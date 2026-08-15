@@ -1,0 +1,359 @@
+/* Live-summary placeholder emoji — triggered pop-in animations.
+   Three entrance sequences (randomly matched per trigger) + one unified exit. */
+
+.lp-emoji {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+
+/* Emoji + trailing "..." dots laid out as one inline group.
+   Dots hug the bottom of the emoji (靠底). `min-width: 0` lets it shrink below
+   its content (emoji + dots) so it can collapse at extreme narrow widths
+   instead of hard-holding ~26px. */
+.lp-emoji-group {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  min-width: 0;
+}
+
+/* Entrance 1: scale up → shake → settle to normal. */
+@keyframes lp-anim-1 {
+  0%   { transform: scale(0);    opacity: 0; }
+  40%  { transform: scale(1.3);  opacity: 1; }
+  55%  { transform: scale(1.3) rotate(-8deg); }
+  65%  { transform: scale(1.3) rotate(8deg); }
+  75%  { transform: scale(1.3) rotate(-5deg); }
+  85%  { transform: scale(1.3) rotate(5deg); }
+  100% { transform: scale(1) rotate(0); opacity: 1; }
+}
+.lp-anim-1 {
+  animation: lp-anim-1 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* Entrance 2: jelly — 1.6x → 0.3x → sudden overshoot with jitter → settle. */
+@keyframes lp-anim-2 {
+  0%   { transform: scale(0);    opacity: 0; }
+  30%  { transform: scale(1.6);  opacity: 1; }
+  50%  { transform: scale(0.3); }
+  70%  { transform: scale(1.15); }
+  80%  { transform: scale(0.95); }
+  88%  { transform: scale(1.08); }
+  100% { transform: scale(1); opacity: 1; }
+}
+.lp-anim-2 {
+  animation: lp-anim-2 0.75s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* Entrance 3: slide in from left, overshoot, hard brake, jelly swing → normal. */
+@keyframes lp-anim-3 {
+  0%   { transform: translateX(-14px) scale(0.6); opacity: 0; }
+  35%  { transform: translateX(6px)  scale(1.1);  opacity: 1; }
+  50%  { transform: translateX(-4px) scale(1.05); }
+  65%  { transform: translateX(3px)  scale(0.98); }
+  78%  { transform: translateX(-2px) scale(1.02); }
+  100% { transform: translateX(0)    scale(1);    opacity: 1; }
+}
+.lp-anim-3 {
+  animation: lp-anim-3 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* Unified exit: quick shrink-out (used for every dismissal). */
+@keyframes lp-exit {
+  0%   { transform: scale(1); opacity: 1; }
+  100% { transform: scale(0); opacity: 0; }
+}
+.lp-exit {
+  animation: lp-exit 0.2s ease-in both;
+}
+
+/* Idle "waiting" dots — appear one by one, hold, then fade out as a group.
+   Each dot runs the same cycle offset slightly so they light up sequentially
+   (逐点出现) and the whole "..." clears before the next loop (再消失). */
+.lp-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--_dk-text-muted);
+}
+.lp-dots > span {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0;
+  /* Hold until the emoji entrance settles (~0.75s) into its normal state,
+     then begin the appear → fade loop. */
+  animation: lp-dot 1.6s ease-in-out 0.8s infinite both;
+}
+.lp-dots > span:nth-child(1) { animation-delay: 0.8s; }
+.lp-dots > span:nth-child(2) { animation-delay: 0.96s; }
+.lp-dots > span:nth-child(3) { animation-delay: 1.12s; }
+
+@keyframes lp-dot {
+  0%   { opacity: 0; transform: scale(0.5); }
+  15%  { opacity: 1; transform: scale(1); }
+  65%  { opacity: 1; transform: scale(1); }
+  80%  { opacity: 0; transform: scale(0.5); }
+  100% { opacity: 0; transform: scale(0.5); }
+}
+
+/* ── Fixed-width slot ──
+   Every LivePreview branch returns an element with `.lp-slot`. The slot is a
+   FIXED width and never shrinks, so the component needs no ResizeObserver /
+   whole-icon trimming — that removed the measurement↔visibility feedback loop
+   that flickered icons when width was tight.
+   No `overflow: clip` here: the tool-call glow (`.lp-step-glow`) intentionally
+   diffuses BEYOND the icon, and clipping the slot would cut the glow. The fixed
+   `width` + `flex: 0 0 auto` already stop the row from being stretched; the
+   multi-digit count is clipped/rolled by `.lp-count-wrap` (its own
+   `overflow: hidden`), not here. */
+.lp-slot {
+  flex: 0 0 auto;
+  width: 32px;
+}
+
+/* ── Step summary (single tool-call glyph + count, compact) ── */
+.lp-steps {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--_dk-text-muted);
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+
+/* After the turn ends the recap dims to signal it is about to leave. */
+.lp-steps.is-stale {
+  opacity: 0.45;
+  transition: opacity 0.4s ease;
+}
+
+.lp-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  /* Keep each icon+count as one rigid unit so clipping happens between icons,
+     never mid-icon. */
+  flex: 0 0 auto;
+}
+
+/* Icon wrapper — relative box so the glow sits behind the glyph. Remounts on
+   each +1 (keyed by count) so the pop and the glow replay together. */
+.lp-step-icon-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Subtle diffusing glow behind the icon on pop — inherits the icon's own
+   colour (currentColor) and stays small; no success/fail status distinction. */
+.lp-step-glow {
+  position: absolute;
+  inset: -2px;
+  border-radius: 999px;
+  background: currentColor;
+  filter: blur(3px);
+  opacity: 0;
+  pointer-events: none;
+  animation: lp-step-glow 0.45s ease-out both;
+}
+
+/* Icon pops each time its count increments (remounted via key). */
+.lp-step-icon {
+  display: inline-flex;
+  animation: lp-icon-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.lp-step-count {
+  display: inline-flex;
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Clip so the number rolls up from below like a slot. */
+.lp-count-wrap {
+  display: inline-block;
+  overflow: hidden;
+  height: 1em;
+  line-height: 1;
+}
+.lp-count-num {
+  display: inline-block;
+  animation: lp-count-roll 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes lp-icon-pop {
+  0%   { transform: scale(0.5); }
+  55%  { transform: scale(1.3); }
+  100% { transform: scale(1); }
+}
+@keyframes lp-step-glow {
+  0%   { transform: scale(0.4); opacity: 0; }
+  22%  { transform: scale(1.1); opacity: 0.5; }
+  100% { transform: scale(1); opacity: 0; }
+}
+@keyframes lp-count-roll {
+  0%   { transform: translateY(100%); }
+  100% { transform: translateY(0); }
+}
+
+/* Recap shrink-out before returning to idle. */
+@keyframes lp-step-exit {
+  0%   { transform: scale(1); opacity: 1; }
+  100% { transform: scale(0.8); opacity: 0; }
+}
+.lp-step-exit {
+  animation: lp-step-exit 0.3s ease-in both;
+}
+
+/* ── Session status bar (vertical) ───────────────────────────
+   A thin vertical bar encodes session status. A rightward glow beam is
+   emitted from its right edge: pulsing for running, breathing for pending. */
+.status-bar {
+  position: relative;
+  display: block;
+  flex: none;
+  width: 2px;
+  height: 18px;
+  border-radius: 2px;
+  background: var(--_dk-text-muted);
+  transform-origin: center;
+}
+
+/* Rightward glow beam. It is rendered INSIDE the summary span and pinned from
+   the status bar (left:-8px bridges the gap-2 between bar and summary) to the
+   summary's right edge (right:0). Its length is therefore always bounded by the
+   summary width — it can never overrun into the LivePreview. This element is a
+   transparent POSITIONING + BLUR container; the actual visuals live on the
+   ::after (breathing base) and, for running, an inner .status-bar-glow__beam
+   (the pulse). Putting blur here (not on the beam) means it is applied AFTER
+   the beam's mask, so the comet's edges truly soften. */
+.status-bar-glow {
+  position: absolute;
+  left: -8px;
+  right: 0;
+  top: 50%;
+  height: 18px;
+  transform: translateY(-50%);
+  transform-origin: left center;
+  pointer-events: none;
+}
+
+/* idle: static muted bar, no glow. */
+.status-bar--idle {
+  background: var(--_dk-text-muted);
+}
+
+/* running: bounce + colour shift to emerald, then two distinct rightward
+   effects on a thin green line:
+     - a short trail that breathes in opacity (::after), and
+     - a sharper pulse that shoots out to the right (the beam, on the span). */
+.status-bar--running {
+  background: var(--_dk-emerald-500);
+  animation: status-bar-run 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+/* Running wrapper: transparent positioning + blur container. The blur lives
+   HERE (not on the beam) so it is applied AFTER the beam's mask — the comet's
+   edges are softened, not the band's hard reveal. Bumped to 3px for running. */
+.status-bar-glow--running {
+  filter: blur(1px);
+}
+/* Pulse (the comet): an inner beam carrying the solid gradient + the moving
+   mask band. It lives INSIDE .status-bar-glow--running, so the parent's blur
+   lands after the mask. Width is dynamic (spans the summary); mask sweep uses
+   % so it works at any width. */
+.status-bar-glow--running .status-bar-glow__beam {
+  position: absolute;
+  inset: 0;
+  /* Steep, fast decay: a tiny bright plateau at the bar, then drops quickly so
+     the comet weakens almost immediately as it travels. Capped at 28% (still
+     inside the left third of the summary). */
+  background: linear-gradient(to right,
+    var(--_dk-emerald-500) 0%,
+    var(--_dk-emerald-500) 3%,
+    transparent 28%);
+  /* Narrow band (48%→50%→52% of the 200% mask ≈ 8% of element width) so the
+     comet stays tight; the sweep keyframe keeps it within the left third. */
+  -webkit-mask-image: linear-gradient(90deg, transparent 48%, #000 50%, transparent 52%);
+  mask-image: linear-gradient(90deg, transparent 48%, #000 50%, transparent 52%);
+  -webkit-mask-size: 200% 100%;
+  mask-size: 200% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  animation: status-bar-run-beam 1.6s linear 0.5s infinite;
+}
+/* Short rightward green trail that breathes in opacity. Hidden during the
+   bounce (base opacity 0 + animation delay) so it appears only after the
+   bounce settles. Blurred by the parent wrapper's filter (no own filter). */
+.status-bar-glow--running::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 18px;
+  transform: translateY(-50%);
+  opacity: 0;
+  /* Non-linear: hold a bright plateau right at the bar, then steep drop. Capped
+     at 33% to stay within the left third of the summary. */
+  background: linear-gradient(to right,
+    var(--_dk-emerald-500) 0%,
+    var(--_dk-emerald-500) 13%,
+    transparent 33%);
+  pointer-events: none;
+  animation: status-bar-run-short 2.4s ease-in-out 0.5s infinite;
+}
+
+/* pending: amber bar, short rightward line that breathes in a slow loop. */
+.status-bar--pending {
+  background: var(--_dk-amber-500);
+}
+.status-bar-glow--pending {
+  opacity: 0;
+  filter: blur(1px);
+  /* Non-linear: bright plateau at the bar, steep drop — matches running glow.
+     Capped at 33% to stay within the left third of the summary. */
+  background: linear-gradient(to right,
+    var(--_dk-amber-500) 0%,
+    var(--_dk-amber-500) 13%,
+    transparent 33%);
+  animation: status-bar-pending-beam 2.4s ease-in-out infinite;
+}
+
+@keyframes status-bar-run {
+  0%   { transform: scaleY(0.4); background: var(--_dk-text-muted); }
+  60%  { transform: scaleY(1.3); }
+  100% { transform: scaleY(1);   background: var(--_dk-emerald-500); }
+}
+
+/* Pulse: the mask band sweeps rightward but is CONFINED to the left third of
+   the summary. With mask-size 200%, band-center = (1 - position%) × width:
+   100% → bar edge (0%), 73% → 27% of width (right edge of the ~12%-wide band
+   lands at ~33%, the edge of the left third). Ending at 73% instead of 0%
+   keeps the comet from travelling to the far right. */
+@keyframes status-bar-run-beam {
+  0%   { -webkit-mask-position-x: 100%; mask-position-x: 100%; opacity: 0; }
+  8%  { opacity: 0.42; }
+  100% { -webkit-mask-position-x: 66%;  mask-position-x: 66%;   opacity: 0; }
+}
+
+/* Short rightward green breathing trail (opacity only). */
+@keyframes status-bar-run-short {
+  0%, 100% { opacity: 0.08; }
+  50%      { opacity: 0.24; }
+}
+
+/* Pending: short amber line that breathes in opacity. */
+@keyframes status-bar-pending-beam {
+  0%, 100% { opacity: 0.08; }
+  50%      { opacity: 0.24; }
+}

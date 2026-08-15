@@ -1,0 +1,10 @@
+{
+  "type": "message",
+  "role": "user",
+  "content": [
+    {
+      "type": "input_text",
+      "text": "golden user text"
+    }
+  ]
+}

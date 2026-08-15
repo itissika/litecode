@@ -1,0 +1,9 @@
+node_modules
+dist
+*.local
+
+# Whole Remotion render chain (config + composition sources + generated CSS +
+# render artifacts). Kept locally for screenshot/video production but never
+# committed — README-facing images are copied to /assets/ at the repo root.
+/remotion.config.ts
+/remotion/

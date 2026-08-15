@@ -1,0 +1,61 @@
+# Ignore build artifacts
+target
+.litecode/
+.fastembed_cache
+.vscode
+node_modules
+.codebuddy
+dist/
+
+# Local eval artifacts (runs, reports, models cache, experimental recipes under .data/recipes/)
+eval/retrieval/.data/
+
+# Python bytecode / local venvs (eval scripts, ORT tooling)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.venv-*/
+*.egg-info/
+
+# Core dumps (do not ignore Rust sources named core.rs)
+/core
+/core.[0-9]*
+!**/core.rs
+!core.rs
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*~
+
+# ── Environment & secrets (never commit real values) ──────────
+.env
+.env.*
+!.env.example
+
+# ── Local runtime logs & caches ───────────────────────────────
+*.log
+*.err
+.cargo_serve.log
+.cargo_serve.err
+
+# ── IDE / tool-specific private configs ───────────────────────
+.serena/
+.codebuddy
+
+# ── npm / install logs ────────────────────────────────────────
+web/.pw_install.log
+web/.vite_dev*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Electron build output
+desktop/dist/
+desktop/node_modules/
+desktop/out/
+target-test-onboarding
+docs/Tool_usability_evaluation/archived_result
+# ── Dev-private (internal tooling, docs, eval; not shipped) ──
+dev/

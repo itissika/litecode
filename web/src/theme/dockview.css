@@ -1,0 +1,133 @@
+/* ============================================
+   dockview.css — dockview-react adapter
+
+   Maps --_dk-* design tokens to dockview's --dv-*
+   CSS variables. Sources tokens from tokens.css.
+   ============================================ */
+
+/* ═══ SURFACE MAPPING ═══ */
+.litecode-dv-base {
+  --dv-background-color:                              var(--_dk-root);
+  --dv-group-view-background-color:                   var(--_dk-editor);
+  --dv-tabs-and-actions-container-background-color:   var(--_dk-root);
+
+  --dv-activegroup-visiblepanel-tab-background-color:   var(--_dk-editor);
+  --dv-activegroup-hiddenpanel-tab-background-color:    var(--_dk-root);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--_dk-editor);
+  --dv-inactivegroup-hiddenpanel-tab-background-color:  var(--_dk-root);
+
+  /* ═══ TEXT ═══ */
+  --dv-activegroup-visiblepanel-tab-color:      var(--_dk-text-primary);
+  --dv-activegroup-hiddenpanel-tab-color:       var(--_dk-text-muted);
+  --dv-inactivegroup-visiblepanel-tab-color:    var(--_dk-text-secondary);
+  --dv-inactivegroup-hiddenpanel-tab-color:     var(--_dk-text-disabled);
+
+  /* ═══ LINES ═══ */
+  --dv-separator-border:             var(--_dk-line);
+  --dv-tab-divider-color:            transparent;
+  --dv-paneview-header-border-color: transparent;
+  --dv-floating-border:              none;
+  --dv-floating-group-border:        none;
+  --dv-floating-titlebar-border-bottom: 1px solid var(--_dk-line);
+  --dv-drag-over-border:             1px solid var(--_dk-accent);
+
+  /* ═══ INTERACTIVE ═══ */
+  --dv-tab-close-icon:              var(--_dk-text-muted);
+  --dv-icon-hover-background-color: var(--_dk-line);
+  --dv-active-sash-color:           var(--_dk-accent);
+  --dv-sash-color:                  transparent;
+  --dv-paneview-active-outline-color: var(--_dk-accent);
+  --dv-drag-over-background-color:  var(--_dk-accent-glow);
+  --dv-drag-over-border-color:      var(--_dk-accent);
+  --dv-tab-close-icon-size:         10px;
+
+  /* ═══ SHAPES ═══ */
+  --dv-border-radius:                 0px;
+  --dv-tab-border-radius:             3px;
+  --dv-sash-border-radius:            3px;
+  --dv-dropdown-border-radius:        10px;
+  --dv-tab-group-chip-border-radius:  9999px;
+
+  /* ═══ SPACING ═══ */
+  --dv-tabs-and-actions-container-height:       34px;
+  --dv-tabs-and-actions-container-font-size:    12px;
+  --dv-tab-font-size:                           12px;
+  --dv-tab-margin:                              0;
+  --dv-spacing-padding:                         8px;
+  --dv-tab-group-chip-padding:                  2px 6px;
+  --dv-tab-group-chip-font-size:                10px;
+  --dv-tab-group-line-height:                   1.0;
+  --dv-tab-group-line-opacity:                  0.35;
+
+  /* ═══ ELEVATION ═══ */
+  --dv-floating-box-shadow:               var(--_dk-elevation);
+  --dv-floating-group-dragging-opacity:   0.9;
+  --dv-floating-titlebar-background-color: var(--_dk-float);
+  --dv-floating-titlebar-height:          34px;
+
+  /* ═══ CONTEXT MENU ═══ */
+  --dv-context-menu-background-color: var(--_dk-overlay);
+  --dv-context-menu-color:            var(--_dk-text-primary);
+
+  /* ═══ TAB GROUP CHIPS ═══ */
+  --dv-tab-group-color:        var(--_dk-accent);
+  --dv-tab-group-color-blue:   #1a85ff;
+  --dv-tab-group-color-cyan:   #06b6d4;
+  --dv-tab-group-color-green:  #22c55e;
+  --dv-tab-group-color-grey:   var(--_dk-text-muted);
+  --dv-tab-group-color-orange: #f97316;
+  --dv-tab-group-color-pink:   #ec4899;
+  --dv-tab-group-color-purple: #a855f7;
+  --dv-tab-group-color-red:    #ef4444;
+  --dv-tab-group-color-yellow: #eab308;
+
+  /* ═══ SCROLLBAR ═══ */
+  --dv-scrollbar-background-color:       transparent;
+  --dv-tabs-container-scrollbar-color:   var(--_dk-text-disabled);
+
+  /* ═══ MISC ═══ */
+  --dv-overlay-z-index:                   999;
+  --dv-transition-duration:               120ms;
+  --dv-active-sash-transition-duration:   200ms;
+  --dv-active-sash-transition-delay:      0ms;
+}
+
+/* ═══ EDGE GROUPS ═══ */
+.litecode-dv-base .dv-groupview.dv-groupview-edge > .dv-tabs-and-actions-container {
+  background-color: var(--_dk-side);
+}
+.litecode-dv-base .dv-groupview.dv-groupview-edge > .dv-content-container {
+  background-color: var(--_dk-sidepanel);
+}
+.litecode-dv-base .dv-groupview.dv-groupview-edge > .dv-tabs-and-actions-container .dv-tabs-container > .dv-tab.dv-active-tab {
+  background-color: var(--_dk-sidepanel);
+}
+.litecode-dv-base .dv-groupview.dv-groupview-edge > .dv-tabs-and-actions-container .dv-tabs-container > .dv-tab.dv-inactive-tab {
+  background-color: var(--_dk-side);
+}
+
+.litecode-dv-base .dv-groupview.dv-groupview-edge.dv-edge-collapsed,
+.litecode-dv-base .dv-groupview.dv-groupview-edge.dv-edge-collapsed > .dv-tabs-and-actions-container {
+  background-color: var(--_dk-side);
+}
+.litecode-dv-base .dv-groupview.dv-groupview-edge.dv-edge-collapsed > .dv-content-container {
+  display: none;
+}
+.litecode-dv-base .dv-groupview.dv-groupview-edge.dv-edge-collapsed > .dv-tabs-and-actions-container .dv-tabs-container > .dv-tab {
+  background-color: var(--_dk-side);
+}
+
+/* ═══ SASH ═══ */
+.litecode-dv-base .dv-sash:hover,
+.litecode-dv-base .dv-sash.dv-sash-hover {
+  background-color: var(--_dk-line-visible);
+}
+
+/* ═══ TITLEBAR CLOSE ═══ */
+.lc-titlebar-close {
+  color: inherit;
+}
+.lc-titlebar-close:hover {
+  color: var(--_dk-close-hover-color);
+  background: var(--_dk-close-hover-bg);
+}

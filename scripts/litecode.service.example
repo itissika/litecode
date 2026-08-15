@@ -1,0 +1,25 @@
+# Example systemd unit for litecode headless server.
+# Copy to /etc/systemd/system/litecode.service and adjust paths / token.
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now litecode
+
+[Unit]
+Description=Litecode headless serve
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/litecode-server
+Environment=LITECODE_TOKEN=REPLACE_WITH_LONG_RANDOM_TOKEN
+ExecStart=/opt/litecode-server/litecode --workspace /path/to/repo serve --bind 0.0.0.0:7483 --require-auth
+Restart=on-failure
+RestartSec=3
+
+# Optional hardening (adjust as needed):
+# NoNewPrivileges=true
+# ProtectSystem=strict
+# ReadWritePaths=/path/to/repo /opt/litecode-server
+
+[Install]
+WantedBy=multi-user.target

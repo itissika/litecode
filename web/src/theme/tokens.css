@@ -1,0 +1,337 @@
+/* ============================================
+   tokens.css — single source of truth for design tokens
+
+   This is the ONLY definition for all --_dk-* tokens.
+   No other file should redefine these variables.
+
+   Surface hierarchy:
+     root          editor bar + app bg
+     editor        editor tab + editor panel
+     side          sidebar bar (collapsed bar)
+     sidepanel     side tab + side panel
+     float         floating panels
+     overlay       menus / dropdowns
+
+   Theme switching via data-dv-theme on :root (document-global scope)
+   ============================================ */
+
+:root {
+  /* ── Surface ── */
+  --_dk-header:    hsl(0 0% 1% / 1);
+  --_dk-root:      hsl(0 0% 3% / 1);
+  --_dk-side:      hsl(0 0% 5% / 1);
+  --_dk-sidepanel: hsl(0 0% 8% / 1);
+  --_dk-editor:    hsl(0 0% 10% / 1);
+  --_dk-float:     hsl(0 0% 0% / 1);
+  --_dk-overlay:   hsl(0 0% 9% / 1);
+
+  /* ── Text ── */
+  --_dk-text-primary:    hsl(0 0% 96% / 1);
+  --_dk-text-body:       hsl(0 0% 88% / 1);   /* chat prose: a touch below primary */
+  --_dk-text-secondary:  hsl(0 0% 64% / 1);
+  --_dk-text-muted:      hsl(0 0% 47% / 1);
+  --_dk-text-disabled:   hsl(0 0% 32% / 1);
+
+  /* ── Text style system (weight / font / size) ──
+     Single source for typography. Exposed to Tailwind via @theme (index.css)
+     so components consume utilities, never raw px or weight literals. Weight
+     and size are theme-independent, so defined once here. */
+  --_dk-text-weight-regular:   200;
+  --_dk-text-weight-medium:    300;
+  --_dk-text-weight-semibold:  400;
+  --_dk-text-weight-bold:      500;
+
+  --_dk-font-ui:   var(--font-sans);
+  --_dk-font-code: var(--font-mono);
+
+  /* ── Text size scale ──
+     A deliberately tight scale: UI chrome stays 9–11px at the bottom, while the
+     body/heading steps are compressed into a narrow band (base ≈0.93rem ≈14.9px,
+     up to 4xl = 2rem ≈32px) so everything reads close in size with gentle
+     hierarchy. Every surface pulls from this one shared scale. */
+  --_dk-text-3xs:  0.5625rem;  /* 9px    */
+  --_dk-text-2xs:  0.625rem;   /* 10px   */
+  --_dk-text-xs:   0.6875rem;  /* 11px   */
+  --_dk-text-sm:   0.82rem;    /* ~13.8px */
+  --_dk-text-md:   0.85rem;
+  --_dk-text-base: 0.89rem;
+  --_dk-text-lg:   0.953rem;   /* ~15.2px */
+  --_dk-text-xl:   1.10rem;    /* ~17.6px — markdown h3 */
+  --_dk-text-2xl:  1.23rem;    /* ~19.7px — markdown h2 */
+  --_dk-text-3xl:  1.54rem;    /* ~24.6px — markdown h1 */
+  --_dk-text-4xl:  2rem;       /* 32px   */
+
+  /* ── Indentation ──
+     The single source of truth for LEFT indentation. FoldCard (and every
+     component that renders inside it) must derive its left inset from these
+     tokens — never a hardcoded pl- / px- utility — so a change here cascades
+     everywhere and header/content/guide-line stay in a consistent relationship. */
+  --_dk-indent-card-head: 0.5rem;    /* 8px  — FoldCard header (icon) inset */
+  --_dk-indent-card-body: 1.625rem;  
+  --_dk-indent-step:      0.75rem;   /* 12px — one nesting-depth step */
+
+  /* Comfortable reading measure for prose. Keeps long paragraphs from
+     stretching across ultra-wide panels; code/table/mermaid stay full width. */
+  --_dk-prose-measure: 72ch;
+
+  /* ── Accent ── */
+  --_dk-accent:       #2c3033;
+  --_dk-accent-glow:  rgba(232, 236, 240, 0.12);
+  --_dk-accent-ring:  rgb(186, 188, 190);
+  --_dk-accent-hover: #e8ecf0;
+  --_dk-accent-halo:  rgba(232, 236, 240, 0.05);
+
+  /* ── Solid button ── */
+  --_dk-accent-solid:       #3e4041;
+  --_dk-accent-solid-text:  #dad7d7;
+
+  /* ── Semantic ── */
+  --_dk-red-500:          #ef4444;
+  --_dk-amber-500:        #f59e0b;
+  --_dk-emerald-500:      #10b981;
+  --_dk-red-900\/10:      rgba(127, 29, 29, 0.1);
+  --_dk-amber-900\/20:    rgba(120, 53, 15, 0.2);
+  --_dk-emerald-900\/20:  rgba(6, 78, 59, 0.2);
+
+  /* ── Categorical (fixed-hue UI accents: tab-group chips, status dots) ──
+     Theme-aware: tuned per theme so each hue reads cleanly on both surfaces.
+     Single source for the dockview chip palette (see theme/dockview/adapter.css). */
+  --_dk-cat-blue:    #1a85ff;
+  --_dk-cat-cyan:    #06b6d4;
+  --_dk-cat-green:   #22c55e;
+  --_dk-cat-orange:  #f97316;
+  --_dk-cat-pink:    #ec4899;
+  --_dk-cat-purple:  #a855f7;
+  --_dk-cat-red:     #ef4444;
+  --_dk-cat-yellow:  #eab308;
+
+  /* ── Tags (pure data-state indicators: status / enum) ──
+     Tints derive from the THEME-BOUND 500 bases via color-mix, so the same
+     token reads cleanly in BOTH themes — no muddy dark-base blend in light
+     (the old --_dk-*-900/NN tokens were identical across themes and turned
+     grayish over white). 500 bases are already tuned per theme, so color-mix
+     recomputes per theme automatically. Defined once in :root; no light
+     override needed because every value references a theme-bound token. */
+  --_dk-tag-ok-fg:       var(--_dk-emerald-500);
+  --_dk-tag-ok-bg:       color-mix(in srgb, var(--_dk-emerald-500) 14%, transparent);
+  --_dk-tag-ok-border:   color-mix(in srgb, var(--_dk-emerald-500) 30%, transparent);
+
+  --_dk-tag-warn-fg:     var(--_dk-amber-500);
+  --_dk-tag-warn-bg:     color-mix(in srgb, var(--_dk-amber-500) 16%, transparent);
+  --_dk-tag-warn-border: color-mix(in srgb, var(--_dk-amber-500) 34%, transparent);
+
+  --_dk-tag-danger-fg:   var(--_dk-red-500);
+  --_dk-tag-danger-bg:   color-mix(in srgb, var(--_dk-red-500) 14%, transparent);
+  --_dk-tag-danger-border: color-mix(in srgb, var(--_dk-red-500) 30%, transparent);
+
+  --_dk-tag-neutral-fg:     var(--_dk-text-muted);
+  --_dk-tag-neutral-bg:     transparent;
+  --_dk-tag-neutral-border: var(--_dk-line-visible);
+
+  /* ── Status (tool-icon static states) ── */
+  --_dk-status-ok:    #e8ecf0;   /* theme foreground: light-white in dark theme */
+  --_dk-status-fail:  #ef4444;   /* failure red */
+
+  /* ── Lines (4 levels, all 1px) ── */
+  --_dk-line:           rgba(255, 255, 255, 0.05);   /* L1: subtle — internal dividers */
+  --_dk-line-visible:   rgba(255, 255, 255, 0.1);   /* L2: medium — general borders */
+  --_dk-border-visible: rgba(255, 255, 255, 0.14);   /* L3: prominent — buttons etc */
+  --_dk-border-strong:  rgba(255, 255, 255, 0.22);   /* L4: strongest — primary/important buttons */
+  /* ── Surface extensions ── */
+  --_dk-surface-raised:  #1e1e20;   /* cards / toggles / inline code */
+  --_dk-surface-header:  #111114;   /* table / code-block headers */
+
+  /* ── Elevation ── */
+  --_dk-elevation: 0 8px 32px rgba(0, 0, 0, 0.5);
+
+  /* ── Window controls ── */
+  --_dk-close-hover-color: #f87171;
+  --_dk-close-hover-bg:    rgba(127, 29, 29, 0.4);
+
+  /* ── Interaction (shared surface matrix) ──
+     One token set every interactive element uses — no per-component btn
+     variants. Three surface intensities (neutral / accent / danger) share the
+     SAME skeleton: normal · hover · pressed · selected · disabled × {bg,fg,border}
+     plus one shared focus ring. Components compose the states via Tailwind
+     variants (hover:/active:/disabled:/focus-visible:/aria-selected:). */
+  --_dk-hover:          rgba(255, 255, 255, 0.06);
+  --_dk-pressed:        rgba(255, 255, 255, 0.10);
+  --_dk-accent-solid-hover:    #4a4c4d;
+  --_dk-accent-solid-pressed:  #333536;
+  --_dk-danger-pressed:        rgba(127, 29, 29, 0.28);
+
+  --_dk-ix-ring:           var(--_dk-accent-ring);
+
+  /* neutral surface — rows, chips, tabs, menu items, ghost buttons */
+  --_dk-ix-bg:            transparent;
+  --_dk-ix-bg-hover:      var(--_dk-hover);
+  --_dk-ix-bg-pressed:    var(--_dk-pressed);
+  --_dk-ix-bg-selected:   var(--_dk-accent-halo);
+  --_dk-ix-bg-disabled:   transparent;
+  --_dk-ix-fg:            var(--_dk-text-secondary);
+  --_dk-ix-fg-hover:      var(--_dk-text-primary);
+  --_dk-ix-fg-pressed:    var(--_dk-text-primary);
+  --_dk-ix-fg-selected:   var(--_dk-accent-hover);
+  --_dk-ix-fg-disabled:   var(--_dk-text-disabled);
+  --_dk-ix-border:        var(--_dk-border-visible);
+  --_dk-ix-border-hover:  var(--_dk-border-strong);
+  --_dk-ix-border-pressed:var(--_dk-border-strong);
+  --_dk-ix-border-selected:var(--_dk-accent-hover);
+  --_dk-ix-border-disabled:var(--_dk-border-visible);
+
+  /* accent surface — primary / emphasis action (was btn-primary, now filled) */
+  --_dk-ix-accent-bg:          var(--_dk-accent-solid);
+  --_dk-ix-accent-bg-hover:    var(--_dk-accent-solid-hover);
+  --_dk-ix-accent-bg-pressed:  var(--_dk-accent-solid-pressed);
+  --_dk-ix-accent-bg-selected: var(--_dk-accent-solid);
+  --_dk-ix-accent-bg-disabled: var(--_dk-accent-solid);
+  --_dk-ix-accent-fg:          var(--_dk-accent-solid-text);
+  --_dk-ix-accent-fg-hover:    var(--_dk-accent-solid-text);
+  --_dk-ix-accent-fg-pressed:  var(--_dk-accent-solid-text);
+  --_dk-ix-accent-fg-selected: var(--_dk-accent-solid-text);
+  --_dk-ix-accent-fg-disabled: var(--_dk-accent-solid-text);
+  --_dk-ix-accent-border:        transparent;
+  --_dk-ix-accent-border-hover:  transparent;
+  --_dk-ix-accent-border-pressed:transparent;
+  --_dk-ix-accent-border-selected:transparent;
+  --_dk-ix-accent-border-disabled:transparent;
+
+  /* danger surface — destructive action (was btn-danger) */
+  --_dk-ix-danger-bg:          transparent;
+  --_dk-ix-danger-bg-hover:    rgba(127, 29, 29, 0.1);
+  --_dk-ix-danger-bg-pressed:  var(--_dk-danger-pressed);
+  --_dk-ix-danger-bg-selected: rgba(127, 29, 29, 0.1);
+  --_dk-ix-danger-bg-disabled: transparent;
+  --_dk-ix-danger-fg:          var(--_dk-red-500);
+  --_dk-ix-danger-fg-hover:    var(--_dk-red-500);
+  --_dk-ix-danger-fg-pressed:  var(--_dk-red-500);
+  --_dk-ix-danger-fg-selected: var(--_dk-red-500);
+  --_dk-ix-danger-fg-disabled: var(--_dk-text-disabled);
+  --_dk-ix-danger-border:        transparent;
+  --_dk-ix-danger-border-hover:  var(--_dk-red-500);
+  --_dk-ix-danger-border-pressed:var(--_dk-red-500);
+  --_dk-ix-danger-border-selected:var(--_dk-red-500);
+  --_dk-ix-danger-border-disabled:transparent;
+}
+
+/* ═══ LIGHT THEME ═══ */
+
+:root[data-dv-theme="light"] {
+  --_dk-header:    #ffffff;
+  --_dk-root:      hsl(0 4% 94% / 1);
+  --_dk-editor:    #fff;
+  --_dk-side:      hsl(0 0% 96% / 1);
+  --_dk-sidepanel: hsl(0 0% 99% / 1);
+  --_dk-float:     #fafafa;
+  --_dk-overlay:   #ffffff;
+
+  --_dk-text-primary:    hsl(0 0% 4% / 1);
+  --_dk-text-body:       hsl(0 0% 12% / 1);   /* chat prose: a touch below primary */
+  --_dk-text-secondary:  hsl(0 0% 24% / 1);
+  --_dk-text-muted:      hsl(0 0% 33% / 1);
+  --_dk-text-disabled:   #a7a5a5;
+
+  --_dk-accent:       #d8dadd;
+  --_dk-accent-glow:  rgba(44, 44, 46, 0.10);
+  --_dk-accent-ring:  rgba(44, 44, 46, 0.22);
+  --_dk-accent-hover: #2c2c2e;
+  --_dk-accent-halo:  rgba(44, 44, 46, 0.04);
+
+  /* ── Solid button ── */
+  --_dk-accent-solid:       #969393;
+  --_dk-accent-solid-text:  #ffffff;
+
+  --_dk-red-500:          #ff3d37;
+  --_dk-amber-500:        #ffaa48;
+  --_dk-emerald-500:      #00d459;
+  --_dk-red-900\/10:      rgba(127, 29, 29, 0.1);
+  --_dk-amber-900\/20:    rgba(120, 53, 15, 0.2);
+  --_dk-emerald-900\/20:  rgba(6, 78, 59, 0.2);
+
+  /* ── Status (tool-icon static states) ── */
+  --_dk-status-ok:    #2c2c2e;   /* theme foreground: deep-grey in light theme */
+  --_dk-status-fail:  #ef4444;   /* failure red */
+
+  /* ── Categorical (light-tuned for contrast on light surfaces) ── */
+  --_dk-cat-blue:    #0066cc;
+  --_dk-cat-cyan:    #0891b2;
+  --_dk-cat-green:   #16a34a;
+  --_dk-cat-orange:  #ea580c;
+  --_dk-cat-pink:    #db2777;
+  --_dk-cat-purple:  #9333ea;
+  --_dk-cat-red:     #dc2626;
+  --_dk-cat-yellow:  #ca8a04;
+
+  --_dk-line:           rgba(0, 0, 0, 0.05);   /* L1: subtle */
+  --_dk-line-visible:   rgba(0, 0, 0, 0.10);   /* L2: medium */
+  --_dk-border-visible: rgba(0, 0, 0, 0.18);   /* L3: prominent */
+  --_dk-border-strong:  rgba(0, 0, 0, 0.30);   /* L4: strongest — primary/important buttons */
+  --_dk-elevation:    0 4px 20px rgba(0, 0, 0, 0.10);
+
+  /* ── Surface extensions ── */
+  --_dk-surface-raised:  #f3f3f5;
+  --_dk-surface-header:  #ebebed;
+
+  --_dk-close-hover-color: #ffffff;
+  --_dk-close-hover-bg:    rgba(255, 38, 38, 0.822);
+
+  /* ── Interaction (shared surface matrix) — see dark :root for the full set ── */
+  --_dk-hover:          rgba(0, 0, 0, 0.05);
+  --_dk-pressed:        rgba(0, 0, 0, 0.09);
+  --_dk-accent-solid-hover:    #8a8787;
+  --_dk-accent-solid-pressed:  #a3a0a0;
+  --_dk-danger-pressed:        rgba(127, 29, 29, 0.22);
+
+  --_dk-ix-ring:           var(--_dk-accent-ring);
+
+  /* neutral surface */
+  --_dk-ix-bg:            transparent;
+  --_dk-ix-bg-hover:      var(--_dk-hover);
+  --_dk-ix-bg-pressed:    var(--_dk-pressed);
+  --_dk-ix-bg-selected:   var(--_dk-accent-halo);
+  --_dk-ix-bg-disabled:   transparent;
+  --_dk-ix-fg:            var(--_dk-text-secondary);
+  --_dk-ix-fg-hover:      var(--_dk-text-primary);
+  --_dk-ix-fg-pressed:    var(--_dk-text-primary);
+  --_dk-ix-fg-selected:   var(--_dk-accent-hover);
+  --_dk-ix-fg-disabled:   var(--_dk-text-disabled);
+  --_dk-ix-border:        var(--_dk-border-visible);
+  --_dk-ix-border-hover:  var(--_dk-border-strong);
+  --_dk-ix-border-pressed:var(--_dk-border-strong);
+  --_dk-ix-border-selected:var(--_dk-accent-hover);
+  --_dk-ix-border-disabled:var(--_dk-border-visible);
+
+  /* accent surface */
+  --_dk-ix-accent-bg:          var(--_dk-accent-solid);
+  --_dk-ix-accent-bg-hover:    var(--_dk-accent-solid-hover);
+  --_dk-ix-accent-bg-pressed:  var(--_dk-accent-solid-pressed);
+  --_dk-ix-accent-bg-selected: var(--_dk-accent-solid);
+  --_dk-ix-accent-bg-disabled: var(--_dk-accent-solid);
+  --_dk-ix-accent-fg:          var(--_dk-accent-solid-text);
+  --_dk-ix-accent-fg-hover:    var(--_dk-accent-solid-text);
+  --_dk-ix-accent-fg-pressed:  var(--_dk-accent-solid-text);
+  --_dk-ix-accent-fg-selected: var(--_dk-accent-solid-text);
+  --_dk-ix-accent-fg-disabled: var(--_dk-accent-solid-text);
+  --_dk-ix-accent-border:        transparent;
+  --_dk-ix-accent-border-hover:  transparent;
+  --_dk-ix-accent-border-pressed:transparent;
+  --_dk-ix-accent-border-selected:transparent;
+  --_dk-ix-accent-border-disabled:transparent;
+
+  /* danger surface */
+  --_dk-ix-danger-bg:          transparent;
+  --_dk-ix-danger-bg-hover:    rgba(127, 29, 29, 0.1);
+  --_dk-ix-danger-bg-pressed:  var(--_dk-danger-pressed);
+  --_dk-ix-danger-bg-selected: rgba(127, 29, 29, 0.1);
+  --_dk-ix-danger-bg-disabled: transparent;
+  --_dk-ix-danger-fg:          var(--_dk-red-500);
+  --_dk-ix-danger-fg-hover:    var(--_dk-red-500);
+  --_dk-ix-danger-fg-pressed:  var(--_dk-red-500);
+  --_dk-ix-danger-fg-selected: var(--_dk-red-500);
+  --_dk-ix-danger-fg-disabled: var(--_dk-text-disabled);
+  --_dk-ix-danger-border:        transparent;
+  --_dk-ix-danger-border-hover:  var(--_dk-red-500);
+  --_dk-ix-danger-border-pressed:var(--_dk-red-500);
+  --_dk-ix-danger-border-selected:var(--_dk-red-500);
+  --_dk-ix-danger-border-disabled:transparent;
+}

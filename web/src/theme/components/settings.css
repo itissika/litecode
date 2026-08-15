@@ -1,0 +1,367 @@
+@keyframes lc-settings-flash {
+  0%   { opacity: 0.4; filter: brightness(1.06); }
+  100% { opacity: 1;   filter: brightness(1); }
+}
+
+.settings-content-enter {
+  animation: lc-settings-flash 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.session-row-active {
+  background: var(--_dk-accent-halo) !important;
+  box-shadow: inset 2px 0 0 var(--_dk-accent-hover);
+}
+
+.session-current-badge {
+  border: 1px solid var(--_dk-emerald-900\/20);
+  background: var(--_dk-emerald-900\/20);
+  color: var(--_dk-emerald-500);
+  border-radius: 999px;
+  padding: 0.0625rem 0.375rem;
+  font-size: 0.625rem;
+  font-weight: 500;
+  text-transform: lowercase;
+}
+
+.settings-section-intro {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--_dk-text-muted);
+}
+
+.settings-section-intro code {
+  font-size: 0.8125rem;
+  color: var(--_dk-text-secondary);
+}
+
+.settings-section-title {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--_dk-text-primary);
+}
+
+/* Thin hairline drawn under a section's operation row (the Add / Save / Refresh
+   button bar that heads most settings pages). Reuses the same --_dk-line token
+   as table headers, text inputs, and fold-card separators so the divider stays
+   consistent with the rest of the settings chrome. */
+.settings-op-divider {
+  border-bottom: 1px solid var(--_dk-line);
+  padding-bottom: 0.625rem;
+  margin-bottom: 0.75rem;
+}
+
+/* Content container for a settings section. Wraps every control + button that
+   belongs under a [title + description] pair, and provides the left indent
+   that hints the hierarchy. Inner elements must NOT add their own left padding
+   — the container does it. Mirrors the markdown outline:
+     - Title
+     - Description
+       - controls
+       - buttons */
+.settings-content-indent {
+  padding-left: var(--_dk-indent-card-head);
+}
+
+.settings-field-hint {
+  margin-top: 0.125rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--_dk-text-muted);
+}
+
+.settings-input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--_dk-line);
+  border-radius: 0;
+  background-color: transparent;
+  padding: 0.375rem 0 0.375rem 0.25rem;
+  font-size: 0.875rem;
+  color: var(--_dk-text-primary);
+  outline: none;
+  transition: border-color 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.settings-input:focus {
+  border-bottom-color: var(--_dk-accent-hover);
+}
+
+.settings-input:focus-visible {
+  box-shadow: none;
+  outline: none;
+}
+
+.settings-input:disabled {
+  opacity: 0.5;
+}
+
+
+
+.settings-nav-item {
+  display: flex;
+  align-items: left;
+  gap: 0;
+  width: 100%;
+  padding: 0.375rem 0.75rem;
+  text-align: left;
+  font-size: 0.8125rem;
+  color: var(--_dk-text-muted);
+}
+
+.settings-nav-item-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.settings-nav-item:hover .settings-nav-item-content {
+  filter: brightness(1.3);
+}
+
+:root[data-dv-theme="light"] .settings-nav-item:hover .settings-nav-item-content {
+  filter: brightness(0.7);
+}
+
+.settings-nav-item:active .settings-nav-item-content {
+  filter: brightness(0.85);
+}
+
+.settings-nav-item-active {
+  color: var(--_dk-text-primary);
+}
+
+.settings-table {
+  width: 100%;
+  text-align: left;
+  font-size: 0.875rem;
+}
+
+.settings-table thead {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--_dk-text-muted);
+  border-bottom: 1px solid var(--_dk-line);
+}
+
+.settings-table th {
+  padding: 0.5rem 0.75rem;
+}
+
+.settings-table td {
+  padding: 0.5rem 0.75rem;
+}
+
+.settings-table tbody tr {
+  border-top: 1px solid var(--_dk-line);
+  transition: background-color 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.settings-table tbody tr:hover {
+  background: var(--_dk-accent-halo);
+}
+
+.settings-header-meta {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--_dk-text-disabled);
+}
+
+.tool-binding-card {
+  position: relative;
+  transition: background-color 120ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 120ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 80ms cubic-bezier(0.16, 1, 0.3, 1),
+    filter 80ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Interaction feel: hover lays a faint brighten veil over the whole card;
+   press darkens + slightly shrinks the card itself. States key off the
+   full-card toggle button via :has() so no markup change is needed. */
+.tool-binding-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tool-binding-card:has(.tool-binding-toggle:hover:not(:disabled))::after {
+  opacity: 0.04;
+}
+
+.tool-binding-card:has(.tool-binding-toggle:active:not(:disabled)) {
+  transform: scale(0.98);
+  filter: brightness(0.92);
+}
+
+.tool-binding-card:has(.tool-binding-toggle:active:not(:disabled))::after {
+  opacity: 0;
+}
+
+/* Full-card toggle overlay: the whole card toggles status. The visible
+   content sits above it and is click-through (pointer-events: none) so any
+   click on the card toggles — except .tool-binding-action controls (Install /
+   Guide), which stay interactive and do NOT toggle the card. */
+.tool-binding-toggle {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: inherit;
+  cursor: pointer;
+}
+
+.tool-binding-toggle:focus-visible {
+  outline: 2px solid var(--_dk-accent-ring);
+  outline-offset: -2px;
+}
+
+.tool-binding-toggle:disabled {
+  cursor: not-allowed;
+}
+
+.tool-binding-content {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.tool-binding-action {
+  pointer-events: auto;
+}
+
+.tool-binding-card[data-enabled="false"] .tool-binding-title {
+  color: var(--_dk-text-disabled);
+}
+
+.tool-binding-card[data-enabled="true"] {
+  background: rgba(44, 44, 46, 0.18);
+  box-shadow: inset 1.3px 0 0 var(--_dk-line-visible);
+}
+
+:root[data-dv-theme="light"] .tool-binding-card[data-enabled="true"] {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.tool-binding-foot {
+  border-top: none;
+  position: relative;
+  padding-top: 0.75rem;
+}
+
+.tool-binding-foot::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 1.3rem;
+  right: 1.3rem;
+  border-top: 1px solid var(--_dk-line);
+}
+
+.tool-binding-card[aria-disabled="true"] {
+  opacity: 0.45;
+}
+
+/* Provider rows reuse FoldCard for collapsible收纳, but without the
+   chat-specific editor background / 30vh scroll cap / edge-blur bands.
+   Horizontal indent is intentionally NOT overridden here — settings now uses
+   the same --_dk-indent-card-* tokens as chat (the old 0.75rem override existed
+   only to paper over chat's header≠body mismatch, which is now fixed at the
+   token level). Only vertical rhythm + dropdown-escape behaviour are tuned. */
+.settings-foldcard .foldcard-header {
+  padding-top: 0.125rem;
+  padding-bottom: 0.125rem;
+}
+
+.settings-foldcard .foldcard-scroll-frame {
+  background: transparent;
+  padding-bottom: 0;
+  /* override chat's `overflow: clip` — the Select dropdown is an absolutely
+     positioned panel that opens downward and must escape the frame, otherwise
+     it gets clipped mid-list. No blur bands exist in settings, so safe. */
+  overflow: visible;
+}
+
+/* The Select dropdown must also escape `.foldcard-body-inner`'s `overflow:
+   hidden` (used by the 0fr→1fr collapse). Only release it while the card is
+   open — when collapsed the hidden clip is what hides the content, so we must
+   NOT touch it then. */
+.settings-foldcard .foldcard-body.is-open .foldcard-body-inner {
+  overflow: visible;
+}
+
+.settings-foldcard .foldcard-scroll {
+  max-height: none;
+  overflow: visible;
+  /* Compact vertical rhythm only; left inset inherits the default
+     --_dk-indent-card-body token so settings matches chat exactly. */
+  padding-top: 0.375rem;
+  padding-right: 0.375rem;
+  padding-bottom: 0.5rem;
+}
+
+.engine-icon-static {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex-shrink: 0;
+  color: var(--_dk-text-muted);
+  cursor: default;
+}
+
+.engine-index-track {
+  position: relative;
+  height: 0.375rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--_dk-line-visible);
+}
+
+.lsp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.5rem;
+}
+
+.engine-index-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.engine-index-fill[data-tone="ready"] {
+  background: var(--_dk-emerald-500);
+}
+
+.engine-index-fill[data-tone="stale"],
+.engine-index-fill[data-tone="busy"] {
+  background: var(--_dk-amber-500);
+}
+
+.engine-index-fill[data-tone="rebuild"] {
+  background: var(--_dk-red-500);
+}
+
+.engine-index-fill[data-tone="idle"] {
+  background: var(--_dk-text-disabled);
+}
+
+.engine-index-fill.is-pulse {
+  animation: engine-index-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes engine-index-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}

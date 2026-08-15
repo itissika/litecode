@@ -1,0 +1,13 @@
+{
+  "type": "message",
+  "id": "msg_golden_1",
+  "role": "assistant",
+  "status": "completed",
+  "content": [
+    {
+      "type": "output_text",
+      "text": "golden assistant text",
+      "annotations": []
+    }
+  ]
+}

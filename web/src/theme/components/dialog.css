@@ -1,0 +1,53 @@
+/* Floating dialog window chrome — shared by Settings and About. */
+.lc-dialog {
+  background: var(--_dk-overlay);
+  border: 1px solid var(--_dk-line-visible);
+  box-shadow: var(--_dk-elevation);
+}
+
+.lc-dialog-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  padding: 0 0 0 0.75rem;
+  flex-shrink: 0;
+  cursor: move;
+  background: var(--_dk-float);
+  border-bottom: 1px solid var(--_dk-line);
+}
+
+.lc-dialog-title {
+  font-size: 11px;
+  color: var(--_dk-text-secondary);
+}
+
+.lc-dialog-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--_dk-text-muted);
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.lc-dialog-close:hover {
+  color: var(--_dk-close-hover-color);
+  background: var(--_dk-close-hover-bg);
+}
+
+.lc-dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.lc-dialog-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+}

@@ -1,0 +1,300 @@
+/* Agent content — markdown, code blocks, mermaid diagrams */
+
+/* ── Markdown ── */
+
+/* Compact markdown inside a tool-card body (e.g. the subagent Task brief).
+   AgentMarkdown now sizes itself relative to the container's font-size (em
+   headings + inherited body), so we only need to set the theme scale here and
+   tighten spacing. Selector specificity (0,2,1) beats the Tailwind utilities
+   (0,1,0) inside AgentMarkdown, so these win without !important. The heading
+   sizes themselves come from the em-based rules in AgentMarkdown. */
+.tool-card-markdown {
+  font-size: var(--_dk-text-xs);
+  line-height: 1.5;
+}
+
+.tool-card-markdown .agent-markdown > p,
+.tool-card-markdown .agent-markdown > ul,
+.tool-card-markdown .agent-markdown > ol,
+.tool-card-markdown .agent-markdown > blockquote {
+  margin-bottom: 0.375rem;
+}
+
+.tool-card-markdown .agent-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.tool-card-markdown .agent-markdown > h1,
+.tool-card-markdown .agent-markdown > h2,
+.tool-card-markdown .agent-markdown > h3 {
+  margin-bottom: 0.25rem;
+  /* Headings are wired to the full --_dk-text-* scale (e.g. text-dk-2xl/3xl in
+     the message view); inside a compact 11px card that would overflow, so pin
+     them to a single modest step just above the card body. */
+  font-size: var(--_dk-text-sm);
+}
+
+/* Code blocks use --_dk-text-md (13px) by default; inside a tool card they step
+   down one notch to --_dk-text-2xs (10px), below the card's 11px body — both are
+   global theme tokens, so the code block stays "one notch smaller than body" in
+   every context without hardcoded ratios. */
+.tool-card-markdown .agent-code-block-body pre,
+.tool-card-markdown .agent-code-block-fallback {
+  font-size: var(--_dk-text-2xs);
+}
+
+/* Tables follow the same "one notch below the card body" nesting rule as the
+   code block above — step down to --_dk-text-2xs (10px) inside the 11px card. */
+.tool-card-markdown .agent-markdown-table {
+  font-size: var(--_dk-text-2xs);
+}
+
+.agent-markdown-inline-code {
+  border-radius: 0.25rem;
+  background: var(--_dk-surface-raised);
+  padding: 0.0625rem 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  /* Code must not inherit the parent's bold/medium weight (e.g. when nested
+     inside a heading or **bold** run) — keep it Regular so mono strokes stay
+     crisp instead of rendering as a heavier, halo-softened weight. */
+  font-weight: 400;
+  /* Off-white rather than pure #fff: kills the white-on-dark halo that makes
+     small mono text read as "blurry" on a near-black surface. */
+  color: var(--_dk-text-body);
+}
+
+.agent-markdown-blockquote {
+  margin-bottom: 0.5rem;
+  border-left: 2px solid var(--_dk-text-disabled);
+  padding-left: 0.75rem;
+  color: var(--_dk-text-body);
+}
+
+.agent-markdown-blockquote:last-child {
+  margin-bottom: 0;
+}
+
+.agent-markdown-table-wrap {
+  overflow-x: auto;
+  border-radius: 0.5rem;
+  border: 1px solid var(--_dk-border-visible);
+}
+
+.agent-markdown-table {
+  width: 100%;
+  border-collapse: collapse;
+  /* Wire the table into the project scale: --_dk-text-sm (12px) matches the prior
+     hardcoded 0.75rem but now tracks the central size token. */
+  font-size: var(--_dk-text-sm);
+  line-height: 1.5;
+}
+
+.agent-markdown-table th,
+.agent-markdown-table td {
+  border-bottom: 1px solid var(--_dk-border-visible);
+  padding: 0.375rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.agent-markdown-table th {
+  background: var(--_dk-surface-header);
+  font-weight: var(--_dk-text-weight-semibold);
+  color: var(--_dk-text-body);
+}
+
+.agent-markdown-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* Comfortable reading measure for prose only — code blocks, tables and
+   mermaid diagrams remain full width (they are direct children, not matched
+   here). Overflow-wrap keeps long tokens (URLs, paths) from blowing out. */
+.agent-markdown > p,
+.agent-markdown > ul,
+.agent-markdown > ol,
+.agent-markdown > blockquote,
+.agent-markdown > h1,
+.agent-markdown > h2,
+.agent-markdown > h3 {
+  max-width: var(--_dk-prose-measure);
+  overflow-wrap: break-word;
+  /* Prose previously inherited Tailwind's text-sm line-height (~1.43). Bump it
+     for a more comfortable reading rhythm. */
+  line-height: 1.75;
+}
+
+/* ── Code blocks ── */
+.agent-code-block {
+  overflow: hidden;
+  border-radius: 0.5rem;
+  border: 1px solid var(--_dk-border-visible);
+  background: var(--_dk-editor);
+}
+
+.agent-code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--_dk-border-visible);
+  background: var(--_dk-surface-header);
+  padding: 0.25rem 0.5rem;
+}
+
+.agent-code-block-lang {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: var(--_dk-text-weight-medium);
+  text-transform: lowercase;
+  color: var(--_dk-text-muted);
+}
+
+.agent-code-block-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 0.25rem;
+  padding: 0.125rem 0.375rem;
+  font-size: 0.625rem;
+  color: var(--_dk-text-muted);
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.agent-code-block-copy:hover {
+  background: var(--_dk-surface-raised);
+  color: var(--_dk-text-secondary);
+}
+
+.agent-code-block-body {
+  max-height: 16rem;
+  overflow: auto;
+}
+
+.agent-code-block-body :is(pre, code) {
+  margin: 0;
+  background: transparent !important;
+}
+
+.agent-code-block-body pre {
+  padding: 0.625rem 0.75rem;
+  font-family: var(--font-mono);
+  /* One notch below the 14px message body (--_dk-text-md = 13px, a global theme
+     token). Shiki only sets foreground colors, never font-size, so this is safe.
+     Inside a compact tool card it steps down one notch further (see below). */
+  font-size: var(--_dk-text-md);
+  line-height: 1.6;
+}
+
+.agent-code-block-fallback {
+  max-height: 16rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.625rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: var(--_dk-text-md);
+  line-height: 1.6;
+  color: var(--_dk-text-body);
+}
+
+/* ── Mermaid diagrams ── */
+.agent-mermaid-block {
+  overflow: hidden;
+  border-radius: 0.5rem;
+  border: 1px solid var(--_dk-border-visible);
+  background: var(--_dk-editor);
+  box-shadow: inset 0 1px 0 rgba(255 255 255 / 0.03);
+}
+
+.agent-mermaid-block-error {
+  border-color: var(--_dk-red-500);
+}
+
+.agent-mermaid-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--_dk-border-visible);
+  background: var(--_dk-surface-header);
+  padding: 0.25rem 0.5rem;
+}
+
+.agent-mermaid-label {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: var(--_dk-text-weight-medium);
+  text-transform: lowercase;
+  color: var(--_dk-text-muted);
+}
+
+.agent-mermaid-status {
+  font-size: 0.625rem;
+  color: var(--_dk-text-disabled);
+}
+
+.agent-mermaid-wrap {
+  overflow-x: auto;
+  padding: 0.875rem 0.75rem;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 0%, var(--_dk-accent-halo), transparent 70%),
+    var(--_dk-editor);
+}
+
+.agent-mermaid-wrap svg {
+  display: block;
+  max-width: none;
+  height: auto;
+  font-family: var(--font-sans) !important;
+  background: transparent !important;
+}
+
+/* Mermaid bakes an explicit font-size into each injected <text> at render time
+   (theme/mermaid.ts hardcodes "13px"), so its text does NOT inherit the project
+   cascade. Force it back to a project token — the minimum fallback the project
+   requires. !important beats mermaid's per-element size (same as the font-family
+   override above). Inside a tool card it steps down to --_dk-text-2xs so it stays
+   one notch below the 11px card body, consistent with the code-block handling. */
+.agent-mermaid-wrap svg text {
+  font-size: var(--_dk-text-md) !important;
+}
+
+.tool-card-markdown .agent-mermaid-wrap svg text {
+  font-size: var(--_dk-text-2xs) !important;
+}
+
+/* Mermaid SVG colors are governed by mermaid themeVariables (see theme/mermaid.ts). */
+
+/* Mindmap edges: mermaid's default tapered widths (14/11/8/5px by depth) read as
+   far too heavy. Thin them to a uniform hairline. We target only mindmap-only
+   classes (edge-depth-*, section-edge-*, section-* line) so flowchart edges are
+   untouched, and use !important because mermaid injects its own styles after
+   this sheet loads. */
+.agent-mermaid-wrap [class*="edge-depth-"],
+.agent-mermaid-wrap [class*="section-edge-"],
+.agent-mermaid-wrap [class*="section-"] line {
+  stroke-width: 1.5px !important;
+}
+
+.agent-mermaid-source {
+  border-top: 1px solid var(--_dk-border-visible);
+}
+
+.agent-mermaid-source-summary {
+  cursor: pointer;
+  padding: 0.375rem 0.5rem;
+  font-size: 0.625rem;
+  color: var(--_dk-text-disabled);
+}
+
+.agent-mermaid-source-pre {
+  margin: 0;
+  max-height: 12rem;
+  overflow: auto;
+  padding: 0.5rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.55;
+  color: var(--_dk-text-muted);
+}

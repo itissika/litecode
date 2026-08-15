@@ -1,0 +1,26 @@
+@keyframes lc-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--_dk-editor) 0%,
+    var(--_dk-sidepanel) 45%,
+    var(--_dk-editor) 90%
+  );
+  background-size: 200% 100%;
+  animation: lc-shimmer 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer {
+    animation: none;
+    background: var(--_dk-sidepanel);
+  }
+}

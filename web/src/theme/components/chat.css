@@ -1,0 +1,432 @@
+/* Agent chat — interactive controls and empty state */
+
+.agent-input {
+  resize: none;
+  min-height: 4.5rem;
+}
+
+/* Keyboard-submit press feedback (Enter has no :active, so fire manually) */
+.send-press {
+  animation: send-press 0.18s ease-out;
+}
+
+@keyframes send-press {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(0.88); }
+  100% { transform: scale(1); }
+}
+
+.agent-chat-options {
+  font-size: 11px;
+}
+
+/* Toggle control */
+.agent-chat-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.45rem 0.2rem 0.25rem;
+  border-radius: 999px;
+  border: 1px solid var(--_dk-border-visible);
+  background: var(--_dk-surface-raised);
+  color: var(--_dk-text-disabled);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.agent-chat-toggle:hover:not(:disabled) {
+  color: var(--_dk-text-secondary);
+  border-color: var(--_dk-border-visible);
+}
+
+.agent-chat-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.agent-chat-toggle-on {
+  border-color: var(--_dk-accent-ring);
+  background: var(--_dk-accent-glow);
+  color: var(--_dk-accent-hover);
+}
+
+.agent-chat-toggle-knob {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 999px;
+  background: var(--_dk-text-disabled);
+  flex-shrink: 0;
+  transition: background 120ms ease;
+}
+
+.agent-chat-toggle-on .agent-chat-toggle-knob {
+  background: var(--_dk-accent-hover);
+}
+
+.agent-chat-toggle-label {
+  line-height: 1;
+  user-select: none;
+}
+
+/* Connection status pills */
+.agent-connection-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.625rem;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.agent-connection-connected {
+  border: 1px solid var(--_dk-emerald-900\/20);
+  background: var(--_dk-emerald-900\/20);
+  color: var(--_dk-emerald-500);
+}
+
+.agent-connection-pending {
+  border: 1px solid var(--_dk-amber-900\/20);
+  background: var(--_dk-amber-900\/20);
+  color: var(--_dk-amber-500);
+}
+
+.agent-connection-off {
+  border: 1px solid var(--_dk-line);
+  background: var(--_dk-surface-raised);
+  color: var(--_dk-text-disabled);
+}
+
+/* Empty state */
+.agent-empty-state {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.agent-empty-state-title {
+  font-size: 0.875rem;
+  color: var(--_dk-text-muted);
+}
+
+.agent-empty-state-hint {
+  font-size: 0.75rem;
+  color: var(--_dk-text-disabled);
+}
+
+/* ── Tool icon ───────────────────────────────────────────────
+   Two static states, transition-driven feedback:
+     ok / unknown / running → theme foreground (--_dk-status-ok)
+     failed                 → failure red (--_dk-status-fail)
+   running→ok   : big pop + green flash + blurred emerald glow burst,
+                  slow colour/glow fade-out, then settle to static
+   running→fail : grow→hard-shrink + landing jitter + wide shockwave ───── */
+.tool-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--_dk-status-ok);
+}
+
+.tool-icon--fail {
+  color: var(--_dk-status-fail);
+}
+
+.tool-icon--warn {
+  color: var(--_dk-amber-500);
+}
+
+.tool-icon-glyph {
+  display: block;
+  position: relative;
+  z-index: 1;
+  transform-origin: center;
+}
+
+/* running → ok :
+   - glyph: snappy big pop + emerald flash that bursts fast, then a long,
+     slow colour fade-out (退场久)
+   - glow : blurred emerald halo that bursts quickly, then lingers and fades
+     out slowly (辉光爆发快、退场久) */
+.tool-icon--pop .tool-icon-glyph {
+  animation: tool-pop 700ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes tool-pop {
+  0% {
+    transform: scale(1);
+    color: var(--_dk-status-ok);
+  }
+  /* fast burst: bigger than before (1.85) + instant green */
+  12% {
+    transform: scale(1.85);
+    color: var(--_dk-emerald-500);
+  }
+  /* hold the enlarged, green state briefly */
+  32% {
+    transform: scale(1.55);
+    color: var(--_dk-emerald-500);
+  }
+  /* slow exit: colour lingers in green, only fading back at the tail */
+  72% {
+    transform: scale(1.06);
+    color: var(--_dk-emerald-500);
+  }
+  100% {
+    transform: scale(1);
+    color: var(--_dk-status-ok);
+  }
+}
+
+/* blurred emerald halo behind the glyph, only for the ok pop.
+   Sizing is chosen so the glow never escapes the .foldcard-scroll clip box:
+   glyph half (6px) + inset (3px) = 9px box half; peak scale 1.35 → 12.15px;
+   blur(4px) spreads ~2σ (8px) → ~20px total reach from icon center, safely
+   under the 24px clearance to the top/bottom clip edges. */
+.tool-icon-glow {
+  position: absolute;
+  inset: -3px;
+  z-index: 0;
+  border-radius: 999px;
+  background: var(--_dk-emerald-500);
+  filter: blur(4px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tool-icon--pop .tool-icon-glow {
+  animation: tool-glow 700ms ease-out both;
+}
+
+@keyframes tool-glow {
+  /* fast burst: quick scale-up + bright flash */
+  0% {
+    transform: scale(0.35);
+    opacity: 0;
+  }
+  14% {
+    transform: scale(1.35);
+    opacity: 0.9;
+  }
+  /* long, slow fade-out (退场久) */
+  100% {
+    transform: scale(1.05);
+    opacity: 0;
+  }
+}
+
+/* running → failed :
+   - glyph: grow first, then hard shrink; at the shrink moment emit the
+     shockwave and a landing jitter (震感)
+   - shockwave: wider red ring, released as the glyph lands */
+.tool-icon--fail-anim .tool-icon-glyph {
+  animation: tool-fail 600ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes tool-fail {
+  0% {
+    transform: scale(1) translateY(0);
+  }
+  /* grow */
+  28% {
+    transform: scale(1.25) translateY(0);
+  }
+  /* hard shrink → this is the moment the shockwave fires */
+  50% {
+    transform: scale(0.78) translateY(0);
+  }
+  /* landing bounce + jitter (落地抖动) */
+  60% {
+    transform: scale(0.94) translateY(-2px);
+  }
+  68% {
+    transform: scale(0.86) translateY(2px);
+  }
+  76% {
+    transform: scale(0.95) translateY(-1px);
+  }
+  84% {
+    transform: scale(0.9) translateY(1px);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* red shockwave ring emitted on failure (released as the glyph lands) */
+.tool-icon-shockwave {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 2.5px solid var(--_dk-status-fail);
+  pointer-events: none;
+  animation: tool-shockwave 600ms ease-out 260ms both;
+}
+
+@keyframes tool-shockwave {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(2.9);
+    opacity: 0;
+  }
+}
+
+/* ── Send button (running state) ─────────────────────────────
+   Edge glow (绕边辉光) while the agent runs, made with a blurred
+   box-shadow so it hugs (贴合) the button's rounded shape. No offset —
+   a uniform ring glow in the button border's main colour that PULSES
+   in size (small → large → small), with BOTH an outer halo and an
+   inner glow (inset) so the light also lives inside the wireframe.
+   Outer reach ~8px at peak, well inside the overflow:hidden margin. ── */
+.send-spin-glow {
+  animation: send-glow-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes send-glow-pulse {
+  0%   { box-shadow: 0 0 2px var(--_dk-border-strong), inset 0 0 1px var(--_dk-border-strong); }
+  50%  { box-shadow: 0 0 8px var(--_dk-border-strong), inset 0 0 4px var(--_dk-border-strong); }
+  100% { box-shadow: 0 0 2px var(--_dk-border-strong), inset 0 0 1px var(--_dk-border-strong); }
+}
+
+/* ── Cache-hit breathing dot ────────────────────────────────
+   A slow halo pulse in the dot's own colour (set inline via
+   box-shadow colour). Colour comes from the inline style, so this
+   keyframe only animates the halo spread + opacity. ── */
+@keyframes dk-cache-pulse {
+  0%   { box-shadow: 0 0 0 0 var(--_dk-cache-pulse-color, transparent); transform: scale(1); }
+  50%  { box-shadow: 0 0 4px 1px var(--_dk-cache-pulse-color, transparent); transform: scale(1.08); }
+  100% { box-shadow: 0 0 0 0 var(--_dk-cache-pulse-color, transparent); transform: scale(1); }
+}
+
+/* ── Cache-hit ring breathing glow ───────────────────────────
+   Blurred halo behind the progress arc. Base intensity comes
+   from the parent <g> inline opacity (hit rate 90%→60% maps to
+   0→1), so this only animates the relative breathing factor. ── */
+.dk-ring-glow {
+  filter: blur(2.5px);
+  animation: dk-ring-glow 2.4s ease-in-out infinite;
+}
+
+@keyframes dk-ring-glow {
+  0%   { opacity: 0.2; }
+  50%  { opacity: 0.85; }
+  100% { opacity: 0.2; }
+}
+
+/* ── FoldCard ────────────────────────────────────────────────
+   - Horizontal entrance (summary row) plays once on mount; on
+     finish `ready` lets children mount → nested cascade.
+   - Body expands downward via a grid-rows 0fr→1fr transition,
+     gated on `ready` (can't expand mid-entrance).
+   - Top/bottom edge blur bands (ProgressiveBlur) show only while
+     overflowing, strength = linear scroll-distance from that edge. ─ */
+.foldcard-header {
+  animation: foldcard-enter 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  /* Left inset comes from the indent token, not a Tailwind pl-* on the element,
+     so the header/content/guide-line relationship is governed in one place
+     (tokens.css) and callers cannot privately re-indent it. */
+  padding-left: var(--_dk-indent-card-head);
+}
+
+@keyframes foldcard-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.foldcard-arrow {
+  transition: transform 200ms ease;
+}
+
+.foldcard-arrow.is-open {
+  transform: rotate(90deg);
+}
+
+.foldcard-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms ease;
+}
+
+.foldcard-body.is-open {
+  grid-template-rows: 1fr;
+}
+
+.foldcard-body-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Static frame: holds the scroller + the edge-blur overlays as siblings, so
+   the blur bands stay pinned to the frame edges and never scroll with content.
+   overflow: clip (NOT hidden) — hidden creates a stacking context that blocks
+   backdrop-filter from penetrating into nested FoldCard content. */
+.foldcard-scroll-frame {
+  position: relative;
+  overflow: clip;
+  background: var(--_dk-editor);
+  padding-bottom: 1px;
+}
+
+/* Nesting guide: a hairline aligned with the header's expand arrow,
+   spanning the body height so expanded content reads as belonging to the
+   arrow above it. Uses the weakest line token (--_dk-line). The frame is
+   position:relative + overflow:clip, so the line stays pinned (does not
+   scroll with content) and is bounded to the card. It only shows when the
+   card is open — on collapse grid-rows:0fr makes the frame 0px tall. */
+.foldcard-scroll-frame::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* Align with the header arrow center: header inset token + ½ of the 10px
+     arrow. Tied to the indent token so it tracks header changes. */
+  left: calc(var(--_dk-indent-card-head) + 5px);
+  width: 1px;
+  background: var(--_dk-line);
+  pointer-events: none;
+}
+
+.foldcard-scroll {
+  max-height: 30vh;
+  overflow: auto;
+  /* Contain scroll chaining on the TOP-LEVEL card: when it hits its own scroll
+     boundary, do not bubble the wheel/trackpad scroll to the ancestor (the
+     message list / panel). This keeps scrolling on the element under the cursor
+     — the expected default — instead of the parent "stealing" the scroll. */
+  overscroll-behavior: contain;
+  /* Match the old FoldCard content box: 6px gutter all round + 20px left
+     indent so the body sits under the header icon rather than touching the
+     frame edges.
+     Top/bottom get extra ~14px clearance so a tool icon's OK glow (which
+     blooms ~20px past the glyph, but only its faint blur fringe reaches past
+     ~14px) stays inside this `overflow: auto` box instead of being clipped.
+     Left already has 20px and is safe; inter-tool spacing (space-y-1) is
+     untouched. */
+  padding: 0.875rem 0.375rem 0.875rem var(--_dk-indent-card-body);
+}
+
+/* Nested FoldCards: an inner .foldcard-scroll is always a DOM descendant of the
+   outer one, so let its scroll bubble up (overscroll-behavior: auto) to the
+   parent FoldCard once the inner hits its boundary. Without this, every level
+   trapping scroll (contain) would pin all wheel/trackpad input to the innermost
+   card and the outer card could never be scrolled — the "always scrolls the
+   inner container" problem. The outermost card keeps `contain` and still stops
+   chaining to the message list / panel. */
+.foldcard-scroll .foldcard-scroll {
+  overscroll-behavior: auto;
+}

@@ -1,0 +1,215 @@
+@import "tailwindcss";
+@import "./tokens.css";
+@import "./dockview/adapter.css";
+@import "./components/dialog.css";
+@import "./components/chat.css";
+@import "./components/content.css";
+@import "./components/editor-tab.css";
+@import "./components/settings.css";
+@import "./components/skeleton.css";
+@import "./components/status-bar.css";
+@import "./components/live-preview.css";
+@import "./components/button.css";
+@import "./components/tag.css";
+@import "./components/search.css";
+
+@theme {
+  /* === dk-* semantic tokens === */
+  --color-dk-header: var(--_dk-header);
+  --color-dk-root: var(--_dk-root);
+  --color-dk-editor: var(--_dk-editor);
+  --color-dk-side: var(--_dk-side);
+  --color-dk-sidepanel: var(--_dk-sidepanel);
+  --color-dk-float: var(--_dk-float);
+  --color-dk-overlay: var(--_dk-overlay);
+
+  --color-dk-text-primary: var(--_dk-text-primary);
+  --color-dk-text-secondary: var(--_dk-text-secondary);
+  --color-dk-text-muted: var(--_dk-text-muted);
+  --color-dk-text-disabled: var(--_dk-text-disabled);
+
+  --color-dk-accent: var(--_dk-accent);
+  --color-dk-accent-hover: var(--_dk-accent-hover);
+  --color-dk-accent-glow: var(--_dk-accent-glow);
+  --color-dk-accent-halo: var(--_dk-accent-halo);
+  --color-dk-accent-ring: var(--_dk-accent-ring);
+
+  --color-dk-red-500: var(--_dk-red-500);
+  --color-dk-amber-500: var(--_dk-amber-500);
+  --color-dk-emerald-500: var(--_dk-emerald-500);
+
+  --color-dk-line: var(--_dk-line);
+  --color-dk-line-visible: var(--_dk-line-visible);
+  --color-dk-elevation: var(--_dk-elevation);
+
+  --color-dk-surface-raised: var(--_dk-surface-raised);
+  --color-dk-surface-header: var(--_dk-surface-header);
+  --color-dk-border-visible: var(--_dk-border-visible);
+
+  --font-sans:
+    "Inter",
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  --font-mono:
+    "JetBrains Mono",
+    ui-monospace,
+    "SF Mono",
+    "Cascadia Code",
+    monospace;
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+
+  /* Typography — weight utilities become token-driven. Values match Tailwind
+     defaults, so there is no visual change; this only centralizes them so a
+     single edit here updates every font-* utility app-wide. */
+  --font-weight-normal:    var(--_dk-text-weight-regular);
+  --font-weight-regular:   var(--_dk-text-weight-regular);
+  --font-weight-medium:    var(--_dk-text-weight-medium);
+  --font-weight-semibold:  var(--_dk-text-weight-semibold);
+  --font-weight-bold:      var(--_dk-text-weight-bold);
+
+  /* Semantic font families (font-ui / font-code utilities) */
+  --font-ui:   var(--_dk-font-ui);
+  --font-code: var(--_dk-font-code);
+
+  /* Text size scale — isolated `dk-` namespace so default text-* utilities are
+     untouched. Components replace arbitrary text-[Npx] with these. */
+  --text-dk-3xs: var(--_dk-text-3xs);
+  --text-dk-2xs: var(--_dk-text-2xs);
+  --text-dk-xs:  var(--_dk-text-xs);
+  --text-dk-sm:  var(--_dk-text-sm);
+  --text-dk-md:  var(--_dk-text-md);
+  --text-dk-base: var(--_dk-text-base);
+  --text-dk-lg:  var(--_dk-text-lg);
+  --text-dk-xl:  var(--_dk-text-xl);
+  --text-dk-2xl: var(--_dk-text-2xl);
+  --text-dk-3xl: var(--_dk-text-3xl);
+  --text-dk-4xl: var(--_dk-text-4xl);
+}
+
+:root[data-dv-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root[data-dv-theme="light"] {
+  color-scheme: light;
+}
+
+:root {
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--_dk-root);
+  color: var(--_dk-text-secondary);
+}
+
+body.lc-resizing,
+body.lc-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+
+
+#root {
+  min-height: 100vh;
+  position: relative;
+}
+
+::selection {
+  background: rgb(41 151 255 / 0.35);
+  color: var(--_dk-text-primary);
+}
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--_dk-line);
+  }
+
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+
+  button,
+  a,
+  input,
+  textarea,
+  select {
+    transition-property: color, background-color, border-color, opacity, box-shadow,
+      transform;
+    transition-duration: 120ms;
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    border-radius: var(--radius-sm);
+  }
+
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  button:focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--_dk-accent-ring);
+  }
+
+  code {
+    font-family: var(--font-mono);
+  }
+}
+
+/* Scrollbars: thin, low-contrast (Linear-like) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--_dk-line) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+  border: 0 none;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--_dk-line);
+  border-radius: 4px;
+  border: 0 none;
+  outline: 0 none;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--_dk-text-disabled);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Shiki dual-theme toggle — switches syntax highlighting colors via CSS variables. */
+:root[data-dv-theme="dark"] .shiki-host .shiki,
+:root[data-dv-theme="dark"] .shiki-host .shiki span {
+  color: var(--shiki-dark) !important;
+  background-color: var(--shiki-dark-bg) !important;
+}

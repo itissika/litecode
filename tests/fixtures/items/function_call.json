@@ -1,0 +1,7 @@
+{
+  "type": "function_call",
+  "id": "fc_golden_1",
+  "call_id": "call_golden_1",
+  "name": "bash",
+  "arguments": "{\"command\":\"ls\"}"
+}

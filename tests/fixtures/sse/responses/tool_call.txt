@@ -1,0 +1,5 @@
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"function_call","id":"fc_read_1","call_id":"call_read_1","name":"read","arguments":"","status":"in_progress"}}
+
+data: {"type":"response.function_call_arguments.delta","sequence_number":2,"item_id":"fc_read_1","output_index":0,"delta":"{\"path\":\"test.txt\"}"}
+
+data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_tool_1","object":"response","created_at":1,"model":"gpt-4o","status":"completed","output":[{"type":"function_call","id":"fc_read_1","call_id":"call_read_1","name":"read","arguments":"{\"path\":\"test.txt\"}","status":"completed"}]}}

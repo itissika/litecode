@@ -1,0 +1,84 @@
+{
+  "name": "litecode-desktop",
+  "version": "0.1.3",
+  "private": true,
+  "description": "Litecode Electron host (sidecar + BrowserWindow)",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node ./scripts/copy-theme-tokens.mjs",
+    "dev": "npm run build && electron .",
+    "start": "electron .",
+    "test": "tsc -p tsconfig.json && node ./scripts/copy-theme-tokens.mjs && node --test dist/lap-path.test.js dist/handshake-url.test.js dist/recents.test.js dist/ssh-session.test.js dist/parse-user-host.test.js dist/url-policy.test.js dist/window-guard.test.js dist/ipc-trust.test.js dist/ssh-credential-material.test.js dist/sidecar.test.js",
+    "dist:win": "npm run build && electron-builder --win --x64",
+    "pack:dir": "npm run build && electron-builder --win dir --x64"
+  },
+  "build": {
+    "appId": "app.litecode.desktop",
+    "productName": "Litecode",
+    "directories": {
+      "output": "out",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist/product",
+        "to": "sidecar",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../dist/linux/litecode-server-linux-x64.tar.gz",
+        "to": "linux/litecode-server-linux-x64.tar.gz"
+      },
+      {
+        "from": "../dist/linux/litecode-server-linux-x64.tar.gz.sha256",
+        "to": "linux/litecode-server-linux-x64.tar.gz.sha256"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Litecode-${version}-${os}-${arch}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "Litecode-Setup-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Litecode-Portable-${version}-${arch}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "electron": "^35.2.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.8.3"
+  },
+  "allowScripts": {
+    "electron@35.7.5": true,
+    "electron-winstaller@5.4.0": true
+  }
+}

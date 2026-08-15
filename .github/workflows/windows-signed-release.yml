@@ -1,0 +1,84 @@
+name: Windows signed release
+
+# Publishes installers to a GitHub Release only when Authenticode secrets exist.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to attach artifacts to (workflow_dispatch)"
+        required: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    steps:
+      - name: Require signing secrets
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if (-not $env:CSC_LINK -or -not $env:CSC_KEY_PASSWORD) {
+            Write-Error "WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD required for signed release. Refusing to publish unsigned."
+            exit 1
+          }
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+
+      - name: Cache embed models
+        uses: actions/cache@v4
+        with:
+          path: models/ibm-granite
+          key: embed-models-${{ hashFiles('scripts/bundle_embed_model.sh') }}
+
+      - name: Build signed Windows installers
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          # Enable electron-builder signing for this job
+          (Get-Content desktop/package.json -Raw) -replace '"signAndEditExecutable": false','"signAndEditExecutable": true' |
+            Set-Content -Encoding utf8 desktop/package.json
+          ./scripts/package_win.ps1
+
+      - name: SHA256SUMS
+        shell: pwsh
+        run: |
+          Get-FileHash desktop/out/Litecode-*.exe -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content -Encoding ascii desktop/out/SHA256SUMS.txt
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+          files: |
+            desktop/out/Litecode-Portable-*.exe
+            desktop/out/Litecode-Setup-*.exe
+            desktop/out/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

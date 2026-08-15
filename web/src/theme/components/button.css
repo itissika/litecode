@@ -1,0 +1,162 @@
+/* ============================================
+   button.css — packaged general button styles
+
+   Buttons are composed from TWO ORTHOGONAL AXES so that intensity and size
+   vary independently (each axis has 4 steps):
+
+     INTENSITY (color only — weak → strong)
+       tier 1  .btn-ghost    borderless + transparent        tabs · pills · Cancel
+       tier 2  .btn          hairline border + transparent   ← the general / default btn
+       tier 3  .btn-primary  transparent + stronger border/text  emphasis / affirmative
+       tier 4  .btn-danger   red text + red wash             destructive
+
+     SIZE (geometry only — small → large)
+       .btn-xs   py-1 px-2   · text-[11px]   ≈ 22px   inline controls · card chips
+       .btn-sm   py-1 px-2     · text-xs     ≈ 26px   dense toolbars
+       .btn-md   py-1.5 px-3 · text-sm       ≈ 32px   ← default, the general size
+       .btn-lg   py-2 px-4   · text-base     ≈ 40px   primary CTAs
+
+   The two axes compose freely: e.g. `btn-primary btn-xs`, `btn-ghost btn-md`.
+   A button with no size class falls back to .btn-md (see "default size"
+   rule below) so existing `.btn` usage is unaffected.
+
+   All colors come from the --_dk-ix-* matrix (tokens.css); this file only
+   composes them. Transitions and the focus-visible ring are provided
+   globally in index.css, so they are not repeated here.
+
+   FALLBACK: any <button> with no class inherits tier 2 / md
+   (.btn + .btn-md) so the project's general style is the default even when
+   nothing is written. Explicit utility classes (later layer) still override
+   it, and classed buttons are untouched.
+   ============================================ */
+
+@layer components {
+  /* ── intensity tiers: COLOR/BORDER ONLY (orthogonal to size) ── */
+  .btn,
+  .btn-ghost,
+  .btn-primary,
+  .btn-danger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    background-color: transparent;
+    color: var(--_dk-ix-fg);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  /* ── size tiers: GEOMETRY ONLY (orthogonal to intensity) ── */
+  .btn-xs { padding: 0.25rem 0.5rem;    font-size: 0.6875rem; line-height: 1rem; }
+  .btn-sm { padding: 0.25rem 0.5rem;    font-size: 0.75rem;    line-height: 1.125rem; }
+  .btn-md { padding: 0.375rem 0.75rem;  font-size: 0.875rem;   line-height: 1.25rem; }
+  .btn-lg { padding: 0.5rem 1rem;       font-size: 1rem;       line-height: 1.5rem; }
+
+  /* ── shape axis: SQUARE ICON BUTTON (orthogonal to intensity + size) ──
+     Geometry here is the internal icon padding — minimalist, with generous
+     breathing room around the glyph. A clean 4-step ladder (xs→lg) matching
+     the size axis. Box = glyph (≈14px) + symmetric airy padding. Composes
+     freely: e.g. `btn-ghost btn-icon btn-sm`. */
+  .btn-icon { aspect-ratio: 1; padding: 0.5rem; }    /* md default: 14 + 8  air → 30px */
+  .btn-icon.btn-xs { padding: 0.3125rem; }            /* 14 + 5  air → 24px */
+  .btn-icon.btn-sm { padding: 0.375rem; }             /* 14 + 6  air → 26px */
+  .btn-icon.btn-md { padding: 0.5rem; }               /* 14 + 8  air → 30px */
+  .btn-icon.btn-lg { padding: 0.625rem; }             /* 14 + 10 air → 34px */
+
+  /* default size = md when no explicit size class is present.
+     .btn-icon is excluded — it owns its own (symmetric, airy) padding. */
+  .btn:not([class*="btn-xs"]):not([class*="btn-sm"]):not([class*="btn-lg"]):not([class*="btn-icon"]),
+  .btn-ghost:not([class*="btn-xs"]):not([class*="btn-sm"]):not([class*="btn-lg"]):not([class*="btn-icon"]),
+  .btn-primary:not([class*="btn-xs"]):not([class*="btn-sm"]):not([class*="btn-lg"]):not([class*="btn-icon"]),
+  .btn-danger:not([class*="btn-xs"]):not([class*="btn-sm"]):not([class*="btn-lg"]):not([class*="btn-icon"]) {
+    padding: 0.375rem 0.75rem; font-size: 0.875rem; line-height: 1.25rem;
+  }
+
+  /* tier 1 · ghost — borderless, lowest emphasis */
+  .btn-ghost:hover {
+    background-color: var(--_dk-ix-bg-hover);
+    color: var(--_dk-ix-fg-hover);
+  }
+  .btn-ghost:active {
+    background-color: var(--_dk-ix-bg-pressed);
+  }
+
+  /* tier 2 · general / default — 极细边框 + 透明 + 极弱 hover 背景 */
+  .btn {
+    border-color: var(--_dk-line);      /* 极细边框 */
+  }
+  .btn:hover {
+    background-color: var(--_dk-ix-bg-hover);   /* 极弱背景，边框不变 → 极简 */
+    color: var(--_dk-ix-fg-hover);
+  }
+  .btn:active {
+    background-color: var(--_dk-ix-bg-pressed);
+  }
+
+  /* tier 3 · primary — transparent, stronger border + content (one level up) */
+  .btn-primary {
+    border-color: var(--_dk-line-visible);   /* 比通用档(0.05)强一级 → 0.10 */
+    color: var(--_dk-text-primary);          /* 内容对比度强一级 → 主文本色 */
+  }
+  .btn-primary:hover {
+    background-color: var(--_dk-ix-bg-hover);
+  }
+  .btn-primary:active {
+    background-color: var(--_dk-ix-bg-pressed);
+  }
+
+  /* tier 4 · danger — destructive */
+  .btn-danger {
+    color: var(--_dk-ix-danger-fg);
+  }
+  .btn-danger:hover {
+    background-color: var(--_dk-ix-danger-bg-hover);
+  }
+  .btn-danger:active {
+    background-color: var(--_dk-ix-danger-bg-pressed);
+  }
+
+  /* shared disabled state */
+  .btn:disabled,
+  .btn-ghost:disabled,
+  .btn-primary:disabled,
+  .btn-danger:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+@layer base {
+  /* Fallback: a button with no class gets the general btn (tier 2).
+     Utilities (later layer) still override; classed buttons are untouched. */
+  button:not([class]) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    padding: 0.375rem 0.75rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    border: 1px solid var(--_dk-line);   /* 极细边框 */
+    background-color: transparent;
+    color: var(--_dk-ix-fg);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  button:not([class]):hover {
+    background-color: var(--_dk-ix-bg-hover);
+    color: var(--_dk-ix-fg-hover);
+  }
+  button:not([class]):active {
+    background-color: var(--_dk-ix-bg-pressed);
+  }
+  button:not([class]):disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}

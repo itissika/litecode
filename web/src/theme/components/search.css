@@ -1,0 +1,19 @@
+/* Search result groups reuse FoldCard, but the chat-oriented 14px top/bottom
+   padding on .foldcard-scroll is excessive for dense single-line hits.
+   Collapse the vertical clearance (keep the left indent so lines still align
+   under the header icon) and let each row's own py handle spacing. */
+.search-foldcard .foldcard-scroll {
+  padding: 0 0.375rem 0 var(--_dk-indent-card-body);
+}
+
+/* Drop the FoldCard "card" background so expanded hit rows blend into the
+   panel like a text tree (no editor-colored body behind the rows). */
+.search-foldcard .foldcard-scroll-frame {
+  background: transparent;
+}
+
+/* Character-level match highlight inside hit lines: only the matched
+   characters change color (amber) — no background change. */
+.search-hit {
+  color: var(--_dk-amber-500);
+}

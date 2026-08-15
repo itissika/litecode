@@ -1,0 +1,76 @@
+name: Windows desktop package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+
+      - name: Cache embed models
+        uses: actions/cache@v4
+        with:
+          path: models/ibm-granite
+          key: embed-models-${{ hashFiles('scripts/bundle_embed_model.sh') }}
+
+      - name: Package Windows (portable + NSIS)
+        shell: pwsh
+        env:
+          # Optional Authenticode (W4). When unset, unsigned artifacts are produced.
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if ($env:CSC_LINK) {
+            # Prefer signing when secret is configured
+            Write-Host "Code signing secrets detected"
+          } else {
+            Write-Host "No CSC_LINK — building unsigned"
+          }
+          ./scripts/package_win.ps1
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: litecode-win-x64-installers
+          path: |
+            desktop/out/Litecode-Portable-*.exe
+            desktop/out/Litecode-Setup-*.exe
+            desktop/out/latest.yml
+          if-no-files-found: error
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-FileHash desktop/out/Litecode-*.exe -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content -Encoding ascii desktop/out/SHA256SUMS.txt
+          Get-Content desktop/out/SHA256SUMS.txt
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: litecode-win-x64-checksums
+          path: desktop/out/SHA256SUMS.txt

@@ -1,0 +1,71 @@
+name: Windows sidecar
+
+on:
+  push:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "web/**"
+      - "scripts/assemble_product.*"
+      - "scripts/smoke_product.*"
+      - "scripts/bundle_embed_model.sh"
+      - ".github/workflows/windows-sidecar.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "web/**"
+      - "scripts/assemble_product.*"
+      - "scripts/smoke_product.*"
+      - ".github/workflows/windows-sidecar.yml"
+  workflow_dispatch:
+
+jobs:
+  sidecar:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Cache embed models
+        uses: actions/cache@v4
+        with:
+          path: models/ibm-granite
+          key: embed-models-${{ hashFiles('scripts/bundle_embed_model.sh') }}
+
+      - name: Assemble product (release)
+        shell: pwsh
+        run: |
+          # Model bundle may be absent on fresh CI; smoke covers auth/lock without ORT load.
+          ./scripts/assemble_product.ps1 -SkipModel
+          if (-not (Test-Path models/ibm-granite)) {
+            Write-Host "models not present; sidecar smoke still runs core serve checks"
+          }
+
+      - name: Smoke product tree
+        shell: pwsh
+        run: ./scripts/smoke_product.ps1
+
+      - name: Upload sidecar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: litecode-win-x64-sidecar
+          path: dist/product/
+          if-no-files-found: error
