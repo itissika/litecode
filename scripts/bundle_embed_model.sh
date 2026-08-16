@@ -16,6 +16,12 @@ if [[ ! -f "$ART" ]]; then
   exit 1
 fi
 
+# Default SRC==DEST (model already in-repo). GNU cp errors on same-file copy.
+if [[ "$SRC" -ef "$DEST" ]]; then
+  echo "embed model already in place at $DEST"
+  exit 0
+fi
+
 mkdir -p "$DEST/artifacts" "$DEST/1_Pooling"
 cp -f "$SRC/config.json" "$DEST/"
 cp -f "$SRC/tokenizer.json" "$DEST/"
