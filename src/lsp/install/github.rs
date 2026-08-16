@@ -224,9 +224,9 @@ async fn fetch_github_api(
         .map_err(|e| LitecodeError::Config(format!("failed to parse GitHub API response: {e}")))?;
 
     let tag = body["tag_name"].as_str().unwrap_or("latest").to_string();
-    let assets = body["assets"]
-        .as_array()
-        .ok_or_else(|| LitecodeError::Config(format!("GitHub release {tag} has no assets array")))?;
+    let assets = body["assets"].as_array().ok_or_else(|| {
+        LitecodeError::Config(format!("GitHub release {tag} has no assets array"))
+    })?;
 
     let (asset_url, digest) =
         find_asset(assets, &info.asset_pattern, info.format, info.exact_asset)?;
@@ -257,9 +257,9 @@ pub(crate) fn find_asset(
             name.contains(pattern)
         };
         if name_ok && asset_matches_format(name, format) {
-            let url = asset["browser_download_url"]
-                .as_str()
-                .ok_or_else(|| LitecodeError::Config("asset is missing browser_download_url".into()))?;
+            let url = asset["browser_download_url"].as_str().ok_or_else(|| {
+                LitecodeError::Config("asset is missing browser_download_url".into())
+            })?;
             let digest = asset["digest"].as_str().and_then(normalize_github_digest);
             return Ok((url.to_string(), digest));
         }
@@ -443,7 +443,8 @@ async fn download_to_file(
     let status = resp.status();
     if status == StatusCode::FORBIDDEN {
         return Err(LitecodeError::Config(
-            "GitHub API rate limited (403), 0/60 remaining. Set GITHUB_TOKEN to raise the limit".into(),
+            "GitHub API rate limited (403), 0/60 remaining. Set GITHUB_TOKEN to raise the limit"
+                .into(),
         ));
     }
     if status == StatusCode::NOT_FOUND {

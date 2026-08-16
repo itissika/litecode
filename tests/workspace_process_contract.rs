@@ -3,18 +3,28 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use litecode::client_protocol::observer::NoopObserver;
+use litecode::config::workspace::clear_runtime_paths;
 use litecode::config::{
     TurnGuard, WorkspacePaths, WorkspaceState, init_workspace, load_workspace_state,
 };
 use litecode::engines::WorkspaceEngines;
+use litecode::ide_base::IdeBaseHandle;
+use litecode::optional::EngineManager;
+use litecode::runtime::AgentRuntime;
 use litecode::serve::ServeState;
 use litecode::serve::router;
 use litecode::session::WorkspaceLock;
+use litecode::session::manager::SessionManager;
+use litecode::session::store::Session;
 use litecode::workspace::restart_watcher;
 use tokio::net::TcpListener;
 
 mod common;
-use common::{test_agent, test_resolved, test_serve_settings};
+use common::{
+    ScriptedProvider, test_agent, test_auto_approve_sink, test_resolved, test_serve_settings,
+    test_turn_binding, test_workspace,
+};
 
 static CONTRACT_LOCK: Mutex<()> = Mutex::new(());
 
@@ -172,5 +182,74 @@ async fn workspace_open_http_endpoint_is_gone() {
         matches!(resp.status().as_u16(), 404 | 405),
         "workspace open HTTP route must not exist (got {})",
         resp.status()
+    );
+}
+
+#[test]
+fn agent_runtime_cwd_uses_resolved_workspace_not_process_cwd() {
+    let _guard = CONTRACT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let prev = std::env::current_dir().expect("prev cwd");
+    let workspace_dir = tempfile::tempdir().unwrap();
+    let decoy_dir = tempfile::tempdir().unwrap();
+    let workspace = test_workspace(workspace_dir.path());
+    let expected = workspace.workspace_root.clone();
+
+    let global = test_resolved("default", &[]).global().clone();
+    let resolved = litecode::config::resolved::resolve(global, workspace.clone());
+
+    let db_path = workspace.paths.sessions_db.clone();
+    let session = Session::open(
+        &db_path.to_string_lossy(),
+        &expected.to_string_lossy(),
+        "default",
+        Some("default"),
+    )
+    .expect("session");
+    let session_id = session.id.clone();
+    let sessions = Arc::new(SessionManager::new(
+        Arc::new(TurnGuard::new()),
+        db_path.to_string_lossy().to_string(),
+    ));
+    sessions.register_for_test(session);
+
+    let provider = Arc::new(ScriptedProvider::with_text("ok"));
+    let binding = test_turn_binding(&resolved, provider, "test-key", "default");
+    let workspace_engines = WorkspaceEngines::new();
+    let ide = IdeBaseHandle::open(&expected, Arc::new(workspace_engines.clone())).expect("ide");
+
+    clear_runtime_paths();
+    std::env::set_current_dir(decoy_dir.path()).expect("chdir decoy");
+
+    let result = AgentRuntime::new(
+        resolved,
+        session_id,
+        sessions,
+        binding,
+        "default",
+        0,
+        test_auto_approve_sink(),
+        Arc::new(NoopObserver),
+        None,
+        None,
+        EngineManager::new(),
+        workspace_engines,
+        ide,
+    );
+    let _ = std::env::set_current_dir(prev);
+    let runtime = result.expect("AgentRuntime::new");
+
+    let tool_cwd = runtime.context().cwd.clone();
+    let decoy = decoy_dir
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| decoy_dir.path().to_path_buf());
+
+    assert_eq!(
+        tool_cwd, expected,
+        "tool cwd must come from ResolvedConfig, not process cwd"
+    );
+    assert_ne!(
+        tool_cwd, decoy,
+        "tool cwd must not fall back to the launch directory"
     );
 }

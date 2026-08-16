@@ -382,6 +382,14 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
                 "kind": kind,
             }),
         )),
+        InternalEvent::BashJobs { snapshot: bash } => Some(notification(
+            super::protocol::methods::BASH_JOBS,
+            serde_json::json!({
+                "session_id": snapshot.session_id,
+                "jobs": bash.jobs,
+                "waits": bash.waits,
+            }),
+        )),
     }
 }
 
@@ -842,5 +850,6 @@ pub fn buffer_snapshot(
         thinking_tier: binding.thinking_tier.clone(),
         context_mode: binding.context_mode.clone(),
         max_file_revert_k: None,
+        bash: None,
     }
 }

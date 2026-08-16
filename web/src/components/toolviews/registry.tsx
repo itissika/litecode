@@ -5,7 +5,9 @@ import type { ToolStatus } from "../ToolIcon";
 import { BashToolView } from "./BashToolView";
 import { EditToolView } from "./EditToolView";
 import { FileParamView } from "./FileParamView";
+import { KillShellToolView } from "./KillShellToolView";
 import { SubagentToolView } from "./SubagentToolView";
+import { WaitShellToolView } from "./WaitShellToolView";
 import { WriteToolView } from "./WriteToolView";
 
 export interface ToolViewProps {
@@ -30,6 +32,8 @@ export const TOOL_VIEWS: Record<string, (props: ToolViewProps) => ReactElement> 
     write: WriteToolView,
     edit: EditToolView,
     bash: BashToolView,
+    wait_shell: WaitShellToolView,
+    kill_shell: KillShellToolView,
     subagent_launch: SubagentToolView,
   };
 
@@ -47,6 +51,8 @@ export function getToolView(
  */
 const OUTPUT_OWNED_BY_VIEW: ReadonlySet<string> = new Set([
   "bash",
+  "wait_shell",
+  "kill_shell",
   "subagent_launch",
   "edit",
   "write",

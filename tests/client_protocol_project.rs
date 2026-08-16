@@ -162,6 +162,56 @@ fn subagent_bound_projects_to_agent_subagent_bound() {
 }
 
 #[test]
+fn bash_jobs_projects_to_bash_jobs_notification() {
+    let snap = sample_snapshot();
+    let msg = project::project(
+        &InternalEvent::BashJobs {
+            snapshot: litecode::terminal::BashJobsSnapshot {
+                jobs: vec![litecode::terminal::BashJobWire {
+                    id: "bg_a".into(),
+                    call_id: "call_a".into(),
+                    command_preview: "sleep 8".into(),
+                    output_file: ".litecode/bash/bg_a.output".into(),
+                    started_at_ms: 42,
+                }],
+                waits: vec![litecode::terminal::BashWaitWire {
+                    call_id: "wait_1".into(),
+                    watching_id: Some("bg_a".into()),
+                    started_at_ms: 40,
+                    deadline_ms: Some(5000),
+                }],
+            },
+        },
+        &snap,
+    )
+    .unwrap();
+    assert!(method_is(&msg, methods::BASH_JOBS));
+    assert_eq!(msg["params"]["session_id"], "s1");
+    assert_eq!(msg["params"]["jobs"][0]["id"], "bg_a");
+    assert_eq!(msg["params"]["jobs"][0]["call_id"], "call_a");
+    assert_eq!(msg["params"]["waits"][0]["call_id"], "wait_1");
+    assert!(msg["params"].get("turn_id").is_none());
+}
+
+#[test]
+fn session_snapshot_includes_bash_when_set() {
+    let mut snap = sample_snapshot();
+    snap.bash = Some(litecode::terminal::BashJobsSnapshot {
+        jobs: vec![litecode::terminal::BashJobWire {
+            id: "bg_a".into(),
+            call_id: "call_a".into(),
+            command_preview: "sleep".into(),
+            output_file: ".litecode/bash/bg_a.output".into(),
+            started_at_ms: 1,
+        }],
+        waits: vec![],
+    });
+    let msg = project::session_snapshot(snap);
+    assert!(method_is(&msg, methods::SESSION_SNAPSHOT));
+    assert_eq!(msg["params"]["bash"]["jobs"][0]["id"], "bg_a");
+}
+
+#[test]
 fn turn_started_projects_to_turn_started_notification() {
     let snap = sample_snapshot();
     let msg = project::project(

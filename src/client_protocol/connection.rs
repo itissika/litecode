@@ -85,6 +85,7 @@ pub async fn handle_jsonrpc(
     sink: &UnboundedSender<serde_json::Value>,
     perm_tx: &UnboundedSender<PendingPermission>,
     rpc: &JsonRpcRequestEnvelope,
+    terminal_hub: &std::sync::Arc<crate::terminal::TerminalHub>,
 ) -> bool {
     use crate::client_protocol::protocol::methods;
     let id = rpc.id.clone();
@@ -461,7 +462,7 @@ pub async fn handle_jsonrpc(
             });
             let sid = resolve_sid(session, &params.session_id);
             let snapshot = session.snapshot_for(&sid).or_else(|| session.snapshot());
-            let Some(snapshot) = snapshot else {
+            let Some(mut snapshot) = snapshot else {
                 emit(
                     sink,
                     serde_json::to_value(err_response(id, -32000, "no session bound".to_string()))
@@ -469,6 +470,7 @@ pub async fn handle_jsonrpc(
                 );
                 return false;
             };
+            snapshot.bash = Some(terminal_hub.jobs.wire_snapshot(&sid));
             for msg in session.take_all_outgoing() {
                 emit(sink, msg);
             }
@@ -961,6 +963,7 @@ pub async fn run_session_loop(
     response_tx: UnboundedSender<serde_json::Value>,
     perm_tx: UnboundedSender<PendingPermission>,
     mut perm_rx: tokio::sync::mpsc::UnboundedReceiver<PendingPermission>,
+    terminal_hub: std::sync::Arc<crate::terminal::TerminalHub>,
 ) {
     loop {
         finalize_ready_turn(session, &response_tx);
@@ -1167,7 +1170,9 @@ pub async fn run_session_loop(
                         }
                     }
                     Some(SessionRequest::JsonRpc(rpc)) => {
-                        if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc).await {
+                        if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub)
+                            .await
+                        {
                             break;
                         }
                     }
@@ -1216,7 +1221,9 @@ pub async fn run_session_loop(
                         }
                     }
                     SessionRequest::JsonRpc(rpc) => {
-                        if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc).await {
+                        if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub)
+                            .await
+                        {
                             return;
                         }
                     }
@@ -1246,7 +1253,7 @@ pub async fn run_session_loop(
                 SessionRequest::Quit => break,
                 SessionRequest::Cancel => {}
                 SessionRequest::JsonRpc(rpc) => {
-                    if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc).await {
+                    if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub).await {
                         return;
                     }
                 }
@@ -1283,7 +1290,15 @@ impl ConnectionHandle {
         let (perm_tx, perm_rx) = mpsc::unbounded_channel();
         let loop_handle = tokio::spawn(async move {
             let mut session = session;
-            run_session_loop(&mut session, request_rx, response_tx, perm_tx, perm_rx).await;
+            run_session_loop(
+                &mut session,
+                request_rx,
+                response_tx,
+                perm_tx,
+                perm_rx,
+                std::sync::Arc::new(crate::terminal::TerminalHub::new()),
+            )
+            .await;
         });
         Self {
             request_tx,

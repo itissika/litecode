@@ -215,7 +215,9 @@ mod tests {
 
     fn spawn_echo(hub: &TerminalHub, root: &std::path::Path, sid: &str) -> String {
         let cmd = if cfg!(windows) { "echo hi" } else { "echo hi" };
-        hub.spawn_command(cmd, None, root, sid).expect("spawn").id
+        hub.spawn_command(cmd, None, root, sid, "")
+            .expect("spawn")
+            .id
     }
 
     #[test]
@@ -234,6 +236,7 @@ mod tests {
             exit_code: Some(0),
             output_path: dir.path().join("x.output"),
             command_preview: "echo hi".into(),
+            user_killed: false,
         };
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &notice) {
             IdleAutoTurn::SkippedNoUi => {}
@@ -269,6 +272,7 @@ mod tests {
             exit_code: Some(0),
             output_path: dir.path().join("x.output"),
             command_preview: "echo hi".into(),
+            user_killed: false,
         };
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &notice) {
             IdleAutoTurn::SkippedBusy => {}

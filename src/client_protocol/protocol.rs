@@ -35,6 +35,9 @@ pub mod methods {
     pub const TERMINAL_WRITE: &str = "terminal/write";
     pub const TERMINAL_RESIZE: &str = "terminal/resize";
     pub const TERMINAL_CLOSE: &str = "terminal/close";
+    pub const BASH_JOBS: &str = "bash/jobs";
+    pub const BASH_TAIL: &str = "bash/tail";
+    pub const BASH_KILL: &str = "bash/kill";
     pub const SUBSCRIBE_LOGS: &str = "subscribe_logs";
     pub const UNSUBSCRIBE_LOGS: &str = "unsubscribe_logs";
 }
@@ -270,6 +273,9 @@ pub struct SessionSnapshot {
     /// `None` = no file-level revert available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_revert_k: Option<i64>,
+    /// Running agent bash jobs and wait_shell waiters for this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bash: Option<crate::terminal::BashJobsSnapshot>,
 }
 
 fn default_thinking_tier() -> String {

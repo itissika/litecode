@@ -28,6 +28,7 @@ pub struct BashTool {
     /// passed explicitly, never via TLS).
     cancel: CancellationToken,
     session_id: Mutex<String>,
+    call_id: Mutex<String>,
     foreground_wait: Duration,
 }
 
@@ -37,6 +38,7 @@ impl BashTool {
             hub,
             cancel: CancellationToken::new(),
             session_id: Mutex::new(String::new()),
+            call_id: Mutex::new(String::new()),
             foreground_wait: FOREGROUND_WAIT,
         }
     }
@@ -46,12 +48,17 @@ impl BashTool {
             hub,
             cancel: CancellationToken::new(),
             session_id: Mutex::new(String::new()),
+            call_id: Mutex::new(String::new()),
             foreground_wait,
         }
     }
 
     fn session_id(&self) -> String {
         self.session_id.lock().unwrap().clone()
+    }
+
+    fn call_id(&self) -> String {
+        self.call_id.lock().unwrap().clone()
     }
 
     fn call_with_root(&self, input: Value, workspace_root: std::path::PathBuf) -> ToolCallResult {
@@ -63,11 +70,12 @@ impl BashTool {
         let run_in_background = input["run_in_background"].as_bool().unwrap_or(false);
         let workdir = input["workdir"].as_str().map(Path::new);
         let sid = self.session_id();
+        let call_id = self.call_id();
 
         if run_in_background {
             return match self
                 .hub
-                .spawn_command(command, workdir, &workspace_root, &sid)
+                .spawn_command(command, workdir, &workspace_root, &sid, &call_id)
             {
                 Ok(spawned) => {
                     let jobs = self.hub.jobs.running(&sid);
@@ -82,13 +90,14 @@ impl BashTool {
             };
         }
 
-        let spawned = match self
-            .hub
-            .spawn_command(command, workdir, &workspace_root, &sid)
-        {
-            Ok(s) => s,
-            Err(e) => return ToolCallResult::error(e.to_string()),
-        };
+        let spawned =
+            match self
+                .hub
+                .spawn_command(command, workdir, &workspace_root, &sid, &call_id)
+            {
+                Ok(s) => s,
+                Err(e) => return ToolCallResult::error(e.to_string()),
+            };
 
         match self.hub.jobs.wait(
             &sid,
@@ -183,6 +192,7 @@ impl Tool for BashTool {
             hub: Arc::clone(&self.hub),
             cancel: execution.cancel.clone(),
             session_id: Mutex::new(execution.session_id.clone()),
+            call_id: Mutex::new(execution.call_id.clone()),
             foreground_wait: self.foreground_wait,
         };
         let workspace_root = execution.workspace_root.clone();
@@ -688,6 +698,7 @@ mod tests {
                 hub: Arc::clone(&tool.hub),
                 cancel: CancellationToken::new(),
                 session_id: Mutex::new("test".into()),
+                call_id: Mutex::new("call_live".into()),
                 foreground_wait: Duration::from_millis(400),
             };
             let cmd = shell_cmd(

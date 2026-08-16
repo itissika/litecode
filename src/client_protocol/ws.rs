@@ -224,10 +224,18 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
     let loop_session = session;
     let loop_tx = response_tx.clone();
     let loop_perm_tx = perm_tx.clone();
+    let loop_hub = terminal_hub.clone();
     let loop_handle = tokio::spawn(async move {
         let mut session = loop_session;
-        connection::run_session_loop(&mut session, request_rx, loop_tx, loop_perm_tx, perm_rx)
-            .await;
+        connection::run_session_loop(
+            &mut session,
+            request_rx,
+            loop_tx,
+            loop_perm_tx,
+            perm_rx,
+            loop_hub,
+        )
+        .await;
     });
 
     let (mut ws_tx, mut ws_rx) = socket.split();

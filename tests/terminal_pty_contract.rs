@@ -193,7 +193,7 @@ fn spawn_command_background_writes_output_file_and_kill() {
     let command = "echo LITECODE_BG_OK; sleep 30";
 
     let spawned = hub
-        .spawn_command(command, Some(root.as_path()), root.as_path(), "test")
+        .spawn_command(command, Some(root.as_path()), root.as_path(), "test", "")
         .expect("spawn");
     assert!(
         spawned.output_path.exists(),

@@ -14,6 +14,7 @@ import type {
 } from "../api/types";
 import { getModels, type ModelDefinition } from "../api/settings";
 import { useConnectionStore, attachSiblingStores, getDockviewApi } from "./connectionStore";
+import { useBashStore } from "./bashStore";
 import { useToastStore } from "./toastStore";
 import { useTurnStore } from "./turnStore";
 import { useMessageStore } from "./messageStore";
@@ -166,6 +167,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
 
     useTurnStore.getState().applySnapshotTurn(sessionId, snap.turn ?? null);
     useTurnStore.getState().applySnapshotMeter(sessionId, snap);
+    if (snap.bash) {
+      useBashStore.getState().applySnapshot(sessionId, snap.bash);
+    }
 
     if (snap.buffer.len === 0) {
       set({ pendingSessionOp: null });

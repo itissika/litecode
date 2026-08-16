@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -7,6 +7,8 @@ import {
   processGroupStreaming,
 } from "./toolCallStatus";
 import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
+import { useBashStore } from "../stores/bashStore";
+import { useConnectionStore } from "../stores/connectionStore";
 import { ToolCallCard } from "./ToolCallCard";
 import { clearFoldCardOpen } from "./foldCardState";
 
@@ -32,6 +34,7 @@ afterEach(() => {
   // foldCardState is module-global; the same foldCardId is reused across
   // cases, so drop it between tests (production ids are unique per bubble).
   clearFoldCardOpen("session-1");
+  useBashStore.getState().reset();
 });
 
 describe("deriveToolStatus", () => {
@@ -172,5 +175,46 @@ describe("ToolCallCard open state", () => {
     renderCard({ streaming: true });
     const header = screen.getByRole("button", { name: /write/i });
     expect(header.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("shows Kill on a live bash card and calls bash/kill", () => {
+    const sendRpc = vi.fn(async () => ({ ok: true }));
+    useConnectionStore.setState({ sendRpc });
+    useBashStore.getState().applySnapshot("session-1", {
+      jobs: [
+        {
+          id: "bg_a",
+          call_id: "call_1",
+          command_preview: "sleep 8",
+          output_file: ".litecode/bash/bg_a.output",
+          started_at_ms: Date.now() - 12_000,
+        },
+      ],
+      waits: [],
+    });
+    render(
+      <ToolCallCard
+        call={{
+          type: "function_call",
+          id: "fc_bash",
+          call_id: "call_1",
+          name: "bash",
+          arguments: JSON.stringify({ command: "sleep 8" }),
+          status: "completed",
+        }}
+        output={{
+          type: "function_call_output",
+          call_id: "call_1",
+          output: "status: running\nbash_id: bg_a\n",
+        }}
+        projectRoot={null}
+        onOpenFile={() => {}}
+        sessionId="session-1"
+        foldCardId="session-1:bubble:tool:call_1"
+      />,
+    );
+    expect(screen.getByText("running 1")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /^Kill$/ }));
+    expect(sendRpc).toHaveBeenCalledWith("bash/kill", { bash_id: "bg_a" });
   });
 });

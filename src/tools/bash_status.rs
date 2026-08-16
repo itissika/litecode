@@ -118,10 +118,17 @@ pub fn format_exit_reminder(
     for n in notices {
         let rel = display_output_path(&n.output_path, workspace_root);
         let code = n.exit_code.map(|c| c as i32).unwrap_or(-1);
-        inner.push_str(&format!(
-            "Background bash {} exited with code {code}.\noutput_file: {rel}\ncommand: {}\n",
-            n.bash_id, n.command_preview
-        ));
+        if n.user_killed {
+            inner.push_str(&format!(
+                "The user stopped background bash {} (Kill).\nexit_code: {code}\noutput_file: {rel}\ncommand: {}\n",
+                n.bash_id, n.command_preview
+            ));
+        } else {
+            inner.push_str(&format!(
+                "Background bash {} exited with code {code}.\noutput_file: {rel}\ncommand: {}\n",
+                n.bash_id, n.command_preview
+            ));
+        }
     }
     inner.push_str(&format_running_list(jobs, workspace_root));
     format!("<system-reminder>\n{}</system-reminder>", inner.trim_end())
@@ -227,6 +234,7 @@ mod tests {
             exit_code: Some(0),
             output_path: root.join(".litecode").join("bash").join("bg_aaa.output"),
             command_preview: "cargo test".into(),
+            user_killed: false,
         };
 
         let exited = format_exited_status(&notice, root, &jobs);
@@ -253,12 +261,21 @@ mod tests {
         assert!(unknown.contains(&format_running_list(&jobs, root)));
         assert!(!unknown.contains(guidance_line()));
 
-        let reminder = format_exit_reminder(&[notice], &jobs, root);
+        let reminder = format_exit_reminder(&[notice.clone()], &jobs, root);
         assert!(reminder.starts_with("<system-reminder>\n"));
         assert!(reminder.ends_with("</system-reminder>"));
         assert!(reminder.contains("Background bash bg_aaa exited with code 0."));
         assert!(reminder.contains(format_running_list(&jobs, root).trim_end()));
         assert!(!reminder.contains("status: exited"));
+
+        let mut user_stopped = notice.clone();
+        user_stopped.user_killed = true;
+        user_stopped.exit_code = Some(143);
+        let killed_reminder = format_exit_reminder(&[user_stopped], &jobs, root);
+        assert!(killed_reminder.contains(
+            "The user stopped background bash bg_aaa (Kill).\nexit_code: 143\n"
+        ));
+        assert!(!killed_reminder.contains("Background bash bg_aaa exited"));
     }
 
     #[test]

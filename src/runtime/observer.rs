@@ -237,6 +237,10 @@ pub enum InternalEvent {
     FileRevertUpdated {
         max_k: Option<i64>,
     },
+    /// Session-scoped agent bash jobs (running + current waits). Projected to `bash/jobs`.
+    BashJobs {
+        snapshot: crate::terminal::BashJobsSnapshot,
+    },
     Error(TurnError),
 }
 

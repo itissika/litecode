@@ -20,6 +20,7 @@ pub struct WaitShellTool {
     pub hub: Arc<TerminalHub>,
     cancel: CancellationToken,
     session_id: Mutex<String>,
+    call_id: Mutex<String>,
 }
 
 impl WaitShellTool {
@@ -28,6 +29,7 @@ impl WaitShellTool {
             hub,
             cancel: CancellationToken::new(),
             session_id: Mutex::new(String::new()),
+            call_id: Mutex::new(String::new()),
         }
     }
 
@@ -35,12 +37,20 @@ impl WaitShellTool {
         self.session_id.lock().unwrap().clone()
     }
 
+    fn call_id(&self) -> String {
+        self.call_id.lock().unwrap().clone()
+    }
+
     fn call_with_root(&self, input: Value, workspace_root: std::path::PathBuf) -> ToolCallResult {
         let id = input["id"].as_str().filter(|s| !s.is_empty());
         let sec = input["sec"].as_u64();
         let sid = self.session_id();
+        let call_id = self.call_id();
         let timeout = sec.map(Duration::from_secs);
-        match self.hub.jobs.wait(&sid, id, timeout, &self.cancel, true) {
+        self.hub.jobs.begin_wait(&sid, &call_id, id, timeout);
+        let outcome = self.hub.jobs.wait(&sid, id, timeout, &self.cancel, true);
+        self.hub.jobs.end_wait(&call_id);
+        match outcome {
             WaitOutcome::Exited(notice) => {
                 let jobs = self.hub.jobs.running(&sid);
                 ToolCallResult::ok(bash_status::format_exited_status(
@@ -96,6 +106,7 @@ impl Tool for WaitShellTool {
             hub: Arc::clone(&self.hub),
             cancel: execution.cancel.clone(),
             session_id: Mutex::new(execution.session_id.clone()),
+            call_id: Mutex::new(execution.call_id.clone()),
         };
         let workspace_root = execution.workspace_root.clone();
         Box::pin(async move { tool.call_with_root(input, workspace_root) })

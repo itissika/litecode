@@ -222,3 +222,39 @@ describe("MessageList process group across seal", () => {
     expect(headerAfterSeal.getAttribute("aria-expanded")).toBe("true");
   });
 });
+
+describe("MessageList system reminder", () => {
+  it("renders a one-line notice without revert or reminder body", () => {
+    const reminder: ChatRow = {
+      id: "item-session-1-0",
+      item: {
+        type: "message",
+        role: "user",
+        id: "msg_rem",
+        status: "completed",
+        content: [
+          {
+            type: "input_text",
+            text: "<system-reminder>\nThe user stopped background bash bg_a (Kill).\n</system-reminder>",
+          },
+        ],
+      },
+    };
+    render(
+      <MessageList
+        messages={[reminder]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={false}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    expect(screen.getByRole("status", { name: "Terminal killed" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Revert to here" })).toBeNull();
+    expect(screen.queryByText(/system-reminder/)).toBeNull();
+    expect(screen.queryByText(/bg_a/)).toBeNull();
+  });
+});

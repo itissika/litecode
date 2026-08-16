@@ -1,11 +1,15 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FileArrowUpIcon } from "@phosphor-icons/react";
 
 import {
+  functionCallOutputText,
   normalizeToolFilePath,
   parseFunctionArguments,
 } from "../api/adapter";
 import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
+import { formatElapsed, matchJob } from "../lib/bashLive";
+import { bashKill } from "../lib/litecodeBash";
+import { useBashStore } from "../stores/bashStore";
 import { useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
 import { agentColor } from "./agentIdentity";
@@ -81,6 +85,22 @@ export function ToolCallCard({
   // run-state dot, instead of the generic `name + inputSummary`. Its body
   // (Task brief + process list) is rendered by SubagentToolView.
   const isSubagent = toolName === "subagent_launch";
+  const isBash = toolName === "bash";
+  const rawOutput = output ? functionCallOutputText(output) : "";
+  const bashJob = useBashStore((s) => {
+    if (!isBash || !sessionId) return undefined;
+    const jobs = s.bySession.get(sessionId)?.jobs ?? [];
+    return matchJob(jobs, call.call_id, rawOutput);
+  });
+  const runningCount = useBashStore((s) =>
+    sessionId ? (s.bySession.get(sessionId)?.jobs.length ?? 0) : 0,
+  );
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!bashJob) return;
+    const t = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(t);
+  }, [bashJob]);
   const subagentAgent =
     isSubagent && input && typeof input === "object" && !Array.isArray(input)
       ? typeof (input as Record<string, unknown>).agent === "string"
@@ -195,6 +215,26 @@ export function ToolCallCard({
                     {action.label}
                   </button>
                 ))}
+              </span>
+            )}
+            {bashJob && (
+              <span className="ml-auto flex shrink-0 items-center gap-2">
+                <span className="font-mono text-dk-2xs text-(--_dk-text-muted)">
+                  {formatElapsed(now - bashJob.started_at_ms)}
+                </span>
+                <span className="font-mono text-dk-2xs text-(--_dk-text-muted)">
+                  running {runningCount}
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void bashKill(bashJob.id);
+                  }}
+                  className="inline-flex items-center text-dk-xs text-(--_dk-text-muted) hover:brightness-110 active:brightness-90"
+                >
+                  Kill
+                </button>
               </span>
             )}
           </span>

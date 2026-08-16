@@ -382,6 +382,39 @@ export interface SessionSnapshot {
    * Absent / null = no file-level revert available.
    */
   max_file_revert_k?: number | null;
+  /** Running agent bash jobs + wait_shell waiters (reconnect hydrate). */
+  bash?: BashJobsSnapshot | null;
+}
+
+export interface BashJob {
+  id: string;
+  call_id: string;
+  command_preview: string;
+  output_file: string;
+  started_at_ms: number;
+}
+
+export interface BashWait {
+  call_id: string;
+  watching_id?: string | null;
+  started_at_ms: number;
+  deadline_ms?: number | null;
+}
+
+export interface BashJobsSnapshot {
+  jobs: BashJob[];
+  waits: BashWait[];
+}
+
+export interface BashJobsNotification extends BashJobsSnapshot {
+  session_id: string;
+}
+
+export interface BashTailResult {
+  text: string;
+  truncated_on_disk: boolean;
+  alive: boolean;
+  exit_code: number | null;
 }
 
 export type ThinkingTier = "low" | "medium" | "high";

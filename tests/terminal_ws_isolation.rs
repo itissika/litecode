@@ -273,6 +273,7 @@ async fn websocket_terminals_are_owner_isolated_and_disconnect_cleaned() {
             Some(project.path()),
             project.path(),
             "test",
+            "",
         )
         .expect("agent background");
     tokio::time::timeout(Duration::from_secs(10), async {

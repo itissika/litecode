@@ -414,7 +414,7 @@ fn running_list_is_session_scoped() {
     let mine_id = bash_id_of(&mine.content);
     let other = flow
         .hub
-        .spawn_command(&sleep_cmd(20), None, &flow.root, other_sid)
+        .spawn_command(&sleep_cmd(20), None, &flow.root, other_sid, "")
         .unwrap();
     let listed = flow.hub.jobs.running(&flow.sid);
     assert_eq!(listed.len(), 1);

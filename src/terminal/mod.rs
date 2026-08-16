@@ -20,7 +20,8 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 pub use agent_jobs::{
-    AgentJobRecord, AgentJobRegistry, ExitNotice, RunningJob, WaitOutcome, command_preview,
+    AgentJobRecord, AgentJobRegistry, BashJobWire, BashJobsSnapshot, BashTailView, BashWaitWire,
+    ExitNotice, RunningJob, WaitOutcome, command_preview,
 };
 pub use error::{TerminalError, TerminalResult};
 pub use shell::{ShellSpec, default_shell, shell_command};
@@ -211,6 +212,7 @@ impl TerminalHub {
                         std::thread::sleep(Duration::from_millis(25));
                     }
                 }
+                session.try_reap();
                 let code = session.exit_code();
                 if exit_sent.swap(true, Ordering::AcqRel) {
                     return;
@@ -520,6 +522,7 @@ impl TerminalHub {
         workdir: Option<&Path>,
         workspace_root: &Path,
         session_id: &str,
+        call_id: &str,
     ) -> TerminalResult<SpawnCommandResult> {
         let id = Self::next_id("bg");
         let cwd = resolve_cwd(workdir);
@@ -553,6 +556,9 @@ impl TerminalHub {
                 t.push_raw(&footer);
                 let _ = t.flush_file();
             }
+            if code.is_none() {
+                return;
+            }
             if !exit_sent_cb.swap(true, Ordering::AcqRel) {
                 jobs.finish(&id_exit, code);
                 let mut sessions = sessions.lock().expect("sessions lock");
@@ -568,11 +574,17 @@ impl TerminalHub {
             id.clone(),
             AgentJobRecord {
                 session_id: session_key.to_string(),
+                call_id: call_id.to_string(),
                 command_preview: command_preview(command),
                 output_path: output_path.clone(),
                 tee: Arc::clone(&tee),
                 alive: true,
                 exit_code: None,
+                started_at_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64,
+                user_killed: false,
             },
         );
         let mut session = match pty::PtySession::spawn_interactive(
@@ -614,8 +626,20 @@ impl TerminalHub {
         Ok(SpawnCommandResult { id, output_path })
     }
 
-    /// Kill a background/command session (agent kill_shell).
+    /// Kill a background/command session (agent `kill_shell`).
     pub fn kill(&self, id: &str) -> TerminalResult<SessionInfo> {
+        self.kill_with(id, false)
+    }
+
+    /// Kill from the bash card Kill control (human).
+    pub fn kill_from_ui(&self, id: &str) -> TerminalResult<SessionInfo> {
+        self.kill_with(id, true)
+    }
+
+    fn kill_with(&self, id: &str, user_killed: bool) -> TerminalResult<SessionInfo> {
+        if user_killed {
+            self.jobs.mark_user_kill(id);
+        }
         // Snapshot the session handle, then release the table lock: the kill +
         // reap poll below can take up to ~1s and must not block every other
         // terminal operation (3.3).
@@ -650,7 +674,11 @@ impl TerminalHub {
         // close_agent / reaper may set exit_sent before on_exit runs, which
         // skips jobs.finish. Mark the registry here so wait_shell and running
         // lists observe the killed job immediately.
-        self.jobs.finish(id, info.exit_code);
+        if user_killed {
+            self.jobs.finish_user_killed(id, info.exit_code);
+        } else {
+            self.jobs.finish(id, info.exit_code);
+        }
         Ok(info)
     }
 
@@ -725,6 +753,27 @@ mod tests {
         assert!(nonce_b.len() >= 16);
         // A UUID cannot be trivially enumerated by incrementing.
         assert!(nonce_a.parse::<u64>().is_err(), "nonce must not be numeric");
+    }
+
+    #[test]
+    fn kill_rejects_human_pty_id() {
+        let hub = TerminalHub::new();
+        let caller = ConnectionId::new();
+        let _events = hub.attach_connection(caller.clone());
+        let id = hub
+            .create(
+                &caller,
+                CreateOptions {
+                    cols: 80,
+                    rows: 24,
+                    cwd: None,
+                },
+            )
+            .expect("human pty");
+        assert!(matches!(
+            hub.kill(&id),
+            Err(TerminalError::SessionNotFound(_))
+        ));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 import type { ChatRow } from "../api/adapter";
-import { applyTurnEventMeta, newMessageId, userTextItem } from "../api/adapter";
+import { applyTurnEventMeta, isUserMessage, itemPlainText, newMessageId, userTextItem } from "../api/adapter";
 import type {
   AgentRunState,
   TurnPhase,
@@ -414,6 +414,22 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         pendingPermission: null,
         pendingCancel: false,
       });
+
+      // Server-initiated turns (idle bash auto-turn) never went through `start()`,
+      // so there is no optimistic user row. Surface the turn input so the panel
+      // matches a normal agent/run. `buffer/item` later seals this `user-*` row.
+      const trimmed = (ts.input ?? "").trim();
+      if (trimmed) {
+        const rows =
+          useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
+        const lastUser = [...rows].reverse().find((m) => isUserMessage(m.item));
+        if (!lastUser || itemPlainText(lastUser.item) !== trimmed) {
+          useMessageStore.getState().pushUserMessage(sessionId, {
+            id: newMessageId("user"),
+            item: userTextItem(trimmed),
+          });
+        }
+      }
     },
 
     onTurnEvent: (te) => {

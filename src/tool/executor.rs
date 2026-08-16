@@ -1111,7 +1111,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hub = Arc::new(crate::terminal::TerminalHub::new());
         let spawned = hub
-            .spawn_command("echo hi", None, dir.path(), "sess")
+            .spawn_command("echo hi", None, dir.path(), "sess", "")
             .unwrap();
         wait_job_exit(&hub, &spawned.id);
         let notice = hub.jobs.notice_snapshot(&spawned.id).expect("notice");
@@ -1134,7 +1134,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hub = Arc::new(crate::terminal::TerminalHub::new());
         let spawned = hub
-            .spawn_command("echo hi", None, dir.path(), "sess")
+            .spawn_command("echo hi", None, dir.path(), "sess", "")
             .unwrap();
         wait_job_exit(&hub, &spawned.id);
         let notice = hub.jobs.notice_snapshot(&spawned.id).expect("notice");

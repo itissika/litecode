@@ -192,7 +192,9 @@ pub async fn install_server_to_lsp_dir(
         .ok_or_else(|| LitecodeError::Config(format!("unknown language server id: {server_id}")))?;
 
     if !adapter.auto_installable() {
-        let hint = adapter.install_hint().unwrap_or("install it via your system package manager");
+        let hint = adapter
+            .install_hint()
+            .unwrap_or("install it via your system package manager");
         return Err(LitecodeError::Config(format!(
             "{server_id} does not support automatic install. {hint}"
         )));

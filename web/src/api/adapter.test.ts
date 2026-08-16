@@ -6,7 +6,9 @@ import {
   deriveUserAnchorK,
   extractBufferIndex,
   isAssistantMessage,
+  isChatUserMessage,
   isStreamFailureEvent,
+  isSystemReminderItem,
   itemAuthorityId,
   itemPlainText,
   liveItemRowId,
@@ -169,6 +171,18 @@ describe("userTextItem", () => {
       content: [{ type: "input_text", text: "hello" }],
     });
     expect(itemPlainText(item)).toBe("hello");
+  });
+});
+
+describe("isSystemReminderItem", () => {
+  it("detects wrapped auto-turn input and excludes it from chat-user bubbles", () => {
+    const reminder = userTextItem(
+      "<system-reminder>\nThe user stopped background bash bg_a (Kill).\n</system-reminder>",
+    );
+    expect(isSystemReminderItem(reminder)).toBe(true);
+    expect(isChatUserMessage(reminder)).toBe(false);
+    expect(isChatUserMessage(userTextItem("hello"))).toBe(true);
+    expect(isSystemReminderItem(userTextItem("hello"))).toBe(false);
   });
 });
 

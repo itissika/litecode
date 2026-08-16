@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { itemPlainText } from "../api/adapter";
 import type { SessionSnapshot, TurnFinished, TurnSnapshot } from "../api/types";
 import { useConnectionStore } from "./connectionStore";
 import { useMessageStore } from "./messageStore";
@@ -450,5 +451,46 @@ describe("grantPermission receipt (FE-04)", () => {
     const toasts = useToastStore.getState().toasts.map((t) => t.message);
     expect(toasts).toContain("LLM request failed");
     expect(toasts).toContain("Workspace snapshot track failed");
+  });
+
+  it("onTurnStarted hydrates a user row for server-initiated input", () => {
+    const sessionId = "s-idle-kill";
+    useTurnStore.getState().onTurnStarted({
+      session_id: sessionId,
+      turn_id: "t-idle",
+      input: "<system-reminder>bash exited</system-reminder>",
+      step_max: 8,
+    });
+    const slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.runState).toBe("running");
+    expect(slice.currentTurnId).toBe("t-idle");
+    const rows = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toMatch(/^user-/);
+    expect(itemPlainText(rows[0].item)).toBe(
+      "<system-reminder>bash exited</system-reminder>",
+    );
+
+    useTurnStore.getState().onTurnStarted({
+      session_id: sessionId,
+      turn_id: "t-idle",
+      input: "<system-reminder>bash exited</system-reminder>",
+      step_max: 8,
+    });
+    const again = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
+    expect(again).toHaveLength(1);
+  });
+
+  it("onTurnStarted does not duplicate an optimistic start() user row", () => {
+    const sessionId = "s-human-run";
+    expect(useTurnStore.getState().start(sessionId, "hello from composer")).toBe(true);
+    useTurnStore.getState().onTurnStarted({
+      session_id: sessionId,
+      turn_id: "t-human",
+      input: "hello from composer",
+      step_max: 5,
+    });
+    const rows = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
+    expect(rows.filter((m) => m.id.startsWith("user-"))).toHaveLength(1);
   });
 });

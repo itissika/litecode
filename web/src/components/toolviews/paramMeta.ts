@@ -16,6 +16,8 @@ export const TOOL_PARAM_META: Record<string, ToolParamConfig> = {
   write: { primary: ["file_path", "content"] },
   edit: { primary: ["file_path", "old_string", "new_string"] },
   bash: { primary: ["command"] },
+  wait_shell: { primary: ["id", "sec"] },
+  kill_shell: { primary: ["bash_id"] },
   subagent_launch: { primary: ["agent", "prompt"] },
 };
 

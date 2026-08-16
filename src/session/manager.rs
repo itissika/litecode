@@ -701,7 +701,7 @@ impl SessionManager {
             record.project = Some(project.to_string());
             record.activity = SessionActivity::RunningTurn(LiveTurnState {
                 turn_id: turn_id.clone(),
-                cancel,
+                cancel: cancel.clone(),
                 progress: progress.clone(),
             });
             (record.event_tx.clone(), progress)
@@ -712,10 +712,34 @@ impl SessionManager {
             progress,
         });
 
+        // Fanout must outlive the caller's runtime. Idle bash auto-turn starts
+        // the turn on a throwaway current-thread runtime that exits as soon as
+        // `start_turn` returns; `tokio::spawn` on that runtime would abort
+        // fanout and the agent panel would never see `agent/turn_started` /
+        // `buffer/item` even though session-list lifecycle already flipped to
+        // running.
         let session_id_owned = session_id.to_string();
-        tokio::spawn(async move {
-            fanout_turn(session_id_owned, handle, event_tx, manager).await;
-        });
+        let turn_id_owned = turn_id.clone();
+        std::thread::Builder::new()
+            .name(format!("turn-fanout-{session_id}"))
+            .spawn(move || {
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(error) => {
+                        tracing::error!(error = %error, "turn fanout runtime failed");
+                        let _ = manager.finish_turn(&session_id_owned, &turn_id_owned);
+                        return;
+                    }
+                };
+                rt.block_on(fanout_turn(session_id_owned, handle, event_tx, manager));
+            })
+            .map_err(|error| {
+                cancel.cancel();
+                LitecodeError::ToolExecution(format!("turn fanout spawn failed: {error}"))
+            })?;
         Ok(())
     }
 
@@ -1847,5 +1871,78 @@ mod child_session_tests {
             .expect("slot frees on drop");
         drop(retry);
         drop(other);
+    }
+
+    #[test]
+    fn start_turn_fanout_survives_caller_runtime_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let mgr = Arc::new(SessionManager::new(
+            Arc::new(TurnGuard::new()),
+            db.to_str().unwrap().to_string(),
+        ));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let sid = rt
+            .block_on(mgr.open_session("/proj", "default", None))
+            .unwrap();
+        let _ = mgr.attach(&sid);
+        let mut sub = mgr.subscribe(&sid).expect("subscribe");
+        mgr.reserve_turn(&sid, "t-idle".into(), 5, "default", "/proj")
+            .unwrap();
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = crate::runtime::TurnHandle {
+            handle: None,
+            rx,
+            cancel: CancellationToken::new(),
+            turn_id: "t-idle".into(),
+            step_max: 5,
+        };
+        let mgr_start = Arc::clone(&mgr);
+        let sid_start = sid.clone();
+        std::thread::spawn(move || {
+            let nested = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            nested
+                .block_on(mgr_start.start_turn(
+                    &sid_start,
+                    handle,
+                    "default",
+                    "/proj",
+                    Arc::clone(&mgr_start),
+                ))
+                .expect("start_turn");
+        })
+        .join()
+        .expect("starter thread");
+
+        tx.send(InternalEnvelope {
+            event: InternalEvent::TurnStarted {
+                turn_id: "t-idle".into(),
+                input: "from-mailbox".into(),
+                step_max: 5,
+            },
+            parent_session_id: None,
+        })
+        .expect("fanout still holding the turn event channel");
+
+        let got = rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(2), sub.recv())
+                .await
+                .expect("timed out waiting for fanout")
+                .expect("broadcast lagged")
+        });
+        drop(tx);
+        match got.event {
+            InternalEvent::TurnStarted { input, .. } => {
+                assert_eq!(input, "from-mailbox");
+            }
+            other => panic!("expected TurnStarted, got {other:?}"),
+        }
     }
 }

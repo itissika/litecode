@@ -23,8 +23,10 @@ import type {
   TurnStarted,
   TurnEventEnvelope,
   TurnFinished,
+  BashJobsNotification,
 } from "../api/types";
 import type { WorkspaceChangeKind } from "../api/workspace";
+import { useBashStore } from "./bashStore";
 import { useToastStore } from "./toastStore";
 
 /** Module-level dockview API reference, set by useDockviewConfig. */
@@ -248,6 +250,14 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
           case "session/lifecycle": {
             const lc = params as unknown as SessionLifecycle;
             session?.onSessionLifecycle(lc);
+            if (lc.event === "turn_started" && lc.turn?.turn_id) {
+              turn?.onTurnStarted({
+                session_id: lc.session_id,
+                turn_id: lc.turn.turn_id,
+                input: "",
+                step_max: lc.turn.step_max,
+              });
+            }
             return;
           }
 
@@ -276,6 +286,17 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
           case "agent/subagent_bound": {
             const bound = params as unknown as SubagentBound;
             message?.onSubagentBound(bound.session_id, bound);
+            return;
+          }
+
+          case "bash/jobs": {
+            const bash = params as unknown as BashJobsNotification;
+            if (bash.session_id) {
+              useBashStore.getState().applySnapshot(bash.session_id, {
+                jobs: bash.jobs ?? [],
+                waits: bash.waits ?? [],
+              });
+            }
             return;
           }
 

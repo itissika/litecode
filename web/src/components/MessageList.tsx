@@ -6,11 +6,13 @@ import type { ChatRow } from "../api/adapter";
 import {
   deriveUserAnchorK,
   extractBufferIndex,
+  isChatUserMessage,
   isCompactCutRow,
   isFunctionCall,
   isFunctionCallOutput,
   isMessageItem,
   isReasoningItem,
+  isSystemReminderItem,
   isUserMessage,
   itemPlainText,
   projectionRowKey,
@@ -54,6 +56,20 @@ export function CompactCutMark() {
     >
       <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
       <span className="text-dk-2xs text-(--_dk-text-disabled)">compaction point</span>
+    </div>
+  );
+}
+
+/** Bash-exit auto-turn input is a user-role reminder; show a one-line notice. */
+export function SystemReminderMark() {
+  return (
+    <div
+      role="status"
+      aria-label="Terminal killed"
+      className="flex items-center gap-1.5 py-1"
+    >
+      <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
+      <span className="text-dk-2xs text-(--_dk-text-disabled)">Terminal killed</span>
     </div>
   );
 }
@@ -328,7 +344,10 @@ function ItemBubbleImpl({
   const revertToUserAnchor = useMessageStore((s) => s.revertToUserAnchor);
   const revertFiles = useMessageStore((s) => s.revertFiles);
   const first = rows.find((r) => !isCompactCutRow(r)) ?? rows[0];
-  const isUser = first != null && isUserMessage(first.item);
+  if (first != null && isSystemReminderItem(first.item)) {
+    return <SystemReminderMark />;
+  }
+  const isUser = first != null && isChatUserMessage(first.item);
   const nodes = rowsToNodes(rows, isRunning);
   const streaming =
     rows.some((r) => r.streaming === true) || nodes.some((n) => n.streaming);
@@ -499,9 +518,11 @@ export const LIST_FOOTER_KEY = "__list_footer__";
  * first. A key flip remounts the bubble at `estimateSize`, which is what
  * made the whole list jump while output was still streaming.
  *
- * Assistant bubbles are keyed by the nearest preceding user bubble, so
- * internal row reorder and live→seal keep the same slot. Compact cuts are
- * not bubbles and do not affect identity.
+ * Assistant bubbles are keyed by the nearest preceding user *or* system-
+ * reminder bubble. Reminders split the list (user-role rows) so skipping
+ * them in lookback would give two assistant groups the same
+ * `assistant-after:user:…` key. Compact cuts are not bubbles and do not
+ * affect identity.
  */
 export function bubbleIdentity(bubbles: ChatRow[][], index: number): string {
   const group = bubbles[index];
@@ -510,13 +531,19 @@ export function bubbleIdentity(bubbles: ChatRow[][], index: number): string {
   if (isCompactCutRow(first)) {
     return `compact:${projectionRowKey(first)}`;
   }
-  if (isUserMessage(first.item)) {
+  if (isSystemReminderItem(first.item)) {
+    return `notice:${projectionRowKey(first)}`;
+  }
+  if (isChatUserMessage(first.item)) {
     return `user:${projectionRowKey(first)}`;
   }
   for (let i = index - 1; i >= 0; i--) {
     const prev = firstContentRow(bubbles[i] ?? []) ?? bubbles[i]?.[0];
     if (!prev) continue;
-    if (isUserMessage(prev.item)) {
+    if (isSystemReminderItem(prev.item)) {
+      return `assistant-after:notice:${projectionRowKey(prev)}`;
+    }
+    if (isChatUserMessage(prev.item)) {
       return `assistant-after:user:${projectionRowKey(prev)}`;
     }
   }
@@ -603,7 +630,8 @@ export const MessageList = memo(function MessageList({
       if (index >= bubbles.length) return 72;
       const first = firstContentRow(bubbles[index] ?? []);
       if (!first) return 28;
-      if (isUserMessage(first.item)) return 88;
+      if (isSystemReminderItem(first.item)) return 28;
+      if (isChatUserMessage(first.item)) return 88;
       return 240;
     },
     [bubbles],
@@ -717,7 +745,7 @@ export const MessageList = memo(function MessageList({
             // Sealed buffer rows only — optimistic live user shells have no buffer id.
             const sealed =
               first != null && extractBufferIndex(first.id) !== null;
-            const isUser = first != null && isUserMessage(first.item);
+            const isUser = first != null && isChatUserMessage(first.item);
             const showRevert = sealed && isUser && firstIdx >= 0;
             const userAnchorK = showRevert
               ? deriveUserAnchorK(messages, firstIdx, userDetailBefore)

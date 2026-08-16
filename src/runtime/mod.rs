@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use crate::agent::{AgentDeps, TurnOutcome};
 use crate::config::bridge::agent_config_for;
 use crate::config::schema::ADAPTER_DEEPSEEK_RESPONSES;
-use crate::config::workspace::{active_paths, set_runtime_paths, workspace_root_from_paths};
+use crate::config::workspace::set_runtime_paths;
 use crate::config::{AgentConfig, ConfigManager, ResolvedConfig, WorkspaceState, log_filter};
 use crate::context_pipeline::{Context, build_context};
 use crate::context_pipeline::{ContextPipeline, ProviderPromptBaseline};
@@ -451,8 +451,11 @@ impl AgentRuntime {
             turn_llm.provider_id
         );
 
-        let paths = active_paths();
-        let cwd = workspace_root_from_paths(&paths);
+        // Process-owned workspace from ResolvedConfig. Do not use thread-local
+        // `active_paths()`, which falls back to process cwd on tokio workers
+        // (dev `cargo run` cwd is the source tree, not `--workspace`).
+        let paths = resolved.paths().clone();
+        let cwd = resolved.workspace_root().to_path_buf();
         let context = build_context(&resolved, &cwd, &paths);
 
         let context_window = turn_llm.context_window;

@@ -64,6 +64,8 @@ pub fn is_workspace_method(method: &str) -> bool {
             | methods::TERMINAL_WRITE
             | methods::TERMINAL_RESIZE
             | methods::TERMINAL_CLOSE
+            | methods::BASH_TAIL
+            | methods::BASH_KILL
     )
 }
 
@@ -332,6 +334,94 @@ pub async fn handle_jsonrpc(
                 ),
             }
         }
+        methods::BASH_TAIL => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                bash_id: String,
+            }
+            let params: Params = match serde_json::from_value(rpc.params) {
+                Ok(params) => params,
+                Err(error) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {error}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return;
+                }
+            };
+            match terminal_hub.jobs.tail_view(&params.bash_id) {
+                Some(view) => emit(
+                    sink,
+                    serde_json::to_value(ok_response(
+                        id,
+                        serde_json::json!({
+                            "text": view.text,
+                            "truncated_on_disk": view.truncated_on_disk,
+                            "alive": view.alive,
+                            "exit_code": view.exit_code,
+                        }),
+                    ))
+                    .unwrap(),
+                ),
+                None => emit(
+                    sink,
+                    serde_json::to_value(err_response(
+                        id,
+                        -32000,
+                        format!("bash job '{}' not found", params.bash_id),
+                    ))
+                    .unwrap(),
+                ),
+            }
+        }
+        methods::BASH_KILL => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                bash_id: String,
+            }
+            let params: Params = match serde_json::from_value(rpc.params) {
+                Ok(params) => params,
+                Err(error) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {error}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return;
+                }
+            };
+            let hub = std::sync::Arc::clone(terminal_hub);
+            match tokio::task::spawn_blocking(move || {
+                let info = hub.kill_from_ui(&params.bash_id)?;
+                let _ = hub.close_agent(&params.bash_id);
+                Ok::<_, crate::terminal::TerminalError>(info)
+            })
+            .await
+            {
+                Ok(Ok(_)) => emit(
+                    sink,
+                    serde_json::to_value(ok_response(id, serde_json::json!({ "ok": true })))
+                        .unwrap(),
+                ),
+                Ok(Err(error)) => emit(
+                    sink,
+                    serde_json::to_value(err_response(id, -32000, error.to_string())).unwrap(),
+                ),
+                Err(error) => emit(
+                    sink,
+                    serde_json::to_value(err_response(id, -32000, error.to_string())).unwrap(),
+                ),
+            }
+        }
         _ => unreachable!("workspace router only receives workspace methods"),
     }
 }
@@ -344,7 +434,10 @@ mod tests {
     fn classifies_workspace_methods() {
         assert!(is_workspace_method("lsp/request"));
         assert!(is_workspace_method("terminal/create"));
+        assert!(is_workspace_method("bash/tail"));
+        assert!(is_workspace_method("bash/kill"));
         assert!(!is_workspace_method("session/subscribe"));
         assert!(!is_workspace_method("agent/run"));
+        assert!(!is_workspace_method("bash/jobs"));
     }
 }

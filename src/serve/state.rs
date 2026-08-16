@@ -114,6 +114,19 @@ impl ServeState {
             Arc::clone(&sessions),
             project.clone(),
         );
+        {
+            let sessions = Arc::clone(&sessions);
+            let hub = Arc::clone(&terminal_hub);
+            terminal_hub
+                .jobs
+                .set_jobs_changed_handler(Arc::new(move |session_id: String| {
+                    let snapshot = hub.jobs.wire_snapshot(&session_id);
+                    let _ = sessions.publish_internal(
+                        &session_id,
+                        crate::runtime::observer::InternalEvent::BashJobs { snapshot },
+                    );
+                }));
+        }
         Ok(Self {
             ide,
             runtime,

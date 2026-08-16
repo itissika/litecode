@@ -76,6 +76,62 @@ describe("bubbleIdentity", () => {
     const grouped = groupRowsForBubbles([userRow, liveReasoning]);
     expect(bubbleIdentity(grouped, 0)).toBe(`user:${projectionRowKey(userRow)}`);
   });
+
+  it("keys a system-reminder as a notice, not a user bubble", () => {
+    const reminder: ChatRow = {
+      id: "item-session-1-9",
+      item: {
+        type: "message",
+        role: "user",
+        id: "msg_reminder",
+        status: "completed",
+        content: [
+          {
+            type: "input_text",
+            text: "<system-reminder>\nThe user stopped background bash bg_a (Kill).\n</system-reminder>",
+          },
+        ],
+      },
+    };
+    const grouped = groupRowsForBubbles([userRow, reminder, liveReasoning]);
+    expect(grouped).toHaveLength(3);
+    expect(bubbleIdentity(grouped, 1)).toBe(`notice:${projectionRowKey(reminder)}`);
+    expect(bubbleIdentity(grouped, 2)).toBe(
+      `assistant-after:notice:${projectionRowKey(reminder)}`,
+    );
+  });
+
+  it("does not reuse assistant-after:user keys across a reminder split", () => {
+    const reminder: ChatRow = {
+      id: "item-session-1-9",
+      item: {
+        type: "message",
+        role: "user",
+        id: "msg_reminder",
+        status: "completed",
+        content: [
+          {
+            type: "input_text",
+            text: "<system-reminder>\nThe user stopped background bash bg_a (Kill).\n</system-reminder>",
+          },
+        ],
+      },
+    };
+    const grouped = groupRowsForBubbles([
+      userRow,
+      liveReasoning,
+      reminder,
+      liveTool,
+    ]);
+    const keys = grouped.map((_, i) => bubbleIdentity(grouped, i));
+    expect(keys).toEqual([
+      `user:${projectionRowKey(userRow)}`,
+      `assistant-after:user:${projectionRowKey(userRow)}`,
+      `notice:${projectionRowKey(reminder)}`,
+      `assistant-after:notice:${projectionRowKey(reminder)}`,
+    ]);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
 });
 
 const compactCut = (id: string): ChatRow => ({

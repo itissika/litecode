@@ -110,6 +110,23 @@ export function isUserMessage(item: Item): item is InputMessageItem {
 }
 
 /**
+ * Idle auto-turn (and similar) injects `<system-reminder>…` as a user-role
+ * buffer item so the agent turn input is unchanged. The transcript still
+ * stores it as a user detail; the chat view must not treat it as a human
+ * bubble (no composer styling, no revert).
+ */
+export function isSystemReminderItem(item: Item): boolean {
+  if (!isUserMessage(item)) return false;
+  const text = itemPlainText(item).trim();
+  return text.startsWith("<system-reminder>") && text.includes("</system-reminder>");
+}
+
+/** User-role row that should render as a human chat bubble. */
+export function isChatUserMessage(item: Item): boolean {
+  return isUserMessage(item) && !isSystemReminderItem(item);
+}
+
+/**
  * Absolute 0-based revert anchor for the user row at `rowIndex`.
  * `userDetailBefore` is the server count of user details with buffer index
  * `<` the loaded window start.
