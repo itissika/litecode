@@ -2,6 +2,8 @@ name: Windows sidecar
 
 on:
   push:
+    tags-ignore:
+      - "v*"
     paths:
       - "src/**"
       - "Cargo.toml"
