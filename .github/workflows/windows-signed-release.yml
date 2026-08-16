@@ -50,7 +50,7 @@ jobs:
           else
             (cd web && npm ci)
           fi
-          ./scripts/package_linux.sh
+          bash scripts/package_linux.sh
 
       - name: Upload Linux bundle
         uses: actions/upload-artifact@v4
@@ -73,6 +73,12 @@ jobs:
         with:
           name: linux-server-bundle
           path: dist/linux/
+
+      # checkout mtimes are "now"; artifact mtimes are older and would trip
+      # ensure_linux_bundle.ps1 -Require stale check.
+      - name: Refresh Linux bundle timestamps
+        shell: pwsh
+        run: Get-ChildItem -LiteralPath dist/linux -File | ForEach-Object { $_.LastWriteTime = Get-Date }
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
