@@ -41,14 +41,18 @@ function Get-LinuxBundleFreshnessSources {
         [Parameter(Mandatory = $true)]
         [string]$Root
     )
+    # Do not use web/dist: assemble_product rebuilds it immediately before this
+    # check, so its mtime is always newer than a same-SHA Linux tar (CI and local).
     $paths = @(
         (Join-Path $Root "Cargo.toml"),
-        (Join-Path $Root "web\dist\index.html")
+        (Join-Path $Root "web\package.json")
     )
-    $srcDir = Join-Path $Root "src"
-    if (Test-Path -LiteralPath $srcDir) {
-        $paths += Get-ChildItem -LiteralPath $srcDir -Recurse -File -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty FullName
+    foreach ($dir in @("src", "web\src")) {
+        $full = Join-Path $Root $dir
+        if (Test-Path -LiteralPath $full) {
+            $paths += Get-ChildItem -LiteralPath $full -Recurse -File -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty FullName
+        }
     }
     return $paths | Where-Object { Test-Path -LiteralPath $_ }
 }

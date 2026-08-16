@@ -58,7 +58,7 @@ Linux server bundle missing for version $version.
 
 if (Test-LinuxBundleStale -Root $Root -TarPath $tar) {
     $warn = @"
-Linux server bundle looks older than src/, web/dist, or Cargo.toml.
+Linux server bundle looks older than src/, web/src, or Cargo.toml.
 
   $tar
 

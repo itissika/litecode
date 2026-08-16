@@ -22,6 +22,15 @@ if (-not (Test-Path $Exe)) {
   throw "sidecar missing at $Exe — assemble first"
 }
 
+# GitHub checkout mtimes are "now"; the Linux artifact is older even at the same SHA.
+if ($env:GITHUB_ACTIONS) {
+  $linuxDir = Join-Path $Root "dist\linux"
+  if (Test-Path -LiteralPath $linuxDir) {
+    Get-ChildItem -LiteralPath $linuxDir -File -ErrorAction SilentlyContinue |
+      ForEach-Object { $_.LastWriteTime = Get-Date }
+  }
+}
+
 $null = & (Join-Path $Root "scripts\ensure_linux_bundle.ps1") -Root $Root -Require
 Push-Location (Join-Path $Root "desktop")
 try {
