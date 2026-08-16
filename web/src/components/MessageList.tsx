@@ -9,6 +9,7 @@ import {
   isCompactCutRow,
   isFunctionCall,
   isFunctionCallOutput,
+  isMessageItem,
   isReasoningItem,
   isUserMessage,
   itemPlainText,
@@ -121,7 +122,7 @@ export function rowsToNodes(rows: ChatRow[], turnActive = false): RenderNode[] {
       }
       continue;
     }
-    if (item.type === "message") {
+    if (isMessageItem(item)) {
       const text = itemPlainText(item);
       if (text) {
         nodes.push({
