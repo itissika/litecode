@@ -52,13 +52,15 @@ export type SettingsSection =
   | "agents"
   | "advanced";
 
-// Catalog warmup poll: exponential backoff with a hard cap and an attempt
-// limit, so a stuck engine or a transient fetch error never polls forever and
-// never fails silently (FE-03).
+// Catalog warmup poll: exponential backoff, then a quiet keep-alive at the
+// max delay. Engines (ORT / LSP) can stay `warming` for minutes; that is
+// visible in Settings → Engines and must not spam error toasts (FE-03).
 const WARMUP_BASE_MS = 500;
 const WARMUP_MAX_DELAY_MS = 8000;
 const WARMUP_MAX_ATTEMPTS = 8;
 let warmupAttempts = 0;
+let catalogPollTimer: ReturnType<typeof setTimeout> | null = null;
+let catalogFetchErrorToasted = false;
 
 /** Exponential backoff delay (ms) for the `attempt`-th catalog poll (1-based). */
 export function catalogPollDelayMs(attempt: number): number {
@@ -66,21 +68,44 @@ export function catalogPollDelayMs(attempt: number): number {
   return Math.min(WARMUP_BASE_MS * 2 ** n, WARMUP_MAX_DELAY_MS);
 }
 
-/** Schedule the next catalog poll with backoff; after the cap, surface the
- *  failure explicitly (toast) instead of recursing silently. */
+function clearCatalogPollTimer(): void {
+  if (catalogPollTimer !== null) {
+    clearTimeout(catalogPollTimer);
+    catalogPollTimer = null;
+  }
+}
+
+/** Test hook: module poll state is not in the zustand store. */
+export function resetCatalogPollState(): void {
+  warmupAttempts = 0;
+  catalogFetchErrorToasted = false;
+  clearCatalogPollTimer();
+}
+
+function markCatalogSettled(): void {
+  warmupAttempts = 0;
+  catalogFetchErrorToasted = false;
+  clearCatalogPollTimer();
+}
+
+/** Coalesce overlapping callers (hello + settings/changed + Engines 1s refresh). */
 function scheduleCatalogPoll(error?: unknown): void {
-  warmupAttempts += 1;
-  if (warmupAttempts > WARMUP_MAX_ATTEMPTS) {
-    warmupAttempts = 0;
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Tool catalog did not settle after repeated polling";
-    useToastStore.getState().showToast(message, "error");
+  if (catalogPollTimer !== null) {
     return;
   }
+  warmupAttempts += 1;
+  if (warmupAttempts > WARMUP_MAX_ATTEMPTS) {
+    warmupAttempts = WARMUP_MAX_ATTEMPTS;
+    if (error instanceof Error && !catalogFetchErrorToasted) {
+      catalogFetchErrorToasted = true;
+      useToastStore.getState().showToast(error.message, "error");
+    }
+  }
   const delay = catalogPollDelayMs(warmupAttempts);
-  setTimeout(() => void useSettingsStore.getState().ensureCatalogLoaded(), delay);
+  catalogPollTimer = setTimeout(() => {
+    catalogPollTimer = null;
+    void useSettingsStore.getState().ensureCatalogLoaded();
+  }, delay);
 }
 
 interface SettingsStoreState {
@@ -302,11 +327,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       if (warming) {
         scheduleCatalogPoll();
       } else {
-        warmupAttempts = 0;
+        markCatalogSettled();
       }
     } catch (err) {
-      // A transient fetch failure is retried with backoff (not silently
-      // swallowed); a sustained failure past the cap surfaces explicitly.
+      // Transient fetch failures retry with backoff; a sustained failure
+      // toasts once, then keeps retrying quietly at the max delay.
       scheduleCatalogPoll(err);
     }
   },

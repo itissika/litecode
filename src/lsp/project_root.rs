@@ -113,9 +113,9 @@ fn cargo_toml_has_workspace_table(dir: &Path) -> bool {
 fn crate_is_workspace_member(crate_dir: &Path, workspace_dir: &Path) -> bool {
     let crate_dir = crate::config::path::canon_abs_lossy(crate_dir);
     let members = workspace_member_dirs(workspace_dir);
-    members.iter().any(|member| {
-        crate::config::path::canon_abs_lossy(member) == crate_dir
-    })
+    members
+        .iter()
+        .any(|member| crate::config::path::canon_abs_lossy(member) == crate_dir)
 }
 
 fn workspace_member_dirs(workspace_dir: &Path) -> Vec<PathBuf> {

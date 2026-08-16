@@ -379,9 +379,7 @@ mod tests {
             unknown_top_level_properties(&schema, &json!({"pattern": "*.rs", "extra": true})),
             vec!["extra".to_string()]
         );
-        assert!(
-            unknown_top_level_properties(&schema, &json!({"pattern": "*.rs"})).is_empty()
-        );
+        assert!(unknown_top_level_properties(&schema, &json!({"pattern": "*.rs"})).is_empty());
     }
 
     #[test]

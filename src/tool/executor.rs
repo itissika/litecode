@@ -989,7 +989,9 @@ mod tests {
             run_schema_tool(Arc::new(CustomShapeTool), r#"{"key": "ok", "timeout": 3}"#).await;
         assert!(result.content.contains("ran"), "{}", result.content);
         assert!(
-            result.content.contains("ignored unknown parameter(s): timeout"),
+            result
+                .content
+                .contains("ignored unknown parameter(s): timeout"),
             "{}",
             result.content
         );

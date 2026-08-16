@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::lsp::install::npm::npm_program_and_args;
 use crate::lsp::install::{LanguageServerBinary, LspAdapter, adapters, ls_program_and_args};
 use crate::lsp::{command_parts, detect_needed_server_commands, program_from_command, server_map};
 use crate::types::LitecodeError;
@@ -126,8 +127,9 @@ pub fn commands_for_server_ids(root: &Path, ids: &[String]) -> Vec<String> {
 }
 
 fn npm_config_prefix() -> Option<PathBuf> {
-    let output = Command::new("npm")
-        .args(["config", "get", "prefix"])
+    let (program, args) = npm_program_and_args(&["config".into(), "get".into(), "prefix".into()])?;
+    let output = Command::new(program)
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
@@ -346,8 +348,12 @@ fn npm_install_permission_denied(stderr: &str) -> bool {
 }
 
 fn run_npm(args: &[&str]) -> std::io::Result<std::process::Output> {
-    Command::new("npm")
-        .args(args)
+    let owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+    let (program, argv) = npm_program_and_args(&owned).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "npm command not found")
+    })?;
+    Command::new(program)
+        .args(argv)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()

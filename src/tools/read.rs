@@ -331,9 +331,7 @@ fn resolve_offset(input: &Value) -> (usize, Option<String>) {
         if n < 1 {
             return (
                 1,
-                Some(
-                    "offset 0 is invalid (must be >= 1); starting at line 1".into(),
-                ),
+                Some("offset 0 is invalid (must be >= 1); starting at line 1".into()),
             );
         }
         return (n as usize, None);
@@ -445,14 +443,8 @@ fn pagination_footer(
     }
 }
 
-fn apply_read_warnings(
-    result: ToolCallResult,
-    warnings: [&Option<String>; 3],
-) -> ToolCallResult {
-    let joined: Vec<&str> = warnings
-        .iter()
-        .filter_map(|w| w.as_deref())
-        .collect();
+fn apply_read_warnings(result: ToolCallResult, warnings: [&Option<String>; 3]) -> ToolCallResult {
+    let joined: Vec<&str> = warnings.iter().filter_map(|w| w.as_deref()).collect();
     if joined.is_empty() {
         result
     } else {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { catalogPollDelayMs, useSettingsStore } from "./settingsStore";
+import { catalogPollDelayMs, resetCatalogPollState, useSettingsStore } from "./settingsStore";
 import { useToastStore } from "./toastStore";
 
 // Mock the settings API module so the catalog poll is deterministic.
@@ -30,6 +30,7 @@ function warmingEngines(state: EngineStatus["state"]): {
 }
 
 beforeEach(() => {
+  resetCatalogPollState();
   useSettingsStore.setState({
     toolCatalog: {},
     engineStatuses: {},
@@ -39,6 +40,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetCatalogPollState();
   vi.useRealTimers();
 });
 
@@ -70,22 +72,49 @@ describe("ensureCatalogLoaded warming poll (FE-03)", () => {
     expect(useSettingsStore.getState().engineStatuses.lsp.state).toBe("warm");
   });
 
-  it("surfaces an explicit toast after the poll cap instead of recursing forever", async () => {
+  it("keeps polling quietly after the cap while an engine stays warming — no error toast", async () => {
     vi.useFakeTimers();
     mockedGetToolCatalog.mockResolvedValue(warmingEngines("warming"));
 
     void useSettingsStore.getState().ensureCatalogLoaded();
-    // Poll delays: 500, 1000, 2000, 4000, 8000, 8000, 8000, 8000.
-    // 1 initial + 8 retries = 9 catalog calls; the cap (attempt > MAX) is
-    // crossed on the 9th attempt, which surfaces the error toast.
+    // Poll delays: 500, 1000, 2000, 4000, then 8000… (cap).
     const delays = [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000];
     for (const delay of delays) {
       await vi.advanceTimersByTimeAsync(delay);
     }
 
     expect(mockedGetToolCatalog).toHaveBeenCalledTimes(9);
-    expect(useToastStore.getState().toasts.length).toBe(1);
-    expect(useToastStore.getState().toasts[0].variant).toBe("error");
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(mockedGetToolCatalog).toHaveBeenCalledTimes(10);
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+  });
+
+  it("toasts a sustained catalog fetch error once, then retries without repeating the toast", async () => {
+    vi.useFakeTimers();
+    mockedGetToolCatalog.mockRejectedValue(new Error("catalog fetch failed"));
+    const shown: string[] = [];
+    let toastCount = 0;
+    const unsub = useToastStore.subscribe((s) => {
+      if (s.toasts.length > toastCount) {
+        shown.push(s.toasts[s.toasts.length - 1].message);
+      }
+      toastCount = s.toasts.length;
+    });
+
+    void useSettingsStore.getState().ensureCatalogLoaded();
+    const delays = [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000];
+    for (const delay of delays) {
+      await vi.advanceTimersByTimeAsync(delay);
+    }
+
+    expect(shown).toEqual(["catalog fetch failed"]);
+
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(mockedGetToolCatalog.mock.calls.length).toBeGreaterThan(9);
+    expect(shown).toEqual(["catalog fetch failed"]);
+    unsub();
   });
 
   it("retries a transient fetch error with backoff and does not swallow it silently", async () => {

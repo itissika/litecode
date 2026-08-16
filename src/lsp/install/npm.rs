@@ -7,6 +7,74 @@ use tokio::process::Command;
 use crate::lsp::paths::lsp_dir;
 use crate::types::{LitecodeError, Result};
 
+/// Windows Node shims are `npm.cmd`, not a PE `npm.exe`. `CreateProcess("npm")`
+/// therefore fails even when Node is installed (same trap as `ls_program_and_args`).
+pub fn resolve_npm_shim() -> Option<PathBuf> {
+    for dir in nodejs_search_dirs() {
+        #[cfg(windows)]
+        {
+            let cmd = dir.join("npm.cmd");
+            if cmd.is_file() {
+                return Some(cmd);
+            }
+            let exe = dir.join("npm.exe");
+            if exe.is_file() {
+                return Some(exe);
+            }
+        }
+        let unix = dir.join("npm");
+        if unix.is_file() {
+            return Some(unix);
+        }
+    }
+    None
+}
+
+/// Program + argv that can be passed to `Command` (wraps `.cmd` via `cmd /C`).
+pub fn npm_program_and_args(npm_args: &[String]) -> Option<(PathBuf, Vec<String>)> {
+    let shim = resolve_npm_shim()?;
+    Some(super::ls_program_and_args(&shim, npm_args))
+}
+
+fn nodejs_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(path_var) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&path_var));
+    }
+    dirs.extend(extra_nodejs_dirs());
+    dirs
+}
+
+fn extra_nodejs_dirs() -> Vec<PathBuf> {
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+    #[cfg(windows)]
+    {
+        let mut dirs = Vec::new();
+        if let Ok(symlink) = std::env::var("NVM_SYMLINK") {
+            let trimmed = symlink.trim();
+            if !trimmed.is_empty() {
+                dirs.push(PathBuf::from(trimmed));
+            }
+        }
+        for key in ["ProgramFiles", "ProgramFiles(x86)"] {
+            if let Ok(root) = std::env::var(key) {
+                dirs.push(PathBuf::from(root).join("nodejs"));
+            }
+        }
+        dirs
+    }
+}
+
+fn npm_command_tokio(npm_args: &[String]) -> Option<Command> {
+    let (program, args) = npm_program_and_args(npm_args)?;
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    Some(cmd)
+}
+
 /// Install npm packages into `lsp_dir()/<server_id>/`.
 /// The last package in `packages` is treated as the language server for version metadata.
 pub async fn npm_install(server_id: &str, packages: &[(&str, &str)]) -> Result<()> {
@@ -46,8 +114,12 @@ pub async fn npm_install(server_id: &str, packages: &[(&str, &str)]) -> Result<(
         }
     }
 
-    let npm_ok = Command::new("npm")
-        .arg("--version")
+    let Some(mut version_cmd) = npm_command_tokio(&["--version".into()]) else {
+        return Err(LitecodeError::Config(
+            "未找到 npm 命令。请安装 Node.js 和 npm".into(),
+        ));
+    };
+    let npm_ok = version_cmd
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -71,12 +143,19 @@ pub async fn npm_install(server_id: &str, packages: &[(&str, &str)]) -> Result<(
         .iter()
         .map(|(name, version)| format!("{name}@{version}"))
         .collect();
-    let mut cmd = Command::new("npm");
-    cmd.arg("install")
-        .arg("--prefix")
-        .arg(&staging_dir)
-        .args(&specs)
-        .stdout(std::process::Stdio::piped())
+    let mut install_args = vec![
+        "install".into(),
+        "--prefix".into(),
+        staging_dir.to_string_lossy().into_owned(),
+    ];
+    install_args.extend(specs);
+    let Some(mut cmd) = npm_command_tokio(&install_args) else {
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        return Err(LitecodeError::Config(
+            "未找到 npm 命令。请安装 Node.js 和 npm".into(),
+        ));
+    };
+    cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let output = cmd.output().await.map_err(|e| {
         let _ = std::fs::remove_dir_all(&staging_dir);
@@ -110,10 +189,9 @@ pub async fn npm_install(server_id: &str, packages: &[(&str, &str)]) -> Result<(
     Ok(())
 }
 
-/// Locate `node` / `node.exe` on PATH.
+/// Locate `node` / `node.exe` on PATH (and Windows Node.js install dirs).
 pub fn resolve_node_binary() -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
+    for dir in nodejs_search_dirs() {
         let unix = dir.join("node");
         if unix.is_file() {
             return Some(unix);
@@ -169,4 +247,49 @@ pub(crate) fn write_managed_meta(dest_dir: &std::path::Path, version: &str) -> R
     let meta_path = dest_dir.join(".meta");
     let json = serde_json::to_string_pretty(&meta)?;
     super::github::atomic_write(&meta_path, json.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_shim_is_not_passed_to_create_process() {
+        let (program, args) = super::super::ls_program_and_args(
+            Path::new(r"C:\Program Files\nodejs\npm.cmd"),
+            &["install".into(), "--prefix".into(), r"D:\tmp".into()],
+        );
+        assert_eq!(program, PathBuf::from("cmd"));
+        assert_eq!(args[0], "/D");
+        assert_eq!(args[1], "/S");
+        assert_eq!(args[2], "/C");
+        assert!(args[3].contains("npm.cmd"));
+        assert!(args[3].contains("install"));
+    }
+
+    #[test]
+    fn unix_npm_is_invoked_directly() {
+        let (program, args) =
+            super::super::ls_program_and_args(Path::new("/usr/bin/npm"), &["--version".into()]);
+        assert_eq!(program, PathBuf::from("/usr/bin/npm"));
+        assert_eq!(args, vec!["--version".to_string()]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extra_nodejs_dirs_include_program_files() {
+        let previous = std::env::var_os("ProgramFiles");
+        unsafe { std::env::set_var("ProgramFiles", r"C:\Program Files") };
+        let dirs = extra_nodejs_dirs();
+        match previous {
+            Some(value) => unsafe { std::env::set_var("ProgramFiles", value) },
+            None => unsafe { std::env::remove_var("ProgramFiles") },
+        }
+        assert!(
+            dirs.iter()
+                .any(|d| d.ends_with(Path::new(r"Program Files\nodejs"))),
+            "{dirs:?}"
+        );
+    }
 }

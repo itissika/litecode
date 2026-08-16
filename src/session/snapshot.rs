@@ -1529,10 +1529,7 @@ mod tests {
 
             let snaps = snapshots_dir_for_workspace(&ws);
             let r = snapshot_track(&ws, &snaps, "sess", 0);
-            assert!(
-                r.is_ok(),
-                "ignored dirs must not abort git add: {r:?}"
-            );
+            assert!(r.is_ok(), "ignored dirs must not abort git add: {r:?}");
             assert!(snapshot_exists(&snaps, "sess", 0));
         });
     }
