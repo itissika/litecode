@@ -62,4 +62,33 @@ describe("sessionStore lifecycle turn_finished", () => {
     expect(useTurnStore.getState().byId.get("s1")!.runState).toBe("idle");
     expect(useTurnStore.getState().byId.get("s1")!.currentTurnId).toBeNull();
   });
+
+  it("turn_finished does not idle an optimistic next start", () => {
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          "s1",
+          {
+            ...useTurnStore.getState().byId.get("s1")!,
+            runState: "running",
+            currentTurnId: null,
+          },
+        ],
+      ]),
+    });
+    useSessionStore.getState().onSessionLifecycle({
+      session_id: "s1",
+      event: "turn_finished",
+      turn: {
+        turn_id: "t1",
+        phase: "idle",
+        step: 1,
+        step_max: 5,
+        started_at_ms: 1,
+      },
+    });
+    expect(useTurnStore.getState().byId.get("s1")!.runState).toBe("running");
+    expect(useTurnStore.getState().byId.get("s1")!.currentTurnId).toBeNull();
+    expect(useSessionStore.getState().sessions[0].running).toBe(false);
+  });
 });

@@ -28,13 +28,10 @@ pub trait AgentDeps {
 
     fn max_steps(&self) -> u32;
 
-    /// Persist in-memory transcript Items to session storage.
-    /// On tool steps the loop calls this twice: after model output (FunctionCall
-    /// sealed for the client) and again after `execute_tools` (FunctionCallOutput).
-    /// On success, orphan `FunctionCallOutput`s are dropped from memory in the
-    /// same operation that deletes them from DB. On commit failure, `items` is
-    /// unchanged.
-    fn persist_items(&self, items: &mut Vec<Item>) -> Result<()>;
+    /// Persist the uncommitted suffix. `Ok(true)` means the log was truncated
+    /// under this turn: `items` was replaced with the DB prefix and the delta
+    /// was not written.
+    fn persist_items(&self, items: &mut Vec<Item>) -> Result<bool>;
 
     /// Called at the start of each agent-loop step; drives step/phase telemetry.
     fn begin_step(&mut self, step: u64);

@@ -281,6 +281,14 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
 
           case "buffer/reverted": {
             const rev = params as unknown as { session_id: string; committed_end: number };
+            turn?.clearPendingStream?.(rev.session_id);
+            const turnSlice = turn?.byId?.get(rev.session_id);
+            if (
+              turnSlice?.runState === "running" ||
+              turnSlice?.runState === "cancelling"
+            ) {
+              turn?.onTranscriptReverted?.(rev.session_id);
+            }
             message?.onBufferReverted(rev.session_id, rev);
             return;
           }

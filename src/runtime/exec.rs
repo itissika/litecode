@@ -207,13 +207,13 @@ impl AgentDeps for AgentRuntime {
         self.agent_config.max_steps
     }
 
-    fn persist_items(&self, items: &mut Vec<Item>) -> Result<()> {
-        // Persist even when cancelled: a cancelled turn still commits its final
-        // delta (synthesized "interrupted" tool outputs) so the transcript stays
-        // valid for the next turn. commit_step is a plain DB write — no cancel point.
+    fn persist_items(&self, items: &mut Vec<Item>) -> Result<bool> {
         let outcome = self.sessions.with_entry_store(&self.session_id, |s| {
             Ok(self.context_pipeline.commit_step(s, items)?)
         })?;
+        if outcome.discarded {
+            return Ok(true);
+        }
         if outcome.committed {
             self.emit_internal(InternalEvent::StepCommitted);
         }
@@ -223,7 +223,7 @@ impl AgentDeps for AgentRuntime {
                 updated_at,
             });
         }
-        Ok(())
+        Ok(false)
     }
 
     fn emit_todo_progress(&mut self) {

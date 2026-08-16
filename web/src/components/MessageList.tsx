@@ -31,8 +31,8 @@ import { ToolCallCard } from "./ToolCallCard";
 import { isToolCallLive, processGroupStreaming } from "./toolCallStatus";
 
 type RenderNode =
-  | { kind: "text"; text: string; key: string; streaming: boolean }
-  | { kind: "reasoning"; text: string; key: string; streaming: boolean }
+  | { kind: "text"; text: string; key: string; streaming: boolean; incomplete?: boolean }
+  | { kind: "reasoning"; text: string; key: string; streaming: boolean; incomplete?: boolean }
   | { kind: "compact_cut"; key: string; streaming: boolean }
   | {
       kind: "tool";
@@ -111,14 +111,26 @@ export function rowsToNodes(rows: ChatRow[], turnActive = false): RenderNode[] {
     if (isReasoningItem(item)) {
       const text = itemPlainText(item);
       if (text) {
-        nodes.push({ kind: "reasoning", text, key, streaming });
+        nodes.push({
+          kind: "reasoning",
+          text,
+          key,
+          streaming,
+          incomplete: item.status === "incomplete",
+        });
       }
       continue;
     }
     if (item.type === "message") {
       const text = itemPlainText(item);
       if (text) {
-        nodes.push({ kind: "text", text, key, streaming });
+        nodes.push({
+          kind: "text",
+          text,
+          key,
+          streaming,
+          incomplete: item.status === "incomplete",
+        });
       }
       continue;
     }
@@ -185,7 +197,7 @@ export function NodeView({
           className="text-sm"
           contentClassName="text-(--_dk-text-secondary)"
           icon={<BrainIcon size={13} aria-hidden className="shrink-0 text-(--_dk-text-muted)" />}
-          label="Reasoning"
+          label={node.incomplete ? "Reasoning (incomplete)" : "Reasoning"}
           streaming={streaming}
         >
           <AgentMarkdown text={node.text} streaming={streaming} />
@@ -195,6 +207,11 @@ export function NodeView({
       return (
         <div className="text-dk-base text-(--_dk-text-primary) pl-(--_dk-indent-card-head)">
           <AgentMarkdown text={node.text} streaming={streaming} />
+          {node.incomplete && !streaming ? (
+            <div className="mt-1 text-dk-2xs italic text-(--_dk-text-disabled)">
+              Output incomplete
+            </div>
+          ) : null}
         </div>
       );
     case "tool":
@@ -376,7 +393,6 @@ function ItemBubbleImpl({
         <div className="mt-1 flex justify-start gap-1 pl-[14px] opacity-80">
           <button
             type="button"
-            disabled={isRunning}
             onClick={() => revertToUserAnchor(sessionId, userAnchorK)}
             className="rounded px-1.5 py-0.5 text-dk-2xs text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-ix-fg-hover) disabled:cursor-not-allowed disabled:opacity-40"
             title="Revert transcript to here"

@@ -91,9 +91,8 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
             transcript.extend(output.iter().cloned());
         }
 
-        if let Err(e) = deps.persist_items(transcript) {
-            transcript.truncate(persist_at);
-            return TurnOutcome::Error(e);
+        if let Some(outcome) = persist_or_stop(deps, transcript, persist_at, &final_text) {
+            return outcome;
         }
 
         let skip_tools =
@@ -102,9 +101,8 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
         if !tool_uses.is_empty() && skip_tools {
             let before_pad = transcript.len();
             append_interrupted_outputs(transcript, &tool_uses);
-            if let Err(e) = deps.persist_items(transcript) {
-                transcript.truncate(before_pad);
-                return TurnOutcome::Error(e);
+            if let Some(outcome) = persist_or_stop(deps, transcript, before_pad, &final_text) {
+                return outcome;
             }
             return TurnOutcome::Cancelled { final_text };
         }
@@ -114,17 +112,17 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
             match deps.execute_tools(&tool_uses, transcript).await {
                 Ok(()) => {}
                 Err(LitecodeError::Canceled) => {
-                    if let Err(e) = deps.persist_items(transcript) {
-                        transcript.truncate(before_tools);
-                        return TurnOutcome::Error(e);
+                    if let Some(outcome) =
+                        persist_or_stop(deps, transcript, before_tools, &final_text)
+                    {
+                        return outcome;
                     }
                     return TurnOutcome::Cancelled { final_text };
                 }
                 Err(e) => return TurnOutcome::Error(e),
             }
-            if let Err(e) = deps.persist_items(transcript) {
-                transcript.truncate(before_tools);
-                return TurnOutcome::Error(e);
+            if let Some(outcome) = persist_or_stop(deps, transcript, before_tools, &final_text) {
+                return outcome;
             }
             deps.emit_todo_progress();
             continue;
@@ -144,6 +142,24 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
     }
 
     TurnOutcome::Completed { final_text }
+}
+
+fn persist_or_stop(
+    deps: &impl AgentDeps,
+    transcript: &mut Transcript,
+    persist_at: usize,
+    final_text: &str,
+) -> Option<TurnOutcome> {
+    match deps.persist_items(transcript) {
+        Err(e) => {
+            transcript.truncate(persist_at);
+            Some(TurnOutcome::Error(e))
+        }
+        Ok(true) => Some(TurnOutcome::Cancelled {
+            final_text: final_text.to_string(),
+        }),
+        Ok(false) => None,
+    }
 }
 
 fn function_call_must_not_execute(fc: &FunctionToolCall) -> bool {

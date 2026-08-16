@@ -92,6 +92,15 @@ WHERE t.session_id = ?1
   )
 ORDER BY CASE WHEN t.kind = 'compact_checkpoint' THEN 0 ELSE 1 END, t.seq ASC";
 
+pub const SQL_TURN_VIEW_COUNT: &str = "\
+SELECT COUNT(*) FROM transcript_items t
+JOIN sessions s ON s.id = t.session_id
+WHERE t.session_id = ?1
+  AND (
+    (t.kind = 'compact_checkpoint' AND t.seq = s.checkpoint_seq)
+    OR (t.kind = 'detail' AND t.seq >= s.kept_from_seq)
+  )";
+
 /// Full chronological UI history: all detail plus the current checkpoint marker.
 pub const SQL_LOAD_HISTORY_TRANSCRIPT: &str = "\
 SELECT t.session_id, t.seq, t.turn_id, t.turn_seq, t.item_type, t.kind, t.body, t.body_ref,
@@ -358,6 +367,17 @@ fn normalize_model_id(model_id: Option<&str>) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Result of inserting a turn delta into `transcript_items`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitDeltaOutcome {
+    /// Log is shorter than the caller's committed prefix; `items` was replaced
+    /// with the DB view and nothing was inserted.
+    Discarded,
+    Applied {
+        preview: Option<(String, i64)>,
+    },
+}
+
 pub struct Session {
     conn: Connection,
     pub id: String,
@@ -373,9 +393,6 @@ pub struct Session {
     data_root: PathBuf,
     db_path: Option<PathBuf>,
     ephemeral: bool,
-    /// In-memory seq cursor for persisted-transcript delta alignment (REV-3).
-    /// Not a DB column; seq is allocated on row insert. Tracks the DB's max
-    /// `transcript_items.seq` so increment commits align with `seq > persisted_max_seq`.
     persisted_max_seq: Cell<i64>,
 }
 
@@ -1241,31 +1258,13 @@ impl Session {
         Ok(preview_updated)
     }
 
-    /// Commit a turn delta **and** purge orphan `FunctionCallOutput` rows in one
-    /// transaction (2.1), aligned to the REV-3 seq cursor.
-    ///
-    /// Orphan `FunctionCallOutput`s (call_id with no matching `FunctionCall`) are
-    /// computed on a copy. `items` and `persisted_max_seq` are written back only
-    /// after `tx.commit` succeeds; on failure the caller's vec matches disk.
-    ///
-    /// The delta to persist is the kept suffix after `delta_start`, where
-    /// `delta_start` is the pipeline's seq-cursor-aligned `persisted_prefix_len`
-    /// (REV-3): the number of leading in-memory items already persisted. It is
-    /// **not** re-derived from a DB row count, so a revert that truncates DB
-    /// (and shrinks `persisted_max_seq`) cannot cause re-persisting of in-memory
-    /// content that is no longer persisted. `MAX(seq)` is used only as a
-    /// consistency check and to allocate new seqs.
     pub fn commit_turn_delta_with_orphan_cleanup(
         &self,
         items: &mut Vec<Item>,
-        delta_start: usize,
+        delta: &[Item],
+        expected_committed_len: usize,
         turn_id: &str,
-    ) -> Result<Option<(String, i64)>> {
-        if items.is_empty() {
-            return Ok(None);
-        }
-
-        // Compute kept/delta on a copy. Do not mutate `items` until commit.
+    ) -> Result<CommitDeltaOutcome> {
         let valid_call_ids: std::collections::HashSet<String> = items
             .iter()
             .filter_map(|item| match item {
@@ -1273,50 +1272,44 @@ impl Session {
                 _ => None,
             })
             .collect();
-        let mut kept = Vec::with_capacity(items.len());
-        let mut removed_before_start = 0usize;
-        for (idx, item) in items.iter().enumerate() {
-            let is_orphan = matches!(
+        let is_orphan = |item: &Item| {
+            matches!(
                 item,
                 Item::FunctionCallOutput(out) if !valid_call_ids.contains(&out.call_id)
-            );
-            if is_orphan {
-                if idx < delta_start {
-                    removed_before_start += 1;
-                }
-                continue;
-            }
-            kept.push(item.clone());
-        }
-        let delta_start = delta_start
-            .saturating_sub(removed_before_start)
-            .min(kept.len());
-        let delta = &kept[delta_start..];
+            )
+        };
+        let kept: Vec<Item> = items
+            .iter()
+            .filter(|item| !is_orphan(item))
+            .cloned()
+            .collect();
+        let insert: Vec<Item> = delta
+            .iter()
+            .filter(|item| !is_orphan(item))
+            .cloned()
+            .collect();
 
         let tx = self
             .conn
             .unchecked_transaction()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
 
-        // ── Consistency: MAX(seq) is the allocator base and a guard, not the delta ──
-        // ── source. If the DB moved under this cursor (external revert/compact on a   ──
-        // ── second handle), re-sync so `persisted_max_seq` stays honest (REV-3).      ──
+        let view_len: i64 =
+            tx.query_row(SQL_TURN_VIEW_COUNT, rusqlite::params![self.id], |row| {
+                row.get(0)
+            })?;
+        if (view_len as usize) < expected_committed_len {
+            drop(tx);
+            *items = self.load_transcript()?;
+            return Ok(CommitDeltaOutcome::Discarded);
+        }
+
         let base_seq: i64 = tx.query_row(
             "SELECT COALESCE(MAX(seq), -1) FROM transcript_items WHERE session_id = ?1",
             rusqlite::params![self.id],
             |row| row.get(0),
         )?;
-        let cursor = self.persisted_max_seq.get();
-        if base_seq != cursor {
-            tracing::debug!(
-                base_seq,
-                cursor,
-                "REV-3 seq cursor re-synced to DB max (external revert/compact)"
-            );
-            // Cell is written only after commit, via max_seq().
-        }
 
-        // ── DB side: delete persisted orphan output rows in the same transaction ──
         let mut orphan_seqs: Vec<i64> = Vec::new();
         {
             let mut stmt = tx.prepare(
@@ -1352,7 +1345,7 @@ impl Session {
         } else {
             turn_id.to_string()
         };
-        for (i, msg) in delta.iter().enumerate() {
+        for (i, msg) in insert.iter().enumerate() {
             let seq = base_seq + 1 + i as i64;
             let item_type = item_type_of(msg);
             let (body, body_ref, token_estimate) =
@@ -1390,7 +1383,7 @@ impl Session {
         }
 
         let now = chrono::Utc::now().timestamp_millis();
-        let preview = Self::last_user_message_preview(delta);
+        let preview = Self::last_user_message_preview(&insert);
         let preview_updated = if !preview.is_empty() {
             tx.execute(
                 "UPDATE sessions SET updated_at = ?1, last_message = ?2 WHERE id = ?3",
@@ -1408,11 +1401,10 @@ impl Session {
         tx.commit()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
         *items = kept;
-        // Re-align the cursor to the actual DB max: orphan deletions in this
-        // transaction can lower it below `base_seq + delta.len()` (e.g. an orphan
-        // at the tail with an empty delta). Reloading from DB keeps it authoritative.
         self.persisted_max_seq.set(self.max_seq()?);
-        Ok(preview_updated)
+        Ok(CommitDeltaOutcome::Applied {
+            preview: preview_updated,
+        })
     }
 
     /// §5.1 k formula — persisted user detail count (C2 anchor input).
@@ -1656,8 +1648,6 @@ impl Session {
             .map_err(Into::into)
     }
 
-    /// §5.1 REV-3 cursor — current DB max `seq` for this session (`-1` when empty).
-    /// Same query shape as the insert base used in `insert_detail_rows_with_turn`.
     pub fn max_seq(&self) -> Result<i64> {
         self.conn
             .query_row(
@@ -1725,7 +1715,7 @@ impl Session {
     /// §5.1 compact success — summary checkpoint with empty keep (summary-only view).
     pub fn apply_compact_checkpoint(&self, summary: &Item, token_estimate: i64) -> Result<i64> {
         // `kept_from_seq = N` (checkpoint) → no pre-existing detail in the view.
-        self.apply_compact_checkpoint_from(summary, None, token_estimate)
+        self.apply_compact_checkpoint_checked(summary, None, token_estimate, None)
     }
 
     /// Pi-style keep-recent compact:
@@ -1744,6 +1734,18 @@ impl Session {
         kept_from_seq: Option<i64>,
         token_estimate: i64,
     ) -> Result<i64> {
+        self.apply_compact_checkpoint_checked(summary, kept_from_seq, token_estimate, None)
+    }
+
+    /// Like `apply_compact_checkpoint_from`, but abort if the turn view length
+    /// no longer matches `expected_view_len` (log truncated under this compact).
+    pub fn apply_compact_checkpoint_checked(
+        &self,
+        summary: &Item,
+        kept_from_seq: Option<i64>,
+        token_estimate: i64,
+        expected_view_len: Option<usize>,
+    ) -> Result<i64> {
         let now = chrono::Utc::now().timestamp_millis();
         let item_type = item_type_of(summary);
         let (body, body_ref, _) =
@@ -1753,6 +1755,16 @@ impl Session {
             .conn
             .unchecked_transaction()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
+
+        if let Some(expected) = expected_view_len {
+            let view_len: i64 =
+                tx.query_row(SQL_TURN_VIEW_COUNT, rusqlite::params![self.id], |row| {
+                    row.get(0)
+                })?;
+            if view_len as usize != expected {
+                return Err(LitecodeError::Canceled);
+            }
+        }
 
         let n: i64 = tx.query_row(
             "SELECT COALESCE(MAX(seq), -1) + 1 FROM transcript_items WHERE session_id = ?1",
@@ -2737,7 +2749,7 @@ mod tests {
             .execute_batch("DROP TABLE transcript_items")
             .unwrap();
         let err = session
-            .commit_turn_delta_with_orphan_cleanup(&mut items, 3, "t1")
+            .commit_turn_delta_with_orphan_cleanup(&mut items, &[], 3, "t1")
             .expect_err("dropped table must fail the transaction");
         let _ = err;
         assert_eq!(
@@ -2751,6 +2763,92 @@ mod tests {
                 _ => false,
             }),
             "orphan must remain in the caller's vec when disk did not change"
+        );
+    }
+
+    #[test]
+    fn commit_delta_discards_when_turn_view_is_shorter() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("u0"), user_text("u1"), user_text("u2")])
+            .unwrap();
+        session.revert_to_user_anchor(1).unwrap();
+        let mut items = vec![
+            user_text("u0"),
+            user_text("u1"),
+            user_text("u2"),
+            user_text("stale"),
+        ];
+        let outcome = session
+            .commit_turn_delta_with_orphan_cleanup(&mut items, &[user_text("stale")], 3, "t1")
+            .unwrap();
+        assert!(matches!(outcome, CommitDeltaOutcome::Discarded));
+        assert_eq!(items.len(), 1);
+        assert_eq!(item_text_preview(&items[0]), "u0");
+        assert_eq!(session.load_transcript().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn commit_delta_does_not_insert_orphan_output() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let fc = Item::FunctionCall(FunctionToolCall {
+            arguments: "{}".into(),
+            call_id: "c1".into(),
+            namespace: None,
+            name: "bash".into(),
+            id: None,
+            status: None,
+        });
+        let live = Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: "c1".into(),
+            output: FunctionCallOutput::Text("ok".into()),
+            id: None,
+            status: None,
+        });
+        let orphan = Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: "gone".into(),
+            output: FunctionCallOutput::Text("orphan".into()),
+            id: None,
+            status: None,
+        });
+        session.insert_detail_rows(&[fc.clone()]).unwrap();
+        let mut items = vec![fc, live.clone(), orphan.clone()];
+        let outcome = session
+            .commit_turn_delta_with_orphan_cleanup(&mut items, &[live, orphan], 1, "t1")
+            .unwrap();
+        assert!(matches!(outcome, CommitDeltaOutcome::Applied { .. }));
+        assert_eq!(items.len(), 2);
+        let db = session.load_transcript().unwrap();
+        assert_eq!(db.len(), 2);
+        assert!(
+            !db.iter()
+                .any(|i| matches!(i, Item::FunctionCallOutput(o) if o.call_id == "gone")),
+            "orphan in the delta must not be inserted"
+        );
+    }
+
+    #[test]
+    fn compact_checkpoint_aborts_when_turn_view_shrunk() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("u0"), user_text("u1"), user_text("u2")])
+            .unwrap();
+        let rows = session.load_turn_transcript().unwrap();
+        let prefix = rows.len();
+        let kept = rows[0].seq;
+        session.revert_to_user_anchor(2).unwrap();
+        let err = session
+            .apply_compact_checkpoint_checked(&user_text("sum"), Some(kept), 10, Some(prefix))
+            .unwrap_err();
+        assert!(matches!(err, LitecodeError::Canceled));
+        assert_eq!(session.load_transcript().unwrap().len(), 2);
+        assert!(
+            session
+                .load_turn_transcript()
+                .unwrap()
+                .iter()
+                .all(|r| r.kind != "compact_checkpoint"),
+            "truncated log must not receive a compact checkpoint"
         );
     }
 }

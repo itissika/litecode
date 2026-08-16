@@ -1,14 +1,15 @@
 //! Stage A (ctx/session data consistency): 1.1 / 2.1 / 2.2 / 2.3 / 2.4.
 //!
 //! Product-path integration tests against the real `Session` + `ContextPipeline`
-//! (authority `Item` API), the REV-3 seq cursor, orphan cleanup in the commit
-//! transaction, the revert contract three-state, TurnCompleted-before-persist,
-//! and provider token usage write-back.
+//! (authority `Item` API), orphan cleanup in the commit transaction, revert,
+//! TurnCompleted-before-persist, and provider token usage write-back.
 
 mod common;
 
+use std::cell::Cell;
 use std::sync::Arc;
 
+use litecode::agent::{self, AgentDeps};
 use litecode::authority::responses::{FunctionCallOutput, FunctionCallOutputItemParam};
 use litecode::config::TurnGuard;
 use litecode::config::workspace::set_runtime_paths;
@@ -20,7 +21,7 @@ use litecode::hook::{HookDispatcher, HookRegistry};
 use litecode::session::manager::SessionManager;
 use litecode::session::store::Session;
 use litecode::session::task_state::TaskReminders;
-use litecode::types::{Item, LitecodeError, user_text};
+use litecode::types::{FunctionToolCall, Item, LitecodeError, Transcript, user_text};
 
 use common::fake_deps::{assistant_text_item, function_call_item};
 use common::scripted_provider::ScriptedProvider;
@@ -1344,11 +1345,29 @@ fn usage_text_sse_with(input_tokens: u64) -> String {
 // ── PROBE A: revert-then-commit must not replay reverted content ─────────────
 
 #[test]
-fn commit_after_revert_without_reload_does_not_replay_reverted_items() {
+fn idle_revert_truncates_log_for_next_begin_turn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (db_path, sid) = setup_workspace_and_session(dir.path(), "default");
+    {
+        let s = Session::resume(&db_path, &sid).unwrap();
+        s.insert_detail_rows(&[user_text("u0"), user_text("u1"), user_text("u2")])
+            .unwrap();
+    }
+    let session = Session::resume(&db_path, &sid).unwrap();
+    session.revert_to_user_anchor(1).unwrap();
+    assert_eq!(session.load_transcript().unwrap().len(), 1);
+
+    let ctx = test_context(dir.path());
+    let pipeline = ContextPipeline::new(&session, 10_000, ctx, dir.path().to_path_buf());
+    let turn = pipeline.begin_turn(&session).unwrap();
+    assert_eq!(turn.len(), 1);
+}
+
+#[test]
+fn commit_after_revert_discards_uncommitted_delta() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (db_path, sid) = setup_workspace_and_session(dir.path(), "default");
 
-    // Seed three persisted user messages.
     {
         let s = Session::resume(&db_path, &sid).unwrap();
         s.insert_detail_rows(&[user_text("u0"), user_text("u1"), user_text("u2")])
@@ -1360,19 +1379,19 @@ fn commit_after_revert_without_reload_does_not_replay_reverted_items() {
     let ctx = test_context(dir.path());
     let pipeline = ContextPipeline::new(&session, 10_000, ctx.clone(), dir.path().to_path_buf());
 
-    // Load the transcript into the pipeline: cursor aligned to all 3 persisted items.
     let mut turn = pipeline.begin_turn(&session).unwrap();
     assert_eq!(turn.len(), 3);
 
-    // Revert DB to user anchor k=1 (keeps only user index 0 = u0; drops u1,u2).
-    // persisted_max_seq drops, but the in-memory `turn` is NOT reloaded — it still
-    // holds u0,u1,u2.
     session.revert_to_user_anchor(1).unwrap();
     assert_eq!(session.load_transcript().unwrap().len(), 1);
 
-    // Committing the stale in-memory set must NOT re-persist the reverted u1,u2:
-    // the delta boundary comes from the seq cursor, not a DB row count.
-    pipeline.commit_step(&session, &mut turn).unwrap();
+    turn.push(assistant_text_item("uncommitted tail", "msg_stale"));
+    let outcome = pipeline.commit_step(&session, &mut turn).unwrap();
+    assert!(
+        outcome.discarded,
+        "stale delta after truncate must not insert"
+    );
+    assert_eq!(turn.len(), 1);
 
     let after = session.load_transcript().unwrap();
     let previews: Vec<String> = after
@@ -1382,8 +1401,132 @@ fn commit_after_revert_without_reload_does_not_replay_reverted_items() {
     assert_eq!(
         previews,
         vec!["u0".to_string()],
-        "a stale commit after revert must not replay reverted items (got {previews:?})"
+        "uncommitted output after revert must not be inserted (got {previews:?})"
     );
+}
+
+struct PipelinePersistDeps {
+    pipeline: ContextPipeline,
+    session: Session,
+    responses: Vec<Vec<Item>>,
+    call_index: Cell<usize>,
+    cancelled: Cell<bool>,
+    cancel_after_model: bool,
+    revert_k: Cell<Option<i64>>,
+    execute_calls: Cell<u32>,
+}
+
+impl AgentDeps for PipelinePersistDeps {
+    async fn call_model(&mut self) -> litecode::types::Result<Vec<Item>> {
+        let idx = self.call_index.get();
+        self.call_index.set(idx + 1);
+        let items = self
+            .responses
+            .get(idx)
+            .cloned()
+            .ok_or_else(|| LitecodeError::Llm("no more responses".into()))?;
+        if self.cancel_after_model {
+            self.cancelled.set(true);
+        }
+        Ok(items)
+    }
+
+    async fn execute_tools(
+        &self,
+        tool_uses: &[FunctionToolCall],
+        transcript: &mut Transcript,
+    ) -> litecode::types::Result<()> {
+        self.execute_calls
+            .set(self.execute_calls.get().saturating_add(1));
+        for tu in tool_uses {
+            transcript.push(Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                call_id: tu.call_id.clone(),
+                output: FunctionCallOutput::Text("should not land".into()),
+                id: None,
+                status: None,
+            }));
+        }
+        Ok(())
+    }
+
+    async fn should_stop(&self, _output: &[Item]) -> litecode::types::Result<bool> {
+        Ok(true)
+    }
+
+    async fn compact_if_needed(
+        &self,
+        _transcript: &mut Transcript,
+        _step: u64,
+    ) -> litecode::types::Result<()> {
+        Ok(())
+    }
+
+    fn emit_todo_progress(&mut self) {}
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.get()
+    }
+
+    fn max_steps(&self) -> u32 {
+        50
+    }
+
+    fn persist_items(&self, items: &mut Vec<Item>) -> litecode::types::Result<bool> {
+        if let Some(k) = self.revert_k.take() {
+            self.session.revert_to_user_anchor(k)?;
+        }
+        Ok(self.pipeline.commit_step(&self.session, items)?.discarded)
+    }
+
+    fn begin_step(&mut self, _step: u64) {}
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn agent_persist_after_revert_does_not_replay_or_pad() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (db_path, sid) = setup_workspace_and_session(dir.path(), "default");
+    {
+        let s = Session::resume(&db_path, &sid).unwrap();
+        s.insert_detail_rows(&[user_text("keep"), user_text("drop")])
+            .unwrap();
+    }
+    let session = Session::resume(&db_path, &sid).unwrap();
+    let ctx = test_context(dir.path());
+    let pipeline = ContextPipeline::new(&session, 10_000, ctx, dir.path().to_path_buf());
+    let mut transcript = pipeline.begin_turn(&session).unwrap();
+    assert_eq!(transcript.len(), 2);
+
+    let mut deps = PipelinePersistDeps {
+        pipeline,
+        session,
+        responses: vec![vec![function_call_item(
+            "call_gone",
+            "read",
+            "{}",
+            "fc_gone",
+        )]],
+        call_index: Cell::new(0),
+        cancelled: Cell::new(false),
+        cancel_after_model: true,
+        revert_k: Cell::new(Some(1)),
+        execute_calls: Cell::new(0),
+    };
+    let outcome = agent::run(&mut deps, &mut transcript).await;
+    assert!(
+        matches!(outcome, litecode::agent::TurnOutcome::Cancelled { .. }),
+        "got {outcome:?}"
+    );
+    assert_eq!(deps.execute_calls.get(), 0);
+    assert_eq!(transcript.len(), 1);
+    assert!(
+        !transcript
+            .iter()
+            .any(|i| matches!(i, Item::FunctionCall(_) | Item::FunctionCallOutput(_))),
+        "reverted prefix must not grow interrupted residue: {transcript:?}"
+    );
+    let db = deps.session.load_transcript().unwrap();
+    assert_eq!(db.len(), 1);
+    assert_eq!(litecode::types::item_text_preview(&db[0]), "keep");
 }
 
 // ── PROBE B: commit must clear orphans from memory AND DB, no drift ──────────

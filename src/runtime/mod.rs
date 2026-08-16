@@ -592,8 +592,6 @@ impl AgentRuntime {
         self.emit_turn_completed(turn_id, reason, final_text)
     }
 
-    /// Open the Idle gate and emit `TurnCompleted` without clearing the context
-    /// pipeline (so `commit_step` can still see `persisted_prefix_len`).
     fn emit_turn_completed(
         &mut self,
         turn_id: &str,
@@ -869,6 +867,14 @@ impl AgentRuntime {
             let commit_outcome = self.sessions.with_entry_store(&self.session_id, |s| {
                 Ok(self.context_pipeline.commit_step(s, &mut items)?)
             })?;
+            if commit_outcome.discarded {
+                return self.finalize_agent_outcome(
+                    turn_id,
+                    crate::agent::TurnOutcome::Cancelled {
+                        final_text: String::new(),
+                    },
+                );
+            }
             if commit_outcome.committed {
                 self.emit_internal(crate::runtime::observer::InternalEvent::StepCommitted);
             }
@@ -968,16 +974,18 @@ impl AgentRuntime {
             let commit_outcome = self.sessions.with_entry_store(&self.session_id, |s| {
                 Ok(self.context_pipeline.commit_step(s, &mut items)?)
             })?;
-            if commit_outcome.committed {
-                self.emit_internal(crate::runtime::observer::InternalEvent::StepCommitted);
-            }
-            if let Some((preview, updated_at)) = commit_outcome.preview {
-                self.emit_internal(
-                    crate::runtime::observer::InternalEvent::SessionPreviewUpdated {
-                        preview,
-                        updated_at,
-                    },
-                );
+            if !commit_outcome.discarded {
+                if commit_outcome.committed {
+                    self.emit_internal(crate::runtime::observer::InternalEvent::StepCommitted);
+                }
+                if let Some((preview, updated_at)) = commit_outcome.preview {
+                    self.emit_internal(
+                        crate::runtime::observer::InternalEvent::SessionPreviewUpdated {
+                            preview,
+                            updated_at,
+                        },
+                    );
+                }
             }
         }
 

@@ -1,6 +1,6 @@
 {
   "name": "litecode-desktop",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Litecode Electron host (sidecar + BrowserWindow)",
   "main": "dist/main.js",

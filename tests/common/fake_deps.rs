@@ -164,7 +164,7 @@ impl AgentDeps for FakeAgentDeps {
         self.max_steps
     }
 
-    fn persist_items(&self, items: &mut Vec<Item>) -> Result<()> {
+    fn persist_items(&self, items: &mut Vec<Item>) -> Result<bool> {
         if self.persist_fail {
             return Err(LitecodeError::ToolExecution("persist failed".into()));
         }
@@ -172,7 +172,7 @@ impl AgentDeps for FakeAgentDeps {
             len: items.len(),
             types: items.iter().map(item_type_name).collect(),
         });
-        Ok(())
+        Ok(false)
     }
 
     fn begin_step(&mut self, _step: u64) {}

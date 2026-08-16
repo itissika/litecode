@@ -145,6 +145,9 @@ function MessageListRegion({ sessionId }: { sessionId: string }) {
   const shapeError = useMessageStore(
     (s) => s.bySession.get(sessionId)?.shapeError ?? null,
   );
+  const turnEndNotice = useMessageStore(
+    (s) => s.bySession.get(sessionId)?.turnEndNotice ?? null,
+  );
   const runState = useTurnStore(
     (s) => s.byId.get(sessionId)?.runState ?? "idle",
   );
@@ -176,6 +179,11 @@ function MessageListRegion({ sessionId }: { sessionId: string }) {
       {shapeError && (
         <div className="shrink-0 border-b border-(--_dk-red-500)/30 bg-(--_dk-red-500)/10 px-3 py-2 text-xs text-(--_dk-red-500)">
           {shapeError}
+        </div>
+      )}
+      {turnEndNotice && (
+        <div className="shrink-0 border-b border-(--_dk-red-500)/30 bg-(--_dk-red-500)/10 px-3 py-2 text-xs text-(--_dk-red-500)">
+          {turnEndNotice.message}
         </div>
       )}
 

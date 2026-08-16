@@ -720,12 +720,60 @@ impl SessionManager {
     }
 
     pub async fn cancel_turn(&self, session_id: &str) {
+        self.cancel_turn_sync(session_id);
+    }
+
+    /// Cancel a live `RunningTurn` without taking the exclusive lease.
+    /// Returns true when a cancel token was signalled.
+    pub fn cancel_turn_sync(&self, session_id: &str) -> bool {
         let records = self.records.lock().unwrap();
         if let Some(record) = records.get(session_id) {
             if let SessionActivity::RunningTurn(live) = &record.activity {
                 live.cancel.cancel();
+                return true;
             }
         }
+        false
+    }
+
+    /// Exclusive compact (or other exclusive ops) is the only busy reject.
+    /// Idle takes a lease; a running turn is cancelled and truncate proceeds
+    /// without one; StartingTurn becomes Exclusive Revert under the same lock.
+    pub fn try_begin_revert(
+        self: &Arc<Self>,
+        session_id: &str,
+    ) -> Result<Option<SessionOperationLease>> {
+        let mut records = self.records.lock().unwrap();
+        let record = records.get_mut(session_id).ok_or_else(|| {
+            LitecodeError::ToolExecution(format!("session {session_id} not found"))
+        })?;
+        match &record.activity {
+            SessionActivity::Idle => {}
+            SessionActivity::RunningTurn(live) => {
+                live.cancel.cancel();
+                return Ok(None);
+            }
+            SessionActivity::StartingTurn { .. } => {
+                let operation_id = uuid::Uuid::new_v4().to_string();
+                record.activity = SessionActivity::Exclusive {
+                    operation_id: operation_id.clone(),
+                    kind: SessionOperationKind::Revert,
+                };
+                drop(records);
+                self.turn_guard.end_turn();
+                return Ok(Some(SessionOperationLease {
+                    manager: Arc::clone(self),
+                    session_id: session_id.to_string(),
+                    operation_id,
+                }));
+            }
+            SessionActivity::Exclusive { .. } => {
+                return Err(LitecodeError::AgentAlreadyRunning);
+            }
+        }
+        drop(records);
+        self.try_begin_operation(session_id, SessionOperationKind::Revert)
+            .map(Some)
     }
 
     pub async fn is_turn_running(&self, session_id: &str) -> bool {
@@ -1648,6 +1696,11 @@ mod child_session_tests {
             Err(error) => error,
         };
         assert!(matches!(revert_err, LitecodeError::AgentAlreadyRunning));
+        let revert_busy = match mgr.try_begin_revert(&sid) {
+            Ok(_) => panic!("try_begin_revert must not overlap compact"),
+            Err(error) => error,
+        };
+        assert!(matches!(revert_busy, LitecodeError::AgentAlreadyRunning));
 
         drop(compact);
         assert!(!mgr.is_session_busy_blocking(&sid));
@@ -1655,6 +1708,93 @@ mod child_session_tests {
             .try_begin_operation(&sid, SessionOperationKind::Revert)
             .expect("lease releases on drop");
         drop(revert);
+    }
+
+    #[tokio::test]
+    async fn revert_during_running_turn_cancels_without_exclusive_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let mgr = Arc::new(SessionManager::new(
+            Arc::new(TurnGuard::new()),
+            db.to_str().unwrap().to_string(),
+        ));
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.with_entry_store(&sid, |s| {
+            s.insert_detail_rows(&[
+                crate::types::user_text("u0"),
+                crate::types::user_text("u1"),
+                crate::types::user_text("u2"),
+            ])?;
+            Ok(())
+        })
+        .unwrap();
+        let cancel = CancellationToken::new();
+        mgr.begin_turn(
+            &sid,
+            "t-revert".into(),
+            cancel.clone(),
+            5,
+            "default",
+            "/proj",
+        )
+        .unwrap();
+
+        let lease = mgr
+            .try_begin_revert(&sid)
+            .expect("revert during turn must proceed");
+        assert!(
+            lease.is_none(),
+            "running turn keeps activity; revert must not take Exclusive"
+        );
+        assert!(
+            cancel.is_cancelled(),
+            "revert must signal the turn cancel token"
+        );
+        assert!(mgr.is_turn_running_blocking(&sid));
+
+        mgr.entry_revert_to_user_anchor(&sid, 1).unwrap();
+        let len = mgr
+            .with_entry_store(&sid, |s| Ok(s.load_transcript()?.len()))
+            .unwrap();
+        assert_eq!(len, 1, "running-turn revert must truncate the log");
+    }
+
+    #[tokio::test]
+    async fn revert_during_starting_turn_releases_reservation() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let mgr = Arc::new(SessionManager::new(
+            Arc::new(TurnGuard::new()),
+            db.to_str().unwrap().to_string(),
+        ));
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.with_entry_store(&sid, |s| {
+            s.insert_detail_rows(&[crate::types::user_text("u0"), crate::types::user_text("u1")])?;
+            Ok(())
+        })
+        .unwrap();
+        mgr.reserve_turn(&sid, "reserved".into(), 5, "default", "/proj")
+            .expect("reserve turn");
+
+        let lease = mgr
+            .try_begin_revert(&sid)
+            .expect("starting turn must not block revert");
+        assert!(
+            lease.is_some(),
+            "starting turn takes exclusive revert lease"
+        );
+        assert!(!mgr.is_turn_running_blocking(&sid));
+        assert!(mgr.is_session_busy_blocking(&sid));
+        let sneak = mgr
+            .reserve_turn(&sid, "sneak".into(), 5, "default", "/proj")
+            .unwrap_err();
+        assert!(matches!(sneak, LitecodeError::AgentAlreadyRunning));
+
+        mgr.entry_revert_to_user_anchor(&sid, 1).unwrap();
+        let len = mgr
+            .with_entry_store(&sid, |s| Ok(s.load_transcript()?.len()))
+            .unwrap();
+        assert_eq!(len, 1);
     }
 
     #[tokio::test]

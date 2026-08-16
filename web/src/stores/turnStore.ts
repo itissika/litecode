@@ -14,8 +14,9 @@ import type {
   SessionSnapshot,
   CompactLifecycle,
 } from "../api/types";
+import { debugTrace } from "../lib/debugTrace";
 import { useConnectionStore, attachSiblingStores } from "./connectionStore";
-import { useMessageStore } from "./messageStore";
+import { useMessageStore, type TurnEndNotice } from "./messageStore";
 import { useNotificationStore } from "./notificationStore";
 import { toastLlmConfigFailure, useSettingsStore } from "./settingsStore";
 import { useToastStore } from "./toastStore";
@@ -98,6 +99,45 @@ function getSlice(byId: Map<string, TurnSlice>, sessionId: string): TurnSlice {
   return slice;
 }
 
+/**
+ * Whether this end event owns the live turn. Duplicate idle finishes and
+ * finishes for a previous turn (next turn already started) must not idle
+ * the panel or touch the overlay.
+ */
+export function shouldApplyTurnEnd(
+  currentTurnId: string | null,
+  runState: AgentRunState,
+  finishedTurnId?: string | null,
+): boolean {
+  if (runState === "idle" && !currentTurnId) return false;
+  if (!currentTurnId && (runState === "running" || runState === "cancelling")) {
+    return false;
+  }
+  if (finishedTurnId && currentTurnId && finishedTurnId !== currentTurnId) {
+    return false;
+  }
+  return true;
+}
+
+function turnEndNoticeFrom(tf: TurnFinished): TurnEndNotice | null {
+  if (tf.reason === "error") {
+    return {
+      kind: "error",
+      message: tf.error?.message ?? tf.final_text ?? "Turn failed",
+    };
+  }
+  if (tf.reason === "max_steps") {
+    return { kind: "error", message: "Max steps reached" };
+  }
+  if (tf.reason === "hook_blocked") {
+    return {
+      kind: "error",
+      message: tf.error?.message ?? "Blocked by hook",
+    };
+  }
+  return null;
+}
+
 interface TurnStore {
   byId: Map<string, TurnSlice>;
 
@@ -110,6 +150,13 @@ interface TurnStore {
   onTurnStarted: (ts: TurnStarted) => void;
   onTurnEvent: (te: TurnEventEnvelope) => void;
   onTurnFinished: (tf: TurnFinished) => void;
+  /** List-channel turn end; idle only if this still owns the live turn. */
+  onLifecycleTurnFinished: (
+    sessionId: string,
+    finishedTurnId?: string | null,
+  ) => void;
+  /** Transcript revert cancelled the live turn; wait for turn_finished. */
+  onTranscriptReverted: (sessionId: string) => void;
   onCompactLifecycle: (life: CompactLifecycle) => void;
   applySnapshotTurn: (sessionId: string, turn: TurnSnapshot | null | undefined) => void;
   /** Hydrate context ring fields from a session snapshot (subscribe / reload). */
@@ -117,6 +164,8 @@ interface TurnStore {
   resetTurn: (sessionId: string) => void;
   /** Flush rAF-coalesced stream deltas before authority seal. */
   flushPendingStream: (sessionId: string) => void;
+  /** Drop queued stream deltas without applying them (transcript revert). */
+  clearPendingStream: (sessionId: string) => void;
 }
 
 function deriveRunState(turn: TurnSnapshot | null | undefined): AgentRunState {
@@ -214,7 +263,14 @@ export const useTurnStore = create<TurnStore>((set, get) => {
 
       const ws = useConnectionStore.getState();
       const current = getSlice(get().byId, sessionId);
-      if (!ws.sendRpc || current.runState !== "idle") return false;
+      if (!ws.sendRpc || current.runState !== "idle") {
+        debugTrace("turn", "start.rejected", {
+          sessionId,
+          runState: current.runState,
+          currentTurnId: current.currentTurnId,
+        });
+        return false;
+      }
 
       const userRow: ChatRow = {
         id: newMessageId("user"),
@@ -228,6 +284,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         runState: "running",
         currentTurnId: null,
       });
+      debugTrace("turn", "start", { sessionId });
 
       const startPayload = { input: trimmed, session_id: sessionId };
 
@@ -277,6 +334,18 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (current.runState !== "running") return;
       patch(sessionId, { runState: "cancelling", pendingCancel: true, pendingPermission: null });
       useConnectionStore.getState().sendRpc("agent/cancel", { session_id: sessionId }).catch(() => {});
+    },
+
+    onTranscriptReverted: (sessionId) => {
+      const current = getSlice(get().byId, sessionId);
+      if (current.runState !== "running" && current.runState !== "cancelling") {
+        return;
+      }
+      patch(sessionId, {
+        runState: "cancelling",
+        pendingCancel: true,
+        pendingPermission: null,
+      });
     },
 
     grantPermission: (sessionId, approved, always) => {
@@ -329,6 +398,12 @@ export const useTurnStore = create<TurnStore>((set, get) => {
 
     onTurnStarted: (ts) => {
       const sessionId = ts.session_id;
+      useMessageStore.getState().allowLogGrowth(sessionId);
+      debugTrace("turn", "started", {
+        sessionId,
+        turnId: ts.turn_id,
+        stepMax: ts.step_max,
+      });
 
       patch(sessionId, {
         runState: "running",
@@ -344,7 +419,17 @@ export const useTurnStore = create<TurnStore>((set, get) => {
     onTurnEvent: (te) => {
       const sessionId = te.session_id;
       const current = getSlice(get().byId, sessionId);
-      if (te.turn_id !== current.currentTurnId) return;
+      if (te.turn_id !== current.currentTurnId) {
+        if (te.event.type !== "stream_event") {
+          debugTrace("turn", "event.dropped", {
+            sessionId,
+            eventTurn: te.turn_id,
+            currentTurnId: current.currentTurnId,
+            type: te.event.type,
+          });
+        }
+        return;
+      }
 
       // Informational turn events → bell. Failures / warnings → corner toast.
       const notify = useNotificationStore.getState();
@@ -395,7 +480,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       // Stream tokens go to messageStore via rAF; do not set turnStore (no
       // meta change) so Todo/Ring/Input/List parents do not re-render per token.
       if (te.event.type === "stream_event") {
-        if (current.currentTurnId) {
+        if (current.runState === "running" && current.currentTurnId) {
           enqueueStreamEvent(sessionId, te.turn_id, te.event.event);
         }
         return;
@@ -465,29 +550,72 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       }
     },
 
+    onLifecycleTurnFinished: (sessionId, finishedTurnId) => {
+      const current = getSlice(get().byId, sessionId);
+      if (!shouldApplyTurnEnd(current.currentTurnId, current.runState, finishedTurnId)) {
+        debugTrace("turn", "lifecycle.finished.skipped", {
+          sessionId,
+          finishedTurnId: finishedTurnId ?? null,
+          currentTurnId: current.currentTurnId,
+          runState: current.runState,
+        });
+        return;
+      }
+      debugTrace("turn", "lifecycle.finished", {
+        sessionId,
+        finishedTurnId: finishedTurnId ?? null,
+        currentTurnId: current.currentTurnId,
+        runState: current.runState,
+      });
+      flushStreamSession(sessionId);
+      useMessageStore.getState().finalizeTurn(sessionId, current.currentTurnId ?? "");
+      get().applySnapshotTurn(sessionId, null);
+    },
+
     onTurnFinished: (tf) => {
       const sessionId = tf.session_id || tf.snapshot.session_id;
       const current = getSlice(get().byId, sessionId);
-      if (tf.turn_id !== current.currentTurnId) {
-        console.warn(
-          "[turnStore] turn_finished turn_id mismatch; forcing idle",
-          { sessionId, finished: tf.turn_id, current: current.currentTurnId },
-        );
-      }
+      const applies = shouldApplyTurnEnd(
+        current.currentTurnId,
+        current.runState,
+        tf.turn_id,
+      );
+      debugTrace("turn", applies ? "finished" : "finished.skipped", {
+        sessionId,
+        finished: tf.turn_id,
+        currentTurnId: current.currentTurnId,
+        runState: current.runState,
+        reason: tf.reason,
+        error: tf.error?.message ?? null,
+        committedEnd: tf.snapshot.buffer?.committed_end,
+        bufferLen: tf.snapshot.buffer?.len,
+      });
 
       const snap = tf.snapshot;
-      // Provider truth only: last_turn_token_stats / turn_token_stats.
+      const notice = turnEndNoticeFrom(tf);
+      if (!applies) {
+        get().applySnapshotMeter(sessionId, snap);
+        if (current.runState === "idle" && notice) {
+          useMessageStore.getState().setTurnEndNotice(sessionId, notice);
+        }
+        return;
+      }
+
       const tts = snap.last_turn_token_stats ?? tf.turn_token_stats;
-      // Session-total accumulators come from the snapshot only (authoritative
-      // sum persisted at turn end); live events keep adding increments after.
       const cum = snap.cumulative_token_stats;
       const turnId = tf.turn_id || current.currentTurnId;
 
-      // Flush any buffered stream deltas before finalizing so no token is lost.
       flushStreamSession(sessionId);
+      useMessageStore.getState().finalizeTurn(sessionId, turnId ?? "");
+      if (notice) {
+        useMessageStore.getState().setTurnEndNotice(sessionId, notice);
+      }
 
-      if (turnId) {
-        useMessageStore.getState().finalizeTurn(sessionId, turnId);
+      const localEnd =
+        useMessageStore.getState().bySession.get(sessionId)?.committedBufferEnd ?? 0;
+      const serverEnd = snap.buffer?.committed_end ?? snap.buffer?.len ?? 0;
+      if (serverEnd > localEnd) {
+        void useMessageStore.getState().loadRange(sessionId, localEnd, serverEnd);
       }
 
       patch(sessionId, {
@@ -580,6 +708,10 @@ export const useTurnStore = create<TurnStore>((set, get) => {
 
     flushPendingStream: (sessionId) => {
       flushStreamSession(sessionId);
+    },
+
+    clearPendingStream: (sessionId) => {
+      clearStreamSession(sessionId);
     },
   };
 });

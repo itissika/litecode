@@ -356,10 +356,14 @@ impl CompactPolicy {
         };
 
         if let Err(e) = sessions.with_entry_store(session_id, |s| {
-            Ok(s.apply_compact_checkpoint_from(
+            if cancel.is_cancelled() {
+                return Err(LitecodeError::Canceled.into());
+            }
+            Ok(s.apply_compact_checkpoint_checked(
                 &summary_item,
                 Some(kept_from_seq),
                 final_count as i64,
+                Some(persisted_prefix_len),
             )?)
         }) {
             *transcript = snapshot;

@@ -462,10 +462,7 @@ impl Projection {
         project: &str,
         binding: &SessionBindingProjection,
     ) -> anyhow::Result<()> {
-        let _lease = match self.sessions.try_begin_operation(
-            &self.session_id,
-            crate::session::manager::SessionOperationKind::Revert,
-        ) {
+        let _lease = match self.sessions.try_begin_revert(&self.session_id) {
             Ok(lease) => lease,
             Err(LitecodeError::AgentAlreadyRunning) => {
                 self.push_operation_error(

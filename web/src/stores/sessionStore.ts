@@ -317,7 +317,10 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         // initial pull completed). Upsert it so the live status is not dropped.
         if (!exists) {
           if (event === "turn_finished") {
-            useTurnStore.getState().applySnapshotTurn(session_id, null);
+            useTurnStore.getState().onLifecycleTurnFinished(
+              session_id,
+              turn?.turn_id,
+            );
           }
           const fresh: SessionInfo = {
             id: session_id,
@@ -380,8 +383,10 @@ export const useSessionStore = create<SessionStore>((set, get) => {
           case "turn_finished": {
             // Keep `step_kinds` for the recap; the UI holds it for a while then
             // transitions back to idle on its own timer. Cleared on next start.
-            // Force turnStore idle even if agent/turn_finished was missed on this connection.
-            useTurnStore.getState().applySnapshotTurn(session_id, null);
+            useTurnStore.getState().onLifecycleTurnFinished(
+              session_id,
+              turn?.turn_id,
+            );
             const sessions = state.sessions.map((s) =>
               s.id === session_id ? { ...s, running: false, turn: null } : s,
             );

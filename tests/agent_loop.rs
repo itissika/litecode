@@ -188,6 +188,27 @@ async fn cancelled_after_model_persists_output() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn cancelled_after_stream_skips_tool_execution() {
+    let mut deps = FakeAgentDeps::with_responses(vec![vec![function_call_item(
+        "call_1", "read", "{}", "fc_1",
+    )]]);
+    deps.cancel_after_model = true;
+    let mut transcript = vec![user_text("go")];
+    let outcome = agent::run(&mut deps, &mut transcript).await;
+    assert!(
+        matches!(outcome, litecode::agent::TurnOutcome::Cancelled { .. }),
+        "revert/cancel after stream must interrupt before tools, got {outcome:?}"
+    );
+    assert_eq!(deps.execute_calls.get(), 0);
+    assert!(
+        transcript
+            .iter()
+            .any(|i| matches!(i, Item::FunctionCallOutput(_))),
+        "open FunctionCall still in the working set must be sealed interrupted"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn incomplete_function_call_is_not_executed() {
     let mut deps = FakeAgentDeps::with_responses(vec![vec![Item::FunctionCall(
         litecode::authority::responses::FunctionToolCall {

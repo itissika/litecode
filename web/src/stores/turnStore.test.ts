@@ -5,7 +5,7 @@ import { useConnectionStore } from "./connectionStore";
 import { useMessageStore } from "./messageStore";
 import { useNotificationStore } from "./notificationStore";
 import { useToastStore } from "./toastStore";
-import { EMPTY_SLICE, useTurnStore } from "./turnStore";
+import { EMPTY_SLICE, shouldApplyTurnEnd, useTurnStore } from "./turnStore";
 
 vi.stubGlobal(
   "window",
@@ -101,7 +101,16 @@ describe("turnStore convergence", () => {
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
   });
 
-  it("onTurnFinished with mismatched turn_id still forces idle", () => {
+  it("shouldApplyTurnEnd skips duplicate idle and a newer live turn", () => {
+    expect(shouldApplyTurnEnd(null, "idle", "t1")).toBe(false);
+    expect(shouldApplyTurnEnd(null, "running", "t1")).toBe(false);
+    expect(shouldApplyTurnEnd("t2", "running", "t1")).toBe(false);
+    expect(shouldApplyTurnEnd("t1", "running", "t1")).toBe(true);
+    expect(shouldApplyTurnEnd("t1", "cancelling", "t1")).toBe(true);
+    expect(shouldApplyTurnEnd("t1", "running", null)).toBe(true);
+  });
+
+  it("onTurnFinished with a different live turn_id does not force idle", () => {
     const sessionId = "s1";
     useTurnStore.setState({
       byId: new Map([
@@ -110,7 +119,7 @@ describe("turnStore convergence", () => {
           {
             ...EMPTY_SLICE,
             runState: "running",
-            currentTurnId: "optimistic-or-stale",
+            currentTurnId: "t-next",
             turnPhase: "calling_llm",
             turnStep: 1,
             turnStepMax: 5,
@@ -120,7 +129,7 @@ describe("turnStore convergence", () => {
     });
 
     const tf: TurnFinished = {
-      turn_id: "actual-turn",
+      turn_id: "t-old",
       reason: "completed",
       final_text: "done",
       error: null,
@@ -130,8 +139,48 @@ describe("turnStore convergence", () => {
     useTurnStore.getState().onTurnFinished(tf);
 
     const slice = useTurnStore.getState().byId.get(sessionId)!;
-    expect(slice.runState).toBe("idle");
-    expect(slice.currentTurnId).toBeNull();
+    expect(slice.runState).toBe("running");
+    expect(slice.currentTurnId).toBe("t-next");
+  });
+
+  it("onTurnFinished matching turn_id idles and drops unsealed live overlay", () => {
+    const sessionId = "s-finish-drop";
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            runState: "running",
+            currentTurnId: "t1",
+          },
+        ],
+      ]),
+    });
+    useMessageStore.getState().applyStreamEvent(sessionId, "t1", 1, {
+      type: "response.reasoning_text.delta",
+      sequence_number: 1,
+      item_id: "rs_half",
+      output_index: 0,
+      content_index: 0,
+      delta: "half",
+    });
+
+    useTurnStore.getState().onTurnFinished({
+      turn_id: "t1",
+      reason: "error",
+      final_text: "stream ended",
+      error: { code: "internal", message: "stream ended" },
+      snapshot: snapshot(sessionId),
+      session_id: sessionId,
+    });
+
+    const turn = useTurnStore.getState().byId.get(sessionId)!;
+    expect(turn.runState).toBe("idle");
+    expect(turn.currentTurnId).toBeNull();
+    const msgs = useMessageStore.getState().bySession.get(sessionId)!;
+    expect(msgs.messages.some((m) => m.id.startsWith("live-"))).toBe(false);
+    expect(msgs.turnEndNotice?.message).toBe("stream ended");
   });
 
   it("applySnapshotTurn with null forces idle", () => {

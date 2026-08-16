@@ -34,20 +34,14 @@ pub use view::{HotView, PreparedView};
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CommitStepOutcome {
     pub committed: bool,
-    /// Set when this delta updated `sessions.last_message`.
+    pub discarded: bool,
     pub preview: Option<(String, i64)>,
 }
 
 struct PipelineState {
     hot: HotView,
     prepared: Option<PreparedView>,
-    /// Index into the in-memory turn transcript of the first not-yet-persisted
-    /// item — the REV-3 delta start. Set to the loaded transcript length at
-    /// `begin_turn`, advanced to `items.len()` after each committed delta, and
-    /// re-aligned (after reloading `Session.persisted_max_seq`) after compaction.
-    /// Passed to `Session::commit_turn_delta_with_orphan_cleanup` as the delta
-    /// boundary; `persisted_max_seq` is the authoritative seq cursor backing it.
-    persisted_prefix_len: usize,
+    committed_len: usize,
     turn_id: Option<String>,
 }
 
@@ -73,7 +67,7 @@ impl ContextPipeline {
             state: RefCell::new(PipelineState {
                 hot: HotView::new(),
                 prepared: None,
-                persisted_prefix_len: 0,
+                committed_len: 0,
                 turn_id: None,
             }),
         }
@@ -110,22 +104,24 @@ impl ContextPipeline {
         turn_id: Option<String>,
     ) -> Result<Transcript> {
         let items = session.load_transcript()?;
-        // REV-3: align the in-memory cursor with the DB's persisted max seq on load.
         session.reload_persisted_max_seq()?;
 
         let mut state = self.state.borrow_mut();
         state.turn_id = turn_id;
-        state.persisted_prefix_len = items.len();
+        state.committed_len = items.len();
         state.hot.replace(items.clone());
         state.prepared = None;
         Ok(items)
     }
 
-    /// Drop in-memory turn working set at turn end.
+    pub fn persisted_prefix_len(&self) -> usize {
+        self.state.borrow().committed_len
+    }
+
     pub fn end_turn(&self) {
         let mut state = self.state.borrow_mut();
         state.turn_id = None;
-        state.persisted_prefix_len = 0;
+        state.committed_len = 0;
         state.hot.replace(Vec::new());
         state.prepared = None;
     }
@@ -161,7 +157,7 @@ impl ContextPipeline {
         }
 
         let mut transcript = turn_items.clone();
-        let persisted_prefix_len = self.state.borrow().persisted_prefix_len;
+        let committed_len = self.state.borrow().committed_len;
         let reminder = tail_reminders::build_compaction_content(task_state);
         let checkpoint_before =
             sessions.with_entry_store(session_id, |s| Ok(s.checkpoint_seq()?))?;
@@ -181,7 +177,7 @@ impl ContextPipeline {
                 compact_max_tokens,
                 prompt_baseline,
                 &mut transcript,
-                persisted_prefix_len,
+                committed_len,
                 reminder.as_deref(),
                 step,
                 cancel,
@@ -195,16 +191,11 @@ impl ContextPipeline {
         let checkpoint_after =
             sessions.with_entry_store(session_id, |s| Ok(s.checkpoint_seq()?))?;
         if checkpoint_after != checkpoint_before {
-            // Compact rewrote history (REV-3 step 3): reload the seq cursor from the
-            // post-compact DB and reset the delta start to the reloaded transcript
-            // length, so the cursor and prefix are re-aligned instead of pointing at
-            // the pre-compact transcript length (which would skip the post-compact
-            // delta, 1.1).
             let persisted_count = sessions.with_entry_store(session_id, |s| {
                 s.reload_persisted_max_seq()?;
                 Ok(s.load_turn_transcript()?.len())
             })?;
-            self.state.borrow_mut().persisted_prefix_len = persisted_count;
+            self.state.borrow_mut().committed_len = persisted_count;
         }
 
         // Crash / force-kill recovery: dangling FunctionCalls must be padded on
@@ -248,27 +239,45 @@ impl ContextPipeline {
         items: &mut Vec<Item>,
         turn_id: &str,
     ) -> Result<CommitStepOutcome> {
-        let mut state = self.state.borrow_mut();
-        let tid = if turn_id.is_empty() {
-            state.turn_id.clone().unwrap_or_default()
-        } else {
-            turn_id.to_string()
+        let committed_len = self.state.borrow().committed_len;
+        let tid = {
+            let state = self.state.borrow();
+            if turn_id.is_empty() {
+                state.turn_id.clone().unwrap_or_default()
+            } else {
+                turn_id.to_string()
+            }
         };
-
-        // Delta start is the seq-cursor-aligned persisted prefix (REV-3), advanced
-        // by each committed delta and reset after compaction/load. The store uses
-        // this to slice the delta; it is not re-derived from a DB row count.
-        let delta_start = state.persisted_prefix_len;
-        let committed = !items.is_empty();
-        let preview = session.commit_turn_delta_with_orphan_cleanup(items, delta_start, &tid)?;
-        state.persisted_prefix_len = items.len();
-        if !committed {
-            return Ok(CommitStepOutcome::default());
+        let start = committed_len.min(items.len());
+        let delta = items[start..].to_vec();
+        let outcome =
+            session.commit_turn_delta_with_orphan_cleanup(items, &delta, committed_len, &tid)?;
+        match outcome {
+            crate::session::store::CommitDeltaOutcome::Discarded => {
+                let mut state = self.state.borrow_mut();
+                state.committed_len = items.len();
+                state.hot.replace(items.clone());
+                state.prepared = None;
+                Ok(CommitStepOutcome {
+                    committed: false,
+                    discarded: true,
+                    preview: None,
+                })
+            }
+            crate::session::store::CommitDeltaOutcome::Applied { preview } => {
+                let mut state = self.state.borrow_mut();
+                state.committed_len = items.len();
+                state.hot.replace(items.clone());
+                if delta.is_empty() {
+                    return Ok(CommitStepOutcome::default());
+                }
+                Ok(CommitStepOutcome {
+                    committed: true,
+                    discarded: false,
+                    preview,
+                })
+            }
         }
-        Ok(CommitStepOutcome {
-            committed: true,
-            preview,
-        })
     }
 
     /// Token estimate for the last prepared view or hot items.

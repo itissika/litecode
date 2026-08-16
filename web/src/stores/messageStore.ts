@@ -5,7 +5,6 @@ import {
   bufferItemId,
   extractBufferIndex,
   isCompactCutRow,
-  isEmptyItemShell,
   isStreamFailureEvent,
   isUserMessage,
   itemAuthorityId,
@@ -22,8 +21,10 @@ import type {
   ResponseStreamEvent,
   SubagentBound,
 } from "../api/types";
+import { debugTrace } from "../lib/debugTrace";
 import { useConnectionStore, attachSiblingStores } from "./connectionStore";
 import { useToastStore } from "./toastStore";
+import { useTurnStore } from "./turnStore";
 
 const HISTORY_PAGE = 40;
 
@@ -43,6 +44,15 @@ export interface MessageSlice {
   shapeError: string | null;
   /** `subagent_launch` call_id → child session id (live bind + buffer/load). */
   subagentBindings: Record<string, string>;
+  /** After revert, refuse log-growth appends until the next turn starts. */
+  blockLogGrowth: boolean;
+  /** Durable panel notice for the last turn end (error / max steps). */
+  turnEndNotice: TurnEndNotice | null;
+}
+
+export interface TurnEndNotice {
+  kind: "error";
+  message: string;
 }
 
 export const EMPTY_SLICE: MessageSlice = {
@@ -54,6 +64,8 @@ export const EMPTY_SLICE: MessageSlice = {
   loadingHistory: false,
   shapeError: null,
   subagentBindings: {},
+  blockLogGrowth: false,
+  turnEndNotice: null,
 };
 
 export function emptySlice(): MessageSlice {
@@ -78,6 +90,22 @@ interface BufferRowItem {
   item: Item;
   /** DB row `kind` (`detail` | `compact_checkpoint`) — REV-11 wire. */
   kind?: string;
+}
+
+function overlayStats(messages: ChatRow[]): {
+  n: number;
+  live: number;
+  streaming: number;
+} {
+  let live = 0;
+  let streaming = 0;
+  for (const row of messages) {
+    if (extractBufferIndex(row.id) == null) {
+      live += 1;
+      if (row.streaming) streaming += 1;
+    }
+  }
+  return { n: messages.length, live, streaming };
 }
 
 function findLastIndex<T>(arr: T[], predicate: (item: T) => boolean): number {
@@ -236,6 +264,10 @@ function ingestBufferItems(
 
   const state = getState();
   const slice = getSlice(state.bySession, sessionId);
+  const incoming = slice.blockLogGrowth
+    ? items.filter((entry) => entry.bufferIndex < slice.committedBufferEnd)
+    : items;
+  if (incoming.length === 0) return;
 
   const persisted = new Map<number, ChatRow>();
   const transient: ChatRow[] = [];
@@ -247,7 +279,7 @@ function ingestBufferItems(
   const hadPersisted = persisted.size > 0;
   const claimed = new Set<number>();
 
-  for (const entry of items) {
+  for (const entry of incoming) {
     const bufferId = bufferItemId(sessionId, entry.bufferIndex);
     const liveIdx = findUnclaimedLive(transient, entry.item, claimed);
     if (liveIdx >= 0) {
@@ -292,7 +324,7 @@ function ingestBufferItems(
   // Optimistic user-* has no authority id — still drop by text when the
   // committed window already contains that message.
   const loadedUserTexts = new Map<string, number>();
-  for (const entry of items) {
+  for (const entry of incoming) {
     if (!isUserMessage(entry.item)) continue;
     const text = itemPlainText(entry.item);
     loadedUserTexts.set(text, (loadedUserTexts.get(text) ?? 0) + 1);
@@ -312,14 +344,21 @@ function ingestBufferItems(
     remainingTransient.unshift(row);
   }
 
+  const turn = useTurnStore.getState().byId.get(sessionId);
+  const turnLive =
+    turn?.runState === "running" || turn?.runState === "cancelling";
+  const keptTransient = turnLive
+    ? remainingTransient
+    : remainingTransient.filter((row) => row.id.startsWith("user-"));
+
   const nextMessages = [
     ...[...persisted.entries()]
       .sort(([left], [right]) => left - right)
       .map(([, row]) => row),
-    ...remainingTransient,
+    ...keptTransient,
   ];
 
-  const indices = items.map((i) => i.bufferIndex);
+  const indices = incoming.map((i) => i.bufferIndex);
   const minIdx = Math.min(...indices);
   const maxIdx = Math.max(...indices) + 1;
   const nextStart = hadPersisted ? Math.min(slice.bufferViewStart, minIdx) : minIdx;
@@ -336,6 +375,9 @@ function ingestBufferItems(
     messages: nextMessages,
     bufferViewStart: nextStart,
     bufferViewEnd: Math.max(slice.bufferViewEnd, maxIdx),
+    committedBufferEnd: slice.blockLogGrowth
+      ? slice.committedBufferEnd
+      : Math.max(slice.committedBufferEnd, maxIdx),
     userDetailBefore,
   };
 
@@ -347,9 +389,13 @@ function ingestBufferItems(
 interface MessageStore extends MessageState {
   onBufferLoaded: (sessionId: string, loaded: BufferLoaded) => void;
   onBufferItem: (sessionId: string, bi: BufferItemNotification) => void;
-  onBufferReverted: (sessionId: string, rev: { session_id: string; committed_end: number }) => void;
+  onBufferReverted: (
+    sessionId: string,
+    rev: { session_id: string; committed_end: number },
+  ) => void;
   onBufferCompacted: (sessionId: string, compacted: BufferCompacted) => void;
   onSubagentBound: (sessionId: string, bound: SubagentBound) => void;
+  allowLogGrowth: (sessionId: string) => void;
 
   applyStreamEvent: (
     sessionId: string,
@@ -358,6 +404,7 @@ interface MessageStore extends MessageState {
     event: ResponseStreamEvent,
   ) => void;
   finalizeTurn: (sessionId: string, turnId: string) => void;
+  setTurnEndNotice: (sessionId: string, notice: TurnEndNotice | null) => void;
 
   pushUserMessage: (sessionId: string, row: ChatRow) => void;
   /** Drop a failed optimistic user row by exact client id (MSG-01). */
@@ -402,6 +449,14 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       });
       const bindings = loaded.subagent_bindings ?? {};
       const slice = getSlice(get().bySession, sessionId);
+      debugTrace("buffer", "load", {
+        sessionId,
+        start: loaded.start,
+        end: loaded.end,
+        items: loaded.items.length,
+        ...overlayStats(slice.messages),
+        committedEnd: slice.committedBufferEnd,
+      });
       patch(sessionId, {
         loadingHistory: false,
         subagentBindings: { ...slice.subagentBindings, ...bindings },
@@ -418,9 +473,29 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       });
     },
 
+    allowLogGrowth: (sessionId) => {
+      patch(sessionId, { blockLogGrowth: false, turnEndNotice: null });
+    },
+
     onBufferItem: (sessionId, bi) => {
-      const bufferId = bufferItemId(sessionId, bi.buffer_index);
       const slice = getSlice(get().bySession, sessionId);
+      const itemMeta = {
+        sessionId,
+        index: bi.buffer_index,
+        type: bi.item.type,
+        committedEnd: slice.committedBufferEnd,
+      };
+      if (bi.buffer_index > slice.committedBufferEnd) {
+        debugTrace("buffer", "item.dropped_gap", itemMeta);
+        return;
+      }
+      const append = bi.buffer_index === slice.committedBufferEnd;
+      if (append && slice.blockLogGrowth) {
+        debugTrace("buffer", "item.dropped_blocked", itemMeta);
+        return;
+      }
+      const nextEnd = append ? bi.buffer_index + 1 : slice.committedBufferEnd;
+      const bufferId = bufferItemId(sessionId, bi.buffer_index);
 
       if (bi.child_session_id && bi.item.type === "function_call") {
         const callId = "call_id" in bi.item ? bi.item.call_id : undefined;
@@ -436,7 +511,8 @@ export const useMessageStore = create<MessageStore>((set, get) => {
 
       if (isUserMessage(bi.item)) {
         if (slice.messages.some((row) => row.id === bufferId)) {
-          patch(sessionId, { committedBufferEnd: bi.buffer_index + 1 });
+          debugTrace("buffer", "item.sealed", { ...itemMeta, how: "already" });
+          patch(sessionId, { committedBufferEnd: nextEnd });
           return;
         }
 
@@ -456,19 +532,25 @@ export const useMessageStore = create<MessageStore>((set, get) => {
           next[optimisticIdx] = mismatch
             ? { id: bufferId, item: bi.item, kind: bi.kind, streaming: false }
             : row;
+          debugTrace("buffer", "item.sealed", {
+            ...itemMeta,
+            how: "optimistic",
+            mismatch: Boolean(mismatch),
+          });
           patch(sessionId, {
             messages: orderSealedBeforeTransient(next),
-            committedBufferEnd: bi.buffer_index + 1,
+            committedBufferEnd: nextEnd,
           });
           return;
         }
 
+        debugTrace("buffer", "item.sealed", { ...itemMeta, how: "append" });
         patch(sessionId, {
           messages: orderSealedBeforeTransient([
             ...slice.messages,
             { id: bufferId, item: bi.item, kind: bi.kind },
           ]),
-          committedBufferEnd: bi.buffer_index + 1,
+          committedBufferEnd: nextEnd,
         });
         return;
       }
@@ -481,38 +563,56 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         sealIdx = messages.findIndex((m) => m.id === bufferId);
       }
 
+      let how: "live" | "index" | "insert" = "insert";
+      let mismatch: string | null = null;
       if (sealIdx >= 0) {
-        const { row, mismatch } = sealProjectionRow(
+        how = extractBufferIndex(messages[sealIdx].id) != null ? "index" : "live";
+        const sealed = sealProjectionRow(
           messages[sealIdx],
           bi.item,
           bufferId,
           bi.kind,
         );
-        if (mismatch) {
+        mismatch = sealed.mismatch;
+        if (sealed.mismatch) {
           // H3 fail-closed: never overwrite a differently-typed (or id-mismatched) slot.
-          reportShapeError(patch, sessionId, mismatch);
+          reportShapeError(patch, sessionId, sealed.mismatch);
           messages.push({ id: bufferId, item: bi.item, kind: bi.kind, streaming: false });
         } else {
-          messages[sealIdx] = row;
+          messages[sealIdx] = sealed.row;
         }
       } else {
         messages.push({ id: bufferId, item: bi.item, kind: bi.kind, streaming: false });
       }
 
+      const ordered = orderSealedBeforeTransient(messages);
+      debugTrace("buffer", "item.sealed", {
+        ...itemMeta,
+        how,
+        mismatch: Boolean(mismatch),
+        ...overlayStats(ordered),
+      });
       patch(sessionId, {
-        messages: orderSealedBeforeTransient(messages),
-        committedBufferEnd: bi.buffer_index + 1,
+        messages: ordered,
+        committedBufferEnd: nextEnd,
       });
     },
 
-    applyStreamEvent: (sessionId, _turnId, _step, event) => {
+    applyStreamEvent: (sessionId, turnId, _step, event) => {
       const slice = getSlice(get().bySession, sessionId);
+      const turn = useTurnStore.getState().byId.get(sessionId);
 
       // A turn-level failure (response.failed / error) invalidates every
       // in-flight function_call — no half-streamed call may stay "in_progress".
       // `response.incomplete` is a seal terminal, not a failure: live rows wait
       // for buffer/item.
       if (isStreamFailureEvent(event)) {
+        debugTrace("buffer", "stream.failed", {
+          sessionId,
+          turnId,
+          type: event.type,
+          ...overlayStats(slice.messages),
+        });
         const messages = slice.messages.map((m) => {
           const failed = markFunctionCallsFailed([m.item])[0];
           return failed !== m.item
@@ -528,6 +628,13 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       // Authority already sealed this slot (buffer/item). Ignore late deltas —
       // rAF batches can land after seal and would append onto the full text.
       if (existingIdx >= 0 && extractBufferIndex(slice.messages[existingIdx].id) != null) {
+        return;
+      }
+      if (
+        existingIdx < 0 &&
+        turn &&
+        (turn.runState !== "running" || turn.currentTurnId !== turnId)
+      ) {
         return;
       }
       const existingItem =
@@ -563,16 +670,26 @@ export const useMessageStore = create<MessageStore>((set, get) => {
 
     finalizeTurn: (sessionId, _turnId) => {
       const slice = getSlice(get().bySession, sessionId);
-      const messages = slice.messages
-        .map((m) => {
-          if (!m.streaming) return m;
-          if (isEmptyItemShell(m.item) && m.id.startsWith("live-")) {
-            return null;
-          }
-          return { ...m, streaming: false };
-        })
-        .filter((m): m is ChatRow => m != null);
-      patch(sessionId, { messages });
+      let droppedLive = 0;
+      const messages = slice.messages.filter((m) => {
+        if (m.id.startsWith("live-")) {
+          droppedLive += 1;
+          return false;
+        }
+        return true;
+      }).map((m) => (m.streaming ? { ...m, streaming: false } : m));
+      debugTrace("buffer", "finalize", {
+        sessionId,
+        droppedLive,
+        ...overlayStats(messages),
+      });
+      patch(sessionId, {
+        messages,
+      });
+    },
+
+    setTurnEndNotice: (sessionId, notice) => {
+      patch(sessionId, { turnEndNotice: notice });
     },
 
     pushUserMessage: (sessionId, row) => {
@@ -591,15 +708,25 @@ export const useMessageStore = create<MessageStore>((set, get) => {
     onBufferReverted: (sessionId, rev) => {
       const slice = getSlice(get().bySession, sessionId);
       const messages = slice.messages.filter((m) => {
-        if (m.id.startsWith("live-")) return false;
         const idx = extractBufferIndex(m.id);
-        return idx === null || idx < rev.committed_end;
+        return idx !== null && idx < rev.committed_end;
       });
+      debugTrace("buffer", "reverted", {
+        sessionId,
+        committedEnd: rev.committed_end,
+        dropped: slice.messages.length - messages.length,
+        ...overlayStats(messages),
+      });
+      const nextStart = Math.min(slice.bufferViewStart, rev.committed_end);
       patch(sessionId, {
         messages,
+        bufferViewStart: nextStart,
         bufferViewEnd: rev.committed_end,
         committedBufferEnd: rev.committed_end,
+        userDetailBefore: nextStart === 0 ? 0 : slice.userDetailBefore,
         shapeError: null,
+        blockLogGrowth: true,
+        turnEndNotice: null,
       });
     },
 
@@ -698,6 +825,8 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         loadingHistory: false,
         shapeError: null,
         subagentBindings: {},
+        blockLogGrowth: false,
+        turnEndNotice: null,
       });
     },
   };

@@ -19,6 +19,7 @@ import type { Item } from "../api/types";
 import { useConnectionStore } from "./connectionStore";
 import { applyCompactSplice, emptySlice, useMessageStore } from "./messageStore";
 import { useToastStore } from "./toastStore";
+import { EMPTY_SLICE as EMPTY_TURN, useTurnStore } from "./turnStore";
 
 vi.stubGlobal(
   "window",
@@ -59,14 +60,27 @@ function functionCallOutput(callId: string, output: string): Item {
   };
 }
 
+function markTurnRunning(sessionId: string, turnId = "t1"): void {
+  useTurnStore.setState({
+    byId: new Map([
+      [
+        sessionId,
+        { ...EMPTY_TURN, runState: "running", currentTurnId: turnId },
+      ],
+    ]),
+  });
+}
+
 describe("messageStore Item projection", () => {
   beforeEach(() => {
     useMessageStore.setState({ bySession: new Map() });
+    useTurnStore.setState({ byId: new Map() });
     useToastStore.setState({ toasts: [] });
   });
 
   it("buffer/compacted keeps existing rows and appends the checkpoint", async () => {
     const sid = "s-compact";
+    markTurnRunning(sid);
     useMessageStore.getState().onBufferItem(sid, {
       session_id: sid,
       buffer_index: 0,
@@ -556,6 +570,8 @@ describe("messageStore Item projection", () => {
             loadingHistory: false,
             shapeError: null,
             subagentBindings: {},
+            blockLogGrowth: false,
+            turnEndNotice: null,
           },
         ],
       ]),
@@ -766,6 +782,7 @@ describe("messageStore Item projection", () => {
 
   it("buffer/load keeps a live row that is not in the committed window", () => {
     const sid = "s-reconnect-keep-live";
+    markTurnRunning(sid);
     useMessageStore.getState().pushUserMessage(sid, {
       id: bufferItemId(sid, 0),
       item: {
@@ -799,5 +816,192 @@ describe("messageStore Item projection", () => {
     expect(slice.messages).toHaveLength(2);
     expect(slice.messages[1].id).toBe(liveItemRowId("msg_new"));
     expect(itemPlainText(slice.messages[1].item)).toBe("still streaming");
+  });
+
+  it("buffer/reverted drops the tail and unindexed live/optimistic rows", () => {
+    const sid = "s-revert-tail";
+    useMessageStore.getState().onBufferLoaded(sid, {
+      session_id: sid,
+      start: 0,
+      end: 3,
+      items: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "keep" }],
+        },
+        assistantMsg("a0", "keep-reply"),
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "drop-me" }],
+        },
+      ],
+      user_detail_before: 0,
+    });
+    useMessageStore.getState().pushUserMessage(sid, {
+      id: "user-orphan-1",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "optimistic leftover" }],
+      },
+    });
+    useTurnStore.getState().onTurnStarted({
+      session_id: sid,
+      turn_id: "t-live",
+      input: "",
+      step_max: 1,
+    });
+    useMessageStore.getState().applyStreamEvent(sid, "t-live", 1, {
+      type: "response.output_text.delta",
+      sequence_number: 1,
+      item_id: "msg_live_drop",
+      output_index: 0,
+      content_index: 0,
+      delta: "should vanish",
+    });
+
+    useTurnStore.getState().onTranscriptReverted(sid);
+    useMessageStore.getState().onBufferReverted(sid, {
+      session_id: sid,
+      committed_end: 2,
+    });
+
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages.map((m) => itemPlainText(m.item))).toEqual([
+      "keep",
+      "keep-reply",
+    ]);
+    expect(slice.committedBufferEnd).toBe(2);
+    expect(slice.messages.some((m) => m.id.startsWith("live-"))).toBe(false);
+    expect(slice.messages.some((m) => m.id.startsWith("user-"))).toBe(false);
+
+    useMessageStore.getState().applyStreamEvent(sid, "t-live", 1, {
+      type: "response.output_text.delta",
+      sequence_number: 2,
+      item_id: "msg_live_drop",
+      output_index: 0,
+      content_index: 0,
+      delta: " after revert",
+    });
+    expect(useMessageStore.getState().bySession.get(sid)!.messages).toHaveLength(2);
+
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      buffer_index: 3,
+      item: assistantMsg("late", "replayed tail"),
+    });
+    expect(useMessageStore.getState().bySession.get(sid)!.messages).toHaveLength(2);
+
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      buffer_index: 2,
+      item: assistantMsg("late-eq", "first deleted row"),
+    });
+    expect(useMessageStore.getState().bySession.get(sid)!.messages).toHaveLength(2);
+    expect(useMessageStore.getState().bySession.get(sid)!.committedBufferEnd).toBe(2);
+
+    useMessageStore.getState().onBufferLoaded(sid, {
+      session_id: sid,
+      start: 0,
+      end: 4,
+      items: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "keep" }],
+        },
+        assistantMsg("a0", "keep-reply"),
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "drop-me" }],
+        },
+        assistantMsg("late-load", "stale tail"),
+      ],
+      user_detail_before: 0,
+    });
+    expect(useMessageStore.getState().bySession.get(sid)!.messages).toHaveLength(2);
+    expect(useMessageStore.getState().bySession.get(sid)!.committedBufferEnd).toBe(2);
+
+    useTurnStore.getState().onTurnStarted({
+      session_id: sid,
+      turn_id: "t-next",
+      input: "",
+      step_max: 1,
+    });
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      buffer_index: 2,
+      item: assistantMsg("next", "new turn first"),
+    });
+    const after = useMessageStore.getState().bySession.get(sid)!;
+    expect(after.committedBufferEnd).toBe(3);
+    expect(itemPlainText(after.messages[2].item)).toBe("new turn first");
+  });
+
+  it("finalizeTurn drops unsealed live rows and keeps sealed plus optimistic user", () => {
+    const sid = "s-finalize-drop-live";
+    markTurnRunning(sid);
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      buffer_index: 0,
+      item: assistantMsg("a0", "sealed"),
+    });
+    useMessageStore.getState().pushUserMessage(sid, {
+      id: "user-next",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "continue" }],
+      },
+    });
+    useMessageStore.getState().applyStreamEvent(sid, "t1", 1, {
+      type: "response.reasoning_text.delta",
+      sequence_number: 1,
+      item_id: "rs_half",
+      output_index: 0,
+      content_index: 0,
+      delta: "half thought",
+    });
+
+    useMessageStore.getState().finalizeTurn(sid, "t1");
+
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages.map((m) => m.id)).toEqual([
+      bufferItemId(sid, 0),
+      "user-next",
+    ]);
+    expect(slice.messages.every((m) => m.streaming !== true)).toBe(true);
+  });
+
+  it("buffer/load while idle drops unclaimed live overlay", () => {
+    const sid = "s-idle-drop-live";
+    useMessageStore.getState().applyStreamEvent(sid, "t1", 1, {
+      type: "response.output_text.delta",
+      sequence_number: 1,
+      item_id: "ghost",
+      output_index: 0,
+      content_index: 0,
+      delta: "ghost text",
+    });
+    useMessageStore.getState().onBufferLoaded(sid, {
+      session_id: sid,
+      start: 0,
+      end: 1,
+      items: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "hi" }],
+        },
+      ],
+      user_detail_before: 0,
+    });
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages).toHaveLength(1);
+    expect(itemPlainText(slice.messages[0].item)).toBe("hi");
+    expect(slice.messages.some((m) => m.id.startsWith("live-"))).toBe(false);
   });
 });

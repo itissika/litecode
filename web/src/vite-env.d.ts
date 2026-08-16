@@ -13,3 +13,13 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+interface LitecodeDebugApi {
+  on: (spec?: string) => void;
+  off: () => void;
+  status: () => string | null;
+}
+
+interface Window {
+  litecodeDebug?: LitecodeDebugApi;
+}

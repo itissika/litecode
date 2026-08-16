@@ -2,6 +2,14 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.1.4] - 2026-08-16
+
+### 修复
+
+- 运行中 Revert 会中断当前 turn，已截断的日志不会被未提交 delta 或 interrupted 工具输出写回去。
+- 自动压缩在日志已被截短时中止，避免把已删除内容写进 checkpoint。
+- 前端在 Revert 后丢掉未封口的流式 overlay，并忽略迟到的 `turn_finished`，避免新 turn 被旧结束事件打回 idle。
+
 ## [0.1.3] - 2026-08-16
 
 首次 GitHub 公开版本。
