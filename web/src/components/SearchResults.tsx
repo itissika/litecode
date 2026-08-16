@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { FoldCard } from "./FoldCard";
+import { FoldCard, FOLDCARD_HEADER_TONE } from "./FoldCard";
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -117,7 +117,7 @@ export function SearchResultGroupCard({ group }: { group: SearchResultGroup }) {
       className="search-foldcard"
       icon={group.icon}
       label={
-        <span className="flex min-w-0 items-baseline gap-1.5">
+        <span className={`${FOLDCARD_HEADER_TONE} flex min-w-0 items-baseline gap-1.5`}>
           <span className="truncate font-mono text-dk-xs text-(--_dk-text-secondary)">
             {group.title}
           </span>

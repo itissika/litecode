@@ -3,6 +3,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { ProgressiveBlur } from "./ProgressiveBlur";
 import { getFoldCardOpen, setFoldCardOpen } from "./foldCardState";
 
+/** Marks header chrome that should brighten/dim with the FoldCard row. */
+export const FOLDCARD_HEADER_TONE = "foldcard-header-tone";
+
 interface FoldCardProps {
   /** Stable identity used to persist open/collapsed across virtual-list remounts.
    *  If omitted, state is purely local (resets on unmount). */
@@ -15,8 +18,12 @@ interface FoldCardProps {
   onToggle?: (open: boolean) => void;
   icon?: ReactNode;
   label: ReactNode;
+  /** Accessible name for the header toggle when the visual label is icon-only. */
+  headerAriaLabel?: string;
   streaming?: boolean;
   className?: string;
+  /** Extra classes merged onto the header row (e.g. bump summary text size). */
+  headerClassName?: string;
   contentClassName?: string;
   children: ReactNode;
 }
@@ -41,8 +48,10 @@ export function FoldCard({
   onToggle,
   icon,
   label,
+  headerAriaLabel,
   streaming,
   className = "",
+  headerClassName = "",
   contentClassName = "",
   children,
 }: FoldCardProps) {
@@ -227,15 +236,20 @@ export function FoldCard({
   };
 
   return (
-    <div className={className}>
+    <div className={`foldcard min-w-0 max-w-full ${className}`.trim()}>
       <div
         role="button"
         tabIndex={0}
         aria-expanded={canExpand}
+        aria-label={headerAriaLabel}
         onClick={onClick}
         onKeyDown={onKeyDown}
         onAnimationEnd={() => setReady(true)}
-        className="foldcard-header flex cursor-pointer list-none items-center gap-1.5 select-none py-1 text-xs text-(--_dk-text-muted) hover:text-(--_dk-text-secondary)"
+        className={`foldcard-header flex min-w-0 max-w-full cursor-pointer list-none items-center gap-1.5 select-none py-1 ${
+          headerClassName !== ""
+            ? headerClassName
+            : "text-xs text-(--_dk-text-muted)"
+        }`}
       >
         <svg
           width="10"
@@ -246,12 +260,18 @@ export function FoldCard({
           strokeWidth="1.5"
           strokeLinecap="round"
           strokeLinejoin="round"
-          className={`foldcard-arrow shrink-0 ${canExpand ? "is-open" : ""}`}
+          className={`foldcard-arrow ${FOLDCARD_HEADER_TONE} shrink-0 ${canExpand ? "is-open" : ""}`}
         >
           <path d="M3 1.5l4 3.5-4 3.5" />
         </svg>
-        {icon}
-        {label}
+        {icon != null ? (
+          <span className={`${FOLDCARD_HEADER_TONE} inline-flex shrink-0`}>{icon}</span>
+        ) : null}
+        {typeof label === "string" ? (
+          <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate`}>{label}</span>
+        ) : (
+          label
+        )}
       </div>
       <div className={`foldcard-body ${canExpand ? "is-open" : ""}`}>
         <div className="foldcard-body-inner">

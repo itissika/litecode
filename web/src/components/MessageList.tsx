@@ -1,4 +1,4 @@
-import { BrainIcon, WrenchIcon } from "@phosphor-icons/react";
+import { BrainIcon, PencilIcon, TerminalIcon, WrenchIcon } from "@phosphor-icons/react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -23,11 +23,14 @@ import type {
   Item,
 } from "../api/types";
 import { AgentMarkdown } from "./AgentMarkdown";
+import { CategoryCount } from "./CategoryCount";
 import { FoldCard } from "./FoldCard";
+import { InlineToolRow } from "./InlineToolRow";
 import { useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useEditorStore } from "../stores/editorStore";
+import { isInlineTool, processToolBucket } from "../lib/toolCategory";
 import { PermissionCard } from "./PermissionModal";
 import { MessageHistorySkeleton } from "./ui/Skeleton";
 import { ToolCallCard } from "./ToolCallCard";
@@ -232,6 +235,16 @@ export function NodeView({
         </div>
       );
     case "tool":
+      if (isInlineTool(node.call.name)) {
+        return (
+          <InlineToolRow
+            call={node.call}
+            output={node.output}
+            streaming={streaming}
+            sessionId={sessionId}
+          />
+        );
+      }
       return (
         <ToolCallCard
           call={node.call}
@@ -277,12 +290,31 @@ export function ProcessGroup({
   const openFile = useEditorStore((s) => s.openFile);
 
   const reasoningCount = nodes.filter((n) => n.kind === "reasoning").length;
-  const toolCount = nodes.filter((n) => n.kind === "tool").length;
-  const labels: string[] = [];
-  if (reasoningCount > 0) labels.push(`${reasoningCount} reasoning`);
-  if (toolCount > 0)
-    labels.push(`${toolCount} tool call${toolCount !== 1 ? "s" : ""}`);
-  const summary = labels.join(" + ") || "Process";
+  let bashCount = 0;
+  let editCount = 0;
+  let toolCount = 0;
+  for (const node of nodes) {
+    if (node.kind !== "tool") continue;
+    const bucket = processToolBucket(node.call.name);
+    if (bucket === "bash") bashCount += 1;
+    else if (bucket === "edit") editCount += 1;
+    else if (bucket === "tool") toolCount += 1;
+  }
+
+  const ariaParts: string[] = [];
+  if (reasoningCount > 0) {
+    ariaParts.push(`${reasoningCount} reasoning`);
+  }
+  if (bashCount > 0) {
+    ariaParts.push(`${bashCount} bash`);
+  }
+  if (editCount > 0) {
+    ariaParts.push(`${editCount} edit`);
+  }
+  if (toolCount > 0) {
+    ariaParts.push(`${toolCount} tool${toolCount !== 1 ? "s" : ""}`);
+  }
+  const headerAriaLabel = ariaParts.join(", ") || "Process";
 
   return (
     <FoldCard
@@ -291,17 +323,57 @@ export function ProcessGroup({
           ? `${sessionId}:${bubbleKey}:process:${groupIndex}`
           : undefined
       }
-      icon={
-        <>
-          {reasoningCount > 0 && (
-            <BrainIcon size={13} aria-hidden className="shrink-0 text-(--_dk-text-muted)" />
-          )}
-          {toolCount > 0 && (
-            <WrenchIcon size={13} aria-hidden className="shrink-0 text-(--_dk-amber-500)" />
-          )}
-        </>
+      icon={null}
+      headerClassName="text-dk-sm text-(--_dk-text-secondary)"
+      label={
+        <span className="flex min-w-0 flex-1 items-center gap-2.5">
+          <CategoryCount
+            icon={
+              <BrainIcon
+                size={14}
+                aria-hidden
+                className="shrink-0 text-(--_dk-text-secondary)"
+              />
+            }
+            count={reasoningCount}
+            noun="reasoning"
+          />
+          <CategoryCount
+            icon={
+              <TerminalIcon
+                size={14}
+                aria-hidden
+                className="shrink-0 text-(--_dk-text-secondary)"
+              />
+            }
+            count={bashCount}
+            noun="bash"
+          />
+          <CategoryCount
+            icon={
+              <PencilIcon
+                size={14}
+                aria-hidden
+                className="shrink-0 text-(--_dk-text-secondary)"
+              />
+            }
+            count={editCount}
+            noun="edit"
+          />
+          <CategoryCount
+            icon={
+              <WrenchIcon
+                size={14}
+                aria-hidden
+                className="shrink-0 text-(--_dk-amber-500)"
+              />
+            }
+            count={toolCount}
+            noun="tool"
+          />
+        </span>
       }
-      label={summary}
+      headerAriaLabel={headerAriaLabel}
       streaming={streaming}
     >
       <div className="space-y-1">

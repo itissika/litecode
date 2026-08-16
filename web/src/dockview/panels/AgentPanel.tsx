@@ -12,6 +12,7 @@ import { MessageList } from "../../components/MessageList";
 import { clearFoldCardOpen } from "../../components/foldCardState";
 import { ProgressiveBlur } from "../../components/ProgressiveBlur";
 import { TodoPanel } from "../../components/TodoPanel";
+import { TerminalStatusBar } from "../../components/TerminalStatusBar";
 
 class AgentErrorBoundary extends Component<
   { onClose: () => void; children: ReactNode },
@@ -259,7 +260,12 @@ function ComposerDock({ sessionId }: { sessionId: string }) {
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-3">
       <div className="pointer-events-auto mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col gap-2">
-        <TodoPanel sessionId={sessionId} />
+        <div className="flex items-end gap-2">
+          <TerminalStatusBar sessionId={sessionId} />
+          <div className="min-w-0 flex-1">
+            <TodoPanel sessionId={sessionId} />
+          </div>
+        </div>
         <AgentChatInput key={sessionId} sessionId={sessionId} />
       </div>
     </div>

@@ -63,6 +63,9 @@ pub fn format_exited_status(
     out.push_str("status: exited\n");
     out.push_str(&format!("bash_id: {}\n", notice.bash_id));
     out.push_str(&format!("exit_code: {code}\n"));
+    if notice.user_killed {
+        out.push_str("stopped_by: user (Kill)\n");
+    }
     out.push_str(&format!("output_file: {rel}\n"));
     if !notice.command_preview.is_empty() {
         out.push_str(&format!("command: {}\n", notice.command_preview));
@@ -271,10 +274,14 @@ mod tests {
         let mut user_stopped = notice.clone();
         user_stopped.user_killed = true;
         user_stopped.exit_code = Some(143);
+        let exited_kill = format_exited_status(&user_stopped, root, &jobs);
+        assert!(exited_kill.contains("stopped_by: user (Kill)\n"));
+        assert!(exited_kill.contains("exit_code: 143\n"));
         let killed_reminder = format_exit_reminder(&[user_stopped], &jobs, root);
-        assert!(killed_reminder.contains(
-            "The user stopped background bash bg_aaa (Kill).\nexit_code: 143\n"
-        ));
+        assert!(
+            killed_reminder
+                .contains("The user stopped background bash bg_aaa (Kill).\nexit_code: 143\n")
+        );
         assert!(!killed_reminder.contains("Background bash bg_aaa exited"));
     }
 

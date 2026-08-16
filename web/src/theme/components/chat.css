@@ -329,12 +329,45 @@
      gated on `ready` (can't expand mid-entrance).
    - Top/bottom edge blur bands (ProgressiveBlur) show only while
      overflowing, strength = linear scroll-distance from that edge. ─ */
+.foldcard {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 .foldcard-header {
+  position: relative;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   animation: foldcard-enter 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  /* Left inset comes from the indent token, not a Tailwind pl-* on the element,
-     so the header/content/guide-line relationship is governed in one place
-     (tokens.css) and callers cannot privately re-indent it. */
   padding-left: var(--_dk-indent-card-head);
+  padding-right: 0.375rem;
+  border-radius: var(--radius-sm);
+}
+
+.foldcard-header > * {
+  min-width: 0;
+}
+
+/* Uniform brighten/dim — color tokens can't do this (ix-fg-hover === ix-fg-pressed). */
+.foldcard-header-tone {
+  transition: filter 140ms ease;
+}
+
+.foldcard-header:hover:not(:active) .foldcard-header-tone:not(:is(button, button *)) {
+  filter: brightness(1.22);
+}
+
+.foldcard-header:active .foldcard-header-tone:not(:is(button, button *)) {
+  filter: brightness(0.88);
+  transition-duration: 80ms;
+}
+
+.foldcard-header:focus-visible {
+  outline: 2px solid var(--_dk-accent-ring);
+  outline-offset: 1px;
 }
 
 @keyframes foldcard-enter {
@@ -349,11 +382,25 @@
 }
 
 .foldcard-arrow {
-  transition: transform 200ms ease;
+  transform: rotate(0deg);
+  transform-origin: center;
+  scale: 1;
+  transition:
+    transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    scale 120ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .foldcard-arrow.is-open {
   transform: rotate(90deg);
+}
+
+.foldcard-header:hover:not(:active) .foldcard-arrow {
+  scale: 1.18;
+}
+
+.foldcard-header:active .foldcard-arrow {
+  scale: 0.9;
+  transition-duration: 80ms;
 }
 
 .foldcard-body {
@@ -403,7 +450,8 @@
 
 .foldcard-scroll {
   max-height: 30vh;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   /* Contain scroll chaining on the TOP-LEVEL card: when it hits its own scroll
      boundary, do not bubble the wheel/trackpad scroll to the ancestor (the
      message list / panel). This keeps scrolling on the element under the cursor
@@ -429,4 +477,42 @@
    chaining to the message list / panel. */
 .foldcard-scroll .foldcard-scroll {
   overscroll-behavior: auto;
+}
+
+/* ── Wait-shell wave text ─────────────────────────────────────
+   Per-character muted→secondary color pulse with staggered delay. */
+.wait-wave-text {
+  color: var(--_dk-text-muted);
+}
+
+.wait-wave-char {
+  animation: wait-text-wave 2.2s ease-in-out infinite;
+}
+
+@keyframes wait-text-wave {
+  0%,
+  100% {
+    color: var(--_dk-text-muted);
+    opacity: 0.72;
+  }
+  45% {
+    color: var(--_dk-text-secondary);
+    opacity: 1;
+  }
+}
+
+/* Composer terminal status — alive bash job count beside Todo. */
+.terminal-status-icon {
+  transform-origin: center;
+  animation: terminal-status-bounce 0.9s ease-in-out infinite;
+}
+
+@keyframes terminal-status-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2.5px);
+  }
 }

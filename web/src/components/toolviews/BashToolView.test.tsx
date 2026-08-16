@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BashToolView } from "./BashToolView";
@@ -54,8 +54,34 @@ describe("BashToolView live overlay", () => {
 
     expect(await screen.findByText("live-out")).toBeTruthy();
     expect(screen.queryByText(/status: running/)).toBeNull();
+    expect(screen.getByTestId("bash-console")).toBeTruthy();
+    expect(screen.getByText("sleep 8")).toBeTruthy();
+    const outputPre = screen.getByText("live-out").closest("pre");
+    expect(outputPre?.className).toContain("overflow-hidden");
     await waitFor(() => {
       expect(sendRpc).toHaveBeenCalledWith("bash/tail", { bash_id: "bg_a" });
     });
+  });
+
+  it("expands a multiline command in place", () => {
+    render(
+      <BashToolView
+        name="bash"
+        status="ok"
+        input={{ command: "npm run build\nnpm run test" }}
+        output={{
+          type: "function_call_output",
+          call_id: "call_1",
+          output: "ok\n",
+        }}
+        call_id="call_1"
+        sessionId="s1"
+      />,
+    );
+
+    const expand = screen.getByRole("button", { name: "Expand command" });
+    fireEvent.click(expand);
+    expect(screen.getByRole("button", { name: "Collapse command" })).toBeTruthy();
+    expect(screen.getByText(/npm run build[\s\S]*npm run test/)).toBeTruthy();
   });
 });

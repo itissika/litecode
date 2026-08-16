@@ -769,6 +769,12 @@ mod tests {
                 .lines()
                 .find_map(|l| l.strip_prefix("bash_id: "))
                 .expect("id");
+            assert!(
+                id.starts_with("bg_")
+                    && id.len() == 11
+                    && id[3..].chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+                "expected short bash_id, got {id}"
+            );
             let log = root
                 .join(".litecode")
                 .join("bash")

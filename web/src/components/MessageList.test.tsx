@@ -3,8 +3,9 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MessageList } from "./MessageList";
+import { MessageList, ProcessGroup, rowsToNodes } from "./MessageList";
 import type { ChatRow } from "../api/adapter";
+import { useBashStore } from "../stores/bashStore";
 
 const grantPermission = vi.fn();
 
@@ -136,6 +137,7 @@ const liveTool: ChatRow = {
 afterEach(() => {
   cleanup();
   grantPermission.mockClear();
+  useBashStore.getState().reset();
 });
 
 describe("MessageList permission card", () => {
@@ -198,7 +200,7 @@ describe("MessageList process group across seal", () => {
       />,
     );
 
-    const header = screen.getByRole("button", { name: /1 reasoning \+ 1 tool call/i });
+    const header = screen.getByRole("button", { name: /1 reasoning, 1 tool/i });
     expect(header.getAttribute("aria-expanded")).toBe("true");
 
     rerender(
@@ -215,11 +217,86 @@ describe("MessageList process group across seal", () => {
     );
 
     const headerAfterSeal = screen.getByRole("button", {
-      name: /1 reasoning \+ 1 tool call/i,
+      name: /1 reasoning, 1 tool/i,
     });
     // Same DOM node ⇒ ProcessGroup/FoldCard did not remount on seal.
     expect(headerAfterSeal).toBe(header);
     expect(headerAfterSeal.getAttribute("aria-expanded")).toBe("true");
+  });
+});
+
+describe("ProcessGroup header buckets", () => {
+  it("shows icon counts per category and excludes wait_shell from bash bucket", () => {
+    const rows: ChatRow[] = [
+      liveReasoning,
+      {
+        id: "fc_bash",
+        streaming: false,
+        item: {
+          type: "function_call",
+          id: "fc_bash",
+          call_id: "call_bash",
+          name: "bash",
+          arguments: JSON.stringify({ command: "echo hi" }),
+          status: "completed",
+        },
+      },
+      {
+        id: "fc_edit",
+        streaming: false,
+        item: {
+          type: "function_call",
+          id: "fc_edit",
+          call_id: "call_edit",
+          name: "edit",
+          arguments: JSON.stringify({ file_path: "a.ts" }),
+          status: "completed",
+        },
+      },
+      liveTool,
+      {
+        id: "fc_wait",
+        streaming: false,
+        item: {
+          type: "function_call",
+          id: "fc_wait",
+          call_id: "call_wait",
+          name: "wait_shell",
+          arguments: JSON.stringify({ id: "bg_a", sec: 5 }),
+          status: "completed",
+        },
+      },
+    ];
+    const nodes = rowsToNodes(rows, true);
+    const now = Date.now();
+    useBashStore.getState().applySnapshot("session-1", {
+      jobs: [],
+      waits: [
+        {
+          call_id: "call_wait",
+          watching_id: "bg_a",
+          started_at_ms: now,
+          deadline_ms: now + 5_000,
+        },
+      ],
+    });
+    render(
+      <ProcessGroup
+        nodes={nodes}
+        streaming={true}
+        sessionId="session-1"
+        bubbleKey="bubble-1"
+        groupIndex={0}
+      />,
+    );
+
+    const header = screen.getByRole("button", {
+      name: "1 reasoning, 1 bash, 1 edit, 1 tool",
+    });
+    expect(header).toBeTruthy();
+    expect(header.textContent).toContain("×1");
+    expect(screen.queryByRole("button", { name: /wait_shell/i })).toBeNull();
+    expect(screen.getByTestId("wait-elapsed")).toBeTruthy();
   });
 });
 

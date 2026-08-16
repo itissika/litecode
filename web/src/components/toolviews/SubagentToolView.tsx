@@ -7,7 +7,7 @@ import { AgentMarkdown } from "../AgentMarkdown";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useMessageStore } from "../../stores/messageStore";
 import { useTurnStore } from "../../stores/turnStore";
-import { FoldCard } from "../FoldCard";
+import { FoldCard, FOLDCARD_HEADER_TONE } from "../FoldCard";
 import { SubagentViewport } from "../SubagentViewport";
 
 /** Prompts longer than this collapse by default in the task FoldCard. */
@@ -101,10 +101,10 @@ export function SubagentToolView({
           icon={<FileTextIcon size={12} aria-hidden />}
           label={
             <span className="flex min-w-0 flex-1 items-center gap-2">
-              <span className="shrink-0 font-mono text-dk-xs font-medium text-(--_dk-text-primary)">
+              <span className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-xs font-medium text-(--_dk-text-primary)`}>
                 Task
               </span>
-              <span className="min-w-0 flex-1 truncate text-(--_dk-text-muted)">
+              <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}>
                 {prompt}
               </span>
             </span>

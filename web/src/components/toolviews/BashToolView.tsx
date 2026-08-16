@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { CaretDownIcon } from "@phosphor-icons/react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { functionCallOutputText } from "../../api/adapter";
 import { bashTail } from "../../lib/litecodeBash";
@@ -40,46 +41,94 @@ function parseBashOutput(raw: string): ParsedBashOutput {
   return { stdout: body, stderr: "", exitCode };
 }
 
-function ConsoleBody({
+function PinnedOutput({
   text,
   failed,
   footer,
-  stick,
 }: {
   text: string;
   failed: boolean;
   footer?: string;
-  stick?: boolean;
 }) {
   const preRef = useRef<HTMLPreElement>(null);
   useEffect(() => {
-    if (!stick) return;
     const el = preRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [stick, text]);
+  }, [text]);
 
   return (
-    <div className="max-h-60 overflow-auto rounded-md border border-(--_dk-line-visible) font-mono text-dk-sm leading-relaxed">
-      <pre
-        ref={preRef}
-        className={`max-h-60 overflow-auto whitespace-pre-wrap break-words px-2 py-1.5 ${
-          failed ? "text-(--_dk-red-500)" : "text-(--_dk-text-secondary)"
-        }`}
-      >
-        {text}
-      </pre>
+    <>
+      <div className="h-36 overflow-hidden">
+        <pre
+          ref={preRef}
+          className={`h-full overflow-hidden whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-dk-sm leading-relaxed ${
+            failed ? "text-(--_dk-red-500)" : "text-(--_dk-text-secondary)"
+          }`}
+        >
+          {text}
+        </pre>
+      </div>
       {footer !== undefined && (
         <span className="block border-t border-(--_dk-line-visible) px-2 py-1 text-dk-xs text-(--_dk-text-muted)">
           {footer}
         </span>
       )}
+    </>
+  );
+}
+
+function CommandHeader({ command }: { command: string }) {
+  const commandRef = useRef<HTMLSpanElement>(null);
+  const [truncated, setTruncated] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const multiline = command.includes("\n");
+  const expandable = multiline || truncated;
+
+  useLayoutEffect(() => {
+    if (expanded) return;
+    const el = commandRef.current;
+    if (!el) return;
+    setTruncated(el.scrollWidth > el.clientWidth);
+  }, [command, expanded]);
+
+  return (
+    <div className="shrink-0 bg-(--_dk-editor) px-2.5 py-2">
+      <div className="flex items-start gap-1">
+        <span
+          ref={commandRef}
+          className={`min-w-0 flex-1 font-mono text-dk-sm leading-relaxed text-(--_dk-text-body) ${
+            expanded ? "whitespace-pre-wrap break-words" : "truncate"
+          }`}
+        >
+          {command}
+        </span>
+        {expandable && (
+          <button
+            type="button"
+            className="btn-ghost btn-icon btn-xs shrink-0"
+            aria-label={expanded ? "Collapse command" : "Expand command"}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((open) => !open)}
+          >
+            <CaretDownIcon
+              size={12}
+              className={`transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}
+              aria-hidden
+            />
+          </button>
+        )}
+      </div>
+      <div
+        className="mx-1 mt-2 border-b border-(--_dk-line-visible)"
+        aria-hidden
+      />
     </div>
   );
 }
 
 /**
- * Bash tool body: command + stdout/stderr, or a live tee tail overlay while
- * the process is still running after the tool result sealed.
+ * Bash tool body: command + stdout/stderr in one container, or a live tee tail
+ * overlay while the process is still running after the tool result sealed.
  */
 export function BashToolView({ status, input, output, call_id, sessionId }: ToolViewProps) {
   const obj =
@@ -142,28 +191,28 @@ export function BashToolView({ status, input, output, call_id, sessionId }: Tool
         ? `exited  exit_code: ${tailMeta.exitCode}`
         : "exited";
 
+  const hasSealedOutput =
+    parsed &&
+    (parsed.stdout || parsed.stderr || parsed.exitCode !== null);
+
+  if (command === undefined && !showLive && !hasSealedOutput) {
+    return null;
+  }
+
   return (
-    <div className="flex flex-col gap-2">
-      {command !== undefined && (
-        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--_dk-line-visible) bg-(--_dk-surface-header) px-2 py-1.5 font-mono text-dk-sm leading-relaxed text-(--_dk-text-body)">
-          {command}
-        </pre>
-      )}
+    <div
+      className="overflow-hidden rounded-md border border-(--_dk-line-visible) bg-(--_dk-editor) font-mono text-dk-sm leading-relaxed"
+      data-testid="bash-console"
+    >
+      {command !== undefined && <CommandHeader command={command} />}
 
       {showLive ? (
-        <ConsoleBody text={tail ?? ""} failed={failed} footer={liveFooter} stick />
+        <PinnedOutput text={tail ?? ""} failed={failed} footer={liveFooter} />
       ) : (
-        parsed &&
-        (parsed.stdout || parsed.stderr || parsed.exitCode !== null) && (
-          <div className="max-h-60 overflow-auto rounded-md border border-(--_dk-line-visible) font-mono text-dk-sm leading-relaxed">
+        hasSealedOutput && (
+          <>
             {parsed.stdout && (
-              <pre
-                className={`whitespace-pre-wrap break-words px-2 py-1.5 ${
-                  failed ? "text-(--_dk-red-500)" : "text-(--_dk-text-secondary)"
-                }`}
-              >
-                {parsed.stdout}
-              </pre>
+              <PinnedOutput text={parsed.stdout} failed={failed} />
             )}
             {parsed.stderr && (
               <pre className="whitespace-pre-wrap break-words border-t border-(--_dk-line-visible) bg-(--_dk-amber-500)/5 px-2 py-1.5 text-(--_dk-amber-500)">
@@ -181,7 +230,7 @@ export function BashToolView({ status, input, output, call_id, sessionId }: Tool
                 exit_code: {parsed.exitCode}
               </span>
             )}
-          </div>
+          </>
         )
       )}
     </div>

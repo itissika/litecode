@@ -390,6 +390,25 @@ fn wait_after_kill_returns_exited_not_timeout() {
 }
 
 #[test]
+fn wait_after_ui_kill_tells_agent_user_stopped() {
+    let flow = Flow::new("s1");
+    let launched = flow.run_bash(
+        serde_json::json!({ "command": sleep_cmd(20), "run_in_background": true }),
+        None,
+    );
+    let id = bash_id_of(&launched.content);
+    flow.hub.kill_from_ui(&id).expect("ui kill");
+    let _ = flow.hub.close_agent(&id);
+    let waited = flow.run_wait(serde_json::json!({ "id": id, "sec": 8 }));
+    assert_eq!(waited.level, ToolSignalLevel::Ok);
+    assert!(
+        waited.content.contains("stopped_by: user (Kill)"),
+        "got: {}",
+        waited.content
+    );
+}
+
+#[test]
 fn kill_unknown_equals_unknown_formatter() {
     let flow = Flow::new("s1");
     let result = flow.run_kill("bg_nope");

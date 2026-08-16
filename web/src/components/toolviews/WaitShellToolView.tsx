@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 
+import { WaveText } from "../WaveText";
 import { formatElapsed } from "../../lib/bashLive";
 import { useBashStore } from "../../stores/bashStore";
 import type { ToolViewProps } from "./registry";
+
+const waitLineClass = "font-mono text-dk-sm";
 
 /**
  * Auxiliary wait_shell view: countdown while this call is waiting, then
@@ -27,25 +30,27 @@ export function WaitShellToolView({ call_id, sessionId, output, status }: ToolVi
         ? formatElapsed(waiter.deadline_ms - now)
         : formatElapsed(now - waiter.started_at_ms);
     return (
-      <div className="font-mono text-dk-sm text-(--_dk-text-muted)" data-testid="wait-elapsed">
-        wait {label}
+      <div className={waitLineClass} data-testid="wait-elapsed">
+        <WaveText text={`wait ${label}`} />
       </div>
     );
   }
 
   if (status === "failed") {
     return (
-      <div className="font-mono text-dk-sm text-(--_dk-red-500)">wait failed</div>
+      <div className={`${waitLineClass} text-(--_dk-red-500)`}>wait failed</div>
     );
   }
 
   if (output) {
     return (
-      <div className="font-mono text-dk-sm text-(--_dk-text-muted)">waited</div>
+      <div className={`${waitLineClass} text-(--_dk-text-muted)`}>waited</div>
     );
   }
 
   return (
-    <div className="font-mono text-dk-sm text-(--_dk-text-muted)">waiting…</div>
+    <div className={waitLineClass} data-testid="wait-pending">
+      <WaveText text="waiting…" />
+    </div>
   );
 }

@@ -254,11 +254,7 @@ impl AgentJobRegistry {
                 if !rec.alive {
                     rec.exit_code = rec.exit_code.or(exit_code);
                     rec.user_killed = rec.user_killed || user_killed;
-                    Err((
-                        rec.session_id.clone(),
-                        rec.user_killed,
-                        rec.exit_code,
-                    ))
+                    Err((rec.session_id.clone(), rec.user_killed, rec.exit_code))
                 } else {
                     rec.alive = false;
                     rec.exit_code = exit_code;
@@ -396,6 +392,11 @@ impl AgentJobRegistry {
             .remove(session_id)
             .map(|d| d.into_iter().collect())
             .unwrap_or_default()
+    }
+
+    pub fn mailbox_pending(&self, session_id: &str) -> bool {
+        let g = self.inner.lock().expect("jobs lock");
+        g.mailbox.get(session_id).is_some_and(|q| !q.is_empty())
     }
 
     fn take_notice_from_mailbox(g: &mut JobState, session_id: &str, bash_id: &str) {

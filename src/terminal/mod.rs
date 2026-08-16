@@ -188,9 +188,48 @@ impl TerminalHub {
         }
     }
 
+    /// Human PTY ids stay unguessable (defense-in-depth; authorization uses owner).
     fn next_id(prefix: &str) -> String {
-        // IDs remain unguessable defense-in-depth; authorization uses owner identity.
         format!("{prefix}_{}", Uuid::new_v4())
+    }
+
+    /// Agent bash ids: `bg_` / `bash_` + 8 hex chars. Not sequential; collision
+    /// is retried against live sessions, job records, and leftover output files.
+    fn next_agent_id(prefix: &str) -> String {
+        let uuid = Uuid::new_v4();
+        let bytes = uuid.as_bytes();
+        format!(
+            "{prefix}_{:02x}{:02x}{:02x}{:02x}",
+            bytes[0], bytes[1], bytes[2], bytes[3]
+        )
+    }
+
+    fn agent_id_in_use(&self, id: &str) -> bool {
+        if self.jobs.get(id).is_some() {
+            return true;
+        }
+        self.sessions
+            .lock()
+            .expect("sessions lock")
+            .contains_key(id)
+    }
+
+    fn alloc_agent_id(&self, prefix: &str, workspace_root: &Path) -> String {
+        for _ in 0..16 {
+            let id = Self::next_agent_id(prefix);
+            if self.agent_id_in_use(&id) {
+                continue;
+            }
+            let path = workspace_root
+                .join(".litecode")
+                .join("bash")
+                .join(format!("{id}.output"));
+            if path.exists() {
+                continue;
+            }
+            return id;
+        }
+        Self::next_id(prefix)
     }
 
     fn start_reaper(
@@ -478,7 +517,7 @@ impl TerminalHub {
     ) -> TerminalResult<ExecResult> {
         let cwd = resolve_cwd(workdir);
         let shell = shell::shell_command(command);
-        let id = Self::next_id("bash");
+        let id = self.alloc_agent_id("bash", workspace_root);
         let output_path = agent_output_path(workspace_root, &id)?;
         let tee = Arc::new(Mutex::new(tee::BoundedTee::create(output_path)?));
         let finish = pty::exec_once(&shell, &cwd, timeout, cancel, Arc::clone(&tee))?;
@@ -524,7 +563,7 @@ impl TerminalHub {
         session_id: &str,
         call_id: &str,
     ) -> TerminalResult<SpawnCommandResult> {
-        let id = Self::next_id("bg");
+        let id = self.alloc_agent_id("bg", workspace_root);
         let cwd = resolve_cwd(workdir);
         let shell = shell::shell_command(command);
         let output_path = agent_output_path(workspace_root, &id)?;
@@ -649,7 +688,11 @@ impl TerminalHub {
                 .get(id)
                 .filter(|entry| entry.owner == SessionOwner::Agent)
                 .map(|entry| Arc::clone(&entry.session))
-                .ok_or_else(|| TerminalError::SessionNotFound(id.to_string()))?
+        };
+        let Some(session) = session else {
+            // PTY row may already be gone (reaper/on_exit); still seal the job
+            // so a human Kill reaches the agent mailbox.
+            return self.finish_job_without_pty(id, user_killed);
         };
         if session.is_alive() {
             let _ = session.kill();
@@ -680,6 +723,23 @@ impl TerminalHub {
             self.jobs.finish(id, info.exit_code);
         }
         Ok(info)
+    }
+
+    fn finish_job_without_pty(&self, id: &str, user_killed: bool) -> TerminalResult<SessionInfo> {
+        let Some((_, exit_code, _, output_path)) = self.jobs.get(id) else {
+            return Err(TerminalError::SessionNotFound(id.to_string()));
+        };
+        if user_killed {
+            self.jobs.finish_user_killed(id, exit_code);
+        } else {
+            self.jobs.finish(id, exit_code);
+        }
+        Ok(SessionInfo {
+            id: id.to_string(),
+            alive: false,
+            exit_code,
+            output_path: Some(output_path),
+        })
     }
 
     /// Remove an Agent-owned background session; interactive WS sessions are inaccessible.
@@ -753,6 +813,40 @@ mod tests {
         assert!(nonce_b.len() >= 16);
         // A UUID cannot be trivially enumerated by incrementing.
         assert!(nonce_a.parse::<u64>().is_err(), "nonce must not be numeric");
+    }
+
+    #[test]
+    fn agent_bash_ids_are_short_hex_not_sequential() {
+        let a = TerminalHub::next_agent_id("bg");
+        let b = TerminalHub::next_agent_id("bg");
+        assert_ne!(a, b);
+        for id in [&a, &b] {
+            assert!(id.starts_with("bg_"), "{id}");
+            let nonce = &id["bg_".len()..];
+            assert_eq!(nonce.len(), 8, "{id}");
+            assert!(
+                nonce.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+                "nonce must be lowercase hex: {id}"
+            );
+        }
+        let hub = TerminalHub::new();
+        let dir = tempfile::tempdir().unwrap();
+        let taken = "bg_aaaaaaaa";
+        std::fs::create_dir_all(dir.path().join(".litecode").join("bash")).unwrap();
+        std::fs::write(
+            dir.path()
+                .join(".litecode")
+                .join("bash")
+                .join(format!("{taken}.output")),
+            b"",
+        )
+        .unwrap();
+        // alloc skips leftover files; a colliding draw is retried (or falls back).
+        for _ in 0..8 {
+            let id = hub.alloc_agent_id("bg", dir.path());
+            assert_ne!(id, taken);
+            assert!(id.starts_with("bg_"));
+        }
     }
 
     #[test]

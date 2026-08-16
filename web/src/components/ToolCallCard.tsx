@@ -13,7 +13,7 @@ import { useBashStore } from "../stores/bashStore";
 import { useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
 import { agentColor } from "./agentIdentity";
-import { FoldCard } from "./FoldCard";
+import { FoldCard, FOLDCARD_HEADER_TONE } from "./FoldCard";
 import { ToolContentView } from "./ToolContentView";
 import { ToolIcon } from "./ToolIcon";
 import { deriveToolStatus } from "./toolCallStatus";
@@ -45,6 +45,10 @@ function summarizeInput(toolName: string, input: unknown): string {
       return obj.file_path;
     }
     if (CMD_TOOLS.has(toolName) && typeof obj.command === "string") {
+      if (toolName === "bash") {
+        const desc = typeof obj.description === "string" ? obj.description : "";
+        return desc.length > 90 ? desc.slice(0, 90) + "…" : desc;
+      }
       // Prefer the human-readable `description` in the fold-card row; fall back
       // to the bare command when the tool didn't supply a description.
       const c =
@@ -92,9 +96,6 @@ export function ToolCallCard({
     const jobs = s.bySession.get(sessionId)?.jobs ?? [];
     return matchJob(jobs, call.call_id, rawOutput);
   });
-  const runningCount = useBashStore((s) =>
-    sessionId ? (s.bySession.get(sessionId)?.jobs.length ?? 0) : 0,
-  );
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!bashJob) return;
@@ -159,12 +160,12 @@ export function ToolCallCard({
       label={
         isSubagent ? (
           <span className="flex min-w-0 flex-1 items-center gap-2">
-            <span className="shrink-0 font-mono text-dk-xs font-medium text-(--_dk-text-primary)">
+            <span className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-xs font-medium text-(--_dk-text-primary)`}>
               {toolName}
             </span>
             {subagentAgent && (
               <span
-                className="truncate font-mono text-dk-2xs"
+                className={`${FOLDCARD_HEADER_TONE} truncate font-mono text-dk-2xs`}
                 style={subagentColor ? { color: subagentColor } : undefined}
               >
                 {subagentAgent}
@@ -187,11 +188,11 @@ export function ToolCallCard({
           </span>
         ) : (
           <span className="flex min-w-0 flex-1 items-center gap-2">
-            <span className="shrink-0 font-mono text-dk-xs font-medium text-(--_dk-text-primary)">
+            <span className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-xs font-medium text-(--_dk-text-primary)`}>
               {toolName}
             </span>
             {inputSummary && (
-              <span className="min-w-0 flex-1 truncate text-(--_dk-text-muted)">
+              <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}>
                 {inputSummary}
               </span>
             )}
@@ -219,11 +220,8 @@ export function ToolCallCard({
             )}
             {bashJob && (
               <span className="ml-auto flex shrink-0 items-center gap-2">
-                <span className="font-mono text-dk-2xs text-(--_dk-text-muted)">
+                <span className={`${FOLDCARD_HEADER_TONE} font-mono text-dk-2xs text-(--_dk-text-muted)`}>
                   {formatElapsed(now - bashJob.started_at_ms)}
-                </span>
-                <span className="font-mono text-dk-2xs text-(--_dk-text-muted)">
-                  running {runningCount}
                 </span>
                 <button
                   type="button"
@@ -231,7 +229,7 @@ export function ToolCallCard({
                     e.stopPropagation();
                     void bashKill(bashJob.id);
                   }}
-                  className="inline-flex items-center text-dk-xs text-(--_dk-text-muted) hover:brightness-110 active:brightness-90"
+                  className="btn-danger btn-xs"
                 >
                   Kill
                 </button>

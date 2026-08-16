@@ -213,7 +213,7 @@ describe("ToolCallCard open state", () => {
         foldCardId="session-1:bubble:tool:call_1"
       />,
     );
-    expect(screen.getByText("running 1")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Kill$/ })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /^Kill$/ }));
     expect(sendRpc).toHaveBeenCalledWith("bash/kill", { bash_id: "bg_a" });
   });
