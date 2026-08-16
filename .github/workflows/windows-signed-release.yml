@@ -13,13 +13,66 @@ on:
         required: false
 
 jobs:
+  linux-bundle:
+    # Builds the Linux remote-server tarball that the Windows installer embeds
+    # under extraResources (Open Remote). Uploaded as an artifact for the
+    # Windows release job below. Previously this was only built manually in WSL,
+    # which made the Windows package fail on `ensure_linux_bundle.ps1 -Require`.
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Cache embed models
+        uses: actions/cache@v4
+        with:
+          path: models/ibm-granite
+          key: embed-models-${{ hashFiles('scripts/bundle_embed_model.sh') }}
+
+      - name: Build Linux server bundle
+        shell: bash
+        run: |
+          if [ -d web/node_modules ]; then
+            echo "web deps present"  # reuse if present
+          else
+            (cd web && npm ci)
+          fi
+          ./scripts/package_linux.sh
+
+      - name: Upload Linux bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-server-bundle
+          path: dist/linux/
+          if-no-files-found: error
+
   release:
+    needs: linux-bundle
     runs-on: windows-latest
     timeout-minutes: 180
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download Linux bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-server-bundle
+          path: dist/linux/
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
