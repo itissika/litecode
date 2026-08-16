@@ -1,6 +1,8 @@
-name: Windows signed release
+name: Windows release
 
-# Publishes installers to a GitHub Release only when Authenticode secrets exist.
+# Publishes Windows installers to a GitHub Release.
+# Signs with Authenticode when WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD exist;
+# otherwise publishes unsigned artifacts (with a clear notice).
 on:
   release:
     types: [published]
@@ -17,17 +19,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Require signing secrets
-        shell: pwsh
-        env:
-          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: |
-          if (-not $env:CSC_LINK -or -not $env:CSC_KEY_PASSWORD) {
-            Write-Error "WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD required for signed release. Refusing to publish unsigned."
-            exit 1
-          }
-
       - uses: actions/checkout@v4
 
       - name: Install Rust stable
@@ -53,15 +44,20 @@ jobs:
           path: models/ibm-granite
           key: embed-models-${{ hashFiles('scripts/bundle_embed_model.sh') }}
 
-      - name: Build signed Windows installers
+      - name: Build Windows installers
         shell: pwsh
         env:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: |
-          # Enable electron-builder signing for this job
-          (Get-Content desktop/package.json -Raw) -replace '"signAndEditExecutable": false','"signAndEditExecutable": true' |
-            Set-Content -Encoding utf8 desktop/package.json
+          if ($env:CSC_LINK -and $env:CSC_KEY_PASSWORD) {
+            Write-Host "Code signing secrets detected — signing enabled"
+            # Enable electron-builder signing for this job
+            (Get-Content desktop/package.json -Raw) -replace '"signAndEditExecutable": false','"signAndEditExecutable": true' |
+              Set-Content -Encoding utf8 desktop/package.json
+          } else {
+            Write-Host "No signing secrets — building unsigned artifacts"
+          }
           ./scripts/package_win.ps1
 
       - name: SHA256SUMS
@@ -75,6 +71,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+          body: |
+            > ⚠️ Unsigned build — Windows SmartScreen may warn on first run.
+            >
+            > Installer (`Litecode-Setup-x64.exe`) or portable (`Litecode-Portable-x64.exe`).
           files: |
             desktop/out/Litecode-Portable-*.exe
             desktop/out/Litecode-Setup-*.exe
