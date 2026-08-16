@@ -125,7 +125,7 @@ export function useDockviewConfig() {
           // Restore editor tabs for persisted editor panels
           void restoreEditorTabs(api);
         });
-        // 安全网：2 秒后重置，防止 onDidLayoutFromJSON 永不触发
+        // Safety net: reset after 2s if onDidLayoutFromJSON never fires.
         const safetyTimer = setTimeout(() => {
           if (isRestoring) {
             isRestoring = false;

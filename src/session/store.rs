@@ -66,12 +66,12 @@ pub struct TranscriptRow {
     pub created_at: i64,
 }
 
-/// §5.1 turn 装载 — step 1: read authoritative checkpoint (default 0).
+/// §5.1 turn load — step 1: read authoritative checkpoint (default 0).
 pub const SQL_CHECKPOINT_SEQ: &str = "SELECT checkpoint_seq FROM sessions WHERE id = ?";
 
 pub const SQL_KEPT_FROM_SEQ: &str = "SELECT kept_from_seq FROM sessions WHERE id = ?";
 
-/// §5.1 turn 装载 — pi-style working set:
+/// §5.1 turn load — pi-style working set:
 /// `compact_checkpoint` at `checkpoint_seq` (if that row exists), then original
 /// `detail` with `seq >= kept_from_seq` (and any newer detail after the checkpoint).
 /// Order: summary first, then detail by seq.
@@ -1669,7 +1669,7 @@ impl Session {
         Ok(())
     }
 
-    /// §5.1 turn 装载 — pi view: current compact summary + original detail from
+    /// §5.1 turn load — pi view: current compact summary + original detail from
     /// `kept_from_seq` onward (no mid-log splice / kept rewrite).
     pub fn load_turn_transcript(&self) -> Result<Vec<TranscriptRow>> {
         let mut stmt = self.conn.prepare(SQL_LOAD_TURN_TRANSCRIPT)?;

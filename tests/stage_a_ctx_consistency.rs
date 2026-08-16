@@ -806,7 +806,7 @@ fn revert_contract_three_states() {
 
     assert_eq!(session.user_detail_count().unwrap(), 4);
 
-    // 1) 锚点在检查点内 (anchor within checkpoint): revert to u3's full-history anchor (k=3)
+    // 1) Anchor inside the checkpoint: revert to u3's full-history anchor (k=3)
     // keeps u2 + summary, drops u3.
     session.revert_to_user_anchor(3).unwrap();
     let loaded = session.load_transcript().unwrap();
@@ -817,7 +817,7 @@ fn revert_contract_three_states() {
     assert_eq!(previews, vec!["summary".to_string(), "u2".to_string()]);
     assert_eq!(session.user_detail_count().unwrap(), 3);
 
-    // 2) 被吞 (swallowed): anchor beyond current visible count → InvalidRevertAnchor.
+    // 2) Swallowed: anchor beyond current visible count → InvalidRevertAnchor.
     let err = session.revert_to_user_anchor(5).unwrap_err();
     assert!(
         matches!(err, LitecodeError::InvalidRevertAnchor(_)),
@@ -829,7 +829,7 @@ fn revert_contract_three_states() {
         "a swallowed revert must not mutate the transcript"
     );
 
-    // 3) 跨检查点 (cross-checkpoint): reverting to archived u1 (k=1)
+    // 3) Cross-checkpoint: reverting to archived u1 (k=1)
     // physically removes that detail and the later checkpoint.
     session.revert_to_user_anchor(1).unwrap();
     let after_cross = session.load_transcript().unwrap();

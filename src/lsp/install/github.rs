@@ -67,7 +67,7 @@ pub async fn download_from_github(
             let _ = std::fs::remove_file(&downloaded_path);
             let _ = std::fs::remove_dir_all(&tmp_dir);
             return Err(LitecodeError::Config(format!(
-                "SHA256 校验失败。期望: {expected}，实际: {actual}。文件可能被篡改，已删除"
+                "SHA256 mismatch: expected {expected}, got {actual}. File deleted (possible tampering)"
             )));
         }
         tracing::info!(server_id, sha256 = %expected, "sha256 verified");
@@ -156,7 +156,7 @@ async fn resolve_asset_url(
     }
 
     Err(LitecodeError::Config(format!(
-        "{} 下载失败：已尝试 [{}] 均不可达。错误详情: {}。请手动安装：访问 https://github.com/{}/releases",
+        "{} download failed: tried [{}] and none were reachable. Details: {}. Install manually from https://github.com/{}/releases",
         &info.repo[info.repo.rfind('/').map(|i| i + 1).unwrap_or(0)..],
         source_names.join(", "),
         errors.join("; "),
@@ -212,7 +212,7 @@ async fn fetch_github_api(
 
     if !resp.status().is_success() {
         return Err(LitecodeError::Config(format!(
-            "GitHub API 返回 {}: {}",
+            "GitHub API returned {}: {}",
             resp.status().as_u16(),
             url
         )));
@@ -221,12 +221,12 @@ async fn fetch_github_api(
     let body: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| LitecodeError::Config(format!("解析 GitHub API 响应失败: {e}")))?;
+        .map_err(|e| LitecodeError::Config(format!("failed to parse GitHub API response: {e}")))?;
 
     let tag = body["tag_name"].as_str().unwrap_or("latest").to_string();
     let assets = body["assets"]
         .as_array()
-        .ok_or_else(|| LitecodeError::Config(format!("GitHub release {} 没有 assets 数组", tag)))?;
+        .ok_or_else(|| LitecodeError::Config(format!("GitHub release {tag} has no assets array")))?;
 
     let (asset_url, digest) =
         find_asset(assets, &info.asset_pattern, info.format, info.exact_asset)?;
@@ -259,13 +259,13 @@ pub(crate) fn find_asset(
         if name_ok && asset_matches_format(name, format) {
             let url = asset["browser_download_url"]
                 .as_str()
-                .ok_or_else(|| LitecodeError::Config("asset 缺少 browser_download_url".into()))?;
+                .ok_or_else(|| LitecodeError::Config("asset is missing browser_download_url".into()))?;
             let digest = asset["digest"].as_str().and_then(normalize_github_digest);
             return Ok((url.to_string(), digest));
         }
     }
     Err(LitecodeError::Config(format!(
-        "未找到匹配 '{pattern}' 的 asset"
+        "no GitHub asset matching '{pattern}'"
     )))
 }
 
@@ -378,13 +378,13 @@ async fn download_with_retry(
             };
 
         return Err(LitecodeError::Config(format!(
-            "{} 下载失败：原始源错误: {first_err}，镜像错误: {last_err}。请手动安装：访问 https://github.com/{}/releases",
+            "{} download failed: upstream error: {first_err}; mirror error: {last_err}. Install manually from https://github.com/{}/releases",
             info.repo, info.repo,
         )));
     }
 
     Err(LitecodeError::Config(format!(
-        "{} 下载失败: {first_err}。请手动安装：访问 https://github.com/{}/releases",
+        "{} download failed: {first_err}. Install manually from https://github.com/{}/releases",
         info.repo, info.repo,
     )))
 }
@@ -403,7 +403,11 @@ async fn download_single_with_retry(
             Err(e) => {
                 let msg = e.to_string();
                 // Do not retry on 4xx client errors (403, 404, etc.) — they are permanent.
-                if msg.contains("HTTP 4") || msg.contains("限流") || msg.contains("未找到") {
+                if msg.contains("HTTP 4")
+                    || msg.contains("rate limited")
+                    || msg.contains("release not found")
+                    || msg.contains("no GitHub asset matching")
+                {
                     return Err(e);
                 }
                 tracing::warn!(url, attempt, "download attempt failed");
@@ -417,7 +421,7 @@ async fn download_single_with_retry(
     }
 
     Err(LitecodeError::Config(format!(
-        "GitHub API 连接超时 (15s)，已重试 3 次。可设置 LITECODE_GITHUB_PROXY 使用镜像: {}",
+        "GitHub API timed out (15s) after 3 retries. Set LITECODE_GITHUB_PROXY to use a mirror: {}",
         last_err.unwrap_or_default()
     )))
 }
@@ -439,17 +443,17 @@ async fn download_to_file(
     let status = resp.status();
     if status == StatusCode::FORBIDDEN {
         return Err(LitecodeError::Config(
-            "GitHub API 限流 (403)，剩余 0/60 次。可设置 GITHUB_TOKEN 提高限额".into(),
+            "GitHub API rate limited (403), 0/60 remaining. Set GITHUB_TOKEN to raise the limit".into(),
         ));
     }
     if status == StatusCode::NOT_FOUND {
         return Err(LitecodeError::Config(format!(
-            "未找到对应版本，link: {url}"
+            "release not found, link: {url}"
         )));
     }
     if !status.is_success() {
         return Err(LitecodeError::Config(format!(
-            "下载失败: HTTP {status}, link: {url}"
+            "download failed: HTTP {status}, link: {url}"
         )));
     }
 
@@ -478,7 +482,7 @@ async fn download_to_file(
             if let Some(total) = total {
                 let mb = |n: u64| n as f64 / 1_048_576.0;
                 LitecodeError::Config(format!(
-                    "下载中断 (已传输 {:.1}/{:.1} MB)。网络不稳定，请重试或手动安装",
+                    "download interrupted ({:.1}/{:.1} MB transferred). Retry or install manually",
                     mb(downloaded),
                     mb(total)
                 ))
@@ -853,20 +857,20 @@ fn classify_reqwest_error(e: reqwest::Error, url: &str) -> LitecodeError {
     let msg = e.to_string();
     if e.is_timeout() {
         LitecodeError::Config(format!(
-            "GitHub API 连接超时 (15s)，已重试 3 次。可设置 LITECODE_GITHUB_PROXY 使用镜像: {url}"
+            "GitHub API timed out (15s) after 3 retries. Set LITECODE_GITHUB_PROXY to use a mirror: {url}"
         ))
     } else if e.is_connect() {
         if msg.contains("dns") || msg.contains("resolve") || msg.contains("No such host") {
             LitecodeError::Config(format!(
-                "无法访问 GitHub (api.github.com): DNS 解析失败。请检查网络或设置 HTTP_PROXY"
+                "cannot reach GitHub (api.github.com): DNS lookup failed. Check the network or set HTTP_PROXY"
             ))
         } else {
             LitecodeError::Config(format!(
-                "无法连接到 GitHub: {msg}。请检查网络或设置 HTTP_PROXY"
+                "cannot connect to GitHub: {msg}. Check the network or set HTTP_PROXY"
             ))
         }
     } else {
-        LitecodeError::Config(format!("网络错误: {msg}"))
+        LitecodeError::Config(format!("network error: {msg}"))
     }
 }
 
@@ -888,7 +892,7 @@ fn check_github_rate_limit(resp: &reqwest::Response) -> Result<()> {
         .unwrap_or("60");
 
     Err(LitecodeError::Config(format!(
-        "GitHub API 限流 (403)，剩余 {remaining}/{limit} 次。可设置 GITHUB_TOKEN 提高限额"
+        "GitHub API rate limited (403), {remaining}/{limit} remaining. Set GITHUB_TOKEN to raise the limit"
     )))
 }
 

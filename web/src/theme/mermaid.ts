@@ -2,8 +2,8 @@
  * Mermaid theming.
  *
  * We render on mermaid's `base` theme and override only the three dimensions
- * that define the visual language — fills (底色), strokes/lines (线框), and
- * text (文本) — sourcing every value from the project's design tokens (see
+ * that define the visual language — fills, strokes/lines, and
+ * text — sourcing every value from the project's design tokens (see
  * tokens.ts / tokens.css). Nothing here is a hand-picked hex: each mermaid
  * variable maps to one of a handful of token-derived roles, so diagrams stay
  * in lockstep with the app theme (light/dark) with no second color list to
@@ -128,7 +128,7 @@ export function buildMermaidThemeVariables(
     darkMode,
     background: "transparent",
 
-    // ── Fills (底色) ───────────────────────────────────────────────────────
+    // ── Fills ──────────────────────────────────────────────────────────────
     primaryColor: surface,
     primaryBorderColor: border,
     primaryTextColor: text,
@@ -176,7 +176,7 @@ export function buildMermaidThemeVariables(
     doneTaskBorderColor: border,
     gridColor: hairline,
 
-    // ── Lines / borders (线框) ─────────────────────────────────────────────
+    // ── Lines / borders ────────────────────────────────────────────────────
     lineColor: border,
     border1: border,
     border2: hairline,
@@ -188,7 +188,7 @@ export function buildMermaidThemeVariables(
     loopTextColor: textMuted,
     todayLineColor: accent,
 
-    // ── Text (文本) ────────────────────────────────────────────────────────
+    // ── Text ───────────────────────────────────────────────────────────────
     fontFamily: fontUi,
     fontSize: "13px",
     fontWeight: "400",

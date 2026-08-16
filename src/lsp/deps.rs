@@ -90,7 +90,7 @@ const SERVER_METAS: &[ServerMeta] = &[
         program: "csharp-ls",
         default_command: "csharp-ls",
         size_hint: "~100MB+",
-        install_hint: "需先安装 .NET 10 SDK，然后运行：dotnet tool install -g csharp-ls",
+        install_hint: "Install the .NET 10 SDK, then run: dotnet tool install -g csharp-ls",
         auto_installable: true,
     },
 ];
@@ -649,14 +649,14 @@ pub(crate) fn ensure_dotnet_sdk() -> Result<(), LitecodeError> {
         Ok(output) => output,
         Err(e) => {
             return Err(LitecodeError::Config(dotnet_sdk_install_hint(&format!(
-                "无法运行 dotnet（{e}），无法安装 csharp-ls"
+                "cannot run dotnet ({e}); csharp-ls cannot be installed"
             ))));
         }
     };
 
     if !output.status.success() {
         return Err(LitecodeError::Config(dotnet_sdk_install_hint(
-            "dotnet --list-sdks 执行失败",
+            "dotnet --list-sdks failed",
         )));
     }
 
@@ -665,7 +665,7 @@ pub(crate) fn ensure_dotnet_sdk() -> Result<(), LitecodeError> {
         Ok(())
     } else {
         Err(LitecodeError::Config(dotnet_sdk_install_hint(
-            "未检测到 .NET 10 SDK（csharp-ls 需要 .NET 10）",
+            ".NET 10 SDK not detected (csharp-ls requires .NET 10)",
         )))
     }
 }
@@ -674,12 +674,12 @@ pub(crate) fn ensure_dotnet_sdk() -> Result<(), LitecodeError> {
 /// the install itself, only returns guidance surfaced in errors/hints.
 fn dotnet_sdk_install_hint(reason: &str) -> String {
     let platform = if cfg!(windows) {
-        "Windows：下载安装 .NET 10 SDK（https://dotnet.microsoft.com/download ），或运行 `winget install Microsoft.DotNet.SDK.10`"
+        "Windows: install the .NET 10 SDK from https://dotnet.microsoft.com/download, or run `winget install Microsoft.DotNet.SDK.10`"
     } else {
-        "Ubuntu/Linux：运行 `sudo apt-get update && sudo apt-get install -y dotnet-sdk-10.0`（24.04 起为官方源；其它发行版用官方脚本：`curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0`）"
+        "Ubuntu/Linux: `sudo apt-get update && sudo apt-get install -y dotnet-sdk-10.0` (official packages from 24.04; other distros: `curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0`)"
     };
     format!(
-        "{reason}。请先安装 .NET 10 SDK：\n{platform}\n安装完成后重试 `dotnet tool install -g csharp-ls`。"
+        "{reason}. Install the .NET 10 SDK first:\n{platform}\nThen retry `dotnet tool install -g csharp-ls`."
     )
 }
 

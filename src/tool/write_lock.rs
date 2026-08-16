@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
-/// 资源键：文件路径 或 特殊的 workspace 键
+/// Resource key: a file path, or the workspace-wide coarse lock.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ResourceKey {
-    File(String), // 文件路径
-    Workspace,    // workspace 粗锁（bash 使用）
+    File(String),
+    /// Coarse workspace lock used by bash.
+    Workspace,
 }
 
 #[derive(Debug, Clone)]
@@ -13,17 +14,18 @@ pub struct LockInfo {
     pub session_id: String,
 }
 
-/// 进程级写锁注册表。
+/// Process-wide write-lock registry.
 ///
-/// 用于实现 DESIGN §1.3「资源级粗暴挡」：跨 session 的写互斥。
-/// - write/edit 工具按文件路径加锁
-/// - bash 工具使用 [`ResourceKey::Workspace`] 粗锁，与所有其他写工具互斥
+/// Implements DESIGN §1.3 resource-level exclusion across sessions:
+/// - write/edit lock by file path
+/// - bash uses [`ResourceKey::Workspace`], exclusive with every other writer
 ///
-/// 底层为同步 `std::sync::Mutex`：临界区仅做 HashMap 读写、绝不跨
-/// `.await`，因此取/放锁均可同步完成。这消除了原先基于 `tokio` 异步锁
-/// + `Drop` 内 `spawn` 释放带来的两个问题：(1) 若 drop 发生时无 current
-/// runtime 则释放被静默丢弃导致锁泄漏；(2) 释放 fire-and-forget 与同
-/// session 下一次取锁竞态（原先只能靠可重入短路兜底）。
+/// Backed by a sync `std::sync::Mutex`: the critical section only touches a
+/// HashMap and never `.await`s, so acquire/release can be synchronous. That
+/// removes two problems from the old tokio lock + `Drop`/`spawn` release:
+/// (1) drop with no current runtime silently leaked the lock; (2) fire-and-forget
+/// release raced the next acquire in the same session (previously papered over
+/// with re-entrancy).
 pub struct WorkspaceWriteLock {
     locks: std::sync::Mutex<HashMap<ResourceKey, LockInfo>>,
 }
@@ -35,23 +37,24 @@ impl WorkspaceWriteLock {
         }
     }
 
-    /// 尝试获取一组资源锁。
+    /// Try to acquire a set of resource locks.
     ///
-    /// **原子性（全有或全无）**：仅当所有请求的 key 都能获取时才获取全部；
-    /// 若任一 key 冲突，返回 `Err(持有者 session_id)`，且**不会**获取任何锁。
+    /// **All-or-nothing:** every requested key must be free, otherwise
+    /// `Err(holder session_id)` and **no** lock is taken.
     ///
-    /// **同 session 可重入**：同一 session 重复请求同一 key 视为成功。
+    /// **Same-session re-entrant:** requesting a key this session already holds
+    /// succeeds.
     ///
-    /// **粗锁交叉互斥**：`ResourceKey::Workspace`（bash 使用）与任意已持有的
-    /// 锁（无论是 `Workspace` 还是某个 `File`）冲突，反之亦然——即 workspace
-    /// 粗锁与所有 write/edit 互斥。不同 `File` 键之间互不冲突，可并发。
+    /// **Coarse-lock exclusion:** `ResourceKey::Workspace` (bash) conflicts with
+    /// any held lock (Workspace or File) and vice versa. Distinct `File` keys
+    /// do not conflict and may run concurrently.
     pub fn try_acquire(&self, keys: &[ResourceKey], session_id: &str) -> Result<(), String> {
         let mut locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
 
-        // 第一遍：检测冲突。
-        // 任意请求 key 与任意已持有锁之间，只要满足以下任一条件即冲突：
-        //   - 同一具体 key 被其他 session 持有（同 File 或同 Workspace）
-        //   - 任一侧为 Workspace 粗锁（bash 与所有写操作互斥）
+        // Pass 1: detect conflicts.
+        // A requested key conflicts with a held lock when:
+        //   - the same key is held by another session (same File or Workspace)
+        //   - either side is the Workspace coarse lock (bash vs all writers)
         for key in keys {
             for (held, info) in locks.iter() {
                 if info.session_id == session_id {
@@ -66,7 +69,7 @@ impl WorkspaceWriteLock {
             }
         }
 
-        // 第二遍：无冲突，获取所有空闲的 key（同一 session 持有的 key 不变）。
+        // Pass 2: no conflicts; acquire idle keys (keys this session already holds stay).
         for key in keys {
             locks.entry(key.clone()).or_insert(LockInfo {
                 session_id: session_id.to_string(),
@@ -76,11 +79,11 @@ impl WorkspaceWriteLock {
         Ok(())
     }
 
-    /// 释放该 session 持有的所有资源锁。
+    /// Release every lock held by this session.
     ///
-    /// 注意：只释放「由该 session 持有」的锁。如果是跨调用持锁的场景，
-    /// 调用方应保证只用本 session 的锁——本方法不区分锁是如何获取的，
-    /// 只要当前锁属于该 session 就释放。
+    /// Only locks owned by `session_id` are dropped. Callers that hold locks
+    /// across calls must use this session's id — this method does not care how
+    /// the lock was acquired.
     pub fn release_all(&self, session_id: &str) {
         let mut locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
         locks.retain(|_key, info| info.session_id != session_id);
@@ -93,17 +96,17 @@ impl Default for WorkspaceWriteLock {
     }
 }
 
-/// 进程级单例写锁。
+/// Process-wide singleton write lock.
 ///
-/// 跨 session 写互斥的正确性**依赖**全进程所有 turn 共享同一把锁。原先该
-/// 不变量是隐式的（serve 只建一个 `RuntimeHandle` 再 clone）。这里提升为
-/// 真正的进程级单例：无论创建多少个 `RuntimeHandle`/`RuntimeContext`，
-/// 取到的都是同一个 `Arc<WorkspaceWriteLock>`，从根上杜绝「各建一把锁 →
-/// 跨 session 互斥静默失效」的重构风险。
+/// Cross-session exclusion requires every turn to share one lock. That used to
+/// be implicit (serve built one `RuntimeHandle` and cloned it). It is now a
+/// real process singleton: any number of `RuntimeHandle` / `RuntimeContext`
+/// values share the same `Arc<WorkspaceWriteLock>`, so a refactor cannot
+/// silently create a second lock and drop exclusion.
 static PROCESS_WRITE_LOCK: LazyLock<Arc<WorkspaceWriteLock>> =
     LazyLock::new(|| Arc::new(WorkspaceWriteLock::new()));
 
-/// 返回进程级单例写锁句柄（供所有 `RuntimeContext` 共享）。
+/// Handle to the process-wide write lock (shared by all `RuntimeContext`s).
 pub fn process_write_lock() -> Arc<WorkspaceWriteLock> {
     PROCESS_WRITE_LOCK.clone()
 }
@@ -120,7 +123,7 @@ mod tests {
                 .is_ok()
         );
         lock.release_all("s1");
-        // 释放后，其他 session 可取锁
+        // After release, another session can acquire.
         assert!(
             lock.try_acquire(&[ResourceKey::File("/a".into())], "s2")
                 .is_ok()
@@ -143,7 +146,7 @@ mod tests {
         let lock = WorkspaceWriteLock::new();
         lock.try_acquire(&[ResourceKey::File("/a".into())], "s1")
             .unwrap();
-        // 请求两个 key，其中一个冲突 → 全都不获取
+        // Two keys, one conflicting → acquire none of them.
         let err = lock
             .try_acquire(
                 &[
@@ -154,7 +157,7 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err, "s1");
-        // /b 仍应为空闲
+        // /b should still be free
         assert!(
             lock.try_acquire(&[ResourceKey::File("/b".into())], "s3")
                 .is_ok()
@@ -166,7 +169,7 @@ mod tests {
         let lock = WorkspaceWriteLock::new();
         lock.try_acquire(&[ResourceKey::File("/a".into())], "s1")
             .unwrap();
-        // 同一 session 重入应成功
+        // Same-session re-entry should succeed
         assert!(
             lock.try_acquire(&[ResourceKey::File("/a".into())], "s1")
                 .is_ok()
@@ -177,9 +180,9 @@ mod tests {
     async fn test_workspace_coarse_lock() {
         let lock = WorkspaceWriteLock::new();
         lock.try_acquire(&[ResourceKey::Workspace], "s1").unwrap();
-        // 其他 session 的 bash 被挡
+        // Other session bash is blocked
         assert!(lock.try_acquire(&[ResourceKey::Workspace], "s2").is_err());
-        // 其他 session 的 write/edit 也被挡（workspace 粗锁互斥）
+        // Other session write/edit is also blocked (workspace coarse lock)
         assert!(
             lock.try_acquire(&[ResourceKey::File("/x".into())], "s2")
                 .is_err()

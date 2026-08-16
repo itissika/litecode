@@ -34,7 +34,7 @@ const WAIT_MS = 30000;
  *   - below 1 min: 0 (too soon to interrupt)
  *   - above 5 min: 0 (dead window)
  *   - within: convex curve, p = ((5 - m)/4)^3 — high near 1 min, hard drop to 0
- *     at 5 min (large curvature, "弧度大" per spec).
+ *     at 5 min (large curvature per spec).
  */
 function triggerProbability(secsSinceUpdate: number): number {
   const m = secsSinceUpdate / 60;

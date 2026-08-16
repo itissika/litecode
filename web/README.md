@@ -1,25 +1,29 @@
 # litecode Web UI
 
-**RS 内核的第一方参考客户端。** 业务真源在 Rust（`litecode serve`）；本目录负责把 agent、权限、会话、工作区能力**可视化**，不在浏览器中实现 agent 策略或工具语义。
+First-party reference client for the Rust kernel. Business logic lives in Rust
+(`litecode serve`); this directory visualizes agent, permission, session, and
+workspace capabilities. It does not implement agent policy or tool semantics in
+the browser.
 
-## 定位
+## Role
 
-| 层 | 职责 |
-|----|------|
-| **RS** | Agent Loop、Session、Permission、Tool、Hook |
-| **serve** | WebSocket + REST + 静态 `web/dist` |
-| **web/** | 三栏 MCE：Agent 侧栏、文件树、Monaco 编辑器 |
+| Layer | Responsibility |
+|-------|----------------|
+| **RS** | Agent loop, session, permission, tool, hook |
+| **serve** | WebSocket + REST + static `web/dist` |
+| **web/** | Three-pane workbench: agent sidebar, file tree, Monaco editor |
 
-后续 RS 通过 **Tool / Hook** 增厚时，Web 侧增加对应展示（工具卡、配置、观测），而非平行实现逻辑。
+When the kernel grows via **tools / hooks**, the UI adds matching presentation
+(tool cards, settings, telemetry) rather than a parallel implementation.
 
 ## Prerequisites
 
 ```bash
-# 仓库根目录
+# repo root
 cargo run -- serve
 ```
 
-默认：`http://127.0.0.1:7483`（若已 `npm run build`，同时托管 `web/dist`）
+Default: `http://127.0.0.1:7483` (also serves `web/dist` after `npm run build`).
 
 ## Development
 
@@ -29,17 +33,18 @@ npm install
 npm run dev
 ```
 
-打开 [http://localhost:5173](http://localhost:5173)。Vite 将 `/ws`、`/health`、`/api` 代理到 `127.0.0.1:7483`。
+Open [http://localhost:5173](http://localhost:5173). Vite proxies `/ws`, `/health`,
+and `/api` to `127.0.0.1:7483`.
 
-**Windows：** 一键 API + Vite（终端打印握手 URL）：
+**Windows:** one-shot API + Vite (prints a handshake URL):
 
 ```powershell
-# 仓库根目录
+# repo root
 ./scripts/serve_win.ps1
-# 打开打印的 LITECODE_BROWSER_DEV 链接（含 ?token=）
+# open the printed LITECODE_BROWSER_DEV link (includes ?token=)
 ```
 
-终态 Electron 壳用 `./scripts/dev_win.ps1`（无 Vite HMR）。
+End-state Electron shell: `./scripts/dev_win.ps1` (no Vite HMR).
 
 ### Environment variables
 
@@ -92,12 +97,12 @@ curl -i -N \
 
 ## Usage
 
-0. **Settings（⚙）** — 六区块设置面板：连接、模型、Tool 目录、默认 Agent、Agents（per-tool 绑定）、高级（auth + log）；turn 进行中禁用保存
-1. **Explorer（左）** — 懒加载文件树；点击打开文件
-2. **Editor（中）** — Monaco 高亮；**Ctrl+S** 保存（`PUT /api/workspace/file`）
-3. **New / Delete** — 资源管理器 **+** 与右键删除
-4. **Agent（右）** — 流式对话、工具卡、权限弹窗、会话列表（New / Delete）
-5. **联动** — `workspace_changed` 刷新已打开 tab；`read`/`write`/`edit` 工具路径可点击打开
+0. **Settings** — connection, models, tool catalog, default agent, agents (per-tool bindings), advanced (auth + log); save is disabled while a turn is running
+1. **Explorer (left)** — lazy file tree; click to open
+2. **Editor (center)** — Monaco; **Ctrl+S** saves (`PUT /api/workspace/file`)
+3. **New / Delete** — explorer **+** and context-menu delete
+4. **Agent (right)** — streaming chat, tool cards, permission prompts, session list (New / Delete)
+5. **Sync** — `workspace_changed` refreshes open tabs; `read` / `write` / `edit` tool paths open on click
 
 ## Layout (`web/src/`)
 
@@ -107,14 +112,14 @@ stores/       agentStore, editorStore, treeStore, settingsStore
 components/   AppShell, AgentSidebar, SettingsPanel, FileTree, EditorPane, …
 ```
 
-`adapter.ts` 将 RS 线协议映射为 UI 消息部件；**不使用 AI SDK 作为 wire format**。
+`adapter.ts` maps the RS wire protocol to UI message parts. **Do not use the AI SDK as the wire format.**
 
 ## Build
 
 ```bash
-npm run build    # 输出 web/dist，供 serve 静态托管
+npm run build    # emit web/dist for serve static hosting
 npm run preview
-npm test         # Vitest：adapter fixture + merge 回归
+npm test         # Vitest: adapter fixtures + merge regressions
 ```
 
 ## Stack

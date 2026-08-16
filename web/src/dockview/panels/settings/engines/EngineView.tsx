@@ -241,7 +241,7 @@ function RetrievalSection({
           <span className="min-w-0 break-all font-mono text-dk-xs">
             {detail.model.ready
               ? model.name
-              : `未在${model.path}路径下找到${model.name}`}
+              : `not found: ${model.name} under ${model.path}`}
           </span>
         </div>
 

@@ -9,9 +9,9 @@ export type SessionStatus = "idle" | "running" | "pending";
  * colour + animation — a thin vertical bar plus a rightward glow beam:
  *   - idle:    static muted bar
  *   - running: colour shift to emerald, then a green pulse that shoots out to
- *              the right (持续脉冲式横向发射)
+ *              the right (repeating lateral pulse)
  *   - pending: amber bar with a rightward glow that breathes in a loop
- *              (呼吸式循环, awaiting a permission grant)
+ *              (breathing cycle, awaiting a permission grant)
  *
  * Self-contained: when `children` are supplied the glow is rendered and anchored
  * to that content (the bar sits to its left, the glow spans from the bar across

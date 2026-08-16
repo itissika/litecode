@@ -15,7 +15,7 @@ const ICON_MAP: Record<string, IconComponent> = {
   search: MagnifyingGlass,
   editor: File,
   agent: Robot,
-  sessions: Chats, // 历史对话（会话列表）
+  sessions: Chats, // session list / history
 };
 
 export function getPanelIcon(component: string): IconComponent {

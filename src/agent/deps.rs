@@ -1,6 +1,6 @@
 use crate::types::{FunctionToolCall, Item, Result, Transcript};
 
-// current_thread runtime 下 Future 不需 Send bound，保留 async fn in trait。
+// On a current_thread runtime, futures need not be Send; keep async fn in traits.
 #[allow(async_fn_in_trait)]
 pub trait AgentDeps {
     /// Call the model using the prepared LLM view (Items + instructions).

@@ -192,9 +192,9 @@ pub async fn install_server_to_lsp_dir(
         .ok_or_else(|| LitecodeError::Config(format!("unknown language server id: {server_id}")))?;
 
     if !adapter.auto_installable() {
-        let hint = adapter.install_hint().unwrap_or("请通过系统包管理器安装");
+        let hint = adapter.install_hint().unwrap_or("install it via your system package manager");
         return Err(LitecodeError::Config(format!(
-            "{server_id} 不支持自动安装。{hint}"
+            "{server_id} does not support automatic install. {hint}"
         )));
     }
 
@@ -248,7 +248,7 @@ async fn install_gopls(server_id: &str, dest_dir: &Path) -> Result<()> {
         .unwrap_or(false);
     if !go_ok {
         return Err(LitecodeError::Config(
-            "未找到 go 命令。请安装 Go 并确保其在 PATH 中，然后重试 gopls 安装。".into(),
+            "go was not found. Install Go, ensure it is on PATH, then retry gopls install.".into(),
         ));
     }
 

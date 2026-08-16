@@ -196,7 +196,7 @@ pub enum InternalEvent {
         preview: String,
         updated_at: i64,
     },
-    /// 单条 Item 已写入 buffer，携带 buffer_index 和完整 Item。
+    /// One Item was written to the buffer, with buffer_index and the full Item.
     BufferItem {
         buffer_index: usize,
         item: crate::types::Item,

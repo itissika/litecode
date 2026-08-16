@@ -77,7 +77,7 @@ Monaco themes up front). Both read `getComputedStyle` — no second copy.
   tokens via `readDkTokensForTheme`.
 - **Mermaid** (`theme/mermaid.ts` + `lib/mermaid.ts` + `components/MermaidBlock.tsx`):
   - Renders on mermaid's `base` theme and overrides only the three visual
-    dimensions — fills (底色), strokes/lines (线框), text (文本) — via
+    dimensions — fills, strokes/lines, text — via
     `buildMermaidThemeVariables(tokens, darkMode)`.
   - **Every color comes from a project token** (or a `color-mix` of one) through
     a small set of roles (`overlay`/`sidepanel` fills, `line-visible`/`line`

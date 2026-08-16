@@ -25,7 +25,7 @@ pub struct RuntimeContext {
     pub spill_threshold: usize,
     /// §5.2 anchor k for the active turn (-1 = unset).
     pub turn_anchor_k: Arc<AtomicI64>,
-    /// 进程级写锁，用于跨 session 的资源写互斥（Phase 3）。
+    /// Process-wide write lock for cross-session resource exclusion (Phase 3).
     pub write_lock: Arc<WorkspaceWriteLock>,
 }
 

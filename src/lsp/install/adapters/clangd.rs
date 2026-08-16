@@ -45,9 +45,9 @@ impl LspAdapter for ClangdAdapter {
 
     fn install_hint(&self) -> Option<&'static str> {
         Some(
-            "clangd 需要较新的系统库（Linux 上需要 glibc 2.18+）。\
-             推荐通过系统包管理器安装，例如: sudo apt install clangd。\
-             安装后 litecode 会自动发现系统路径中的 clangd。",
+            "clangd needs a recent system libc (glibc 2.18+ on Linux). \
+             Install via your package manager, e.g. `sudo apt install clangd`. \
+             Litecode will pick it up from PATH afterwards.",
         )
     }
 }

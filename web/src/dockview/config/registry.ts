@@ -17,8 +17,8 @@ export const panelComponents: Record<string, React.FunctionComponent<IDockviewPa
   search: SearchPanel,
   editor: EditorPanel,
   agent: AgentPanel,
-  about: AboutPanel, // 已在 registry 注册但当前未在默认布局中使用，保留供未来作为独立面板打开
-  sessions: SessionListPanel, // 右侧常驻 Sessions 面板
+  about: AboutPanel, // registered; not in the default layout, kept for a future standalone panel
+  sessions: SessionListPanel, // persistent Sessions panel on the right
   terminal: TerminalPanel,
 };
 

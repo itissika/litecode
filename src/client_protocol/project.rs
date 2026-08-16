@@ -372,7 +372,7 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
             Some(notification("agent/turn_finished", params))
         }
         InternalEvent::BufferChanged { .. } => {
-            // 降级：不再自动发出 session/snapshot
+            // Degraded: no longer auto-emit session/snapshot
             None
         }
         InternalEvent::WorkspaceChanged { paths, kind } => Some(notification(

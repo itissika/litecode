@@ -557,7 +557,7 @@ impl Projection {
                 self.push_operation_error(
                     OperationKind::RevertFiles,
                     ErrorCode::NothingToRevert,
-                    "没有可回退的文件变更".into(),
+                    "no file changes to revert".into(),
                     project,
                     binding,
                 );
@@ -569,7 +569,7 @@ impl Projection {
                 self.push_operation_error(
                     OperationKind::RevertFiles,
                     ErrorCode::SnapshotUnavailable,
-                    "该锚点没有文件快照（可能因 track 失败）".into(),
+                    "no file snapshot for this anchor (track may have failed)".into(),
                     project,
                     binding,
                 );
@@ -581,7 +581,7 @@ impl Projection {
                 self.push_operation_error(
                     OperationKind::RevertFiles,
                     ErrorCode::SnapshotUnavailable,
-                    "文件快照不可用（本 turn track 失败）".into(),
+                    "file snapshot unavailable (track failed this turn)".into(),
                     project,
                     binding,
                 );

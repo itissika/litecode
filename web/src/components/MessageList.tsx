@@ -53,7 +53,7 @@ export function CompactCutMark() {
       className="flex items-center gap-1.5 py-1"
     >
       <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
-      <span className="text-dk-2xs text-(--_dk-text-disabled)">压缩点</span>
+      <span className="text-dk-2xs text-(--_dk-text-disabled)">compaction point</span>
     </div>
   );
 }

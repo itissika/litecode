@@ -93,7 +93,7 @@ impl ContextPipeline {
         self.state.borrow_mut().prepared.take()
     }
 
-    /// Load turn working set from Session DB (§5.1 turn 装载 — sole path).
+    /// Load turn working set from Session DB (§5.1 turn load — sole path).
     pub fn begin_turn(&self, session: &Session) -> Result<Transcript> {
         self.begin_turn_with_id(session, None)
     }

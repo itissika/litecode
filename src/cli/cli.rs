@@ -22,7 +22,7 @@ use crate::session::store::Session;
 use crate::types::LitecodeError;
 
 #[derive(Parser)]
-#[command(name = "litecode", about = "极致轻量的终端 AI 编程助手")]
+#[command(name = "litecode", about = "A lightweight terminal coding agent")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -310,7 +310,7 @@ impl CliSession {
 
 /// Run an interactive REPL loop via the wire connection.
 fn run_interactive(session: &mut CliSession) -> anyhow::Result<()> {
-    println!("\n--- 进入交互模式 (输入 /help 查看命令) ---");
+    println!("\n--- interactive mode (type /help for commands) ---");
 
     loop {
         print!("litecode> ");
@@ -329,13 +329,13 @@ fn run_interactive(session: &mut CliSession) -> anyhow::Result<()> {
         match input {
             "/exit" | "/quit" => break,
             "/help" => {
-                println!("可用命令:");
-                println!("  /exit, /quit   — 退出");
-                println!("  其他输入       — 发送给 Agent");
+                println!("commands:");
+                println!("  /exit, /quit   — quit");
+                println!("  anything else  — send to the agent");
                 continue;
             }
             _ if input.starts_with('/') => {
-                println!("未知命令: {}. 可用: /exit, /help", input);
+                println!("unknown command: {}. available: /exit, /help", input);
                 continue;
             }
             _ => {}
