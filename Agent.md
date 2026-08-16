@@ -94,3 +94,7 @@ Windows 安装包 CI（`windows-signed-release.yml`）在 Release **published** 
 ### 5. Agent 权限
 
 未经用户明确确认，禁止：改版本号、打 tag、Publish Release、force 移动已有 tag。需要发版时先说明相对上一 tag 的变更摘要与建议版本号，等确认后再做。
+
+### 6. 发版前检查
+
+Windows / Linux 打包都会跑 `web` 的 `tsc -b`（`npm run build`），和 vitest 不是同一道门。本地 `cargo test` / `npm test` 过了，类型收窄错误仍会让云构建在 Linux bundle 第一步直接失败。发版前在 `web/` 跑一次 `npx tsc -b`。
