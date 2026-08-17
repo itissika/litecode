@@ -21,12 +21,26 @@
 
 ## ✨ 功能亮点
 
-<p align="center">
-  <img width="220" height="220" src="./assets/features/c-lightweight.webp" alt="极致轻量">
-  <img width="220" height="220" src="./assets/features/c-search.webp" alt="搜索面板">
-  <img width="220" height="220" src="./assets/features/c-sessions.webp" alt="Session 并行">
-  <img width="220" height="220" src="./assets/features/c-switch.webp" alt="运行中切换">
-</p>
+**开销随需** — 核心常驻 ~50MB，默认极致轻量；按需叠加语义搜索 / LSP / 远程等能力，亦可极重。
+
+### 🤖 Agent
+- **并行执行** — 多 Session 并行 + 并发子代理（不可嵌套），互不阻塞。
+- **自由编排** — 主 / 子 Agent 按需增加，各自注册任意数量的工具集与 system prompt。
+- **工具自由扩展** — 内置工具集之外，支持自定义工具与 MCP 服务器，注册即用。
+- **工具热插拔** — 保存设置下一轮即生效，无需重启 serve。
+- **LSP 完整体验** — 开启后 write / edit 自动获得诊断反馈，Agent 拥有人类编辑代码般的完整体验。
+- **安全策略** — 内置工具自带授权预设一键切换；敏感路径防护，Session 快照支持运行中 Revert。
+- **上下文压缩** — 自动或一键手动；keep-recent 自动保留关键内容，内置 `session_search` tool 无损召回历史。
+
+### 🖥️ IDE
+- **轻量编辑** — 内嵌 Monaco 编辑器即开即用；IDE 能力即 Agent 能力，优先供给 Agent 侧。
+- **语义搜索** — 按语义而非文本匹配代码（200+ 语言，ANN + tree-sitter）。
+- **双形态 + 远程** — Electron 桌面端与浏览器端；SSH 部署 Linux 无头服务端，隧道回连。
+
+### 🔌 Provider
+- **多适配器** — OpenAI Responses 为唯一权威格式，openai / deepseek / mimo 即插即用。
+- **运行中切换** — 中途换模型 / Agent 不丢上下文，下一轮生效。
+- **成本可见** — prompt / completion / cache hit / miss 按 step 实时统计，精准控制成本。
 
 ## 🚀 快速开始
 

@@ -1,7 +1,7 @@
-import type { FormEvent, ReactNode } from "react";
-import { FloppyDisk } from "@phosphor-icons/react";
+import type { ReactNode } from "react";
 
 import type { AdapterDescriptor } from "../../../api/settings";
+import { useSettingsStore, type PersistStatus } from "../../../stores/settingsStore";
 
 export function FieldLabel({
   children,
@@ -36,27 +36,30 @@ export function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement
   );
 }
 
-export function SaveButton({
-  disabled,
-  saving,
-  label = "Save",
-  icon,
-}: {
-  disabled?: boolean;
-  saving?: boolean;
-  label?: string;
-  icon?: React.ReactNode;
-}) {
+const PERSIST_LABEL: Record<PersistStatus, string | null> = {
+  idle: null,
+  pending: "Saving…",
+  saving: "Saving…",
+  saved: "Saved",
+  invalid: "Fix fields to save",
+  error: "Could not save",
+};
+
+export function PersistStatusLabel() {
+  const status = useSettingsStore((s) => s.persistStatus);
+  const text = PERSIST_LABEL[status];
+  if (!text) return null;
   return (
-    <button
-      type="submit"
-      disabled={disabled || saving}
-      className={icon ? "btn-primary btn-icon" : "btn-primary"}
-      aria-label={icon ? label : undefined}
-      title={icon ? label : undefined}
+    <span
+      className={`text-dk-xs ${
+        status === "error" || status === "invalid"
+          ? "text-(--_dk-red-500)"
+          : "text-(--_dk-text-muted)"
+      }`}
+      aria-live="polite"
     >
-      {icon ? icon : saving ? "Saving…" : label}
-    </button>
+      {text}
+    </span>
   );
 }
 
@@ -82,48 +85,24 @@ export function SectionHeader({
 export function SettingsPageShell({
   title,
   actions,
-  save,
-  onSubmit,
   children,
 }: {
   title: string;
   actions?: ReactNode;
-  save?: {
-    disabled?: boolean;
-    saving?: boolean;
-    label?: string;
-  };
-  onSubmit?: (e: FormEvent) => void;
   children: ReactNode;
 }) {
-  const chrome = (
-    <>
+  return (
+    <div className="flex h-full flex-col">
       <div className="shrink-0 px-6 py-3.5">
         <SectionHeader title={title}>
+          <PersistStatusLabel />
           {actions}
-          {save ? (
-            <SaveButton
-              disabled={save.disabled}
-              saving={save.saving}
-              label={save.label ?? "Save"}
-              icon={<FloppyDisk size={16} />}
-            />
-          ) : null}
         </SectionHeader>
       </div>
       <div className="mx-4.5 shrink-0 border-t border-(--_dk-line)" />
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">{children}</div>
-    </>
+    </div>
   );
-
-  if (onSubmit) {
-    return (
-      <form onSubmit={onSubmit} className="flex h-full flex-col">
-        {chrome}
-      </form>
-    );
-  }
-  return <div className="flex h-full flex-col">{chrome}</div>;
 }
 
 export function adapterDefaultEndpoint(

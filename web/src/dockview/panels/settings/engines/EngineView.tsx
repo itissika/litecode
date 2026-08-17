@@ -26,6 +26,9 @@ import {
   type LspServerProbe,
   type RetrievalEngineDetail,
 } from "../../../../api/workspace";
+import { useSettingsStore } from "../../../../stores/settingsStore";
+import { useToastStore } from "../../../../stores/toastStore";
+import { SETTINGS_PERSIST_ERROR_CHANNEL } from "../persist";
 
 /* ------------------------------------------------------------------ */
 /* Retrieval section                                                   */
@@ -497,11 +500,26 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
   // Silent persist of the enabled set. Empty set clears servers + stops (unlike
   // the engine Stop button, which keeps the list for a later Start).
   const persist = async (ids: string[]) => {
+    const committed = [...detail.configured_servers];
     try {
+      useSettingsStore.getState().setPersistStatus("saving");
       if (ids.length === 0) await clearLspServers();
       else await initLspServers(ids);
+      useSettingsStore.getState().setPersistStatus("saved");
     } catch (e) {
-      console.error("lsp config sync failed", e);
+      setSelected(new Set(committed));
+      useSettingsStore.getState().setPersistStatus("error");
+      const message = e instanceof Error ? e.message : String(e);
+      useToastStore
+        .getState()
+        .showToast(
+          message === "turn_in_progress"
+            ? "Cannot change engines while an agent turn is in progress"
+            : message,
+          "error",
+          5000,
+          SETTINGS_PERSIST_ERROR_CHANNEL,
+        );
     } finally {
       refresh();
     }

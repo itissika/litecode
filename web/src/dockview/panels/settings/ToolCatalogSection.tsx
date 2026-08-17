@@ -1,21 +1,30 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { isCoreCatalogEntry, type ToolCatalogEntry } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { SettingsPageShell } from "./shared";
+import { isPersistBusy, useSettingsPersist } from "./persist";
 
 export function ToolCatalogSection() {
   const toolCatalog = useSettingsStore((s) => s.toolCatalog);
-  const saving = useSettingsStore((s) => s.saving);
   const saveBlocked = useSettingsStore((s) => s.isSaveBlocked());
+  const persistStatus = useSettingsStore((s) => s.persistStatus);
+  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const saveToolCatalog = useSettingsStore((s) => s.saveToolCatalog);
   const [draft, setDraft] = useState<Record<string, ToolCatalogEntry>>({});
 
   useEffect(() => {
+    if (isPersistBusy(persistStatus)) return;
     setDraft(toolCatalog ?? {});
-  }, [toolCatalog]);
+  }, [toolCatalog, persistStatus]);
 
-  // Sort core tools first, optional next, then any custom/mcp tiers — within a
-  // tier keep a stable id order.
+  useSettingsPersist(draft, {
+    debounceMs: 0,
+    setStatus: setPersistStatus,
+    serialize: (d) => ({ ok: d }),
+    commit: (p) => saveToolCatalog(p),
+    revert: () => setDraft(useSettingsStore.getState().toolCatalog ?? {}),
+  });
+
   const tierRank: Record<string, number> = { core: 0, optional: 1, custom: 2, mcp: 3 };
   const entries = useMemo(
     () =>
@@ -27,28 +36,16 @@ export function ToolCatalogSection() {
   );
 
   const toggleEnabled = (id: string) => {
-    void (async () => {
-      const entry = draft[id];
-      if (!entry || isCoreCatalogEntry(entry) || saveBlocked) return;
-      const enabling = !entry.catalog_enabled;
-      setDraft((prev) => ({
-        ...prev,
-        [id]: { ...entry, catalog_enabled: enabling },
-      }));
-    })();
-  };
-
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    void saveToolCatalog(draft);
+    const entry = draft[id];
+    if (!entry || isCoreCatalogEntry(entry) || saveBlocked) return;
+    setDraft((prev) => ({
+      ...prev,
+      [id]: { ...entry, catalog_enabled: !entry.catalog_enabled },
+    }));
   };
 
   return (
-    <SettingsPageShell
-      title="Tool Catalog"
-      onSubmit={onSubmit}
-      save={{ disabled: saveBlocked, saving }}
-    >
+    <SettingsPageShell title="Tool Catalog">
       <div className="space-y-4">
       <p className="text-xs text-(--_dk-text-muted)">
         Enable optional, custom, and MCP tools here, then bind them on Agents. Catalog alone does
@@ -89,7 +86,7 @@ export function ToolCatalogSection() {
                           type="checkbox"
                           checked={entry.catalog_enabled}
                           onChange={() => toggleEnabled(entry.id)}
-                          disabled={saveBlocked || saving}
+                          disabled={saveBlocked}
                           className="accent-(--_dk-accent-hover)"
                         />
                       )}

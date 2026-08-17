@@ -21,12 +21,26 @@ A vibe-coded agent framework built specifically for coding. It focuses on **Tool
 
 ## ✨ Feature Highlights
 
-<p align="center">
-  <img width="220" height="220" src="./assets/features/c-lightweight.webp" alt="Ultra lightweight">
-  <img width="220" height="220" src="./assets/features/c-search.webp" alt="Universal search">
-  <img width="220" height="220" src="./assets/features/c-sessions.webp" alt="Parallel sessions">
-  <img width="220" height="220" src="./assets/features/c-switch.webp" alt="Mid-session switch">
-</p>
+**On-demand footprint** — ~50MB baseline core, ultra-light by default; stack semantic search / LSP / remote on demand — as heavy as you need.
+
+### 🤖 Agent
+- **Parallel execution** — Multiple sessions run in parallel with concurrent subagents (non-nested), non-blocking.
+- **Free orchestration** — Add primary / sub agents as needed, each with its own toolset and system prompt.
+- **Extensible tools** — Custom tools and MCP servers on top of the built-in toolset; register and use.
+- **Hot-plug tools** — Settings take effect on the next turn without restarting serve.
+- **Full LSP experience** — With LSP on, write / edit get automatic diagnostics feedback — the agent edits like a human.
+- **Safety policies** — One-click preset switch for tool authorization; sensitive-path protection; session snapshots with mid-run revert.
+- **Context compression** — auto or one-click manual; keep-recent automatically keeps key content; built-in `session_search` tool recalls history losslessly.
+
+### 🖥️ IDE
+- **Lightweight editing** — Embedded Monaco editor, ready out of the box; IDE capabilities are Agent capabilities, prioritized for the agent side.
+- **Semantic search** — Code search by meaning, not text (200+ languages, ANN + tree-sitter).
+- **Two form factors + remote** — Electron desktop and browser; SSH to a headless Linux server, tunneled back.
+
+### 🔌 Provider
+- **Multi-adapter** — OpenAI Responses as the single canonical format; openai / deepseek / mimo plug and play.
+- **Mid-turn switching** — Swap model / agent anytime without losing context; effective next turn.
+- **Cost visibility** — prompt / completion / cache hit / miss tracked per step in real time for precise cost control.
 
 ## 🚀 Quick Start
 

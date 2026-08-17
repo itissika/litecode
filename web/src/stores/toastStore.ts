@@ -10,19 +10,33 @@ export interface Toast {
 
 interface ToastStore {
   toasts: Toast[];
-  showToast: (message: string, variant?: ToastVariant, durationMs?: number) => void;
+  showToast: (
+    message: string,
+    variant?: ToastVariant,
+    durationMs?: number,
+    channel?: string,
+  ) => void;
   dismissToast: (id: string) => void;
 }
 
 let nextToastId = 0;
+const channelTimers = new Map<string, number>();
 
 export const useToastStore = create<ToastStore>((set, get) => ({
   toasts: [],
 
-  showToast: (message, variant = "error", durationMs = 5000) => {
-    const id = `toast-${++nextToastId}-${Date.now()}`;
-    set((s) => ({ toasts: [...s.toasts, { id, message, variant }] }));
-    window.setTimeout(() => get().dismissToast(id), durationMs);
+  showToast: (message, variant = "error", durationMs = 5000, channel) => {
+    const id = channel ?? `toast-${++nextToastId}-${Date.now()}`;
+    const prevTimer = channelTimers.get(id);
+    if (prevTimer !== undefined) window.clearTimeout(prevTimer);
+    set((s) => ({
+      toasts: [...s.toasts.filter((t) => t.id !== id), { id, message, variant }],
+    }));
+    const timer = window.setTimeout(() => {
+      channelTimers.delete(id);
+      get().dismissToast(id);
+    }, durationMs);
+    channelTimers.set(id, timer);
   },
 
   dismissToast: (id) =>

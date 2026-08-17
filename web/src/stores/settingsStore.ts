@@ -42,6 +42,13 @@ import type { SettingsChanged } from "../api/types";
 import { useSessionStore } from "./sessionStore";
 import { useTurnStore } from "./turnStore";
 import { useToastStore } from "./toastStore";
+import {
+  flushRegisteredSettings,
+  SETTINGS_PERSIST_ERROR_CHANNEL,
+  type PersistStatus,
+} from "../dockview/panels/settings/persist";
+
+export type { PersistStatus };
 
 export type SettingsSection =
   | "connection"
@@ -130,12 +137,14 @@ interface SettingsStoreState {
   saving: boolean;
   loadError: string | null;
   restartRequired: boolean;
+  persistStatus: PersistStatus;
 }
 
 interface SettingsStore extends SettingsStoreState {
   openSettings: (section?: SettingsSection) => void;
-  closeSettings: () => void;
-  setSection: (section: SettingsSection) => void;
+  closeSettings: () => Promise<void>;
+  setSection: (section: SettingsSection) => Promise<void>;
+  setPersistStatus: (status: PersistStatus) => void;
   setRevision: (revision: number) => void;
   onRemoteSettingsChanged: (event: SettingsChanged) => void;
   /** Load tool catalog + engine statuses (needed for Editor LSP gate). */
@@ -176,17 +185,27 @@ function handleSaveError(err: unknown): void {
   if (err instanceof SettingsApiError && err.isTurnBlocked) {
     useToastStore
       .getState()
-      .showToast("Cannot save settings while an agent turn is in progress", "error");
+      .showToast(
+        "Cannot save settings while an agent turn is in progress",
+        "error",
+        5000,
+        SETTINGS_PERSIST_ERROR_CHANNEL,
+      );
     return;
   }
   const message = err instanceof Error ? err.message : "Settings save failed";
   if (message === "turn_in_progress") {
     useToastStore
       .getState()
-      .showToast("Cannot change engines while an agent turn is in progress", "error");
+      .showToast(
+        "Cannot change engines while an agent turn is in progress",
+        "error",
+        5000,
+        SETTINGS_PERSIST_ERROR_CHANNEL,
+      );
     return;
   }
-  useToastStore.getState().showToast(message, "error");
+  useToastStore.getState().showToast(message, "error", 5000, SETTINGS_PERSIST_ERROR_CHANNEL);
 }
 
 /** Toast whenever setup is incomplete — every time, no hard gate. */
@@ -263,15 +282,28 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   saving: false,
   loadError: null,
   restartRequired: false,
+  persistStatus: "idle",
 
   openSettings: (section = "connection") => {
-    set({ open: true, section });
+    set({ open: true, section, persistStatus: "idle" });
     void get().refresh();
   },
 
-  closeSettings: () => set({ open: false }),
+  closeSettings: async () => {
+    await flushRegisteredSettings();
+    set({ open: false, persistStatus: "idle" });
+  },
 
-  setSection: (section) => set({ section }),
+  setSection: async (section) => {
+    if (get().section === section) return;
+    await flushRegisteredSettings();
+    set({ section, persistStatus: "idle" });
+  },
+
+  setPersistStatus: (persistStatus) => {
+    if (get().persistStatus === persistStatus) return;
+    set({ persistStatus });
+  },
 
   setRevision: (revision) => {
     const { revision: current, open } = get();
@@ -293,7 +325,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         .showToast("Settings changed — restart the server to apply", "info");
     } else if (event.summary.setup_guidance) {
       toastSetupGuidance(event.summary);
-    } else if (event.summary.effective_next_turn) {
+    } else if (event.summary.effective_next_turn && !get().open) {
       useToastStore
         .getState()
         .showToast("Settings changed — effective next turn", "success");
@@ -301,7 +333,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     void get().ensureCatalogLoaded();
     void useSessionStore.getState().refreshAvailableModels();
     if (get().open) {
-      void get().refresh();
+      const status = get().persistStatus;
+      if (status !== "pending" && status !== "saving") {
+        void get().refresh();
+      }
     }
   },
 
@@ -432,12 +467,13 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   saveProviders: async (providers) => {
     if (turnInProgress()) {
-      handleSaveError(new SettingsApiError(409, "turn_in_progress"));
-      return;
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
     }
     set({ saving: true });
     try {
-      const { revision, restart_required } = await putProviders(providers);
+      const { revision } = await putProviders(providers);
       const next = await getProviders();
       set({
         revision,
@@ -445,12 +481,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         provider: Object.values(next)[0] ?? null,
         saving: false,
       });
-      useToastStore.getState().showToast(
-        restart_required
-          ? "Providers saved — restart required"
-          : "Providers saved — effective next turn",
-        "success",
-      );
     } catch (err) {
       set({ saving: false });
       handleSaveError(err);
@@ -460,17 +490,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   saveWebSearch: async (body) => {
     if (turnInProgress()) {
-      handleSaveError(new SettingsApiError(409, "turn_in_progress"));
-      return;
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
     }
     set({ saving: true });
     try {
       const { revision } = await putWebSearch(body);
       const websearch = await getWebSearch();
       set({ revision, websearch, saving: false });
-      useToastStore
-        .getState()
-        .showToast("Web search endpoint saved — effective next turn", "success");
     } catch (err) {
       set({ saving: false });
       handleSaveError(err);
@@ -480,17 +508,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   saveModels: async (models) => {
     if (turnInProgress()) {
-      handleSaveError(new SettingsApiError(409, "turn_in_progress"));
-      return;
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
     }
     set({ saving: true });
     try {
       const { revision } = await putModels(models);
       set({ revision, models, saving: false });
       void useSessionStore.getState().refreshAvailableModels();
-      useToastStore
-        .getState()
-        .showToast("Models saved — effective next turn", "success");
     } catch (err) {
       set({ saving: false });
       handleSaveError(err);
@@ -500,8 +526,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   saveToolCatalog: async (catalog) => {
     if (turnInProgress()) {
-      handleSaveError(new SettingsApiError(409, "turn_in_progress"));
-      return;
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
     }
     set({ saving: true });
     try {
@@ -513,7 +540,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         engineStatuses: catalogPayload.engines,
         saving: false,
       });
-      useToastStore.getState().showToast("Tool catalog saved", "success");
     } catch (err) {
       set({ saving: false });
       handleSaveError(err);
@@ -523,8 +549,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   saveCustomTool: async (id, def) => {
     if (turnInProgress()) {
-      handleSaveError(new SettingsApiError(409, "turn_in_progress"));
-      return;
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
     }
     set({ saving: true });
     try {
@@ -540,9 +567,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         engineStatuses: catalogPayload.engines,
         saving: false,
       });
-      useToastStore
-        .getState()
-        .showToast(`Custom tool "${id}" saved — enable it in Tool Catalog`, "success");
     } catch (err) {
       set({ saving: false });
       handleSaveError(err);
@@ -552,8 +576,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   removeCustomTool: async (id) => {
     if (turnInProgress()) {
-      handleSaveError(new SettingsApiError(409, "turn_in_progress"));
-      return;
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
     }
     set({ saving: true });
     try {
@@ -570,7 +595,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         engineStatuses: catalogPayload.engines,
         saving: false,
       });
-      useToastStore.getState().showToast(`Custom tool "${id}" deleted`, "success");
     } catch (err) {
       set({ saving: false });
       handleSaveError(err);
@@ -580,8 +604,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   saveAgent: async (id, profile) => {
     if (turnInProgress()) {
-      handleSaveError(new SettingsApiError(409, "turn_in_progress"));
-      return;
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
     }
     set({ saving: true });
     try {
@@ -592,7 +617,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         agents: { ...s.agents, [id]: synced },
         saving: false,
       }));
-      useToastStore.getState().showToast(`Agent "${id}" saved`, "success");
     } catch (err) {
       set({ saving: false });
       handleSaveError(err);
@@ -602,8 +626,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   applyAgentToolPreset: async (id, preset) => {
     if (turnInProgress()) {
-      handleSaveError(new SettingsApiError(409, "turn_in_progress"));
-      return;
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
     }
     set({ saving: true });
     try {
@@ -614,7 +639,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         agents: { ...s.agents, [id]: profile },
         saving: false,
       }));
-      useToastStore.getState().showToast(`Applied ${preset} preset`, "success");
     } catch (err) {
       set({ saving: false });
       handleSaveError(err);
@@ -630,8 +654,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   removeAgent: async (id) => {
     if (turnInProgress()) {
-      handleSaveError(new SettingsApiError(409, "turn_in_progress"));
-      return;
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
     }
     set({ saving: true });
     try {
@@ -652,7 +677,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
           : agentIds[0] ?? "default",
         saving: false,
       });
-      useToastStore.getState().showToast(`Agent "${id}" deleted`, "success");
     } catch (err) {
       set({ saving: false });
       handleSaveError(err);
@@ -662,16 +686,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   saveLog: async (level) => {
     if (turnInProgress()) {
-      handleSaveError(new SettingsApiError(409, "turn_in_progress"));
-      return;
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
     }
     set({ saving: true });
     try {
       const { revision } = await putLog(level);
       set({ revision, log: { level }, saving: false });
-      useToastStore
-        .getState()
-        .showToast("Log level saved — effective immediately", "success");
     } catch (err) {
       set({ saving: false });
       handleSaveError(err);

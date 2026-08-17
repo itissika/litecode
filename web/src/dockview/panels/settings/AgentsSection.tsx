@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { Plus, ArrowClockwise } from "@phosphor-icons/react";
 
 import {
@@ -24,6 +24,11 @@ import {
   TextArea,
   SettingsPageShell,
 } from "./shared";
+import {
+  flushRegisteredSettings,
+  isPersistBusy,
+  useSettingsPersist,
+} from "./persist";
 
 function ModelRefSelect({
   value,
@@ -345,6 +350,33 @@ export function AgentToolsGrid({
 // and always persist a fixed default rather than a user-edited value.
 const BUILTIN_TEMPERATURE = 0.7;
 
+function agentPersistPayload(
+  draft: AgentProfile,
+  selectedAgentId: string,
+  bindableToolsPrimary: ToolCatalogEntry[],
+  bindableToolsSubagent: ToolCatalogEntry[],
+): AgentProfile {
+  const isHidden = isHiddenSettingsAgent(selectedAgentId, draft.role);
+  const bindableTools =
+    draft.role === "subagent" ? bindableToolsSubagent : bindableToolsPrimary;
+  const bindableIds = new Set(bindableTools.map((entry) => entry.id));
+  const tools = Object.fromEntries(
+    Object.entries(draft.tools).filter(([id]) => bindableIds.has(id)),
+  );
+  if (isHidden) {
+    return { ...draft, tools: {}, allowed_subagents: [], temperature: BUILTIN_TEMPERATURE };
+  }
+  if (draft.role === "subagent") {
+    return withSyncedToolSeries({
+      ...draft,
+      tools,
+      allowed_subagents: [],
+      temperature: BUILTIN_TEMPERATURE,
+    });
+  }
+  return withSyncedToolSeries({ ...draft, tools, temperature: BUILTIN_TEMPERATURE });
+}
+
 export function AgentsSection() {
   const toolCatalog = useSettingsStore((s) => s.toolCatalog);
   const models = useSettingsStore((s) => s.models);
@@ -353,6 +385,8 @@ export function AgentsSection() {
   const agents = useSettingsStore((s) => s.agents);
   const saving = useSettingsStore((s) => s.saving);
   const saveBlocked = useSettingsStore((s) => s.isSaveBlocked());
+  const persistStatus = useSettingsStore((s) => s.persistStatus);
+  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const setSelectedAgentId = useSettingsStore((s) => s.setSelectedAgentId);
   const saveAgent = useSettingsStore((s) => s.saveAgent);
   const createAgent = useSettingsStore((s) => s.createAgent);
@@ -396,7 +430,8 @@ export function AgentsSection() {
   }, [toolCatalog]);
 
   useEffect(() => {
-    if (!profile) return;
+    if (!profile || creating) return;
+    if (isPersistBusy(persistStatus)) return;
     const bindableIds = new Set(
       (profile.role === "subagent" ? bindableToolsSubagent : bindableToolsPrimary).map(
         (e) => e.id,
@@ -410,7 +445,34 @@ export function AgentsSection() {
       allowed_subagents: profile.allowed_subagents ?? [],
       tools,
     });
-  }, [profile, selectedAgentId, bindableToolsPrimary, bindableToolsSubagent]);
+  }, [profile, selectedAgentId, bindableToolsPrimary, bindableToolsSubagent, persistStatus, creating]);
+
+  useSettingsPersist(draft, {
+    enabled: !creating && draft != null,
+    debounceMs: 400,
+    setStatus: setPersistStatus,
+    serialize: (d) => {
+      if (!d) return { skip: "unchanged" };
+      return {
+        ok: agentPersistPayload(
+          d,
+          selectedAgentId,
+          bindableToolsPrimary,
+          bindableToolsSubagent,
+        ),
+      };
+    },
+    commit: (p) => saveAgent(selectedAgentId, p),
+    revert: () => {
+      const snap = useSettingsStore.getState();
+      const current = snap.agents[snap.selectedAgentId];
+      if (!current) return;
+      setDraft({
+        ...current,
+        allowed_subagents: current.allowed_subagents ?? [],
+      });
+    },
+  });
 
   const isHiddenAgent =
     profile != null && isHiddenSettingsAgent(selectedAgentId, profile.role);
@@ -457,28 +519,22 @@ export function AgentsSection() {
     }
   };
 
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    if (!draft) return;
-    const bindableTools =
-      draft.role === "subagent" ? bindableToolsSubagent : bindableToolsPrimary;
-    const bindableIds = new Set(bindableTools.map((entry) => entry.id));
-    const tools = Object.fromEntries(
-      Object.entries(draft.tools).filter(([id]) => bindableIds.has(id)),
+  const onCreate = () => {
+    if (!draft || !newAgentId.trim()) return;
+    const payload = agentPersistPayload(
+      draft,
+      newAgentId.trim(),
+      bindableToolsPrimary,
+      bindableToolsSubagent,
     );
-    const payload: AgentProfile = isHiddenAgent
-      ? { ...draft, tools: {}, allowed_subagents: [], temperature: BUILTIN_TEMPERATURE }
-      : draft.role === "subagent"
-        ? withSyncedToolSeries({
-            ...draft,
-            tools,
-            allowed_subagents: [],
-            temperature: BUILTIN_TEMPERATURE,
-          })
-        : withSyncedToolSeries({ ...draft, tools, temperature: BUILTIN_TEMPERATURE });
-    void (creating
-      ? createAgent(newAgentId.trim(), payload).then(() => setCreating(false))
-      : saveAgent(selectedAgentId, payload));
+    void createAgent(newAgentId.trim(), payload)
+      .then(() => {
+        setCreating(false);
+        setPersistStatus("saved");
+      })
+      .catch(() => {
+        // toast already shown
+      });
   };
 
   const onDelete = () => {
@@ -498,9 +554,18 @@ export function AgentsSection() {
   return (
     <SettingsPageShell
       title="Agents"
-      onSubmit={onSubmit}
       actions={
         <>
+          {creating ? (
+            <button
+              type="button"
+              onClick={onCreate}
+              disabled={saveBlocked || !newAgentId.trim() || saving}
+              className="btn-primary btn-sm"
+            >
+              Create
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={startCreate}
@@ -522,11 +587,6 @@ export function AgentsSection() {
           </button>
         </>
       }
-      save={{
-        disabled: saveBlocked || (creating && !newAgentId.trim()),
-        saving,
-        label: creating ? "Create" : "Save",
-      }}
     >
       <div className="space-y-6">
       <div className="space-y-3">
@@ -556,7 +616,9 @@ export function AgentsSection() {
                 <FieldLabel>Agent</FieldLabel>
                 <Select
                   value={selectedAgentId}
-                  onChange={setSelectedAgentId}
+                  onChange={(id) => {
+                    void flushRegisteredSettings().then(() => setSelectedAgentId(id));
+                  }}
                   options={agentIds.map((id) => {
                     const role = agents[id]?.role ?? "primary";
                     return {

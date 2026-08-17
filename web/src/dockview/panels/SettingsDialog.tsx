@@ -63,7 +63,7 @@ export function SettingsDialog() {
     <FloatingDialog
       visible={open}
       title={`Settings — rev ${revision}`}
-      onClose={closeSettings}
+      onClose={() => void closeSettings()}
       defaultWidth={860}
       defaultHeight={640}
     >
@@ -78,7 +78,7 @@ export function SettingsDialog() {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setSection(item.id)}
+                  onClick={() => void setSection(item.id)}
                   className={
                     section === item.id
                       ? "settings-nav-item settings-nav-item-active bg-(--_dk-overlay)"

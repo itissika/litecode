@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Plus } from "@phosphor-icons/react";
 
 import {
@@ -15,6 +15,11 @@ import {
   SettingsPageShell,
   adapterDefaultEndpoint,
 } from "./shared";
+import {
+  isPersistBusy,
+  useSettingsPersist,
+  type SerializeResult,
+} from "./persist";
 
 function readyProviderIds(
   providers: Record<string, ProviderView> | null,
@@ -56,19 +61,40 @@ function closedApiModelOptions(
   return field?.options ?? [];
 }
 
+function serializeModels(
+  draft: Record<string, ModelDefinition>,
+): SerializeResult<Record<string, ModelDefinition>> {
+  for (const model of Object.values(draft)) {
+    if (!model.provider_ref.trim() || !(model.config?.api_model_id ?? "").trim()) {
+      return { skip: "invalid" };
+    }
+  }
+  return { ok: draft };
+}
+
 export function ModelsSection() {
   const adapters = useSettingsStore((s) => s.adapters);
   const providers = useSettingsStore((s) => s.providers);
   const models = useSettingsStore((s) => s.models);
   const agents = useSettingsStore((s) => s.agents);
-  const saving = useSettingsStore((s) => s.saving);
   const saveBlocked = useSettingsStore((s) => s.isSaveBlocked());
+  const persistStatus = useSettingsStore((s) => s.persistStatus);
+  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const saveModels = useSettingsStore((s) => s.saveModels);
   const [draft, setDraft] = useState<Record<string, ModelDefinition>>({});
 
   useEffect(() => {
+    if (isPersistBusy(persistStatus)) return;
     setDraft(models ?? {});
-  }, [models]);
+  }, [models, persistStatus]);
+
+  useSettingsPersist(draft, {
+    debounceMs: 400,
+    setStatus: setPersistStatus,
+    serialize: serializeModels,
+    commit: (p) => saveModels(p),
+    revert: () => setDraft(useSettingsStore.getState().models ?? {}),
+  });
 
   const referencedModelRefs = useMemo(() => {
     const refs = new Set<string>();
@@ -148,15 +174,9 @@ export function ModelsSection() {
     });
   };
 
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    void saveModels(draft);
-  };
-
   return (
     <SettingsPageShell
       title="Models"
-      onSubmit={onSubmit}
       actions={
         <button
           type="button"
@@ -169,7 +189,6 @@ export function ModelsSection() {
           <Plus size={16} />
         </button>
       }
-      save={{ disabled: saveBlocked, saving }}
     >
       <div className="space-y-2">
         {entries.map((model) => {

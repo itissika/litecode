@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Plus } from "@phosphor-icons/react";
 
 import {
@@ -15,6 +15,11 @@ import {
   SettingsPageShell,
   adapterDefaultEndpoint,
 } from "./shared";
+import {
+  isPersistBusy,
+  useSettingsPersist,
+  type SerializeResult,
+} from "./persist";
 
 type ProviderDraft = {
   id: string;
@@ -49,6 +54,25 @@ function viewToDraft(view: ProviderView, adapters: AdapterDescriptor[]): Provide
   };
 }
 
+function serializeProviderDrafts(
+  drafts: ProviderDraft[],
+  adapters: AdapterDescriptor[],
+): SerializeResult<Record<string, ProviderDefinition>> {
+  for (const d of drafts) {
+    if (!d.id.trim() || !d.adapter_id) return { skip: "invalid" };
+    if (endpointFieldRequired(adapters, d.adapter_id) && !d.endpoint.trim()) {
+      return { skip: "invalid" };
+    }
+    if (!(d.api_key.trim() || d.masked_key)) return { skip: "invalid" };
+  }
+  return { ok: draftsToProviders(drafts) };
+}
+
+function snapshotProviderDrafts(): ProviderDraft[] {
+  const { providers, adapters } = useSettingsStore.getState();
+  return Object.values(providers ?? {}).map((view) => viewToDraft(view, adapters));
+}
+
 function draftsToProviders(drafts: ProviderDraft[]): Record<string, ProviderDefinition> {
   const out: Record<string, ProviderDefinition> = {};
   for (const d of drafts) {
@@ -71,15 +95,25 @@ function draftsToProviders(drafts: ProviderDraft[]): Record<string, ProviderDefi
 export function ConnectionSection() {
   const adapters = useSettingsStore((s) => s.adapters);
   const providers = useSettingsStore((s) => s.providers);
-  const saving = useSettingsStore((s) => s.saving);
   const saveBlocked = useSettingsStore((s) => s.isSaveBlocked());
+  const persistStatus = useSettingsStore((s) => s.persistStatus);
+  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const saveProviders = useSettingsStore((s) => s.saveProviders);
   const [drafts, setDrafts] = useState<ProviderDraft[]>([]);
   const [justAddedProviderId, setJustAddedProviderId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (isPersistBusy(persistStatus)) return;
     setDrafts(Object.values(providers ?? {}).map((view) => viewToDraft(view, adapters)));
-  }, [providers, adapters]);
+  }, [providers, adapters, persistStatus]);
+
+  useSettingsPersist(drafts, {
+    debounceMs: 400,
+    setStatus: setPersistStatus,
+    serialize: (d) => serializeProviderDrafts(d, adapters),
+    commit: (p) => saveProviders(p),
+    revert: () => setDrafts(snapshotProviderDrafts()),
+  });
 
   const adapterOptions = useMemo(
     () => adapters.map((a) => ({ value: a.id, label: a.label as ReactNode })),
@@ -112,15 +146,9 @@ export function ConnectionSection() {
     setDrafts((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    void saveProviders(draftsToProviders(drafts));
-  };
-
   return (
     <SettingsPageShell
       title="Providers"
-      onSubmit={onSubmit}
       actions={
         <button
           type="button"
@@ -133,7 +161,6 @@ export function ConnectionSection() {
           <Plus size={16} />
         </button>
       }
-      save={{ disabled: saveBlocked, saving }}
     >
         <div className="settings-content-indent space-y-2">
           <div className="space-y-2">

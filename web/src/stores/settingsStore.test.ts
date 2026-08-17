@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { catalogPollDelayMs, resetCatalogPollState, useSettingsStore } from "./settingsStore";
 import { useToastStore } from "./toastStore";
+import { registerSettingsFlush } from "../dockview/panels/settings/persist";
 
 // Mock the settings API module so the catalog poll is deterministic.
 vi.mock("../api/settings", async (importOriginal) => {
@@ -128,5 +129,36 @@ describe("ensureCatalogLoaded warming poll (FE-03)", () => {
 
     expect(mockedGetToolCatalog).toHaveBeenCalledTimes(2);
     expect(useSettingsStore.getState().engineStatuses.lsp.state).toBe("warm");
+  });
+});
+
+describe("settings persist toasts", () => {
+  it("does not success-toast settings/changed while the dialog is open", () => {
+    useToastStore.setState({ toasts: [] });
+    useSettingsStore.setState({ open: true, persistStatus: "saving" });
+    useSettingsStore.getState().onRemoteSettingsChanged({
+      revision: 99,
+      summary: {
+        revision: 99,
+        provider_endpoint: null,
+        model_count: 1,
+        agent_count: 1,
+        catalog_count: 1,
+        log_level: "info",
+        effective_next_turn: true,
+        restart_required: false,
+      },
+    });
+    expect(useToastStore.getState().toasts.map((t) => t.message)).not.toContain(
+      "Settings changed — effective next turn",
+    );
+  });
+
+  it("flushes registered persist before closing settings", async () => {
+    const flush = vi.fn(async () => undefined);
+    const unreg = registerSettingsFlush(flush);
+    await useSettingsStore.getState().closeSettings();
+    expect(flush).toHaveBeenCalledTimes(1);
+    unreg();
   });
 });
