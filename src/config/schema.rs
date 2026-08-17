@@ -11,6 +11,7 @@ use serde_json::Value;
 pub const ADAPTER_OPENAI_RESPONSES: &str = "openai_responses";
 pub const ADAPTER_DEEPSEEK_RESPONSES: &str = "deepseek_responses";
 pub const ADAPTER_MIMO_RESPONSES: &str = "mimo_responses";
+pub const ADAPTER_OPENCODE: &str = "opencode";
 
 /// LLM provider auth mode for HTTP requests.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

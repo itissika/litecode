@@ -95,6 +95,7 @@ impl ConfigManager {
         }
 
         validate_custom_tools(global)?;
+        validate_mcp_servers(global)?;
 
         Ok(())
     }
@@ -255,6 +256,49 @@ fn validate_custom_tools(global: &GlobalSettings) -> Result<()> {
             return Err(LitecodeError::Config(format!(
                 "custom tool '{}' catalog entry must have tier custom",
                 tool.name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_mcp_servers(global: &GlobalSettings) -> Result<()> {
+    use super::global_db::tools;
+
+    for id in global.mcp_servers.keys() {
+        let catalog_id = tools::mcp_catalog_id(id);
+        let Some(entry) = global.tool_catalog.get(&catalog_id) else {
+            return Err(LitecodeError::Config(format!(
+                "MCP server '{id}' has no matching tool catalog entry '{catalog_id}'"
+            )));
+        };
+        if entry.tier != ToolTier::Mcp {
+            return Err(LitecodeError::Config(format!(
+                "MCP server '{id}' catalog entry must have tier mcp"
+            )));
+        }
+        if entry.init_scope != InitScope::Global {
+            return Err(LitecodeError::Config(format!(
+                "MCP server '{id}' must have init_scope global"
+            )));
+        }
+    }
+
+    for entry in global.tool_catalog.values() {
+        if entry.tier != ToolTier::Mcp {
+            continue;
+        }
+        let Some(server_id) = entry.id.strip_prefix("mcp_") else {
+            return Err(LitecodeError::Config(format!(
+                "tool catalog entry '{}' has tier mcp but id is not mcp_<server>",
+                entry.id
+            )));
+        };
+        if !global.mcp_servers.contains_key(server_id) {
+            return Err(LitecodeError::Config(format!(
+                "tool catalog entry '{}' has tier mcp but no matching mcp_servers definition",
+                entry.id
             )));
         }
     }

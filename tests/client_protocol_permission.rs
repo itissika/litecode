@@ -9,6 +9,7 @@ fn server_hello_notification_serializes_correctly() {
     use litecode::client_protocol::project;
     let msg = project::server_hello(
         "0.1.0".into(),
+        "dev".into(),
         "sess".into(),
         "/proj".into(),
         "ws-id".into(),

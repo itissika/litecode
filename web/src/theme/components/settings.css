@@ -130,6 +130,26 @@
   color: var(--_dk-text-primary);
 }
 
+.settings-nav {
+  padding: 0.5rem 0 0.75rem;
+  overflow-y: auto;
+}
+
+.settings-nav-group + .settings-nav-group {
+  margin-top: 0.625rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid var(--_dk-line);
+}
+
+.settings-nav-group-title {
+  padding: 0.125rem 0.75rem 0.25rem;
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--_dk-text-disabled);
+}
+
 .settings-table {
   width: 100%;
   text-align: left;

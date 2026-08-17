@@ -1,15 +1,17 @@
-//! MCP stdio integration (2.10): initialize-once, crash-rebuild, liveness.
+//! Typical MCP host path against `tests/fixtures/mock_mcp_server.py`:
 //!
-//! Drives a real `McpStdioClient` / `McpConnectionPool` against the mock
-//! `tests/fixtures/mock_mcp_server.py`. The 60s timeout-kill path is not run
-//! here (it would slow the suite by a minute); it is covered by the pool
-//! liveness/kill primitives exercised below plus the `run_mcp_call` timeout
-//! wiring, which are the pieces whose regression would reintroduce a leak.
+//! Settings start (async hop) → schemas for the LLM list → sync `Tool::call`
+//! from a current-thread runtime (the turn) → hub I/O.
+//!
+//! Direct `McpStdioClient` tests cover the JSON-RPC codec only.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use litecode::mcp::{McpClient, McpConnectionPool, McpStdioClient};
+use litecode::mcp::{McpClient, McpConnectionPool, McpRunState, McpStdioClient};
+use litecode::tool::Tool;
+use litecode::tools::mcp_tool::{McpServerConnection, McpTool};
+use litecode::types::ToolSignalLevel;
 
 fn mock_command() -> (String, Vec<String>) {
     let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -24,6 +26,31 @@ fn stdio_client() -> McpStdioClient {
 
 fn mcp_client() -> McpClient {
     McpClient::Stdio(stdio_client())
+}
+
+fn mock_def() -> litecode::config::schema::McpServerDefinition {
+    let (command, args) = mock_command();
+    litecode::config::schema::McpServerDefinition {
+        command,
+        args,
+        env: HashMap::new(),
+        transport: litecode::config::schema::McpTransport::Stdio,
+    }
+}
+
+fn echo_tool(pool: Arc<McpConnectionPool>, cmd: &str, args: &[String]) -> McpTool {
+    McpTool::new(
+        "echo".into(),
+        serde_json::json!({"type": "object", "properties": {"greeting": {"type": "string"}}}),
+        McpServerConnection {
+            tool_name: "echo".into(),
+            server_name: "mock".into(),
+            command: cmd.to_string(),
+            args: args.to_vec(),
+            env: HashMap::new(),
+            pool,
+        },
+    )
 }
 
 /// initialize happens exactly once per connection and flips `needs_initialize`.
@@ -85,7 +112,7 @@ async fn pool_reuses_live_client_for_same_key() {
         .expect("second get");
     assert!(Arc::ptr_eq(&a, &b), "pool must reuse the cached client");
     assert!(
-        a.lock().await.is_alive().await,
+        pool.child_alive("mock").await,
         "cached client must be alive"
     );
 }
@@ -101,11 +128,10 @@ async fn pool_rebuilds_after_crash() {
         .await
         .expect("initial get");
 
-    // Kill the underlying server; the cached client must now report dead.
-    client.lock().await.kill().await;
+    pool.kill_child("mock").await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert!(
-        !client.lock().await.is_alive().await,
+        !pool.child_alive("mock").await,
         "cached client must be detected dead after process kill"
     );
 
@@ -119,7 +145,211 @@ async fn pool_rebuilds_after_crash() {
         "a dead client must be replaced, not reused"
     );
     assert!(
-        rebuilt.lock().await.is_alive().await,
+        pool.child_alive("mock").await,
         "rebuilt client must be alive"
+    );
+}
+
+/// Restart replaces the live process; subsequent get_or_create uses the new child.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pool_restart_replaces_live_client() {
+    let (cmd, args) = mock_command();
+    let pool = Arc::new(McpConnectionPool::new());
+    let def = litecode::config::schema::McpServerDefinition {
+        command: cmd.clone(),
+        args: args.clone(),
+        env: HashMap::new(),
+        transport: litecode::config::schema::McpTransport::Stdio,
+    };
+    pool.start("mock", &def).await.expect("start");
+    let first = pool
+        .get_or_create("mock", &cmd, &args, &HashMap::new())
+        .await
+        .expect("first");
+    pool.restart("mock", &def).await.expect("restart");
+    let second = pool
+        .get_or_create("mock", &cmd, &args, &HashMap::new())
+        .await
+        .expect("second");
+    assert!(
+        !Arc::ptr_eq(&first, &second),
+        "restart must spawn a new client"
+    );
+    assert!(pool.child_alive("mock").await);
+}
+
+/// Product path: start on hub, list tools, then `Tool::call` on the turn's
+/// current-thread runtime (must not panic / must round-trip echo).
+#[tokio::test(flavor = "current_thread")]
+async fn turn_runtime_start_list_and_tool_call() {
+    let pool = Arc::new(McpConnectionPool::new());
+    let def = mock_def();
+    let tools = pool.start("mock", &def).await.expect("start");
+    assert!(
+        tools.iter().any(|(t, _)| t == "echo"),
+        "start must return tools/list schemas, got {tools:?}"
+    );
+    let snap = pool.snapshot("mock").await;
+    assert_eq!(snap.status, McpRunState::Running);
+    assert!(snap.tools.iter().any(|t| t == "echo"));
+
+    let schemas = pool.schemas("mock").await;
+    assert!(
+        schemas.iter().any(|(n, _)| n == "echo"),
+        "schemas used by build_tool_list must include echo"
+    );
+
+    let (cmd, args) = mock_command();
+    let tool = echo_tool(Arc::clone(&pool), &cmd, &args);
+    let result = tool.call(serde_json::json!({"greeting": "hello"}));
+    assert_eq!(
+        result.level,
+        ToolSignalLevel::Ok,
+        "turn-runtime MCP call failed: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("hello"),
+        "echo must reflect arguments, got: {}",
+        result.content
+    );
+
+    pool.stop("mock").await;
+    assert!(!pool.child_alive("mock").await);
+    let after_stop = tool.call(serde_json::json!({"greeting": "again"}));
+    assert_eq!(
+        after_stop.level,
+        ToolSignalLevel::Ok,
+        "call after Stop must auto-start: {}",
+        after_stop.content
+    );
+    assert!(after_stop.content.contains("again"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn block_on_hub_from_turn_runtime_does_not_panic() {
+    let pool = McpConnectionPool::new();
+    let n = pool
+        .block_on_hub(async { 7u8 })
+        .expect("block_on_hub from current-thread runtime");
+    assert_eq!(n, 7);
+}
+
+/// Catalog enable + agent bind → `build_tool_list` advertises MCP's own names
+/// (`echo`), not `mcp_<id>`, and `Tool::call` works on the turn runtime.
+#[tokio::test(flavor = "current_thread")]
+async fn catalog_and_bind_exposes_echo_and_round_trips() {
+    use litecode::config::TurnGuard;
+    use litecode::config::resolved::{WorkspaceState, resolve};
+    use litecode::config::schema::{
+        ADAPTER_OPENAI_RESPONSES, AgentProfile, AgentToolBinding, GlobalSettings, InitScope,
+        McpServerDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition,
+        ToolCatalogEntry, ToolTier,
+    };
+    use litecode::engines::WorkspaceEngines;
+    use litecode::ide_base::IdeBaseHandle;
+    use litecode::llm::provider_from_definition;
+    use litecode::optional::EngineManager;
+    use litecode::session::manager::SessionManager;
+    use litecode::tool::catalog::init;
+    use litecode::tool::registry::build_tool_list;
+
+    let (command, args) = mock_command();
+    let mut global = GlobalSettings::default();
+    global.mcp_servers.insert(
+        "mock".into(),
+        McpServerDefinition {
+            command,
+            args,
+            env: HashMap::new(),
+            transport: litecode::config::schema::McpTransport::Stdio,
+        },
+    );
+    global.tool_catalog.insert(
+        "mcp_mock".into(),
+        ToolCatalogEntry {
+            id: "mcp_mock".into(),
+            tier: ToolTier::Mcp,
+            init_scope: InitScope::Global,
+            catalog_enabled: true,
+        },
+    );
+    let mut bindings = HashMap::new();
+    bindings.insert(
+        "mcp_mock".into(),
+        AgentToolBinding {
+            enabled: true,
+            policy: litecode::permission::ToolPolicy::allow_all(),
+            path_mode: litecode::permission::BindingPathMode::default(),
+            last_applied_preset: None,
+        },
+    );
+    global.agents.insert(
+        "default".into(),
+        AgentProfile {
+            tools: bindings,
+            ..Default::default()
+        },
+    );
+
+    let ws = tempfile::TempDir::new().expect("ws");
+    let mut resolved = resolve(global, WorkspaceState::new(ws.path()));
+    init(&mut resolved, InitScope::Global);
+
+    let pool = Arc::new(McpConnectionPool::new());
+    let workspace_engines = WorkspaceEngines::new();
+    let ide = IdeBaseHandle::open(ws.path(), Arc::new(workspace_engines.clone())).expect("ide");
+    let provider = provider_from_definition(&ProviderDefinition {
+        id: "test".into(),
+        adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
+        label: "test".into(),
+        config: ProviderConnectionConfig {
+            endpoint: "http://127.0.0.1:9".into(),
+            api_key: "k".into(),
+            auth: ProviderAuth::Bearer,
+        },
+    })
+    .expect("provider");
+
+    let tools = build_tool_list(
+        &resolved,
+        "default",
+        provider,
+        "k",
+        0,
+        tokio_util::sync::CancellationToken::new(),
+        EngineManager::new(),
+        workspace_engines,
+        ide,
+        "test-parent-session",
+        Arc::new(SessionManager::new(
+            Arc::new(TurnGuard::new()),
+            String::new(),
+        )),
+        Arc::clone(&pool),
+    )
+    .await;
+    let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+    assert!(
+        names.contains(&"echo".to_string()),
+        "LLM list must use the server tool name, got {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n.starts_with("mcp_")),
+        "catalog id must not be advertised as a tool, got {names:?}"
+    );
+
+    let echo = tools.iter().find(|t| t.name() == "echo").expect("echo");
+    let result = echo.call(serde_json::json!({"greeting": "from-list"}));
+    assert_eq!(
+        result.level,
+        ToolSignalLevel::Ok,
+        "listed MCP tool call failed: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("from-list"),
+        "got: {}",
+        result.content
     );
 }

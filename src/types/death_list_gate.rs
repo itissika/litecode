@@ -424,19 +424,21 @@ fn death_list_dialect_tokens_absent_from_src() {
 fn death_list_adapter_registry_invariants() {
     use crate::config::schema::{
         ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES, ADAPTER_OPENAI_RESPONSES,
+        ADAPTER_OPENCODE,
     };
     use crate::llm::list_adapters;
 
     let adapters = list_adapters();
     assert_eq!(
         adapters.len(),
-        3,
-        "expected exactly three registered adapters"
+        4,
+        "expected exactly four registered adapters"
     );
     let ids: Vec<_> = adapters.iter().map(|a| a.id).collect();
     assert!(ids.contains(&ADAPTER_OPENAI_RESPONSES));
     assert!(ids.contains(&ADAPTER_DEEPSEEK_RESPONSES));
     assert!(ids.contains(&ADAPTER_MIMO_RESPONSES));
+    assert!(ids.contains(&ADAPTER_OPENCODE));
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let seed = fs::read_to_string(root.join("src/config/global_db/seed.rs")).expect("seed.rs");
@@ -470,6 +472,7 @@ fn death_list_adapter_registry_invariants() {
         "ADAPTER_OPENAI_RESPONSES",
         "ADAPTER_DEEPSEEK_RESPONSES",
         "ADAPTER_MIMO_RESPONSES",
+        "ADAPTER_OPENCODE",
     ] {
         assert!(
             schema_rs.contains(const_name),

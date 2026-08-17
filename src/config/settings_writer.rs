@@ -14,8 +14,8 @@ use super::log_filter;
 use super::manager::ConfigManager;
 use super::schema::{
     AgentProfile, AgentToolBinding, CustomToolDefinition, GlobalSettings, InitScope, LogSettings,
-    ModelDefinition, PROTECTED_AGENT_IDS, ProviderDefinition, ToolCatalogEntry, ToolPreset,
-    ToolTier, WebSearchSettings,
+    McpServerDefinition, McpTransport, ModelDefinition, PROTECTED_AGENT_IDS, ProviderDefinition,
+    ToolCatalogEntry, ToolPreset, ToolTier, WebSearchSettings,
 };
 use super::turn_guard::TurnGuard;
 use super::workspace;
@@ -568,7 +568,10 @@ impl SettingsWriter {
                 .get_mut(&id)
                 .expect("agent exists after load check");
             for (tool_id, binding) in profile.tools.iter_mut() {
-                if tools::core_none_tools().contains(&tool_id.as_str()) {
+                if tools::core_none_tools().contains(&tool_id.as_str())
+                    || tools::is_mcp_catalog_id(tool_id)
+                {
+                    binding.last_applied_preset = None;
                     continue;
                 }
                 apply_preset_to_binding(tool_id, binding, preset);
@@ -690,6 +693,84 @@ impl SettingsWriter {
         .map(|(rev, _)| rev)
     }
 
+    pub fn list_mcp_servers(&self) -> Result<Vec<(String, McpServerDefinition)>> {
+        let settings = self.load()?;
+        let mut servers: Vec<_> = settings.mcp_servers.into_iter().collect();
+        servers.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(servers)
+    }
+
+    pub fn get_mcp_server(&self, id: &str) -> Result<Option<McpServerDefinition>> {
+        let settings = self.load()?;
+        Ok(settings.mcp_servers.get(id).cloned())
+    }
+
+    pub fn write_mcp_server(&self, id: &str, mut def: McpServerDefinition) -> Result<u64> {
+        validate_tool_id(id)?;
+        if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
+            return Err(LitecodeError::Config(format!(
+                "MCP server id '{id}' conflicts with a builtin tool"
+            )));
+        }
+        def.command = def.command.trim().to_string();
+        match &def.transport {
+            McpTransport::Stdio => {
+                if def.command.is_empty() {
+                    return Err(LitecodeError::Config(
+                        "MCP stdio server command must not be empty".into(),
+                    ));
+                }
+            }
+            McpTransport::Remote { url, .. } => {
+                if cfg!(not(feature = "remote-mcp")) {
+                    return Err(LitecodeError::Config(
+                        "remote MCP transport requires a build with the remote-mcp feature".into(),
+                    ));
+                }
+                if url.trim().is_empty() {
+                    return Err(LitecodeError::Config(
+                        "MCP remote server url must not be empty".into(),
+                    ));
+                }
+            }
+        }
+
+        let catalog_id = tools::mcp_catalog_id(id);
+        self.commit_partial(move |settings| {
+            settings.mcp_servers.insert(id.to_string(), def.clone());
+            settings
+                .tool_catalog
+                .entry(catalog_id.clone())
+                .or_insert_with(|| ToolCatalogEntry {
+                    id: catalog_id.clone(),
+                    tier: ToolTier::Mcp,
+                    init_scope: InitScope::Global,
+                    catalog_enabled: false,
+                });
+            if let Some(entry) = settings.tool_catalog.get_mut(&catalog_id) {
+                entry.tier = ToolTier::Mcp;
+                entry.init_scope = InitScope::Global;
+            }
+            Ok(false)
+        })
+        .map(|(rev, _)| rev)
+    }
+
+    pub fn delete_mcp_server(&self, id: &str) -> Result<u64> {
+        let catalog_id = tools::mcp_catalog_id(id);
+        self.commit_partial(|settings| {
+            if settings.mcp_servers.remove(id).is_none() {
+                return Err(LitecodeError::Config(format!("MCP server not found: {id}")));
+            }
+            settings.tool_catalog.remove(&catalog_id);
+            for profile in settings.agents.values_mut() {
+                profile.tools.remove(&catalog_id);
+            }
+            Ok(false)
+        })
+        .map(|(rev, _)| rev)
+    }
+
     /// Initialize catalog readiness for global optional tools.
     /// Workspace infrastructure engines are not initialized here — use
     /// `enable_code_search_engine` / `write_lsp_init`.
@@ -751,7 +832,9 @@ fn validate_agent_id(id: &str) -> Result<()> {
 /// NONE tools (`plan` / `todo` / `subagent_launch`) are left untouched.
 fn expand_binding_presets(tools: &mut HashMap<String, AgentToolBinding>) {
     for (tool_id, binding) in tools.iter_mut() {
-        if tools::core_none_tools().contains(&tool_id.as_str()) {
+        if tools::core_none_tools().contains(&tool_id.as_str()) || tools::is_mcp_catalog_id(tool_id)
+        {
+            binding.last_applied_preset = None;
             continue;
         }
         if let Some(preset) = binding.last_applied_preset {
@@ -780,7 +863,7 @@ fn validate_tool_id(id: &str) -> Result<()> {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
     if !valid {
         return Err(LitecodeError::Config(format!(
-            "invalid custom tool id '{id}': use [a-z][a-z0-9_]*"
+            "invalid id '{id}': use [a-z][a-z0-9_]*"
         )));
     }
     Ok(())

@@ -11,11 +11,13 @@ use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 
 use crate::config::schema::{
-    AgentProfile, CustomToolDefinition, InitScope, LogSettings, ModelDefinition,
-    ProviderDefinition, ToolCatalogEntry, ToolPreset, ToolReadiness, ToolTier,
+    ADAPTER_OPENCODE, AgentProfile, CustomToolDefinition, InitScope, LogSettings,
+    McpServerDefinition, ModelDefinition, ProviderAuth, ProviderDefinition, ToolCatalogEntry,
+    ToolPreset, ToolReadiness, ToolTier,
 };
 use crate::config::workspace;
-use crate::llm::list_adapters;
+use crate::llm::{list_adapters, opencode_models_url, parse_opencode_model_catalog};
+use crate::mcp::{McpConnectionPool, McpRunState, McpServerSnapshot};
 use crate::serve::state::ServeState;
 use crate::tool::catalog::{effective_readiness, prune_non_catalog_agent_bindings};
 use crate::types::LitecodeError;
@@ -93,6 +95,7 @@ pub fn router() -> Router<ServeState> {
         .route("/", get(get_settings))
         .route("/adapters", get(get_adapters))
         .route("/providers", get(get_providers).put(put_providers))
+        .route("/providers/{id}/models", get(get_provider_models))
         .route("/websearch", get(get_websearch).put(put_websearch))
         .route("/models", get(get_models).put(put_models))
         .route("/agents", get(list_agents))
@@ -112,6 +115,17 @@ pub fn router() -> Router<ServeState> {
                 .put(put_custom_tool)
                 .delete(delete_custom_tool),
         )
+        .route("/mcp-servers", get(list_mcp_servers))
+        .route(
+            "/mcp-servers/{id}",
+            get(get_mcp_server)
+                .put(put_mcp_server)
+                .delete(delete_mcp_server),
+        )
+        .route("/mcp-servers/{id}/probe", post(start_mcp_server))
+        .route("/mcp-servers/{id}/start", post(start_mcp_server))
+        .route("/mcp-servers/{id}/stop", post(stop_mcp_server))
+        .route("/mcp-servers/{id}/restart", post(restart_mcp_server))
         .route("/log", get(get_log).put(put_log))
 }
 
@@ -147,6 +161,73 @@ async fn put_providers(
         }
         Err(e) => settings_write_error(e),
     }
+}
+
+async fn get_provider_models(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
+    let settings = match state.settings_writer.load_settings() {
+        Ok(s) => s,
+        Err(e) => return settings_error(e),
+    };
+    let Some(provider) = settings.providers.get(&id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ApiErr {
+                ok: false,
+                error: format!("provider not found: {id}"),
+            }),
+        )
+            .into_response();
+    };
+    if provider.adapter_id != ADAPTER_OPENCODE {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ApiErr {
+                ok: false,
+                error: format!("provider '{id}' has no remote model catalog"),
+            }),
+        )
+            .into_response();
+    }
+    let endpoint = crate::llm::closed_default_endpoint(&provider.adapter_id)
+        .filter(|_| provider.config.endpoint.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| provider.config.endpoint.clone());
+    let url = opencode_models_url(&endpoint);
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return catalog_fetch_error(format!("catalog client: {e}")),
+    };
+    let mut req = client.get(&url);
+    let key = provider.config.api_key.trim();
+    if !key.is_empty() {
+        req = match provider.config.auth {
+            ProviderAuth::Bearer => req.header("Authorization", format!("Bearer {key}")),
+            ProviderAuth::ApiKey => req.header("api-key", key),
+        };
+    }
+    let response = match req.send().await {
+        Ok(r) => r,
+        Err(e) => return catalog_fetch_error(format!("catalog fetch failed: {e}")),
+    };
+    let status = response.status();
+    let body = match response.text().await {
+        Ok(t) => t,
+        Err(e) => return catalog_fetch_error(format!("catalog body: {e}")),
+    };
+    if !status.is_success() {
+        return catalog_fetch_error(format!("HTTP {status}: {body}"));
+    }
+    match parse_opencode_model_catalog(&body) {
+        Ok(ids) => ok_json(serde_json::json!({ "ids": ids })),
+        Err(e) => catalog_fetch_error(e.to_string()),
+    }
+}
+
+fn catalog_fetch_error(error: String) -> Response {
+    (StatusCode::BAD_GATEWAY, Json(ApiErr { ok: false, error })).into_response()
 }
 
 async fn get_websearch(State(state): State<ServeState>) -> Response {
@@ -426,6 +507,151 @@ async fn delete_custom_tool(State(state): State<ServeState>, Path(id): Path<Stri
             ok_json(RevisionBody { revision })
         }
         Err(e) => settings_write_error(e),
+    }
+}
+
+#[derive(Serialize)]
+struct McpServerItem {
+    id: String,
+    #[serde(flatten)]
+    def: McpServerDefinition,
+    status: McpRunState,
+    tools: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn mcp_pool(state: &ServeState) -> std::sync::Arc<McpConnectionPool> {
+    state.runtime.read().expect("runtime lock").mcp_pool.clone()
+}
+
+fn mcp_item(id: String, def: McpServerDefinition, snap: McpServerSnapshot) -> McpServerItem {
+    McpServerItem {
+        id,
+        def,
+        status: snap.status,
+        tools: snap.tools,
+        error: snap.error,
+    }
+}
+
+#[derive(Serialize)]
+struct McpProbeResult {
+    ready: bool,
+    status: McpRunState,
+    tools: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+async fn list_mcp_servers(State(state): State<ServeState>) -> Response {
+    match state.settings_writer.list_mcp_servers() {
+        Ok(servers) => {
+            let pool = mcp_pool(&state);
+            let snaps = pool.snapshots().await;
+            ok_json(serde_json::json!({
+                "mcp_servers": servers
+                    .into_iter()
+                    .map(|(id, def)| {
+                        let snap = snaps.get(&id).cloned().unwrap_or_default();
+                        mcp_item(id, def, snap)
+                    })
+                    .collect::<Vec<_>>(),
+            }))
+        }
+        Err(e) => settings_error(e),
+    }
+}
+
+async fn get_mcp_server(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
+    match state.settings_writer.get_mcp_server(&id) {
+        Ok(Some(def)) => {
+            let snap = mcp_pool(&state).snapshot(&id).await;
+            ok_json(mcp_item(id, def, snap))
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiErr {
+                ok: false,
+                error: format!("MCP server not found: {id}"),
+            }),
+        )
+            .into_response(),
+        Err(e) => settings_error(e),
+    }
+}
+
+async fn put_mcp_server(
+    State(state): State<ServeState>,
+    Path(id): Path<String>,
+    Json(body): Json<McpServerDefinition>,
+) -> Response {
+    match state.settings_writer.write_mcp_server(&id, body) {
+        Ok(revision) => {
+            reload_runtime_after_settings_write(&state, "MCP server write");
+            ok_json(RevisionBody { revision })
+        }
+        Err(e) => settings_write_error(e),
+    }
+}
+
+async fn delete_mcp_server(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
+    mcp_pool(&state).stop(&id).await;
+    match state.settings_writer.delete_mcp_server(&id) {
+        Ok(revision) => {
+            reload_runtime_after_settings_write(&state, "MCP server delete");
+            ok_json(RevisionBody { revision })
+        }
+        Err(e) => settings_write_error(e),
+    }
+}
+
+async fn start_mcp_server(
+    State(state): State<ServeState>,
+    Path(id): Path<String>,
+    Json(def): Json<McpServerDefinition>,
+) -> Response {
+    mcp_lifecycle_result(mcp_pool(&state).start(&id, &def).await, id, &state).await
+}
+
+async fn restart_mcp_server(
+    State(state): State<ServeState>,
+    Path(id): Path<String>,
+    Json(def): Json<McpServerDefinition>,
+) -> Response {
+    mcp_lifecycle_result(mcp_pool(&state).restart(&id, &def).await, id, &state).await
+}
+
+async fn stop_mcp_server(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
+    mcp_pool(&state).stop(&id).await;
+    let snap = mcp_pool(&state).snapshot(&id).await;
+    ok_json(McpProbeResult {
+        ready: false,
+        status: snap.status,
+        tools: snap.tools,
+        error: snap.error,
+    })
+}
+
+async fn mcp_lifecycle_result(
+    result: crate::types::Result<Vec<(String, serde_json::Value)>>,
+    id: String,
+    state: &ServeState,
+) -> Response {
+    let snap = mcp_pool(state).snapshot(&id).await;
+    match result {
+        Ok(schemas) => ok_json(McpProbeResult {
+            ready: true,
+            status: snap.status,
+            tools: schemas.into_iter().map(|(name, _)| name).collect(),
+            error: None,
+        }),
+        Err(e) => ok_json(McpProbeResult {
+            ready: false,
+            status: snap.status,
+            tools: vec![],
+            error: Some(e.to_string()),
+        }),
     }
 }
 

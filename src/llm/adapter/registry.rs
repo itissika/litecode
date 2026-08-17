@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::schema::{
-    ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES, ADAPTER_OPENAI_RESPONSES,
+    ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES, ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE,
     ModelAdapterConfig, ModelCapability, ProviderAuth, ProviderConnectionConfig,
     ProviderDefinition, ReasoningEffort, ThinkingMode,
 };
@@ -23,6 +23,7 @@ use super::mimo_responses::{
     MimoResponsesProvider,
 };
 use super::openai_responses::OpenaiResponsesProvider;
+use super::opencode::{DEFAULT_ENDPOINT as OPENCODE_DEFAULT_ENDPOINT, OpencodeProvider};
 
 /// Field type exposed to Settings UI / API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -58,6 +59,9 @@ pub struct AdapterDescriptor {
     /// Official host for closed adapters. Open adapters leave this unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_endpoint: Option<&'static str>,
+    /// When true, Settings can refresh model ids from `{endpoint}/models`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub remote_model_catalog: bool,
 }
 
 const AUTH_OPTIONS: &[&str] = &["bearer", "api_key"];
@@ -234,6 +238,7 @@ const ADAPTERS: &[AdapterDescriptor] = &[
         provider_fields: SHARED_PROVIDER_FIELDS,
         model_fields: SHARED_MODEL_FIELDS,
         default_endpoint: None,
+        remote_model_catalog: false,
     },
     AdapterDescriptor {
         id: ADAPTER_DEEPSEEK_RESPONSES,
@@ -241,6 +246,7 @@ const ADAPTERS: &[AdapterDescriptor] = &[
         provider_fields: CLOSED_PROVIDER_FIELDS,
         model_fields: DEEPSEEK_MODEL_FIELDS,
         default_endpoint: Some(DEEPSEEK_DEFAULT_ENDPOINT),
+        remote_model_catalog: false,
     },
     AdapterDescriptor {
         id: ADAPTER_MIMO_RESPONSES,
@@ -248,6 +254,15 @@ const ADAPTERS: &[AdapterDescriptor] = &[
         provider_fields: CLOSED_PROVIDER_FIELDS,
         model_fields: MIMO_MODEL_FIELDS,
         default_endpoint: Some(MIMO_DEFAULT_ENDPOINT),
+        remote_model_catalog: false,
+    },
+    AdapterDescriptor {
+        id: ADAPTER_OPENCODE,
+        label: "OpenCode",
+        provider_fields: CLOSED_PROVIDER_FIELDS,
+        model_fields: SHARED_MODEL_FIELDS,
+        default_endpoint: Some(OPENCODE_DEFAULT_ENDPOINT),
+        remote_model_catalog: true,
     },
 ];
 
@@ -269,8 +284,13 @@ pub fn closed_default_endpoint(adapter_id: &str) -> Option<&'static str> {
     match adapter_id {
         ADAPTER_DEEPSEEK_RESPONSES => Some(DEEPSEEK_DEFAULT_ENDPOINT),
         ADAPTER_MIMO_RESPONSES => Some(MIMO_DEFAULT_ENDPOINT),
+        ADAPTER_OPENCODE => Some(OPENCODE_DEFAULT_ENDPOINT),
         _ => None,
     }
+}
+
+pub fn has_remote_model_catalog(adapter_id: &str) -> bool {
+    adapter_id == ADAPTER_OPENCODE
 }
 
 /// Closed-adapter context budgets: `(default, max)`.
@@ -536,6 +556,7 @@ pub fn build_client(def: &ProviderDefinition) -> Result<Box<dyn LlmProvider>> {
         ADAPTER_OPENAI_RESPONSES => Ok(Box::new(OpenaiResponsesProvider::new(endpoint, auth)?)),
         ADAPTER_DEEPSEEK_RESPONSES => Ok(Box::new(DeepseekResponsesProvider::new(endpoint, auth)?)),
         ADAPTER_MIMO_RESPONSES => Ok(Box::new(MimoResponsesProvider::new(endpoint, auth)?)),
+        ADAPTER_OPENCODE => Ok(Box::new(OpencodeProvider::new(endpoint, auth)?)),
         other => Err(LitecodeError::Config(format!(
             "unknown adapter_id '{other}' for provider '{}'",
             def.id
@@ -548,6 +569,7 @@ mod tests {
     use super::*;
     use crate::config::schema::{
         ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES, ADAPTER_OPENAI_RESPONSES,
+        ADAPTER_OPENCODE,
     };
 
     #[test]
@@ -638,6 +660,13 @@ mod tests {
             .find(|a| a.id == ADAPTER_OPENAI_RESPONSES)
             .unwrap();
         assert_eq!(openai.default_endpoint, None);
+        let opencode = list_adapters()
+            .iter()
+            .find(|a| a.id == ADAPTER_OPENCODE)
+            .unwrap();
+        assert_eq!(opencode.default_endpoint, Some(OPENCODE_DEFAULT_ENDPOINT));
+        assert!(opencode.remote_model_catalog);
+        assert!(has_remote_model_catalog(ADAPTER_OPENCODE));
     }
 
     #[test]
@@ -665,5 +694,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(open.endpoint, "");
+
+        let zen = parse_provider_config(
+            ADAPTER_OPENCODE,
+            &serde_json::json!({ "api_key": "sk-test" }),
+        )
+        .unwrap();
+        assert_eq!(zen.endpoint, OPENCODE_DEFAULT_ENDPOINT);
+
+        let go = parse_provider_config(
+            ADAPTER_OPENCODE,
+            &serde_json::json!({
+                "endpoint": "https://opencode.ai/zen/go/v1",
+                "api_key": "sk-test"
+            }),
+        )
+        .unwrap();
+        assert_eq!(go.endpoint, "https://opencode.ai/zen/go/v1");
     }
 }

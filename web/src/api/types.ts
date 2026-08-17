@@ -206,6 +206,8 @@ export interface SettingsSummary {
 
 export interface WireServerHello {
   version: string;
+  /** Build channel: dev | nightly | official */
+  version_channel?: string;
   session_id: string;
   project: string;
   /** Stable workspace identity from `.litecode/workspace.json`. */

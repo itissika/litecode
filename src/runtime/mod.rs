@@ -32,6 +32,7 @@ use crate::engines::WorkspaceEngines;
 use crate::hook::{HookDispatcher, HookRegistry, apply_hook_output};
 use crate::ide_base::IdeBaseHandle;
 use crate::llm::LlmProvider;
+use crate::mcp::McpConnectionPool;
 use crate::optional::EngineManager;
 use crate::permission::{CancellingPermissionSink, PermissionEngine, PermissionSink};
 use crate::runtime::observer::{
@@ -56,6 +57,8 @@ pub struct RuntimeHandle {
     pub workspace_engines: Arc<WorkspaceEngines>,
     /// Shared editor-facing services consumed by workspace-scoped Agent tools.
     pub ide: Arc<IdeBaseHandle>,
+    /// Process-level MCP stdio connections (start / restart / stop).
+    pub mcp_pool: Arc<McpConnectionPool>,
     global_db_path: PathBuf,
     settings_revision: Arc<AtomicU64>,
     loaded_revision: Arc<AtomicU64>,
@@ -88,6 +91,7 @@ impl RuntimeHandle {
             engine_manager,
             workspace_engines,
             ide,
+            mcp_pool: Arc::new(McpConnectionPool::new()),
             global_db_path: global_db_path.into(),
             settings_revision,
             loaded_revision: Arc::new(AtomicU64::new(loaded)),
@@ -264,7 +268,7 @@ impl RuntimeHandle {
             binding.provider = Arc::clone(provider);
         }
 
-        AgentRuntime::new(
+        AgentRuntime::with_mcp_pool(
             self.resolved.clone(),
             session_id,
             sessions,
@@ -278,6 +282,7 @@ impl RuntimeHandle {
             (*self.engine_manager).clone(),
             (*self.workspace_engines).clone(),
             Arc::clone(&self.ide),
+            Arc::clone(&self.mcp_pool),
         )
     }
 }
@@ -293,6 +298,7 @@ impl Clone for RuntimeHandle {
             engine_manager: Arc::clone(&self.engine_manager),
             workspace_engines: Arc::clone(&self.workspace_engines),
             ide: Arc::clone(&self.ide),
+            mcp_pool: Arc::clone(&self.mcp_pool),
             global_db_path: self.global_db_path.clone(),
             settings_revision: Arc::clone(&self.settings_revision),
             loaded_revision: Arc::new(AtomicU64::new(0)),
@@ -403,6 +409,7 @@ struct BuildToolParams {
     parent_session_id: String,
     sessions: Arc<SessionManager>,
     permission_sink: Arc<dyn PermissionSink>,
+    mcp_pool: Arc<McpConnectionPool>,
 }
 
 impl AgentRuntime {
@@ -429,6 +436,41 @@ impl AgentRuntime {
         engine_manager: EngineManager,
         workspace_engines: WorkspaceEngines,
         ide: Arc<IdeBaseHandle>,
+    ) -> Result<Self> {
+        Self::with_mcp_pool(
+            resolved,
+            session_id,
+            sessions,
+            turn_llm,
+            agent_name,
+            depth,
+            permission_sink,
+            observer,
+            cancel,
+            max_steps_override,
+            engine_manager,
+            workspace_engines,
+            ide,
+            Arc::new(McpConnectionPool::new()),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_mcp_pool(
+        resolved: ResolvedConfig,
+        session_id: String,
+        sessions: Arc<SessionManager>,
+        turn_llm: TurnLlmBinding,
+        agent_name: &str,
+        depth: u32,
+        permission_sink: Arc<dyn PermissionSink>,
+        observer: Arc<dyn RuntimeObserver>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+        max_steps_override: Option<u32>,
+        engine_manager: EngineManager,
+        workspace_engines: WorkspaceEngines,
+        ide: Arc<IdeBaseHandle>,
+        mcp_pool: Arc<McpConnectionPool>,
     ) -> Result<Self> {
         let cancel = cancel.unwrap_or_default();
 
@@ -482,6 +524,7 @@ impl AgentRuntime {
             parent_session_id: session_id.clone(),
             sessions: Arc::clone(&sessions),
             permission_sink,
+            mcp_pool,
         });
 
         let runtime = Self {
@@ -722,6 +765,7 @@ impl AgentRuntime {
                 Arc::clone(&params.ide),
                 &params.parent_session_id,
                 Arc::clone(&params.sessions),
+                Arc::clone(&params.mcp_pool),
             )
             .await;
 

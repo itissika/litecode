@@ -4,6 +4,7 @@ import {
   SettingsPersistController,
   flushRegisteredSettings,
   registerSettingsFlush,
+  shouldHydrateDraftFromStore,
   type PersistStatus,
 } from "./persist";
 
@@ -39,6 +40,17 @@ function makeController(opts?: {
   });
   return { controller, statuses, getSnapshot: () => snapshot, setSnapshot: (v: string) => { snapshot = v; } };
 }
+
+describe("shouldHydrateDraftFromStore", () => {
+  it("keeps incomplete local drafts instead of snapping back to the store", () => {
+    expect(shouldHydrateDraftFromStore("invalid")).toBe(false);
+    expect(shouldHydrateDraftFromStore("pending")).toBe(false);
+    expect(shouldHydrateDraftFromStore("saving")).toBe(false);
+    expect(shouldHydrateDraftFromStore("idle")).toBe(true);
+    expect(shouldHydrateDraftFromStore("saved")).toBe(true);
+    expect(shouldHydrateDraftFromStore("error")).toBe(true);
+  });
+});
 
 describe("SettingsPersistController", () => {
   it("skips RPC when the payload is unchanged", async () => {

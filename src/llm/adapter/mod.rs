@@ -3,8 +3,9 @@
 //! # Adapter selection
 //!
 //! Product adapters are registered in [`registry`] (`openai_responses`,
-//! `deepseek_responses`, `mimo_responses`). All three speak Responses JSON/SSE;
-//! vendor-tolerant hardening stays inside this module.
+//! `deepseek_responses`, `mimo_responses`, `opencode`). OpenAI / DeepSeek / MiMo
+//! speak Responses JSON/SSE; OpenCode translates Chat Completions inside its
+//! module. Vendor-tolerant hardening stays in this directory.
 //!
 //! # Streaming contract
 //!
@@ -16,6 +17,7 @@
 mod deepseek_responses;
 mod mimo_responses;
 mod openai_responses;
+mod opencode;
 mod registry;
 mod responses_sse;
 mod stream_contract;
@@ -33,8 +35,12 @@ pub(super) fn from_definition(def: &ProviderDefinition) -> Result<Box<dyn LlmPro
 pub mod public {
     pub use super::registry::{
         AdapterDescriptor, FieldSchema, FieldType, adapter_default_capabilities,
-        closed_api_model_ids, closed_context_windows, closed_default_endpoint, is_known_adapter,
-        list_adapters, parse_model_config, parse_provider_config, provider_ready,
-        validate_model_config, validate_provider_config,
+        closed_api_model_ids, closed_context_windows, closed_default_endpoint,
+        has_remote_model_catalog, is_known_adapter, list_adapters, parse_model_config,
+        parse_provider_config, provider_ready, validate_model_config, validate_provider_config,
     };
 }
+
+pub(crate) use opencode::{
+    models_get_url as opencode_models_url, parse_model_catalog as parse_opencode_model_catalog,
+};

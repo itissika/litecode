@@ -47,7 +47,11 @@ if (-not (Test-Path $ModelDir)) {
   Write-Warning "models/ bundle missing at $ModelDir — packaging may be incomplete"
 }
 
-Write-Host "==> cargo $($CargoArgs -join ' ')"
+if ($env:LITECODE_CHANNEL -ne "official") {
+  $env:LITECODE_CHANNEL = "nightly"
+}
+
+Write-Host "==> cargo $($CargoArgs -join ' ') (LITECODE_CHANNEL=$($env:LITECODE_CHANNEL))"
 Push-Location $Root
 $prevEa = $ErrorActionPreference
 $ErrorActionPreference = "Continue"

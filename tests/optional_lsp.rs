@@ -167,6 +167,7 @@ fn catalog_off_no_lsp_tool() {
             Arc::new(TurnGuard::new()),
             String::new(),
         )),
+        Arc::new(litecode::mcp::McpConnectionPool::new()),
     ));
     assert!(!tools.iter().any(|t| t.name() == "lsp"));
 }

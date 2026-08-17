@@ -59,6 +59,8 @@ export interface AdapterDescriptor {
   model_fields: FieldSchema[];
   /** Official host for closed adapters (DeepSeek / MiMo). Open adapters omit this. */
   default_endpoint?: string | null;
+  /** When true, Settings can refresh model ids from this provider's `/models`. */
+  remote_model_catalog?: boolean;
 }
 
 export interface ProviderView {
@@ -171,6 +173,33 @@ export interface CustomToolDefinition {
   timeout?: number;
 }
 
+export type McpTransport =
+  | { type: "stdio" }
+  | { type: "remote"; url: string; headers?: Record<string, string> };
+
+export interface McpServerDefinition {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  transport?: McpTransport;
+}
+
+export type McpRunState = "stopped" | "starting" | "running" | "error";
+
+export interface McpServerItem extends McpServerDefinition {
+  id: string;
+  status?: McpRunState;
+  tools?: string[];
+  error?: string | null;
+}
+
+export interface McpProbeResult {
+  ready: boolean;
+  status?: McpRunState;
+  tools: string[];
+  error?: string | null;
+}
+
 export interface LogSettings {
   level: string | null;
 }
@@ -269,6 +298,13 @@ export async function getProviders(): Promise<Record<string, ProviderView>> {
     "/api/settings/providers",
   );
   return data.providers;
+}
+
+export async function getProviderModels(providerId: string): Promise<string[]> {
+  const data = await requestJson<{ ids: string[] }>(
+    `/api/settings/providers/${encodeURIComponent(providerId)}/models`,
+  );
+  return data.ids ?? [];
 }
 
 export async function putProviders(
@@ -408,6 +444,69 @@ export async function deleteCustomTool(id: string): Promise<RevisionResponse> {
   );
 }
 
+export async function getMcpServers(): Promise<McpServerItem[]> {
+  const data = await requestJson<{ mcp_servers: McpServerItem[] }>(
+    "/api/settings/mcp-servers",
+  );
+  return data.mcp_servers ?? [];
+}
+
+export async function putMcpServer(
+  id: string,
+  def: McpServerDefinition,
+): Promise<RevisionResponse> {
+  return requestJson<RevisionResponse>(
+    `/api/settings/mcp-servers/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(def),
+    },
+  );
+}
+
+export async function deleteMcpServer(id: string): Promise<RevisionResponse> {
+  return requestJson<RevisionResponse>(
+    `/api/settings/mcp-servers/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function startMcpServer(
+  id: string,
+  def: McpServerDefinition,
+): Promise<McpProbeResult> {
+  return requestJson<McpProbeResult>(
+    `/api/settings/mcp-servers/${encodeURIComponent(id)}/start`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(def),
+    },
+  );
+}
+
+export async function restartMcpServer(
+  id: string,
+  def: McpServerDefinition,
+): Promise<McpProbeResult> {
+  return requestJson<McpProbeResult>(
+    `/api/settings/mcp-servers/${encodeURIComponent(id)}/restart`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(def),
+    },
+  );
+}
+
+export async function stopMcpServer(id: string): Promise<McpProbeResult> {
+  return requestJson<McpProbeResult>(
+    `/api/settings/mcp-servers/${encodeURIComponent(id)}/stop`,
+    { method: "POST" },
+  );
+}
+
 export async function getLog(): Promise<LogSettings> {
   return requestJson<LogSettings>("/api/settings/log");
 }
@@ -427,8 +526,13 @@ export const NONE_TOOL_IDS = new Set([
   "subagent_launch",
 ]);
 
+/** MCP catalog ids (`mcp_*`) have no ALL/SAFE — bind is on/off only. */
+export function isMcpCatalogTool(toolId: string): boolean {
+  return toolId.startsWith("mcp_");
+}
+
 export function isConfigurableTool(toolId: string): boolean {
-  return !NONE_TOOL_IDS.has(toolId);
+  return !NONE_TOOL_IDS.has(toolId) && !isMcpCatalogTool(toolId);
 }
 
 export function isCatalogCandidate(entry: ToolCatalogEntry): boolean {
@@ -478,7 +582,8 @@ export function toolEnableSeries(toolId: string): readonly string[] | null {
 function defaultSeriesBinding(toolId: string): AgentToolBinding {
   return {
     enabled: false,
-    last_applied_preset: NONE_TOOL_IDS.has(toolId) ? null : "ALL",
+    last_applied_preset:
+      NONE_TOOL_IDS.has(toolId) || isMcpCatalogTool(toolId) ? null : "ALL",
   };
 }
 

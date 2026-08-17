@@ -16,7 +16,7 @@ import {
   adapterDefaultEndpoint,
 } from "./shared";
 import {
-  isPersistBusy,
+  shouldHydrateDraftFromStore,
   useSettingsPersist,
   type SerializeResult,
 } from "./persist";
@@ -103,7 +103,7 @@ export function ConnectionSection() {
   const [justAddedProviderId, setJustAddedProviderId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isPersistBusy(persistStatus)) return;
+    if (!shouldHydrateDraftFromStore(persistStatus)) return;
     setDrafts(Object.values(providers ?? {}).map((view) => viewToDraft(view, adapters)));
   }, [providers, adapters, persistStatus]);
 
@@ -260,6 +260,22 @@ export function ConnectionSection() {
                       disabled={saveBlocked}
                       autoComplete="off"
                     />
+                    {row.adapter_id === "opencode" ? (
+                      <p className="mt-1 text-xs text-(--_dk-text-tertiary)">
+                        Default is Zen. For Go, use{" "}
+                        <span className="font-mono">https://opencode.ai/zen/go/v1</span>{" "}
+                        (same key if subscribed). Keys at{" "}
+                        <a
+                          href="https://opencode.ai/auth"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline"
+                        >
+                          opencode.ai/auth
+                        </a>
+                        .
+                      </p>
+                    ) : null}
                   </div>
                   <div>
                     <FieldLabel required>API key</FieldLabel>

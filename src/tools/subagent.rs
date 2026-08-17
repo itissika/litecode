@@ -33,6 +33,7 @@ pub struct SubagentLaunchTool {
     ide: Arc<IdeBaseHandle>,
     sessions: Arc<SessionManager>,
     parent_session_id: String,
+    mcp_pool: Arc<crate::mcp::McpConnectionPool>,
     /// The parent tool `call_id` captured from the execution context (REV-9:
     /// passed explicitly, never via TLS).
     parent_call_id: String,
@@ -51,6 +52,7 @@ impl SubagentLaunchTool {
         ide: Arc<IdeBaseHandle>,
         sessions: Arc<SessionManager>,
         parent_session_id: impl Into<String>,
+        mcp_pool: Arc<crate::mcp::McpConnectionPool>,
     ) -> Self {
         Self {
             resolved,
@@ -64,6 +66,7 @@ impl SubagentLaunchTool {
             ide,
             sessions,
             parent_session_id: parent_session_id.into(),
+            mcp_pool,
             parent_call_id: String::new(),
         }
     }
@@ -81,6 +84,7 @@ impl SubagentLaunchTool {
             ide: Arc::clone(&self.ide),
             sessions: Arc::clone(&self.sessions),
             parent_session_id: self.parent_session_id.clone(),
+            mcp_pool: Arc::clone(&self.mcp_pool),
             parent_call_id: self.parent_call_id.clone(),
         }
     }
@@ -260,6 +264,7 @@ impl Tool for SubagentLaunchTool {
         let model_id_override_clone = model_id_override.clone();
         let sessions = Arc::clone(&self.sessions);
         let parent_session_id = self.parent_session_id.clone();
+        let mcp_pool = Arc::clone(&self.mcp_pool);
 
         let (tx, rx) = std::sync::mpsc::channel::<(String, TurnTokenStats, String)>();
 
@@ -351,7 +356,7 @@ impl Tool for SubagentLaunchTool {
             let (event_tx, event_rx) = mpsc::unbounded_channel::<InternalEnvelope>();
             let observer = ChannelObserver::new(event_tx);
 
-            let mut runtime = match crate::runtime::AgentRuntime::new(
+            let mut runtime = match crate::runtime::AgentRuntime::with_mcp_pool(
                 resolved,
                 child_session_id.clone(),
                 Arc::clone(&sessions),
@@ -365,6 +370,7 @@ impl Tool for SubagentLaunchTool {
                 engine_manager,
                 workspace_engines,
                 ide,
+                Arc::clone(&mcp_pool),
             ) {
                 Ok(r) => r,
                 Err(e) => {

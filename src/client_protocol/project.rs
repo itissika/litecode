@@ -450,6 +450,7 @@ pub fn operation_result(
 
 pub fn server_hello(
     version: String,
+    version_channel: String,
     session_id: String,
     project: String,
     workspace_id: String,
@@ -463,6 +464,7 @@ pub fn server_hello(
         "server/hello",
         serde_json::json!({
             "version": version,
+            "version_channel": version_channel,
             "session_id": session_id,
             "project": project,
             "workspace_id": workspace_id,

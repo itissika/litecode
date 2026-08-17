@@ -5,6 +5,7 @@ import {
   type AdapterDescriptor,
   type ModelDefinition,
   type ProviderView,
+  getProviderModels,
 } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { Select } from "../../../components/ui/Select";
@@ -16,7 +17,7 @@ import {
   adapterDefaultEndpoint,
 } from "./shared";
 import {
-  isPersistBusy,
+  shouldHydrateDraftFromStore,
   useSettingsPersist,
   type SerializeResult,
 } from "./persist";
@@ -61,6 +62,78 @@ function closedApiModelOptions(
   return field?.options ?? [];
 }
 
+function hasRemoteModelCatalog(
+  adapters: AdapterDescriptor[],
+  adapterId: string,
+): boolean {
+  return adapters.find((a) => a.id === adapterId)?.remote_model_catalog === true;
+}
+
+function RemoteCatalogModelId({
+  providerId,
+  value,
+  disabled,
+  onChange,
+}: {
+  providerId: string;
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const [ids, setIds] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    if (!providerId) {
+      setError("Select a provider first");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await getProviderModels(providerId);
+      setIds(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "catalog refresh failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const catalog = value && !ids.includes(value) ? [value, ...ids] : ids;
+  const apiModelOptions = [
+    { value: "", label: "— select —" as ReactNode },
+    ...catalog.map((id) => ({ value: id, label: id as ReactNode })),
+  ];
+
+  return (
+    <div>
+      <FieldLabel required>API model id</FieldLabel>
+      <div className="flex gap-2">
+        <Select
+          value={value}
+          onChange={onChange}
+          options={apiModelOptions}
+          disabled={disabled}
+          className="min-w-0 flex-1"
+        />
+        <button
+          type="button"
+          className="btn btn-sm shrink-0"
+          disabled={disabled || busy || !providerId}
+          onClick={() => void refresh()}
+        >
+          {busy ? "…" : "Refresh"}
+        </button>
+      </div>
+      {error ? (
+        <p className="mt-1 text-xs text-(--_dk-danger)">{error}</p>
+      ) : null}
+    </div>
+  );
+}
+
 function serializeModels(
   draft: Record<string, ModelDefinition>,
 ): SerializeResult<Record<string, ModelDefinition>> {
@@ -84,7 +157,7 @@ export function ModelsSection() {
   const [draft, setDraft] = useState<Record<string, ModelDefinition>>({});
 
   useEffect(() => {
-    if (isPersistBusy(persistStatus)) return;
+    if (!shouldHydrateDraftFromStore(persistStatus)) return;
     setDraft(models ?? {});
   }, [models, persistStatus]);
 
@@ -197,7 +270,12 @@ export function ModelsSection() {
           const apiCatalog = closedApiModelOptions(adapters, selectedAdapter);
           const providerOptions = [
             { value: "", label: "— select —" as ReactNode },
-            ...allReadyProviderIds.map((id) => ({ value: id, label: id as ReactNode })),
+            ...allReadyProviderIds.map((id) => ({
+              value: id,
+              // Show the provider's human-readable label (fall back to the id
+              // when the label is empty) — raw ids are hard to read/compare.
+              label: (((providers ?? {})[id]?.label?.trim() || id) as ReactNode),
+            })),
           ];
           const apiModelOptions = [
             { value: "", label: "— select —" as ReactNode },
@@ -290,6 +368,13 @@ export function ModelsSection() {
                         className="w-full"
                       />
                     </div>
+                  ) : hasRemoteModelCatalog(adapters, selectedAdapter) ? (
+                    <RemoteCatalogModelId
+                      providerId={model.provider_ref}
+                      value={model.config?.api_model_id ?? ""}
+                      disabled={saveBlocked}
+                      onChange={(v) => updateConfig(model.id, { api_model_id: v })}
+                    />
                   ) : (
                     <div>
                       <FieldLabel required>API model ID</FieldLabel>

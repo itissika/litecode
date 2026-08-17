@@ -1054,7 +1054,8 @@ impl SessionController {
             })
             .collect();
         project::server_hello(
-            env!("CARGO_PKG_VERSION").into(),
+            crate::version::VERSION.into(),
+            crate::version::channel().into(),
             self.first_session_id().unwrap_or_default(),
             self.project.clone(),
             self.runtime.workspace.workspace_id.clone(),

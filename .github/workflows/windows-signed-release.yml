@@ -44,6 +44,8 @@ jobs:
 
       - name: Build Linux server bundle
         shell: bash
+        env:
+          LITECODE_CHANNEL: official
         run: |
           if [ -d web/node_modules ]; then
             echo "web deps present"  # reuse if present
@@ -106,6 +108,7 @@ jobs:
       - name: Build Windows installers
         shell: pwsh
         env:
+          LITECODE_CHANNEL: official
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: |

@@ -42,6 +42,10 @@ else
 fi
 
 echo "==> cargo build ${CARGO_PROFILE_FLAG}${TARGET_TRIPLE:+ --target $TARGET_TRIPLE}"
+# Release CI sets official; local product assembly is always nightly otherwise.
+if [[ "${LITECODE_CHANNEL:-}" != "official" ]]; then
+  export LITECODE_CHANNEL=nightly
+fi
 TARGET_ROOT="${CARGO_TARGET_DIR:-$ROOT/target}"
 if [[ -n "$TARGET_TRIPLE" ]]; then
   # shellcheck disable=SC2086

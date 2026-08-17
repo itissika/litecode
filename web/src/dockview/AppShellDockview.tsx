@@ -107,6 +107,8 @@ export function AppShellDockview() {
         <FloatingDialog
           visible={dialogVisible}
           title="About"
+          defaultWidth={440}
+          defaultHeight={460}
           onClose={() => setDialogVisible(false)}
         >
           <AboutContent replay={aboutReplay} />

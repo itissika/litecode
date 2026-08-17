@@ -16,6 +16,8 @@ describe("settings helpers", () => {
     expect(isConfigurableTool("read")).toBe(true);
     expect(isConfigurableTool("plan")).toBe(false);
     expect(isConfigurableTool("subagent_launch")).toBe(false);
+    expect(isConfigurableTool("mcp_github")).toBe(false);
+    expect(isConfigurableTool("echo_py")).toBe(true);
   });
 
   it("filters visible agent roles", () => {

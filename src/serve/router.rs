@@ -93,6 +93,7 @@ pub async fn listen(
     let engine_manager = state.engine_manager.clone();
     let workspace_engines = state.workspace_engines.clone();
     let sessions = state.sessions.clone();
+    let mcp_pool = state.runtime.read().expect("runtime lock").mcp_pool.clone();
     let session_gc = sessions.clone();
     restart_watcher(&state.watcher, state.workspace.clone()).await?;
     // Sole OS watcher → code_search worker Index dirty queue (DESIGN §2.9).
@@ -145,6 +146,7 @@ pub async fn listen(
         .with_graceful_shutdown(async move {
             shutdown::wait_for_shutdown(shutdown_watch).await;
             sessions.shutdown_cleanup().await;
+            mcp_pool.stop_all().await;
             engine_manager.stop_all();
             workspace_engines.stop_all();
         })

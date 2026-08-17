@@ -75,6 +75,7 @@ fn launch_tool(
         ide,
         sessions,
         parent_session_id,
+        Arc::new(litecode::mcp::McpConnectionPool::new()),
     )
 }
 

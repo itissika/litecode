@@ -12,10 +12,12 @@ pub use request::{ModelRequest, ToolDef};
 
 pub use adapter::public::{
     AdapterDescriptor, FieldSchema, FieldType, adapter_default_capabilities, closed_api_model_ids,
-    closed_context_windows, closed_default_endpoint, is_known_adapter, list_adapters,
-    parse_model_config, parse_provider_config, provider_ready, validate_model_config,
-    validate_provider_config,
+    closed_context_windows, closed_default_endpoint, has_remote_model_catalog, is_known_adapter,
+    list_adapters, parse_model_config, parse_provider_config, provider_ready,
+    validate_model_config, validate_provider_config,
 };
+
+pub(crate) use adapter::{opencode_models_url, parse_opencode_model_catalog};
 
 use crate::config::schema::ProviderDefinition;
 use crate::types::Result;

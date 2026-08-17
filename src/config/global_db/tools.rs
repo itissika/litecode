@@ -50,6 +50,10 @@ pub fn mcp_catalog_id(server_id: &str) -> String {
     format!("mcp_{server_id}")
 }
 
+pub fn is_mcp_catalog_id(id: &str) -> bool {
+    id.starts_with("mcp_")
+}
+
 pub fn normalize_mcp_tool_name(name: &str) -> Option<String> {
     if name.starts_with("mcp_") {
         Some(name.to_string())

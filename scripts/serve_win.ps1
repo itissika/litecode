@@ -138,10 +138,17 @@ try {
     $cargoArgs += @("serve", "--bind", $Bind, "--agent", $Agent)
     if (-not $NoAuth) { $cargoArgs += "--require-auth" }
 
-    Write-Host "==> starting API via cargo $($cargoArgs -join ' ')"
+    Write-Host "==> starting API via cargo $($cargoArgs -join ' ') (LITECODE_CHANNEL=dev)"
     Write-Host "    bind=$Bind agent=$Agent"
+    $savedChannel = $env:LITECODE_CHANNEL
+    $env:LITECODE_CHANNEL = "dev"
     $api = Start-Process -FilePath "cargo" -ArgumentList $cargoArgs `
       -WorkingDirectory $Root -NoNewWindow -PassThru
+    if ($null -eq $savedChannel) {
+      Remove-Item Env:\LITECODE_CHANNEL -ErrorAction SilentlyContinue
+    } else {
+      $env:LITECODE_CHANNEL = $savedChannel
+    }
     $procs += $api
 
     $health = "http://$Bind/health"

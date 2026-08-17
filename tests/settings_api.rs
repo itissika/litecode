@@ -352,6 +352,7 @@ fn disabled_binding_changes_tools_count_after_reload() {
             Arc::clone(&runtime.ide),
             "test-parent-session",
             common::test_sessions_manager(""),
+            Arc::clone(&runtime.mcp_pool),
         ))
         .len();
     assert!(
@@ -384,6 +385,7 @@ fn disabled_binding_changes_tools_count_after_reload() {
             Arc::clone(&runtime.ide),
             "test-parent-session",
             common::test_sessions_manager(""),
+            Arc::clone(&runtime.mcp_pool),
         ))
         .len();
 
@@ -1412,6 +1414,7 @@ async fn settings_custom_tool_crud_enable_bind_execute_and_delete() {
             ide,
             "test-parent-session",
             common::test_sessions_manager(""),
+            std::sync::Arc::new(litecode::mcp::McpConnectionPool::new()),
         )
         .await;
         let tool = tools.iter().find(|t| t.name() == id).expect("in tool list");
@@ -1590,6 +1593,146 @@ async fn settings_custom_tool_validation_rejects_bad_inputs() {
         .await
         .expect("optional conflict");
     assert_eq!(optional_id.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn settings_mcp_server_crud_catalog_and_stdio_probe() {
+    let ws = TempDir::new().expect("ws");
+    let db_dir = TempDir::new().expect("db");
+    let db_path = db_dir.path().join("litecode.db");
+    seed_global_db(&db_path);
+    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path.clone());
+    let addr = spawn_server(state, web_dist).await;
+    let client = test_http_client();
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/mock_mcp_server.py");
+    let def = serde_json::json!({
+        "command": "python3",
+        "args": [script.display().to_string()],
+        "env": {},
+        "transport": { "type": "stdio" }
+    });
+    let put = client
+        .put(format!("http://{addr}/api/settings/mcp-servers/mockecho"))
+        .json(&def)
+        .send()
+        .await
+        .expect("put mcp");
+    assert!(
+        put.status().is_success(),
+        "{}",
+        put.text().await.unwrap_or_default()
+    );
+
+    let loaded = ConfigManager::load_global_from(&db_path).unwrap();
+    assert!(loaded.mcp_servers.contains_key("mockecho"));
+    assert!(loaded.tool_catalog.contains_key("mcp_mockecho"));
+    assert_eq!(loaded.tool_catalog["mcp_mockecho"].catalog_enabled, false);
+
+    let list: Value = client
+        .get(format!("http://{addr}/api/settings/mcp-servers"))
+        .send()
+        .await
+        .expect("list")
+        .json()
+        .await
+        .expect("json");
+    assert!(
+        list["mcp_servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == "mockecho")
+    );
+
+    let probe: Value = client
+        .post(format!(
+            "http://{addr}/api/settings/mcp-servers/mockecho/start"
+        ))
+        .json(&def)
+        .send()
+        .await
+        .expect("start")
+        .json()
+        .await
+        .expect("start json");
+    assert_eq!(probe["ready"], true, "{probe}");
+    assert_eq!(probe["status"], "running", "{probe}");
+    let tools = probe["tools"].as_array().expect("tools");
+    assert!(tools.iter().any(|t| t == "echo"));
+
+    let listed: Value = client
+        .get(format!("http://{addr}/api/settings/mcp-servers"))
+        .send()
+        .await
+        .expect("list after start")
+        .json()
+        .await
+        .expect("list json");
+    let row = listed["mcp_servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "mockecho")
+        .expect("row");
+    assert_eq!(row["status"], "running");
+
+    let restarted: Value = client
+        .post(format!(
+            "http://{addr}/api/settings/mcp-servers/mockecho/restart"
+        ))
+        .json(&def)
+        .send()
+        .await
+        .expect("restart")
+        .json()
+        .await
+        .expect("restart json");
+    assert_eq!(restarted["ready"], true, "{restarted}");
+    assert_eq!(restarted["status"], "running");
+
+    let stopped: Value = client
+        .post(format!(
+            "http://{addr}/api/settings/mcp-servers/mockecho/stop"
+        ))
+        .send()
+        .await
+        .expect("stop")
+        .json()
+        .await
+        .expect("stop json");
+    assert_eq!(stopped["status"], "stopped", "{stopped}");
+
+    let del = client
+        .delete(format!("http://{addr}/api/settings/mcp-servers/mockecho"))
+        .send()
+        .await
+        .expect("delete");
+    assert!(del.status().is_success());
+    let after = ConfigManager::load_global_from(&db_path).unwrap();
+    assert!(!after.mcp_servers.contains_key("mockecho"));
+    assert!(!after.tool_catalog.contains_key("mcp_mockecho"));
+}
+
+#[tokio::test]
+async fn settings_mcp_server_rejects_builtin_id() {
+    let ws = TempDir::new().expect("ws");
+    let db_dir = TempDir::new().expect("db");
+    let db_path = db_dir.path().join("litecode.db");
+    seed_global_db(&db_path);
+    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
+    let addr = spawn_server(state, web_dist).await;
+    let res = test_http_client()
+        .put(format!("http://{addr}/api/settings/mcp-servers/bash"))
+        .json(&serde_json::json!({
+            "command": "echo",
+            "args": [],
+            "transport": { "type": "stdio" }
+        }))
+        .send()
+        .await
+        .expect("put");
+    assert_eq!(res.status(), reqwest::StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

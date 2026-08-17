@@ -8,6 +8,11 @@ export function isPersistBusy(status: PersistStatus): boolean {
   return status === "pending" || status === "saving";
 }
 
+/** Store snapshots must not replace an incomplete local draft (status `invalid`). */
+export function shouldHydrateDraftFromStore(status: PersistStatus): boolean {
+  return !isPersistBusy(status) && status !== "invalid";
+}
+
 export const SETTINGS_PERSIST_ERROR_CHANNEL = "settings-persist-error";
 
 type FlushFn = () => Promise<void>;

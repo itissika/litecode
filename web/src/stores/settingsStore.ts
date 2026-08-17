@@ -23,11 +23,20 @@ import {
   getCustomTools,
   putCustomTool,
   deleteCustomTool,
+  getMcpServers,
+  putMcpServer,
+  deleteMcpServer,
+  startMcpServer as requestMcpStart,
+  restartMcpServer as requestMcpRestart,
+  stopMcpServer as requestMcpStop,
   SettingsApiError,
   withSyncedToolSeries,
   type AdapterDescriptor,
   type AgentProfile,
   type CustomToolDefinition,
+  type McpProbeResult,
+  type McpServerDefinition,
+  type McpServerItem,
   type LogSettings,
   type ModelDefinition,
   type ProviderDefinition,
@@ -56,6 +65,7 @@ export type SettingsSection =
   | "engines"
   | "tool-catalog"
   | "custom-tools"
+  | "mcp"
   | "agents"
   | "advanced";
 
@@ -128,6 +138,7 @@ interface SettingsStoreState {
   models: Record<string, ModelDefinition> | null;
   toolCatalog: Record<string, ToolCatalogEntry> | null;
   customTools: CustomToolDefinition[] | null;
+  mcpServers: McpServerItem[] | null;
   engineStatuses: Record<string, EngineStatus>;
   agentIds: string[];
   selectedAgentId: string;
@@ -162,6 +173,11 @@ interface SettingsStore extends SettingsStoreState {
   saveToolCatalog: (catalog: Record<string, ToolCatalogEntry>) => Promise<void>;
   saveCustomTool: (id: string, def: CustomToolDefinition) => Promise<void>;
   removeCustomTool: (id: string) => Promise<void>;
+  saveMcpServer: (id: string, def: McpServerDefinition) => Promise<void>;
+  removeMcpServer: (id: string) => Promise<void>;
+  startMcpServer: (id: string, def: McpServerDefinition) => Promise<McpProbeResult>;
+  restartMcpServer: (id: string, def: McpServerDefinition) => Promise<McpProbeResult>;
+  stopMcpServer: (id: string) => Promise<McpProbeResult>;
   saveAgent: (id: string, profile: AgentProfile) => Promise<void>;
   applyAgentToolPreset: (id: string, preset: ToolPreset) => Promise<void>;
   createAgent: (id: string, profile: AgentProfile) => Promise<void>;
@@ -273,6 +289,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   models: null,
   toolCatalog: null,
   customTools: null,
+  mcpServers: null,
   engineStatuses: {},
   agentIds: ["default"],
   selectedAgentId: "default",
@@ -402,7 +419,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set({ loading: true, loadError: null });
     try {
       const summary = await getSettingsSummary();
-      const [adapters, providers, websearch, models, catalogPayload, customTools, log] =
+      const [adapters, providers, websearch, models, catalogPayload, customTools, mcpServers, log] =
         await Promise.all([
           getAdapters(),
           getProviders(),
@@ -410,6 +427,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
           getModels(),
           getToolCatalog(),
           getCustomTools(),
+          getMcpServers(),
           getLog(),
         ]);
       const agentIds = await loadSettingsAgentIds();
@@ -431,6 +449,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         toolCatalog: catalogPayload.tool_catalog,
         engineStatuses: catalogPayload.engines,
         customTools,
+        mcpServers,
         agentIds,
         agents,
         selectedAgentId: agentIds.includes(get().selectedAgentId)
@@ -600,6 +619,82 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
+  },
+
+  saveMcpServer: async (id, def) => {
+    if (turnInProgress()) {
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
+    }
+    set({ saving: true });
+    try {
+      const { revision } = await putMcpServer(id, def);
+      const [mcpServers, catalogPayload] = await Promise.all([
+        getMcpServers(),
+        getToolCatalog(),
+      ]);
+      set({
+        revision,
+        mcpServers,
+        toolCatalog: catalogPayload.tool_catalog,
+        engineStatuses: catalogPayload.engines,
+        saving: false,
+      });
+    } catch (err) {
+      set({ saving: false });
+      handleSaveError(err);
+      throw err;
+    }
+  },
+
+  removeMcpServer: async (id) => {
+    if (turnInProgress()) {
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
+    }
+    set({ saving: true });
+    try {
+      const { revision } = await deleteMcpServer(id);
+      const [mcpServers, catalogPayload] = await Promise.all([
+        getMcpServers(),
+        getToolCatalog(),
+      ]);
+      await get().refreshAgents();
+      set({
+        revision,
+        mcpServers,
+        toolCatalog: catalogPayload.tool_catalog,
+        engineStatuses: catalogPayload.engines,
+        saving: false,
+      });
+    } catch (err) {
+      set({ saving: false });
+      handleSaveError(err);
+      throw err;
+    }
+  },
+
+  startMcpServer: async (id, def) => {
+    const result = await requestMcpStart(id, def);
+    const mcpServers = await getMcpServers();
+    set({ mcpServers });
+    return result;
+  },
+
+  restartMcpServer: async (id, def) => {
+    const result = await requestMcpRestart(id, def);
+    const mcpServers = await getMcpServers();
+    set({ mcpServers });
+    return result;
+  },
+
+  stopMcpServer: async (id) => {
+    const result = await requestMcpStop(id);
+    const mcpServers = await getMcpServers();
+    set({ mcpServers });
+    return result;
   },
 
   saveAgent: async (id, profile) => {

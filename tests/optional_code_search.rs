@@ -377,6 +377,7 @@ async fn build_tool_list_includes_code_search_after_warmup() {
             Arc::new(TurnGuard::new()),
             String::new(),
         )),
+        Arc::new(litecode::mcp::McpConnectionPool::new()),
     )
     .await;
     assert!(tools.iter().any(|t| t.name() == "code_search"));

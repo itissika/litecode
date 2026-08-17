@@ -21,4 +21,5 @@ pub mod terminal;
 pub mod tool;
 pub mod tools;
 pub mod types;
+pub mod version;
 pub mod workspace;

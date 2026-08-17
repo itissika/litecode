@@ -38,7 +38,7 @@ A vibe-coded agent framework built specifically for coding. It focuses on **Tool
 - **Two form factors + remote** — Electron desktop and browser; SSH to a headless Linux server, tunneled back.
 
 ### 🔌 Provider
-- **Multi-adapter** — OpenAI Responses as the single canonical format; openai / deepseek / mimo plug and play.
+- **Multi-adapter** — OpenAI Responses for openai / deepseek / mimo; OpenCode Chat Completions with Zen by default and an optional Go endpoint.
 - **Mid-turn switching** — Swap model / agent anytime without losing context; effective next turn.
 - **Cost visibility** — prompt / completion / cache hit / miss tracked per step in real time for precise cost control.
 
@@ -117,7 +117,7 @@ cd web && npm install && npm run build
 cd desktop && npm install && npm run build
 ```
 
-Configuration: after `serve` starts, manage Provider (openai / deepseek / mimo), Model, and Agent via the web settings UI.
+Configuration: after `serve` starts, manage Provider (openai / deepseek / mimo / opencode), Model, and Agent via the web settings UI.
 
 </details>
 

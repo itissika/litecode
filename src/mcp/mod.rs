@@ -4,7 +4,7 @@ pub mod pool;
 pub mod remote;
 
 pub use client::McpStdioClient;
-pub use pool::McpConnectionPool;
+pub use pool::{McpConnectionPool, McpRunState, McpServerSnapshot};
 #[cfg(feature = "remote-mcp")]
 pub use remote::McpRemoteClient;
 
@@ -74,6 +74,14 @@ impl McpClient {
     pub async fn kill(&mut self) {
         match self {
             McpClient::Stdio(c) => c.kill().await,
+            #[cfg(feature = "remote-mcp")]
+            McpClient::Remote(_) => {}
+        }
+    }
+
+    pub fn start_kill(&mut self) {
+        match self {
+            McpClient::Stdio(c) => c.start_kill(),
             #[cfg(feature = "remote-mcp")]
             McpClient::Remote(_) => {}
         }

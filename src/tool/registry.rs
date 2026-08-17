@@ -8,6 +8,7 @@ use crate::config::resolved::ResolvedConfig;
 use crate::engines::WorkspaceEngines;
 use crate::ide_base::IdeBaseHandle;
 use crate::llm::LlmProvider;
+use crate::mcp::McpConnectionPool;
 use crate::optional::EngineManager;
 use crate::session::manager::SessionManager;
 use crate::tool::catalog::should_include_in_llm_list;
@@ -62,11 +63,12 @@ fn instantiate_tool(
     if let Some(server_id) = tool_id.strip_prefix("mcp_")
         && let Some(mcp) = resolved.mcp_servers().get(server_id)
     {
-        let defaults = vec![(
-            mcp_catalog_id(server_id),
-            serde_json::json!({"type": "object", "properties": {}}),
-        )];
-        let tool_schemas = mcp_schemas.get(server_id).unwrap_or(&defaults);
+        // Handshake must have succeeded this turn (`mcp_schemas` is filled only
+        // after start). Do not advertise a dummy catalog-id tool when the
+        // process is down — the model would see it and try to call it.
+        let Some(tool_schemas) = mcp_schemas.get(server_id) else {
+            return vec![];
+        };
         return tool_schemas
             .iter()
             .map(|(tool_name, schema)| {
@@ -133,32 +135,26 @@ pub async fn build_tool_list(
     ide: Arc<IdeBaseHandle>,
     parent_session_id: &str,
     sessions: Arc<SessionManager>,
+    mcp_pool: Arc<McpConnectionPool>,
 ) -> Vec<Arc<dyn Tool>> {
-    // Create shared MCP connection pool for reuse across tool calls
-    let mcp_pool = Arc::new(crate::mcp::McpConnectionPool::new());
-
-    // Pre-fetch MCP tool schemas
     let mut mcp_schemas: HashMap<String, Vec<(String, Value)>> = HashMap::new();
     for (server_id, mcp_def) in resolved.mcp_servers() {
-        let mut client =
-            match crate::mcp::McpStdioClient::new(&mcp_def.command, &mcp_def.args, &mcp_def.env) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("Failed to create MCP client for '{}': {}", server_id, e);
-                    continue;
-                }
-            };
-        match client.tool_schemas().await {
+        let catalog_id = mcp_catalog_id(server_id);
+        if !should_include_in_llm_list(
+            resolved,
+            agent_id,
+            &catalog_id,
+            &engines,
+            &workspace_engines,
+        ) {
+            continue;
+        }
+        match mcp_pool.start(server_id, mcp_def).await {
             Ok(schemas) => {
                 mcp_schemas.insert(server_id.clone(), schemas);
             }
             Err(e) => {
-                tracing::warn!(
-                    "Failed to fetch tools from MCP server '{}': {}",
-                    server_id,
-                    e
-                );
-                continue;
+                tracing::warn!("Failed to start MCP server '{}': {}", server_id, e);
             }
         }
     }
@@ -190,6 +186,7 @@ pub async fn build_tool_list(
                 Arc::clone(&ide),
                 Arc::clone(&sessions),
                 parent_session_id.to_string(),
+                Arc::clone(&mcp_pool),
             ));
             tools.push(subagent_tool);
             continue;
@@ -219,7 +216,8 @@ mod tests {
     use crate::config::resolved::{WorkspaceState, resolve};
     use crate::config::schema::{
         AgentProfile, AgentToolBinding, CustomToolDefinition, GlobalSettings, InitScope,
-        ProviderAuth, ProviderDefinition, ToolCatalogEntry, ToolPreset, ToolSchema, ToolTier,
+        McpServerDefinition, ProviderAuth, ProviderDefinition, ToolCatalogEntry, ToolPreset,
+        ToolSchema, ToolTier,
     };
     use crate::context_pipeline::Context;
     use crate::llm::{LlmProvider, provider_from_definition};
@@ -345,6 +343,7 @@ mod tests {
             ide,
             "test-parent-session",
             dummy_sessions(),
+            Arc::new(McpConnectionPool::new()),
         ))
     }
 
@@ -481,5 +480,54 @@ mod tests {
         let tools = list_tools(&resolved, 1);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"subagent_launch"));
+    }
+
+    #[test]
+    fn failed_mcp_start_does_not_advertise_dummy_tool() {
+        let mut bindings = default_bindings();
+        bindings.insert(
+            "mcp_dead".into(),
+            AgentToolBinding {
+                enabled: true,
+                policy: crate::permission::ToolPolicy::allow_all(),
+                path_mode: crate::permission::BindingPathMode::default(),
+                last_applied_preset: None,
+            },
+        );
+        let mut global = GlobalSettings::default();
+        seed_core_catalog(&mut global);
+        global.mcp_servers.insert(
+            "dead".into(),
+            McpServerDefinition {
+                command: "__litecode_no_such_mcp__".into(),
+                args: vec![],
+                env: HashMap::new(),
+                transport: crate::config::schema::McpTransport::Stdio,
+            },
+        );
+        global.tool_catalog.insert(
+            "mcp_dead".into(),
+            ToolCatalogEntry {
+                id: "mcp_dead".into(),
+                tier: ToolTier::Mcp,
+                init_scope: InitScope::Global,
+                catalog_enabled: true,
+            },
+        );
+        global.agents.insert(
+            "default".into(),
+            AgentProfile {
+                tools: bindings,
+                ..Default::default()
+            },
+        );
+        let mut resolved = resolve(global, WorkspaceState::new("/tmp"));
+        init(&mut resolved, InitScope::Global);
+        let tools = list_tools(&resolved, 0);
+        let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+        assert!(
+            !names.iter().any(|n| n == "mcp_dead" || n.contains("dead")),
+            "unusable MCP must not enter the model tool list, got {names:?}"
+        );
     }
 }

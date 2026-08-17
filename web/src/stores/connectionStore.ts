@@ -91,6 +91,10 @@ export function attachSiblingStores(next: Partial<SiblingStores>): void {
 interface ConnectionStore {
   state: ConnectionState;
   project: string;
+  /** Server binary version from server/hello. */
+  serverVersion: string;
+  /** Build channel from server/hello: dev | nightly | official */
+  serverVersionChannel: string;
   /** Stable workspace identity from server/hello. */
   workspaceId: string;
   llmEcosystem: string;
@@ -114,6 +118,8 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
     return {
       state: "disconnected",
       project: "",
+      serverVersion: "",
+      serverVersionChannel: "",
       workspaceId: "",
       llmEcosystem: "",
       subscribedSessions: new Set(),
@@ -162,6 +168,8 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
         set({
           state: "disconnected",
           project: "",
+          serverVersion: "",
+          serverVersionChannel: "",
           workspaceId: "",
           llmEcosystem: "",
           subscribedSessions: new Set(),
@@ -226,6 +234,8 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
             // global info (project, workspace_id, models, settings_revision, etc.).
             set({
               project: hello.project,
+              serverVersion: hello.version ?? "",
+              serverVersionChannel: hello.version_channel ?? "",
               workspaceId: hello.workspace_id ?? "",
               llmEcosystem: hello.llm_ecosystem ?? "openai",
             });

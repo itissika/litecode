@@ -4,6 +4,7 @@ version = "0.1.4"
 edition = "2024"
 description = "极致轻量的终端 AI 编程助手"
 license = "MIT"
+build = "build.rs"
 
 [workspace]
 members = ["."]

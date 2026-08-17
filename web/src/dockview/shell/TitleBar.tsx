@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { MenuBar } from "../menu/MenuBar";
 import { Logo } from "../../components/Logo";
+import { useServerVersionTags, VersionTags } from "../../components/VersionTags";
 
 interface TitleBarProps {
   onMenuAction?: (item: string) => void;
@@ -10,6 +11,7 @@ interface TitleBarProps {
 export function TitleBar({ onMenuAction, sessionMode = "local" }: TitleBarProps) {
   const [maximized, setMaximized] = useState(false);
   const hasWindowChrome = typeof window.litecode?.windowClose === "function";
+  const versionTags = useServerVersionTags();
 
   useEffect(() => {
     if (!hasWindowChrome) return;
@@ -29,6 +31,9 @@ export function TitleBar({ onMenuAction, sessionMode = "local" }: TitleBarProps)
     <div className="flex h-[30px] shrink-0 select-none" style={dragStyle}>
       <div className="flex items-center">
         <Logo size="sm" animated={false} />
+        <span style={noDrag}>
+          <VersionTags {...versionTags} size="xs" className="ml-2 mr-1" />
+        </span>
         <MenuBar onAction={onMenuAction} sessionMode={sessionMode} />
         {sessionMode === "remote" ? (
           <span

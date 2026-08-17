@@ -262,7 +262,7 @@ run_api_local() {
     echo "    bind=$BIND agent=$AGENT [host]"
     echo "    health: http://$BIND/health"
     echo "    ws:     ws://$BIND/ws"
-    cargo "${cargo_args[@]}" &
+    LITECODE_CHANNEL=dev cargo "${cargo_args[@]}" &
     PIDS+=("$!")
 }
 

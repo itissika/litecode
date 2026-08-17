@@ -334,7 +334,9 @@ export function AgentToolsGrid({
                       ))}
                     </div>
                   ) : (
-                    <p className="text-xs text-(--_dk-text-disabled)">Not configurable</p>
+                    <p className="text-xs text-(--_dk-text-disabled)">
+                      {entry.tier === "mcp" ? "No preset" : "Not configurable"}
+                    </p>
                   )}
                 </div>
               </div>

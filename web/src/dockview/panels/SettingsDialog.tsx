@@ -1,4 +1,4 @@
-import { Link, Cube, WrenchIcon, Robot, GearSix, Cpu, Code } from "@phosphor-icons/react";
+import { Link, Cube, WrenchIcon, Robot, GearSix, Cpu, Code, Plugs } from "@phosphor-icons/react";
 
 import { useSettingsStore, type SettingsSection } from "../../stores/settingsStore";
 import { SettingsSkeleton } from "../../components/ui/Skeleton";
@@ -7,18 +7,38 @@ import { ConnectionSection } from "./settings/ConnectionSection";
 import { ModelsSection } from "./settings/ModelsSection";
 import { ToolCatalogSection } from "./settings/ToolCatalogSection";
 import { CustomToolsSection } from "./settings/CustomToolsSection";
+import { McpServersSection } from "./settings/McpServersSection";
 import { AgentsSection } from "./settings/AgentsSection";
 import { AdvancedSection } from "./settings/AdvancedSection";
 import { EnginesSection } from "./settings/engines/EnginesSection";
 
-const SECTIONS: { id: SettingsSection; label: string; Icon: React.FC<{ size?: number }> }[] = [
-  { id: "connection", label: "Provider", Icon: Link },
-  { id: "models", label: "Models", Icon: Cube },
-  { id: "engines", label: "Engines", Icon: Cpu },
-  { id: "tool-catalog", label: "Tool Catalog", Icon: WrenchIcon },
-  { id: "custom-tools", label: "Custom Tools", Icon: Code },
-  { id: "agents", label: "Agents", Icon: Robot },
-  { id: "advanced", label: "Advanced", Icon: GearSix },
+const NAV_GROUPS: {
+  title: string;
+  items: { id: SettingsSection; label: string; Icon: React.FC<{ size?: number }> }[];
+}[] = [
+  {
+    title: "LLM",
+    items: [
+      { id: "connection", label: "Provider", Icon: Link },
+      { id: "models", label: "Models", Icon: Cube },
+    ],
+  },
+  {
+    title: "Agent",
+    items: [
+      { id: "agents", label: "Agents", Icon: Robot },
+      { id: "tool-catalog", label: "Catalog", Icon: WrenchIcon },
+      { id: "custom-tools", label: "Custom Tools", Icon: Code },
+      { id: "mcp", label: "MCP", Icon: Plugs },
+    ],
+  },
+  {
+    title: "System",
+    items: [
+      { id: "engines", label: "Engines", Icon: Cpu },
+      { id: "advanced", label: "Advanced", Icon: GearSix },
+    ],
+  },
 ];
 
 function TurnBlockedBanner() {
@@ -43,6 +63,8 @@ function SectionContent({ section }: { section: SettingsSection }) {
       return <ToolCatalogSection />;
     case "custom-tools":
       return <CustomToolsSection />;
+    case "mcp":
+      return <McpServersSection />;
     case "agents":
       return <AgentsSection />;
     case "advanced":
@@ -67,31 +89,36 @@ export function SettingsDialog() {
       defaultWidth={860}
       defaultHeight={640}
     >
-      <div className="flex flex-col h-full">
+      <div className="flex h-full flex-col">
         <TurnBlockedBanner />
 
         <div className="flex min-h-0 flex-1">
-          <nav className="shrink-0 bg-(--_dk-side)">
-            {SECTIONS.map((item) => {
-              const Icon = item.Icon;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => void setSection(item.id)}
-                  className={
-                    section === item.id
-                      ? "settings-nav-item settings-nav-item-active bg-(--_dk-overlay)"
-                      : "settings-nav-item"
-                  }
-                >
-                  <span className="settings-nav-item-content">
-                    <Icon size={14} />
-                    <span>{item.label}</span>
-                  </span>
-                </button>
-              );
-            })}
+          <nav className="settings-nav shrink-0 bg-(--_dk-side)">
+            {NAV_GROUPS.map((group) => (
+              <div key={group.title} className="settings-nav-group">
+                <div className="settings-nav-group-title">{group.title}</div>
+                {group.items.map((item) => {
+                  const Icon = item.Icon;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => void setSection(item.id)}
+                      className={
+                        section === item.id
+                          ? "settings-nav-item settings-nav-item-active bg-(--_dk-overlay)"
+                          : "settings-nav-item"
+                      }
+                    >
+                      <span className="settings-nav-item-content">
+                        <Icon size={14} />
+                        <span>{item.label}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
           </nav>
 
           <div className="min-w-0 flex-1 bg-(--_dk-overlay)">

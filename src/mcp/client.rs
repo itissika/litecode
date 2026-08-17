@@ -154,6 +154,10 @@ impl McpStdioClient {
     pub async fn kill(&mut self) {
         let _ = self.child.kill().await;
     }
+
+    pub fn start_kill(&mut self) {
+        let _ = self.child.start_kill();
+    }
 }
 
 impl Drop for McpStdioClient {
