@@ -12,7 +12,11 @@ pub(crate) fn chat_post_url(base: &str) -> String {
 }
 
 pub(crate) fn models_get_url(base: &str) -> String {
-    format!("{}/models", base.trim_end_matches('/'))
+    let mut base = base.trim().trim_end_matches('/');
+    if let Some(stripped) = base.strip_suffix("/responses") {
+        base = stripped.trim_end_matches('/');
+    }
+    format!("{base}/models")
 }
 
 pub(crate) fn parse_model_catalog(body: &str) -> Result<Vec<String>> {

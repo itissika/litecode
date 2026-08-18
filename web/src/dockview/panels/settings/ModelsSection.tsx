@@ -385,6 +385,16 @@ export function ModelsSection() {
                         }
                         disabled={saveBlocked}
                       />
+                      {selectedAdapter === "ark_coding" ? (
+                        <p className="mt-1 text-xs text-(--_dk-text-tertiary)">
+                          Coding Plan names from the Ark console (e.g.{" "}
+                          <span className="font-mono">doubao-seed-2.1-turbo</span>
+                          , <span className="font-mono">ark-code-latest</span>
+                          ). The gateway{" "}
+                          <span className="font-mono">/models</span> list is the
+                          pay-as-you-go catalog and is not used here.
+                        </p>
+                      ) : null}
                     </div>
                   )}
                 </div>

@@ -272,9 +272,12 @@ export function ConnectionSection() {
                         <span className="font-mono">
                           https://ark.cn-beijing.volces.com/api/coding/v3
                         </span>
-                        . Use the Ark console API key. Coding Plan quota is licensed for
+                        {" "}(Responses at <span className="font-mono">/responses</span>).
+                        Use the Ark console API key. Coding Plan quota is licensed for
                         listed tools; LiteCode is an unofficial client. Do not use the
                         general <span className="font-mono">/api/v3</span> host.
+                        Type Coding Plan model names in Settings → Models; this
+                        adapter does not fetch <span className="font-mono">/models</span>.
                       </p>
                     ) : null}
                   </div>

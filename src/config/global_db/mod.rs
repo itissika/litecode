@@ -357,15 +357,7 @@ pub mod store {
         let mut map = HashMap::new();
         for row in rows {
             let mut model = row?;
-            // Closed adapters are adapter-owned: normalize on read so rows written
-            // before the adapter default existed (or via non-settings paths) still
-            // carry the vendor's official modality matrix.
-            if crate::platform_knobs::is_closed_adapter(&model.adapter_id) {
-                model.config.capabilities = crate::llm::adapter_default_capabilities(
-                    &model.adapter_id,
-                    &model.config.api_model_id,
-                );
-            }
+            crate::llm::apply_owned_modality_capabilities(&mut model);
             map.insert(model.id.clone(), model);
         }
         Ok(map)

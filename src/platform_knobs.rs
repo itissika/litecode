@@ -241,6 +241,23 @@ mod tests {
     }
 
     #[test]
+    fn ark_coding_thinking_tiers_map_to_openai_effort() {
+        use crate::config::schema::ADAPTER_ARK_CODING;
+        assert_eq!(
+            map_thinking_to_wire(ADAPTER_ARK_CODING, ThinkingTier::Low),
+            (None, Some("low".into()))
+        );
+        assert_eq!(
+            map_thinking_to_wire(ADAPTER_ARK_CODING, ThinkingTier::Medium),
+            (None, Some("medium".into()))
+        );
+        assert_eq!(
+            map_thinking_to_wire(ADAPTER_ARK_CODING, ThinkingTier::High),
+            (None, Some("high".into()))
+        );
+    }
+
+    #[test]
     fn closed_api_model_uses_saved_selection() {
         let mut model = closed_model(ADAPTER_DEEPSEEK_RESPONSES);
         model.config.api_model_id = "deepseek-v4-pro".into();

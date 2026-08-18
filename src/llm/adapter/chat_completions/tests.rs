@@ -1,6 +1,6 @@
 //! Codec golden tests extracted from the OpenCode adapter.
 
-use super::catalog::{chat_post_url, parse_model_catalog};
+use super::catalog::{chat_post_url, models_get_url, parse_model_catalog};
 use super::encode::{ChatEncodeOpts, REASONING_CONTENT_KEY, encode_chat_body};
 use super::usage::chat_usage_to_responses;
 use crate::authority::responses::{
@@ -190,19 +190,19 @@ fn encode_tools_request_puts_reasoning_key_on_every_assistant() {
 }
 
 #[test]
-fn ark_and_opencode_share_messages_stream_options_is_dialect() {
-    let req = sample_request(vec![]);
-    let oc = encode_chat_body(&req, true, &ChatEncodeOpts::OPENCODE).unwrap();
-    let ark = encode_chat_body(&req, true, &ChatEncodeOpts::ARK).unwrap();
-    assert_eq!(oc["messages"], ark["messages"]);
-    assert_eq!(oc["stream_options"]["include_usage"], true);
-    assert_eq!(ark["stream_options"]["include_usage"], true);
-
-    let mut ark_off = ChatEncodeOpts::ARK;
-    ark_off.include_stream_usage = false;
-    let ark_body = encode_chat_body(&req, true, &ark_off).unwrap();
-    assert!(ark_body.get("stream_options").is_none());
-    assert_eq!(ark_body["messages"], oc["messages"]);
+fn catalog_url_strips_responses_suffix() {
+    assert_eq!(
+        models_get_url("https://opencode.ai/zen/v1"),
+        "https://opencode.ai/zen/v1/models"
+    );
+    assert_eq!(
+        models_get_url("https://ark.cn-beijing.volces.com/api/coding/v3"),
+        "https://ark.cn-beijing.volces.com/api/coding/v3/models"
+    );
+    assert_eq!(
+        models_get_url("https://ark.cn-beijing.volces.com/api/coding/v3/responses"),
+        "https://ark.cn-beijing.volces.com/api/coding/v3/models"
+    );
 }
 
 #[test]

@@ -5,8 +5,8 @@ use serde_json::Value;
 
 use crate::config::schema::{
     ADAPTER_ARK_CODING, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES,
-    ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE, ModelAdapterConfig, ModelCapability, ProviderAuth,
-    ProviderConnectionConfig, ProviderDefinition, ReasoningEffort, ThinkingMode,
+    ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE, ModelAdapterConfig, ModelCapability, ModelDefinition,
+    ProviderAuth, ProviderConnectionConfig, ProviderDefinition, ReasoningEffort, ThinkingMode,
 };
 use crate::llm::provider::LlmProvider;
 use crate::types::{LitecodeError, Result};
@@ -271,7 +271,9 @@ const ADAPTERS: &[AdapterDescriptor] = &[
         provider_fields: CLOSED_PROVIDER_FIELDS,
         model_fields: SHARED_MODEL_FIELDS,
         default_endpoint: Some(ARK_DEFAULT_ENDPOINT),
-        remote_model_catalog: true,
+        // Coding Plan has no dedicated /models SKU list; GET {base}/models
+        // returns the general inference catalog and is not usable here.
+        remote_model_catalog: false,
     },
 ];
 
@@ -337,6 +339,7 @@ pub fn closed_api_model_ids(adapter_id: &str) -> Option<&'static [&'static str]>
 /// - `mimo-v2.5`: native full-modality — text/image/video/audio input (see
 ///   <https://mimo.mi.com/models/zh-CN/mimo-v2.5>).
 /// - `mimo-v2.5-pro`: flagship base model — text-only input.
+/// - Ark Coding Plan `doubao-seed-2.1-turbo`: text + image (Coding Plan `/responses` P2).
 /// - Everything else: text-only.
 pub fn adapter_default_capabilities(adapter_id: &str, api_model_id: &str) -> Vec<ModelCapability> {
     match adapter_id {
@@ -346,7 +349,26 @@ pub fn adapter_default_capabilities(adapter_id: &str, api_model_id: &str) -> Vec
             ModelCapability::Video,
             ModelCapability::Audio,
         ],
+        ADAPTER_ARK_CODING if api_model_id.eq_ignore_ascii_case("doubao-seed-2.1-turbo") => {
+            vec![ModelCapability::Text, ModelCapability::Image]
+        }
         _ => vec![ModelCapability::Text],
+    }
+}
+
+/// Adapters whose modality matrix is overwritten on Settings read/write.
+pub fn adapter_owns_modality_matrix(adapter_id: &str) -> bool {
+    matches!(
+        adapter_id,
+        ADAPTER_DEEPSEEK_RESPONSES | ADAPTER_MIMO_RESPONSES | ADAPTER_ARK_CODING
+    )
+}
+
+/// Apply the adapter-owned modality matrix so stale `["text"]` rows cannot stick.
+pub fn apply_owned_modality_capabilities(model: &mut ModelDefinition) {
+    if adapter_owns_modality_matrix(&model.adapter_id) {
+        model.config.capabilities =
+            adapter_default_capabilities(&model.adapter_id, &model.config.api_model_id);
     }
 }
 
@@ -614,6 +636,14 @@ mod tests {
             adapter_default_capabilities(ADAPTER_OPENAI_RESPONSES, "gpt-4o"),
             vec![ModelCapability::Text]
         );
+        assert_eq!(
+            adapter_default_capabilities(ADAPTER_ARK_CODING, "deepseek-v4-flash"),
+            vec![ModelCapability::Text]
+        );
+        assert_eq!(
+            adapter_default_capabilities(ADAPTER_ARK_CODING, "doubao-seed-2.1-turbo"),
+            vec![ModelCapability::Text, ModelCapability::Image]
+        );
     }
 
     #[test]
@@ -686,8 +716,8 @@ mod tests {
             .find(|a| a.id == ADAPTER_ARK_CODING)
             .unwrap();
         assert_eq!(ark.default_endpoint, Some(ARK_DEFAULT_ENDPOINT));
-        assert!(ark.remote_model_catalog);
-        assert!(has_remote_model_catalog(ADAPTER_ARK_CODING));
+        assert!(!ark.remote_model_catalog);
+        assert!(!has_remote_model_catalog(ADAPTER_ARK_CODING));
         assert!(!has_remote_model_catalog(ADAPTER_DEEPSEEK_RESPONSES));
         assert!(!has_remote_model_catalog(ADAPTER_MIMO_RESPONSES));
     }

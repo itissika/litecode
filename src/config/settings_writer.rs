@@ -475,12 +475,7 @@ impl SettingsWriter {
         let normalized: HashMap<String, ModelDefinition> = models
             .into_iter()
             .map(|(id, mut model)| {
-                if crate::platform_knobs::is_closed_adapter(&model.adapter_id) {
-                    model.config.capabilities = crate::llm::adapter_default_capabilities(
-                        &model.adapter_id,
-                        &model.config.api_model_id,
-                    );
-                }
+                crate::llm::apply_owned_modality_capabilities(&mut model);
                 (id, model)
             })
             .collect();
@@ -1001,6 +996,49 @@ mod tests {
             loaded.models["open"].config.capabilities,
             vec![ModelCapability::Text],
             "open adapters keep the payload as-is"
+        );
+    }
+
+    #[test]
+    fn write_models_normalizes_ark_turbo_image_capability() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("litecode.db");
+        let mut settings = global_db::load_global_from_path(&db).unwrap();
+        let mut ark_provider = ready_provider("ark");
+        ark_provider.adapter_id = crate::config::schema::ADAPTER_ARK_CODING.into();
+        settings.providers.insert("ark".into(), ark_provider);
+
+        let mut turbo = sample_model("turbo", "ark");
+        turbo.adapter_id = crate::config::schema::ADAPTER_ARK_CODING.into();
+        turbo.config.api_model_id = "doubao-seed-2.1-turbo".into();
+        turbo.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
+
+        let mut flash = sample_model("flash", "ark");
+        flash.adapter_id = crate::config::schema::ADAPTER_ARK_CODING.into();
+        flash.config.api_model_id = "deepseek-v4-flash".into();
+        flash.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
+
+        settings.models.insert("turbo".into(), turbo);
+        settings.models.insert("flash".into(), flash);
+        settings.agents.get_mut("default").unwrap().model_ref = "turbo".into();
+        global_db::import_into(&db, &settings).unwrap();
+        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
+
+        let mut incoming = settings.models.clone();
+        for model in incoming.values_mut() {
+            model.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
+        }
+        writer.write_models(incoming).unwrap();
+
+        let loaded = global_db::load_global_from_path(&db).unwrap();
+        use crate::config::schema::ModelCapability;
+        assert_eq!(
+            loaded.models["turbo"].config.capabilities,
+            vec![ModelCapability::Text, ModelCapability::Image]
+        );
+        assert_eq!(
+            loaded.models["flash"].config.capabilities,
+            vec![ModelCapability::Text]
         );
     }
 

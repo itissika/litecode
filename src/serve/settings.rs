@@ -194,6 +194,7 @@ async fn get_provider_models(State(state): State<ServeState>, Path(id): Path<Str
         .filter(|_| provider.config.endpoint.trim().is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| provider.config.endpoint.clone());
+    // Strips a trailing `/responses` so Ark Coding Plan catalog stays `{v3}/models`.
     let url = chat_models_url(&endpoint);
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
