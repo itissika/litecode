@@ -351,9 +351,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     void useSessionStore.getState().refreshAvailableModels();
     if (get().open) {
       const status = get().persistStatus;
-      if (status !== "pending" && status !== "saving") {
-        void get().refresh();
+      // Own-write echo: persist already applied the payload. A full refresh
+      // would flip `loading` and remount the section onto a skeleton.
+      if (status === "pending" || status === "saving" || status === "saved") {
+        return;
       }
+      void get().refresh();
     }
   },
 
@@ -416,7 +419,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   isSaveBlocked: () => turnInProgress(),
 
   refresh: async () => {
-    set({ loading: true, loadError: null });
+    const firstLoad = !get().adapters.length && get().providers === null;
+    if (firstLoad) {
+      set({ loading: true, loadError: null });
+    }
     try {
       const summary = await getSettingsSummary();
       const [adapters, providers, websearch, models, catalogPayload, customTools, mcpServers, log] =
