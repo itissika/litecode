@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { gitRowId, isGitMetaPath, parseGitRowId, selectedPaths, watchPathsAffectGitWorktree } from "./gitStore";
+import { actionTargetPaths, gitRowId, isGitMetaPath, parseGitRowId, selectedPaths, watchPathsAffectGitWorktree } from "./gitStore";
 
 describe("git row ids", () => {
   it("round-trips section and path", () => {
@@ -31,5 +31,19 @@ describe("git watch path filter", () => {
     expect(watchPathsAffectGitWorktree([".git/index", ".git/HEAD"])).toBe(false);
     expect(watchPathsAffectGitWorktree([".git/index", "src/a.ts"])).toBe(true);
     expect(watchPathsAffectGitWorktree([])).toBe(true);
+  });
+});
+
+describe("git file action targets", () => {
+  it("applies file actions to the multi-selection when the click target is selected", () => {
+    const selected = new Set([
+      gitRowId("changes", "a.ts"),
+      gitRowId("changes", "b.ts"),
+    ]);
+    expect(actionTargetPaths(selected, "changes", "a.ts")).toEqual(["a.ts", "b.ts"]);
+    expect(actionTargetPaths(selected, "changes", "c.ts")).toEqual(["c.ts"]);
+    expect(actionTargetPaths(new Set([gitRowId("changes", "a.ts")]), "changes", "a.ts")).toEqual([
+      "a.ts",
+    ]);
   });
 });

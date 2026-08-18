@@ -1,7 +1,9 @@
-import { type MouseEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
+  CaretDown,
+  CaretRight,
   GitBranch,
   Minus,
   Plus,
@@ -9,14 +11,26 @@ import {
 } from "@phosphor-icons/react";
 
 import type { GitCommitInfo, GitFile } from "../api/workspace";
+import { FoldCard } from "./FoldCard";
+import { FOLDCARD_HEADER_TONE } from "./FoldCard";
 import { useEditorStore } from "../stores/editorStore";
 import {
+  actionTargetPaths,
   gitRowId,
-  selectedPaths,
   useGitStore,
   type GitSection,
 } from "../stores/gitStore";
+import {
+  buildGitTree,
+  descendantFiles,
+  visibleFileIds,
+  type GitTreeNode,
+} from "../lib/gitTree";
 import { fileNameFromPath } from "../utils/language";
+import { FolderIcon, getFileIcon } from "../utils/fileIcon";
+
+const SPLIT_KEY = "litecode-git-split";
+const SPLIT_DEFAULT = 0.55;
 
 function statusLabel(letter: string, untracked: boolean): string {
   if (untracked) return "U";
@@ -28,26 +42,6 @@ function confirmDiscard(paths: string[]): boolean {
   const preview = paths.slice(0, 8).join("\n");
   const extra = paths.length > 8 ? `\n…and ${paths.length - 8} more` : "";
   return window.confirm(`Discard changes to:\n${preview}${extra}`);
-}
-
-function SectionHeader({
-  title,
-  count,
-  actions,
-}: {
-  title: string;
-  count: number;
-  actions: ReactNode;
-}) {
-  return (
-    <div className="flex items-center gap-1 px-2 py-1 text-dk-xs text-(--_dk-text-muted)">
-      <span className="min-w-0 flex-1 truncate uppercase tracking-wide">
-        {title}
-        {count > 0 ? ` (${count})` : ""}
-      </span>
-      {actions}
-    </div>
-  );
 }
 
 function IconBtn({
@@ -74,23 +68,167 @@ function IconBtn({
   );
 }
 
+function FileActions({
+  section,
+  paths,
+  mutating,
+}: {
+  section: GitSection;
+  paths: string[];
+  mutating: boolean;
+}) {
+  const stagePaths = useGitStore((s) => s.stagePaths);
+  const unstagePaths = useGitStore((s) => s.unstagePaths);
+  const restorePaths = useGitStore((s) => s.restorePaths);
+
+  return (
+    <span className="hidden shrink-0 gap-0.5 group-hover:flex">
+      {section === "changes" ? (
+        <IconBtn
+          title="Stage"
+          disabled={mutating || paths.length === 0}
+          onClick={(e) => {
+            e.stopPropagation();
+            void stagePaths(paths);
+          }}
+        >
+          <Plus size={12} />
+        </IconBtn>
+      ) : (
+        <IconBtn
+          title="Unstage"
+          disabled={mutating || paths.length === 0}
+          onClick={(e) => {
+            e.stopPropagation();
+            void unstagePaths(paths);
+          }}
+        >
+          <Minus size={12} />
+        </IconBtn>
+      )}
+      <IconBtn
+        title="Discard"
+        disabled={mutating || paths.length === 0}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (!confirmDiscard(paths)) return;
+          void restorePaths(paths);
+        }}
+      >
+        <ArrowCounterClockwise size={12} />
+      </IconBtn>
+    </span>
+  );
+}
+
+function TreeNodes({
+  nodes,
+  section,
+  depth,
+  collapsed,
+  toggleCollapsed,
+  visible,
+}: {
+  nodes: GitTreeNode[];
+  section: GitSection;
+  depth: number;
+  collapsed: Set<string>;
+  toggleCollapsed: (path: string) => void;
+  visible: string[];
+}) {
+  return (
+    <>
+      {nodes.map((node) =>
+        node.kind === "dir" ? (
+          <DirRow
+            key={`dir:${node.path}`}
+            node={node}
+            section={section}
+            depth={depth}
+            collapsed={collapsed}
+            toggleCollapsed={toggleCollapsed}
+            visible={visible}
+          />
+        ) : (
+          <FileRow
+            key={gitRowId(section, node.file.path)}
+            file={node.file}
+            section={section}
+            depth={depth}
+            visible={visible}
+          />
+        ),
+      )}
+    </>
+  );
+}
+
+function DirRow({
+  node,
+  section,
+  depth,
+  collapsed,
+  toggleCollapsed,
+  visible,
+}: {
+  node: Extract<GitTreeNode, { kind: "dir" }>;
+  section: GitSection;
+  depth: number;
+  collapsed: Set<string>;
+  toggleCollapsed: (path: string) => void;
+  visible: string[];
+}) {
+  const mutating = useGitStore((s) => s.mutating);
+  const open = !collapsed.has(node.path);
+  const files = descendantFiles(node);
+  const paths = files.map((f) => f.path);
+  const Caret = open ? CaretDown : CaretRight;
+
+  return (
+    <div>
+      <div
+        className="group flex cursor-pointer items-center gap-1 py-0.5 pr-2 text-dk-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-selected)/50"
+        style={{ paddingLeft: 8 + depth * 12 }}
+        onClick={() => toggleCollapsed(node.path)}
+      >
+        <Caret size={10} className="shrink-0 text-(--_dk-text-muted)" />
+        <FolderIcon size={14} className="shrink-0" />
+        <span className="min-w-0 flex-1 truncate">{node.name}</span>
+        <FileActions section={section} paths={paths} mutating={mutating} />
+      </div>
+      {open && (
+        <TreeNodes
+          nodes={node.children}
+          section={section}
+          depth={depth + 1}
+          collapsed={collapsed}
+          toggleCollapsed={toggleCollapsed}
+          visible={visible}
+        />
+      )}
+    </div>
+  );
+}
+
 function FileRow({
   section,
   file,
+  depth,
   visible,
 }: {
   section: GitSection;
   file: GitFile;
+  depth: number;
   visible: string[];
 }) {
   const id = gitRowId(section, file.path);
   const selected = useGitStore((s) => s.selected.has(id));
+  const allSelected = useGitStore((s) => s.selected);
   const select = useGitStore((s) => s.select);
-  const stagePaths = useGitStore((s) => s.stagePaths);
-  const unstagePaths = useGitStore((s) => s.unstagePaths);
-  const restorePaths = useGitStore((s) => s.restorePaths);
   const mutating = useGitStore((s) => s.mutating);
   const openFile = useEditorStore((s) => s.openFile);
+  const Icon = getFileIcon(fileNameFromPath(file.path));
+  const targets = actionTargetPaths(allSelected, section, file.path);
 
   const onClick = (e: MouseEvent) => {
     select(id, {
@@ -107,7 +245,8 @@ function FileRow({
       role="option"
       aria-selected={selected}
       onClick={onClick}
-      className={`group flex cursor-pointer items-center gap-1 px-2 py-0.5 text-dk-xs ${
+      style={{ paddingLeft: 8 + depth * 12 }}
+      className={`group flex cursor-pointer items-center gap-1 py-0.5 pr-2 text-dk-xs ${
         selected
           ? "bg-(--_dk-ix-bg-selected) text-(--_dk-text-secondary)"
           : "text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-selected)/50"
@@ -117,44 +256,69 @@ function FileRow({
       <span className="w-3 shrink-0 font-mono text-(--_dk-text-muted)">
         {statusLabel(file.status, file.untracked)}
       </span>
+      <Icon size={14} className="shrink-0" />
       <span className="min-w-0 flex-1 truncate">{fileNameFromPath(file.path)}</span>
-      <span className="hidden shrink-0 gap-0.5 group-hover:flex">
-        {section === "changes" ? (
-          <IconBtn
-            title="Stage"
-            disabled={mutating}
-            onClick={(e) => {
-              e.stopPropagation();
-              void stagePaths([file.path]);
-            }}
-          >
-            <Plus size={12} />
-          </IconBtn>
-        ) : (
-          <IconBtn
-            title="Unstage"
-            disabled={mutating}
-            onClick={(e) => {
-              e.stopPropagation();
-              void unstagePaths([file.path]);
-            }}
-          >
-            <Minus size={12} />
-          </IconBtn>
-        )}
-        <IconBtn
-          title="Discard"
-          disabled={mutating}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!confirmDiscard([file.path])) return;
-            void restorePaths([file.path]);
-          }}
-        >
-          <ArrowCounterClockwise size={12} />
-        </IconBtn>
-      </span>
+      <FileActions section={section} paths={targets} mutating={mutating} />
     </div>
+  );
+}
+
+function ChangeGroup({
+  section,
+  files,
+  label,
+  headerActionTitle,
+  onHeaderAction,
+  collapsed,
+  toggleCollapsed,
+}: {
+  section: GitSection;
+  files: GitFile[];
+  label: string;
+  headerActionTitle: string;
+  onHeaderAction: () => void;
+  collapsed: Set<string>;
+  toggleCollapsed: (path: string) => void;
+}) {
+  const mutating = useGitStore((s) => s.mutating);
+  const tree = useMemo(() => buildGitTree(files), [files]);
+  const visible = useMemo(
+    () => visibleFileIds(tree, section, collapsed, gitRowId),
+    [tree, section, collapsed],
+  );
+
+  return (
+    <FoldCard
+      id={`git-${section}`}
+      defaultOpen
+      className="git-foldcard"
+      label={
+        <span className="flex min-w-0 flex-1 items-center gap-1">
+          <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate`}>
+            {label} ({files.length})
+          </span>
+          <IconBtn
+            title={headerActionTitle}
+            disabled={mutating}
+            onClick={(e) => {
+              e.stopPropagation();
+              onHeaderAction();
+            }}
+          >
+            {section === "staged" ? <Minus size={12} /> : <Plus size={12} />}
+          </IconBtn>
+        </span>
+      }
+    >
+      <TreeNodes
+        nodes={tree}
+        section={section}
+        depth={0}
+        collapsed={collapsed}
+        toggleCollapsed={toggleCollapsed}
+        visible={visible}
+      />
+    </FoldCard>
   );
 }
 
@@ -184,11 +348,16 @@ function CommitRow({ commit }: { commit: GitCommitInfo }) {
   );
 }
 
+function readSplit(): number {
+  const raw = Number(localStorage.getItem(SPLIT_KEY));
+  if (!Number.isFinite(raw)) return SPLIT_DEFAULT;
+  return Math.min(0.8, Math.max(0.2, raw));
+}
+
 export function GitPanel() {
   const status = useGitStore((s) => s.status);
   const commits = useGitStore((s) => s.commits);
   const message = useGitStore((s) => s.message);
-  const selected = useGitStore((s) => s.selected);
   const loading = useGitStore((s) => s.loading);
   const mutating = useGitStore((s) => s.mutating);
   const error = useGitStore((s) => s.error);
@@ -196,26 +365,53 @@ export function GitPanel() {
   const refresh = useGitStore((s) => s.refresh);
   const stagePaths = useGitStore((s) => s.stagePaths);
   const unstagePaths = useGitStore((s) => s.unstagePaths);
-  const restorePaths = useGitStore((s) => s.restorePaths);
   const commit = useGitStore((s) => s.commit);
   const pull = useGitStore((s) => s.pull);
   const push = useGitStore((s) => s.push);
+
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [split, setSplit] = useState(readSplit);
+  const splitRef = useRef(split);
+  splitRef.current = split;
+  const paneRef = useRef<HTMLDivElement>(null);
+
+  const toggleCollapsed = useCallback((path: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     void refresh({ silent: false });
   }, [refresh]);
 
-  const visibleIds = useMemo(() => {
-    return [
-      ...status.staged.map((f) => gitRowId("staged", f.path)),
-      ...status.changes.map((f) => gitRowId("changes", f.path)),
-    ];
-  }, [status.staged, status.changes]);
+  const onSplitterDown = (e: MouseEvent) => {
+    e.preventDefault();
+    const pane = paneRef.current;
+    if (!pane) return;
+    const startY = e.clientY;
+    const start = splitRef.current;
+    const height = pane.getBoundingClientRect().height;
+    const onMove = (ev: globalThis.MouseEvent) => {
+      if (height <= 0) return;
+      const next = Math.min(0.8, Math.max(0.2, start + (ev.clientY - startY) / height));
+      splitRef.current = next;
+      setSplit(next);
+    };
+    const onUp = () => {
+      localStorage.setItem(SPLIT_KEY, String(splitRef.current));
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
-  const selectedStaged = selectedPaths(selected, "staged");
-  const selectedChanges = selectedPaths(selected, "changes");
-  const selectedAny = [...new Set([...selectedStaged, ...selectedChanges])];
   const busy = mutating;
+  const hasChanges = status.staged.length > 0 || status.changes.length > 0;
   const upstream =
     status.upstream_ahead || status.upstream_behind
       ? ` ↑${status.upstream_ahead} ↓${status.upstream_behind}`
@@ -245,126 +441,89 @@ export function GitPanel() {
         </IconBtn>
       </div>
 
-      <div className="border-b border-(--_dk-line) p-2">
-        <textarea
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          placeholder="Message (Ctrl+Enter to commit)"
-          rows={3}
-          className="w-full resize-none rounded border border-(--_dk-line-visible) bg-(--_dk-surface-header) px-2 py-1 text-(--_dk-text-secondary) outline-none"
-          onKeyDown={(e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-              e.preventDefault();
-              void commit();
-            }
-          }}
-        />
-        <div className="mt-1 flex justify-end">
-          <button
-            type="button"
-            disabled={busy || !message.trim() || status.staged.length === 0}
-            onClick={() => void commit()}
-            className="rounded bg-(--_dk-ix-bg-selected) px-2 py-0.5 text-(--_dk-text-secondary) disabled:opacity-40"
-          >
-            Commit
-          </button>
-        </div>
-      </div>
-
       {error && (
         <div className="border-b border-(--_dk-red-500) px-2 py-1 text-(--_dk-red-500)">
           {error}
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-auto">
-        <SectionHeader
-          title="Staged Changes"
-          count={status.staged.length}
-          actions={
-            <>
-              <IconBtn
-                title="Unstage selected"
-                disabled={busy || selectedStaged.length === 0}
-                onClick={() => void unstagePaths(selectedStaged)}
+      <div ref={paneRef} className="flex min-h-0 flex-1 flex-col">
+        <div className="min-h-0 overflow-auto" style={{ flex: split }}>
+          <div className="border-b border-(--_dk-line) p-2">
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder="Message (Ctrl+Enter to commit)"
+              rows={3}
+              className="w-full resize-none rounded border border-(--_dk-line-visible) bg-(--_dk-surface-header) px-2 py-1 text-(--_dk-text-secondary) outline-none"
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                  e.preventDefault();
+                  void commit();
+                }
+              }}
+            />
+            <div className="mt-1 flex justify-end">
+              <button
+                type="button"
+                disabled={busy || !message.trim() || status.staged.length === 0}
+                onClick={() => void commit()}
+                className="rounded bg-(--_dk-ix-bg-selected) px-2 py-0.5 text-(--_dk-text-secondary) disabled:opacity-40"
               >
-                <Minus size={12} />
-              </IconBtn>
-              <IconBtn
-                title="Unstage all"
-                disabled={busy || status.staged.length === 0}
-                onClick={() => void unstagePaths(status.staged.map((f) => f.path))}
-              >
-                <Minus size={14} weight="bold" />
-              </IconBtn>
-            </>
-          }
-        />
-        {status.staged.map((file) => (
-          <FileRow
-            key={gitRowId("staged", file.path)}
-            section="staged"
-            file={file}
-            visible={visibleIds}
-          />
-        ))}
+                Commit
+              </button>
+            </div>
+          </div>
 
-        <SectionHeader
-          title="Changes"
-          count={status.changes.length}
-          actions={
-            <>
-              <IconBtn
-                title="Stage selected"
-                disabled={busy || selectedChanges.length === 0}
-                onClick={() => void stagePaths(selectedChanges)}
-              >
-                <Plus size={12} />
-              </IconBtn>
-              <IconBtn
-                title="Stage all"
-                disabled={busy || status.changes.length === 0}
-                onClick={() => void stagePaths(status.changes.map((f) => f.path))}
-              >
-                <Plus size={14} weight="bold" />
-              </IconBtn>
-              <IconBtn
-                title="Discard selected"
-                disabled={busy || selectedAny.length === 0}
-                onClick={() => {
-                  if (!confirmDiscard(selectedAny)) return;
-                  void restorePaths(selectedAny);
-                }}
-              >
-                <ArrowCounterClockwise size={12} />
-              </IconBtn>
-              <IconBtn
-                title="Discard all"
-                disabled={busy || status.changes.length === 0}
-                onClick={() => {
-                  const paths = status.changes.map((f) => f.path);
-                  if (!confirmDiscard(paths)) return;
-                  void restorePaths(paths);
-                }}
-              >
-                <ArrowCounterClockwise size={14} weight="bold" />
-              </IconBtn>
-            </>
-          }
-        />
-        {status.changes.map((file) => (
-          <FileRow
-            key={gitRowId("changes", file.path)}
-            section="changes"
-            file={file}
-            visible={visibleIds}
-          />
-        ))}
+          <div className="px-1 py-1">
+            {!hasChanges ? (
+              <div className="px-2 py-3 text-(--_dk-text-muted)">No changes</div>
+            ) : (
+              <>
+                {status.staged.length > 0 && (
+                  <ChangeGroup
+                    section="staged"
+                    files={status.staged}
+                    label="Staged Changes"
+                    headerActionTitle="Unstage All Changes"
+                    onHeaderAction={() => void unstagePaths(status.staged.map((f) => f.path))}
+                    collapsed={collapsed}
+                    toggleCollapsed={toggleCollapsed}
+                  />
+                )}
+                {status.changes.length > 0 && (
+                  <ChangeGroup
+                    section="changes"
+                    files={status.changes}
+                    label="Changes"
+                    headerActionTitle="Stage All Changes"
+                    onHeaderAction={() => void stagePaths(status.changes.map((f) => f.path))}
+                    collapsed={collapsed}
+                    toggleCollapsed={toggleCollapsed}
+                  />
+                )}
+              </>
+            )}
+          </div>
+        </div>
 
-        <SectionHeader title="Commits" count={commits.length} actions={null} />
-        {commits.map((c) => (
-          <CommitRow key={c.sha} commit={c} />
-        ))}
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          className="h-1 shrink-0 cursor-ns-resize bg-(--_dk-line) hover:bg-(--_dk-text-muted)"
+          onMouseDown={onSplitterDown}
+        />
+
+        <div className="min-h-0 overflow-auto" style={{ flex: 1 - split }}>
+          <div className="px-2 py-1 text-dk-xs uppercase tracking-wide text-(--_dk-text-muted)">
+            Commits
+          </div>
+          {commits.length === 0 ? (
+            <div className="px-2 py-2 text-(--_dk-text-muted)">No commits yet</div>
+          ) : (
+            commits.map((c) => <CommitRow key={c.sha} commit={c} />)
+          )}
+        </div>
       </div>
     </div>
   );

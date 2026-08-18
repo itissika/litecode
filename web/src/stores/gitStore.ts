@@ -92,6 +92,17 @@ export function selectedPaths(selected: Set<string>, section: GitSection): strin
   return out;
 }
 
+/** VS Code: if the clicked file is in a multi-selection, the action applies to the selection. */
+export function actionTargetPaths(
+  selected: Set<string>,
+  section: GitSection,
+  clickedPath: string,
+): string[] {
+  const inSection = selectedPaths(selected, section);
+  if (inSection.length > 1 && inSection.includes(clickedPath)) return inSection;
+  return [clickedPath];
+}
+
 export const useGitStore = create<GitStore>((set, get) => ({
   status: emptyStatus(),
   commits: [],

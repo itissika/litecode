@@ -1,0 +1,12 @@
+/* SCM FoldCards live inside a scrolling split pane — don't cap at 30vh
+   or trap scroll inside the card. Dense rows, no chat-card padding. */
+.git-foldcard .foldcard-scroll {
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;
+  padding: 0 0.25rem 0.25rem var(--_dk-indent-card-body);
+}
+
+.git-foldcard .foldcard-scroll-frame {
+  background: transparent;
+}

@@ -12,6 +12,7 @@
 @import "./components/button.css";
 @import "./components/tag.css";
 @import "./components/search.css";
+@import "./components/git.css";
 
 @theme {
   /* === dk-* semantic tokens === */
