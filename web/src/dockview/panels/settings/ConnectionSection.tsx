@@ -190,24 +190,14 @@ export function ConnectionSection() {
               className="settings-foldcard"
             >
               <div className="space-y-2">
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <FieldLabel required>Id</FieldLabel>
-                    <TextInput
-                      value={row.id}
-                      onChange={(e) => updateDraft(index, { id: e.target.value })}
-                      disabled={saveBlocked}
-                      autoComplete="off"
-                    />
-                  </div>
-                  <div>
-                    <FieldLabel>Label</FieldLabel>
-                    <TextInput
-                      value={row.label}
-                      onChange={(e) => updateDraft(index, { label: e.target.value })}
-                      disabled={saveBlocked}
-                    />
-                  </div>
+                <div>
+                  <FieldLabel>Label</FieldLabel>
+                  <TextInput
+                    value={row.label}
+                    onChange={(e) => updateDraft(index, { label: e.target.value })}
+                    disabled={saveBlocked}
+                    placeholder={row.id || "Provider name"}
+                  />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
