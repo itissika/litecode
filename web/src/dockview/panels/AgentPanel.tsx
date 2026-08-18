@@ -1,5 +1,6 @@
-import { Component, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Component, type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
+import { CaretDownIcon } from "@phosphor-icons/react";
 
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useSessionStore } from "../../stores/sessionStore";
@@ -9,10 +10,12 @@ import { useMessageStore } from "../../stores/messageStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { AgentChatInput } from "../../components/AgentChatInput";
 import { MessageList } from "../../components/MessageList";
+import { PermissionCard } from "../../components/PermissionModal";
 import { clearFoldCardOpen } from "../../components/foldCardState";
 import { ProgressiveBlur } from "../../components/ProgressiveBlur";
 import { TodoPanel } from "../../components/TodoPanel";
 import { TerminalStatusBar } from "../../components/TerminalStatusBar";
+import { composerCardClass } from "../../components/composerCard";
 
 class AgentErrorBoundary extends Component<
   { onClose: () => void; children: ReactNode },
@@ -118,10 +121,21 @@ export function AgentPanel(props: IDockviewPanelProps) {
  * chat shell against a mocked store — the dockview panel entry above is
  * not usable headless. */
 export function AgentChatShell({ sessionId }: { sessionId: string }) {
+  const [stickToEnd, setStickToEnd] = useState(true);
+  const jumpToEndRef = useRef<(() => void) | null>(null);
+
   return (
     <div className="relative flex h-full flex-col">
-      <MessageListRegion sessionId={sessionId} />
-      <ComposerDock sessionId={sessionId} />
+      <MessageListRegion
+        sessionId={sessionId}
+        onStickChange={setStickToEnd}
+        jumpToEndRef={jumpToEndRef}
+      />
+      <ComposerDock
+        sessionId={sessionId}
+        stickToEnd={stickToEnd}
+        onJumpToEnd={() => jumpToEndRef.current?.()}
+      />
     </div>
   );
 }
@@ -130,7 +144,15 @@ export function AgentChatShell({ sessionId }: { sessionId: string }) {
  * Transcript region — the only parent that feeds MessageList.
  * Subscribes to message fields + runState boolean; never to composer draft.
  */
-function MessageListRegion({ sessionId }: { sessionId: string }) {
+function MessageListRegion({
+  sessionId,
+  onStickChange,
+  jumpToEndRef,
+}: {
+  sessionId: string;
+  onStickChange: (stickToEnd: boolean) => void;
+  jumpToEndRef: RefObject<(() => void) | null>;
+}) {
   const messages = useMessageStore(
     (s) => s.bySession.get(sessionId)?.messages ?? EMPTY_MESSAGES,
   );
@@ -142,12 +164,6 @@ function MessageListRegion({ sessionId }: { sessionId: string }) {
   );
   const userDetailBefore = useMessageStore(
     (s) => s.bySession.get(sessionId)?.userDetailBefore ?? 0,
-  );
-  const shapeError = useMessageStore(
-    (s) => s.bySession.get(sessionId)?.shapeError ?? null,
-  );
-  const turnEndNotice = useMessageStore(
-    (s) => s.bySession.get(sessionId)?.turnEndNotice ?? null,
   );
   const runState = useTurnStore(
     (s) => s.byId.get(sessionId)?.runState ?? "idle",
@@ -170,24 +186,10 @@ function MessageListRegion({ sessionId }: { sessionId: string }) {
     const el = listRef.current;
     if (!el) return;
     setBlurOpacity(Math.min(el.scrollTop / 72, 1));
-    if (el.scrollTop < 32 && canLoadMore && !loadingHistory && !isRunning) {
-      loadMoreHistory();
-    }
   };
 
   return (
     <>
-      {shapeError && (
-        <div className="shrink-0 border-b border-(--_dk-red-500)/30 bg-(--_dk-red-500)/10 px-3 py-2 text-xs text-(--_dk-red-500)">
-          {shapeError}
-        </div>
-      )}
-      {turnEndNotice && (
-        <div className="shrink-0 border-b border-(--_dk-red-500)/30 bg-(--_dk-red-500)/10 px-3 py-2 text-xs text-(--_dk-red-500)">
-          {turnEndNotice.message}
-        </div>
-      )}
-
       {/* Three layers, each with one job:
           1. Non-scrolling frame (this div): carries the PERSISTENT top/side
              inset (pt-4/px-4). Because it never scrolls, the scroll container
@@ -211,11 +213,7 @@ function MessageListRegion({ sessionId }: { sessionId: string }) {
             (viewport-sized child + overflowing absolute items), which is one
             of the "list drifts while streaming" sources.
           */}
-          <div
-            className={`mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col bg-(--_dk-editor) ${
-              messages.length === 0 ? "min-h-full" : ""
-            }`}
-          >
+          <div className="mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col bg-(--_dk-editor)">
             <MessageList
               key={sessionId}
               messages={messages}
@@ -227,14 +225,10 @@ function MessageListRegion({ sessionId }: { sessionId: string }) {
               scrollRef={listRef}
               sessionId={sessionId}
               maxFileRevertK={maxFileRevertK}
+              onStickChange={onStickChange}
+              jumpToEndRef={jumpToEndRef}
             />
           </div>
-          {/* Half the scrollport. Direct child so `h-1/2` is 50% of the
-              list viewport, not of content. Pushes the last bubble up;
-              native stick-to-end follows scrollHeight, which includes this. */}
-          {messages.length > 0 && (
-            <div aria-hidden className="h-[50cqh] w-full shrink-0" />
-          )}
         </div>
       </div>
       <ProgressiveBlur
@@ -253,13 +247,49 @@ function MessageListRegion({ sessionId }: { sessionId: string }) {
 
 const EMPTY_MESSAGES: import("../../api/adapter").ChatRow[] = [];
 
-/** Composer + todos — no messageStore subscription.
+/** Composer + todos + permission — no messageStore subscription.
  *  Floats over the transcript at the same reading measure as MessageList,
  *  so the list can scroll under it instead of being clipped above. */
-function ComposerDock({ sessionId }: { sessionId: string }) {
+export function ComposerDock({
+  sessionId,
+  stickToEnd = true,
+  onJumpToEnd,
+}: {
+  sessionId: string;
+  stickToEnd?: boolean;
+  onJumpToEnd?: () => void;
+}) {
+  const pendingPermission = useTurnStore(
+    (s) => s.byId.get(sessionId)?.pendingPermission ?? null,
+  );
+  const grantPermission = useTurnStore((s) => s.grantPermission);
+
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-3">
       <div className="pointer-events-auto mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col gap-2">
+        {!stickToEnd && (
+          <div className="flex justify-center">
+            <button
+              type="button"
+              className={`${composerCardClass} inline-flex items-center gap-1 px-2.5 py-1 text-xs text-(--_dk-text-secondary)`}
+              onClick={onJumpToEnd}
+            >
+              <CaretDownIcon size={12} weight="bold" aria-hidden />
+              Latest
+            </button>
+          </div>
+        )}
+        {pendingPermission && (
+          <PermissionCard
+            tool={pendingPermission.tool}
+            ruleId={pendingPermission.rule_id}
+            summary={pendingPermission.summary}
+            requestId={pendingPermission.request_id}
+            onGrant={(approved, always) => {
+              grantPermission(sessionId, approved, always);
+            }}
+          />
+        )}
         <div className="flex items-end gap-2">
           <TerminalStatusBar sessionId={sessionId} />
           <div className="min-w-0 flex-1">

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 import type { ChatRow } from "../api/adapter";
-import { applyTurnEventMeta, isUserMessage, itemPlainText, newMessageId, userTextItem } from "../api/adapter";
+import { applyTurnEventMeta, isCompactCutRow, isUserMessage, itemPlainText, newMessageId, userTextItem } from "../api/adapter";
 import type {
   AgentRunState,
   TurnPhase,
@@ -422,7 +422,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (trimmed) {
         const rows =
           useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
-        const lastUser = [...rows].reverse().find((m) => isUserMessage(m.item));
+        const lastUser = [...rows].reverse().find(
+          (m) => !isCompactCutRow(m) && isUserMessage(m.item),
+        );
         if (!lastUser || itemPlainText(lastUser.item) !== trimmed) {
           useMessageStore.getState().pushUserMessage(sessionId, {
             id: newMessageId("user"),

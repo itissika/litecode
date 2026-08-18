@@ -1,5 +1,7 @@
 import { WarningCircle } from "@phosphor-icons/react";
 
+import { composerCardClass } from "./composerCard";
+
 interface PermissionCardProps {
   tool: string;
   ruleId: string;
@@ -19,7 +21,7 @@ export function PermissionCard({
 
   return (
     <div
-      className="mx-3 my-2 flex gap-3 rounded-md border border-(--_dk-line-visible) border-l-2 border-l-(--_dk-amber-500) bg-(--_dk-surface-raised) p-3 shadow-(--_dk-elevation)"
+      className={`${composerCardClass} flex gap-3 border-l-2 border-l-(--_dk-amber-500) p-3`}
       role="group"
       aria-labelledby="perm-title"
       aria-describedby={requestSuffix ? "perm-request-id" : undefined}

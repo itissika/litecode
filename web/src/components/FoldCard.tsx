@@ -41,6 +41,12 @@ function isNearScrollEnd(el: HTMLElement, threshold = STICK_THRESHOLD): boolean 
   return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
 }
 
+function cssTimeToMs(value: string): number {
+  const first = value.split(",")[0]?.trim() ?? "0s";
+  if (first.endsWith("ms")) return Number.parseFloat(first) || 0;
+  return (Number.parseFloat(first) || 0) * 1000;
+}
+
 export function FoldCard({
   id,
   open: controlledOpen,
@@ -82,14 +88,54 @@ export function FoldCard({
   const isControlled = controlledOpen !== undefined;
   const open = isControlled ? controlledOpen : internalOpen;
 
-  // Readiness: the horizontal entrance has finished playing. Children only
-  // mount after `ready`, so nested FoldCards cascade in (parent → child).
-  // Live cards start ready so a remount (e.g. accidental key churn) does not
-  // flash collapsed→open while streaming is still true. A card that is already
-  // open at mount (streaming, or restored from persisted state) must also start
-  // ready: otherwise it would mount collapsed, measure short, then pop open 260ms
-  // later and re-jitter the virtual list.
+  // Readiness: the horizontal entrance has finished playing. Nested FoldCards
+  // cascade in (parent → child). Live cards start ready so a remount does not
+  // flash collapsed→open while still streaming. A card that is already open at
+  // mount (streaming, or restored from persisted state) must also start ready:
+  // otherwise it would mount collapsed, measure short, then pop open 260ms
+  // later and jitter the virtual list.
   const [ready, setReady] = useState(streaming === true || internalOpen === true);
+  const wantOpen = open && ready;
+
+  // Body grid (`0fr` → `1fr`) needs content mounted to interpolate height.
+  // Expand: mount children while still `0fr`, then `is-open` after layout.
+  // Collapse: drop `is-open` first, unmount after the row transition ends.
+  // Steady collapsed = no descendants, so splitter resize does not layout them.
+  const [bodyMounted, setBodyMounted] = useState(wantOpen);
+  const [bodyOpen, setBodyOpen] = useState(wantOpen);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const wantOpenRef = useRef(wantOpen);
+  wantOpenRef.current = wantOpen;
+
+  useLayoutEffect(() => {
+    if (wantOpen) {
+      if (!bodyMounted) {
+        setBodyMounted(true);
+        return;
+      }
+      if (!bodyOpen) setBodyOpen(true);
+      return;
+    }
+    if (bodyOpen) setBodyOpen(false);
+  }, [wantOpen, bodyMounted, bodyOpen]);
+
+  useEffect(() => {
+    if (wantOpen || bodyOpen || !bodyMounted) return;
+    const el = bodyRef.current;
+    let ms = 0;
+    if (el) {
+      const style = getComputedStyle(el);
+      ms = cssTimeToMs(style.transitionDuration) + cssTimeToMs(style.transitionDelay);
+    }
+    if (!(ms > 0)) {
+      setBodyMounted(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      if (!wantOpenRef.current) setBodyMounted(false);
+    }, ms + 50);
+    return () => window.clearTimeout(timer);
+  }, [wantOpen, bodyOpen, bodyMounted]);
 
   // Edge blur strengths (single linear value per edge, driven by scroll
   // distance from that edge). 0 = flush with the edge, no band shown.
@@ -106,7 +152,7 @@ export function FoldCard({
   // Do NOT auto-reopen on false→true — that caused close→open flicker when the
   // streaming signal briefly dipped between tool batches.
   const prevStreaming = useRef(streaming);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (prevStreaming.current && !streaming && !isControlled) {
       setInternalOpen(false);
     }
@@ -192,7 +238,7 @@ export function FoldCard({
 
   // Expand only after the entrance has finished (ready). Until then the body
   // stays collapsed and toggle clicks are ignored.
-  const canExpand = open && ready;
+  const canExpand = wantOpen;
 
   // Returns true when the event originated from an interactive descendant of
   // the header (a button, link, input, etc.) rather than the header surface
@@ -260,7 +306,7 @@ export function FoldCard({
           strokeWidth="1.5"
           strokeLinecap="round"
           strokeLinejoin="round"
-          className={`foldcard-arrow ${FOLDCARD_HEADER_TONE} shrink-0 ${canExpand ? "is-open" : ""}`}
+          className={`foldcard-arrow ${FOLDCARD_HEADER_TONE} shrink-0 ${bodyOpen ? "is-open" : ""}`}
         >
           <path d="M3 1.5l4 3.5-4 3.5" />
         </svg>
@@ -273,36 +319,46 @@ export function FoldCard({
           label
         )}
       </div>
-      <div className={`foldcard-body ${canExpand ? "is-open" : ""}`}>
+      <div
+        ref={bodyRef}
+        className={`foldcard-body ${bodyOpen ? "is-open" : ""}`}
+        onTransitionEnd={(event) => {
+          if (event.target !== event.currentTarget) return;
+          if (event.propertyName !== "grid-template-rows") return;
+          if (!wantOpenRef.current) setBodyMounted(false);
+        }}
+      >
         <div className="foldcard-body-inner">
-          <div className="foldcard-scroll-frame">
-            <div
-              ref={contentRef}
-              className={`foldcard-scroll ${contentClassName}`}
-            >
-              {ready && children}
+          {bodyMounted && (
+            <div className="foldcard-scroll-frame">
+              <div
+                ref={contentRef}
+                className={`foldcard-scroll ${contentClassName}`}
+              >
+                {children}
+              </div>
+              {topStrength > 0.5 && (
+                <ProgressiveBlur
+                  side="top"
+                  height={BLUR_BAND}
+                  strength={topStrength}
+                  tint={1}
+                  tintCurve={1}
+                  tintColor="var(--_dk-editor)"
+                />
+              )}
+              {bottomStrength > 0.5 && (
+                <ProgressiveBlur
+                  side="bottom"
+                  height={BLUR_BAND}
+                  strength={bottomStrength}
+                  tint={1}
+                  tintCurve={1}
+                  tintColor="var(--_dk-editor)"
+                />
+              )}
             </div>
-            {topStrength > 0.5 && (
-              <ProgressiveBlur
-                side="top"
-                height={BLUR_BAND}
-                strength={topStrength}
-                tint={1}
-                tintCurve={1}
-                tintColor="var(--_dk-editor)"
-              />
-            )}
-            {bottomStrength > 0.5 && (
-              <ProgressiveBlur
-                side="bottom"
-                height={BLUR_BAND}
-                strength={bottomStrength}
-                tint={1}
-                tintCurve={1}
-                tintColor="var(--_dk-editor)"
-              />
-            )}
-          </div>
+          )}
         </div>
       </div>
     </div>

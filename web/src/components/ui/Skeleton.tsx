@@ -99,15 +99,3 @@ export function FileTreeSkeleton() {
     </div>
   );
 }
-
-export function MessageHistorySkeleton() {
-  return (
-    <div
-      className="border-b border-(--_dk-line) px-4 py-3"
-      aria-busy="true"
-      aria-label="Loading earlier items"
-    >
-      <Skeleton className="mx-auto h-3 w-28" />
-    </div>
-  );
-}

@@ -66,13 +66,21 @@ type ToolAnim = "pop" | "fail" | null;
  *   - settling to ok        → bounce + green flash once, then settle to static
  *   - settling to failed    → shrink + red flash + shockwave once, then red
  *
- * The animation fires whenever the status lands on a terminal state (ok/failed),
- * not only on a running→ok/failed transition. This is deliberate: the
- * function_call (model SSE) and its function_call_output (agent buffer commit)
- * arrive through different channels, so a completed call often mounts directly
- * at `ok` after the buffer seal rather than transitioning out of `running`.
+ * The animation fires when status is ok/failed *and* `live` is true (the
+ * owning process group is still the streaming phase). A completed call often
+ * mounts directly at `ok` after buffer seal rather than transitioning out of
+ * `running`; `live` is what distinguishes that from a remount of a sealed card
+ * (FoldCard expand / virtualizer recycle), which must stay static.
  */
-export function ToolIcon({ name, status }: { name: string; status: ToolStatus }) {
+export function ToolIcon({
+  name,
+  status,
+  live = false,
+}: {
+  name: string;
+  status: ToolStatus;
+  live?: boolean;
+}) {
   const Glyph = glyphFor(name);
   const [anim, setAnim] = useState<ToolAnim>(null);
   const clearTimer = useRef<number | null>(null);
@@ -88,6 +96,11 @@ export function ToolIcon({ name, status }: { name: string; status: ToolStatus })
       tick();
       const id = window.setInterval(tick, 1800);
       return () => window.clearInterval(id);
+    }
+
+    if (!live) {
+      setAnim(null);
+      return;
     }
 
     if (status === "ok") {
@@ -107,7 +120,7 @@ export function ToolIcon({ name, status }: { name: string; status: ToolStatus })
         clearTimer.current = null;
       }
     };
-  }, [status]);
+  }, [status, live]);
 
   const colorClass =
     status === "failed"

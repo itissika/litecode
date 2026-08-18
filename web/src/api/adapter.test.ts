@@ -7,6 +7,7 @@ import {
   extractBufferIndex,
   isAssistantMessage,
   isChatUserMessage,
+  isHumanUserRow,
   isStreamFailureEvent,
   isSystemReminderItem,
   itemAuthorityId,
@@ -183,6 +184,18 @@ describe("isSystemReminderItem", () => {
     expect(isChatUserMessage(reminder)).toBe(false);
     expect(isChatUserMessage(userTextItem("hello"))).toBe(true);
     expect(isSystemReminderItem(userTextItem("hello"))).toBe(false);
+    expect(
+      isHumanUserRow({ item: reminder, kind: "detail" }),
+    ).toBe(false);
+    expect(
+      isHumanUserRow({ item: userTextItem("hello") }),
+    ).toBe(true);
+    expect(
+      isHumanUserRow({
+        item: userTextItem("compact summary"),
+        kind: "compact_checkpoint",
+      }),
+    ).toBe(false);
   });
 });
 

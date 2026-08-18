@@ -31,17 +31,6 @@ function header() {
   return screen.getByRole("button", { name: "bash" });
 }
 
-/**
- * jsdom runs no CSS animations and React 19 listens for the vendor-prefixed
- * `webkitAnimationEnd` there — dispatch both spellings so the entrance
- * finishes and the header accepts toggles.
- */
-function finishEntrance(el: HTMLElement) {
-  for (const type of ["webkitAnimationEnd", "animationend"]) {
-    el.dispatchEvent(new Event(type, { bubbles: true }));
-  }
-}
-
 afterEach(() => {
   cleanup();
   clearFoldCardOpen(SESSION);
@@ -51,12 +40,14 @@ describe("FoldCard mount defaults", () => {
   it("mounts collapsed when nothing else applies", () => {
     renderCard();
     expect(header().getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("body")).toBeNull();
   });
 
   it("mounts open when streaming with no persisted state", () => {
     renderCard({ streaming: true });
     // Live cards start ready, so the open state is visible immediately.
     expect(header().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("body")).toBeTruthy();
   });
 
   it("mounts open when defaultOpen with no persisted state", () => {
@@ -67,14 +58,17 @@ describe("FoldCard mount defaults", () => {
 
 describe("FoldCard remount persistence", () => {
   it("keeps a card the user expanded open after remount", () => {
-    const { unmount } = renderCard();
-    finishEntrance(header());
+    const { unmount } = renderCard({ defaultOpen: true });
+    fireEvent.click(header());
+    expect(header().getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(header());
     expect(header().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("body")).toBeTruthy();
 
     unmount();
     renderCard();
     expect(header().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("body")).toBeTruthy();
   });
 
   it("keeps a card the user collapsed collapsed after remount, even with defaultOpen", () => {
@@ -174,9 +168,11 @@ describe("FoldCard streaming transitions", () => {
       </FoldCard>,
     );
     expect(header().getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("body")).toBeNull();
 
     unmount();
     renderCard({ streaming: false });
     expect(header().getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("body")).toBeNull();
   });
 });

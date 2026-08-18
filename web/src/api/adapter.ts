@@ -34,6 +34,21 @@ export function isCompactCutRow(row: { kind?: string }): boolean {
   return row.kind === "compact_checkpoint";
 }
 
+/**
+ * Human composer row — envelope `kind` first, then Item role.
+ * Compact checkpoints are user-role Items but are not chat bubbles.
+ * Optimistic `user-*` shells have no kind and still count as human.
+ */
+export function isHumanUserRow(row: { item: Item; kind?: string }): boolean {
+  if (isCompactCutRow(row)) return false;
+  return isUserMessage(row.item) && !isSystemReminderItem(row.item);
+}
+
+/** Missing wire kind is a conversation `detail` (REV-11 envelope). */
+export function wireRowKind(kind?: string): string {
+  return kind === "compact_checkpoint" ? "compact_checkpoint" : "detail";
+}
+
 let nextId = 0;
 export function newMessageId(prefix = "msg"): string {
   nextId += 1;
@@ -121,7 +136,7 @@ export function isSystemReminderItem(item: Item): boolean {
   return text.startsWith("<system-reminder>") && text.includes("</system-reminder>");
 }
 
-/** User-role row that should render as a human chat bubble. */
+/** Item-only chat-user check (no envelope). Prefer `isHumanUserRow` when a ChatRow exists. */
 export function isChatUserMessage(item: Item): boolean {
   return isUserMessage(item) && !isSystemReminderItem(item);
 }

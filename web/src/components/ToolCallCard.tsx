@@ -22,6 +22,8 @@ interface ToolCallCardProps {
   call: FunctionCallItem;
   output?: FunctionCallOutputItem;
   streaming?: boolean;
+  /** Process-group live window — drives ToolIcon settle animation. */
+  live?: boolean;
   projectRoot?: string | null;
   onOpenFile: (path: string) => void;
   /** Owning session id — needed by per-tool views (e.g. subagent) to resolve nested state. */
@@ -75,6 +77,7 @@ export function ToolCallCard({
   call,
   output,
   streaming = false,
+  live = false,
   projectRoot = null,
   onOpenFile,
   sessionId,
@@ -156,7 +159,7 @@ export function ToolCallCard({
   return (
     <FoldCard
       id={foldCardId}
-      icon={<ToolIcon name={toolName} status={status} />}
+      icon={<ToolIcon name={toolName} status={status} live={live} />}
       label={
         isSubagent ? (
           <span className="flex min-w-0 flex-1 items-center gap-2">

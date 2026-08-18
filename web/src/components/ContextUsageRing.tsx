@@ -49,7 +49,7 @@ const RING_STOPS: { name: string; at: number }[] = [
   { name: "--_dk-cat-orange", at: 0.7 },
   { name: "--_dk-cat-yellow", at: 0.8 },
   { name: "--_dk-cat-cyan", at: 0.9 },
-  { name: "--_dk-cat-green", at: 1 },
+  { name: "--_dk-emerald-500", at: 1 },
 ];
 
 // Exported for Remotion compositions (c-switch ring replica) so the hit-rate →

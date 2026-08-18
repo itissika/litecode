@@ -97,28 +97,6 @@
   color: var(--_dk-text-disabled);
 }
 
-/* Empty state */
-.agent-empty-state {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.375rem;
-  padding: 1.5rem;
-  text-align: center;
-}
-
-.agent-empty-state-title {
-  font-size: 0.875rem;
-  color: var(--_dk-text-muted);
-}
-
-.agent-empty-state-hint {
-  font-size: 0.75rem;
-  color: var(--_dk-text-disabled);
-}
-
 /* ── Tool icon ───────────────────────────────────────────────
    Two static states, transition-driven feedback:
      ok / unknown / running → theme foreground (--_dk-status-ok)
@@ -332,7 +310,11 @@
 .foldcard {
   min-width: 0;
   max-width: 100%;
-  overflow-x: hidden;
+  /* clip-x (not hidden) contains the horizontal entrance slide WITHOUT forcing
+     overflow-y to compute to auto — `hidden` would coerce y→auto and clip the
+     tool-icon glow that paints past the card's top/bottom edges. clip+visible
+     share a group, so y stays visible. */
+  overflow-x: clip;
 }
 
 .foldcard-header {
@@ -340,7 +322,11 @@
   box-sizing: border-box;
   min-width: 0;
   max-width: 100%;
-  overflow: hidden;
+  /* No overflow clipping needed: the parent .foldcard contains the horizontal
+     entrance slide, and the label truncates itself. Leaving overflow visible
+     lets the tool-icon ok/fail glow + shockwave paint past the header's
+     top/bottom edges instead of being cut off. */
+  overflow: visible;
   animation: foldcard-enter 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
   padding-left: var(--_dk-indent-card-head);
   padding-right: 0.375rem;

@@ -17,7 +17,7 @@ import {
 } from "../api/adapter";
 import type { Item } from "../api/types";
 import { useConnectionStore } from "./connectionStore";
-import { applyCompactSplice, emptySlice, useMessageStore } from "./messageStore";
+import { useMessageStore } from "./messageStore";
 import { useToastStore } from "./toastStore";
 import { EMPTY_SLICE as EMPTY_TURN, useTurnStore } from "./turnStore";
 
@@ -38,6 +38,14 @@ function assistantMsg(id: string, text: string): Item {
     id,
     status: "completed",
     content: [{ type: "output_text", text, annotations: [] }],
+  };
+}
+
+function userMsg(text: string): Item {
+  return {
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text }],
   };
 }
 
@@ -98,7 +106,7 @@ describe("messageStore Item projection", () => {
       session_id: sid,
       start: 1,
       end: 2,
-      items: [assistantMsg("summary", "hidden summary")],
+      items: [userMsg("hidden summary")],
       kinds: ["compact_checkpoint"],
       user_detail_before: 0,
     }));
@@ -136,7 +144,7 @@ describe("messageStore Item projection", () => {
       end: 3,
       items: [
         assistantMsg("a0", "first"),
-        assistantMsg("sum1", "old summary"),
+        userMsg("old summary"),
         assistantMsg("a1", "after"),
       ],
       kinds: ["detail", "compact_checkpoint", "detail"],
@@ -146,7 +154,7 @@ describe("messageStore Item projection", () => {
       session_id: sid,
       start: 2,
       end: 3,
-      items: [assistantMsg("sum2", "new summary")],
+      items: [userMsg("new summary")],
       kinds: ["compact_checkpoint"],
       user_detail_before: 0,
     }));
@@ -166,7 +174,7 @@ describe("messageStore Item projection", () => {
     expect(slice.messages.map((row) => row.item)).toEqual([
       assistantMsg("a0", "first"),
       assistantMsg("a1", "after"),
-      assistantMsg("sum2", "new summary"),
+      userMsg("new summary"),
     ]);
     expect(extractBufferIndex(slice.messages[1]!.id)).toBe(1);
     expect(sendRpc).toHaveBeenCalledWith("buffer/load", {
@@ -174,33 +182,6 @@ describe("messageStore Item projection", () => {
       end: 3,
       session_id: sid,
     });
-  });
-
-  it("applyCompactSplice shifts the window when the old checkpoint is not loaded", () => {
-    const sid = "s-compact-shift";
-    const slice = {
-      ...emptySlice(),
-      bufferViewStart: 10,
-      bufferViewEnd: 12,
-      committedBufferEnd: 12,
-      messages: [
-        {
-          id: bufferItemId(sid, 10),
-          item: assistantMsg("a10", "kept"),
-          kind: "detail",
-        },
-        {
-          id: bufferItemId(sid, 11),
-          item: assistantMsg("a11", "also"),
-          kind: "detail",
-        },
-      ],
-    };
-    const next = applyCompactSplice(sid, slice, 12);
-    expect(next.bufferViewStart).toBe(9);
-    expect(extractBufferIndex(next.messages[0]!.id)).toBe(9);
-    expect(extractBufferIndex(next.messages[1]!.id)).toBe(10);
-    expect(next.messages.some(isCompactCutRow)).toBe(false);
   });
 
   it("stream upsert then buffer/item seal keeps same authority id", () => {
@@ -588,9 +569,8 @@ describe("messageStore Item projection", () => {
     });
     const slice = useMessageStore.getState().bySession.get(sid)!;
     expect(slice.shapeError).toMatch(/type=/);
-    expect(slice.messages).toHaveLength(2);
-    expect(slice.messages[0].item.type).toBe("message");
-    expect(slice.messages[1].item.type).toBe("reasoning");
+    expect(slice.messages).toHaveLength(1);
+    expect(slice.messages[0].item.type).toBe("reasoning");
   });
 
   it("records subagent bindings from live bind and buffer/load", () => {
@@ -1003,5 +983,127 @@ describe("messageStore Item projection", () => {
     expect(slice.messages).toHaveLength(1);
     expect(itemPlainText(slice.messages[0].item)).toBe("hi");
     expect(slice.messages.some((m) => m.id.startsWith("live-"))).toBe(false);
+  });
+
+  it("compact then next turn seals optimistic user before assistant", async () => {
+    const sid = "s-compact-next-turn";
+    useMessageStore.getState().onBufferLoaded(sid, {
+      session_id: sid,
+      start: 0,
+      end: 1,
+      items: [assistantMsg("a0", "kept")],
+      kinds: ["detail"],
+      user_detail_before: 0,
+    });
+    const sendRpc = vi.fn(async () => ({
+      session_id: sid,
+      start: 1,
+      end: 2,
+      items: [userMsg("rolled-up")],
+      kinds: ["compact_checkpoint"],
+      user_detail_before: 0,
+    }));
+    useConnectionStore.setState({ sendRpc } as never);
+    useMessageStore.getState().onBufferCompacted(sid, {
+      session_id: sid,
+      revision: 2,
+      committed_end: 2,
+    });
+    await vi.waitFor(() => {
+      expect(
+        useMessageStore.getState().bySession.get(sid)?.messages.some(isCompactCutRow),
+      ).toBe(true);
+    });
+
+    markTurnRunning(sid);
+    useMessageStore.getState().pushUserMessage(sid, {
+      id: "user-next-1",
+      item: userMsg("continue after compact"),
+    });
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      buffer_index: 2,
+      item: userMsg("continue after compact"),
+      kind: "detail",
+    });
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      buffer_index: 3,
+      item: assistantMsg("a1", "reply"),
+      kind: "detail",
+    });
+
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages.map((row) => itemPlainText(row.item))).toEqual([
+      "kept",
+      "rolled-up",
+      "continue after compact",
+      "reply",
+    ]);
+    expect(slice.messages[1]?.kind).toBe("compact_checkpoint");
+    expect(slice.messages.some((row) => row.id.startsWith("user-"))).toBe(false);
+  });
+
+  it("buffer/item checkpoint does not consume a different optimistic user", () => {
+    const sid = "s-cp-no-steal";
+    useMessageStore.getState().pushUserMessage(sid, {
+      id: "user-pending",
+      item: userMsg("hello after compact"),
+    });
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      buffer_index: 0,
+      item: userMsg("rolled-up summary"),
+      kind: "compact_checkpoint",
+    });
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages[0]?.kind).toBe("compact_checkpoint");
+    expect(itemPlainText(slice.messages[0]!.item)).toBe("rolled-up summary");
+    expect(slice.messages.some((row) => row.id === "user-pending")).toBe(true);
+    expect(itemPlainText(slice.messages[1]!.item)).toBe("hello after compact");
+  });
+
+  it("buffer/item overlays an occupied index instead of skipping", () => {
+    const sid = "s-overlay-user";
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      buffer_index: 0,
+      item: userMsg("stale"),
+      kind: "detail",
+    });
+    useMessageStore.getState().pushUserMessage(sid, {
+      id: "user-fresh",
+      item: userMsg("fresh"),
+    });
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      buffer_index: 0,
+      item: userMsg("fresh"),
+      kind: "detail",
+    });
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages).toHaveLength(1);
+    expect(slice.messages[0]?.id).toBe(bufferItemId(sid, 0));
+    expect(itemPlainText(slice.messages[0]!.item)).toBe("fresh");
+  });
+
+  it("buffer/load does not text-dedup optimistic user against a checkpoint", () => {
+    const sid = "s-fe05-cp";
+    useMessageStore.getState().pushUserMessage(sid, {
+      id: "user-same-text",
+      item: userMsg("summary"),
+    });
+    useMessageStore.getState().onBufferLoaded(sid, {
+      session_id: sid,
+      start: 0,
+      end: 1,
+      items: [userMsg("summary")],
+      kinds: ["compact_checkpoint"],
+      user_detail_before: 0,
+    });
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages).toHaveLength(2);
+    expect(slice.messages[0]?.kind).toBe("compact_checkpoint");
+    expect(slice.messages.some((row) => row.id === "user-same-text")).toBe(true);
   });
 });

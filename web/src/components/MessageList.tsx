@@ -6,14 +6,13 @@ import type { ChatRow } from "../api/adapter";
 import {
   deriveUserAnchorK,
   extractBufferIndex,
-  isChatUserMessage,
   isCompactCutRow,
   isFunctionCall,
   isFunctionCallOutput,
+  isHumanUserRow,
   isMessageItem,
   isReasoningItem,
   isSystemReminderItem,
-  isUserMessage,
   itemPlainText,
   projectionRowKey,
 } from "../api/adapter";
@@ -27,12 +26,9 @@ import { CategoryCount } from "./CategoryCount";
 import { FoldCard } from "./FoldCard";
 import { InlineToolRow } from "./InlineToolRow";
 import { useMessageStore } from "../stores/messageStore";
-import { useTurnStore } from "../stores/turnStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useEditorStore } from "../stores/editorStore";
 import { isInlineTool, processToolBucket } from "../lib/toolCategory";
-import { PermissionCard } from "./PermissionModal";
-import { MessageHistorySkeleton } from "./ui/Skeleton";
 import { ToolCallCard } from "./ToolCallCard";
 import { isToolCallLive, processGroupStreaming } from "./toolCallStatus";
 
@@ -191,6 +187,7 @@ export function groupNodes(nodes: RenderNode[]): NodeGroup[] {
 export function NodeView({
   node,
   streaming = false,
+  live = false,
   projectRoot,
   onOpenFile,
   sessionId,
@@ -198,6 +195,7 @@ export function NodeView({
 }: {
   node: RenderNode;
   streaming?: boolean;
+  live?: boolean;
   projectRoot?: string | null;
   onOpenFile?: (path: string) => void;
   sessionId?: string;
@@ -241,6 +239,7 @@ export function NodeView({
             call={node.call}
             output={node.output}
             streaming={streaming}
+            live={live}
             sessionId={sessionId}
           />
         );
@@ -250,6 +249,7 @@ export function NodeView({
           call={node.call}
           output={node.output}
           streaming={streaming}
+          live={live}
           projectRoot={projectRoot ?? null}
           onOpenFile={(path) => onOpenFile?.(path)}
           sessionId={sessionId}
@@ -382,6 +382,7 @@ export function ProcessGroup({
             key={node.key}
             node={node}
             streaming={node.streaming}
+            live={streaming}
             projectRoot={project}
             onOpenFile={(path) => void openFile(path)}
             sessionId={sessionId}
@@ -419,7 +420,7 @@ function ItemBubbleImpl({
   if (first != null && isSystemReminderItem(first.item)) {
     return <SystemReminderMark />;
   }
-  const isUser = first != null && isChatUserMessage(first.item);
+  const isUser = first != null && isHumanUserRow(first);
   const nodes = rowsToNodes(rows, isRunning);
   const streaming =
     rows.some((r) => r.streaming === true) || nodes.some((n) => n.streaming);
@@ -563,7 +564,7 @@ export function groupRowsForBubbles(rows: ChatRow[]): ChatRow[][] {
       current.push(row);
       continue;
     }
-    if (isUserMessage(row.item)) {
+    if (isHumanUserRow(row) || isSystemReminderItem(row.item)) {
       if (current.length > 0 && current.every(isCompactCutRow)) {
         groups.push([...current, row]);
         current = [];
@@ -579,8 +580,8 @@ export function groupRowsForBubbles(rows: ChatRow[]): ChatRow[][] {
   return groups;
 }
 
-/** Sentinel key for the trailing permission card. */
-export const LIST_FOOTER_KEY = "__list_footer__";
+const LIST_LOADER_KEY = "__list_loader__";
+const LIST_LOADER_HEIGHT = 40;
 
 /**
  * Stable virtual-item identity for a bubble.
@@ -606,7 +607,7 @@ export function bubbleIdentity(bubbles: ChatRow[][], index: number): string {
   if (isSystemReminderItem(first.item)) {
     return `notice:${projectionRowKey(first)}`;
   }
-  if (isChatUserMessage(first.item)) {
+  if (isHumanUserRow(first)) {
     return `user:${projectionRowKey(first)}`;
   }
   for (let i = index - 1; i >= 0; i--) {
@@ -615,7 +616,7 @@ export function bubbleIdentity(bubbles: ChatRow[][], index: number): string {
     if (isSystemReminderItem(prev.item)) {
       return `assistant-after:notice:${projectionRowKey(prev)}`;
     }
-    if (isChatUserMessage(prev.item)) {
+    if (isHumanUserRow(prev)) {
       return `assistant-after:user:${projectionRowKey(prev)}`;
     }
   }
@@ -630,6 +631,34 @@ export function canRevertFiles(
   return maxFileRevertK != null && k <= maxFileRevertK;
 }
 
+const SCROLL_INTENT_KEYS = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "PageUp",
+  "PageDown",
+  "Home",
+  "End",
+  " ",
+]);
+
+function wheelTargetIsNestedScroller(
+  target: EventTarget | null,
+  root: HTMLElement,
+): boolean {
+  let node = target instanceof HTMLElement ? target : null;
+  while (node && node !== root) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (
+      (overflowY === "auto" || overflowY === "scroll") &&
+      node.scrollHeight > node.clientHeight + 1
+    ) {
+      return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
+}
+
 interface MessageListProps {
   messages: ChatRow[];
   loadingHistory: boolean;
@@ -641,6 +670,9 @@ interface MessageListProps {
   sessionId: string;
   /** Highest user-detail k with a nonempty file patch; null hides Revert files. */
   maxFileRevertK?: number | null;
+  /** Human stick intent: true until the user scrolls up. */
+  onStickChange?: (stickToEnd: boolean) => void;
+  jumpToEndRef?: RefObject<(() => void) | null>;
 }
 
 export const MessageList = memo(function MessageList({
@@ -653,133 +685,186 @@ export const MessageList = memo(function MessageList({
   scrollRef,
   sessionId,
   maxFileRevertK = null,
+  onStickChange,
+  jumpToEndRef,
 }: MessageListProps) {
-  const pendingPermission = useTurnStore(
-    (s) => s.byId.get(sessionId)?.pendingPermission ?? null,
-  );
-  const rawGrantPermission = useTurnStore((s) => s.grantPermission);
-  const grantPermission = useCallback(
-    (approved: boolean, always: boolean) => {
-      rawGrantPermission(sessionId, approved, always);
-    },
-    [sessionId, rawGrantPermission],
-  );
-
-  // Cache the grouping on the messages reference. The store only swaps the
-  // `messages` array on a stream flush, so between flushes the bubble array is
-  // referentially stable and the virtualizer / ItemBubble props don't churn on
-  // unrelated re-renders. This is the pre-gate O(N) cost — run once per real
-  // data change, not per render.
   const bubbles = useMemo(() => groupRowsForBubbles(messages), [messages]);
+  const loader = canLoadMore ? 1 : 0;
+  const count = loader + bubbles.length;
 
-  const headerRef = useRef<HTMLDivElement | null>(null);
-  const [scrollMargin, setScrollMargin] = useState(0);
-  const hasFooter = pendingPermission != null;
-  const bindHeader = useCallback((node: HTMLDivElement | null) => {
-    headerRef.current = node;
-    setScrollMargin(node?.offsetHeight ?? 0);
-  }, []);
-  useLayoutEffect(() => {
-    const node = headerRef.current;
-    if (!node) return;
-    const ro = new ResizeObserver(() => {
-      setScrollMargin(node.offsetHeight);
-    });
-    ro.observe(node);
-    return () => ro.disconnect();
-  }, [canLoadMore, loadingHistory]);
+  const [bottomPad, setBottomPad] = useState(0);
+  const [stickToEnd, setStickToEnd] = useState(true);
+  const stickToEndRef = useRef(true);
+  stickToEndRef.current = stickToEnd;
+
+  useEffect(() => {
+    const measure = () => {
+      const el = scrollRef.current;
+      if (!el) return;
+      const h = el.getBoundingClientRect().height;
+      setBottomPad(h > 0 ? h / 2 : 0);
+    };
+    measure();
+    const raf = requestAnimationFrame(measure);
+    const ro = new ResizeObserver(measure);
+    const el = scrollRef.current;
+    if (el) ro.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, [scrollRef]);
 
   const getItemKey = useCallback(
     (index: number) => {
-      if (index >= bubbles.length) return LIST_FOOTER_KEY;
-      return bubbleIdentity(bubbles, index);
+      if (loader && index === 0) return LIST_LOADER_KEY;
+      return bubbleIdentity(bubbles, index - loader);
     },
-    [bubbles],
+    [bubbles, loader],
   );
 
   const estimateSize = useCallback(
     (index: number) => {
-      if (index >= bubbles.length) return 72;
-      const first = firstContentRow(bubbles[index] ?? []);
+      if (loader && index === 0) return LIST_LOADER_HEIGHT;
+      const first = firstContentRow(bubbles[index - loader] ?? []);
       if (!first) return 28;
       if (isSystemReminderItem(first.item)) return 28;
-      if (isChatUserMessage(first.item)) return 88;
+      if (isHumanUserRow(first)) return 88;
       return 240;
     },
-    [bubbles],
+    [bubbles, loader],
   );
 
-  // Unpin when the user scrolls away from the real bottom (spacer included).
-  const [stickToEnd, setStickToEnd] = useState(true);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
-      setStickToEnd((prev) => (prev === atEnd ? prev : atEnd));
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    onScroll();
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [scrollRef]);
+  const setStick = useCallback(
+    (next: boolean) => {
+      if (stickToEndRef.current === next) return;
+      stickToEndRef.current = next;
+      setStickToEnd(next);
+      onStickChange?.(next);
+    },
+    [onStickChange],
+  );
 
   const virtualizer = useVirtualizer({
-    count: messages.length === 0 ? 0 : bubbles.length + (hasFooter ? 1 : 0),
+    count,
     getScrollElement: () => scrollRef.current,
     estimateSize,
     overscan: 6,
     getItemKey,
-    scrollMargin,
+    paddingEnd: bottomPad,
     anchorTo: "end",
     followOnAppend: stickToEnd,
   });
 
   const virtualItems = virtualizer.getVirtualItems();
-  const pinnedOnMount = useRef(false);
-  useLayoutEffect(() => {
-    if (pinnedOnMount.current || bubbles.length === 0) return;
-    pinnedOnMount.current = true;
+
+  const pinToEnd = useCallback(() => {
+    setStick(true);
     virtualizer.scrollToEnd();
-  }, [bubbles.length, virtualizer]);
+  }, [setStick, virtualizer]);
+
+  if (jumpToEndRef) jumpToEndRef.current = pinToEnd;
+
+  const totalSize = virtualizer.getTotalSize();
+  useLayoutEffect(() => {
+    if (!stickToEnd) return;
+    virtualizer.scrollToEnd();
+  }, [stickToEnd, totalSize, count, virtualizer]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const afterHumanScroll = () => {
+      requestAnimationFrame(() => {
+        setStick(virtualizer.isAtEnd());
+      });
+    };
+
+    const onWheel = (event: WheelEvent) => {
+      if (wheelTargetIsNestedScroller(event.target, el)) return;
+      if (event.deltaY < 0) {
+        setStick(false);
+        return;
+      }
+      afterHumanScroll();
+    };
+
+    let touchY = 0;
+    const onTouchStart = (event: TouchEvent) => {
+      touchY = event.touches[0]?.clientY ?? 0;
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      if (wheelTargetIsNestedScroller(event.target, el)) return;
+      const y = event.touches[0]?.clientY ?? touchY;
+      const dy = y - touchY;
+      touchY = y;
+      if (dy > 2) {
+        setStick(false);
+        return;
+      }
+      if (dy < -2) afterHumanScroll();
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!SCROLL_INTENT_KEYS.has(event.key)) return;
+      if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") {
+        setStick(false);
+        return;
+      }
+      afterHumanScroll();
+    };
+
+    let fromScrollbar = false;
+    const onPointerDown = (event: PointerEvent) => {
+      fromScrollbar = event.target === el;
+    };
+    const onPointerUp = () => {
+      if (!fromScrollbar) return;
+      fromScrollbar = false;
+      afterHumanScroll();
+    };
+    const onScroll = () => {
+      if (!fromScrollbar) return;
+      setStick(virtualizer.isAtEnd());
+    };
+
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
+    el.addEventListener("keydown", onKeyDown);
+    el.addEventListener("pointerdown", onPointerDown);
+    el.addEventListener("pointerup", onPointerUp);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("keydown", onKeyDown);
+      el.removeEventListener("pointerdown", onPointerDown);
+      el.removeEventListener("pointerup", onPointerUp);
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, [scrollRef, setStick, virtualizer]);
+
+  useEffect(() => {
+    if (!canLoadMore || loadingHistory) return;
+    if (virtualItems.some((item) => item.index === 0)) {
+      onLoadMore();
+    }
+  }, [canLoadMore, loadingHistory, onLoadMore, virtualItems]);
 
   const itemStyle = (start: number): CSSProperties => ({
     position: "absolute",
     top: 0,
     left: 0,
     width: "100%",
-    transform: `translateY(${start - virtualizer.options.scrollMargin}px)`,
+    transform: `translateY(${start}px)`,
   });
 
   return (
-    <div
-      className={messages.length === 0 ? "flex flex-1 flex-col" : undefined}
-      data-testid="message-list"
-    >
-      {canLoadMore && (
-        <div ref={bindHeader} className="shrink-0 p-2 text-center">
-          {loadingHistory ? (
-            <MessageHistorySkeleton />
-          ) : (
-            <button
-              type="button"
-              onClick={onLoadMore}
-              className="text-xs text-(--_dk-accent-hover) hover:text-(--_dk-accent-hover)"
-            >
-              Load earlier items
-            </button>
-          )}
-        </div>
-      )}
-      {messages.length === 0 ? (
-        <div className="agent-empty-state">
-          <p className="agent-empty-state-title">
-            Send a message to start the agent.
-          </p>
-          <p className="agent-empty-state-hint">
-            Enter to send · Shift+Enter for newline
-          </p>
-        </div>
-      ) : (
+    <div data-testid="message-list">
+      {count > 0 && (
         <div
           style={{
             height: `${virtualizer.getTotalSize()}px`,
@@ -788,36 +873,31 @@ export const MessageList = memo(function MessageList({
           }}
         >
           {virtualItems.map((virtualItem) => {
-            if (virtualItem.index >= bubbles.length) {
-              if (!pendingPermission) return null;
+            if (loader && virtualItem.index === 0) {
               return (
                 <div
                   key={virtualItem.key}
-                  data-index={virtualItem.index}
-                  ref={virtualizer.measureElement}
-                  style={itemStyle(virtualItem.start)}
-                >
-                  <PermissionCard
-                    tool={pendingPermission.tool}
-                    ruleId={pendingPermission.rule_id}
-                    summary={pendingPermission.summary}
-                    requestId={pendingPermission.request_id}
-                    onGrant={grantPermission}
-                  />
-                </div>
+                  data-index={0}
+                  style={{
+                    ...itemStyle(virtualItem.start),
+                    height: LIST_LOADER_HEIGHT,
+                  }}
+                  aria-busy={loadingHistory}
+                  aria-label={loadingHistory ? "Loading earlier items" : undefined}
+                />
               );
             }
 
-            const group = bubbles[virtualItem.index];
+            const bubbleIndex = virtualItem.index - loader;
+            const group = bubbles[bubbleIndex];
             if (!group) return null;
 
             const { cutsBefore, rows: contentRows } = splitLeadingCuts(group);
             const first = contentRows[0];
             const firstIdx = first ? messages.indexOf(first) : -1;
-            // Sealed buffer rows only — optimistic live user shells have no buffer id.
             const sealed =
               first != null && extractBufferIndex(first.id) !== null;
-            const isUser = first != null && isChatUserMessage(first.item);
+            const isUser = first != null && isHumanUserRow(first);
             const showRevert = sealed && isUser && firstIdx >= 0;
             const userAnchorK = showRevert
               ? deriveUserAnchorK(messages, firstIdx, userDetailBefore)
@@ -825,7 +905,7 @@ export const MessageList = memo(function MessageList({
             const showRevertFiles =
               userAnchorK !== undefined &&
               canRevertFiles(userAnchorK, maxFileRevertK);
-            const bubbleKey = bubbleIdentity(bubbles, virtualItem.index);
+            const bubbleKey = bubbleIdentity(bubbles, bubbleIndex);
 
             return (
               <div

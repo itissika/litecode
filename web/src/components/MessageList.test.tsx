@@ -1,6 +1,5 @@
 import React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MessageList, ProcessGroup, rowsToNodes } from "./MessageList";
@@ -8,6 +7,13 @@ import type { ChatRow } from "../api/adapter";
 import { useBashStore } from "../stores/bashStore";
 
 const grantPermission = vi.fn();
+
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("ResizeObserver", ResizeObserverStub);
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({
@@ -29,7 +35,7 @@ vi.mock("@tanstack/react-virtual", () => ({
     measureElement: () => {},
     scrollToEnd: () => {},
     isAtEnd: () => true,
-    options: { scrollMargin: 0 },
+    options: {},
   }),
 }));
 
@@ -38,13 +44,7 @@ vi.mock("../stores/turnStore", () => ({
     selector({
       byId: new Map([
         ["session-1", {
-          pendingPermission: {
-            turn_id: "turn-1",
-            request_id: "req-abcdef12",
-            tool: "bash",
-            rule_id: "default",
-            summary: "Run bash command",
-          },
+          pendingPermission: null,
         }],
       ]),
       grantPermission,
@@ -85,17 +85,6 @@ vi.mock("../stores/sessionStore", () => ({
 }));
 
 const makeScrollRef = () => React.createRef<HTMLDivElement>();
-
-const oneMessage: ChatRow = {
-  id: "item-session-1-0",
-  item: {
-    type: "message",
-    role: "assistant",
-    id: "msg_1",
-    status: "completed",
-    content: [{ type: "output_text", text: "hello", annotations: [] }],
-  },
-};
 
 const liveReasoning: ChatRow = {
   id: "live-rs_1",
@@ -138,51 +127,6 @@ afterEach(() => {
   cleanup();
   grantPermission.mockClear();
   useBashStore.getState().reset();
-});
-
-describe("MessageList permission card", () => {
-  it("renders permission_request inline inside MessageList (not a fullscreen overlay)", () => {
-    const { container } = render(
-      <MessageList
-        messages={[oneMessage]}
-        loadingHistory={false}
-        canLoadMore={false}
-        onLoadMore={() => {}}
-        userDetailBefore={0}
-        isRunning={true}
-        scrollRef={makeScrollRef()}
-        sessionId="session-1"
-      />,
-    );
-
-    const list = screen.getByTestId("message-list");
-    const card = screen.getByTestId("permission-card");
-
-    expect(list.contains(card)).toBe(true);
-    expect(container.querySelector(".fixed.inset-0")).toBeNull();
-    expect(card.className).not.toMatch(/\bfixed\b/);
-    expect(card.textContent).toMatch(/bash/);
-    expect(card.textContent).toMatch(/Run bash command/);
-  });
-
-  it("wires Allow once to grantPermission", async () => {
-    const user = userEvent.setup();
-    render(
-      <MessageList
-        messages={[oneMessage]}
-        loadingHistory={false}
-        canLoadMore={false}
-        onLoadMore={() => {}}
-        userDetailBefore={0}
-        isRunning={true}
-        scrollRef={makeScrollRef()}
-        sessionId="session-1"
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: "Allow once" }));
-    expect(grantPermission).toHaveBeenCalledWith("session-1", true, false);
-  });
 });
 
 describe("MessageList process group across seal", () => {
@@ -333,5 +277,29 @@ describe("MessageList system reminder", () => {
     expect(screen.queryByRole("button", { name: "Revert to here" })).toBeNull();
     expect(screen.queryByText(/system-reminder/)).toBeNull();
     expect(screen.queryByText(/bg_a/)).toBeNull();
+  });
+});
+
+describe("MessageList stick intent", () => {
+  it("unsticks only when the human wheels up on the list", () => {
+    const onStickChange = vi.fn();
+    const scrollRef = React.createRef<HTMLDivElement>();
+    render(
+      <div ref={scrollRef} data-testid="scroller">
+        <MessageList
+          messages={[liveReasoning]}
+          loadingHistory={false}
+          canLoadMore={false}
+          onLoadMore={() => {}}
+          userDetailBefore={0}
+          isRunning={true}
+          scrollRef={scrollRef}
+          sessionId="session-1"
+          onStickChange={onStickChange}
+        />
+      </div>,
+    );
+    fireEvent.wheel(screen.getByTestId("scroller"), { deltaY: -40 });
+    expect(onStickChange).toHaveBeenCalledWith(false);
   });
 });

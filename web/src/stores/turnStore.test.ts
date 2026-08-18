@@ -493,4 +493,33 @@ describe("grantPermission receipt (FE-04)", () => {
     const rows = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
     expect(rows.filter((m) => m.id.startsWith("user-"))).toHaveLength(1);
   });
+
+  it("onTurnStarted does not treat a compact checkpoint as the last human user", () => {
+    const sessionId = "s-cp-last-user";
+    useMessageStore.getState().onBufferLoaded(sessionId, {
+      session_id: sessionId,
+      start: 0,
+      end: 1,
+      items: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "rolled-up" }],
+        },
+      ],
+      kinds: ["compact_checkpoint"],
+      user_detail_before: 0,
+    });
+    useTurnStore.getState().onTurnStarted({
+      session_id: sessionId,
+      turn_id: "t-after-compact",
+      input: "rolled-up",
+      step_max: 5,
+    });
+    const rows = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.kind).toBe("compact_checkpoint");
+    expect(rows[1]?.id.startsWith("user-")).toBe(true);
+    expect(itemPlainText(rows[1]!.item)).toBe("rolled-up");
+  });
 });

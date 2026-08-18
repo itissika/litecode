@@ -5,13 +5,14 @@ import {
   bufferItemId,
   extractBufferIndex,
   isCompactCutRow,
+  isHumanUserRow,
   isStreamFailureEvent,
-  isUserMessage,
   itemAuthorityId,
   itemPlainText,
   liveItemRowId,
   markFunctionCallsFailed,
   sealProjectionRow,
+  wireRowKind,
 } from "../api/adapter";
 import type {
   BufferItemNotification,
@@ -108,13 +109,6 @@ function overlayStats(messages: ChatRow[]): {
   return { n: messages.length, live, streaming };
 }
 
-function findLastIndex<T>(arr: T[], predicate: (item: T) => boolean): number {
-  for (let i = arr.length - 1; i >= 0; i--) {
-    if (predicate(arr[i])) return i;
-  }
-  return -1;
-}
-
 function findRowByItemId(messages: ChatRow[], itemId: string): number {
   return messages.findIndex((m) => {
     const aid = itemAuthorityId(m.item);
@@ -154,18 +148,15 @@ function reindexSealed(sessionId: string, row: ChatRow, index: number): ChatRow 
 }
 
 /**
- * Compact does not rewrite details: first pass appends a checkpoint; a later
- * pass deletes the previous checkpoint (indices after it shift down by 1) and
- * appends a new one. Keep live rows. Do not wipe the materialized window.
+ * Compact does not rewrite details. A later pass deletes the previous
+ * checkpoint (indices after it shift down by 1) and appends a new one.
+ * Only splice when the old cut is in the local window — never blind-shift.
  */
 export function applyCompactSplice(
   sessionId: string,
   slice: MessageSlice,
   committedEnd: number,
 ): MessageSlice {
-  const prevEnd = Math.max(slice.committedBufferEnd, slice.bufferViewEnd);
-  const grew = committedEnd > prevEnd;
-
   const sealed: { index: number; row: ChatRow }[] = [];
   const transient: ChatRow[] = [];
   for (const row of slice.messages) {
@@ -193,13 +184,6 @@ export function applyCompactSplice(
       );
     if (viewStart > removed) viewStart -= 1;
     if (viewEnd > removed) viewEnd -= 1;
-  } else if (!grew && committedEnd === prevEnd && viewStart > 0) {
-    nextSealed = sealed.map((entry) => ({
-      index: entry.index - 1,
-      row: reindexSealed(sessionId, entry.row, entry.index - 1),
-    }));
-    viewStart = Math.max(0, viewStart - 1);
-    viewEnd = Math.max(0, viewEnd - 1);
   }
 
   nextSealed.sort((left, right) => left.index - right.index);
@@ -207,7 +191,10 @@ export function applyCompactSplice(
 
   return {
     ...slice,
-    messages: [...nextSealed.map((entry) => entry.row), ...transient],
+    messages: orderProjection(
+      [...nextSealed.map((entry) => entry.row), ...transient],
+      committedEnd,
+    ),
     bufferViewStart: viewStart,
     bufferViewEnd: Math.max(viewEnd, maxSealed),
     committedBufferEnd: committedEnd,
@@ -221,26 +208,29 @@ function hasCheckpointAt(slice: MessageSlice, index: number): boolean {
   );
 }
 
-/**
- * After buffer/item seal: place committed rows by `buffer_index`, keep live /
- * optimistic rows after them (stable relative order). Fixes stream arrival
- * order that diverged from transcript order without waiting for buffer/load.
- * Duplicate buffer ids (fail-closed mismatch push) keep insertion order via
- * stable sort.
- */
-function orderSealedBeforeTransient(messages: ChatRow[]): ChatRow[] {
-  const sealed: ChatRow[] = [];
-  const transient: ChatRow[] = [];
-  for (const row of messages) {
-    if (extractBufferIndex(row.id) != null) sealed.push(row);
-    else transient.push(row);
-  }
-  sealed.sort((a, b) => {
-    const ai = extractBufferIndex(a.id) ?? 0;
-    const bi = extractBufferIndex(b.id) ?? 0;
-    return ai - bi;
+function projectionSortKey(row: ChatRow, committedEnd: number): number {
+  const index = extractBufferIndex(row.id);
+  if (index != null) return index;
+  if (row.id.startsWith("user-")) return committedEnd;
+  return Number.POSITIVE_INFINITY;
+}
+
+/** Sealed by buffer_index; optimistic user occupies committedEnd; live after that. */
+function orderProjection(messages: ChatRow[], committedEnd: number): ChatRow[] {
+  return [...messages].sort((left, right) => {
+    return projectionSortKey(left, committedEnd) - projectionSortKey(right, committedEnd);
   });
-  return [...sealed, ...transient];
+}
+
+function compactProjectionMismatch(slice: MessageSlice, committedEnd: number): boolean {
+  let cuts = 0;
+  for (const row of slice.messages) {
+    const index = extractBufferIndex(row.id);
+    if (index == null) continue;
+    if (index >= committedEnd) return true;
+    if (isCompactCutRow(row)) cuts += 1;
+  }
+  return cuts > 1;
 }
 
 function findUnclaimedLive(
@@ -253,12 +243,28 @@ function findUnclaimedLive(
   return idx;
 }
 
+function isDetailUserEntry(item: Item, kind?: string): boolean {
+  return wireRowKind(kind) !== "compact_checkpoint" && isHumanUserRow({ item, kind });
+}
+
+function contiguousCommittedEnd(
+  prev: number,
+  persisted: Map<number, ChatRow>,
+  hadPersisted: boolean,
+  incomingMaxExcl: number,
+): number {
+  if (!hadPersisted) return Math.max(prev, incomingMaxExcl);
+  let end = prev;
+  while (persisted.has(end)) end += 1;
+  return end;
+}
+
 function ingestBufferItems(
   set: (partial: Partial<MessageState>) => void,
   getState: () => MessageState,
   sessionId: string,
   items: BufferRowItem[],
-  loadMeta?: { start: number; userDetailBefore: number },
+  loadMeta?: { start: number; userDetailBefore: number; dropIdleLive?: boolean },
 ): void {
   if (items.length === 0) return;
 
@@ -278,22 +284,29 @@ function ingestBufferItems(
   }
   const hadPersisted = persisted.size > 0;
   const claimed = new Set<number>();
+  let shapeError = slice.shapeError;
 
   for (const entry of incoming) {
+    const kind = wireRowKind(entry.kind);
     const bufferId = bufferItemId(sessionId, entry.bufferIndex);
-    const liveIdx = findUnclaimedLive(transient, entry.item, claimed);
+    const liveIdx =
+      kind === "compact_checkpoint"
+        ? -1
+        : findUnclaimedLive(transient, entry.item, claimed);
     if (liveIdx >= 0) {
       const { row, mismatch } = sealProjectionRow(
         transient[liveIdx],
         entry.item,
         bufferId,
-        entry.kind,
+        kind,
       );
       if (!mismatch) {
         persisted.set(entry.bufferIndex, row);
         claimed.add(liveIdx);
         continue;
       }
+      shapeError = mismatch;
+      useToastStore.getState().showToast(mismatch, "error");
     }
 
     const existing = persisted.get(entry.bufferIndex);
@@ -302,30 +315,34 @@ function ingestBufferItems(
         existing,
         entry.item,
         bufferId,
-        entry.kind,
+        kind,
       );
-      persisted.set(
-        entry.bufferIndex,
-        mismatch
-          ? { id: bufferId, item: entry.item, kind: entry.kind, streaming: false }
-          : row,
-      );
+      if (mismatch) {
+        shapeError = mismatch;
+        useToastStore.getState().showToast(mismatch, "error");
+        persisted.set(entry.bufferIndex, {
+          id: bufferId,
+          item: entry.item,
+          kind,
+          streaming: false,
+        });
+      } else {
+        persisted.set(entry.bufferIndex, row);
+      }
       continue;
     }
 
     persisted.set(entry.bufferIndex, {
       id: bufferId,
       item: entry.item,
-      kind: entry.kind,
+      kind,
       streaming: false,
     });
   }
 
-  // Optimistic user-* has no authority id — still drop by text when the
-  // committed window already contains that message.
   const loadedUserTexts = new Map<string, number>();
   for (const entry of incoming) {
-    if (!isUserMessage(entry.item)) continue;
+    if (!isDetailUserEntry(entry.item, entry.kind)) continue;
     const text = itemPlainText(entry.item);
     loadedUserTexts.set(text, (loadedUserTexts.get(text) ?? 0) + 1);
   }
@@ -333,7 +350,7 @@ function ingestBufferItems(
   for (let i = transient.length - 1; i >= 0; i--) {
     if (claimed.has(i)) continue;
     const row = transient[i];
-    if (isUserMessage(row.item)) {
+    if (row.id.startsWith("user-") && isHumanUserRow(row)) {
       const text = itemPlainText(row.item);
       const count = loadedUserTexts.get(text) ?? 0;
       if (count > 0) {
@@ -344,27 +361,29 @@ function ingestBufferItems(
     remainingTransient.unshift(row);
   }
 
-  const turn = useTurnStore.getState().byId.get(sessionId);
-  const turnLive =
-    turn?.runState === "running" || turn?.runState === "cancelling";
-  const keptTransient = turnLive
-    ? remainingTransient
-    : remainingTransient.filter((row) => row.id.startsWith("user-"));
-
-  const nextMessages = [
-    ...[...persisted.entries()]
-      .sort(([left], [right]) => left - right)
-      .map(([, row]) => row),
-    ...keptTransient,
-  ];
+  const dropIdleLive = loadMeta?.dropIdleLive === true;
+  const keptTransient = dropIdleLive
+    ? remainingTransient.filter((row) => row.id.startsWith("user-"))
+    : remainingTransient;
 
   const indices = incoming.map((i) => i.bufferIndex);
   const minIdx = Math.min(...indices);
   const maxIdx = Math.max(...indices) + 1;
+  const nextCommitted = slice.blockLogGrowth
+    ? slice.committedBufferEnd
+    : contiguousCommittedEnd(
+        slice.committedBufferEnd,
+        persisted,
+        hadPersisted,
+        maxIdx,
+      );
+  const nextMessages = orderProjection(
+    [...persisted.values(), ...keptTransient],
+    nextCommitted,
+  );
+
   const nextStart = hadPersisted ? Math.min(slice.bufferViewStart, minIdx) : minIdx;
 
-  // Baseline tracks the absolute user count before the current view start.
-  // Refresh when this load is the first window or extends the view backward.
   let userDetailBefore = slice.userDetailBefore;
   if (loadMeta && (!hadPersisted || loadMeta.start < slice.bufferViewStart)) {
     userDetailBefore = loadMeta.userDetailBefore;
@@ -375,10 +394,9 @@ function ingestBufferItems(
     messages: nextMessages,
     bufferViewStart: nextStart,
     bufferViewEnd: Math.max(slice.bufferViewEnd, maxIdx),
-    committedBufferEnd: slice.blockLogGrowth
-      ? slice.committedBufferEnd
-      : Math.max(slice.committedBufferEnd, maxIdx),
+    committedBufferEnd: nextCommitted,
     userDetailBefore,
+    shapeError,
   };
 
   const bySession = new Map(state.bySession);
@@ -443,9 +461,13 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         item,
         kind: loaded.kinds?.[i],
       }));
+      const turn = useTurnStore.getState().byId.get(sessionId);
+      const turnLive =
+        turn?.runState === "running" || turn?.runState === "cancelling";
       ingestBufferItems(set, get, sessionId, itemList, {
         start: loaded.start,
         userDetailBefore: loaded.user_detail_before ?? 0,
+        dropIdleLive: !turnLive,
       });
       const bindings = loaded.subagent_bindings ?? {};
       const slice = getSlice(get().bySession, sessionId);
@@ -485,7 +507,13 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         type: bi.item.type,
         committedEnd: slice.committedBufferEnd,
       };
-      if (bi.buffer_index > slice.committedBufferEnd) {
+      const pendingOptimistic = slice.messages.some((row) =>
+        row.id.startsWith("user-"),
+      );
+      if (
+        bi.buffer_index >
+        slice.committedBufferEnd + (pendingOptimistic ? 1 : 0)
+      ) {
         debugTrace("buffer", "item.dropped_gap", itemMeta);
         return;
       }
@@ -494,8 +522,6 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         debugTrace("buffer", "item.dropped_blocked", itemMeta);
         return;
       }
-      const nextEnd = append ? bi.buffer_index + 1 : slice.committedBufferEnd;
-      const bufferId = bufferItemId(sessionId, bi.buffer_index);
 
       if (bi.child_session_id && bi.item.type === "function_call") {
         const callId = "call_id" in bi.item ? bi.item.call_id : undefined;
@@ -509,92 +535,18 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         }
       }
 
-      if (isUserMessage(bi.item)) {
-        if (slice.messages.some((row) => row.id === bufferId)) {
-          debugTrace("buffer", "item.sealed", { ...itemMeta, how: "already" });
-          patch(sessionId, { committedBufferEnd: nextEnd });
-          return;
-        }
-
-        const optimisticIdx = findLastIndex(
-          slice.messages,
-          (m) => m.id.startsWith("user-") && isUserMessage(m.item),
-        );
-        if (optimisticIdx >= 0) {
-          const optimistic = slice.messages[optimisticIdx];
-          const { row, mismatch } = sealProjectionRow(
-            optimistic,
-            bi.item,
-            bufferId,
-            bi.kind,
-          );
-          const next = [...slice.messages];
-          next[optimisticIdx] = mismatch
-            ? { id: bufferId, item: bi.item, kind: bi.kind, streaming: false }
-            : row;
-          debugTrace("buffer", "item.sealed", {
-            ...itemMeta,
-            how: "optimistic",
-            mismatch: Boolean(mismatch),
-          });
-          patch(sessionId, {
-            messages: orderSealedBeforeTransient(next),
-            committedBufferEnd: nextEnd,
-          });
-          return;
-        }
-
-        debugTrace("buffer", "item.sealed", { ...itemMeta, how: "append" });
-        patch(sessionId, {
-          messages: orderSealedBeforeTransient([
-            ...slice.messages,
-            { id: bufferId, item: bi.item, kind: bi.kind },
-          ]),
-          committedBufferEnd: nextEnd,
-        });
-        return;
-      }
-
-      // Seal the same Item slot: find live row by (authority id + type), else by buffer index id.
-      // Type matters: function_call and function_call_output share call_id and must not collide.
-      const messages = [...slice.messages];
-      let sealIdx = findRowForSeal(messages, bi.item);
-      if (sealIdx < 0) {
-        sealIdx = messages.findIndex((m) => m.id === bufferId);
-      }
-
-      let how: "live" | "index" | "insert" = "insert";
-      let mismatch: string | null = null;
-      if (sealIdx >= 0) {
-        how = extractBufferIndex(messages[sealIdx].id) != null ? "index" : "live";
-        const sealed = sealProjectionRow(
-          messages[sealIdx],
-          bi.item,
-          bufferId,
-          bi.kind,
-        );
-        mismatch = sealed.mismatch;
-        if (sealed.mismatch) {
-          // H3 fail-closed: never overwrite a differently-typed (or id-mismatched) slot.
-          reportShapeError(patch, sessionId, sealed.mismatch);
-          messages.push({ id: bufferId, item: bi.item, kind: bi.kind, streaming: false });
-        } else {
-          messages[sealIdx] = sealed.row;
-        }
-      } else {
-        messages.push({ id: bufferId, item: bi.item, kind: bi.kind, streaming: false });
-      }
-
-      const ordered = orderSealedBeforeTransient(messages);
+      ingestBufferItems(set, get, sessionId, [
+        {
+          bufferIndex: bi.buffer_index,
+          item: bi.item,
+          kind: bi.kind,
+        },
+      ]);
+      const after = getSlice(get().bySession, sessionId);
       debugTrace("buffer", "item.sealed", {
         ...itemMeta,
-        how,
-        mismatch: Boolean(mismatch),
-        ...overlayStats(ordered),
-      });
-      patch(sessionId, {
-        messages: ordered,
-        committedBufferEnd: nextEnd,
+        kind: wireRowKind(bi.kind),
+        ...overlayStats(after.messages),
       });
     },
 
@@ -665,7 +617,10 @@ export const useMessageStore = create<MessageStore>((set, get) => {
           streaming: true,
         });
       }
-      patch(sessionId, { messages, shapeError: null });
+      patch(sessionId, {
+        messages: orderProjection(messages, slice.committedBufferEnd),
+        shapeError: null,
+      });
     },
 
     finalizeTurn: (sessionId, _turnId) => {
@@ -684,17 +639,24 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         ...overlayStats(messages),
       });
       patch(sessionId, {
-        messages,
+        messages: orderProjection(messages, slice.committedBufferEnd),
       });
     },
 
     setTurnEndNotice: (sessionId, notice) => {
       patch(sessionId, { turnEndNotice: notice });
+      // Surface turn-end failures (error / max steps / hook blocked) via toast
+      // instead of the old persistent in-panel banner.
+      if (notice) {
+        useToastStore.getState().showToast(notice.message, "error", 8000);
+      }
     },
 
     pushUserMessage: (sessionId, row) => {
       const slice = getSlice(get().bySession, sessionId);
-      patch(sessionId, { messages: [...slice.messages, row] });
+      patch(sessionId, {
+        messages: orderProjection([...slice.messages, row], slice.committedBufferEnd),
+      });
     },
 
     discardOptimisticUserMessage: (sessionId, rowId) => {
@@ -737,6 +699,17 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       patch(sessionId, spliced);
       if (end === 0) return;
 
+      const loadWindow = () => {
+        const start = Math.min(spliced.bufferViewStart, end);
+        if (start >= end) return;
+        void get().loadRange(sessionId, start, end);
+      };
+
+      if (compactProjectionMismatch(spliced, end)) {
+        loadWindow();
+        return;
+      }
+
       const checkpointIndex = end - 1;
       if (hasCheckpointAt(spliced, checkpointIndex)) return;
 
@@ -749,6 +722,14 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         })
         .then((loaded) => {
           get().onBufferLoaded(sessionId, loaded);
+          const after = getSlice(get().bySession, sessionId);
+          if (
+            !hasCheckpointAt(after, checkpointIndex) ||
+            compactProjectionMismatch(after, end)
+          ) {
+            const start = Math.min(after.bufferViewStart, end);
+            if (start < end) void get().loadRange(sessionId, start, end);
+          }
         })
         .catch((error: unknown) => {
           useToastStore.getState().showToast(
