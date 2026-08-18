@@ -152,9 +152,10 @@ fn preprocess_command(command: &str) -> String {
     }
     // Unwrap backtick command substitution (first pair).
     if let Some(open) = s.find('`')
-        && let Some(close) = s[open + 1..].find('`') {
-            s = s[open + 1..open + 1 + close].to_string();
-        }
+        && let Some(close) = s[open + 1..].find('`')
+    {
+        s = s[open + 1..open + 1 + close].to_string();
+    }
     // Remove backslash escapes.
     let mut unescaped = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -507,9 +508,10 @@ fn collect_redirect_targets(segment: &str, out: &mut Vec<String>) {
     let mut prev: Option<&str> = None;
     for token in tokens {
         if let Some(prev_tok) = prev
-            && matches!(prev_tok, ">" | ">>" | "2>" | "&>") {
-                out.push(token.to_string());
-            }
+            && matches!(prev_tok, ">" | ">>" | "2>" | "&>")
+        {
+            out.push(token.to_string());
+        }
         prev = Some(token);
     }
 }

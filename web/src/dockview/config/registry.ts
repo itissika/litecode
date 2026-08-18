@@ -2,6 +2,7 @@ import type { IDockviewPanelProps } from "dockview-react";
 
 import { FileTreePanel } from "../panels/FileTreePanel";
 import { SearchPanel } from "../panels/SearchPanel";
+import { GitPanelHost as GitPanel } from "../panels/GitPanel";
 import { EditorPanel } from "../panels/EditorPanel";
 import { AgentPanel } from "../panels/AgentPanel";
 import { AboutPanel } from "../panels/AboutPanel";
@@ -15,6 +16,7 @@ import { AgentTab } from "../tabs/AgentTab";
 export const panelComponents: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
   filetree: FileTreePanel,
   search: SearchPanel,
+  git: GitPanel,
   editor: EditorPanel,
   agent: AgentPanel,
   about: AboutPanel, // registered; not in the default layout, kept for a future standalone panel

@@ -3,7 +3,9 @@
 //! This file may name the banned needles. `authority.rs` / `transcript.rs` may
 //! mention them only in hard-rule comments (lines that are `//` / `//!` comments).
 //!
-//! Phase 2: Chat Completions / homemade Chat stream dialect is banned under `src/`.
+//! Phase 2: Chat Completions / homemade Chat stream dialect is banned under `src/`
+//! outside `llm/adapter/` (`chat/completions` and `reasoning_content` are allowed
+//! inside the Chat Completions codec).
 //!
 //! Phase 5: homemade L2 stream deltas (`TextDelta` / `ReasoningDelta` /
 //! `ToolCallStreaming`), method `buffer/message`, and dual `messages` load keys
@@ -253,6 +255,11 @@ fn check_file(path: &Path) -> Vec<String> {
             continue;
         }
         for needle in FORBIDDEN_EXACT {
+            if *needle == "chat/completions" || *needle == "reasoning_content" {
+                if in_adapter {
+                    continue;
+                }
+            }
             if line.contains(needle) {
                 hits.push(format!(
                     "{}:{}: forbidden `{needle}`",
@@ -423,22 +430,23 @@ fn death_list_dialect_tokens_absent_from_src() {
 #[test]
 fn death_list_adapter_registry_invariants() {
     use crate::config::schema::{
-        ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES, ADAPTER_OPENAI_RESPONSES,
-        ADAPTER_OPENCODE,
+        ADAPTER_ARK_CODING, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES,
+        ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE,
     };
     use crate::llm::list_adapters;
 
     let adapters = list_adapters();
     assert_eq!(
         adapters.len(),
-        4,
-        "expected exactly four registered adapters"
+        5,
+        "expected exactly five registered adapters"
     );
     let ids: Vec<_> = adapters.iter().map(|a| a.id).collect();
     assert!(ids.contains(&ADAPTER_OPENAI_RESPONSES));
     assert!(ids.contains(&ADAPTER_DEEPSEEK_RESPONSES));
     assert!(ids.contains(&ADAPTER_MIMO_RESPONSES));
     assert!(ids.contains(&ADAPTER_OPENCODE));
+    assert!(ids.contains(&ADAPTER_ARK_CODING));
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let seed = fs::read_to_string(root.join("src/config/global_db/seed.rs")).expect("seed.rs");
@@ -473,6 +481,7 @@ fn death_list_adapter_registry_invariants() {
         "ADAPTER_DEEPSEEK_RESPONSES",
         "ADAPTER_MIMO_RESPONSES",
         "ADAPTER_OPENCODE",
+        "ADAPTER_ARK_CODING",
     ] {
         assert!(
             schema_rs.contains(const_name),

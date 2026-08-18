@@ -11,10 +11,10 @@ pub fn display_output_path(path: &Path, workspace_root: &Path) -> String {
     if let (Ok(path_abs), Ok(root_abs)) = (
         crate::config::path::canon_abs(path),
         crate::config::path::canon_abs(workspace_root),
-    )
-        && let Ok(rel) = path_abs.strip_prefix(&root_abs) {
-            return rel.to_string_lossy().replace('\\', "/");
-        }
+    ) && let Ok(rel) = path_abs.strip_prefix(&root_abs)
+    {
+        return rel.to_string_lossy().replace('\\', "/");
+    }
     path.display().to_string().replace('\\', "/")
 }
 

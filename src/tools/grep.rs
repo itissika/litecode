@@ -216,11 +216,12 @@ fn run_grep(input: &Value, workspace_root: &Path, path_mode: ToolPathMode) -> Re
 
     if outcome.matches.is_empty() {
         if let Some(ref pat) = input["include_pattern"].as_str().filter(|s| !s.is_empty())
-            && outcome.files_searched == 0 {
-                return Ok(format!(
-                    "No files matched include_pattern '{pat}'. Use forward slashes; multi-ext like '**/*.ts,**/*.tsx'; or omit include_pattern."
-                ));
-            }
+            && outcome.files_searched == 0
+        {
+            return Ok(format!(
+                "No files matched include_pattern '{pat}'. Use forward slashes; multi-ext like '**/*.ts,**/*.tsx'; or omit include_pattern."
+            ));
+        }
         if outcome.files_searched > 0 {
             return Ok(format!(
                 "No matches found (searched {} files).",

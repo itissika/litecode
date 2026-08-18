@@ -579,31 +579,33 @@ impl AgentRuntime {
     pub fn set_context_cwd(&mut self, cwd: std::path::PathBuf) {
         self.base_ctx.cwd = cwd.clone();
         if let Some(ref mut pipeline) = self.tool_pipeline
-            && let Some(ref mut rctx) = self.runtime_ctx {
-                let new_ctx = Arc::new(RuntimeContext {
-                    ctx: Context {
-                        cwd,
-                        ..rctx.ctx.clone()
-                    },
-                    ..(**rctx).clone()
-                });
-                *rctx = Arc::clone(&new_ctx);
-                pipeline.set_runtime(new_ctx);
-            }
+            && let Some(ref mut rctx) = self.runtime_ctx
+        {
+            let new_ctx = Arc::new(RuntimeContext {
+                ctx: Context {
+                    cwd,
+                    ..rctx.ctx.clone()
+                },
+                ..(**rctx).clone()
+            });
+            *rctx = Arc::clone(&new_ctx);
+            pipeline.set_runtime(new_ctx);
+        }
         self.context_pipeline.sync_context(&self.base_ctx);
     }
 
     /// Test helper: replace hooks on the shared runtime context.
     pub fn set_hook_registry(&mut self, hooks: HookDispatcher) {
         if let Some(ref mut pipeline) = self.tool_pipeline
-            && let Some(ref mut rctx) = self.runtime_ctx {
-                let new_ctx = Arc::new(RuntimeContext {
-                    hook_dispatcher: hooks,
-                    ..(**rctx).clone()
-                });
-                *rctx = Arc::clone(&new_ctx);
-                pipeline.set_runtime(new_ctx);
-            }
+            && let Some(ref mut rctx) = self.runtime_ctx
+        {
+            let new_ctx = Arc::new(RuntimeContext {
+                hook_dispatcher: hooks,
+                ..(**rctx).clone()
+            });
+            *rctx = Arc::clone(&new_ctx);
+            pipeline.set_runtime(new_ctx);
+        }
     }
 
     /// Test helper: simulate provider-reported prompt token usage from the prior LLM call.

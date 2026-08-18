@@ -320,9 +320,10 @@ impl StreamItemAccumulator {
 
     fn set_fc_name(&mut self, item_id: &str, name: &str) {
         if let Some(Item::FunctionCall(fc)) = self.items.get_mut(item_id)
-            && fc.name.is_empty() {
-                fc.name = name.to_string();
-            }
+            && fc.name.is_empty()
+        {
+            fc.name = name.to_string();
+        }
     }
 
     pub(super) fn seal_incomplete(&self) -> Vec<Item> {

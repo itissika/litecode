@@ -284,9 +284,10 @@ impl SessionSemanticIndex {
                 continue;
             };
             if let Some(sid) = session_id
-                && chunk.session_id != sid {
-                    continue;
-                }
+                && chunk.session_id != sid
+            {
+                continue;
+            }
             let summary: String = chunk.text.chars().take(SNIPPET_CHARS).collect();
             // No lexical nucleus — Related is rendered entry-level (not fake 0..N bold).
             hits.push(SessionTextHit {

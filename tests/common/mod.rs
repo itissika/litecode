@@ -7,7 +7,6 @@ pub mod scripted_provider;
 pub mod seed;
 pub mod workspace_fixture;
 
-
 pub use fake_deps::{FakeAgentDeps, assistant_text_item, function_call_item};
 pub use permission::{recording_sink, test_auto_approve_sink};
 pub use responses_replay::{

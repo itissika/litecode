@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearLspServers,
   getEnginesDetail,
+  gitStatus,
   initRetrieval,
   refreshRetrieval,
   stopLsp,
@@ -78,5 +79,27 @@ describe("workspace engine API", () => {
     expect(detail.retrieval.index.status).toBe("ready");
     expect(detail.retrieval.index.indexed_chunks).toBe(2);
     expect(detail.lsp.usable).toBe("stopped");
+  });
+
+  it("fetches git status from the workspace git endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        data: {
+          is_repo: true,
+          branch: "main",
+          upstream_ahead: 0,
+          upstream_behind: 0,
+          staged: [],
+          changes: [],
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const status = await gitStatus();
+    expect(status.branch).toBe("main");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/workspace/git/status");
   });
 });

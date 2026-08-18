@@ -26,11 +26,7 @@ use crate::types::{LitecodeError, Result};
 /// One toast-ready string covering provider → model → required agent bindings.
 fn setup_guidance(settings: &GlobalSettings) -> Option<String> {
     let mut steps = Vec::new();
-    if !settings
-        .providers
-        .values()
-        .any(crate::llm::provider_ready)
-    {
+    if !settings.providers.values().any(crate::llm::provider_ready) {
         steps.push(
             "add a Provider in Settings → Connection (adapter, endpoint, API key) and Save"
                 .to_string(),

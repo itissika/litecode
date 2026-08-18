@@ -703,9 +703,10 @@ pub fn classify_incoming(msg: &serde_json::Value) -> IncomingWire {
         "agent/turn_event" => {
             if let Some(params) = params
                 && let Some(event) = params.get("event")
-                    && let Ok(ev) = serde_json::from_value::<WireEvent>(event.clone()) {
-                        return IncomingWire::TurnEvent(ev);
-                    }
+                && let Ok(ev) = serde_json::from_value::<WireEvent>(event.clone())
+            {
+                return IncomingWire::TurnEvent(ev);
+            }
             IncomingWire::Ignored
         }
         "agent/permission_request" => {

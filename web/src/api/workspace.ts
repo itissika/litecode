@@ -419,3 +419,86 @@ export async function getEnginesDetail(): Promise<EnginesDetail> {
   const res = await apiFetch("/api/workspace/engines/detail");
   return parseJson<EnginesDetail>(res);
 }
+
+export interface GitFile {
+  path: string;
+  status: string;
+  orig_path?: string | null;
+  untracked: boolean;
+}
+
+export interface GitStatus {
+  is_repo: boolean;
+  branch: string | null;
+  upstream_ahead: number;
+  upstream_behind: number;
+  staged: GitFile[];
+  changes: GitFile[];
+}
+
+export interface GitCommitInfo {
+  sha: string;
+  subject: string;
+  author: string;
+  date: string;
+  body: string;
+}
+
+export interface GitLog {
+  is_repo: boolean;
+  commits: GitCommitInfo[];
+}
+
+async function gitJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await apiFetch(path, init);
+  return parseJson<T>(res);
+}
+
+export async function gitStatus(): Promise<GitStatus> {
+  return gitJson<GitStatus>("/api/workspace/git/status");
+}
+
+export async function gitLog(limit = 50): Promise<GitLog> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return gitJson<GitLog>(`/api/workspace/git/log?${params}`);
+}
+
+export async function gitStage(paths: string[]): Promise<void> {
+  await gitJson("/api/workspace/git/stage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths }),
+  });
+}
+
+export async function gitUnstage(paths: string[]): Promise<void> {
+  await gitJson("/api/workspace/git/unstage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths }),
+  });
+}
+
+export async function gitRestore(paths: string[]): Promise<void> {
+  await gitJson("/api/workspace/git/restore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths }),
+  });
+}
+
+export async function gitCommit(message: string): Promise<void> {
+  await gitJson("/api/workspace/git/commit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+}
+
+export async function gitPull(): Promise<void> {
+  await gitJson("/api/workspace/git/pull", { method: "POST" });
+}
+
+export async function gitPush(): Promise<void> {
+  await gitJson("/api/workspace/git/push", { method: "POST" });
+}

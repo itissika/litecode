@@ -17,7 +17,7 @@ pub use adapter::public::{
     validate_model_config, validate_provider_config,
 };
 
-pub(crate) use adapter::{opencode_models_url, parse_opencode_model_catalog};
+pub(crate) use adapter::{chat_models_url, parse_chat_model_catalog};
 
 use crate::config::schema::ProviderDefinition;
 use crate::types::Result;

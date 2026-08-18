@@ -119,9 +119,10 @@ impl TextIndexEngine {
     pub fn detach(&self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Ok(mut w) = self.worker.lock()
-            && let Some(h) = w.take() {
-                let _ = h.join();
-            }
+            && let Some(h) = w.take()
+        {
+            let _ = h.join();
+        }
         self.stop.store(false, Ordering::SeqCst);
         if let Ok(mut g) = self.inner.lock() {
             g.store = None;

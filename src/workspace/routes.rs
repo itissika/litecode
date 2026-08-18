@@ -11,6 +11,7 @@ use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 
 use super::WorkspaceError;
+use super::git::{self, GitError};
 use super::service::WorkspaceService;
 use super::tree::TreeEntry;
 use crate::config::workspace::{
@@ -153,6 +154,14 @@ pub fn router() -> Router<ServeState> {
         .route("/rename", post(post_rename))
         .route("/copy", post(post_copy))
         .route("/blob", post(post_blob).put(put_blob))
+        .route("/git/status", get(get_git_status))
+        .route("/git/log", get(get_git_log))
+        .route("/git/stage", post(post_git_stage))
+        .route("/git/unstage", post(post_git_unstage))
+        .route("/git/restore", post(post_git_restore))
+        .route("/git/commit", post(post_git_commit))
+        .route("/git/pull", post(post_git_pull))
+        .route("/git/push", post(post_git_push))
 }
 
 #[derive(Debug, Deserialize)]
@@ -777,6 +786,100 @@ async fn put_blob(
     body: Bytes,
 ) -> Response {
     write_blob(state, &query.path, &body, true).await
+}
+
+#[derive(Debug, Deserialize)]
+struct GitPathsBody {
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitCommitBody {
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitLogQuery {
+    pub limit: Option<usize>,
+}
+
+async fn git_blocking<T: Serialize + Send + 'static>(
+    f: impl FnOnce() -> Result<T, GitError> + Send + 'static,
+) -> Response {
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(data)) => Json(ApiOk { ok: true, data }).into_response(),
+        Ok(Err(e)) => git_error_response(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("git task join: {e}"),
+        ),
+    }
+}
+
+fn git_error_response(err: GitError) -> Response {
+    (
+        git::git_error_status(&err),
+        Json(ApiErr {
+            ok: false,
+            error: err.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+async fn get_git_status(State(state): State<ServeState>) -> Response {
+    let root = state.workspace.sandbox().root().to_path_buf();
+    git_blocking(move || git::status(&root)).await
+}
+
+async fn get_git_log(
+    State(state): State<ServeState>,
+    Query(query): Query<GitLogQuery>,
+) -> Response {
+    let root = state.workspace.sandbox().root().to_path_buf();
+    git_blocking(move || git::log(&root, query.limit)).await
+}
+
+async fn post_git_stage(
+    State(state): State<ServeState>,
+    Json(body): Json<GitPathsBody>,
+) -> Response {
+    let sandbox = state.workspace.sandbox().clone();
+    git_blocking(move || git::stage(&sandbox, &body.paths)).await
+}
+
+async fn post_git_unstage(
+    State(state): State<ServeState>,
+    Json(body): Json<GitPathsBody>,
+) -> Response {
+    let sandbox = state.workspace.sandbox().clone();
+    git_blocking(move || git::unstage(&sandbox, &body.paths)).await
+}
+
+async fn post_git_restore(
+    State(state): State<ServeState>,
+    Json(body): Json<GitPathsBody>,
+) -> Response {
+    let sandbox = state.workspace.sandbox().clone();
+    git_blocking(move || git::restore(&sandbox, &body.paths)).await
+}
+
+async fn post_git_commit(
+    State(state): State<ServeState>,
+    Json(body): Json<GitCommitBody>,
+) -> Response {
+    let sandbox = state.workspace.sandbox().clone();
+    git_blocking(move || git::commit(&sandbox, &body.message)).await
+}
+
+async fn post_git_pull(State(state): State<ServeState>) -> Response {
+    let root = state.workspace.sandbox().root().to_path_buf();
+    git_blocking(move || git::pull(&root)).await
+}
+
+async fn post_git_push(State(state): State<ServeState>) -> Response {
+    let root = state.workspace.sandbox().root().to_path_buf();
+    git_blocking(move || git::push(&root)).await
 }
 
 async fn write_blob(state: ServeState, path: &str, body: &Bytes, overwrite: bool) -> Response {

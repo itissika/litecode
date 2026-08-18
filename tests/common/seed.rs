@@ -9,10 +9,9 @@ use tempfile::TempDir;
 use litecode::config::ConfigManager;
 use litecode::config::global_db::{self, tools};
 use litecode::config::schema::{
-    ADAPTER_OPENAI_RESPONSES, CustomToolDefinition, GlobalSettings,
-    InitScope, McpServerDefinition, ModelAdapterConfig, ModelCapability, ModelDefinition,
-    ProviderAuth, ProviderConnectionConfig, ProviderDefinition, ToolCatalogEntry,
-    ToolSchema, ToolTier,
+    ADAPTER_OPENAI_RESPONSES, CustomToolDefinition, GlobalSettings, InitScope, McpServerDefinition,
+    ModelAdapterConfig, ModelCapability, ModelDefinition, ProviderAuth, ProviderConnectionConfig,
+    ProviderDefinition, ToolCatalogEntry, ToolSchema, ToolTier,
 };
 
 /// Default provider id for integration test fixtures.

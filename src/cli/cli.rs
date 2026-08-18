@@ -98,13 +98,14 @@ fn load_runtime_bundle_from_cli(cli: &Cli) -> anyhow::Result<ResolvedConfig> {
 fn get_api_key(resolved: &ResolvedConfig) -> anyhow::Result<String> {
     if let Some(agent) = resolved.agents().get("default")
         && !agent.model_ref.is_empty()
-            && let Some(model) = resolved.models().get(&agent.model_ref)
-                && let Some(provider) = resolved.providers().get(&model.provider_ref) {
-                    let key = provider.config.api_key.trim();
-                    if !key.is_empty() {
-                        return Ok(key.to_string());
-                    }
-                }
+        && let Some(model) = resolved.models().get(&agent.model_ref)
+        && let Some(provider) = resolved.providers().get(&model.provider_ref)
+    {
+        let key = provider.config.api_key.trim();
+        if !key.is_empty() {
+            return Ok(key.to_string());
+        }
+    }
     resolved
         .providers()
         .values()

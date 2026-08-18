@@ -359,6 +359,7 @@ impl AgentRuntime {
             reasoning_effort: self.resolve_reasoning_effort(),
             // Session binding only — never agent.model_ref (decoupled sticky model).
             json_output: self.turn_llm.model_def.json_output(),
+            session_id: Some(self.session_id.clone()),
         }
     }
 
@@ -401,44 +402,42 @@ impl AgentRuntime {
         let on_event: Option<Box<dyn FnMut(crate::types::StreamEvents) + Send + '_>> =
             Some(Box::new(move |ev| {
                 if let crate::types::StreamEvents::ResponseCompleted(cev) = &ev
-                    && let Some(usage) = &cev.response.usage {
-                        let prompt = usage.input_tokens as u64;
-                        let completion = usage.output_tokens as u64;
-                        let cache_hit = usage.input_tokens_details.cached_tokens as u64;
-                        let cache_miss = usage
-                            .input_tokens
-                            .saturating_sub(usage.input_tokens_details.cached_tokens)
-                            as u64;
-                        // Last request only — each LLM call sends the full context.
-                        *stats = TurnTokenStats {
-                            prompt_tokens: prompt,
-                            completion_tokens: completion,
-                            cache_hit_tokens: cache_hit,
-                            cache_miss_tokens: cache_miss,
-                        };
-                        // Turn-total Σ — every request in this tool loop (session cum_*).
-                        totals.prompt_tokens = totals.prompt_tokens.saturating_add(prompt);
-                        totals.completion_tokens =
-                            totals.completion_tokens.saturating_add(completion);
-                        totals.cache_hit_tokens =
-                            totals.cache_hit_tokens.saturating_add(cache_hit);
-                        totals.cache_miss_tokens =
-                            totals.cache_miss_tokens.saturating_add(cache_miss);
-                        // Provider truth covers this exact request prefix. The next
-                        // tool-loop step adds a local estimate only for appended Items.
-                        prompt_usage_baseline.record(prompt, request_item_count);
-                        let stop_reason = match &cev.response.incomplete_details {
-                            Some(d) => d.reason.clone(),
-                            None => format!("{:?}", cev.response.status),
-                        };
-                        observer.on_internal(InternalEvent::LlmCompleted {
-                            prompt_tokens: prompt,
-                            completion_tokens: completion,
-                            cache_hit_tokens: cache_hit,
-                            cache_miss_tokens: cache_miss,
-                            stop_reason,
-                        });
-                    }
+                    && let Some(usage) = &cev.response.usage
+                {
+                    let prompt = usage.input_tokens as u64;
+                    let completion = usage.output_tokens as u64;
+                    let cache_hit = usage.input_tokens_details.cached_tokens as u64;
+                    let cache_miss = usage
+                        .input_tokens
+                        .saturating_sub(usage.input_tokens_details.cached_tokens)
+                        as u64;
+                    // Last request only — each LLM call sends the full context.
+                    *stats = TurnTokenStats {
+                        prompt_tokens: prompt,
+                        completion_tokens: completion,
+                        cache_hit_tokens: cache_hit,
+                        cache_miss_tokens: cache_miss,
+                    };
+                    // Turn-total Σ — every request in this tool loop (session cum_*).
+                    totals.prompt_tokens = totals.prompt_tokens.saturating_add(prompt);
+                    totals.completion_tokens = totals.completion_tokens.saturating_add(completion);
+                    totals.cache_hit_tokens = totals.cache_hit_tokens.saturating_add(cache_hit);
+                    totals.cache_miss_tokens = totals.cache_miss_tokens.saturating_add(cache_miss);
+                    // Provider truth covers this exact request prefix. The next
+                    // tool-loop step adds a local estimate only for appended Items.
+                    prompt_usage_baseline.record(prompt, request_item_count);
+                    let stop_reason = match &cev.response.incomplete_details {
+                        Some(d) => d.reason.clone(),
+                        None => format!("{:?}", cev.response.status),
+                    };
+                    observer.on_internal(InternalEvent::LlmCompleted {
+                        prompt_tokens: prompt,
+                        completion_tokens: completion,
+                        cache_hit_tokens: cache_hit,
+                        cache_miss_tokens: cache_miss,
+                        stop_reason,
+                    });
+                }
                 observer.on_internal(InternalEvent::StreamEvent(ev));
             }));
         match provider

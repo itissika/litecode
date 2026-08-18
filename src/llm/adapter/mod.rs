@@ -3,9 +3,10 @@
 //! # Adapter selection
 //!
 //! Product adapters are registered in [`registry`] (`openai_responses`,
-//! `deepseek_responses`, `mimo_responses`, `opencode`). OpenAI / DeepSeek / MiMo
-//! speak Responses JSON/SSE; OpenCode translates Chat Completions inside its
-//! module. Vendor-tolerant hardening stays in this directory.
+//! `deepseek_responses`, `mimo_responses`, `opencode`, `ark_coding`). OpenAI /
+//! DeepSeek / MiMo speak Responses JSON/SSE; OpenCode and Ark Coding Plan share
+//! the Chat Completions codec in [`chat_completions`]. Vendor-tolerant
+//! hardening stays in this directory.
 //!
 //! # Streaming contract
 //!
@@ -14,6 +15,8 @@
 //! is never forwarded before an `output_item.added` for that item id (synthesized
 //! when the provider omits it).
 
+mod ark_coding;
+mod chat_completions;
 mod deepseek_responses;
 mod mimo_responses;
 mod openai_responses;
@@ -41,6 +44,6 @@ pub mod public {
     };
 }
 
-pub(crate) use opencode::{
-    models_get_url as opencode_models_url, parse_model_catalog as parse_opencode_model_catalog,
+pub(crate) use chat_completions::{
+    models_get_url as chat_models_url, parse_model_catalog as parse_chat_model_catalog,
 };

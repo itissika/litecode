@@ -15,6 +15,21 @@ export function ensureSearchPanel(api: DockviewApi) {
   });
 }
 
+/** Ensure Source Control panel exists on the left edge (VS Code SCM). */
+export function ensureGitPanel(api: DockviewApi) {
+  if (api.getPanel("workspace-git")) return;
+  if (!api.getEdgeGroup("left")) {
+    api.addEdgeGroup("left", { id: "sidebar-left", initialSize: 280, minimumSize: 180 });
+  }
+  api.addPanel({
+    id: "workspace-git",
+    component: "git",
+    title: "Source Control",
+    tabComponent: "edge",
+    position: { referenceGroup: "sidebar-left" },
+  });
+}
+
 /**
  * Ensure interactive Terminal panel on the bottom edge. Like the other edge
  * tabs it is part of the default layout: always present and non-closable.
@@ -33,7 +48,7 @@ export function ensureTerminalPanel(api: DockviewApi) {
 }
 
 export function buildDefaultLayout(api: DockviewApi) {
-  // Left edge: FileTree + Search (persistent sidebar tabs)
+  // Left edge: FileTree + Search + Source Control (persistent sidebar tabs)
   if (!api.getEdgeGroup("left")) {
     api.addEdgeGroup("left", { id: "sidebar-left", initialSize: 280, minimumSize: 180 });
     api.addPanel({
@@ -45,6 +60,7 @@ export function buildDefaultLayout(api: DockviewApi) {
     });
   }
   ensureSearchPanel(api);
+  ensureGitPanel(api);
 
   // Right edge: Session List (persistent sidebar tab)
   if (!api.getEdgeGroup("right")) {

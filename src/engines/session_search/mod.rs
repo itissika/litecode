@@ -195,9 +195,10 @@ pub fn filter_hits(hits: Vec<SessionTextHit>, query: &SessionTextQuery) -> Vec<S
 
 fn hit_allowed(h: &SessionTextHit, query: &SessionTextQuery) -> bool {
     if let Some(sid) = query.include_session_id.as_ref().filter(|s| !s.is_empty())
-        && &h.session_id != sid {
-            return false;
-        }
+        && &h.session_id != sid
+    {
+        return false;
+    }
     if query
         .exclude_session_ids
         .iter()
@@ -206,9 +207,11 @@ fn hit_allowed(h: &SessionTextHit, query: &SessionTextQuery) -> bool {
         return false;
     }
     if let Some(win) = query.exclude_context_window.as_ref()
-        && h.session_id == win.session_id && h.seq >= win.kept_from_seq {
-            return false;
-        }
+        && h.session_id == win.session_id
+        && h.seq >= win.kept_from_seq
+    {
+        return false;
+    }
     true
 }
 

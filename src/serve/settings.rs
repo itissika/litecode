@@ -11,12 +11,14 @@ use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 
 use crate::config::schema::{
-    ADAPTER_OPENCODE, AgentProfile, CustomToolDefinition, InitScope, LogSettings,
-    McpServerDefinition, ModelDefinition, ProviderAuth, ProviderDefinition, ToolCatalogEntry,
-    ToolPreset, ToolReadiness, ToolTier,
+    AgentProfile, CustomToolDefinition, InitScope, LogSettings, McpServerDefinition,
+    ModelDefinition, ProviderAuth, ProviderDefinition, ToolCatalogEntry, ToolPreset, ToolReadiness,
+    ToolTier,
 };
 use crate::config::workspace;
-use crate::llm::{list_adapters, opencode_models_url, parse_opencode_model_catalog};
+use crate::llm::{
+    chat_models_url, has_remote_model_catalog, list_adapters, parse_chat_model_catalog,
+};
 use crate::mcp::{McpConnectionPool, McpRunState, McpServerSnapshot};
 use crate::serve::state::ServeState;
 use crate::tool::catalog::{effective_readiness, prune_non_catalog_agent_bindings};
@@ -178,7 +180,7 @@ async fn get_provider_models(State(state): State<ServeState>, Path(id): Path<Str
         )
             .into_response();
     };
-    if provider.adapter_id != ADAPTER_OPENCODE {
+    if !has_remote_model_catalog(&provider.adapter_id) {
         return (
             StatusCode::NOT_FOUND,
             Json(ApiErr {
@@ -192,7 +194,7 @@ async fn get_provider_models(State(state): State<ServeState>, Path(id): Path<Str
         .filter(|_| provider.config.endpoint.trim().is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| provider.config.endpoint.clone());
-    let url = opencode_models_url(&endpoint);
+    let url = chat_models_url(&endpoint);
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -220,7 +222,7 @@ async fn get_provider_models(State(state): State<ServeState>, Path(id): Path<Str
     if !status.is_success() {
         return catalog_fetch_error(format!("HTTP {status}: {body}"));
     }
-    match parse_opencode_model_catalog(&body) {
+    match parse_chat_model_catalog(&body) {
         Ok(ids) => ok_json(serde_json::json!({ "ids": ids })),
         Err(e) => catalog_fetch_error(e.to_string()),
     }

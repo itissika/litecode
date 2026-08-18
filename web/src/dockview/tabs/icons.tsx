@@ -4,6 +4,7 @@ import {
   File,
   Robot,
   MagnifyingGlass,
+  GitBranch,
 } from "@phosphor-icons/react";
 import type React from "react";
 
@@ -13,6 +14,7 @@ type IconComponent = React.FC<{ size?: number; weight?: "thin" | "light" | "regu
 const ICON_MAP: Record<string, IconComponent> = {
   filetree: FolderSimple,
   search: MagnifyingGlass,
+  git: GitBranch,
   editor: File,
   agent: Robot,
   sessions: Chats, // session list / history

@@ -383,10 +383,9 @@ fn detect_confusable_lines(s: &str) -> Vec<usize> {
     let mut lines = Vec::new();
     let mut line: usize = 1;
     for c in s.chars() {
-        if confusable_ascii(c).is_some()
-            && lines.last() != Some(&line) {
-                lines.push(line);
-            }
+        if confusable_ascii(c).is_some() && lines.last() != Some(&line) {
+            lines.push(line);
+        }
         if c == '\n' {
             line += 1;
         }

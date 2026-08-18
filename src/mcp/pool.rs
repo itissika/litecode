@@ -322,9 +322,10 @@ impl Drop for McpConnectionPool {
         if let Ok(mut map) = self.inner.try_lock() {
             for (_, entry) in map.drain() {
                 if let Some(client) = entry.client
-                    && let Ok(mut guard) = client.try_lock() {
-                        guard.start_kill();
-                    }
+                    && let Ok(mut guard) = client.try_lock()
+                {
+                    guard.start_kill();
+                }
             }
         }
         self.shutdown.cancel();

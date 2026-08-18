@@ -12,6 +12,7 @@ pub const ADAPTER_OPENAI_RESPONSES: &str = "openai_responses";
 pub const ADAPTER_DEEPSEEK_RESPONSES: &str = "deepseek_responses";
 pub const ADAPTER_MIMO_RESPONSES: &str = "mimo_responses";
 pub const ADAPTER_OPENCODE: &str = "opencode";
+pub const ADAPTER_ARK_CODING: &str = "ark_coding";
 
 /// LLM provider auth mode for HTTP requests.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,7 +389,6 @@ pub enum McpTransport {
         headers: HashMap<String, String>,
     },
 }
-
 
 /// MCP server definition (global layer).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

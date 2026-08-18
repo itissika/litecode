@@ -120,32 +120,34 @@ pub async fn npm_install(server_id: &str, packages: &[(&str, &str)]) -> Result<(
     };
 
     // Check if already installed with the correct version.
-    if dest_dir.join(".meta").exists() && dest_dir.join("node_modules").is_dir()
-        && let Ok(meta) = read_meta(&dest_dir) {
-            let installed_ver = meta.get("version").and_then(|v| v.as_str()).unwrap_or("");
-            if !installed_ver.is_empty() && installed_ver != "latest" {
-                if requested_version == "latest" || installed_ver == requested_version {
-                    if crate::lsp::deps::verify_managed_server(server_id).is_ok() {
-                        tracing::info!(
-                            server_id,
-                            installed_ver,
-                            "npm package already installed, skipping"
-                        );
-                        return Ok(());
-                    }
-                    tracing::warn!(
+    if dest_dir.join(".meta").exists()
+        && dest_dir.join("node_modules").is_dir()
+        && let Ok(meta) = read_meta(&dest_dir)
+    {
+        let installed_ver = meta.get("version").and_then(|v| v.as_str()).unwrap_or("");
+        if !installed_ver.is_empty() && installed_ver != "latest" {
+            if requested_version == "latest" || installed_ver == requested_version {
+                if crate::lsp::deps::verify_managed_server(server_id).is_ok() {
+                    tracing::info!(
                         server_id,
-                        "npm metadata exists but executable verification failed; reinstalling"
+                        installed_ver,
+                        "npm package already installed, skipping"
                     );
+                    return Ok(());
                 }
-                tracing::info!(
+                tracing::warn!(
                     server_id,
-                    old = installed_ver,
-                    new = requested_version,
-                    "version changed, reinstalling"
+                    "npm metadata exists but executable verification failed; reinstalling"
                 );
             }
+            tracing::info!(
+                server_id,
+                old = installed_ver,
+                new = requested_version,
+                "version changed, reinstalling"
+            );
         }
+    }
 
     let Some(mut version_cmd) = npm_command_tokio(&["--version".into()]) else {
         return Err(LitecodeError::Config(NPM_NOT_FOUND.into()));

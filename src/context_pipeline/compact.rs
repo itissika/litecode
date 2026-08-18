@@ -307,6 +307,7 @@ impl CompactPolicy {
             cut,
             transcript,
             reminder,
+            session_id,
             cancel,
         )
         .await
@@ -408,6 +409,7 @@ impl CompactPolicy {
         cut: usize,
         transcript: &mut Transcript,
         reminder: Option<&str>,
+        session_id: &str,
         cancel: &CancellationToken,
     ) -> Result<String> {
         if cancel.is_cancelled() {
@@ -424,6 +426,7 @@ impl CompactPolicy {
             system_prompt,
             &prompt,
             max_tokens,
+            session_id,
             cancel,
         )
         .await?;
@@ -457,6 +460,7 @@ impl CompactPolicy {
         system: &str,
         prompt: &str,
         max_tokens: u32,
+        session_id: &str,
         cancel: &CancellationToken,
     ) -> Result<String> {
         if cancel.is_cancelled() {
@@ -473,6 +477,7 @@ impl CompactPolicy {
             thinking_mode: None,
             reasoning_effort: None,
             json_output: false,
+            session_id: Some(session_id.to_string()),
         };
 
         let items = provider.complete(&request, api_key).await?;

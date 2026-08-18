@@ -21,7 +21,6 @@ pub enum ThinkingTier {
     High,
 }
 
-
 impl ThinkingTier {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -49,7 +48,6 @@ pub enum ContextMode {
     Standard,
     Max,
 }
-
 
 impl ContextMode {
     pub fn as_str(self) -> &'static str {

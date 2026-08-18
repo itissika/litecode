@@ -4,13 +4,14 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::schema::{
-    ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES, ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE,
-    ModelAdapterConfig, ModelCapability, ProviderAuth, ProviderConnectionConfig,
-    ProviderDefinition, ReasoningEffort, ThinkingMode,
+    ADAPTER_ARK_CODING, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES,
+    ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE, ModelAdapterConfig, ModelCapability, ProviderAuth,
+    ProviderConnectionConfig, ProviderDefinition, ReasoningEffort, ThinkingMode,
 };
 use crate::llm::provider::LlmProvider;
 use crate::types::{LitecodeError, Result};
 
+use super::ark_coding::{ArkCodingProvider, DEFAULT_ENDPOINT as ARK_DEFAULT_ENDPOINT};
 use super::deepseek_responses::{
     API_MODEL_IDS as DEEPSEEK_API_MODEL_IDS,
     CONTEXT_WINDOW_DEFAULT as DEEPSEEK_CONTEXT_WINDOW_DEFAULT,
@@ -264,6 +265,14 @@ const ADAPTERS: &[AdapterDescriptor] = &[
         default_endpoint: Some(OPENCODE_DEFAULT_ENDPOINT),
         remote_model_catalog: true,
     },
+    AdapterDescriptor {
+        id: ADAPTER_ARK_CODING,
+        label: "Ark Coding Plan",
+        provider_fields: CLOSED_PROVIDER_FIELDS,
+        model_fields: SHARED_MODEL_FIELDS,
+        default_endpoint: Some(ARK_DEFAULT_ENDPOINT),
+        remote_model_catalog: true,
+    },
 ];
 
 /// All registered adapters (product surface).
@@ -285,12 +294,16 @@ pub fn closed_default_endpoint(adapter_id: &str) -> Option<&'static str> {
         ADAPTER_DEEPSEEK_RESPONSES => Some(DEEPSEEK_DEFAULT_ENDPOINT),
         ADAPTER_MIMO_RESPONSES => Some(MIMO_DEFAULT_ENDPOINT),
         ADAPTER_OPENCODE => Some(OPENCODE_DEFAULT_ENDPOINT),
+        ADAPTER_ARK_CODING => Some(ARK_DEFAULT_ENDPOINT),
         _ => None,
     }
 }
 
 pub fn has_remote_model_catalog(adapter_id: &str) -> bool {
-    adapter_id == ADAPTER_OPENCODE
+    ADAPTERS
+        .iter()
+        .find(|a| a.id == adapter_id)
+        .is_some_and(|a| a.remote_model_catalog)
 }
 
 /// Closed-adapter context budgets: `(default, max)`.
@@ -557,6 +570,7 @@ pub fn build_client(def: &ProviderDefinition) -> Result<Box<dyn LlmProvider>> {
         ADAPTER_DEEPSEEK_RESPONSES => Ok(Box::new(DeepseekResponsesProvider::new(endpoint, auth)?)),
         ADAPTER_MIMO_RESPONSES => Ok(Box::new(MimoResponsesProvider::new(endpoint, auth)?)),
         ADAPTER_OPENCODE => Ok(Box::new(OpencodeProvider::new(endpoint, auth)?)),
+        ADAPTER_ARK_CODING => Ok(Box::new(ArkCodingProvider::new(endpoint, auth)?)),
         other => Err(LitecodeError::Config(format!(
             "unknown adapter_id '{other}' for provider '{}'",
             def.id
@@ -568,8 +582,8 @@ pub fn build_client(def: &ProviderDefinition) -> Result<Box<dyn LlmProvider>> {
 mod tests {
     use super::*;
     use crate::config::schema::{
-        ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES, ADAPTER_OPENAI_RESPONSES,
-        ADAPTER_OPENCODE,
+        ADAPTER_ARK_CODING, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES,
+        ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE,
     };
 
     #[test]
@@ -667,6 +681,15 @@ mod tests {
         assert_eq!(opencode.default_endpoint, Some(OPENCODE_DEFAULT_ENDPOINT));
         assert!(opencode.remote_model_catalog);
         assert!(has_remote_model_catalog(ADAPTER_OPENCODE));
+        let ark = list_adapters()
+            .iter()
+            .find(|a| a.id == ADAPTER_ARK_CODING)
+            .unwrap();
+        assert_eq!(ark.default_endpoint, Some(ARK_DEFAULT_ENDPOINT));
+        assert!(ark.remote_model_catalog);
+        assert!(has_remote_model_catalog(ADAPTER_ARK_CODING));
+        assert!(!has_remote_model_catalog(ADAPTER_DEEPSEEK_RESPONSES));
+        assert!(!has_remote_model_catalog(ADAPTER_MIMO_RESPONSES));
     }
 
     #[test]
@@ -711,5 +734,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(go.endpoint, "https://opencode.ai/zen/go/v1");
+
+        let ark = parse_provider_config(
+            ADAPTER_ARK_CODING,
+            &serde_json::json!({ "api_key": "sk-ark" }),
+        )
+        .unwrap();
+        assert_eq!(ark.endpoint, ARK_DEFAULT_ENDPOINT);
     }
 }

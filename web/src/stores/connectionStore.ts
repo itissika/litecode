@@ -51,6 +51,7 @@ interface SiblingStores {
   tree?: StoreLike;
   settings?: StoreLike;
   telemetry?: StoreLike;
+  git?: StoreLike;
   lsp?: (env: WireEnvelope) => boolean;
   terminal?: (env: WireEnvelope) => boolean;
   terminalCloseAll?: () => void;
@@ -217,6 +218,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
         const tree = siblingStores.tree?.getState();
         const settings = siblingStores.settings?.getState();
         const telemetry = siblingStores.telemetry?.getState();
+        const git = siblingStores.git?.getState();
 
         switch (method) {
           case "server/hello": {
@@ -379,6 +381,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
             const changeKind = kind as WorkspaceChangeKind;
             void editor?.handleWorkspaceChange(paths, changeKind);
             void tree?.handleWorkspaceChange(paths, changeKind);
+            git?.scheduleRefresh?.(paths);
             return;
           }
 

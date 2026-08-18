@@ -29,7 +29,6 @@ impl ReadTool {
     }
 }
 
-
 impl Tool for ReadTool {
     fn name(&self) -> &str {
         "read"
@@ -158,9 +157,10 @@ impl ReadTool {
             None => self.read_resolved(&path, None, &input),
         };
         if !matches!(result.level, crate::types::ToolSignalLevel::Error)
-            && let Some(ide) = &self.ide {
-                ide.sync_document_if_ready(&path).await;
-            }
+            && let Some(ide) = &self.ide
+        {
+            ide.sync_document_if_ready(&path).await;
+        }
         result
     }
 

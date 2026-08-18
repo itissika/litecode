@@ -149,9 +149,10 @@ fn validate_node(schema: &Value, value: &Value, path: &str) -> Result<(), String
         match_type(type_spec, schema_obj, value, path)?;
     } else {
         if (schema_obj.contains_key("properties") || schema_obj.contains_key("required"))
-            && let Value::Object(map) = value {
-                validate_object(schema_obj, map, path)?;
-            }
+            && let Value::Object(map) = value
+        {
+            validate_object(schema_obj, map, path)?;
+        }
         if schema_obj.contains_key("items")
             && let Value::Array(items) = value
         {

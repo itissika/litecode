@@ -266,6 +266,17 @@ export function ConnectionSection() {
                         .
                       </p>
                     ) : null}
+                    {row.adapter_id === "ark_coding" ? (
+                      <p className="mt-1 text-xs text-(--_dk-text-tertiary)">
+                        Default is the Coding Plan OpenAI path{" "}
+                        <span className="font-mono">
+                          https://ark.cn-beijing.volces.com/api/coding/v3
+                        </span>
+                        . Use the Ark console API key. Coding Plan quota is licensed for
+                        listed tools; LiteCode is an unofficial client. Do not use the
+                        general <span className="font-mono">/api/v3</span> host.
+                      </p>
+                    ) : null}
                   </div>
                   <div>
                     <FieldLabel required>API key</FieldLabel>

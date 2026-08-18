@@ -22,4 +22,8 @@ pub struct ModelRequest {
     pub reasoning_effort: Option<String>,
     pub thinking_mode: Option<String>,
     pub json_output: bool,
+    /// Litecode session id. Chat Completions vendors that have a session
+    /// affinity header (OpenCode Zen: `x-opencode-session`) must map this per
+    /// request so parallel sessions do not share one cache bucket.
+    pub session_id: Option<String>,
 }

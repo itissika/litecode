@@ -339,3 +339,128 @@ async fn workspace_mkdir_rename_copy_blob() {
     assert!(dir.path().join("keep").is_dir());
     assert!(dir.path().join("b.txt").exists());
 }
+
+fn git_exe() -> Option<std::path::PathBuf> {
+    litecode::config::git_install::find_git_exe()
+}
+
+fn init_git_repo(dir: &std::path::Path) {
+    let git = git_exe().expect("git");
+    let status = std::process::Command::new(&git)
+        .args(["-c", "init.defaultBranch=main", "init"])
+        .current_dir(dir)
+        .status()
+        .expect("git init");
+    assert!(status.success());
+    let _ = std::process::Command::new(&git)
+        .args(["symbolic-ref", "HEAD", "refs/heads/main"])
+        .current_dir(dir)
+        .status();
+    for (k, v) in [
+        ("user.email", "test@litecode.local"),
+        ("user.name", "Litecode Test"),
+        ("commit.gpgsign", "false"),
+    ] {
+        assert!(
+            std::process::Command::new(&git)
+                .args(["config", k, v])
+                .current_dir(dir)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+}
+
+#[tokio::test]
+async fn workspace_git_status_empty_when_not_a_repo() {
+    let _guard = WORKSPACE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if git_exe().is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _serve, web_dist) = test_state(dir.path().to_path_buf());
+    let addr = spawn_test_server(state, web_dist).await;
+    let client = test_http_client();
+    let resp: Value = client
+        .get(format!("http://{addr}/api/workspace/git/status"))
+        .send()
+        .await
+        .expect("status")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["data"]["is_repo"], false);
+}
+
+#[tokio::test]
+async fn workspace_git_stage_commit_and_rejects_escape() {
+    let _guard = WORKSPACE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if git_exe().is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    init_git_repo(dir.path());
+    std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+    let (state, _serve, web_dist) = test_state(dir.path().to_path_buf());
+    let addr = spawn_test_server(state, web_dist).await;
+    let client = test_http_client();
+    let base = format!("http://{addr}/api/workspace/git");
+
+    let stage: Value = client
+        .post(format!("{base}/stage"))
+        .json(&serde_json::json!({ "paths": ["a.txt"] }))
+        .send()
+        .await
+        .expect("stage")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(stage["ok"], true);
+
+    let status: Value = client
+        .get(format!("{base}/status"))
+        .send()
+        .await
+        .expect("status")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(status["data"]["is_repo"], true);
+    assert_eq!(status["data"]["branch"], "main");
+    assert_eq!(status["data"]["staged"][0]["path"], "a.txt");
+
+    let commit: Value = client
+        .post(format!("{base}/commit"))
+        .json(&serde_json::json!({ "message": "add a" }))
+        .send()
+        .await
+        .expect("commit")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(commit["ok"], true);
+
+    let log: Value = client
+        .get(format!("{base}/log"))
+        .send()
+        .await
+        .expect("log")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(log["data"]["commits"][0]["subject"], "add a");
+
+    let escape = client
+        .post(format!("{base}/stage"))
+        .json(&serde_json::json!({ "paths": ["../secret.txt"] }))
+        .send()
+        .await
+        .expect("escape");
+    assert_eq!(escape.status(), 403);
+}

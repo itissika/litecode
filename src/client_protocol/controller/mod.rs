@@ -325,22 +325,21 @@ impl Projection {
             && let Some((buffer_index, item)) = self
                 .sessions
                 .find_function_call_buffer_item(&self.session_id, call_id)
-            {
-                let data_root =
-                    crate::session::store::data_root_from_db_path(&self.sessions.db_path());
-                if let Ok(encoded) = output::encode_client_item(item, &data_root) {
-                    self.on_event(
-                        InternalEvent::BufferItem {
-                            buffer_index,
-                            item: encoded,
-                            kind: None,
-                            child_session_id: Some(child_session_id.clone()),
-                        },
-                        project,
-                        binding,
-                    );
-                }
+        {
+            let data_root = crate::session::store::data_root_from_db_path(&self.sessions.db_path());
+            if let Ok(encoded) = output::encode_client_item(item, &data_root) {
+                self.on_event(
+                    InternalEvent::BufferItem {
+                        buffer_index,
+                        item: encoded,
+                        kind: None,
+                        child_session_id: Some(child_session_id.clone()),
+                    },
+                    project,
+                    binding,
+                );
             }
+        }
         if let Some(msg) = project::project(&ev, &self.snapshot(project, binding)) {
             self.outgoing.push(msg);
         }
@@ -786,10 +785,9 @@ impl Projection {
                 trigger: crate::runtime::observer::CompactionTrigger::Auto,
                 stage: crate::runtime::observer::CompactionStage::Started,
                 ..
+            } if self.turn_id.is_some() => {
+                self.phase = TurnPhase::Compacting;
             }
-                if self.turn_id.is_some() => {
-                    self.phase = TurnPhase::Compacting;
-                }
             _ => {}
         }
     }
@@ -891,21 +889,22 @@ impl SessionController {
 
         // R7: if a turn is already running for this session, restore state.
         if let Some(progress) = cached
-            && self.sessions.is_turn_running_blocking(session_id) {
-                let snapshot = project::turn_progress_to_snapshot(&progress);
-                proj.turn_id = Some(snapshot.turn_id.clone());
-                proj.phase = project::wire_phase_to_internal(&snapshot.phase);
-                proj.step = snapshot.step;
-                proj.step_max = snapshot.step_max;
-                proj.started_at_ms = snapshot.started_at_ms;
+            && self.sessions.is_turn_running_blocking(session_id)
+        {
+            let snapshot = project::turn_progress_to_snapshot(&progress);
+            proj.turn_id = Some(snapshot.turn_id.clone());
+            proj.phase = project::wire_phase_to_internal(&snapshot.phase);
+            proj.step = snapshot.step;
+            proj.step_max = snapshot.step_max;
+            proj.started_at_ms = snapshot.started_at_ms;
 
-                let events = self.sessions.event_buffer_snapshot(session_id);
-                let project_str = self.project.clone();
-                for envelope in events {
-                    proj.on_internal(envelope, &project_str, &binding);
-                }
-                proj.push_outgoing(project::session_attached(session_id, &snapshot));
+            let events = self.sessions.event_buffer_snapshot(session_id);
+            let project_str = self.project.clone();
+            for envelope in events {
+                proj.on_internal(envelope, &project_str, &binding);
             }
+            proj.push_outgoing(project::session_attached(session_id, &snapshot));
+        }
 
         let project_str = self.project.clone();
         proj.push_outgoing(session_snapshot(proj.snapshot(&project_str, &binding)));
@@ -977,9 +976,10 @@ impl SessionController {
     /// the SQLite row.
     pub fn unsubscribe(&mut self, session_id: &str) {
         if let Some(proj) = self.projections.remove(session_id)
-            && let Some(handle) = proj.forward_task {
-                handle.abort();
-            }
+            && let Some(handle) = proj.forward_task
+        {
+            handle.abort();
+        }
         self.sessions.detach(session_id);
     }
 
@@ -1191,9 +1191,10 @@ impl Drop for SessionController {
         let sids: Vec<String> = self.projections.keys().cloned().collect();
         for sid in sids {
             if let Some(proj) = self.projections.get_mut(&sid)
-                && let Some(handle) = proj.forward_task.take() {
-                    handle.abort();
-                }
+                && let Some(handle) = proj.forward_task.take()
+            {
+                handle.abort();
+            }
             self.sessions.detach(&sid);
         }
     }
