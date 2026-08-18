@@ -14,8 +14,8 @@ pub fn check_floor(tool_name: &str, args: &Value, _ctx: &MatchContext<'_>) -> Op
     // G4: sensitive writes are denied unconditionally — regardless of path_mode.
     // A user-configurable preset (e.g. All → Unrestricted) must never weaken this
     // floor, so it no longer depends on `path_mode == WorkspaceOnly`.
-    if matches!(tool_name, "write" | "edit") {
-        if let Some(path) = args.get("file_path").and_then(Value::as_str)
+    if matches!(tool_name, "write" | "edit")
+        && let Some(path) = args.get("file_path").and_then(Value::as_str)
             && is_sensitive_system_path(path)
         {
             return Some(EvalResult {
@@ -23,7 +23,6 @@ pub fn check_floor(tool_name: &str, args: &Value, _ctx: &MatchContext<'_>) -> Op
                 action: PermissionAction::Deny,
             });
         }
-    }
 
     if tool_name == "bash"
         && let Some(command) = args.get("command").and_then(Value::as_str)

@@ -7,10 +7,7 @@ use std::io;
 use std::path::Path;
 
 pub fn remove_path(path: &Path, recursive: bool) -> io::Result<()> {
-    let meta = match std::fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(error) => return Err(error),
-    };
+    let meta = std::fs::symlink_metadata(path)?;
     if meta.is_dir() && !recursive {
         return std::fs::remove_dir(path);
     }

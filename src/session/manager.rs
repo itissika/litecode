@@ -751,12 +751,11 @@ impl SessionManager {
     /// Returns true when a cancel token was signalled.
     pub fn cancel_turn_sync(&self, session_id: &str) -> bool {
         let records = self.records.lock().unwrap();
-        if let Some(record) = records.get(session_id) {
-            if let SessionActivity::RunningTurn(live) = &record.activity {
+        if let Some(record) = records.get(session_id)
+            && let SessionActivity::RunningTurn(live) = &record.activity {
                 live.cancel.cancel();
                 return true;
             }
-        }
         false
     }
 
@@ -974,17 +973,15 @@ impl SessionManager {
             Session::list_child_session_ids(&self.db_path(), session_id).unwrap_or_default();
         {
             let records = self.records.lock().unwrap();
-            if let Some(record) = records.get(session_id) {
-                if let SessionActivity::RunningTurn(live) = &record.activity {
+            if let Some(record) = records.get(session_id)
+                && let SessionActivity::RunningTurn(live) = &record.activity {
                     live.cancel.cancel();
                 }
-            }
             for child_id in &child_ids {
-                if let Some(record) = records.get(child_id) {
-                    if let SessionActivity::RunningTurn(live) = &record.activity {
+                if let Some(record) = records.get(child_id)
+                    && let SessionActivity::RunningTurn(live) = &record.activity {
                         live.cancel.cancel();
                     }
-                }
             }
         }
 
@@ -1105,11 +1102,10 @@ impl SessionManager {
             let len = s.buffer_len();
             let items = s.load_by_buffer_index(0, len).ok()?;
             for (idx, item) in items.into_iter().enumerate() {
-                if let crate::types::Item::FunctionCall(ref fc) = item {
-                    if fc.call_id == call_id {
+                if let crate::types::Item::FunctionCall(ref fc) = item
+                    && fc.call_id == call_id {
                         return Some((idx, item));
                     }
-                }
             }
             None
         })
@@ -1228,12 +1224,11 @@ impl SessionManager {
         for (id, record) in records.iter_mut() {
             if cleared_set.contains(id.as_str()) {
                 record.model_id = None;
-            } else if let Some(mid) = record.model_id.as_ref() {
-                if !valid_model_ids.contains(mid) {
+            } else if let Some(mid) = record.model_id.as_ref()
+                && !valid_model_ids.contains(mid) {
                     let _ = record.store.with_mut(|s| s.set_model_id(None));
                     record.model_id = None;
                 }
-            }
         }
         Ok(cleared)
     }
@@ -1318,15 +1313,14 @@ async fn fanout_turn(
                         });
                     }
                     InternalEvent::StreamEvent(ev) => {
-                        if let Some((item_id, kind)) = turn_step_from_stream(ev) {
-                            if announced_step_items.insert(item_id) {
+                        if let Some((item_id, kind)) = turn_step_from_stream(ev)
+                            && announced_step_items.insert(item_id) {
                                 manager.emit_lifecycle(LifecycleEvent::TurnStep {
                                     session_id: session_id.clone(),
                                     kind,
                                     progress: progress.clone(),
                                 });
                             }
-                        }
                     }
                     _ => {}
                 }

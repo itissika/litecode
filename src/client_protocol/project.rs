@@ -701,13 +701,11 @@ pub fn classify_incoming(msg: &serde_json::Value) -> IncomingWire {
 
     match method {
         "agent/turn_event" => {
-            if let Some(params) = params {
-                if let Some(event) = params.get("event") {
-                    if let Ok(ev) = serde_json::from_value::<WireEvent>(event.clone()) {
+            if let Some(params) = params
+                && let Some(event) = params.get("event")
+                    && let Ok(ev) = serde_json::from_value::<WireEvent>(event.clone()) {
                         return IncomingWire::TurnEvent(ev);
                     }
-                }
-            }
             IncomingWire::Ignored
         }
         "agent/permission_request" => {

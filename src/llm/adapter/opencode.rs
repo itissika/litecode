@@ -887,11 +887,10 @@ impl LlmProvider for OpencodeProvider {
                         terminal_items = Some(items);
                     }
                 }
-                if terminal_items.is_none() {
-                    if let Some(items) = forward_all(synth.finish_events(&request.model)?)? {
+                if terminal_items.is_none()
+                    && let Some(items) = forward_all(synth.finish_events(&request.model)?)? {
                         terminal_items = Some(items);
                     }
-                }
             }
 
             resolve_stream_outcome(terminal_items, &acc, cancelled)

@@ -473,14 +473,13 @@ impl Tool for SubagentLaunchTool {
             match rx.recv_timeout(std::time::Duration::from_millis(100)) {
                 Ok((text, stats, child_session_id)) => {
                     let mut meta = serde_json::to_value(stats).unwrap_or_default();
-                    if let Some(obj) = meta.as_object_mut() {
-                        if !child_session_id.is_empty() {
+                    if let Some(obj) = meta.as_object_mut()
+                        && !child_session_id.is_empty() {
                             obj.insert(
                                 "child_session_id".into(),
                                 serde_json::Value::String(child_session_id),
                             );
                         }
-                    }
                     // Errors from the child thread are returned as content that starts with
                     // known prefixes; surface them as tool errors when clearly failed.
                     if text.starts_with("runtime creation failed:")

@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
 use crate::config::git_install::find_git_bash;
 
 /// Program + args for an interactive login-style shell (no command).

@@ -18,6 +18,7 @@ const MAX_LINE_CHARS: usize = 1500;
 /// When `limit` is 0 or negative, return this many lines and attach a Warning.
 const INVALID_LIMIT_FALLBACK: usize = 50;
 
+#[derive(Default)]
 pub struct ReadTool {
     ide: Option<Arc<crate::ide_base::IdeBaseHandle>>,
 }
@@ -28,11 +29,6 @@ impl ReadTool {
     }
 }
 
-impl Default for ReadTool {
-    fn default() -> Self {
-        Self { ide: None }
-    }
-}
 
 impl Tool for ReadTool {
     fn name(&self) -> &str {
@@ -161,11 +157,10 @@ impl ReadTool {
             Some(Err(error)) => ToolCallResult::error(error),
             None => self.read_resolved(&path, None, &input),
         };
-        if !matches!(result.level, crate::types::ToolSignalLevel::Error) {
-            if let Some(ide) = &self.ide {
+        if !matches!(result.level, crate::types::ToolSignalLevel::Error)
+            && let Some(ide) = &self.ide {
                 ide.sync_document_if_ready(&path).await;
             }
-        }
         result
     }
 

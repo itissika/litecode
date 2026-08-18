@@ -319,11 +319,10 @@ impl StreamItemAccumulator {
     }
 
     fn set_fc_name(&mut self, item_id: &str, name: &str) {
-        if let Some(Item::FunctionCall(fc)) = self.items.get_mut(item_id) {
-            if fc.name.is_empty() {
+        if let Some(Item::FunctionCall(fc)) = self.items.get_mut(item_id)
+            && fc.name.is_empty() {
                 fc.name = name.to_string();
             }
-        }
     }
 
     pub(super) fn seal_incomplete(&self) -> Vec<Item> {
@@ -367,7 +366,7 @@ fn append_output_text(msg: &mut OutputMessage, delta: &str) {
 
 fn append_reasoning_text(r: &mut ReasoningItem, delta: &str) {
     let parts = r.content.get_or_insert_with(Vec::new);
-    for p in parts.iter_mut() {
+    if let Some(p) = parts.iter_mut().next() {
         let ReasoningItemContent::ReasoningText(t) = p;
         t.text.push_str(delta);
         return;

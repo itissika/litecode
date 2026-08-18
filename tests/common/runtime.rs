@@ -9,8 +9,7 @@ use litecode::client_protocol::observer::NoopObserver;
 use litecode::config::global_db::tools::{core_configurable_tools, core_none_tools, core_tool_ids};
 use litecode::config::resolved::{WorkspaceState, resolve};
 use litecode::config::schema::{
-    AgentProfile, AgentRole, AgentToolBinding, GlobalSettings, InitScope, ToolCatalogEntry,
-    ToolPreset, ToolTier,
+    AgentProfile, AgentRole, GlobalSettings, InitScope, ToolCatalogEntry, ToolTier,
 };
 use litecode::config::workspace::set_runtime_paths;
 use litecode::config::{AgentConfig, ResolvedConfig, TurnGuard};
@@ -86,7 +85,7 @@ pub fn test_resolved_with_budget(
     let mut bindings = HashMap::new();
     if all_core {
         for id in core_configurable_tools() {
-            bindings.insert((*id).to_string(), binding_all_for(*id));
+            bindings.insert((*id).to_string(), binding_all_for(id));
         }
         for id in core_none_tools() {
             bindings.insert((*id).to_string(), binding_none_tool());

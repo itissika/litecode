@@ -25,6 +25,7 @@ import { AgentMarkdown } from "./AgentMarkdown";
 import { CategoryCount } from "./CategoryCount";
 import { FoldCard } from "./FoldCard";
 import { InlineToolRow } from "./InlineToolRow";
+import { requestFoldCardOpen } from "./foldCardState";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useEditorStore } from "../stores/editorStore";
@@ -631,6 +632,32 @@ export function canRevertFiles(
   return maxFileRevertK != null && k <= maxFileRevertK;
 }
 
+/** Find the virtual bubble + FoldCard ids for a live bash job's tool card. */
+export function locateBashTool(
+  bubbles: ChatRow[][],
+  callId: string,
+  sessionId: string,
+  turnActive: boolean,
+): { bubbleIndex: number; foldIds: string[] } | null {
+  for (let i = 0; i < bubbles.length; i++) {
+    const rows = bubbles[i]!;
+    const groups = groupNodes(rowsToNodes(rows, turnActive));
+    const bubbleKey = bubbleIdentity(bubbles, i);
+    for (let gi = 0; gi < groups.length; gi++) {
+      const grouped = groups[gi]!;
+      for (const node of grouped.nodes) {
+        if (node.kind !== "tool" || node.call.call_id !== callId) continue;
+        const foldIds = [`${sessionId}:${bubbleKey}:tool:${callId}`];
+        if (grouped.type === "process") {
+          foldIds.unshift(`${sessionId}:${bubbleKey}:process:${gi}`);
+        }
+        return { bubbleIndex: i, foldIds };
+      }
+    }
+  }
+  return null;
+}
+
 const SCROLL_INTENT_KEYS = new Set([
   "ArrowUp",
   "ArrowDown",
@@ -659,6 +686,14 @@ function wheelTargetIsNestedScroller(
   return false;
 }
 
+function bashCallSelector(callId: string): string {
+  const escaped =
+    typeof CSS !== "undefined" && typeof CSS.escape === "function"
+      ? CSS.escape(callId)
+      : callId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `[data-bash-call-id="${escaped}"]`;
+}
+
 interface MessageListProps {
   messages: ChatRow[];
   loadingHistory: boolean;
@@ -673,6 +708,7 @@ interface MessageListProps {
   /** Human stick intent: true until the user scrolls up. */
   onStickChange?: (stickToEnd: boolean) => void;
   jumpToEndRef?: RefObject<(() => void) | null>;
+  revealBashRef?: RefObject<((callId: string) => void) | null>;
 }
 
 export const MessageList = memo(function MessageList({
@@ -687,6 +723,7 @@ export const MessageList = memo(function MessageList({
   maxFileRevertK = null,
   onStickChange,
   jumpToEndRef,
+  revealBashRef,
 }: MessageListProps) {
   const bubbles = useMemo(() => groupRowsForBubbles(messages), [messages]);
   const loader = canLoadMore ? 1 : 0;
@@ -764,6 +801,33 @@ export const MessageList = memo(function MessageList({
   }, [setStick, virtualizer]);
 
   if (jumpToEndRef) jumpToEndRef.current = pinToEnd;
+
+  const revealBash = useCallback(
+    (callId: string) => {
+      setStick(false);
+      const located = locateBashTool(bubbles, callId, sessionId, isRunning);
+      if (!located) return;
+      for (const foldId of located.foldIds) requestFoldCardOpen(foldId);
+      virtualizer.scrollToIndex(loader + located.bubbleIndex, {
+        align: "center",
+      });
+      const started = performance.now();
+      const tick = () => {
+        const el = document.querySelector(bashCallSelector(callId));
+        if (el instanceof HTMLElement) {
+          el.scrollIntoView({ block: "center", inline: "nearest" });
+          el.classList.remove("bash-view-reveal");
+          void el.offsetWidth;
+          el.classList.add("bash-view-reveal");
+          return;
+        }
+        if (performance.now() - started < 800) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    },
+    [bubbles, isRunning, loader, sessionId, setStick, virtualizer],
+  );
+  if (revealBashRef) revealBashRef.current = revealBash;
 
   const totalSize = virtualizer.getTotalSize();
   useLayoutEffect(() => {

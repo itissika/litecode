@@ -35,6 +35,21 @@ export function setFoldCardOpen(id: string, open: boolean): void {
   openState.set(id, open);
 }
 
+const openRequests = new Set<(id: string) => void>();
+
+/** Open a mounted FoldCard (persist + notify). Used to reveal a bash view. */
+export function requestFoldCardOpen(id: string): void {
+  setFoldCardOpen(id, true);
+  for (const notify of openRequests) notify(id);
+}
+
+export function subscribeFoldCardOpenRequest(notify: (id: string) => void): () => void {
+  openRequests.add(notify);
+  return () => {
+    openRequests.delete(notify);
+  };
+}
+
 /** Drop all state for a session (prefix is `sessionId:`). */
 export function clearFoldCardOpen(sessionId: string): void {
   const prefix = `${sessionId}:`;

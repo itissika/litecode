@@ -152,7 +152,7 @@ impl TextIndexStore {
                     ))
                     .map_err(|e| LitecodeError::Config(format!("text_index add: {e}")))?;
                 added += 1;
-                if added % 5000 == 0 {
+                if added.is_multiple_of(5000) {
                     tracing::debug!(added, "text_index build progress");
                 }
             }

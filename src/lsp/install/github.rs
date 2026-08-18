@@ -862,9 +862,7 @@ fn classify_reqwest_error(e: reqwest::Error, url: &str) -> LitecodeError {
         ))
     } else if e.is_connect() {
         if msg.contains("dns") || msg.contains("resolve") || msg.contains("No such host") {
-            LitecodeError::Config(format!(
-                "cannot reach GitHub (api.github.com): DNS lookup failed. Check the network or set HTTP_PROXY"
-            ))
+            LitecodeError::Config("cannot reach GitHub (api.github.com): DNS lookup failed. Check the network or set HTTP_PROXY".to_string())
         } else {
             LitecodeError::Config(format!(
                 "cannot connect to GitHub: {msg}. Check the network or set HTTP_PROXY"

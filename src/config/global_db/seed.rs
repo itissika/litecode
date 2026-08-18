@@ -91,7 +91,7 @@ fn seed_default_agent_bindings(conn: &Connection) -> Result<()> {
     use crate::permission::presets::binding_for_tool;
 
     for tool in core_configurable_tools() {
-        let (policy, path_mode) = binding_for_tool(*tool, ToolPreset::All);
+        let (policy, path_mode) = binding_for_tool(tool, ToolPreset::All);
         let binding = AgentToolBinding {
             enabled: true,
             policy,
@@ -170,7 +170,7 @@ fn ensure_default_core_bindings(conn: &Connection) -> Result<()> {
             .is_some();
         if !exists {
             let (policy, path_mode) =
-                crate::permission::presets::binding_for_tool(*tool, ToolPreset::All);
+                crate::permission::presets::binding_for_tool(tool, ToolPreset::All);
             let binding = crate::config::schema::AgentToolBinding {
                 enabled: true,
                 policy,

@@ -1106,4 +1106,24 @@ describe("messageStore Item projection", () => {
     expect(slice.messages[0]?.kind).toBe("compact_checkpoint");
     expect(slice.messages.some((row) => row.id === "user-same-text")).toBe(true);
   });
+
+  it("dedups an optimistic kill reminder when buffer/item seals the same text", () => {
+    const sid = "s-kill-reminder";
+    const reminder =
+      "<system-reminder>\nThe user stopped background bash bg_a (Kill).\n</system-reminder>";
+    useMessageStore.getState().pushUserMessage(sid, {
+      id: "user-kill-1",
+      item: userMsg(reminder),
+    });
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      buffer_index: 0,
+      item: userMsg(reminder),
+      kind: "detail",
+    });
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages).toHaveLength(1);
+    expect(slice.messages[0]?.id).toBe(bufferItemId(sid, 0));
+    expect(slice.messages.some((row) => row.id.startsWith("user-"))).toBe(false);
+  });
 });

@@ -203,6 +203,7 @@ export function BashToolView({ status, input, output, call_id, sessionId }: Tool
     <div
       className="overflow-hidden rounded-md border border-(--_dk-line-visible) bg-(--_dk-editor) font-mono text-dk-sm leading-relaxed"
       data-testid="bash-console"
+      data-bash-call-id={call_id}
     >
       {command !== undefined && <CommandHeader command={command} />}
 

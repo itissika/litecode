@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ChatRow } from "../api/adapter";
 import { isCompactCutRow, projectionRowKey } from "../api/adapter";
-import { bubbleIdentity, canRevertFiles, groupRowsForBubbles } from "./MessageList";
+import { bubbleIdentity, canRevertFiles, groupRowsForBubbles, locateBashTool } from "./MessageList";
 
 const userRow: ChatRow = {
   id: "item-session-1-0",
@@ -176,5 +176,27 @@ describe("canRevertFiles", () => {
     expect(canRevertFiles(0, 1)).toBe(true);
     expect(canRevertFiles(1, 1)).toBe(true);
     expect(canRevertFiles(2, 1)).toBe(false);
+  });
+});
+
+describe("locateBashTool", () => {
+  it("returns the assistant bubble and process+tool fold ids", () => {
+    const bashRow: ChatRow = {
+      id: "live-fc_bash",
+      streaming: true,
+      item: {
+        type: "function_call",
+        id: "fc_bash",
+        call_id: "c1",
+        name: "bash",
+        arguments: JSON.stringify({ command: "sleep 1" }),
+        status: "in_progress",
+      },
+    };
+    const bubbles = groupRowsForBubbles([userRow, liveReasoning, bashRow]);
+    const found = locateBashTool(bubbles, "c1", "session-1", true);
+    expect(found?.bubbleIndex).toBe(1);
+    expect(found?.foldIds[0]).toMatch(/:process:0$/);
+    expect(found?.foldIds[1]).toMatch(/:tool:c1$/);
   });
 });

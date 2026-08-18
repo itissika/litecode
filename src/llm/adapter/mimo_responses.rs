@@ -314,9 +314,9 @@ impl LlmProvider for MimoResponsesProvider {
                 }
             }
 
-            if !cancelled {
-                if let Some(line) = reader.finish()? {
-                    if let Some(data) = sse_data_payload(&line) {
+            if !cancelled
+                && let Some(line) = reader.finish()?
+                    && let Some(data) = sse_data_payload(&line) {
                         let event = parse_stream_event(data)?;
                         if let Some(items) =
                             forward_stream_event(&mut gate, &mut acc, event, &mut on_event)?
@@ -324,8 +324,6 @@ impl LlmProvider for MimoResponsesProvider {
                             terminal_items = Some(items);
                         }
                     }
-                }
-            }
 
             resolve_stream_outcome(terminal_items, &acc, cancelled)
         })

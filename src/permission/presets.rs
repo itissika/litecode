@@ -15,11 +15,11 @@ pub fn binding_for_tool(tool_id: &str, preset: ToolPreset) -> (ToolPolicy, Bindi
 pub fn apply_preset_to_tools(preset: ToolPreset) -> Vec<(String, ToolPolicy, BindingPathMode)> {
     let mut out = Vec::new();
     for tool in core_configurable_tools() {
-        let (policy, path_mode) = binding_for_tool(*tool, preset);
+        let (policy, path_mode) = binding_for_tool(tool, preset);
         out.push(((*tool).to_string(), policy, path_mode));
     }
     for tool in optional_builtin_ids() {
-        let (policy, path_mode) = binding_for_tool(*tool, preset);
+        let (policy, path_mode) = binding_for_tool(tool, preset);
         out.push(((*tool).to_string(), policy, path_mode));
     }
     out

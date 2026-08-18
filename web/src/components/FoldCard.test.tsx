@@ -1,8 +1,8 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, act } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { FoldCard } from "./FoldCard";
-import { clearFoldCardOpen } from "./foldCardState";
+import { clearFoldCardOpen, requestFoldCardOpen } from "./foldCardState";
 
 /**
  * FoldCard open/collapse state machine.
@@ -174,5 +174,16 @@ describe("FoldCard streaming transitions", () => {
     renderCard({ streaming: false });
     expect(header().getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("body")).toBeNull();
+  });
+
+  it("opens a mounted collapsed card when requested", () => {
+    renderCard({ defaultOpen: true });
+    fireEvent.click(header());
+    expect(header().getAttribute("aria-expanded")).toBe("false");
+    act(() => {
+      requestFoldCardOpen(ID);
+    });
+    expect(header().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("body")).toBeTruthy();
   });
 });

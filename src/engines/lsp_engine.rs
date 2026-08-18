@@ -13,6 +13,12 @@ pub struct LspEngine {
     warmup_epoch: AtomicU64,
 }
 
+impl Default for LspEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LspEngine {
     pub fn new() -> Self {
         Self {

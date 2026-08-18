@@ -104,12 +104,11 @@ fn materialize_media_parts(
                         "failed to read tool media '{path}': {e}"
                     ))
                 })?;
-                if artifact.width.is_none() || artifact.height.is_none() {
-                    if let Some((width, height)) = image_dimensions(&bytes, &artifact.mime_type) {
+                if (artifact.width.is_none() || artifact.height.is_none())
+                    && let Some((width, height)) = image_dimensions(&bytes, &artifact.mime_type) {
                         artifact.width = Some(width);
                         artifact.height = Some(height);
                     }
-                }
                 let blob_id = write_media_blob(data_root, &bytes)?;
                 artifact.source = MediaSource::BlobRef { blob_id };
             }

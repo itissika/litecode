@@ -719,7 +719,7 @@ impl Session {
             "DELETE FROM transcript_items WHERE session_id = ?1",
             rusqlite::params![session_id],
         )?;
-        crate::session::transcript_fts::delete_session(&*tx, session_id)?;
+        crate::session::transcript_fts::delete_session(&tx, session_id)?;
         tx.execute(
             "DELETE FROM session_context_meter WHERE session_id = ?1",
             rusqlite::params![session_id],
@@ -1233,7 +1233,7 @@ impl Session {
                 ],
             )?;
             let plain = crate::types::item_text_preview(msg);
-            crate::session::transcript_fts::upsert(&*tx, &self.id, seq, &plain)?;
+            crate::session::transcript_fts::upsert(&tx, &self.id, seq, &plain)?;
         }
 
         let now = chrono::Utc::now().timestamp_millis();
@@ -1371,7 +1371,7 @@ impl Session {
                 ],
             )?;
             let plain = crate::types::item_text_preview(msg);
-            crate::session::transcript_fts::upsert(&*tx, &self.id, seq, &plain)?;
+            crate::session::transcript_fts::upsert(&tx, &self.id, seq, &plain)?;
         }
 
         for seq in orphan_seqs {
@@ -1379,7 +1379,7 @@ impl Session {
                 "DELETE FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
                 rusqlite::params![self.id, seq],
             )?;
-            crate::session::transcript_fts::delete_one(&*tx, &self.id, seq)?;
+            crate::session::transcript_fts::delete_one(&tx, &self.id, seq)?;
         }
 
         let now = chrono::Utc::now().timestamp_millis();
@@ -1433,7 +1433,7 @@ impl Session {
             "DELETE FROM transcript_items WHERE session_id = ?1 AND seq >= ?2",
             rusqlite::params![self.id, anchor_seq],
         )?;
-        crate::session::transcript_fts::delete_seq_ge(&*tx, &self.id, anchor_seq)?;
+        crate::session::transcript_fts::delete_seq_ge(&tx, &self.id, anchor_seq)?;
 
         // Keep at most one compact_checkpoint row: the latest remaining one.
         let remaining_cp: Option<i64> = tx

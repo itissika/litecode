@@ -5,8 +5,8 @@ import {
   bufferItemId,
   extractBufferIndex,
   isCompactCutRow,
-  isHumanUserRow,
   isStreamFailureEvent,
+  isUserMessage,
   itemAuthorityId,
   itemPlainText,
   liveItemRowId,
@@ -244,7 +244,15 @@ function findUnclaimedLive(
 }
 
 function isDetailUserEntry(item: Item, kind?: string): boolean {
-  return wireRowKind(kind) !== "compact_checkpoint" && isHumanUserRow({ item, kind });
+  return wireRowKind(kind) !== "compact_checkpoint" && isUserMessage(item);
+}
+
+function isOptimisticUserShell(row: ChatRow): boolean {
+  return (
+    row.id.startsWith("user-") &&
+    isUserMessage(row.item) &&
+    !isCompactCutRow(row)
+  );
 }
 
 function contiguousCommittedEnd(
@@ -350,7 +358,7 @@ function ingestBufferItems(
   for (let i = transient.length - 1; i >= 0; i--) {
     if (claimed.has(i)) continue;
     const row = transient[i];
-    if (row.id.startsWith("user-") && isHumanUserRow(row)) {
+    if (isOptimisticUserShell(row)) {
       const text = itemPlainText(row.item);
       const count = loadedUserTexts.get(text) ?? 0;
       if (count > 0) {

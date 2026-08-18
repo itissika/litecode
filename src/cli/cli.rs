@@ -96,18 +96,15 @@ fn load_runtime_bundle_from_cli(cli: &Cli) -> anyhow::Result<ResolvedConfig> {
 }
 
 fn get_api_key(resolved: &ResolvedConfig) -> anyhow::Result<String> {
-    if let Some(agent) = resolved.agents().get("default") {
-        if !agent.model_ref.is_empty() {
-            if let Some(model) = resolved.models().get(&agent.model_ref) {
-                if let Some(provider) = resolved.providers().get(&model.provider_ref) {
+    if let Some(agent) = resolved.agents().get("default")
+        && !agent.model_ref.is_empty()
+            && let Some(model) = resolved.models().get(&agent.model_ref)
+                && let Some(provider) = resolved.providers().get(&model.provider_ref) {
                     let key = provider.config.api_key.trim();
                     if !key.is_empty() {
                         return Ok(key.to_string());
                     }
                 }
-            }
-        }
-    }
     resolved
         .providers()
         .values()
@@ -218,7 +215,7 @@ fn run_turn_streaming(
                 IncomingWire::PermissionRequest {
                     request_id,
                     tool,
-                    rule_id,
+                    rule_id: _,
                     summary,
                     ..
                 } => {

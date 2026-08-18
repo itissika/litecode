@@ -392,7 +392,7 @@ pub fn validate_model_config(
             )));
         }
         let allowed = closed_api_model_ids(adapter_id).unwrap_or(&[]);
-        if !allowed.iter().any(|id| *id == api) {
+        if !allowed.contains(&api) {
             return Err(LitecodeError::Config(format!(
                 "model '{model_id}' api_model_id '{api}' is not in adapter catalog for '{adapter_id}'"
             )));

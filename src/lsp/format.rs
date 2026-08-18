@@ -101,7 +101,7 @@ fn format_diagnostics(result: &Value) -> String {
     diags
         .iter()
         .take(100)
-        .map(|diag| format_one_diagnostic(diag))
+        .map(format_one_diagnostic)
         .collect::<Vec<_>>()
         .join("\n")
 }

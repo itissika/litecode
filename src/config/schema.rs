@@ -376,8 +376,10 @@ mod custom_tool_definition_tests {
 /// MCP transport type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Default)]
 pub enum McpTransport {
     #[serde(rename = "stdio")]
+    #[default]
     Stdio,
     #[serde(rename = "remote")]
     Remote {
@@ -387,11 +389,6 @@ pub enum McpTransport {
     },
 }
 
-impl Default for McpTransport {
-    fn default() -> Self {
-        McpTransport::Stdio
-    }
-}
 
 /// MCP server definition (global layer).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -69,7 +69,7 @@ pub fn cheap_rel_under(walk_root: &Path, path: &Path) -> Option<String> {
     let path = strip_verbatim(path);
 
     if let Ok(rel) = path.strip_prefix(&walk_root) {
-        return Some(normalize_rel(&rel));
+        return Some(normalize_rel(rel));
     }
 
     #[cfg(windows)]

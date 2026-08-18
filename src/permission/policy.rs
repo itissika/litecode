@@ -51,8 +51,10 @@ impl ToolPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BindingPathMode {
     WorkspaceOnly,
+    #[default]
     Unrestricted,
 }
 
@@ -65,8 +67,3 @@ impl BindingPathMode {
     }
 }
 
-impl Default for BindingPathMode {
-    fn default() -> Self {
-        BindingPathMode::Unrestricted
-    }
-}

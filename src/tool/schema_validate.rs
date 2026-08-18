@@ -148,11 +148,10 @@ fn validate_node(schema: &Value, value: &Value, path: &str) -> Result<(), String
     if let Some(type_spec) = schema_obj.get("type") {
         match_type(type_spec, schema_obj, value, path)?;
     } else {
-        if schema_obj.contains_key("properties") || schema_obj.contains_key("required") {
-            if let Value::Object(map) = value {
+        if (schema_obj.contains_key("properties") || schema_obj.contains_key("required"))
+            && let Value::Object(map) = value {
                 validate_object(schema_obj, map, path)?;
             }
-        }
         if schema_obj.contains_key("items")
             && let Value::Array(items) = value
         {
@@ -173,12 +172,12 @@ fn match_type(
         return Ok(());
     }
     if types.iter().any(|t| type_matches(t, value)) {
-        if types.iter().any(|t| *t == "object")
+        if types.contains(&"object")
             && let Value::Object(map) = value
         {
             validate_object(schema_obj, map, path)?;
         }
-        if types.iter().any(|t| *t == "array")
+        if types.contains(&"array")
             && let Value::Array(items) = value
         {
             validate_array_items(schema_obj, items, path)?;

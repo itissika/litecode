@@ -29,7 +29,7 @@ fn setup_guidance(settings: &GlobalSettings) -> Option<String> {
     if !settings
         .providers
         .values()
-        .any(|p| crate::llm::provider_ready(p))
+        .any(crate::llm::provider_ready)
     {
         steps.push(
             "add a Provider in Settings → Connection (adapter, endpoint, API key) and Save"

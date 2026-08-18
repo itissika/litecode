@@ -1033,7 +1033,7 @@ impl Drop for LspHub {
                 }
             }
         } else {
-            let _ = (*self.rt).block_on(async {
+            (*self.rt).block_on(async {
                 for server in servers {
                     let mut s = server.lock().await;
                     s.shutdown().await;

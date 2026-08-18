@@ -236,9 +236,9 @@ impl LlmProvider for OpenaiResponsesProvider {
                 }
             }
 
-            if !cancelled {
-                if let Some(line) = reader.finish()? {
-                    if let Some(data) = sse_data_payload(&line) {
+            if !cancelled
+                && let Some(line) = reader.finish()?
+                    && let Some(data) = sse_data_payload(&line) {
                         let event: ResponseStreamEvent =
                             serde_json::from_str(data).map_err(|e| {
                                 LitecodeError::Llm(format!(
@@ -251,8 +251,6 @@ impl LlmProvider for OpenaiResponsesProvider {
                             terminal_items = Some(items);
                         }
                     }
-                }
-            }
 
             resolve_stream_outcome(terminal_items, &acc, cancelled)
         })

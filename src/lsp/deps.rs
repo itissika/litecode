@@ -745,15 +745,14 @@ pub async fn ensure_servers(ids: &[String], install: bool) -> (Vec<String>, Vec<
     for id in ids {
         let program = meta_for_id(id).map(|m| m.program).unwrap_or(id.as_str());
 
-        if command_runnable(program).is_err() && install {
-            if let Err(e) = crate::lsp::install::install_server_to_lsp_dir(id, None).await {
+        if command_runnable(program).is_err() && install
+            && let Err(e) = crate::lsp::install::install_server_to_lsp_dir(id, None).await {
                 failures.push(LspInitFailure {
                     id: id.clone(),
                     error: e.to_string(),
                 });
                 continue;
             }
-        }
 
         match command_runnable(program) {
             Ok(()) => ready.push(id.clone()),

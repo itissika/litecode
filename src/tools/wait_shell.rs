@@ -153,7 +153,7 @@ impl Tool for WaitShellTool {
             let n = v
                 .as_u64()
                 .ok_or_else(|| crate::tool::expected_type("sec", "integer", v))?;
-            if n < 1 || n > MAX_WAIT_SECS {
+            if !(1..=MAX_WAIT_SECS).contains(&n) {
                 return Err(crate::tool::must_be("sec", "between 1 and 600"));
             }
         }

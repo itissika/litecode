@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { ProgressiveBlur } from "./ProgressiveBlur";
-import { getFoldCardOpen, setFoldCardOpen } from "./foldCardState";
+import { getFoldCardOpen, requestFoldCardOpen, setFoldCardOpen, subscribeFoldCardOpenRequest } from "./foldCardState";
 
 /** Marks header chrome that should brighten/dim with the FoldCard row. */
 export const FOLDCARD_HEADER_TONE = "foldcard-header-tone";
@@ -168,6 +168,15 @@ export function FoldCard({
     if (id === undefined || isControlled) return;
     setFoldCardOpen(id, internalOpen);
   }, [id, isControlled, internalOpen]);
+
+  useEffect(() => {
+    if (id === undefined || isControlled) return;
+    return subscribeFoldCardOpenRequest((requested) => {
+      if (requested !== id) return;
+      setReady(true);
+      setInternalOpen(true);
+    });
+  }, [id, isControlled]);
 
   // Recompute edge blur from current scroll position. Strength is a single
   // linear interpolation of distance-from-edge: 0 at the edge, ramping to

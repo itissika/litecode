@@ -194,11 +194,10 @@ pub fn filter_hits(hits: Vec<SessionTextHit>, query: &SessionTextQuery) -> Vec<S
 }
 
 fn hit_allowed(h: &SessionTextHit, query: &SessionTextQuery) -> bool {
-    if let Some(sid) = query.include_session_id.as_ref().filter(|s| !s.is_empty()) {
-        if &h.session_id != sid {
+    if let Some(sid) = query.include_session_id.as_ref().filter(|s| !s.is_empty())
+        && &h.session_id != sid {
             return false;
         }
-    }
     if query
         .exclude_session_ids
         .iter()
@@ -206,11 +205,10 @@ fn hit_allowed(h: &SessionTextHit, query: &SessionTextQuery) -> bool {
     {
         return false;
     }
-    if let Some(win) = query.exclude_context_window.as_ref() {
-        if h.session_id == win.session_id && h.seq >= win.kept_from_seq {
+    if let Some(win) = query.exclude_context_window.as_ref()
+        && h.session_id == win.session_id && h.seq >= win.kept_from_seq {
             return false;
         }
-    }
     true
 }
 
@@ -438,21 +436,18 @@ pub fn load_session_meta(
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))?;
     for id in session_ids {
-        match conn.query_row(
+        if let Ok((created_at, updated_at)) = conn.query_row(
             "SELECT created_at, updated_at FROM sessions WHERE id = ?1",
             rusqlite::params![id],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
         ) {
-            Ok((created_at, updated_at)) => {
-                out.insert(
-                    id.clone(),
-                    SessionMeta {
-                        created_at,
-                        updated_at,
-                    },
-                );
-            }
-            Err(_) => {}
+            out.insert(
+                id.clone(),
+                SessionMeta {
+                    created_at,
+                    updated_at,
+                },
+            );
         }
     }
     Ok(out)

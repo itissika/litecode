@@ -507,7 +507,7 @@ fn encode_nul_pathspecs(files: &[String]) -> Vec<u8> {
 fn split_nul_paths(text: &str) -> Vec<String> {
     text.split('\0')
         .filter(|s| !s.is_empty())
-        .map(|s| normalize_rel(s))
+        .map(normalize_rel)
         .filter(|s| !s.is_empty() && !s.ends_with('/'))
         .collect()
 }
@@ -702,13 +702,11 @@ fn session_refs(repo: &Repository, session_id: &str) -> Result<Vec<(i64, git2::O
     let mut refs = Vec::new();
     for entry in repo.references()?.flatten() {
         let name = entry.name().unwrap_or("");
-        if let Some(k_str) = name.strip_prefix(&prefix) {
-            if let Ok(k) = k_str.parse::<i64>() {
-                if let Some(oid) = entry.target() {
+        if let Some(k_str) = name.strip_prefix(&prefix)
+            && let Ok(k) = k_str.parse::<i64>()
+                && let Some(oid) = entry.target() {
                     refs.push((k, oid));
                 }
-            }
-        }
     }
     Ok(refs)
 }
@@ -719,11 +717,10 @@ fn all_session_ids(repo: &Repository) -> Result<HashSet<String>> {
     let prefix = SNAPSHOT_REF_PREFIX;
     for entry in repo.references()?.flatten() {
         let name = entry.name().unwrap_or("");
-        if let Some(rest) = name.strip_prefix(prefix) {
-            if let Some((session_id, _)) = rest.split_once('/') {
+        if let Some(rest) = name.strip_prefix(prefix)
+            && let Some((session_id, _)) = rest.split_once('/') {
                 ids.insert(session_id.to_string());
             }
-        }
     }
     Ok(ids)
 }
@@ -1024,14 +1021,13 @@ pub fn snapshot_track(
     // FIFO eviction: keep at most MAX_ANCHORS per session.
     let mut existing = session_refs(&repo, session_id)?;
     existing.sort_by_key(|(k, _)| *k);
-    if !existing.iter().any(|(ek, _)| *ek == k) && existing.len() >= MAX_ANCHORS {
-        if let Some((oldest_k, _)) = existing.first() {
+    if !existing.iter().any(|(ek, _)| *ek == k) && existing.len() >= MAX_ANCHORS
+        && let Some((oldest_k, _)) = existing.first() {
             if let Ok(mut r) = repo.find_reference(&snapshot_ref(session_id, *oldest_k)) {
                 let _ = r.delete();
             }
             delete_patch(snapshots_dir, session_id, *oldest_k);
         }
-    }
 
     let tree_oid = snapshot_write_tree(workspace, repo.path())?;
     // CLI write-tree may add objects git2 has not yet seen in this handle.

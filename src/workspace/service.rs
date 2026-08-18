@@ -66,7 +66,7 @@ impl WorkspaceService {
 
     pub fn tree(&self, path: &str, depth: usize) -> Result<Vec<TreeEntry>, WorkspaceError> {
         let sandbox = self.sandbox();
-        Ok(list_tree(&sandbox, path, depth)?)
+        Ok(list_tree(sandbox, path, depth)?)
     }
 
     pub fn read_file(&self, path: &str) -> Result<(String, String), WorkspaceError> {

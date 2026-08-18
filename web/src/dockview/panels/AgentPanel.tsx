@@ -123,6 +123,7 @@ export function AgentPanel(props: IDockviewPanelProps) {
 export function AgentChatShell({ sessionId }: { sessionId: string }) {
   const [stickToEnd, setStickToEnd] = useState(true);
   const jumpToEndRef = useRef<(() => void) | null>(null);
+  const revealBashRef = useRef<((callId: string) => void) | null>(null);
 
   return (
     <div className="relative flex h-full flex-col">
@@ -130,11 +131,13 @@ export function AgentChatShell({ sessionId }: { sessionId: string }) {
         sessionId={sessionId}
         onStickChange={setStickToEnd}
         jumpToEndRef={jumpToEndRef}
+        revealBashRef={revealBashRef}
       />
       <ComposerDock
         sessionId={sessionId}
         stickToEnd={stickToEnd}
         onJumpToEnd={() => jumpToEndRef.current?.()}
+        onRevealBash={(callId) => revealBashRef.current?.(callId)}
       />
     </div>
   );
@@ -148,10 +151,12 @@ function MessageListRegion({
   sessionId,
   onStickChange,
   jumpToEndRef,
+  revealBashRef,
 }: {
   sessionId: string;
   onStickChange: (stickToEnd: boolean) => void;
   jumpToEndRef: RefObject<(() => void) | null>;
+  revealBashRef: RefObject<((callId: string) => void) | null>;
 }) {
   const messages = useMessageStore(
     (s) => s.bySession.get(sessionId)?.messages ?? EMPTY_MESSAGES,
@@ -227,6 +232,7 @@ function MessageListRegion({
               maxFileRevertK={maxFileRevertK}
               onStickChange={onStickChange}
               jumpToEndRef={jumpToEndRef}
+              revealBashRef={revealBashRef}
             />
           </div>
         </div>
@@ -254,10 +260,12 @@ export function ComposerDock({
   sessionId,
   stickToEnd = true,
   onJumpToEnd,
+  onRevealBash,
 }: {
   sessionId: string;
   stickToEnd?: boolean;
   onJumpToEnd?: () => void;
+  onRevealBash?: (callId: string) => void;
 }) {
   const pendingPermission = useTurnStore(
     (s) => s.byId.get(sessionId)?.pendingPermission ?? null,
@@ -291,7 +299,7 @@ export function ComposerDock({
           />
         )}
         <div className="flex items-end gap-2">
-          <TerminalStatusBar sessionId={sessionId} />
+          <TerminalStatusBar sessionId={sessionId} onRevealBash={onRevealBash} />
           <div className="min-w-0 flex-1">
             <TodoPanel sessionId={sessionId} />
           </div>

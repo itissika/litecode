@@ -13,17 +13,14 @@ pub const CLOSED_DEFAULT_MAX_TOKENS: u32 = 8192;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ThinkingTier {
     Low,
+    #[default]
     Medium,
     High,
 }
 
-impl Default for ThinkingTier {
-    fn default() -> Self {
-        Self::Medium
-    }
-}
 
 impl ThinkingTier {
     pub fn as_str(self) -> &'static str {
@@ -46,16 +43,13 @@ impl ThinkingTier {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ContextMode {
+    #[default]
     Standard,
     Max,
 }
 
-impl Default for ContextMode {
-    fn default() -> Self {
-        Self::Standard
-    }
-}
 
 impl ContextMode {
     pub fn as_str(self) -> &'static str {

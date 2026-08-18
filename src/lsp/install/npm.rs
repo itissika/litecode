@@ -120,8 +120,8 @@ pub async fn npm_install(server_id: &str, packages: &[(&str, &str)]) -> Result<(
     };
 
     // Check if already installed with the correct version.
-    if dest_dir.join(".meta").exists() && dest_dir.join("node_modules").is_dir() {
-        if let Ok(meta) = read_meta(&dest_dir) {
+    if dest_dir.join(".meta").exists() && dest_dir.join("node_modules").is_dir()
+        && let Ok(meta) = read_meta(&dest_dir) {
             let installed_ver = meta.get("version").and_then(|v| v.as_str()).unwrap_or("");
             if !installed_ver.is_empty() && installed_ver != "latest" {
                 if requested_version == "latest" || installed_ver == requested_version {
@@ -146,7 +146,6 @@ pub async fn npm_install(server_id: &str, packages: &[(&str, &str)]) -> Result<(
                 );
             }
         }
-    }
 
     let Some(mut version_cmd) = npm_command_tokio(&["--version".into()]) else {
         return Err(LitecodeError::Config(NPM_NOT_FOUND.into()));

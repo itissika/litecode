@@ -322,8 +322,7 @@ impl Projection {
             call_id,
             child_session_id,
         } = &ev
-        {
-            if let Some((buffer_index, item)) = self
+            && let Some((buffer_index, item)) = self
                 .sessions
                 .find_function_call_buffer_item(&self.session_id, call_id)
             {
@@ -342,7 +341,6 @@ impl Projection {
                     );
                 }
             }
-        }
         if let Some(msg) = project::project(&ev, &self.snapshot(project, binding)) {
             self.outgoing.push(msg);
         }
@@ -788,11 +786,10 @@ impl Projection {
                 trigger: crate::runtime::observer::CompactionTrigger::Auto,
                 stage: crate::runtime::observer::CompactionStage::Started,
                 ..
-            } => {
-                if self.turn_id.is_some() {
+            }
+                if self.turn_id.is_some() => {
                     self.phase = TurnPhase::Compacting;
                 }
-            }
             _ => {}
         }
     }
@@ -893,8 +890,8 @@ impl SessionController {
             snapshot::max_file_revert_k(&self.runtime.workspace.paths.snapshots_dir, session_id);
 
         // R7: if a turn is already running for this session, restore state.
-        if let Some(progress) = cached {
-            if self.sessions.is_turn_running_blocking(session_id) {
+        if let Some(progress) = cached
+            && self.sessions.is_turn_running_blocking(session_id) {
                 let snapshot = project::turn_progress_to_snapshot(&progress);
                 proj.turn_id = Some(snapshot.turn_id.clone());
                 proj.phase = project::wire_phase_to_internal(&snapshot.phase);
@@ -909,7 +906,6 @@ impl SessionController {
                 }
                 proj.push_outgoing(project::session_attached(session_id, &snapshot));
             }
-        }
 
         let project_str = self.project.clone();
         proj.push_outgoing(session_snapshot(proj.snapshot(&project_str, &binding)));
@@ -980,11 +976,10 @@ impl SessionController {
     /// broadcast_rx). Does NOT cancel the turn, remove the session, or delete
     /// the SQLite row.
     pub fn unsubscribe(&mut self, session_id: &str) {
-        if let Some(proj) = self.projections.remove(session_id) {
-            if let Some(handle) = proj.forward_task {
+        if let Some(proj) = self.projections.remove(session_id)
+            && let Some(handle) = proj.forward_task {
                 handle.abort();
             }
-        }
         self.sessions.detach(session_id);
     }
 
@@ -1195,11 +1190,10 @@ impl Drop for SessionController {
         // must NOT cancel a running turn.
         let sids: Vec<String> = self.projections.keys().cloned().collect();
         for sid in sids {
-            if let Some(proj) = self.projections.get_mut(&sid) {
-                if let Some(handle) = proj.forward_task.take() {
+            if let Some(proj) = self.projections.get_mut(&sid)
+                && let Some(handle) = proj.forward_task.take() {
                     handle.abort();
                 }
-            }
             self.sessions.detach(&sid);
         }
     }

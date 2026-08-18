@@ -118,11 +118,10 @@ impl TextIndexEngine {
 
     pub fn detach(&self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Ok(mut w) = self.worker.lock() {
-            if let Some(h) = w.take() {
+        if let Ok(mut w) = self.worker.lock()
+            && let Some(h) = w.take() {
                 let _ = h.join();
             }
-        }
         self.stop.store(false, Ordering::SeqCst);
         if let Ok(mut g) = self.inner.lock() {
             g.store = None;
@@ -265,7 +264,7 @@ impl TextIndexEngine {
                 }
                 let should_build = match mode {
                     TextIndexMode::On => count <= HARD_FILE_CAP,
-                    TextIndexMode::Auto => count >= BUILD_FILE_THRESHOLD && count <= HARD_FILE_CAP,
+                    TextIndexMode::Auto => (BUILD_FILE_THRESHOLD..=HARD_FILE_CAP).contains(&count),
                     TextIndexMode::Off => false,
                 };
                 if count > HARD_FILE_CAP {

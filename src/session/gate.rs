@@ -19,7 +19,7 @@ impl SessionGate {
         F: FnOnce(&Session) -> R,
     {
         let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        f(&*g)
+        f(&g)
     }
 
     pub fn with_mut<F, R>(&self, f: F) -> R
@@ -27,7 +27,7 @@ impl SessionGate {
         F: FnOnce(&mut Session) -> R,
     {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        f(&mut *g)
+        f(&mut g)
     }
 
     pub fn id(&self) -> String {

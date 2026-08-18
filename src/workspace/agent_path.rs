@@ -6,6 +6,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+#[cfg(windows)]
 use crate::config::git_install::find_git_root;
 use crate::config::path::strip_verbatim;
 

@@ -322,7 +322,7 @@ pub struct TurnHandle {
 
 impl TurnHandle {
     pub fn is_finished(&self) -> bool {
-        self.handle.as_ref().map_or(false, |h| h.is_finished())
+        self.handle.as_ref().is_some_and(|h| h.is_finished())
     }
 }
 
@@ -578,8 +578,8 @@ impl AgentRuntime {
     /// Override the working directory used by tools, hooks, and context restoration.
     pub fn set_context_cwd(&mut self, cwd: std::path::PathBuf) {
         self.base_ctx.cwd = cwd.clone();
-        if let Some(ref mut pipeline) = self.tool_pipeline {
-            if let Some(ref mut rctx) = self.runtime_ctx {
+        if let Some(ref mut pipeline) = self.tool_pipeline
+            && let Some(ref mut rctx) = self.runtime_ctx {
                 let new_ctx = Arc::new(RuntimeContext {
                     ctx: Context {
                         cwd,
@@ -590,14 +590,13 @@ impl AgentRuntime {
                 *rctx = Arc::clone(&new_ctx);
                 pipeline.set_runtime(new_ctx);
             }
-        }
         self.context_pipeline.sync_context(&self.base_ctx);
     }
 
     /// Test helper: replace hooks on the shared runtime context.
     pub fn set_hook_registry(&mut self, hooks: HookDispatcher) {
-        if let Some(ref mut pipeline) = self.tool_pipeline {
-            if let Some(ref mut rctx) = self.runtime_ctx {
+        if let Some(ref mut pipeline) = self.tool_pipeline
+            && let Some(ref mut rctx) = self.runtime_ctx {
                 let new_ctx = Arc::new(RuntimeContext {
                     hook_dispatcher: hooks,
                     ..(**rctx).clone()
@@ -605,7 +604,6 @@ impl AgentRuntime {
                 *rctx = Arc::clone(&new_ctx);
                 pipeline.set_runtime(new_ctx);
             }
-        }
     }
 
     /// Test helper: simulate provider-reported prompt token usage from the prior LLM call.
