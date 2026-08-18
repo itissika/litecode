@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { ProgressiveBlur } from "./ProgressiveBlur";
-import { getFoldCardOpen, requestFoldCardOpen, setFoldCardOpen, subscribeFoldCardOpenRequest } from "./foldCardState";
+import { getFoldCardOpen, setFoldCardOpen, subscribeFoldCardOpenRequest } from "./foldCardState";
 
 /** Marks header chrome that should brighten/dim with the FoldCard row. */
 export const FOLDCARD_HEADER_TONE = "foldcard-header-tone";

@@ -23,7 +23,7 @@ describe("BashToolView live overlay", () => {
       }
       throw new Error(`unexpected ${method}`);
     });
-    useConnectionStore.setState({ sendRpc });
+    useConnectionStore.setState({ sendRpc } as never);
     useBashStore.getState().applySnapshot("s1", {
       jobs: [
         {

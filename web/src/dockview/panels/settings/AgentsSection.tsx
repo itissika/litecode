@@ -449,7 +449,7 @@ export function AgentsSection() {
     });
   }, [profile, selectedAgentId, bindableToolsPrimary, bindableToolsSubagent, persistStatus, creating]);
 
-  useSettingsPersist(draft, {
+  useSettingsPersist<AgentProfile | null, AgentProfile>(draft, {
     enabled: !creating && draft != null,
     debounceMs: 400,
     setStatus: setPersistStatus,

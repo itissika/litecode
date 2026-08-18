@@ -179,7 +179,7 @@ describe("ToolCallCard open state", () => {
 
   it("shows Kill on a live bash card and calls bash/kill", () => {
     const sendRpc = vi.fn(async () => ({ ok: true }));
-    useConnectionStore.setState({ sendRpc });
+    useConnectionStore.setState({ sendRpc } as never);
     useBashStore.getState().applySnapshot("session-1", {
       jobs: [
         {

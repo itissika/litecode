@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { ToolCatalogEntry } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { ToolCatalogSection } from "./ToolCatalogSection";
 
@@ -12,7 +13,9 @@ afterEach(() => {
 describe("ToolCatalogSection autosave", () => {
   it("persists catalog_enabled when a non-core checkbox is toggled", async () => {
     vi.useFakeTimers();
-    const saveToolCatalog = vi.fn(async () => undefined);
+    const saveToolCatalog = vi.fn(
+      async (_catalog: Record<string, ToolCatalogEntry>) => undefined,
+    );
     useSettingsStore.setState({
       persistStatus: "idle",
       toolCatalog: {
@@ -34,10 +37,7 @@ describe("ToolCatalogSection autosave", () => {
     await Promise.resolve();
 
     expect(saveToolCatalog).toHaveBeenCalledTimes(1);
-    const payload = saveToolCatalog.mock.calls[0][0] as Record<
-      string,
-      { catalog_enabled: boolean }
-    >;
+    const payload = saveToolCatalog.mock.calls[0][0];
     expect(payload.grep.catalog_enabled).toBe(true);
   });
 });

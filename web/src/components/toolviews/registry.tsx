@@ -26,8 +26,10 @@ export interface ToolViewProps {
  * covered tools — add a view here plus an entry in `paramMeta.ts`. Tools without
  * an entry fall back to the default input/output rendering in `ToolContentView`.
  */
-export const TOOL_VIEWS: Record<string, (props: ToolViewProps) => ReactElement> =
-  {
+export const TOOL_VIEWS: Record<
+  string,
+  (props: ToolViewProps) => ReactElement | null
+> = {
     read: FileParamView,
     write: WriteToolView,
     edit: EditToolView,
@@ -40,7 +42,7 @@ export const TOOL_VIEWS: Record<string, (props: ToolViewProps) => ReactElement> 
 /** Returns the dedicated view for a tool, or undefined for fallback rendering. */
 export function getToolView(
   name: string,
-): ((props: ToolViewProps) => ReactElement) | undefined {
+): ((props: ToolViewProps) => ReactElement | null) | undefined {
   return TOOL_VIEWS[name];
 }
 
