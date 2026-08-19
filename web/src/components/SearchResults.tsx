@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 import { FoldCard, FOLDCARD_HEADER_TONE } from "./FoldCard";
 
@@ -164,14 +164,20 @@ export function SearchSection({
   count,
   empty,
   children,
+  style,
 }: {
   title: string;
   count: number;
   empty: string;
   children: ReactNode;
+  /** Overrides the default flex-1 sizing (e.g. a resizable split between sections). */
+  style?: CSSProperties;
 }) {
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col border-t border-(--_dk-line)">
+    <div
+      className="flex min-h-0 min-w-0 flex-1 flex-col border-t border-(--_dk-line)"
+      style={style}
+    >
       <div className="shrink-0 px-2 py-1.5 text-dk-2xs uppercase tracking-wide text-(--_dk-text-muted)">
         {title}
         <span className="ml-1 text-(--_dk-text-disabled)">({count})</span>

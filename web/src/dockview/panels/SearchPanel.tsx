@@ -1,5 +1,5 @@
 import type { IDockviewPanelProps } from "dockview-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 
 import {
@@ -21,6 +21,15 @@ import type { SearchResultGroup, SearchResultLine } from "../../components/Searc
 const TEXT_DEBOUNCE_MS = 280;
 const SEMANTIC_DEBOUNCE_MS = 3000;
 const WARM_POLL_MS = 5000;
+
+const SPLIT_KEY = "litecode-search-split";
+const SPLIT_DEFAULT = 0.5;
+
+function readSplit(): number {
+  const raw = Number(localStorage.getItem(SPLIT_KEY));
+  if (!Number.isFinite(raw)) return SPLIT_DEFAULT;
+  return Math.min(0.8, Math.max(0.2, raw));
+}
 
 type SearchTarget = "workspace" | "sessions";
 
@@ -165,6 +174,10 @@ export function SearchPanel(_props: IDockviewPanelProps) {
   const textGenRef = useRef(0);
   const semGenRef = useRef(0);
   const sessionGenRef = useRef(0);
+  const [split, setSplit] = useState(readSplit);
+  const splitRef = useRef(split);
+  splitRef.current = split;
+  const paneRef = useRef<HTMLDivElement>(null);
 
   const clearTimers = () => {
     if (textDebounceRef.current) clearTimeout(textDebounceRef.current);
@@ -372,6 +385,29 @@ export function SearchPanel(_props: IDockviewPanelProps) {
     void openFileAt(hit.path, hit.start_line);
   };
 
+  /** Drag the divider between the Semantic and Text sections. Mirrors GitPanel. */
+  const onSplitterDown = (e: MouseEvent) => {
+    e.preventDefault();
+    const pane = paneRef.current;
+    if (!pane) return;
+    const startY = e.clientY;
+    const start = splitRef.current;
+    const height = pane.getBoundingClientRect().height;
+    const onMove = (ev: globalThis.MouseEvent) => {
+      if (height <= 0) return;
+      const next = Math.min(0.8, Math.max(0.2, start + (ev.clientY - startY) / height));
+      splitRef.current = next;
+      setSplit(next);
+    };
+    const onUp = () => {
+      localStorage.setItem(SPLIT_KEY, String(splitRef.current));
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   const showSemanticSection = target === "workspace" && retrievalReady;
   const busy = textBusy || semBusy;
 
@@ -452,11 +488,12 @@ export function SearchPanel(_props: IDockviewPanelProps) {
         )}
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div ref={paneRef} className="flex min-h-0 flex-1 flex-col">
         {target === "workspace" ? (
           <>
             {showSemanticSection && (
               <SearchSection
+                style={{ flex: split }}
                 title="Semantic"
                 count={semanticHits.length}
                 empty={
@@ -470,7 +507,16 @@ export function SearchPanel(_props: IDockviewPanelProps) {
                 <SearchResultList groups={buildCodeGroups(semanticHits, onOpenFile, query.trim(), caseSensitive)} />
               </SearchSection>
             )}
+            {showSemanticSection && (
+              <div
+                role="separator"
+                aria-orientation="horizontal"
+                className="h-1 shrink-0 cursor-ns-resize bg-(--_dk-line) hover:bg-(--_dk-text-muted)"
+                onMouseDown={onSplitterDown}
+              />
+            )}
             <SearchSection
+              style={showSemanticSection ? { flex: 1 - split } : undefined}
               title="Text"
               count={textHits.length}
               empty={query.trim() ? "No text matches" : "Type to search"}

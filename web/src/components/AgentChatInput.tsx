@@ -42,20 +42,22 @@ function AgentPicker({
     <Dropdown
       direction="up"
       variant="select"
-      className="shrink-0"
+      className="min-w-[32px] max-w-[150px] shrink"
       panelClassName="rounded-md"
       trigger={({ open, toggle }) => (
         <button
           type="button"
           disabled={disabled}
           onClick={toggle}
-          className={`${CTRL_BTN} justify-center gap-1 ${
+          className={`${CTRL_BTN} w-full min-w-0 justify-center gap-1 ${
             open ? "bg-(--_dk-ix-bg-hover)" : ""
           }`}
           title={currentId}
         >
-          <AgentTypeIcon role="primary" color={color} />
-          {currentId}
+          <span className="shrink-0">
+            <AgentTypeIcon role="primary" color={color} />
+          </span>
+          <span className="min-w-0 truncate">{currentId}</span>
         </button>
       )}
     >
@@ -97,7 +99,7 @@ function ThinkSlider({
   ];
   return (
     <LayoutGroup id={`think-${sessionId}`}>
-    <div className="ml-auto flex shrink-0">
+    <div className="flex w-[124px] shrink-0 justify-between">
       {segments.map(({ label, tier }) => {
         const selected = value === tier;
         return (
@@ -147,7 +149,7 @@ function ContextModeToggle({
       type="button"
       disabled={disabled}
       onClick={() => onChange(isMax ? "standard" : "max")}
-      className={`${CTRL_BASE} relative shrink-0 ${
+      className={`${CTRL_BASE} relative w-[64px] shrink-0 justify-center ${
         isMax
           ? "text-(--_dk-accent-hover) hover:text-(--_dk-accent-hover)"
           : "hover:bg-(--_dk-ix-bg-hover)"
@@ -157,7 +159,7 @@ function ContextModeToggle({
       {isMax ? (
         <span className="absolute inset-0 rounded-md bg-(--_dk-accent-halo)" />
       ) : null}
-      <span className="relative z-10">{isMax ? "Max" : "Default"}</span>
+      <span className="relative z-10 whitespace-nowrap">{isMax ? "Max" : "Default"}</span>
     </button>
   );
 }
@@ -312,31 +314,35 @@ export function AgentChatInput({ sessionId }: { sessionId: string }) {
       onSubmit={submit}
       className={`${composerCardClass} focus-within:border-(--_dk-line-visible)`}
     >
-      <div className="flex items-center gap-1 px-1.5 py-1">
-        {primaryAgents.length > 0 && (
-          <AgentPicker
-            agents={primaryAgents}
-            activeId={activePrimary}
-            pendingId={pendingPrimaryId}
+      <div className="flex min-w-0 items-center gap-1 overflow-hidden px-1.5 py-1">
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          {primaryAgents.length > 0 && (
+            <AgentPicker
+              agents={primaryAgents}
+              activeId={activePrimary}
+              pendingId={pendingPrimaryId}
+              disabled={connBlocked}
+              onChange={(id: string) => {
+                setActivePrimary(sessionId, id);
+              }}
+            />
+          )}
+          <ModelSwitcher sessionId={sessionId} disabled={connBlocked} />
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <ThinkSlider
+            sessionId={sessionId}
+            value={thinkingTier}
             disabled={connBlocked}
-            onChange={(id: string) => {
-              setActivePrimary(sessionId, id);
-            }}
+            onChange={(tier) => setThinkingTier(sessionId, tier)}
           />
-        )}
-        <ModelSwitcher sessionId={sessionId} disabled={connBlocked} />
-        <ThinkSlider
-          sessionId={sessionId}
-          value={thinkingTier}
-          disabled={connBlocked}
-          onChange={(tier) => setThinkingTier(sessionId, tier)}
-        />
-        <div className="mx-0.5 h-3.5 w-px shrink-0 bg-(--_dk-line)" />
-        <ContextModeToggle
-          mode={contextMode}
-          disabled={connBlocked}
-          onChange={(mode) => setContextMode(sessionId, mode)}
-        />
+          <div className="mx-0.5 h-3.5 w-px shrink-0 bg-(--_dk-line)" />
+          <ContextModeToggle
+            mode={contextMode}
+            disabled={connBlocked}
+            onChange={(mode) => setContextMode(sessionId, mode)}
+          />
+        </div>
       </div>
       <div className="mx-3 border-t border-(--_dk-line)" />
       <div className="relative overflow-hidden rounded-b-[calc(var(--radius-sm)-1px)]">

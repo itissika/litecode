@@ -74,6 +74,8 @@ pub struct GitStatus {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct GitCommit {
     pub sha: String,
+    /// Parent SHAs, newest-first log order. Empty for a root commit.
+    pub parents: Vec<String>,
     pub subject: String,
     pub author: String,
     pub date: String,
@@ -350,9 +352,10 @@ pub fn log(workspace: &Path, limit: Option<usize>) -> Result<GitLog, GitError> {
         workspace,
         &[
             "log",
+            "--topo-order",
             "-n",
             &n_s,
-            "--format=%H%x00%s%x00%an%x00%aI%x00%b%x1e",
+            "--format=%H%x00%P%x00%s%x00%an%x00%aI%x00%b%x1e",
         ],
     ) {
         Ok(s) => s,
@@ -383,12 +386,19 @@ fn parse_log(raw: &[u8]) -> Vec<GitCommit> {
         if sha.is_empty() {
             continue;
         }
+        let parents = fields
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
         let subject = fields.next().unwrap_or("").to_string();
         let author = fields.next().unwrap_or("").to_string();
         let date = fields.next().unwrap_or("").to_string();
         let body = fields.next().unwrap_or("").trim().to_string();
         commits.push(GitCommit {
             sha: sha.to_string(),
+            parents,
             subject,
             author,
             date,
@@ -619,12 +629,17 @@ mod tests {
 
     #[test]
     fn parse_log_records() {
-        let raw = b"abc123\0fix foo\0Ada\02026-01-01T00:00:00Z\0longer body\n\x1edef456\0add bar\0Bob\02026-01-02T00:00:00Z\0\x1e";
+        let raw = b"abc123\0def456 ghi789\0fix foo\0Ada\02026-01-01T00:00:00Z\0longer body\n\x1edef456\0\0add bar\0Bob\02026-01-02T00:00:00Z\0\x1e";
         let commits = parse_log(raw);
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].subject, "fix foo");
         assert_eq!(commits[0].body, "longer body");
+        assert_eq!(
+            commits[0].parents,
+            ["def456".to_string(), "ghi789".to_string()]
+        );
         assert_eq!(commits[1].author, "Bob");
+        assert!(commits[1].parents.is_empty());
     }
 
     #[test]
@@ -658,6 +673,7 @@ mod tests {
         let lg = log(dir.path(), Some(10)).unwrap();
         assert_eq!(lg.commits.len(), 1);
         assert_eq!(lg.commits[0].subject, "add a");
+        assert!(lg.commits[0].parents.is_empty());
 
         fs::write(dir.path().join("a.txt"), "two\n").unwrap();
         fs::write(dir.path().join("b.txt"), "new\n").unwrap();
@@ -673,6 +689,37 @@ mod tests {
             "one\n"
         );
         assert!(!dir.path().join("b.txt").exists());
+    }
+
+    #[test]
+    fn log_includes_merge_parents() {
+        if !git_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let git = find_git_exe().expect("git");
+        let run = |args: &[&str]| {
+            let ok = StdCommand::new(&git)
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "{args:?}");
+        };
+        fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        run(&["add", "a.txt"]);
+        run(&["commit", "-m", "base"]);
+        run(&["checkout", "-b", "feature"]);
+        fs::write(dir.path().join("b.txt"), "feat\n").unwrap();
+        run(&["add", "b.txt"]);
+        run(&["commit", "-m", "feat"]);
+        run(&["checkout", "main"]);
+        run(&["merge", "--no-ff", "-m", "merge feat", "feature"]);
+        let lg = log(dir.path(), Some(10)).unwrap();
+        assert_eq!(lg.commits[0].subject, "merge feat");
+        assert_eq!(lg.commits[0].parents.len(), 2);
     }
 
     #[test]

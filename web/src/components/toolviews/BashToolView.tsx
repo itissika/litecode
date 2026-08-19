@@ -51,6 +51,8 @@ function PinnedOutput({
   footer?: string;
 }) {
   const preRef = useRef<HTMLPreElement>(null);
+  // Bash output is a fixed tail window by design (no scroll-up): always pin to
+  // the newest line. Earlier output is read in the enclosing FoldCard scroller.
   useEffect(() => {
     const el = preRef.current;
     if (el) el.scrollTop = el.scrollHeight;

@@ -40,7 +40,7 @@ export function ModelSwitcher({
       <button
         type="button"
         disabled
-        className={`${triggerBase(false)} text-(--_dk-text-disabled)`}
+        className={`${triggerBase(false)} min-w-[90px] max-w-[220px] shrink text-(--_dk-text-disabled)`}
         title="Add a model in Settings first"
       >
         No models
@@ -52,23 +52,23 @@ export function ModelSwitcher({
     <Dropdown
       direction="up"
       variant="select"
-      className="shrink-0"
+      className="min-w-[90px] max-w-[220px] shrink"
       panelClassName="rounded-md"
       trigger={({ open, toggle }) => (
         <button
           type="button"
           disabled={disabled}
           onClick={toggle}
-          className={`${triggerBase(open)} disabled:cursor-not-allowed ${
+          className={`${triggerBase(open)} w-full min-w-0 disabled:cursor-not-allowed ${
             displayLabel
               ? "text-(--_dk-text-muted)"
               : "text-(--_dk-accent-hover)"
           }`}
           title={displayLabel ? `Model: ${displayLabel}` : "Select model"}
         >
-          <span className="flex items-center gap-1.5">
+          <span className="flex min-w-0 items-center gap-1.5">
             <ProviderLogo adapterId={currentModelInfo?.adapter_id} />
-            {displayLabel || "Select model"}
+            <span className="truncate">{displayLabel || "Select model"}</span>
           </span>
         </button>
       )}

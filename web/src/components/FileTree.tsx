@@ -6,6 +6,8 @@ import { useEditorStore } from "../stores/editorStore";
 import { useExplorerStore } from "../stores/explorerStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useTreeStore } from "../stores/treeStore";
+import { useGitStore } from "../stores/gitStore";
+import { gitChangedDirs, gitFileLetters, gitStatusColor } from "../lib/gitStatus";
 import { openTerminalAt } from "../dockview/config/layout";
 import {
   copyAbsolutePaths,
@@ -28,6 +30,11 @@ import { isSelfOrDescendant, parentPath } from "../utils/path";
 import { useToastStore } from "../stores/toastStore";
 
 export const LITECODE_PATHS_MIME = "application/x-litecode-paths";
+
+/** Folder tint: amber lerped toward the normal folder text so a "has changes"
+ *  folder reads as a hint, not a shout. Tweak the 60% to taste. */
+const CHANGED_DIR_CLASS =
+  "text-[color-mix(in_srgb,var(--_dk-amber-500)_60%,var(--_dk-text-secondary))]";
 
 function flattenVisible(
   children: Record<string, TreeEntry[] | undefined>,
@@ -214,10 +221,14 @@ function TreeNode({
   entry,
   depth,
   visible,
+  gitLetters,
+  changedDirs,
 }: {
   entry: TreeEntry;
   depth: number;
   visible: string[];
+  gitLetters: Map<string, string>;
+  changedDirs: Set<string>;
 }) {
   const children = useTreeStore((s) => s.children[entry.path]);
   const expanded = useTreeStore((s) => s.expanded.has(entry.path));
@@ -237,6 +248,8 @@ function TreeNode({
   const setInline = useExplorerStore((s) => s.setInline);
 
   const isDir = entry.kind === "dir";
+  const gitLetter = isDir ? null : (gitLetters.get(entry.path) ?? null);
+  const dirChanged = isDir && changedDirs.has(entry.path);
   const isActive = !isDir && activePath === entry.path;
   const isCut = clipboard?.mode === "cut" && clipboard.paths.includes(entry.path);
   const renaming = inline?.kind === "rename" && inline.path === entry.path;
@@ -335,7 +348,9 @@ function TreeNode({
             size={16}
             weight="regular"
             aria-hidden
-            className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
+            className={`h-4 w-4 shrink-0 select-none ${
+              dirChanged ? CHANGED_DIR_CLASS : "text-(--_dk-fg-muted)"
+            }`}
           />
         ) : (
           (() => {
@@ -360,11 +375,20 @@ function TreeNode({
             }}
           />
         ) : (
-          <span className="truncate">{entry.name}</span>
+          <span className={`truncate ${dirChanged ? CHANGED_DIR_CLASS : ""}`}>
+            {entry.name}
+          </span>
         )}
-        {loading && (
-          <span className="ml-auto text-[10px] text-(--_dk-text-disabled)">…</span>
-        )}
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          {loading && (
+            <span className="text-[10px] text-(--_dk-text-disabled)">…</span>
+          )}
+          {gitLetter && (
+            <span className={`font-mono text-[11px] ${gitStatusColor(gitLetter)}`}>
+              {gitLetter}
+            </span>
+          )}
+        </span>
       </div>
       {isDir && expanded && (
         <div>
@@ -377,6 +401,8 @@ function TreeNode({
               entry={child}
               depth={depth + 1}
               visible={visible}
+              gitLetters={gitLetters}
+              changedDirs={changedDirs}
             />
           ))}
         </div>
@@ -409,6 +435,10 @@ export function FileTree() {
   const clearSelection = useExplorerStore((s) => s.clearSelection);
   const rootRef = useRef<HTMLDivElement>(null);
 
+  const gitStatus = useGitStore((s) => s.status);
+  const gitLetters = useMemo(() => gitFileLetters(gitStatus), [gitStatus]);
+  const changedDirs = useMemo(() => gitChangedDirs(gitStatus), [gitStatus]);
+
   const visible = useMemo(
     () => flattenVisible(childrenMap, expanded).map((e) => e.path),
     [childrenMap, expanded],
@@ -417,6 +447,12 @@ export function FileTree() {
   useEffect(() => {
     void loadRoot();
   }, [loadRoot]);
+
+  // Seed git status on mount so change badges render even when the Source
+  // Control panel has never been opened (its own refresh only runs there).
+  useEffect(() => {
+    void useGitStore.getState().refresh({ silent: true });
+  }, []);
 
   const rootGhostKind =
     inline &&
@@ -655,7 +691,14 @@ export function FileTree() {
         {loading && !rootChildren && <FileTreeSkeleton />}
         {rootGhostKind && <GhostRow parent="" depth={0} kind={rootGhostKind} />}
         {rootChildren?.map((entry) => (
-          <TreeNode key={entry.path} entry={entry} depth={0} visible={visible} />
+          <TreeNode
+            key={entry.path}
+            entry={entry}
+            depth={0}
+            visible={visible}
+            gitLetters={gitLetters}
+            changedDirs={changedDirs}
+          />
         ))}
         <div aria-hidden className="shrink-0" style={{ height: "30%" }} />
       </div>

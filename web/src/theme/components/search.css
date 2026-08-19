@@ -3,6 +3,13 @@
    Collapse the vertical clearance (keep the left indent so lines still align
    under the header icon) and let each row's own py handle spacing. */
 .search-foldcard .foldcard-scroll {
+  /* Search groups live inside the section's own scrolling list — don't cap at
+     30vh or trap the wheel inside the card (overscroll-behavior: contain would
+     stop chaining to the list once the card hits its boundary). Let the card
+     grow with its content and let the outer list scroll, like the git panel. */
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;
   padding: 0 0.375rem 0 var(--_dk-indent-card-body);
 }
 

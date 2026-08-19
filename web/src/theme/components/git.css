@@ -10,3 +10,34 @@
 .git-foldcard .foldcard-scroll-frame {
   background: transparent;
 }
+
+.git-commit-graph line,
+.git-commit-graph path {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.git-commit-graph circle {
+  stroke: var(--_dk-sidepanel);
+  stroke-width: 1;
+}
+
+.git-graph-lane-0 { stroke: var(--_dk-cat-blue); }
+.git-graph-lane-1 { stroke: var(--_dk-cat-orange); }
+.git-graph-lane-2 { stroke: var(--_dk-cat-green); }
+.git-graph-lane-3 { stroke: var(--_dk-cat-purple); }
+.git-graph-lane-4 { stroke: var(--_dk-cat-cyan); }
+.git-graph-lane-5 { stroke: var(--_dk-cat-pink); }
+.git-graph-lane-6 { stroke: var(--_dk-cat-yellow); }
+
+.git-commit-graph circle.git-graph-lane-0 { fill: var(--_dk-cat-blue); }
+.git-commit-graph circle.git-graph-lane-1 { fill: var(--_dk-cat-orange); }
+.git-commit-graph circle.git-graph-lane-2 { fill: var(--_dk-cat-green); }
+.git-commit-graph circle.git-graph-lane-3 { fill: var(--_dk-cat-purple); }
+.git-commit-graph circle.git-graph-lane-4 { fill: var(--_dk-cat-cyan); }
+.git-commit-graph circle.git-graph-lane-5 { fill: var(--_dk-cat-pink); }
+.git-commit-graph circle.git-graph-lane-6 { fill: var(--_dk-cat-yellow); }
+
+

@@ -10,9 +10,11 @@ import {
   ArrowCounterClockwise,
 } from "@phosphor-icons/react";
 
+import { GitCommitGraph } from "./GitCommitGraph";
 import type { GitCommitInfo, GitFile } from "../api/workspace";
 import { FoldCard } from "./FoldCard";
 import { FOLDCARD_HEADER_TONE } from "./FoldCard";
+import { Popover } from "./ui/Popover";
 import { useEditorStore } from "../stores/editorStore";
 import {
   actionTargetPaths,
@@ -26,16 +28,18 @@ import {
   visibleFileIds,
   type GitTreeNode,
 } from "../lib/gitTree";
+import {
+  GIT_GRAPH_ROW_HEIGHT,
+  graphWidth,
+  layoutGitGraph,
+  maxLanesForWidth,
+} from "../lib/gitGraph";
 import { fileNameFromPath } from "../utils/language";
 import { FolderIcon, getFileIcon } from "../utils/fileIcon";
+import { gitStatusColor, gitStatusLabel } from "../lib/gitStatus";
 
 const SPLIT_KEY = "litecode-git-split";
 const SPLIT_DEFAULT = 0.55;
-
-function statusLabel(letter: string, untracked: boolean): string {
-  if (untracked) return "U";
-  return letter || "M";
-}
 
 function confirmDiscard(paths: string[]): boolean {
   if (paths.length === 0) return false;
@@ -229,6 +233,7 @@ function FileRow({
   const openFile = useEditorStore((s) => s.openFile);
   const Icon = getFileIcon(fileNameFromPath(file.path));
   const targets = actionTargetPaths(allSelected, section, file.path);
+  const letter = gitStatusLabel(file);
 
   const onClick = (e: MouseEvent) => {
     select(id, {
@@ -253,8 +258,8 @@ function FileRow({
       }`}
       title={file.orig_path ? `${file.orig_path} → ${file.path}` : file.path}
     >
-      <span className="w-3 shrink-0 font-mono text-(--_dk-text-muted)">
-        {statusLabel(file.status, file.untracked)}
+      <span className={`w-3 shrink-0 font-mono ${gitStatusColor(letter)}`}>
+        {letter}
       </span>
       <Icon size={14} className="shrink-0" />
       <span className="min-w-0 flex-1 truncate">{fileNameFromPath(file.path)}</span>
@@ -322,26 +327,97 @@ function ChangeGroup({
   );
 }
 
-function CommitRow({ commit }: { commit: GitCommitInfo }) {
-  const [hover, setHover] = useState(false);
-  const short = commit.sha.slice(0, 7);
-  const tip = [commit.author, commit.date, "", commit.subject, commit.body]
+function CommitRow({
+  commit,
+  graphWidthPx,
+  selected,
+  onSelect,
+}: {
+  commit: GitCommitInfo;
+  graphWidthPx: number;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const tip = [commit.sha, "", commit.author, commit.date, "", commit.subject, commit.body]
     .filter((line, i, arr) => !(line === "" && i === arr.length - 1))
     .join("\n");
 
   return (
-    <div
-      className="relative px-2 py-1 text-dk-xs text-(--_dk-text-secondary)"
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+    <Popover
+      triggerOn="click"
+      width="trigger"
+      placement="down-left"
+      gap={4}
+      className="block"
+      panelClassName="rounded"
+      trigger={({ toggle }) => (
+        <div
+          className={`flex cursor-pointer items-center pr-2 text-dk-xs text-(--_dk-text-secondary) transition-[transform,background-color] duration-150 hover:scale-[1.02] hover:bg-(--_dk-ix-bg-selected)/50 hover:text-(--_dk-text-primary) active:scale-[0.98] active:opacity-70 ${
+            selected ? "bg-(--_dk-ix-bg-selected)/40" : ""
+          }`}
+          style={{ height: GIT_GRAPH_ROW_HEIGHT, paddingLeft: graphWidthPx }}
+          onClick={() => {
+            onSelect();
+            toggle();
+          }}
+        >
+          <div className="flex min-w-0 flex-1 gap-1.5">
+            <span className="max-w-[45%] shrink-0 truncate text-(--_dk-text-muted)">
+              {commit.author}
+            </span>
+            <span className="min-w-0 truncate">{commit.subject}</span>
+          </div>
+        </div>
+      )}
     >
-      <div className="flex gap-1.5">
-        <span className="shrink-0 font-mono text-(--_dk-text-muted)">{short}</span>
-        <span className="min-w-0 truncate">{commit.subject}</span>
+      <div className="max-h-48 overflow-auto whitespace-pre-wrap p-2 text-dk-xs text-(--_dk-text-secondary)">
+        {tip}
       </div>
-      {hover && (
-        <div className="absolute left-2 right-2 z-20 mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-(--_dk-line-visible) bg-(--_dk-overlay) p-2 text-(--_dk-text-secondary) shadow-[0_6px_18px_rgba(0,0,0,0.18)]">
-          {tip}
+    </Popover>
+  );
+}
+
+function CommitsPane({ commits }: { commits: GitCommitInfo[] }) {
+  const paneRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  const [selectedSha, setSelectedSha] = useState<string | null>(null);
+
+  useEffect(() => {
+    const el = paneRef.current;
+    if (!el) return;
+    const measure = () => setWidth(el.clientWidth);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const layout = useMemo(
+    () => layoutGitGraph(commits.map((c) => ({ sha: c.sha, parents: c.parents ?? [] }))),
+    [commits],
+  );
+  const maxLanes = maxLanesForWidth(width);
+  const graphWidthPx = graphWidth(layout.laneCount, maxLanes);
+
+  return (
+    <div ref={paneRef} className="h-full min-h-0">
+      <div className="px-2 py-1 text-dk-xs uppercase tracking-wide text-(--_dk-text-muted)">
+        Commits
+      </div>
+      {commits.length === 0 ? (
+        <div className="px-2 py-2 text-(--_dk-text-muted)">No commits yet</div>
+      ) : (
+        <div className="relative">
+          <GitCommitGraph layout={layout} maxLanes={maxLanes} />
+          {commits.map((c) => (
+            <CommitRow
+              key={c.sha}
+              commit={c}
+              graphWidthPx={graphWidthPx}
+              selected={c.sha === selectedSha}
+              onSelect={() => setSelectedSha(c.sha)}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -515,14 +591,7 @@ export function GitPanel() {
         />
 
         <div className="min-h-0 overflow-auto" style={{ flex: 1 - split }}>
-          <div className="px-2 py-1 text-dk-xs uppercase tracking-wide text-(--_dk-text-muted)">
-            Commits
-          </div>
-          {commits.length === 0 ? (
-            <div className="px-2 py-2 text-(--_dk-text-muted)">No commits yet</div>
-          ) : (
-            commits.map((c) => <CommitRow key={c.sha} commit={c} />)
-          )}
+          <CommitsPane commits={commits} />
         </div>
       </div>
     </div>

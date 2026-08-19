@@ -56,11 +56,15 @@ interface GitStore {
   message: string;
   selected: Set<string>;
   anchorId: string | null;
+  /** Whether the Source Control panel is currently visible. Becoming visible
+   *  triggers a catch-up refresh so the commit log stays fresh. */
+  visible: boolean;
   loading: boolean;
   mutating: boolean;
   error: string | null;
 
   setMessage: (message: string) => void;
+  setVisible: (visible: boolean) => void;
   select: (id: string, opts?: { additive?: boolean; range?: boolean; visible?: string[] }) => void;
   clearSelection: () => void;
   refresh: (opts?: { silent?: boolean }) => Promise<void>;
@@ -109,11 +113,19 @@ export const useGitStore = create<GitStore>((set, get) => ({
   message: "",
   selected: new Set(),
   anchorId: null,
+  visible: true,
   loading: false,
   mutating: false,
   error: null,
 
   setMessage: (message) => set({ message }),
+
+  setVisible: (visible) => {
+    const wasHidden = !get().visible && visible;
+    set({ visible });
+    // Catch up on the changes that were skipped while hidden.
+    if (wasHidden) void get().refresh({ silent: true });
+  },
 
   select: (id, opts) => {
     if (opts?.range && get().anchorId && opts.visible) {
