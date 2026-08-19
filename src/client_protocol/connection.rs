@@ -892,6 +892,7 @@ pub async fn handle_jsonrpc(
                                 "end": params.end,
                                 "items": items_value,
                                 "kinds": range.kinds,
+                                "indices": range.indices,
                                 "user_detail_before": range.user_detail_before,
                                 "subagent_bindings": subagent_bindings,
                             }),

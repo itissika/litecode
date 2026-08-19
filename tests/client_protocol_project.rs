@@ -145,6 +145,30 @@ fn buffer_item_includes_child_session_id_when_set() {
 }
 
 #[test]
+fn buffer_item_compact_checkpoint_kind_projects() {
+    let snap = sample_snapshot();
+    let item = user_text("rolled-up");
+    let msg = project::project(
+        &InternalEvent::BufferItem {
+            buffer_index: 3,
+            item: item.clone(),
+            kind: Some("compact_checkpoint".into()),
+            child_session_id: None,
+        },
+        &snap,
+    )
+    .unwrap();
+    assert!(method_is(&msg, methods::BUFFER_ITEM));
+    assert_eq!(msg["params"]["buffer_index"], 3);
+    assert_eq!(msg["params"]["kind"], "compact_checkpoint");
+    let got: Item = serde_json::from_value(msg["params"]["item"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&got).unwrap(),
+        serde_json::to_value(&item).unwrap()
+    );
+}
+
+#[test]
 fn subagent_bound_projects_to_agent_subagent_bound() {
     let snap = sample_snapshot();
     let msg = project::project(
@@ -209,6 +233,22 @@ fn session_snapshot_includes_bash_when_set() {
     let msg = project::session_snapshot(snap);
     assert!(method_is(&msg, methods::SESSION_SNAPSHOT));
     assert_eq!(msg["params"]["bash"]["jobs"][0]["id"], "bg_a");
+}
+
+#[test]
+fn session_snapshot_includes_todos_when_set() {
+    let mut snap = sample_snapshot();
+    snap.todos = vec![litecode::session::task_state::TodoItem {
+        id: "t1".into(),
+        content: "ship".into(),
+        status: litecode::session::task_state::TodoStatus::InProgress,
+        priority: None,
+    }];
+    let msg = project::session_snapshot(snap);
+    assert!(method_is(&msg, methods::SESSION_SNAPSHOT));
+    assert_eq!(msg["params"]["todos"][0]["id"], "t1");
+    assert_eq!(msg["params"]["todos"][0]["content"], "ship");
+    assert_eq!(msg["params"]["todos"][0]["status"], "in_progress");
 }
 
 #[test]

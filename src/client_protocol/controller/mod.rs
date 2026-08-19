@@ -61,6 +61,9 @@ pub struct MaterializedRange {
     /// `items`. The FE excludes checkpoint rows from revert-anchor counting
     /// (2.2 / REV-11).
     pub kinds: Vec<String>,
+    /// History ordinal per item (position in DB `ORDER BY seq`). Aligned with
+    /// `items`. The client must stamp this onto the row; it must not infer it.
+    pub indices: Vec<usize>,
     pub user_detail_before: usize,
 }
 
@@ -114,12 +117,12 @@ impl Projection {
         self.sessions.entry_load_range(&self.session_id, start, end)
     }
 
-    /// Load items + their DB `kind` (REV-11 wire).
+    /// Load items + their DB `kind` and history ordinal.
     fn load_range_with_kinds(
         &self,
         start: usize,
         end: usize,
-    ) -> crate::types::Result<(Vec<crate::types::Item>, Vec<String>)> {
+    ) -> crate::types::Result<(Vec<crate::types::Item>, Vec<String>, Vec<usize>)> {
         self.sessions
             .entry_load_range_with_kinds(&self.session_id, start, end)
     }
@@ -224,6 +227,10 @@ impl Projection {
             self.sessions.is_compacting_blocking(&self.session_id),
         );
         snap.max_file_revert_k = self.max_file_revert_k;
+        snap.todos = self
+            .sessions
+            .with_entry_task_state(&self.session_id, |state| Ok(state.todos.clone()))
+            .unwrap_or_default();
         snap
     }
 
@@ -275,17 +282,14 @@ impl Projection {
         };
         self.apply_internal_state(&ev, project, binding);
         match &ev {
-            InternalEvent::Compaction { kind, .. }
-                if !matches!(kind, crate::runtime::observer::CompactionKind::Blocked) =>
-            {
-                self.compact_buffer_resync(project, binding);
-            }
             InternalEvent::CompactionLifecycle {
                 trigger,
                 stage: crate::runtime::observer::CompactionStage::Succeeded,
                 ..
             } => {
-                self.compact_buffer_resync(project, binding);
+                // Same wire as a step commit: history grew by one checkpoint item.
+                self.last_turn_token_stats = None;
+                self.bump_buffer_revision(project, binding);
                 if *trigger == crate::runtime::observer::CompactionTrigger::Manual {
                     self.push_operation_ok(OperationKind::CompactSession, project, binding);
                 }
@@ -370,7 +374,7 @@ impl Projection {
         self.refresh_context_estimate();
         if self.committed_end > old_end {
             match self.load_range_with_kinds(old_end, self.committed_end) {
-                Ok((new_msgs, kinds)) => {
+                Ok((new_msgs, kinds, indices)) => {
                     let data_root =
                         crate::session::store::data_root_from_db_path(&self.sessions.db_path());
                     let encoded = match output::encode_client_items(new_msgs, &data_root) {
@@ -384,28 +388,38 @@ impl Projection {
                             Vec::new()
                         }
                     };
-                    for (i, msg) in encoded.into_iter().enumerate() {
-                        let buffer_index = old_end + i;
-                        let kind = kinds.get(i).cloned();
-                        let child_session_id = match &msg {
-                            crate::types::Item::FunctionCall(fc)
-                                if fc.name == "subagent_launch" =>
-                            {
-                                self.sessions
-                                    .child_session_id_for_call(&self.session_id, &fc.call_id)
-                            }
-                            _ => None,
-                        };
-                        self.on_event(
-                            InternalEvent::BufferItem {
-                                buffer_index,
-                                item: msg,
-                                kind,
-                                child_session_id,
-                            },
-                            project,
-                            binding,
+                    if encoded.len() != indices.len() || kinds.len() != indices.len() {
+                        tracing::error!(
+                            session_id = %self.session_id,
+                            encoded = encoded.len(),
+                            kinds = kinds.len(),
+                            indices = indices.len(),
+                            "bump_buffer_revision: history ordinals misaligned with items; refusing to invent indices"
                         );
+                    } else {
+                        for (i, msg) in encoded.into_iter().enumerate() {
+                            let buffer_index = indices[i];
+                            let kind = kinds.get(i).cloned();
+                            let child_session_id = match &msg {
+                                crate::types::Item::FunctionCall(fc)
+                                    if fc.name == "subagent_launch" =>
+                                {
+                                    self.sessions
+                                        .child_session_id_for_call(&self.session_id, &fc.call_id)
+                                }
+                                _ => None,
+                            };
+                            self.on_event(
+                                InternalEvent::BufferItem {
+                                    buffer_index,
+                                    item: msg,
+                                    kind,
+                                    child_session_id,
+                                },
+                                project,
+                                binding,
+                            );
+                        }
                     }
                 }
                 Err(e) => {
@@ -426,28 +440,6 @@ impl Projection {
             project,
             binding,
         );
-    }
-
-    /// Compaction replaces the checkpoint row and can move it across the
-    /// chronological UI projection. Incremental append is therefore unsafe:
-    /// clients must discard their materialized window and reload it.
-    fn compact_buffer_resync(&mut self, _project: &str, _binding: &SessionBindingProjection) {
-        self.buffer_revision = self.buffer_revision.saturating_add(1);
-        self.committed_end = self.buffer_len();
-        self.refresh_context_estimate();
-        // Pre-compact provider prompt_tokens are stale for ring occupancy.
-        // Clear so the FE falls back to the post-compact estimate until the
-        // next llm_completed updates last-turn stats again.
-        self.last_turn_token_stats = None;
-        self.push_outgoing(serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": crate::client_protocol::protocol::methods::BUFFER_COMPACTED,
-            "params": {
-                "session_id": self.session_id,
-                "revision": self.buffer_revision,
-                "committed_end": self.committed_end,
-            },
-        }));
     }
 
     // ── revert ──
@@ -610,16 +602,26 @@ impl Projection {
     // ── materialize ──
 
     pub fn materialize_range(&self, start: usize, end: usize) -> anyhow::Result<MaterializedRange> {
-        let (msgs, kinds) =
+        let (msgs, kinds, indices) =
             self.sessions
                 .entry_load_range_with_kinds(&self.session_id, start, end)?;
         let user_detail_before = self
             .sessions
             .entry_user_detail_before_buffer_index(&self.session_id, start)?;
         let data_root = crate::session::store::data_root_from_db_path(&self.sessions.db_path());
+        let items = output::encode_client_items(msgs, &data_root)?;
+        if items.len() != indices.len() || kinds.len() != indices.len() {
+            anyhow::bail!(
+                "materialize_range: history ordinals misaligned (items={}, kinds={}, indices={})",
+                items.len(),
+                kinds.len(),
+                indices.len()
+            );
+        }
         Ok(MaterializedRange {
-            items: output::encode_client_items(msgs, &data_root)?,
+            items,
             kinds,
+            indices,
             user_detail_before,
         })
     }
@@ -1321,5 +1323,149 @@ mod merged_channel_tests {
         // The consumer still drains all events (including the injected lag
         // markers); the channel is usable and delivery is complete.
         drop(merged_rx);
+    }
+}
+
+#[cfg(test)]
+mod compact_item_wire_tests {
+    use super::*;
+    use crate::runtime::observer::{CompactionStage, CompactionTrigger};
+    use crate::session::store::Session;
+    use crate::types::{item_text_preview, user_text};
+    use std::sync::Arc;
+
+    fn binding() -> SessionBindingProjection {
+        SessionBindingProjection::default()
+    }
+
+    fn succeeded(trigger: CompactionTrigger) -> InternalEvent {
+        InternalEvent::CompactionLifecycle {
+            trigger,
+            stage: CompactionStage::Succeeded,
+            operation_id: None,
+            fail_kind: None,
+            error: None,
+        }
+    }
+
+    fn setup_with_details(texts: &[&str]) -> (Projection, String, Arc<SessionManager>) {
+        let sessions = Arc::new(SessionManager::ephemeral_registry());
+        let session = Session::ephemeral("/p", "default", Some("m")).unwrap();
+        let sid = session.id.clone();
+        session
+            .insert_detail_rows(&texts.iter().map(|t| user_text(*t)).collect::<Vec<_>>())
+            .unwrap();
+        sessions.insert_session_for_test(session);
+        let proj = Projection::new(sid.clone(), sessions.clone(), 0);
+        (proj, sid, sessions)
+    }
+
+    fn apply_compact(sessions: &SessionManager, sid: &str, summary: &str) {
+        sessions
+            .with_entry_store(sid, |s| {
+                s.apply_compact_checkpoint(&user_text(summary), 10)
+                    .map(|_| ())
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            })
+            .unwrap();
+    }
+
+    fn insert_detail(sessions: &SessionManager, sid: &str, text: &str) {
+        sessions
+            .with_entry_store(sid, |s| {
+                s.insert_detail_rows(&[user_text(text)])
+                    .map(|_| ())
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            })
+            .unwrap();
+    }
+
+    fn buffer_item_frames(out: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+        out.iter()
+            .filter(|msg| msg["method"] == crate::client_protocol::protocol::methods::BUFFER_ITEM)
+            .collect()
+    }
+
+    #[test]
+    fn compact_succeeded_emits_checkpoint_buffer_item_not_compacted() {
+        let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
+        apply_compact(&sessions, &sid, "first-cut");
+        let _ = proj.take_outgoing();
+
+        proj.on_event(succeeded(CompactionTrigger::Manual), "/p", &binding());
+        let out = proj.take_outgoing();
+
+        assert!(
+            out.iter().all(|msg| msg["method"] != "buffer/compacted"),
+            "compact must not emit buffer/compacted"
+        );
+        let items = buffer_item_frames(&out);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["params"]["kind"], "compact_checkpoint");
+        assert_eq!(items[0]["params"]["buffer_index"], 3);
+        assert_eq!(items[0]["params"]["session_id"], sid);
+        let item: Item = serde_json::from_value(items[0]["params"]["item"].clone()).unwrap();
+        assert_eq!(item_text_preview(&item), "first-cut");
+
+        let life = out
+            .iter()
+            .find(|msg| msg["method"] == "session/compact_lifecycle")
+            .expect("lifecycle after checkpoint item");
+        assert_eq!(life["params"]["snapshot"]["buffer"]["committed_end"], 4);
+        assert_eq!(life["params"]["snapshot"]["buffer"]["len"], 4);
+        assert_eq!(life["params"]["stage"], "succeeded");
+        let item_pos = out
+            .iter()
+            .position(|msg| msg["method"] == crate::client_protocol::protocol::methods::BUFFER_ITEM)
+            .unwrap();
+        let life_pos = out
+            .iter()
+            .position(|msg| msg["method"] == "session/compact_lifecycle")
+            .unwrap();
+        assert!(
+            item_pos < life_pos,
+            "checkpoint buffer/item must precede lifecycle snapshot"
+        );
+    }
+
+    #[test]
+    fn second_compact_appends_another_checkpoint_item() {
+        let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
+        apply_compact(&sessions, &sid, "first-cut");
+        proj.on_event(succeeded(CompactionTrigger::Auto), "/p", &binding());
+        let _ = proj.take_outgoing();
+
+        insert_detail(&sessions, &sid, "d");
+        proj.bump_buffer_revision("/p", &binding());
+        let _ = proj.take_outgoing();
+
+        apply_compact(&sessions, &sid, "second-cut");
+        proj.on_event(succeeded(CompactionTrigger::Auto), "/p", &binding());
+        let out = proj.take_outgoing();
+
+        assert!(out.iter().all(|msg| msg["method"] != "buffer/compacted"));
+        let items = buffer_item_frames(&out);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["params"]["kind"], "compact_checkpoint");
+        assert_eq!(items[0]["params"]["buffer_index"], 5);
+        let item: Item = serde_json::from_value(items[0]["params"]["item"].clone()).unwrap();
+        assert_eq!(item_text_preview(&item), "second-cut");
+
+        let history = sessions
+            .with_entry_store(&sid, |s| {
+                s.load_history_transcript()
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            })
+            .unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .filter(|r| r.kind == "compact_checkpoint")
+                .count(),
+            2
+        );
+        assert!(history
+            .iter()
+            .any(|r| r.body.as_deref().is_some_and(|b| b.contains("first-cut"))));
     }
 }

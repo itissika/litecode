@@ -237,6 +237,16 @@ impl SessionManager {
         Self::new(Arc::new(TurnGuard::new()), String::new())
     }
 
+    #[cfg(test)]
+    pub fn insert_session_for_test(&self, session: Session) {
+        let id = session.id.clone();
+        let record = SessionRecord::new(
+            Arc::new(SessionGate::new(session)),
+            crate::session::task_state::TaskReminders::default(),
+        );
+        self.records.lock().unwrap().insert(id, record);
+    }
+
     pub fn subscribe_lifecycle(&self) -> broadcast::Receiver<LifecycleEvent> {
         self.lifecycle_tx.subscribe()
     }
@@ -377,13 +387,13 @@ impl SessionManager {
         entry.store.with(|s| s.load_by_buffer_index(start, end))
     }
 
-    /// [`Self::entry_load_range`] plus each row's DB `kind` (REV-11 wire).
+    /// [`Self::entry_load_range`] plus each row's DB `kind` and history ordinal.
     pub fn entry_load_range_with_kinds(
         &self,
         session_id: &str,
         start: usize,
         end: usize,
-    ) -> Result<(Vec<crate::types::Item>, Vec<String>)> {
+    ) -> Result<(Vec<crate::types::Item>, Vec<String>, Vec<usize>)> {
         let records = self.records.lock().unwrap();
         let entry = records.get(session_id).ok_or_else(|| {
             LitecodeError::ToolExecution(format!("session {session_id} not found"))

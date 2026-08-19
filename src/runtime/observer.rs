@@ -155,8 +155,8 @@ pub enum InternalEvent {
         kind: CompactionKind,
         detail: Option<String>,
     },
-    /// Unified compact lifecycle (manual + auto). `buffer/compacted` stays a
-    /// separate history-projection event.
+    /// Unified compact lifecycle (manual + auto). History grows by a checkpoint
+    /// item, projected like any other `buffer/item`.
     CompactionLifecycle {
         trigger: CompactionTrigger,
         stage: CompactionStage,

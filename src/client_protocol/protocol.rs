@@ -16,7 +16,6 @@ pub mod methods {
     pub const SESSION_UNSUBSCRIBE: &str = "session/unsubscribe";
     pub const BUFFER_LOAD: &str = "buffer/load";
     pub const BUFFER_ITEM: &str = "buffer/item";
-    pub const BUFFER_COMPACTED: &str = "buffer/compacted";
     /// Parent session: child session created for a `subagent_launch` call_id.
     pub const AGENT_SUBAGENT_BOUND: &str = "agent/subagent_bound";
     pub const SESSION_NEW: &str = "session/new";
@@ -276,6 +275,10 @@ pub struct SessionSnapshot {
     /// Running agent bash jobs and wait_shell waiters for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bash: Option<crate::terminal::BashJobsSnapshot>,
+    /// Session-scoped todo list (reconnect / snapshot hydrate). Compact does
+    /// not rewrite this column; the panel must not wait for the next turn event.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub todos: Vec<TodoItem>,
 }
 
 fn default_thinking_tier() -> String {

@@ -101,17 +101,15 @@ WHERE t.session_id = ?1
     OR (t.kind = 'detail' AND t.seq >= s.kept_from_seq)
   )";
 
-/// Full chronological UI history: all detail plus the current checkpoint marker.
+/// Full chronological UI history: every detail and every compact_checkpoint,
+/// in seq order. The turn working set (current `checkpoint_seq` only) is a
+/// separate view; history does not hide earlier cuts.
 pub const SQL_LOAD_HISTORY_TRANSCRIPT: &str = "\
 SELECT t.session_id, t.seq, t.turn_id, t.turn_seq, t.item_type, t.kind, t.body, t.body_ref,
        t.token_estimate, t.created_at
 FROM transcript_items t
-JOIN sessions s ON s.id = t.session_id
 WHERE t.session_id = ?1
-  AND (
-    t.kind = 'detail'
-    OR (t.kind = 'compact_checkpoint' AND t.seq = s.checkpoint_seq)
-  )
+  AND t.kind IN ('detail', 'compact_checkpoint')
 ORDER BY t.seq ASC";
 
 /// UI revert anchors span all visible historical user detail.
@@ -1130,17 +1128,30 @@ impl Session {
     }
 
     /// Load a buffer range together with each row's DB `kind`
-    /// (`detail` | `compact_checkpoint`). The FE derives revert anchors from
-    /// `kind` (2.2 / REV-11): only `kind='detail'` user rows are counted, so a
-    /// compact checkpoint must be distinguishable on the wire.
+    /// (`detail` | `compact_checkpoint`) and its history ordinal (position in
+    /// `ORDER BY seq` UI history). The ordinal is the only index the client may
+    /// use; it is not recomputed from `start + i` on the wire consumer.
     pub fn load_by_buffer_index_with_kinds(
         &self,
         start: usize,
         end: usize,
-    ) -> Result<(Transcript, Vec<String>)> {
+    ) -> Result<(Transcript, Vec<String>, Vec<usize>)> {
         let rows = self.load_by_buffer_index_rows(start, end)?;
         let kinds = rows.iter().map(|r| r.kind.clone()).collect();
-        Ok((rows_to_items(&rows, &self.data_root)?, kinds))
+        let indices: Vec<usize> = (start..start + rows.len()).collect();
+        Ok((rows_to_items(&rows, &self.data_root)?, kinds, indices))
+    }
+
+    /// History index and Item of the current turn-view checkpoint, if any.
+    pub fn compact_checkpoint_buffer_item(&self) -> Result<Option<(usize, Item)>> {
+        let cp_seq = self.checkpoint_seq()?;
+        let rows = self.load_history_transcript()?;
+        for (i, row) in rows.iter().enumerate() {
+            if row.kind == "compact_checkpoint" && row.seq == cp_seq {
+                return Ok(Some((i, row_to_item(row, &self.data_root)?)));
+            }
+        }
+        Ok(None)
     }
 
     fn load_by_buffer_index_rows(&self, start: usize, end: usize) -> Result<Vec<TranscriptRow>> {
@@ -1435,7 +1446,6 @@ impl Session {
         )?;
         crate::session::transcript_fts::delete_seq_ge(&tx, &self.id, anchor_seq)?;
 
-        // Keep at most one compact_checkpoint row: the latest remaining one.
         let remaining_cp: Option<i64> = tx
             .query_row(
                 "SELECT MAX(seq) FROM transcript_items
@@ -1447,13 +1457,8 @@ impl Session {
             .flatten();
 
         if let Some(cp) = remaining_cp {
-            tx.execute(
-                "DELETE FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'compact_checkpoint' AND seq < ?2",
-                rusqlite::params![self.id, cp],
-            )?;
-            // Checkpoint survived revert — `kept_from_seq` still describes its
-            // firstKept pointer; leave it unchanged.
+            // Earlier cuts that survived the seq truncate stay in history.
+            // The turn view follows the latest remaining checkpoint.
             tx.execute(
                 "UPDATE sessions SET checkpoint_seq = ?1 WHERE id = ?2",
                 rusqlite::params![cp, self.id],
@@ -1721,10 +1726,10 @@ impl Session {
     /// Pi-style keep-recent compact:
     /// 1. INSERT `compact_checkpoint` @ N with `summary`
     /// 2. UPDATE `checkpoint_seq = N`, `kept_from_seq = firstKept` (or N if empty)
-    /// 3. Drop older `compact_checkpoint` rows (summary envelopes only)
     ///
-    /// **Never deletes or rewrites historical `detail`.** The turn working set is
-    /// a view: summary + original `detail` with `seq >= kept_from_seq`.
+    /// Earlier checkpoint rows stay in history as items. The turn working set
+    /// is a view: current summary + original `detail` with `seq >= kept_from_seq`.
+    /// **Never deletes or rewrites historical `detail`.**
     ///
     /// `kept_from_seq`: `Some(seq)` of the first kept detail row; `None` = empty
     /// keep (pointer set to N so only the summary is visible until new inserts).
@@ -1808,14 +1813,6 @@ impl Session {
         tx.execute(
             "UPDATE sessions SET checkpoint_seq = ?1, kept_from_seq = ?2 WHERE id = ?3",
             rusqlite::params![n, first_kept, self.id],
-        )?;
-
-        // Single-checkpoint invariant: drop any older compact_checkpoint rows
-        // (summary envelopes). Historical conversation `detail` is never deleted.
-        tx.execute(
-            "DELETE FROM transcript_items
-             WHERE session_id = ?1 AND kind = 'compact_checkpoint' AND seq < ?2",
-            rusqlite::params![self.id, n],
         )?;
 
         tx.commit()
@@ -2434,13 +2431,76 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(cp_count, 1, "single-checkpoint invariant");
+        assert_eq!(cp_count, 2, "earlier checkpoint items stay in history");
 
         let loaded = session.load_transcript().unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(item_text_preview(&loaded[0]), "second-summary");
         assert_eq!(session.checkpoint_seq().unwrap(), second);
         assert_eq!(session.kept_from_seq().unwrap(), second);
+    }
+
+    #[test]
+    fn compact_checkpoint_history_index_always_appends() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("a"), user_text("b"), user_text("c")])
+            .unwrap();
+        session
+            .apply_compact_checkpoint(&user_text("first-cut"), 10)
+            .unwrap();
+        let (idx, item) = session
+            .compact_checkpoint_buffer_item()
+            .unwrap()
+            .expect("first compact writes a checkpoint");
+        assert_eq!(idx, 3, "first compact appends the cut at history end");
+        assert_eq!(item_text_preview(&item), "first-cut");
+        let history = session.load_history_transcript().unwrap();
+        assert_eq!(history.len(), 4);
+        assert_eq!(
+            history.iter().filter(|r| r.kind == "detail").count(),
+            3,
+            "detail history indices stay put on compact"
+        );
+
+        session.insert_detail_rows(&[user_text("d")]).unwrap();
+        session
+            .apply_compact_checkpoint(&user_text("second-cut"), 20)
+            .unwrap();
+        let (idx2, item2) = session
+            .compact_checkpoint_buffer_item()
+            .unwrap()
+            .expect("second compact writes a checkpoint");
+        assert_eq!(idx2, 5, "second compact appends another cut; nothing shifts");
+        assert_eq!(item_text_preview(&item2), "second-cut");
+        let history2 = session.load_history_transcript().unwrap();
+        assert_eq!(history2.len(), 6);
+        assert_eq!(
+            history2
+                .iter()
+                .filter(|r| r.kind == "compact_checkpoint")
+                .count(),
+            2
+        );
+        assert_eq!(history2[3].kind, "compact_checkpoint");
+        assert!(
+            history2[3]
+                .body
+                .as_deref()
+                .is_some_and(|b| b.contains("first-cut")),
+            "first cut remains at its original history index"
+        );
+        assert_eq!(history2[4].kind, "detail");
+        assert_eq!(history2[5].kind, "compact_checkpoint");
+
+        let (_, _, indices) = session.load_by_buffer_index_with_kinds(0, 6).unwrap();
+        assert_eq!(
+            indices,
+            vec![0, 1, 2, 3, 4, 5],
+            "history ordinals are ORDER BY seq ranks, not recomputed after compact"
+        );
+        let (_, _, tail) = session.load_by_buffer_index_with_kinds(3, 6).unwrap();
+        assert_eq!(tail, vec![3, 4, 5]);
     }
 
     #[test]

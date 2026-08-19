@@ -852,5 +852,6 @@ pub fn buffer_snapshot(
         context_mode: binding.context_mode.clone(),
         max_file_revert_k: None,
         bash: None,
+        todos: Vec::new(),
     }
 }
