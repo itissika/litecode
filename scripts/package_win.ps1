@@ -3,6 +3,7 @@ param(
   [switch]$SkipAssemble,
   [switch]$SkipWeb,
   [switch]$SkipModel,
+  [switch]$SkipLinuxBundle,
   [string]$Profile = "release"
 )
 
@@ -31,12 +32,38 @@ if ($env:GITHUB_ACTIONS) {
   }
 }
 
-$null = & (Join-Path $Root "scripts\ensure_linux_bundle.ps1") -Root $Root -Require
+if ($SkipLinuxBundle) {
+  Write-Host "==> skipping Linux bundle (slim SKU); Open Remote reads LITECODE_BUNDLE_ROOT / %LOCALAPPDATA%\litecode\bundles"
+} else {
+  $null = & (Join-Path $Root "scripts\ensure_linux_bundle.ps1") -Root $Root -Require
+}
+
 Push-Location (Join-Path $Root "desktop")
+$builderConfig = $null
 try {
   if (-not (Test-Path "node_modules")) { npm ci }
-  npm run dist:win
+  if ($SkipLinuxBundle) {
+    npm run build
+    $pkg = Get-Content -Raw -LiteralPath "package.json" | ConvertFrom-Json
+    $build = $pkg.build
+    $filtered = @()
+    foreach ($item in $build.extraResources) {
+      $from = [string]$item.from
+      if ($from -match 'dist[/\\]linux') { continue }
+      $filtered += $item
+    }
+    $build.extraResources = @($filtered)
+    $builderConfig = Join-Path $env:TEMP ("litecode-electron-builder-slim-" + [guid]::NewGuid().ToString("N") + ".json")
+    $json = $build | ConvertTo-Json -Depth 16
+    [System.IO.File]::WriteAllText($builderConfig, $json)
+    npx electron-builder --win --x64 --config $builderConfig
+  } else {
+    npm run dist:win
+  }
 } finally {
+  if ($builderConfig -and (Test-Path -LiteralPath $builderConfig)) {
+    Remove-Item -LiteralPath $builderConfig -Force -ErrorAction SilentlyContinue
+  }
   Pop-Location
 }
 

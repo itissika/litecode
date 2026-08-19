@@ -69,10 +69,20 @@ if [[ ! -f "$BIN_DIR/$BIN_NAME" ]]; then
 fi
 
 cp -f "$BIN_DIR/$BIN_NAME" "$OUT/"
-# ORT / native dylibs copied next to the binary by ort's copy-dylibs feature.
+# ORT / native libs next to the binary. Shared Windows/WSL target/ dirs can
+# contain both .dll and .so; only copy the host family.
 shopt -s nullglob
-for f in "$BIN_DIR"/*.dll "$BIN_DIR"/*.dylib "$BIN_DIR"/*.so "$BIN_DIR"/lib*.so*; do
-  cp -f "$f" "$OUT/" 2>/dev/null || true
+host="$(uname -s)"
+native_libs=()
+case "$host" in
+  Linux*) native_libs=("$BIN_DIR"/*.so "$BIN_DIR"/lib*.so*) ;;
+  Darwin*) native_libs=("$BIN_DIR"/*.dylib) ;;
+  MINGW*|MSYS*|CYGWIN*) native_libs=("$BIN_DIR"/*.dll) ;;
+  *) native_libs=("$BIN_DIR"/*.dll "$BIN_DIR"/*.dylib "$BIN_DIR"/*.so "$BIN_DIR"/lib*.so*) ;;
+esac
+for f in "${native_libs[@]}"; do
+  [[ -f "$f" ]] || continue
+  cp -f "$f" "$OUT/"
 done
 shopt -u nullglob
 

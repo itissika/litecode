@@ -1,6 +1,6 @@
 {
   "name": "litecode-desktop",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Litecode Electron host (sidecar + BrowserWindow)",
   "main": "dist/main.js",
@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json && node ./scripts/copy-theme-tokens.mjs",
     "dev": "npm run build && electron .",
     "start": "electron .",
-    "test": "tsc -p tsconfig.json && node ./scripts/copy-theme-tokens.mjs && node --test dist/lap-path.test.js dist/handshake-url.test.js dist/recents.test.js dist/ssh-session.test.js dist/parse-user-host.test.js dist/url-policy.test.js dist/window-guard.test.js dist/ipc-trust.test.js dist/ssh-credential-material.test.js dist/sidecar.test.js",
+    "test": "tsc -p tsconfig.json && node ./scripts/copy-theme-tokens.mjs && node --test dist/lap-path.test.js dist/handshake-url.test.js dist/recents.test.js dist/ssh-session.test.js dist/parse-user-host.test.js dist/url-policy.test.js dist/window-guard.test.js dist/ipc-trust.test.js dist/ssh-credential-material.test.js dist/sidecar.test.js dist/bundle-paths.test.js",
     "dist:win": "npm run build && electron-builder --win --x64",
     "pack:dir": "npm run build && electron-builder --win dir --x64"
   },

@@ -42,6 +42,13 @@ import {
 } from "./remote-progress";
 import { startSidecar, stopSidecar, type SidecarHandle } from "./sidecar";
 import {
+  BUNDLED_MODEL_REL,
+  LINUX_TAR_NAME,
+  resolveBundledModelDir,
+  resolveLinuxBundle,
+} from "./bundle-paths";
+import { sidecarRoot } from "./paths";
+import {
   materializePasswordAskPass,
   materializePrivateKeyFile,
   readPrivateKeyFile,
@@ -197,17 +204,12 @@ function remoteBundleInstallDir(): string {
 }
 
 function linuxBundlePaths(): { tar: string; checksum: string } {
-  const fileName = "litecode-server-linux-x64.tar.gz";
-  const packaged = path.join(process.resourcesPath, "linux", fileName);
-  const development = path.resolve(app.getAppPath(), "..", "dist", "linux", fileName);
-  const tar = fs.existsSync(packaged) ? packaged : development;
-  const checksum = `${tar}.sha256`;
-  if (!fs.existsSync(tar) || !fs.existsSync(checksum)) {
-    throw new Error(
-      "Linux server bundle is missing under dist/linux/. Run ./scripts/package_linux.sh in WSL, then retry.",
-    );
-  }
-  return { tar, checksum };
+  const packaged = path.join(process.resourcesPath, "linux", LINUX_TAR_NAME);
+  const development = path.resolve(app.getAppPath(), "..", "dist", "linux", LINUX_TAR_NAME);
+  return resolveLinuxBundle({
+    packagedTar: fs.existsSync(packaged) ? packaged : undefined,
+    developmentTar: development,
+  });
 }
 
 async function materializeSshTarget(target: SavedSshTarget): Promise<{
@@ -392,10 +394,29 @@ async function installLinuxBundle(session: SshSession): Promise<void> {
     onProgress: (progress) => {
       emitRemoteProgress({
         stage: progress.stage,
-        ratio: 0.15 + progress.ratio * 0.7,
+        ratio: 0.15 + progress.ratio * 0.55,
         message: progress.message,
       });
     },
+  });
+  const repoRoot = app.isPackaged ? undefined : path.resolve(app.getAppPath(), "..");
+  const modelDir = resolveBundledModelDir({
+    sidecarRoot: sidecarRoot(),
+    repoRoot,
+  });
+  if (!modelDir) {
+    console.warn("Embed model not found at convention paths; remote code search will be unavailable until models are synced.");
+    return;
+  }
+  emitRemoteProgress({
+    stage: "upload",
+    ratio: 0.78,
+    message: "Uploading embed model to remote server…",
+  });
+  await session.installModelDir({
+    localModelDir: modelDir,
+    destination: remoteBundleInstallDir(),
+    relativeModelPath: `models/${BUNDLED_MODEL_REL}`,
   });
 }
 

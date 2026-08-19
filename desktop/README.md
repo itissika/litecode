@@ -99,6 +99,18 @@ Windows packaging requires `dist/linux/litecode-server-linux-x64.tar.gz` and its
 `.sha256` (built on Linux via `scripts/package_linux.sh`); these are embedded in the
 Windows app for managed SSH upload.
 
+Local nightly slim SKU (no models, no embedded tar):
+
+```powershell
+./scripts/package_local.ps1
+./scripts/package_local.ps1 -WslRoot /home/<you>/litecode
+```
+
+Artifacts land under `dist/` (Linux tar) and `desktop/out/` (Portable / NSIS).
+Open Remote then reads the tar from `LITECODE_BUNDLE_ROOT/linux/` or
+`%LOCALAPPDATA%\litecode\bundles\linux\`; embed weights from `LITECODE_MODEL_DIR`
+or the same bundle root’s `models/` tree.
+
 ## Production packaging (Windows x64)
 
 ```powershell

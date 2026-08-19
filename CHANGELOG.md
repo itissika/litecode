@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.1.5] - 2026-08-19
+
+### 变更
+
+- 本地 nightly 轻量打包：`scripts/package_local.ps1` 产出不内嵌 embed 模型、不内嵌 Linux tar 的 Windows 安装包，并在 WSL 打出同版本无模型 server tar。公开完整包流程（CI `package_win.ps1` 默认嵌入）未改。
+- 打包后的桌面端从约定路径读取 tar / 模型（`LITECODE_BUNDLE_ROOT`、`LITECODE_LINUX_BUNDLE`、`LITECODE_MODEL_DIR`、`%LOCALAPPDATA%\litecode\bundles`）。Open Remote 先上传 slim tar，再按需同步模型目录。
+
 ## [0.1.4] - 2026-08-16
 
 ### 修复

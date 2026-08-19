@@ -200,8 +200,17 @@ export function scpRemoteDest(remotePath: string): string {
   return remotePath.replace(/ /g, "\\ ");
 }
 
+export type ScpUploadOptions = {
+  recursive?: boolean;
+};
+
 /** Construct a safe scp upload invocation. */
-export function buildScpUploadArgs(config: SshSessionConfig, localPath: string, remotePath: string): string[] {
+export function buildScpUploadArgs(
+  config: SshSessionConfig,
+  localPath: string,
+  remotePath: string,
+  options?: ScpUploadOptions,
+): string[] {
   const safe = validateConfig(config);
   if (!localPath || /[\0\r\n]/.test(localPath) || !remotePath || /[\0\r\n]/.test(remotePath)) {
     throw new Error("SCP paths cannot be empty or contain NUL/newlines.");
@@ -210,6 +219,7 @@ export function buildScpUploadArgs(config: SshSessionConfig, localPath: string, 
   if (safe.knownHostsFile) args.push("-o", `UserKnownHostsFile=${safe.knownHostsFile}`, "-o", "StrictHostKeyChecking=yes");
   if (safe.target.port) args.push("-P", String(safe.target.port));
   if (safe.target.identityFile) args.push("-i", safe.target.identityFile);
+  if (options?.recursive) args.push("-r");
   args.push(localPath, `${scpHost(safe.target)}:${scpRemoteDest(remotePath)}`);
   return args;
 }
@@ -436,6 +446,41 @@ export class SshSession {
       await this.exec(`rm -f -- ${posixShellQuote(remoteArchive)}`).catch(() => undefined);
       throw error;
     }
+  }
+
+  /**
+   * Copy a local HF model directory into the extracted server tree
+   * (`models/ibm-granite/granite-embedding-97m-multilingual-r2`).
+   */
+  async installModelDir(options: {
+    localModelDir: string;
+    destination: string;
+    relativeModelPath: string;
+  }): Promise<void> {
+    const destination = relativeHomePath(options.destination, "install destination");
+    const relativeModel = relativeHomePath(options.relativeModelPath, "model path");
+    const local = await stat(options.localModelDir);
+    if (!local.isDirectory()) throw new Error("Model source must be a directory.");
+    const home = await this.requireHome();
+    const parentRel = relativeModel.split("/").slice(0, -1).join("/");
+    const parent = parentRel ? absoluteHomePath(home, `${destination}/${parentRel}`) : absoluteHomePath(home, destination);
+    const target = absoluteHomePath(home, `${destination}/${relativeModel}`);
+    const script = [
+      "set -eu",
+      `home=${posixShellQuote(home)}`,
+      `parent=${posixShellQuote(parent)}`,
+      `target=${posixShellQuote(target)}`,
+      'mkdir -p -- "$parent"',
+      'parent=$(realpath -e -- "$parent")',
+      'case "$parent" in "$home"|"$home"/*) ;; *) echo "model destination escapes remote home" >&2; exit 64;; esac',
+      'rm -rf -- "$target"',
+    ].join("; ");
+    await this.exec(script);
+    await run(
+      this.config.scpCommand,
+      buildScpUploadArgs(this.config, options.localModelDir, target, { recursive: true }),
+      this.config.askPassCommand,
+    );
   }
 
   /** True when an extracted bundle matches the local tar SHA-256 (not app version). */

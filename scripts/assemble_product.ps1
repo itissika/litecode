@@ -42,9 +42,11 @@ if (-not $SkipModel) {
     Write-Host "==> bundling embed model (bash)"
     bash $Bundle
   }
-}
-if (-not (Test-Path $ModelDir)) {
-  Write-Warning "models/ bundle missing at $ModelDir — packaging may be incomplete"
+  if (-not (Test-Path $ModelDir)) {
+    Write-Warning "models/ bundle missing at $ModelDir — packaging may be incomplete"
+  }
+} else {
+  Write-Host "==> skipping embed model (-SkipModel, slim SKU)"
 }
 
 if ($env:LITECODE_CHANNEL -ne "official") {
@@ -80,7 +82,7 @@ Get-ChildItem $BinDir -Filter *.dll -ErrorAction SilentlyContinue | Copy-Item -F
 New-Item -ItemType Directory -Force -Path (Join-Path $OutDir "web") | Out-Null
 Copy-Item -Recurse -Force $WebDist (Join-Path $OutDir "web\dist")
 
-if (Test-Path (Join-Path $Root "models")) {
+if (-not $SkipModel -and (Test-Path (Join-Path $Root "models"))) {
   New-Item -ItemType Directory -Force -Path (Join-Path $OutDir "models") | Out-Null
   Copy-Item -Recurse -Force (Join-Path $Root "models\*") (Join-Path $OutDir "models\")
 }
@@ -95,7 +97,7 @@ Litecode product layout (sidecar-ready)
 Layout:
   $BinName      kernel binary
   web\dist\     UI (served by litecode)
-  models\       embedding weights (shared across workspaces)
+  models\       embedding weights when bundled (full SKU)
   *.dll         native runtime deps when present
 
 Global settings DB: %LOCALAPPDATA%\litecode\

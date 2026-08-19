@@ -49,6 +49,16 @@ describe("ssh-session safety helpers", () => {
     assert.equal(args.at(-1), "alice@dev-box:/home/alice/a\\ folder/artifact.tar");
   });
 
+  it("adds -r for recursive directory uploads", () => {
+    const args = buildScpUploadArgs(
+      { target: { host: "dev-box", user: "alice" } },
+      "C:\\models\\granite",
+      "/home/alice/.litecode/models/ibm-granite/granite-embedding-97m-multilingual-r2",
+      { recursive: true },
+    );
+    assert.ok(args.includes("-r"));
+  });
+
   it("rejects ambiguous targets and paths", () => {
     assert.throws(() => validateSshTarget({ host: "-oProxyCommand=bad" }));
     assert.throws(() => validateSshTarget({ host: "alice@example.test" }));

@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import path from "node:path";
 import { createInterface } from "node:readline";
 
+import { resolveBundledModelDir } from "./bundle-paths";
 import { normalizeWorkspace } from "./lap-path";
 import { litecodeBinary, sidecarRoot } from "./paths";
 
@@ -34,13 +36,20 @@ export async function startSidecar(opts: {
     String(opts.parentPid),
   ];
 
+  const repoRoot = path.resolve(__dirname, "..", "..");
+  const modelDir = resolveBundledModelDir({ sidecarRoot: productRoot, repoRoot });
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    LITECODE_TOKEN: opts.token,
+  };
+  if (modelDir && !process.env.LITECODE_MODEL_DIR?.trim()) {
+    env.LITECODE_MODEL_DIR = modelDir;
+  }
+
   const child = spawn(bin, args, {
     // Process cwd must equal workspace (same contract as Rust serve boot chdir).
     cwd: workspace,
-    env: {
-      ...process.env,
-      LITECODE_TOKEN: opts.token,
-    },
+    env,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });

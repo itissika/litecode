@@ -55,6 +55,12 @@ yarn-error.log*
 desktop/dist/
 desktop/node_modules/
 desktop/out/
+desktop/*.exe
+desktop/*.zip
+desktop/*.tar.gz
+desktop/*.sha256
+desktop/*.blockmap
+desktop/tsconfig.tsbuildinfo
 target-test-onboarding
 docs/Tool_usability_evaluation/archived_result
 # ── Dev-private (internal tooling, docs, eval; not shipped) ──
