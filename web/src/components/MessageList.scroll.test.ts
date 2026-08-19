@@ -5,7 +5,8 @@ import { isCompactCutRow, projectionRowKey } from "../api/adapter";
 import { bubbleIdentity, canRevertFiles, groupRowsForBubbles, locateBashTool } from "./MessageList";
 
 const userRow: ChatRow = {
-  id: "item-session-1-0",
+  id: "live-msg_user",
+  bufferIndex: 0,
   item: {
     type: "message",
     role: "user",
@@ -41,7 +42,8 @@ const liveTool: ChatRow = {
 };
 
 const sealedTool: ChatRow = {
-  id: "item-session-1-2",
+  id: "live-fc_1",
+  bufferIndex: 2,
   streaming: false,
   item: {
     type: "function_call",
@@ -79,7 +81,8 @@ describe("bubbleIdentity", () => {
 
   it("keys a system-reminder as a notice, not a user bubble", () => {
     const reminder: ChatRow = {
-      id: "item-session-1-9",
+      id: "live-msg_reminder",
+      bufferIndex: 9,
       item: {
         type: "message",
         role: "user",
@@ -103,7 +106,8 @@ describe("bubbleIdentity", () => {
 
   it("does not reuse assistant-after:user keys across a reminder split", () => {
     const reminder: ChatRow = {
-      id: "item-session-1-9",
+      id: "live-msg_reminder",
+      bufferIndex: 9,
       item: {
         type: "message",
         role: "user",

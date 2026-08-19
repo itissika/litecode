@@ -90,6 +90,61 @@ export const EMPTY_SLICE: TurnSlice = {
   todoItems: [],
 };
 
+function todoPatchFromItems(
+  items: {
+    id: string;
+    content: string;
+    status: "pending" | "in_progress" | "completed";
+  }[],
+): Pick<
+  TurnSlice,
+  "todoPending" | "todoInProgress" | "todoCompleted" | "todoItems"
+> {
+  const mapped = items.map((i) => ({
+    id: i.id,
+    content: i.content,
+    status: i.status,
+  }));
+  return {
+    todoItems: mapped,
+    todoPending: mapped.filter((t) => t.status === "pending").length,
+    todoInProgress: mapped.filter((t) => t.status === "in_progress").length,
+    todoCompleted: mapped.filter((t) => t.status === "completed").length,
+  };
+}
+
+/**
+ * Todo patch that keeps a struck-through history when the backend clears the
+ * list (empty items) but we previously had entries: the expanded list keeps
+ * the old rows as completed, while the ring/counts follow the backend (0/0/0)
+ * so the ring clears instead of showing all-green. A genuinely empty list
+ * (never had items) and any non-empty list pass straight through.
+ */
+function todoPatchRetaining(
+  prev: TurnSlice,
+  items: {
+    id: string;
+    content: string;
+    status: "pending" | "in_progress" | "completed";
+  }[],
+): Pick<
+  TurnSlice,
+  "todoPending" | "todoInProgress" | "todoCompleted" | "todoItems"
+> {
+  if (items.length === 0 && prev.todoItems.length > 0) {
+    return {
+      todoItems: prev.todoItems.map((i) => ({
+        ...i,
+        status: "completed" as const,
+      })),
+      todoPending: 0,
+      todoInProgress: 0,
+      todoCompleted: 0,
+    };
+  }
+  return todoPatchFromItems(items);
+}
+
 function getSlice(byId: Map<string, TurnSlice>, sessionId: string): TurnSlice {
   let slice = byId.get(sessionId);
   if (!slice) {
@@ -486,12 +541,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           );
           break;
         case "todo_progress":
-          patch(sessionId, {
-            todoPending: te.event.pending,
-            todoInProgress: te.event.in_progress,
-            todoCompleted: te.event.completed,
-            todoItems: (te.event.items ?? []).map((i) => ({ id: i.id, content: i.content, status: i.status })),
-          });
+          patch(sessionId, todoPatchRetaining(current, te.event.items ?? []));
           return;
       }
 
@@ -715,6 +765,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
               sessionCacheHitTokens: cum.cache_hit_tokens ?? 0,
               sessionCacheMissTokens: cum.cache_miss_tokens ?? 0,
             }
+          : {}),
+        ...(snap.todos !== undefined
+          ? todoPatchRetaining(getSlice(get().byId, sessionId), snap.todos)
           : {}),
       });
     },

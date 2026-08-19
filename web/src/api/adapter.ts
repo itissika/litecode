@@ -17,7 +17,17 @@ import { toWorkspacePath } from "../utils/path";
  * Live stream rows carry a typed Item shell (same id space); `buffer/item` seals the slot.
  */
 export interface ChatRow {
+  /**
+   * Identity only (`live-{itemId}`, `user-*`, or `ord-{bufferIndex}` for
+   * id-less committed rows). Never encode or parse the history ordinal here.
+   */
   id: string;
+  /**
+   * History ordinal from the backend (`buffer/item.buffer_index` or
+   * `buffer/load.indices`). Absent on unsealed live / optimistic rows.
+   * The only sort/seal index — never derived from `id`.
+   */
+  bufferIndex?: number;
   /** Authority Item (required — no parallel partial-string dialect). */
   item: Item;
   /**
@@ -55,17 +65,20 @@ export function newMessageId(prefix = "msg"): string {
   return `${prefix}-${nextId}-${Date.now()}`;
 }
 
-export function bufferItemId(sessionId: string, bufferIndex: number): string {
-  return `item-${sessionId}-${bufferIndex}`;
+/** Wire history ordinal stamped on a projection row. */
+export function rowBufferIndex(row: ChatRow): number | null {
+  return typeof row.bufferIndex === "number" && Number.isFinite(row.bufferIndex)
+    ? row.bufferIndex
+    : null;
 }
 
-/** Only buffer-committed ids (`item-{sessionId}-{index}`) map to a buffer index. */
-export function extractBufferIndex(id: string): number | null {
-  if (!id.startsWith("item-")) return null;
-  const lastDash = id.lastIndexOf("-");
-  if (lastDash <= 4) return null;
-  const idx = parseInt(id.slice(lastDash + 1), 10);
-  return Number.isNaN(idx) ? null : idx;
+/** Identity for a committed row: Item id if present, else the wire ordinal. */
+export function committedIdentity(item: Item, bufferIndex: number): string {
+  const aid = itemAuthorityId(item);
+  if (!aid) return `ord-${bufferIndex}`;
+  // call_id is shared by function_call and function_call_output.
+  if (isFunctionCallOutput(item)) return liveItemRowId(`fco-${aid}`);
+  return liveItemRowId(aid);
 }
 
 /** Live row id for a stream `item_id` (same id space as committed Items). */
@@ -210,11 +223,13 @@ export function itemAuthorityId(item: Item): string | undefined {
 
 /**
  * Stable React key for a projection row across live→buffer seal.
- * Prefer authority Item id; `row.id` flips from `live-*` to `item-*` on seal
- * and must not be used as a list key (remounts FoldCards → open/close flicker).
+ * Prefer authority Item id; `row.id` stays on the identity (live-* / ord-*).
  */
 export function projectionRowKey(row: ChatRow): string {
-  return itemAuthorityId(row.item) ?? row.id;
+  const aid = itemAuthorityId(row.item);
+  if (!aid) return row.id;
+  if (isFunctionCallOutput(row.item)) return `fco-${aid}`;
+  return aid;
 }
 
 /** Best-effort plain text from a message / reasoning Item. */
@@ -683,12 +698,13 @@ function stampTerminalFields(live: Item, committed: Item): Item {
 
 /**
  * Reconcile a local projection row against committed authority.
- * Identity mismatch → caller fail-closed. Content match → stamp slot only.
+ * Identity mismatch → caller fail-closed. Content match → stamp terminal fields.
+ * History ordinal comes from the wire (`bufferIndex`); `id` stays identity.
  */
 export function sealProjectionRow(
   live: ChatRow,
   committed: Item,
-  bufferId: string,
+  bufferIndex: number,
   kind?: string,
 ): { row: ChatRow; mismatch: string | null } {
   const mismatch = sealMismatchError(live.item, committed);
@@ -700,7 +716,7 @@ export function sealProjectionRow(
     mismatch: null,
     row: {
       ...live,
-      id: bufferId,
+      bufferIndex,
       kind,
       streaming: false,
       item: same ? stampTerminalFields(live.item, committed) : committed,

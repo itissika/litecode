@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, act } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FoldCard } from "./FoldCard";
 import { clearFoldCardOpen, requestFoldCardOpen } from "./foldCardState";
@@ -118,26 +118,7 @@ describe("FoldCard inner stick-to-bottom", () => {
     Object.defineProperty(el, "clientHeight", { configurable: true, get: () => clientHeight });
   }
 
-  it("does not pin inner scroll after the user leaves the bottom while streaming", () => {
-    const { rerender } = render(
-      <FoldCard id={ID} label="bash" streaming>
-        <div>line1</div>
-      </FoldCard>,
-    );
-    const el = scrollEl();
-    mockOverflow(el);
-    el.scrollTop = 0;
-    fireEvent.scroll(el);
-
-    rerender(
-      <FoldCard id={ID} label="bash" streaming>
-        <div>line1 line2</div>
-      </FoldCard>,
-    );
-    expect(el.scrollTop).toBe(0);
-  });
-
-  it("keeps pinning while the user stays at the bottom", () => {
+  it("starts pinned while streaming and pins to the bottom on growth", () => {
     const { rerender } = render(
       <FoldCard id={ID} label="bash" streaming>
         <div>line1</div>
@@ -146,7 +127,6 @@ describe("FoldCard inner stick-to-bottom", () => {
     const el = scrollEl();
     mockOverflow(el);
     el.scrollTop = 300;
-    fireEvent.scroll(el);
 
     rerender(
       <FoldCard id={ID} label="bash" streaming>
@@ -154,6 +134,81 @@ describe("FoldCard inner stick-to-bottom", () => {
       </FoldCard>,
     );
     expect(el.scrollTop).toBe(400);
+  });
+
+  it("does not pin inner scroll after the user wheels up while streaming", () => {
+    const { rerender } = render(
+      <FoldCard id={ID} label="bash" streaming>
+        <div>line1</div>
+      </FoldCard>,
+    );
+    const el = scrollEl();
+    mockOverflow(el);
+    el.scrollTop = 300;
+    // Scroll-up gesture unpins synchronously — a flush in the same frame must
+    // NOT yank the reader back to the bottom.
+    fireEvent.wheel(el, { deltaY: -40 });
+
+    rerender(
+      <FoldCard id={ID} label="bash" streaming>
+        <div>line1 line2</div>
+      </FoldCard>,
+    );
+    expect(el.scrollTop).toBe(300);
+  });
+
+  it("re-pins when the user wheels back to the bottom", () => {
+    const raf = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((cb: FrameRequestCallback) => {
+        cb(0);
+        return 1;
+      });
+    const { rerender } = render(
+      <FoldCard id={ID} label="bash" streaming>
+        <div>line1</div>
+      </FoldCard>,
+    );
+    const el = scrollEl();
+    mockOverflow(el);
+    el.scrollTop = 300;
+    fireEvent.wheel(el, { deltaY: -40 }); // unpin
+
+    el.scrollTop = 400;
+    fireEvent.wheel(el, { deltaY: 40 }); // scroll back to the end → re-pin
+    raf.mockRestore();
+
+    rerender(
+      <FoldCard id={ID} label="bash" streaming>
+        <div>line1 line2</div>
+      </FoldCard>,
+    );
+    expect(el.scrollTop).toBe(400);
+  });
+
+  it("does not re-pin on a streaming flip after the user unpinned", () => {
+    const { rerender } = render(
+      <FoldCard id={ID} label="bash" open streaming>
+        <div>line1</div>
+      </FoldCard>,
+    );
+    const el = scrollEl();
+    mockOverflow(el);
+    el.scrollTop = 300;
+    fireEvent.wheel(el, { deltaY: -40 }); // unpin
+
+    // A new live window (streaming false→true) must NOT yank the reader back.
+    rerender(
+      <FoldCard id={ID} label="bash" open streaming={false}>
+        <div>line1 line2</div>
+      </FoldCard>,
+    );
+    rerender(
+      <FoldCard id={ID} label="bash" open streaming>
+        <div>line1 line2 line3</div>
+      </FoldCard>,
+    );
+    expect(el.scrollTop).toBe(300);
   });
 });
 

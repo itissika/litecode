@@ -40,16 +40,25 @@ vi.mock("@tanstack/react-virtual", () => ({
   }),
 }));
 
+const turnState = {
+  byId: new Map<
+    string,
+    { pendingPermission: unknown; compacting: boolean; turnPhase: string | null }
+  >([
+    [
+      "session-1",
+      {
+        pendingPermission: null,
+        compacting: false,
+        turnPhase: null,
+      },
+    ],
+  ]),
+};
+
 vi.mock("../stores/turnStore", () => ({
   useTurnStore: (selector: (state: Record<string, unknown>) => unknown) =>
-    selector({
-      byId: new Map([
-        ["session-1", {
-          pendingPermission: null,
-        }],
-      ]),
-      grantPermission,
-    }),
+    selector(turnState),
   emptySlice: () => ({
     runState: "idle",
     currentTurnId: null,
@@ -100,7 +109,8 @@ const liveReasoning: ChatRow = {
 };
 
 const sealedReasoning: ChatRow = {
-  id: "item-session-1-1",
+  id: "live-rs_1",
+  bufferIndex: 1,
   streaming: false,
   item: {
     type: "reasoning",
@@ -128,6 +138,11 @@ afterEach(() => {
   cleanup();
   grantPermission.mockClear();
   useBashStore.getState().reset();
+  const slice = turnState.byId.get("session-1");
+  if (slice) {
+    slice.compacting = false;
+    slice.turnPhase = null;
+  }
 });
 
 describe("MessageList process group across seal", () => {
@@ -248,7 +263,8 @@ describe("ProcessGroup header buckets", () => {
 describe("MessageList system reminder", () => {
   it("renders a one-line notice without revert or reminder body", () => {
     const reminder: ChatRow = {
-      id: "item-session-1-0",
+      id: "live-msg_rem",
+      bufferIndex: 0,
       item: {
         type: "message",
         role: "user",
@@ -302,5 +318,61 @@ describe("MessageList stick intent", () => {
     );
     fireEvent.wheel(screen.getByTestId("scroller"), { deltaY: -40 });
     expect(onStickChange).toHaveBeenCalledWith(false);
+  });
+});
+
+describe("MessageList compacting now marker", () => {
+  const slice = () => turnState.byId.get("session-1")!;
+
+  it("shows the compacting wave line while a manual compaction is in progress", () => {
+    slice().compacting = true;
+    const { rerender } = render(
+      <MessageList
+        messages={[liveReasoning]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={false}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    expect(screen.getByTestId("compacting-now")).toBeTruthy();
+    // Same per-character wave animation as the wait-shell text.
+    expect(document.querySelectorAll(".wait-wave-char").length).toBeGreaterThan(0);
+
+    slice().compacting = false;
+    rerender(
+      <MessageList
+        messages={[liveReasoning]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={false}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    expect(screen.queryByTestId("compacting-now")).toBeNull();
+  });
+
+  it("shows the compacting line for auto compaction via turnPhase", () => {
+    slice().turnPhase = "compacting";
+    render(
+      <MessageList
+        messages={[liveReasoning]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    expect(screen.getByTestId("compacting-now")).toBeTruthy();
+    expect(document.querySelectorAll(".wait-wave-char").length).toBeGreaterThan(0);
   });
 });

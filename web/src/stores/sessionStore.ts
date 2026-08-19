@@ -165,7 +165,12 @@ export const useSessionStore = create<SessionStore>((set, get) => {
           : snap.max_file_revert_k,
     });
 
-    useTurnStore.getState().applySnapshotTurn(sessionId, snap.turn ?? null);
+    // Snapshot turn is hydrate-only. `turn: null` (compact / idle session) must
+    // not force idle — that belongs to turn_finished. A compact snapshot that
+    // lands after the next turn has started would otherwise drop stream deltas.
+    if (snap.turn) {
+      useTurnStore.getState().applySnapshotTurn(sessionId, snap.turn);
+    }
     useTurnStore.getState().applySnapshotMeter(sessionId, snap);
     if (snap.bash) {
       useBashStore.getState().applySnapshot(sessionId, snap.bash);
@@ -176,13 +181,16 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       return;
     }
 
-    // Initial history load: the session has buffered transcript items and the local
-    // slice for this session has not been populated yet. This must NOT depend
-    // on `pendingSessionOp` — that flag only tracks new/reload RPC ops, while a
-    // history session opened via the Session List reaches this path with
-    // `pendingSessionOp === null` and must still load its backlog.
+    // Cold-start history only. Growth after the window exists is buffer/item;
+    // `bufferViewEnd < snap.buffer.len` treated every compact/append as a
+    // reconnect and re-fetched the last 40 into a live turn.
+    // Must NOT depend on `pendingSessionOp` — that flag only tracks new/reload
+    // RPC ops, while a history session opened via the Session List reaches this
+    // path with `pendingSessionOp === null` and must still load its backlog.
     const msgSlice = useMessageStore.getState().bySession.get(sessionId);
-    const needsInitialLoad = !msgSlice || msgSlice.bufferViewEnd < snap.buffer.len;
+    const needsInitialLoad =
+      !msgSlice ||
+      (msgSlice.bufferViewEnd === 0 && msgSlice.messages.length === 0);
 
     if (needsInitialLoad) {
       const end = snap.buffer.len;

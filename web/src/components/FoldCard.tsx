@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 
 import { ProgressiveBlur } from "./ProgressiveBlur";
 import { getFoldCardOpen, setFoldCardOpen, subscribeFoldCardOpenRequest } from "./foldCardState";
+import { isNearScrollEnd, useStickToBottom } from "../lib/scrollStick";
 
 /** Marks header chrome that should brighten/dim with the FoldCard row. */
 export const FOLDCARD_HEADER_TONE = "foldcard-header-tone";
@@ -34,13 +35,6 @@ const BLUR_SCALE = 140;
 const BLUR_MAX = 5;
 /** Band height (px) for the top/bottom fade (matches AgentPanel). */
 const BLUR_BAND = 32;
-/** Distance from the inner scroller's end at which we still consider the user pinned. */
-const STICK_THRESHOLD = 32;
-
-function isNearScrollEnd(el: HTMLElement, threshold = STICK_THRESHOLD): boolean {
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
-}
-
 function cssTimeToMs(value: string): number {
   const first = value.split(",")[0]?.trim() ?? "0s";
   if (first.endsWith("ms")) return Number.parseFloat(first) || 0;
@@ -143,10 +137,6 @@ export function FoldCard({
   const [bottomStrength, setBottomStrength] = useState(0);
 
   const contentRef = useRef<HTMLDivElement>(null);
-  // Live cards start pinned; sealed cards start unpinned so opening them
-  // leaves the reader at the top. User scroll updates this — `streaming`
-  // does not force it back on.
-  const stickToBottom = useRef(streaming === true);
 
   // Auto-collapse when streaming ends (process phase done / turn finished).
   // Do NOT auto-reopen on false→true — that caused close→open flicker when the
@@ -196,54 +186,34 @@ export function FoldCard({
     setBottomStrength(Math.min(distBottom / BLUR_SCALE, 1) * BLUR_MAX);
   }, []);
 
-  const scrollRef = contentRef;
-  const stickToBottomRef = stickToBottom;
-
-  // Re-pin only when streaming flips on (new live window). Do not write
-  // `stick = streaming` on every listener bind — that fought user unpin
-  // whenever the effect re-attached.
-  const prevStreamingForStick = useRef(streaming);
-  const prevOpenForStick = useRef(open);
-  useEffect(() => {
-    const streamingStarted = streaming && !prevStreamingForStick.current;
-    const openedWhileLive = open && !prevOpenForStick.current && streaming;
-    if (open && (streamingStarted || openedWhileLive)) {
-      stickToBottomRef.current = true;
-    }
-    prevStreamingForStick.current = streaming;
-    prevOpenForStick.current = open;
-  }, [streaming, open, stickToBottomRef]);
-
   // Follow the newest line only while the inner scroller is overflowing and
-  // the user has not left the bottom. Scroll updates the pin synchronously so
-  // a stream flush in the same frame cannot pin them back.
+  // the user has not left the bottom. `stickToBottom` is an authoritative ref
+  // driven by gestures (see useStickToBottom): unpin happens synchronously on a
+  // scroll-up gesture, so a stream flush in the same frame cannot race ahead
+  // and yank the user back down; streaming flips never re-pin an unpinned card.
+  const { stickRef: stickToBottom } = useStickToBottom({
+    ref: contentRef,
+    active: open && bodyMounted,
+    initialStick: streaming === true,
+    isAtEnd: () => {
+      const el = contentRef.current;
+      return el ? isNearScrollEnd(el) : false;
+    },
+    onScroll: updateBlur,
+  });
+
+  // Refresh edge blur when the card opens (content may already overflow).
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || !open) return;
-    let raf = 0;
-    const onScroll = () => {
-      stickToBottomRef.current = isNearScrollEnd(el);
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        updateBlur();
-      });
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
     updateBlur();
-    return () => {
-      if (raf) cancelAnimationFrame(raf);
-      el.removeEventListener("scroll", onScroll);
-    };
-  }, [open, updateBlur, scrollRef, stickToBottomRef]);
+  }, [open, updateBlur]);
 
   useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el || !open || !stickToBottomRef.current) return;
+    const el = contentRef.current;
+    if (!el || !open || !stickToBottom.current) return;
     if (el.scrollHeight - el.clientHeight <= 1) return;
     el.scrollTop = el.scrollHeight;
     updateBlur();
-  }, [children, open, streaming, updateBlur, scrollRef, stickToBottomRef]);
+  }, [children, open, streaming, updateBlur, stickToBottom]);
 
   // Expand only after the entrance has finished (ready). Until then the body
   // stays collapsed and toggle clicks are ignored.

@@ -438,6 +438,7 @@ export interface GitStatus {
 
 export interface GitCommitInfo {
   sha: string;
+  parents: string[];
   subject: string;
   author: string;
   date: string;

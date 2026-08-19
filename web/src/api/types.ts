@@ -231,6 +231,12 @@ export interface BufferLoaded {
    */
   kinds?: string[];
   /**
+   * History ordinal per item (DB `ORDER BY seq` rank). Required and aligned
+   * with `items`. The FE stamps this onto the row and must not infer it from
+   * `start + i`.
+   */
+  indices: number[];
+  /**
    * Absolute 0-based user-detail count with buffer index `< start`.
    * FE derives revert k as `user_detail_before + local user ordinal`.
    */
@@ -386,6 +392,13 @@ export interface SessionSnapshot {
   max_file_revert_k?: number | null;
   /** Running agent bash jobs + wait_shell waiters (reconnect hydrate). */
   bash?: BashJobsSnapshot | null;
+  /** Session-scoped todos (reconnect hydrate; not derived from the transcript). */
+  todos?: {
+    id: string;
+    content: string;
+    status: "pending" | "in_progress" | "completed";
+    priority?: string | null;
+  }[];
 }
 
 export interface BashJob {
@@ -484,12 +497,6 @@ export interface OperationResult {
   ok: boolean;
   error: StructuredError | null;
   snapshot: SessionSnapshot;
-}
-
-export interface BufferCompacted {
-  session_id: string;
-  revision: number;
-  committed_end: number;
 }
 
 export interface CompactLifecycle {

@@ -5,7 +5,6 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ChatRow } from "../api/adapter";
 import {
   deriveUserAnchorK,
-  extractBufferIndex,
   isCompactCutRow,
   isFunctionCall,
   isFunctionCallOutput,
@@ -15,6 +14,7 @@ import {
   isSystemReminderItem,
   itemPlainText,
   projectionRowKey,
+  rowBufferIndex,
 } from "../api/adapter";
 import type {
   FunctionCallItem,
@@ -29,7 +29,10 @@ import { requestFoldCardOpen } from "./foldCardState";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useEditorStore } from "../stores/editorStore";
+import { useTurnStore } from "../stores/turnStore";
+import { WaveText } from "./WaveText";
 import { isInlineTool, processToolBucket } from "../lib/toolCategory";
+import { useStickToBottom } from "../lib/scrollStick";
 import { ToolCallCard } from "./ToolCallCard";
 import { isToolCallLive, processGroupStreaming } from "./toolCallStatus";
 
@@ -56,6 +59,23 @@ export function CompactCutMark() {
     >
       <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
       <span className="text-dk-2xs text-(--_dk-text-disabled)">compaction point</span>
+    </div>
+  );
+}
+
+/** Transient "compacting in progress" line — shown while a compaction runs,
+ *  replaced by the `CompactCutMark` (compaction point) when the checkpoint
+ *  item lands. Uses the same per-character wave as the wait-shell text. */
+export function CompactingMark() {
+  return (
+    <div
+      role="status"
+      aria-label="Compacting context"
+      data-testid="compacting-now"
+      className="flex items-center gap-1.5 py-1"
+    >
+      <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
+      <WaveText text="compacting…" className="text-dk-2xs" />
     </div>
   );
 }
@@ -583,6 +603,9 @@ export function groupRowsForBubbles(rows: ChatRow[]): ChatRow[][] {
 
 const LIST_LOADER_KEY = "__list_loader__";
 const LIST_LOADER_HEIGHT = 40;
+/** Trailing transient "compacting…" row (not a real buffer item). */
+const COMPACTING_PENDING_KEY = "__compacting_pending__";
+const COMPACTING_LINE_HEIGHT = 22;
 
 /**
  * Stable virtual-item identity for a bubble.
@@ -658,34 +681,6 @@ export function locateBashTool(
   return null;
 }
 
-const SCROLL_INTENT_KEYS = new Set([
-  "ArrowUp",
-  "ArrowDown",
-  "PageUp",
-  "PageDown",
-  "Home",
-  "End",
-  " ",
-]);
-
-function wheelTargetIsNestedScroller(
-  target: EventTarget | null,
-  root: HTMLElement,
-): boolean {
-  let node = target instanceof HTMLElement ? target : null;
-  while (node && node !== root) {
-    const overflowY = getComputedStyle(node).overflowY;
-    if (
-      (overflowY === "auto" || overflowY === "scroll") &&
-      node.scrollHeight > node.clientHeight + 1
-    ) {
-      return true;
-    }
-    node = node.parentElement;
-  }
-  return false;
-}
-
 function bashCallSelector(callId: string): string {
   const escaped =
     typeof CSS !== "undefined" && typeof CSS.escape === "function"
@@ -726,13 +721,20 @@ export const MessageList = memo(function MessageList({
   revealBashRef,
 }: MessageListProps) {
   const bubbles = useMemo(() => groupRowsForBubbles(messages), [messages]);
+  // Transient "compacting now" phase: manual compaction surfaces via `compacting`
+  // (exclusive lease), auto via `turnPhase === "compacting"`. The real checkpoint
+  // item replaces the pending row with a CompactCutMark on success.
+  const compactingNow = useTurnStore((s) => {
+    const t = s.byId.get(sessionId);
+    return (t?.compacting ?? false) || t?.turnPhase === "compacting";
+  });
   const loader = canLoadMore ? 1 : 0;
-  const count = loader + bubbles.length;
+  const count = loader + bubbles.length + (compactingNow ? 1 : 0);
 
   const [bottomPad, setBottomPad] = useState(0);
   const [stickToEnd, setStickToEnd] = useState(true);
-  const stickToEndRef = useRef(true);
-  stickToEndRef.current = stickToEnd;
+  const onStickChangeRef = useRef(onStickChange);
+  onStickChangeRef.current = onStickChange;
 
   useEffect(() => {
     const measure = () => {
@@ -755,7 +757,9 @@ export const MessageList = memo(function MessageList({
   const getItemKey = useCallback(
     (index: number) => {
       if (loader && index === 0) return LIST_LOADER_KEY;
-      return bubbleIdentity(bubbles, index - loader);
+      const i = index - loader;
+      if (i >= bubbles.length) return COMPACTING_PENDING_KEY;
+      return bubbleIdentity(bubbles, i);
     },
     [bubbles, loader],
   );
@@ -763,23 +767,15 @@ export const MessageList = memo(function MessageList({
   const estimateSize = useCallback(
     (index: number) => {
       if (loader && index === 0) return LIST_LOADER_HEIGHT;
-      const first = firstContentRow(bubbles[index - loader] ?? []);
+      const i = index - loader;
+      if (i >= bubbles.length) return COMPACTING_LINE_HEIGHT;
+      const first = firstContentRow(bubbles[i] ?? []);
       if (!first) return 28;
       if (isSystemReminderItem(first.item)) return 28;
       if (isHumanUserRow(first)) return 88;
       return 240;
     },
     [bubbles, loader],
-  );
-
-  const setStick = useCallback(
-    (next: boolean) => {
-      if (stickToEndRef.current === next) return;
-      stickToEndRef.current = next;
-      setStickToEnd(next);
-      onStickChange?.(next);
-    },
-    [onStickChange],
   );
 
   const virtualizer = useVirtualizer({
@@ -794,6 +790,23 @@ export const MessageList = memo(function MessageList({
   });
 
   const virtualItems = virtualizer.getVirtualItems();
+
+  // Human stick intent: true until the user scrolls up. The stick flag is an
+  // authoritative ref driven by gestures (see useStickToBottom); React state
+  // (`stickToEnd`) is synced from it for the virtualizer + Latest button.
+  const { setStick } = useStickToBottom({
+    ref: scrollRef,
+    active: true,
+    initialStick: true,
+    isAtEnd: () => virtualizer.isAtEnd(),
+    onStickChange: useCallback(
+      (next: boolean) => {
+        setStickToEnd(next);
+        onStickChangeRef.current?.(next);
+      },
+      [],
+    ),
+  });
 
   const pinToEnd = useCallback(() => {
     setStick(true);
@@ -834,82 +847,6 @@ export const MessageList = memo(function MessageList({
     if (!stickToEnd) return;
     virtualizer.scrollToEnd();
   }, [stickToEnd, totalSize, count, virtualizer]);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    const afterHumanScroll = () => {
-      requestAnimationFrame(() => {
-        setStick(virtualizer.isAtEnd());
-      });
-    };
-
-    const onWheel = (event: WheelEvent) => {
-      if (wheelTargetIsNestedScroller(event.target, el)) return;
-      if (event.deltaY < 0) {
-        setStick(false);
-        return;
-      }
-      afterHumanScroll();
-    };
-
-    let touchY = 0;
-    const onTouchStart = (event: TouchEvent) => {
-      touchY = event.touches[0]?.clientY ?? 0;
-    };
-    const onTouchMove = (event: TouchEvent) => {
-      if (wheelTargetIsNestedScroller(event.target, el)) return;
-      const y = event.touches[0]?.clientY ?? touchY;
-      const dy = y - touchY;
-      touchY = y;
-      if (dy > 2) {
-        setStick(false);
-        return;
-      }
-      if (dy < -2) afterHumanScroll();
-    };
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!SCROLL_INTENT_KEYS.has(event.key)) return;
-      if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") {
-        setStick(false);
-        return;
-      }
-      afterHumanScroll();
-    };
-
-    let fromScrollbar = false;
-    const onPointerDown = (event: PointerEvent) => {
-      fromScrollbar = event.target === el;
-    };
-    const onPointerUp = () => {
-      if (!fromScrollbar) return;
-      fromScrollbar = false;
-      afterHumanScroll();
-    };
-    const onScroll = () => {
-      if (!fromScrollbar) return;
-      setStick(virtualizer.isAtEnd());
-    };
-
-    el.addEventListener("wheel", onWheel, { passive: true });
-    el.addEventListener("touchstart", onTouchStart, { passive: true });
-    el.addEventListener("touchmove", onTouchMove, { passive: true });
-    el.addEventListener("keydown", onKeyDown);
-    el.addEventListener("pointerdown", onPointerDown);
-    el.addEventListener("pointerup", onPointerUp);
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      el.removeEventListener("wheel", onWheel);
-      el.removeEventListener("touchstart", onTouchStart);
-      el.removeEventListener("touchmove", onTouchMove);
-      el.removeEventListener("keydown", onKeyDown);
-      el.removeEventListener("pointerdown", onPointerDown);
-      el.removeEventListener("pointerup", onPointerUp);
-      el.removeEventListener("scroll", onScroll);
-    };
-  }, [scrollRef, setStick, virtualizer]);
 
   useEffect(() => {
     if (!canLoadMore || loadingHistory) return;
@@ -953,6 +890,18 @@ export const MessageList = memo(function MessageList({
             }
 
             const bubbleIndex = virtualItem.index - loader;
+            if (bubbleIndex >= bubbles.length) {
+              return (
+                <div
+                  key={virtualItem.key}
+                  data-index={virtualItem.index}
+                  ref={virtualizer.measureElement}
+                  style={itemStyle(virtualItem.start)}
+                >
+                  <CompactingMark />
+                </div>
+              );
+            }
             const group = bubbles[bubbleIndex];
             if (!group) return null;
 
@@ -960,7 +909,7 @@ export const MessageList = memo(function MessageList({
             const first = contentRows[0];
             const firstIdx = first ? messages.indexOf(first) : -1;
             const sealed =
-              first != null && extractBufferIndex(first.id) !== null;
+              first != null && rowBufferIndex(first) !== null;
             const isUser = first != null && isHumanUserRow(first);
             const showRevert = sealed && isUser && firstIdx >= 0;
             const userAnchorK = showRevert

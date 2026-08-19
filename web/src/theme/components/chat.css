@@ -487,6 +487,29 @@
   }
 }
 
+/* Current task wave — same per-character wave as wait-shell, but one level
+   brighter: sits at secondary (wait-shell's peak) with an opacity pulse,
+   without jumping up to body/primary. */
+.todo-wave-text {
+  color: var(--_dk-text-secondary);
+}
+
+.todo-wave-char {
+  animation: todo-text-wave 2.2s ease-in-out infinite;
+}
+
+@keyframes todo-text-wave {
+  0%,
+  100% {
+    color: var(--_dk-text-secondary);
+    opacity: 0.72;
+  }
+  45% {
+    color: var(--_dk-text-primary);
+    opacity: 0.66;
+  }
+}
+
 /* Composer terminal status — alive bash job count beside Todo. */
 .terminal-status-icon {
   transform-origin: center;
@@ -500,6 +523,35 @@
   }
   50% {
     transform: translateY(-2.5px);
+  }
+}
+
+/* Todo progress ring — a short dash travels the filled arc (--todo-pulse-travel).
+   Brightness is a 0→1→0 envelope, independent of the expo-out travel. */
+.todo-pulse {
+  stroke: #79ffe9;
+  filter: blur(1px);
+  animation:
+    todo-pulse-travel 1.8s linear infinite,
+    todo-pulse-glow 1.8s linear infinite;
+}
+
+@keyframes todo-pulse-travel {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: calc(-1 * var(--todo-pulse-travel));
+  }
+}
+
+@keyframes todo-pulse-glow {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  33% {
+    opacity: 1;
   }
 }
 

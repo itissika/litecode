@@ -2,9 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyStreamEvent,
-  bufferItemId,
+  committedIdentity,
   deriveUserAnchorK,
-  extractBufferIndex,
   isAssistantMessage,
   isChatUserMessage,
   isHumanUserRow,
@@ -15,6 +14,7 @@ import {
   liveItemRowId,
   markFunctionCallsFailed,
   projectionRowKey,
+  rowBufferIndex,
   sealMismatchError,
   sealProjectionRow,
   userTextItem,
@@ -115,14 +115,26 @@ describe("stream failure invalidation (FE-06)", () => {
   });
 });
 
-describe("buffer item ids", () => {
-  it("roundtrips buffer index", () => {
-    const id = bufferItemId("sess-abc", 12);
-    expect(extractBufferIndex(id)).toBe(12);
+describe("history ordinal", () => {
+  it("reads bufferIndex from the row, not from id", () => {
+    expect(rowBufferIndex({ id: liveItemRowId("msg_1"), bufferIndex: 12, item: userTextItem("x") })).toBe(12);
+    expect(rowBufferIndex({ id: liveItemRowId("msg_1"), item: userTextItem("x") })).toBeNull();
   });
 
-  it("ignores live ids", () => {
-    expect(extractBufferIndex(liveItemRowId("msg_1"))).toBeNull();
+  it("uses Item id for identity and ordinal only for id-less rows", () => {
+    expect(committedIdentity(userTextItem("hi"), 4)).toBe("ord-4");
+    expect(
+      committedIdentity(
+        {
+          type: "message",
+          role: "assistant",
+          id: "msg_1",
+          status: "completed",
+          content: [{ type: "output_text", text: "ok", annotations: [] }],
+        },
+        4,
+      ),
+    ).toBe(liveItemRowId("msg_1"));
   });
 });
 
@@ -141,7 +153,8 @@ describe("projectionRowKey", () => {
       streaming: true,
     });
     const sealedKey = projectionRowKey({
-      id: bufferItemId("sess", 3),
+      id: liveItemRowId("rs_1"),
+      bufferIndex: 3,
       item,
       streaming: false,
     });
@@ -458,10 +471,11 @@ describe("sealProjectionRow", () => {
         status: "completed",
         content: [{ type: "output_text", text: "hello", annotations: [] }],
       },
-      bufferItemId("s", 0),
+      0,
     );
     expect(mismatch).toBeNull();
-    expect(row.id).toBe(bufferItemId("s", 0));
+    expect(row.id).toBe(liveItemRowId("msg_1"));
+    expect(row.bufferIndex).toBe(0);
     expect(row.streaming).toBe(false);
     expect(row.item).toMatchObject({ id: "msg_1", status: "completed" });
     expect(isAssistantMessage(row.item) && row.item.content).toBe(content);
@@ -473,10 +487,11 @@ describe("sealProjectionRow", () => {
     const { row, mismatch } = sealProjectionRow(
       { id: liveItemRowId("msg_1"), item: liveItem, streaming: true },
       committed,
-      bufferItemId("s", 1),
+      1,
     );
     expect(mismatch).toBeNull();
     expect(row.item).toBe(committed);
+    expect(row.bufferIndex).toBe(1);
   });
 });
 

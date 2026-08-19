@@ -326,6 +326,132 @@ describe("turnStore convergence", () => {
     expect(slice.contextTokensEstimate).toBe(12000);
   });
 
+  it("applySnapshotMeter hydrates todos from snapshot", () => {
+    const sessionId = "s-todo-hydrate";
+    useTurnStore.getState().applySnapshotMeter(sessionId, {
+      ...snapshot(sessionId),
+      todos: [
+        { id: "t1", content: "ship", status: "in_progress" },
+        { id: "t2", content: "later", status: "pending" },
+      ],
+    });
+    const slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.todoInProgress).toBe(1);
+    expect(slice.todoPending).toBe(1);
+    expect(slice.todoItems.map((t) => t.content)).toEqual(["ship", "later"]);
+  });
+
+  it("applySnapshotMeter without todos leaves existing overlay", () => {
+    const sessionId = "s-todo-keep";
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            todoItems: [{ id: "t1", content: "keep", status: "pending" }],
+            todoPending: 1,
+          },
+        ],
+      ]),
+    });
+    useTurnStore.getState().applySnapshotMeter(sessionId, snapshot(sessionId));
+    const slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.todoItems).toEqual([
+      { id: "t1", content: "keep", status: "pending" },
+    ]);
+    expect(slice.todoPending).toBe(1);
+  });
+
+  it("todo_progress with empty items retains struck-through history but clears counts", () => {
+    const sessionId = "s-todo-retain";
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            currentTurnId: "t1",
+            runState: "running",
+            todoItems: [
+              { id: "t1", content: "ship", status: "in_progress" },
+              { id: "t2", content: "later", status: "pending" },
+            ],
+            todoPending: 1,
+            todoInProgress: 1,
+          },
+        ],
+      ]),
+    });
+    useTurnStore.getState().onTurnEvent({
+      session_id: sessionId,
+      turn_id: "t1",
+      event: {
+        type: "todo_progress",
+        pending: 0,
+        in_progress: 0,
+        completed: 0,
+        items: [],
+      },
+    });
+    const slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.todoItems).toEqual([
+      { id: "t1", content: "ship", status: "completed" },
+      { id: "t2", content: "later", status: "completed" },
+    ]);
+    expect(slice.todoPending).toBe(0);
+    expect(slice.todoInProgress).toBe(0);
+    expect(slice.todoCompleted).toBe(0);
+  });
+
+  it("applySnapshotMeter with empty todos retains struck-through history but clears counts", () => {
+    const sessionId = "s-todo-snap-retain";
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            todoItems: [{ id: "t1", content: "ship", status: "completed" }],
+            todoCompleted: 1,
+          },
+        ],
+      ]),
+    });
+    useTurnStore.getState().applySnapshotMeter(sessionId, {
+      ...snapshot(sessionId),
+      todos: [],
+    });
+    const slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.todoItems).toEqual([
+      { id: "t1", content: "ship", status: "completed" },
+    ]);
+    expect(slice.todoCompleted).toBe(0);
+  });
+
+  it("todo_progress with empty items and no history stays empty", () => {
+    const sessionId = "s-todo-empty";
+    useTurnStore.setState({
+      byId: new Map([
+        [sessionId, { ...EMPTY_SLICE, currentTurnId: "t1", runState: "running" }],
+      ]),
+    });
+    useTurnStore.getState().onTurnEvent({
+      session_id: sessionId,
+      turn_id: "t1",
+      event: {
+        type: "todo_progress",
+        pending: 0,
+        in_progress: 0,
+        completed: 0,
+        items: [],
+      },
+    });
+    const slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.todoItems).toEqual([]);
+    expect(slice.todoCompleted).toBe(0);
+  });
+
   it("agent/run reject returns to idle and discards the optimistic user row", async () => {
     const sessionId = "s3";
     useConnectionStore.setState({
@@ -508,6 +634,7 @@ describe("grantPermission receipt (FE-04)", () => {
         },
       ],
       kinds: ["compact_checkpoint"],
+      indices: [0],
       user_detail_before: 0,
     });
     useTurnStore.getState().onTurnStarted({

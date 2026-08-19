@@ -13,7 +13,6 @@ import type {
   SessionSnapshot,
   BufferLoaded,
   BufferItemNotification,
-  BufferCompacted,
   CompactLifecycle,
   SubagentBound,
   SessionList,
@@ -74,7 +73,6 @@ export function shouldIgnoreForwardedSubagentEvent(
     case "agent/turn_finished":
     case "buffer/item":
     case "buffer/reverted":
-    case "buffer/compacted":
     case "agent/permission_request":
       return true;
     default:
@@ -323,12 +321,6 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               turn?.onTranscriptReverted?.(rev.session_id);
             }
             message?.onBufferReverted(rev.session_id, rev);
-            return;
-          }
-
-          case "buffer/compacted": {
-            const compacted = params as unknown as BufferCompacted;
-            message?.onBufferCompacted(compacted.session_id, compacted);
             return;
           }
 

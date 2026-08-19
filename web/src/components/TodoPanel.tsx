@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 
 import { useTurnStore } from "../stores/turnStore";
 import { composerCardClass } from "./composerCard";
+import { WaveText } from "./WaveText";
 
 type TodoItemStatus = "pending" | "in_progress" | "completed";
 
@@ -23,6 +25,7 @@ export function TodoPanel({ sessionId }: { sessionId: string }) {
 
   const total = pending + inProgress + completed;
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+  const current = items.find((item) => item.status === "in_progress");
 
   useEffect(() => {
     if (!open) return;
@@ -60,9 +63,7 @@ export function TodoPanel({ sessionId }: { sessionId: string }) {
                     className={
                       item.status === "completed"
                         ? "text-(--_dk-text-disabled) line-through"
-                        : item.status === "in_progress"
-                          ? "text-(--_dk-text-primary)"
-                          : "text-(--_dk-text-secondary)"
+                        : "text-(--_dk-text-secondary)"
                     }
                   >
                     {item.content}
@@ -77,17 +78,19 @@ export function TodoPanel({ sessionId }: { sessionId: string }) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex h-[30px] w-full items-center gap-2 px-3 text-xs text-(--_dk-text-muted) transition-transform duration-100 hover:brightness-110 active:scale-[0.98] active:brightness-90"
+        className="flex h-[30px] w-full items-center gap-2 px-3 text-left text-xs text-(--_dk-text-muted) transition-transform duration-100 hover:brightness-110 active:scale-[0.98] active:brightness-90"
       >
-        <span className="font-medium">Todo</span>
-        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-(--_dk-line)">
-          <div
-            className="h-full rounded-full bg-(--_dk-emerald-500) transition-all duration-300"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-        <span className="font-mono text-dk-xs text-(--_dk-text-muted) tabular-nums">
-          {completed}/{total}
+        <ProgressRing pct={pct} />
+        <span className="min-w-0 flex-1 truncate">
+          {current ? (
+            <WaveText
+              text={current.content}
+              className="todo-wave-text"
+              charClass="todo-wave-char"
+            />
+          ) : (
+            <span className="italic text-(--_dk-text-disabled)">No active task</span>
+          )}
         </span>
         <svg
           width="10"
@@ -95,7 +98,7 @@ export function TodoPanel({ sessionId }: { sessionId: string }) {
           viewBox="0 0 10 10"
           fill="none"
           stroke="currentColor"
-          strokeWidth="1.5"
+          strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
           className="shrink-0 text-(--_dk-text-disabled) transition-transform duration-150"
@@ -105,6 +108,62 @@ export function TodoPanel({ sessionId }: { sessionId: string }) {
         </svg>
       </button>
     </div>
+  );
+}
+
+function ProgressRing({ pct }: { pct: number }) {
+  const size = 14;
+  const stroke = 2;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const arc = (pct / 100) * c;
+  const offset = c - arc;
+  const head = Math.min(c * 0.18, arc);
+  const cx = size / 2;
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      className="shrink-0 overflow-visible"
+      aria-hidden
+    >
+      <circle
+        cx={cx}
+        cy={cx}
+        r={r}
+        stroke="var(--_dk-line)"
+        strokeWidth={stroke}
+        fill="none"
+      />
+      <circle
+        cx={cx}
+        cy={cx}
+        r={r}
+        stroke="var(--_dk-emerald-500)"
+        strokeWidth={stroke}
+        fill="none"
+        strokeLinecap="round"
+        strokeDasharray={c}
+        strokeDashoffset={offset}
+        transform={`rotate(-90 ${cx} ${cx})`}
+        style={{ transition: "stroke-dashoffset 300ms" }}
+      />
+      {head > 0 ? (
+        <circle
+          className="todo-pulse"
+          cx={cx}
+          cy={cx}
+          r={r}
+          strokeWidth={stroke}
+          fill="none"
+          strokeLinecap="round"
+          strokeDasharray={`${head} ${c}`}
+          transform={`rotate(-90 ${cx} ${cx})`}
+          style={{ "--todo-pulse-travel": `${arc - head}px` } as CSSProperties}
+        />
+      ) : null}
+    </svg>
   );
 }
 
