@@ -79,13 +79,14 @@ function hubLayoutCss(logoFontSrc: string): string {
 ${fontFace}
 ${logoStyles}
 *{box-sizing:border-box}
-html,body{height:100%;margin:0}
+html,body{height:100%;margin:0;overflow:hidden}
 body{
   background:var(--_dk-root);
   color:var(--_dk-text-primary);
   font:var(--_dk-text-md)/1.45 var(--_dk-font-ui);
   display:flex;
   flex-direction:column;
+  min-height:0;
 }
 :root{
   --font-sans:system-ui,-apple-system,"Segoe UI",sans-serif;
@@ -106,10 +107,22 @@ body{
 }
 #titlebar .chrome button:hover{background:var(--_dk-ix-bg-hover);color:var(--_dk-ix-fg-hover)}
 #titlebar .chrome #close:hover{color:var(--_dk-close-hover-color);background:var(--_dk-close-hover-bg)}
-main{flex:1;overflow:auto;max-width:820px;width:100%;margin:0 auto;padding:48px 32px 96px}
+main{
+  flex:1;min-height:0;overflow:hidden;
+  max-width:1080px;width:100%;margin:0 auto;
+  padding:28px 32px 24px;
+  display:flex;flex-direction:column;
+}
+#home-view,#remote-view{flex:1;min-height:0;display:flex;flex-direction:column}
+.home-hero{flex-shrink:0}
 h1{font-size:2rem;font-weight:var(--_dk-text-weight-semibold);margin:0 0 8px;color:var(--_dk-text-primary)}
-.lead{color:var(--_dk-text-muted);margin:0 0 24px;font-size:var(--_dk-text-md)}
-.actions{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}
+.lead{color:var(--_dk-text-muted);margin:0 0 16px;font-size:var(--_dk-text-md)}
+.actions{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:4px;justify-content:center}
+.home-columns{
+  flex:1;min-height:0;
+  display:grid;grid-template-columns:1fr 1fr;grid-template-rows:minmax(0,1fr);
+  gap:20px;align-items:stretch;margin-top:8px;
+}
 .hidden{display:none !important}
 button.btn-primary,button.btn,button.btn-ghost,button.btn-sm{
   display:inline-flex;align-items:center;justify-content:center;gap:0.375rem;
@@ -126,14 +139,23 @@ button.btn:hover{background:var(--_dk-ix-bg-hover);color:var(--_dk-ix-fg-hover)}
 button.btn:active{background:var(--_dk-ix-bg-pressed)}
 button.btn-ghost:hover{background:var(--_dk-ix-bg-hover);color:var(--_dk-ix-fg-hover)}
 button:disabled{opacity:0.5;cursor:not-allowed}
-#status{min-height:22px;margin:12px 0;color:var(--_dk-amber-500);font-size:var(--_dk-text-sm)}
+#status{flex-shrink:0;min-height:0;margin:0;color:var(--_dk-amber-500);font-size:var(--_dk-text-sm)}
+#status:not(:empty){min-height:22px;margin:8px 0 0}
 #status.error{color:var(--_dk-red-500)}
-.recent{margin-top:28px}
-.recent h2{margin:0 0 8px;font-size:var(--_dk-text-md);font-weight:var(--_dk-text-weight-medium);color:var(--_dk-text-secondary)}
+.recent{
+  margin:0;min-height:0;height:100%;
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.recent h2{flex-shrink:0;margin:0 0 8px;font-size:var(--_dk-text-md);font-weight:var(--_dk-text-weight-medium);color:var(--_dk-text-secondary)}
+.recent-list{
+  flex:1;min-height:0;overflow:auto;
+  border:1px solid var(--_dk-line);border-radius:var(--radius-sm);
+}
 .row{display:flex;align-items:center;gap:10px;padding:12px;border-top:1px solid var(--_dk-line)}
+.recent-list .row:first-child{border-top:0}
 .row .path{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
 .row .meta{display:block;font-size:var(--_dk-text-sm);color:var(--_dk-text-muted);margin-top:2px}
-.empty{color:var(--_dk-text-disabled);padding:16px 0;font-size:var(--_dk-text-sm)}
+.empty{color:var(--_dk-text-disabled);padding:16px;font-size:var(--_dk-text-sm)}
 .panel{
   margin-top:20px;padding:16px;border:1px solid var(--_dk-line-visible);
   border-radius:var(--radius-sm);background:var(--_dk-surface-raised);
@@ -166,6 +188,10 @@ button:disabled{opacity:0.5;cursor:not-allowed}
   background:var(--_dk-root);word-break:break-all;color:var(--_dk-text-primary);
 }
 .panel-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
+#remote-view{overflow:auto}
+@media (max-width:720px){
+  .home-columns{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) minmax(0,1fr)}
+}
 `.trim();
 }
 
@@ -523,14 +549,18 @@ ${hubLayoutCss(logoFontSrc)}
 <div id="status" role="status"></div>
 
 <section id="home-view">
-  <div class="logo-hero">${litecodeLogoHtml(80, "var(--_dk-text-primary)")}</div>
-  <p class="lead" style="text-align:center">Open a local folder, or connect a remote machine over SSH.</p>
-  <div class="actions">
-    <button type="button" class="btn-primary" id="open-local">Open local</button>
-    <button type="button" class="btn" id="open-remote">Open remote</button>
+  <div class="home-hero">
+    <div class="logo-hero">${litecodeLogoHtml(80, "var(--_dk-text-primary)")}</div>
+    <p class="lead" style="text-align:center">Open a local folder, or connect a remote machine over SSH.</p>
+    <div class="actions">
+      <button type="button" class="btn-primary" id="open-local">Open local</button>
+      <button type="button" class="btn" id="open-remote">Open remote</button>
+    </div>
   </div>
-  <section class="recent"><h2>Local history</h2><div id="list"></div></section>
-  <section class="recent"><h2>Remote history</h2><div id="remote-list"></div></section>
+  <div class="home-columns">
+    <section class="recent"><h2>Local history</h2><div id="list" class="recent-list"></div></section>
+    <section class="recent"><h2>Remote history</h2><div id="remote-list" class="recent-list"></div></section>
+  </div>
 </section>
 
 <section id="remote-view" class="hidden">

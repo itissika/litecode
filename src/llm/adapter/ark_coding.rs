@@ -37,8 +37,13 @@ pub struct ArkCodingProvider {
 impl ArkCodingProvider {
     pub fn new(endpoint: String, auth: ProviderAuth) -> Result<Self> {
         let endpoint = normalize_endpoint(endpoint);
+        // reqwest `.timeout` is a wall-clock cap on connect + full SSE body.
+        // Long thinking outlives 120s while the stream is still healthy; user
+        // cancel already covers "nothing happening". Idle `read_timeout` would
+        // mis-kill silent thinking. Highest-ROI follow-up is retry on transport
+        // timeout — shelved; dropping the cap is enough for now.
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            // .timeout(std::time::Duration::from_secs(120))
             .build()?;
         Ok(Self {
             client,
