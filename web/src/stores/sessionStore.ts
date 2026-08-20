@@ -176,26 +176,21 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       useBashStore.getState().applySnapshot(sessionId, snap.bash);
     }
 
-    if (snap.buffer.len === 0) {
+    if (snap.buffer.next_seq === 0) {
       set({ pendingSessionOp: null });
       return;
     }
 
-    // Cold-start history only. Growth after the window exists is buffer/item;
-    // `bufferViewEnd < snap.buffer.len` treated every compact/append as a
-    // reconnect and re-fetched the last 40 into a live turn.
-    // Must NOT depend on `pendingSessionOp` — that flag only tracks new/reload
-    // RPC ops, while a history session opened via the Session List reaches this
-    // path with `pendingSessionOp === null` and must still load its backlog.
+    // Cold-start history only. Growth after the window exists is buffer/item.
     const msgSlice = useMessageStore.getState().bySession.get(sessionId);
     const needsInitialLoad =
       !msgSlice ||
-      (msgSlice.bufferViewEnd === 0 && msgSlice.messages.length === 0);
+      (msgSlice.toSeq === 0 && msgSlice.messages.length === 0);
 
     if (needsInitialLoad) {
-      const end = snap.buffer.len;
-      const start = Math.max(0, end - 40);
-      useConnectionStore.getState().sendRpc<BufferLoaded>("buffer/load", { start, end, session_id: sessionId })
+      const toSeq = snap.buffer.next_seq;
+      const fromSeq = Math.max(0, toSeq - 40);
+      useConnectionStore.getState().sendRpc<BufferLoaded>("buffer/load", { from_seq: fromSeq, to_seq: toSeq, session_id: sessionId })
         .then((loaded) => {
           useMessageStore.getState().onBufferLoaded(sessionId, loaded);
         })

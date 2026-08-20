@@ -14,7 +14,6 @@ import {
   isSystemReminderItem,
   itemPlainText,
   projectionRowKey,
-  rowBufferIndex,
 } from "../api/adapter";
 import type {
   FunctionCallItem,
@@ -908,8 +907,7 @@ export const MessageList = memo(function MessageList({
             const { cutsBefore, rows: contentRows } = splitLeadingCuts(group);
             const first = contentRows[0];
             const firstIdx = first ? messages.indexOf(first) : -1;
-            const sealed =
-              first != null && rowBufferIndex(first) !== null;
+            const sealed = first != null && first.seq >= 0;
             const isUser = first != null && isHumanUserRow(first);
             const showRevert = sealed && isUser && firstIdx >= 0;
             const userAnchorK = showRevert

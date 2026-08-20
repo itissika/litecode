@@ -1,12 +1,9 @@
 import type { ReactElement } from "react";
-import type { ChatRow } from "../api/adapter";
 import { rowsToNodes, groupNodes, NodeView, ProcessGroup } from "./MessageList";
-import { useMessageStore } from "../stores/messageStore";
+import { displayMessages, useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useEditorStore } from "../stores/editorStore";
-
-const EMPTY_MESSAGES: ChatRow[] = [];
 
 /**
  * Lightweight, NON-virtualized transcript viewport for a child (subagent)
@@ -28,8 +25,8 @@ export function SubagentViewport({
   childSessionId: string;
   nested?: boolean;
 }): ReactElement {
-  const messages = useMessageStore(
-    (s) => s.bySession.get(childSessionId)?.messages ?? EMPTY_MESSAGES,
+  const messages = useMessageStore((s) =>
+    displayMessages(s.bySession.get(childSessionId)),
   );
   const runState = useTurnStore(
     (s) => s.byId.get(childSessionId)?.runState ?? "idle",

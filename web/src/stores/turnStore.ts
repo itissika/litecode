@@ -1,7 +1,6 @@
 import { create } from "zustand";
 
-import type { ChatRow } from "../api/adapter";
-import { applyTurnEventMeta, isCompactCutRow, isUserMessage, itemPlainText, newMessageId, userTextItem } from "../api/adapter";
+import { applyTurnEventMeta, isCompactCutRow, isUserMessage, itemPlainText, newPendingUserId, userTextItem } from "../api/adapter";
 import type {
   AgentRunState,
   TurnPhase,
@@ -327,13 +326,8 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         return false;
       }
 
-      const userRow: ChatRow = {
-        id: newMessageId("user"),
-        item: userTextItem(trimmed),
-      };
-
-      // Optimistic: user message is immediately visible
-      useMessageStore.getState().pushUserMessage(sessionId, userRow);
+      const pending = { clientId: newPendingUserId(), item: userTextItem(trimmed) };
+      useMessageStore.getState().pushPendingUser(sessionId, pending);
 
       patch(sessionId, {
         runState: "running",
@@ -346,7 +340,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       // Use send (fire-and-forget) for agent/run
       useConnectionStore.getState().sendRpc("agent/run", startPayload).catch((error: unknown) => {
         patch(sessionId, { runState: "idle", currentTurnId: null });
-        useMessageStore.getState().discardOptimisticUserMessage(sessionId, userRow.id);
+        useMessageStore.getState().discardOptimisticUserMessage(sessionId, pending.clientId);
         const message =
           error instanceof Error ? error.message : "Failed to start agent turn";
         // Config / setup gaps → corner toast with full guidance (not the bell).
@@ -481,8 +475,8 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           (m) => !isCompactCutRow(m) && isUserMessage(m.item),
         );
         if (!lastUser || itemPlainText(lastUser.item) !== trimmed) {
-          useMessageStore.getState().pushUserMessage(sessionId, {
-            id: newMessageId("user"),
+          useMessageStore.getState().pushPendingUser(sessionId, {
+            clientId: newPendingUserId(),
             item: userTextItem(trimmed),
           });
         }
@@ -655,8 +649,8 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         runState: current.runState,
         reason: tf.reason,
         error: tf.error?.message ?? null,
-        committedEnd: tf.snapshot.buffer?.committed_end,
-        bufferLen: tf.snapshot.buffer?.len,
+        committedEnd: tf.snapshot.buffer?.next_seq,
+        bufferLen: tf.snapshot.buffer?.next_seq,
       });
 
       const snap = tf.snapshot;
@@ -680,8 +674,8 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       }
 
       const localEnd =
-        useMessageStore.getState().bySession.get(sessionId)?.committedBufferEnd ?? 0;
-      const serverEnd = snap.buffer?.committed_end ?? snap.buffer?.len ?? 0;
+        useMessageStore.getState().bySession.get(sessionId)?.toSeq ?? 0;
+      const serverEnd = snap.buffer?.next_seq ?? 0;
       if (serverEnd > localEnd) {
         void useMessageStore.getState().loadRange(sessionId, localEnd, serverEnd);
       }

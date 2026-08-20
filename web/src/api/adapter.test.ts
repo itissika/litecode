@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyStreamEvent,
-  committedIdentity,
   deriveUserAnchorK,
   isAssistantMessage,
   isChatUserMessage,
@@ -11,12 +10,10 @@ import {
   isSystemReminderItem,
   itemAuthorityId,
   itemPlainText,
-  liveItemRowId,
   markFunctionCallsFailed,
+  mergeCommittedItem,
   projectionRowKey,
-  rowBufferIndex,
   sealMismatchError,
-  sealProjectionRow,
   userTextItem,
 } from "./adapter";
 import type { Item, ResponseStreamEvent } from "./types";
@@ -60,7 +57,7 @@ describe("deriveUserAnchorK", () => {
     const messages = [
       // The buffer window the FE receives includes the compact checkpoint row
       // (kind='compact_checkpoint'), which the backend excludes from the count.
-      { item: userTextItem("summary"), kind: "compact_checkpoint" },
+      { item: userTextItem("summary"), surfaceOp: { op: "replace", start: 0, end: 1 } },
       { item: userTextItem("u2") },
       { item: userTextItem("u3") },
     ];
@@ -115,31 +112,8 @@ describe("stream failure invalidation (FE-06)", () => {
   });
 });
 
-describe("history ordinal", () => {
-  it("reads bufferIndex from the row, not from id", () => {
-    expect(rowBufferIndex({ id: liveItemRowId("msg_1"), bufferIndex: 12, item: userTextItem("x") })).toBe(12);
-    expect(rowBufferIndex({ id: liveItemRowId("msg_1"), item: userTextItem("x") })).toBeNull();
-  });
-
-  it("uses Item id for identity and ordinal only for id-less rows", () => {
-    expect(committedIdentity(userTextItem("hi"), 4)).toBe("ord-4");
-    expect(
-      committedIdentity(
-        {
-          type: "message",
-          role: "assistant",
-          id: "msg_1",
-          status: "completed",
-          content: [{ type: "output_text", text: "ok", annotations: [] }],
-        },
-        4,
-      ),
-    ).toBe(liveItemRowId("msg_1"));
-  });
-});
-
 describe("projectionRowKey", () => {
-  it("stays stable across live→buffer seal when Item authority id is present", () => {
+  it("is the log seq", () => {
     const item: Item = {
       type: "reasoning",
       id: "rs_1",
@@ -147,32 +121,7 @@ describe("projectionRowKey", () => {
       content: [{ type: "reasoning_text", text: "plan" }],
       status: "completed",
     };
-    const liveKey = projectionRowKey({
-      id: liveItemRowId("rs_1"),
-      item,
-      streaming: true,
-    });
-    const sealedKey = projectionRowKey({
-      id: liveItemRowId("rs_1"),
-      bufferIndex: 3,
-      item,
-      streaming: false,
-    });
-    expect(liveKey).toBe("rs_1");
-    expect(sealedKey).toBe("rs_1");
-    expect(liveKey).toBe(sealedKey);
-  });
-
-  it("uses call_id for function_call when item.id is absent", () => {
-    const item: Item = {
-      type: "function_call",
-      call_id: "call_1",
-      name: "bash",
-      arguments: "{}",
-    };
-    expect(
-      projectionRowKey({ id: liveItemRowId("call_1"), item, streaming: true }),
-    ).toBe("call_1");
+    expect(projectionRowKey({ seq: 3, eventType: "item/assistant", item })).toBe("3");
   });
 });
 
@@ -198,7 +147,7 @@ describe("isSystemReminderItem", () => {
     expect(isChatUserMessage(userTextItem("hello"))).toBe(true);
     expect(isSystemReminderItem(userTextItem("hello"))).toBe(false);
     expect(
-      isHumanUserRow({ item: reminder, kind: "detail" }),
+      isHumanUserRow({ item: reminder }),
     ).toBe(false);
     expect(
       isHumanUserRow({ item: userTextItem("hello") }),
@@ -206,7 +155,7 @@ describe("isSystemReminderItem", () => {
     expect(
       isHumanUserRow({
         item: userTextItem("compact summary"),
-        kind: "compact_checkpoint",
+        surfaceOp: { op: "replace", start: 0, end: 1 },
       }),
     ).toBe(false);
   });
@@ -452,8 +401,8 @@ describe("sealMismatchError", () => {
   });
 });
 
-describe("sealProjectionRow", () => {
-  it("stamps the slot and keeps content when visible text already matches", () => {
+describe("mergeCommittedItem", () => {
+  it("stamps status when visible text already matches", () => {
     const content = [{ type: "output_text" as const, text: "hello", annotations: [] }];
     const liveItem: Item = {
       type: "message",
@@ -462,36 +411,21 @@ describe("sealProjectionRow", () => {
       status: "in_progress",
       content,
     };
-    const { row, mismatch } = sealProjectionRow(
-      { id: liveItemRowId("msg_1"), item: liveItem, streaming: true },
-      {
-        type: "message",
-        role: "assistant",
-        id: "msg_1",
-        status: "completed",
-        content: [{ type: "output_text", text: "hello", annotations: [] }],
-      },
-      0,
-    );
-    expect(mismatch).toBeNull();
-    expect(row.id).toBe(liveItemRowId("msg_1"));
-    expect(row.bufferIndex).toBe(0);
-    expect(row.streaming).toBe(false);
-    expect(row.item).toMatchObject({ id: "msg_1", status: "completed" });
-    expect(isAssistantMessage(row.item) && row.item.content).toBe(content);
+    const merged = mergeCommittedItem(liveItem, {
+      type: "message",
+      role: "assistant",
+      id: "msg_1",
+      status: "completed",
+      content: [{ type: "output_text", text: "hello", annotations: [] }],
+    });
+    expect(merged).toMatchObject({ id: "msg_1", status: "completed" });
+    expect(isAssistantMessage(merged) && merged.content).toBe(content);
   });
 
   it("replaces the item when visible content diverges", () => {
     const liveItem = emptyMsg("msg_1", "partial");
     const committed = emptyMsg("msg_1", "final");
-    const { row, mismatch } = sealProjectionRow(
-      { id: liveItemRowId("msg_1"), item: liveItem, streaming: true },
-      committed,
-      1,
-    );
-    expect(mismatch).toBeNull();
-    expect(row.item).toBe(committed);
-    expect(row.bufferIndex).toBe(1);
+    expect(mergeCommittedItem(liveItem, committed)).toBe(committed);
   });
 });
 

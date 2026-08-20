@@ -5,8 +5,9 @@ import { isCompactCutRow, projectionRowKey } from "../api/adapter";
 import { bubbleIdentity, canRevertFiles, groupRowsForBubbles, locateBashTool } from "./MessageList";
 
 const userRow: ChatRow = {
-  id: "live-msg_user",
-  bufferIndex: 0,
+  seq: 0,
+  eventType: "item/user",
+  surfaceOp: "append",
   item: {
     type: "message",
     role: "user",
@@ -17,7 +18,9 @@ const userRow: ChatRow = {
 };
 
 const liveReasoning: ChatRow = {
-  id: "live-rs_1",
+  seq: 1,
+  eventType: "item/assistant",
+  surfaceOp: "append",
   streaming: true,
   item: {
     type: "reasoning",
@@ -29,7 +32,9 @@ const liveReasoning: ChatRow = {
 };
 
 const liveTool: ChatRow = {
-  id: "live-fc_1",
+  seq: 2,
+  eventType: "item/tool_call",
+  surfaceOp: "append",
   streaming: true,
   item: {
     type: "function_call",
@@ -42,8 +47,9 @@ const liveTool: ChatRow = {
 };
 
 const sealedTool: ChatRow = {
-  id: "live-fc_1",
-  bufferIndex: 2,
+  seq: 2,
+  eventType: "item/tool_call",
+  surfaceOp: "append",
   streaming: false,
   item: {
     type: "function_call",
@@ -81,8 +87,9 @@ describe("bubbleIdentity", () => {
 
   it("keys a system-reminder as a notice, not a user bubble", () => {
     const reminder: ChatRow = {
-      id: "live-msg_reminder",
-      bufferIndex: 9,
+      seq: 9,
+      eventType: "item/user",
+      surfaceOp: "append",
       item: {
         type: "message",
         role: "user",
@@ -106,8 +113,9 @@ describe("bubbleIdentity", () => {
 
   it("does not reuse assistant-after:user keys across a reminder split", () => {
     const reminder: ChatRow = {
-      id: "live-msg_reminder",
-      bufferIndex: 9,
+      seq: 9,
+      eventType: "item/user",
+      surfaceOp: "append",
       item: {
         type: "message",
         role: "user",
@@ -138,13 +146,14 @@ describe("bubbleIdentity", () => {
   });
 });
 
-const compactCut = (id: string): ChatRow => ({
-  id,
-  kind: "compact_checkpoint",
+const compactCut = (seq: number): ChatRow => ({
+  seq,
+  eventType: "item/user",
+  surfaceOp: { op: "replace", start: 0, end: seq },
   item: {
     type: "message",
     role: "user",
-    id: `sum_${id}`,
+    id: `sum_${seq}`,
     status: "completed",
     content: [{ type: "input_text", text: "[Conversation summary]\nhidden" }],
   },
@@ -152,16 +161,16 @@ const compactCut = (id: string): ChatRow => ({
 
 describe("groupRowsForBubbles compact cut", () => {
   it("does not turn the checkpoint into its own bubble", () => {
-    const grouped = groupRowsForBubbles([compactCut("c0"), userRow]);
+    const grouped = groupRowsForBubbles([compactCut(0), userRow]);
     expect(grouped).toHaveLength(1);
-    expect(grouped[0]?.map((r) => r.id)).toEqual(["c0", userRow.id]);
+    expect(grouped[0]?.map((r) => r.seq)).toEqual([0, userRow.seq]);
     expect(bubbleIdentity(grouped, 0)).toBe(`user:${projectionRowKey(userRow)}`);
   });
 
   it("keeps a cut between assistant items inside one bubble", () => {
     const grouped = groupRowsForBubbles([
       liveReasoning,
-      compactCut("c-mid"),
+      compactCut(5),
       liveTool,
     ]);
     expect(grouped).toHaveLength(1);
@@ -186,7 +195,9 @@ describe("canRevertFiles", () => {
 describe("locateBashTool", () => {
   it("returns the assistant bubble and process+tool fold ids", () => {
     const bashRow: ChatRow = {
-      id: "live-fc_bash",
+      seq: 3,
+      eventType: "item/tool_call",
+      surfaceOp: "append",
       streaming: true,
       item: {
         type: "function_call",

@@ -219,41 +219,31 @@ export interface WireServerHello {
   models?: ModelInfo[];
 }
 
+/** Compact replace range on a surface-eligible log event. */
+export type SurfaceOp =
+  | "append"
+  | { op: "replace"; start: number; end: number };
+
+/** One persisted log row on `buffer/item` and `buffer/load`. */
+export interface WireBufferEvent {
+  seq: number;
+  type: string;
+  surface_op?: SurfaceOp;
+  item: Item;
+  child_session_id?: string;
+}
+
 export interface BufferLoaded {
   session_id: string;
-  start: number;
-  end: number;
-  items: Item[];
-  /**
-   * DB row `kind` per item (`detail` | `compact_checkpoint`), aligned with
-   * `items`. The FE excludes checkpoint rows from revert-anchor counting
-   * (2.2 / REV-11).
-   */
-  kinds?: string[];
-  /**
-   * History ordinal per item (DB `ORDER BY seq` rank). Required and aligned
-   * with `items`. The FE stamps this onto the row and must not infer it from
-   * `start + i`.
-   */
-  indices: number[];
-  /**
-   * Absolute 0-based user-detail count with buffer index `< start`.
-   * FE derives revert k as `user_detail_before + local user ordinal`.
-   */
-  user_detail_before: number;
+  from_seq: number;
+  to_seq: number;
+  events: WireBufferEvent[];
   /** `subagent_launch` call_id → durable child session id (rebuild path). */
   subagent_bindings?: Record<string, string>;
 }
 
-export interface BufferItemNotification {
+export interface BufferItemNotification extends WireBufferEvent {
   session_id: string;
-  buffer_index: number;
-  item: Item;
-  /** DB row `kind` (`detail` | `compact_checkpoint`) — REV-11 wire. */
-  kind?: string;
-  /** Present when this item is (or re-stamps) a `subagent_launch` function_call. */
-  child_session_id?: string;
-  /** Present on legacy forwarded subagent events; ignore for main transcript. */
   parent_session_id?: string;
 }
 
@@ -351,9 +341,9 @@ export interface WorkspaceChanged {
 
 
 export interface BufferState {
-  len: number;
+  last_seq: number;
+  next_seq: number;
   revision: number;
-  committed_end: number;
 }
 
 export interface TurnSnapshot {

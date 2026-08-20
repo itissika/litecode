@@ -26,3 +26,5 @@ Search exclude = `fold_surface` nodes via read-only SQLite (no `Session::resume`
 04 全量跑出的边路红：search 仍读停写的 `kept_from_seq`（整段当前 session 被当 live 排除）；revert 把 `kind=detail` 的摘要算进 k。这是 02c 切开写/读的预期活，当时没写进完成条件。
 
 File-revert RPC 仍收第 k 条 user；磁盘 stem 是该条 user 落盘后的 `next_seq`。
+
+`load_surface_seqs` 的只读打开不覆盖 lexical FTS 仍 `READ_WRITE` + schema/backfill、以及 `list_sessions` 等第二把写连接。锁纪律见 [09](./09-sessions-db-single-writer.md)，不重开本票。

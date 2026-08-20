@@ -6,7 +6,7 @@ import { useConnectionStore } from "../../stores/connectionStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useToastStore } from "../../stores/toastStore";
 import { useTurnStore } from "../../stores/turnStore";
-import { useMessageStore } from "../../stores/messageStore";
+import { displayMessages, useMessageStore } from "../../stores/messageStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { AgentChatInput } from "../../components/AgentChatInput";
 import { MessageList } from "../../components/MessageList";
@@ -158,14 +158,14 @@ function MessageListRegion({
   jumpToEndRef: RefObject<(() => void) | null>;
   revealBashRef: RefObject<((callId: string) => void) | null>;
 }) {
-  const messages = useMessageStore(
-    (s) => s.bySession.get(sessionId)?.messages ?? EMPTY_MESSAGES,
+  const messages = useMessageStore((s) =>
+    displayMessages(s.bySession.get(sessionId)),
   );
   const loadingHistory = useMessageStore(
     (s) => s.bySession.get(sessionId)?.loadingHistory ?? false,
   );
-  const bufferViewStart = useMessageStore(
-    (s) => s.bySession.get(sessionId)?.bufferViewStart ?? 0,
+  const fromSeq = useMessageStore(
+    (s) => s.bySession.get(sessionId)?.fromSeq ?? 0,
   );
   const userDetailBefore = useMessageStore(
     (s) => s.bySession.get(sessionId)?.userDetailBefore ?? 0,
@@ -181,7 +181,7 @@ function MessageListRegion({
   const listRef = useRef<HTMLDivElement>(null);
   const [blurOpacity, setBlurOpacity] = useState(0);
 
-  const canLoadMore = bufferViewStart > 0;
+  const canLoadMore = fromSeq > 0;
   const isRunning = runState === "running" || runState === "cancelling";
   const maxFileRevertK = useSessionStore(
     (s) => s.byId.get(sessionId)?.maxFileRevertK ?? null,
@@ -250,8 +250,6 @@ function MessageListRegion({
     </>
   );
 }
-
-const EMPTY_MESSAGES: import("../../api/adapter").ChatRow[] = [];
 
 /** Composer + todos + permission — no messageStore subscription.
  *  Floats over the transcript at the same reading measure as MessageList,

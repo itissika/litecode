@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { itemPlainText } from "../api/adapter";
+import { isCompactCutRow, itemPlainText } from "../api/adapter";
 import type { SessionSnapshot, TurnFinished, TurnSnapshot } from "../api/types";
 import { useConnectionStore } from "./connectionStore";
 import { useMessageStore } from "./messageStore";
@@ -25,7 +25,7 @@ function snapshot(sessionId: string): SessionSnapshot {
     project: "/proj",
     agent_id: "default",
     api_model_id: "m",
-    buffer: { len: 0, revision: 0, committed_end: 0 },
+    buffer: { last_seq: -1, next_seq: 0, revision: 0 },
     turn: null,
     context_window: 0,
   };
@@ -180,7 +180,7 @@ describe("turnStore convergence", () => {
     expect(turn.runState).toBe("idle");
     expect(turn.currentTurnId).toBeNull();
     const msgs = useMessageStore.getState().bySession.get(sessionId)!;
-    expect(msgs.messages.some((m) => m.id.startsWith("live-"))).toBe(false);
+    expect(msgs.messages.every((m) => m.seq >= 0)).toBe(true);
     expect(msgs.turnEndNotice?.message).toBe("stream ended");
   });
 
@@ -463,20 +463,12 @@ describe("turnStore convergence", () => {
     const started = useTurnStore.getState().start(sessionId, "hello");
     expect(started).toBe(true);
     expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe("running");
-    expect(
-      useMessageStore.getState().bySession.get(sessionId)!.messages.some((m) =>
-        m.id.startsWith("user-")
-      ),
-    ).toBe(true);
+    expect(useMessageStore.getState().bySession.get(sessionId)!.pendingUser).toBeTruthy();
 
     await vi.waitFor(() => {
       expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe("idle");
     });
-    expect(
-      useMessageStore.getState().bySession.get(sessionId)?.messages.some((m) =>
-        m.id.startsWith("user-")
-      ) ?? false,
-    ).toBe(false);
+    expect(useMessageStore.getState().bySession.get(sessionId)?.pendingUser).toBeNull();
   });
 });
 
@@ -591,9 +583,10 @@ describe("grantPermission receipt (FE-04)", () => {
     expect(slice.runState).toBe("running");
     expect(slice.currentTurnId).toBe("t-idle");
     const rows = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
-    expect(rows).toHaveLength(1);
-    expect(rows[0].id).toMatch(/^user-/);
-    expect(itemPlainText(rows[0].item)).toBe(
+    expect(rows).toHaveLength(0);
+    const pending = useMessageStore.getState().bySession.get(sessionId)?.pendingUser;
+    expect(pending).toBeTruthy();
+    expect(itemPlainText(pending!.item)).toBe(
       "<system-reminder>bash exited</system-reminder>",
     );
 
@@ -604,7 +597,8 @@ describe("grantPermission receipt (FE-04)", () => {
       step_max: 8,
     });
     const again = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
-    expect(again).toHaveLength(1);
+    expect(again).toHaveLength(0);
+    expect(useMessageStore.getState().bySession.get(sessionId)?.pendingUser).toBeTruthy();
   });
 
   it("onTurnStarted does not duplicate an optimistic start() user row", () => {
@@ -617,25 +611,28 @@ describe("grantPermission receipt (FE-04)", () => {
       step_max: 5,
     });
     const rows = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
-    expect(rows.filter((m) => m.id.startsWith("user-"))).toHaveLength(1);
+    expect(rows.filter((m) => m.seq < 0)).toHaveLength(0);
+    expect(useMessageStore.getState().bySession.get(sessionId)?.pendingUser).toBeTruthy();
   });
 
   it("onTurnStarted does not treat a compact checkpoint as the last human user", () => {
     const sessionId = "s-cp-last-user";
     useMessageStore.getState().onBufferLoaded(sessionId, {
       session_id: sessionId,
-      start: 0,
-      end: 1,
-      items: [
+      from_seq: 0,
+      to_seq: 1,
+      events: [
         {
-          type: "message",
-          role: "user",
-          content: [{ type: "input_text", text: "rolled-up" }],
+          seq: 0,
+          type: "item/user",
+          surface_op: { op: "replace", start: 0, end: 0 },
+          item: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "rolled-up" }],
+          },
         },
       ],
-      kinds: ["compact_checkpoint"],
-      indices: [0],
-      user_detail_before: 0,
     });
     useTurnStore.getState().onTurnStarted({
       session_id: sessionId,
@@ -644,9 +641,10 @@ describe("grantPermission receipt (FE-04)", () => {
       step_max: 5,
     });
     const rows = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
-    expect(rows).toHaveLength(2);
-    expect(rows[0]?.kind).toBe("compact_checkpoint");
-    expect(rows[1]?.id.startsWith("user-")).toBe(true);
-    expect(itemPlainText(rows[1]!.item)).toBe("rolled-up");
+    const pending = useMessageStore.getState().bySession.get(sessionId)?.pendingUser;
+    expect(rows).toHaveLength(1);
+    expect(isCompactCutRow(rows[0]!)).toBe(true);
+    expect(pending).toBeTruthy();
+    expect(itemPlainText(pending!.item)).toBe("rolled-up");
   });
 });

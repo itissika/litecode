@@ -4,13 +4,21 @@
 
 **Blocked by:** 04: 线协议只说 seq
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 04 留下的前端红是本票地图，不是意外：`buffer_index` / `buffer.len` / `committed_end` / `start`–`end` 加载窗。不要在 06 之前用 overlay 特例「修」compact 乱序。
 
-- [ ] `ChatRow` 必有 `seq`；删除 `bufferIndex` 与 `live-` / `ord-` / `user-*` 身份协议（A1、A2）
-- [ ] 删除 `orderProjection`、`findRowByItemId` / `findRowForSeal` / `vacateIndex` / `sealProjectionRow`（A3、A4）
-- [ ] 删除 `finalizeTurn` 丢 `live-*`，以及 overlay 生命周期补洞（A5、A6）
-- [ ] 乐观 user：拿到 seq 前最多一个 pending 槽，且不进入排序键空间
-- [ ] 探针：已封口 seq 再来相同 `item_id` 的 delta，不得变异该 seq（G4）
-- [ ] FE 死亡清单 A 类（D 除外）清零；禁止「没 seq 再 fallback item_id」
+- [x] `ChatRow` 必有 `seq`；删除 `bufferIndex` 与 `live-` / `ord-` / `user-*` 身份协议（A1、A2）
+- [x] 删除 `orderProjection`、`findRowByItemId` / `findRowForSeal` / `vacateIndex` / `sealProjectionRow`（A3、A4）
+- [x] 删除 `finalizeTurn` 丢 `live-*`，以及 overlay 生命周期补洞（A5、A6）
+- [x] 乐观 user：拿到 seq 前最多一个 pending 槽，且不进入排序键空间
+- [x] 探针：已封口 seq 再来相同 `item_id` 的 delta，不得变异该 seq（G4）
+- [x] FE 死亡清单 A 类（D 除外）清零；禁止「没 seq 再 fallback item_id」
+
+## Answer
+
+Store is `Map<seq, ChatRow>` plus a sorted `messages` projection. Wire `buffer/load` is `{ from_seq, to_seq, events[] }`; `buffer/item` upserts by seq. Stream deltas apply only when `item_id` already maps to a seq whose Item is not sealed; no seq → drop. Optimistic user is `pendingUser` (at most one), not a seq key. `finalizeTurn` only clears `streaming`. FoldCard/`turnActive` left for 07. Snapshot buffer is `last_seq` / `next_seq`.
+
+## Comments
+
+Streaming before the first persist of that Item is blank by contract (seq allocated on the wire at buffer/item). D 类 FoldCard 活度是 07。

@@ -7,83 +7,53 @@ import type {
   OutputMessageItem,
   ReasoningItem,
   ResponseStreamEvent,
+  SurfaceOp,
   TurnMeta,
   WireEvent,
 } from "./types";
 import { toWorkspacePath } from "../utils/path";
 
 /**
- * UI projection row over an authority Item.
- * Live stream rows carry a typed Item shell (same id space); `buffer/item` seals the slot.
+ * UI projection row over an authority Item. Identity is log `seq`.
+ * Rows without seq never enter the message store.
  */
 export interface ChatRow {
-  /**
-   * Identity only (`live-{itemId}`, `user-*`, or `ord-{bufferIndex}` for
-   * id-less committed rows). Never encode or parse the history ordinal here.
-   */
-  id: string;
-  /**
-   * History ordinal from the backend (`buffer/item.buffer_index` or
-   * `buffer/load.indices`). Absent on unsealed live / optimistic rows.
-   * The only sort/seal index — never derived from `id`.
-   */
-  bufferIndex?: number;
-  /** Authority Item (required — no parallel partial-string dialect). */
+  seq: number;
   item: Item;
-  /**
-   * DB row `kind` from the wire (`detail` | `compact_checkpoint`). Used by
-   * `deriveUserAnchorK` to exclude compact checkpoints from revert-anchor
-   * counting (2.2 / REV-11). Absent for live streams (always detail).
-   */
-  kind?: string;
+  eventType: string;
+  surfaceOp?: SurfaceOp;
   streaming?: boolean;
+  childSessionId?: string;
 }
 
-/** Wire `compact_checkpoint` — UI cut mark between items, never a chat bubble. */
-export function isCompactCutRow(row: { kind?: string }): boolean {
-  return row.kind === "compact_checkpoint";
+export function isReplaceSurfaceOp(
+  op: SurfaceOp | undefined,
+): op is { op: "replace"; start: number; end: number } {
+  return typeof op === "object" && op !== null && op.op === "replace";
+}
+
+/** Compact replace event — UI cut mark, never a chat bubble. */
+export function isCompactCutRow(row: { surfaceOp?: SurfaceOp }): boolean {
+  return isReplaceSurfaceOp(row.surfaceOp);
 }
 
 /**
- * Human composer row — envelope `kind` first, then Item role.
- * Compact checkpoints are user-role Items but are not chat bubbles.
- * Optimistic `user-*` shells have no kind and still count as human.
+ * Human composer row. Replace summaries are user-role Items but not chat bubbles.
  */
-export function isHumanUserRow(row: { item: Item; kind?: string }): boolean {
+export function isHumanUserRow(row: { item: Item; surfaceOp?: SurfaceOp }): boolean {
   if (isCompactCutRow(row)) return false;
   return isUserMessage(row.item) && !isSystemReminderItem(row.item);
 }
 
-/** Missing wire kind is a conversation `detail` (REV-11 envelope). */
-export function wireRowKind(kind?: string): string {
-  return kind === "compact_checkpoint" ? "compact_checkpoint" : "detail";
+let nextPendingId = 0;
+export function newPendingUserId(): string {
+  nextPendingId += 1;
+  return `pending-${nextPendingId}-${Date.now()}`;
 }
 
-let nextId = 0;
-export function newMessageId(prefix = "msg"): string {
-  nextId += 1;
-  return `${prefix}-${nextId}-${Date.now()}`;
-}
-
-/** Wire history ordinal stamped on a projection row. */
-export function rowBufferIndex(row: ChatRow): number | null {
-  return typeof row.bufferIndex === "number" && Number.isFinite(row.bufferIndex)
-    ? row.bufferIndex
-    : null;
-}
-
-/** Identity for a committed row: Item id if present, else the wire ordinal. */
-export function committedIdentity(item: Item, bufferIndex: number): string {
-  const aid = itemAuthorityId(item);
-  if (!aid) return `ord-${bufferIndex}`;
-  // call_id is shared by function_call and function_call_output.
-  if (isFunctionCallOutput(item)) return liveItemRowId(`fco-${aid}`);
-  return liveItemRowId(aid);
-}
-
-/** Live row id for a stream `item_id` (same id space as committed Items). */
-export function liveItemRowId(itemId: string): string {
-  return `live-${itemId}`;
+/** Log identity. Pending display rows use seq < 0 and are not store keys. */
+export function rowSeq(row: ChatRow): number {
+  return row.seq;
 }
 
 /** Optimistic user text Item (OpenAI Responses shape). */
@@ -157,21 +127,18 @@ export function isChatUserMessage(item: Item): boolean {
 /**
  * Absolute 0-based revert anchor for the user row at `rowIndex`.
  * `userDetailBefore` is the server count of user details with buffer index
- * `<` the loaded window start.
- *
- * Must mirror the backend's k semantic (`entry_user_detail_count`, which only
- * counts `kind='detail'` user rows): a compact checkpoint summary is a user
- * role but must NOT be counted as a revert anchor (FE-11 / REV-11).
+ * Counts append-origin user messages before `rowIndex` in the loaded window.
+ * Replace summaries are not revert anchors.
  */
 export function deriveUserAnchorK(
-  messages: { item: Item; kind?: string }[],
+  messages: { item: Item; surfaceOp?: SurfaceOp }[],
   rowIndex: number,
   userDetailBefore: number,
 ): number {
   let local = 0;
   const end = Math.max(0, Math.min(rowIndex, messages.length));
   for (let i = 0; i < end; i++) {
-    if (messages[i].kind === "compact_checkpoint") continue;
+    if (isCompactCutRow(messages[i])) continue;
     if (isUserMessage(messages[i].item)) local += 1;
   }
   return userDetailBefore + local;
@@ -221,15 +188,9 @@ export function itemAuthorityId(item: Item): string | undefined {
   return undefined;
 }
 
-/**
- * Stable React key for a projection row across live→buffer seal.
- * Prefer authority Item id; `row.id` stays on the identity (live-* / ord-*).
- */
+/** React key is log seq. */
 export function projectionRowKey(row: ChatRow): string {
-  const aid = itemAuthorityId(row.item);
-  if (!aid) return row.id;
-  if (isFunctionCallOutput(row.item)) return `fco-${aid}`;
-  return aid;
+  return String(row.seq);
 }
 
 /** Best-effort plain text from a message / reasoning Item. */
@@ -696,32 +657,9 @@ function stampTerminalFields(live: Item, committed: Item): Item {
   return live;
 }
 
-/**
- * Reconcile a local projection row against committed authority.
- * Identity mismatch → caller fail-closed. Content match → stamp terminal fields.
- * History ordinal comes from the wire (`bufferIndex`); `id` stays identity.
- */
-export function sealProjectionRow(
-  live: ChatRow,
-  committed: Item,
-  bufferIndex: number,
-  kind?: string,
-): { row: ChatRow; mismatch: string | null } {
-  const mismatch = sealMismatchError(live.item, committed);
-  if (mismatch) {
-    return { row: live, mismatch };
-  }
-  const same = itemVisibleContentEqual(live.item, committed);
-  return {
-    mismatch: null,
-    row: {
-      ...live,
-      bufferIndex,
-      kind,
-      streaming: false,
-      item: same ? stampTerminalFields(live.item, committed) : committed,
-    },
-  };
+export function mergeCommittedItem(live: Item, committed: Item): Item {
+  const same = itemVisibleContentEqual(live, committed);
+  return same ? stampTerminalFields(live, committed) : committed;
 }
 
 export function applyTurnEventMeta(event: WireEvent): Partial<TurnMeta> {

@@ -2,16 +2,13 @@ import { create } from "zustand";
 import type { ChatRow } from "../api/adapter";
 import {
   applyStreamEvent,
-  committedIdentity,
+  isHumanUserRow,
   isStreamFailureEvent,
-  isUserMessage,
   itemAuthorityId,
   itemPlainText,
-  liveItemRowId,
   markFunctionCallsFailed,
-  rowBufferIndex,
-  sealProjectionRow,
-  wireRowKind,
+  mergeCommittedItem,
+  sealMismatchError,
 } from "../api/adapter";
 import type {
   BufferItemNotification,
@@ -19,6 +16,7 @@ import type {
   Item,
   ResponseStreamEvent,
   SubagentBound,
+  WireBufferEvent,
 } from "../api/types";
 import { debugTrace } from "../lib/debugTrace";
 import { useConnectionStore, attachSiblingStores } from "./connectionStore";
@@ -27,31 +25,32 @@ import { useTurnStore } from "./turnStore";
 
 const HISTORY_PAGE = 40;
 
+export interface PendingUser {
+  clientId: string;
+  item: Item;
+}
+
 export interface MessageSlice {
-  /** Projection rows — each row is an authority Item (live shell or sealed). */
+  /** Seq → row. Sorted projection is `messages`. */
+  bySeq: Map<number, ChatRow>;
   messages: ChatRow[];
-  bufferViewStart: number;
-  bufferViewEnd: number;
+  /** Optimistic composer row; not a seq key. At most one. */
+  pendingUser: PendingUser | null;
+  /** Loaded window `[fromSeq, toSeq)`. */
+  fromSeq: number;
+  toSeq: number;
   /**
-   * Exclusive end of sealed history ordinals in this slice (`max(bufferIndex)+1`),
-   * or the server revert point while `blockLogGrowth` is set.
-   * Pagination/fill only — never an ingest gap gate.
-   */
-  committedBufferEnd: number;
-  /**
-   * Absolute user-detail count with history ordinal `< bufferViewStart`.
-   * From the latest `buffer/load` that extended (or set) the view start.
+   * Append-origin users with seq `< fromSeq` when the window starts at 0;
+   * otherwise 0 until history is loaded from seq 0.
    */
   userDetailBefore: number;
   loadingHistory: boolean;
-  /** Explicit error when a stream/buffer event cannot map to Item authority. */
   shapeError: string | null;
-  /** `subagent_launch` call_id → child session id (live bind + buffer/load). */
   subagentBindings: Record<string, string>;
-  /** After revert, refuse log-growth appends until the next turn starts. */
   blockLogGrowth: boolean;
-  /** Durable panel notice for the last turn end (error / max steps). */
   turnEndNotice: TurnEndNotice | null;
+  /** item_id / call_id → seq for stream deltas. Points at the latest seq. */
+  itemIdToSeq: Map<string, number>;
 }
 
 export interface TurnEndNotice {
@@ -60,20 +59,42 @@ export interface TurnEndNotice {
 }
 
 export const EMPTY_SLICE: MessageSlice = {
+  bySeq: new Map(),
   messages: [],
-  bufferViewStart: 0,
-  bufferViewEnd: 0,
-  committedBufferEnd: 0,
+  pendingUser: null,
+  fromSeq: 0,
+  toSeq: 0,
   userDetailBefore: 0,
   loadingHistory: false,
   shapeError: null,
   subagentBindings: {},
   blockLogGrowth: false,
   turnEndNotice: null,
+  itemIdToSeq: new Map(),
 };
 
 export function emptySlice(): MessageSlice {
-  return { ...EMPTY_SLICE, subagentBindings: {} };
+  return {
+    ...EMPTY_SLICE,
+    bySeq: new Map(),
+    messages: [],
+    subagentBindings: {},
+    itemIdToSeq: new Map(),
+  };
+}
+
+export function displayMessages(slice: MessageSlice | undefined): ChatRow[] {
+  if (!slice) return [];
+  if (!slice.pendingUser) return slice.messages;
+  return [
+    ...slice.messages,
+    {
+      seq: -1,
+      item: slice.pendingUser.item,
+      eventType: "item/user",
+      surfaceOp: "append",
+    },
+  ];
 }
 
 function getSlice(byId: Map<string, MessageSlice>, sessionId: string): MessageSlice {
@@ -85,41 +106,15 @@ function getSlice(byId: Map<string, MessageSlice>, sessionId: string): MessageSl
   return slice;
 }
 
-interface MessageState {
-  bySession: Map<string, MessageSlice>;
+function sortedMessages(bySeq: Map<number, ChatRow>): ChatRow[] {
+  return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
 }
 
-interface BufferRowItem {
-  bufferIndex: number;
-  item: Item;
-  /** DB row `kind` (`detail` | `compact_checkpoint`) — REV-11 wire. */
-  kind?: string;
+function rememberItemSeq(itemIdToSeq: Map<string, number>, item: Item, seq: number): void {
+  const aid = itemAuthorityId(item);
+  if (aid) itemIdToSeq.set(aid, seq);
 }
 
-function overlayStats(messages: ChatRow[]): {
-  n: number;
-  live: number;
-  streaming: number;
-} {
-  let live = 0;
-  let streaming = 0;
-  for (const row of messages) {
-    if (rowBufferIndex(row) == null) {
-      live += 1;
-      if (row.streaming) streaming += 1;
-    }
-  }
-  return { n: messages.length, live, streaming };
-}
-
-function findRowByItemId(messages: ChatRow[], itemId: string): number {
-  return messages.findIndex((m) => {
-    const aid = itemAuthorityId(m.item);
-    return aid === itemId || m.id === liveItemRowId(itemId);
-  });
-}
-
-/** Resolve live-row key from stream events (top-level item_id, or nested item.id/call_id). */
 function streamEventItemIdHint(event: ResponseStreamEvent): string | undefined {
   if (typeof (event as { item_id?: unknown }).item_id === "string") {
     const id = (event as { item_id: string }).item_id;
@@ -135,191 +130,92 @@ function streamEventItemIdHint(event: ResponseStreamEvent): string | undefined {
   return undefined;
 }
 
-/** Seal lookup: authority id AND Item.type must match (call_id is shared by call + output). */
-function findRowForSeal(messages: ChatRow[], committed: Item): number {
-  const authId = itemAuthorityId(committed);
-  if (!authId) return -1;
-  return messages.findIndex((m) => {
-    if (m.item.type !== committed.type) return false;
-    const aid = itemAuthorityId(m.item);
-    // Row-id fallback only while the live shell has no authority id yet.
-    // Matching `live-call_A` after the item mutated to call_B seals the wrong slot.
-    if (aid) return aid === authId;
-    return m.id === liveItemRowId(authId);
-  });
-}
-
-function orderProjection(messages: ChatRow[]): ChatRow[] {
-  return [...messages].sort((left, right) => {
-    const li = rowBufferIndex(left);
-    const ri = rowBufferIndex(right);
-    if (li != null && ri != null) return li - ri;
-    if (li != null) return -1;
-    if (ri != null) return 1;
-    const lu = left.id.startsWith("user-") ? 0 : 1;
-    const ru = right.id.startsWith("user-") ? 0 : 1;
-    return lu - ru;
-  });
-}
-
-function derivedCommittedEnd(messages: ChatRow[]): number {
-  let max = -1;
-  for (const row of messages) {
-    const index = rowBufferIndex(row);
-    if (index != null && index > max) max = index;
+function isSealedItem(item: Item): boolean {
+  if ("status" in item && typeof item.status === "string") {
+    return item.status === "completed" || item.status === "failed" || item.status === "incomplete";
   }
-  return max + 1;
+  return true;
 }
 
-function isDetailUserEntry(item: Item, kind?: string): boolean {
-  return wireRowKind(kind) !== "compact_checkpoint" && isUserMessage(item);
+function rowFromEvent(ev: WireBufferEvent, streaming: boolean): ChatRow {
+  return {
+    seq: ev.seq,
+    item: ev.item,
+    eventType: ev.type,
+    surfaceOp: ev.surface_op,
+    streaming,
+    childSessionId: ev.child_session_id,
+  };
 }
 
-function isOptimisticUserShell(row: ChatRow): boolean {
-  return row.id.startsWith("user-") && isUserMessage(row.item);
-}
-
-function takeAt(
-  rows: ChatRow[],
-  predicate: (row: ChatRow) => boolean,
-): ChatRow | undefined {
-  const idx = rows.findIndex(predicate);
-  if (idx < 0) return undefined;
-  return rows.splice(idx, 1)[0];
-}
-
-/** Another row holding this wire ordinal must not keep it as identity. */
-function vacateIndex(rows: ChatRow[], index: number, keepId: string): void {
-  for (let i = rows.length - 1; i >= 0; i--) {
-    if (rowBufferIndex(rows[i]) !== index || rows[i].id === keepId) continue;
-    if (itemAuthorityId(rows[i].item)) {
-      rows[i] = { ...rows[i], bufferIndex: undefined };
-    } else {
-      rows.splice(i, 1);
-    }
-  }
-}
-
-function ingestBufferItems(
-  set: (partial: Partial<MessageState>) => void,
-  getState: () => MessageState,
-  sessionId: string,
-  items: BufferRowItem[],
-  loadMeta?: { start: number; userDetailBefore: number; dropIdleLive?: boolean },
-): void {
-  if (items.length === 0) return;
-
-  const state = getState();
-  const slice = getSlice(state.bySession, sessionId);
-  const incoming = slice.blockLogGrowth
-    ? items.filter((entry) => entry.bufferIndex < slice.committedBufferEnd)
-    : items;
-  if (incoming.length === 0) return;
-
-  const rows = [...slice.messages];
-  const hadSealed = rows.some((row) => rowBufferIndex(row) != null);
+function upsertEvents(slice: MessageSlice, events: WireBufferEvent[]): MessageSlice {
+  const bySeq = new Map(slice.bySeq);
+  const itemIdToSeq = new Map(slice.itemIdToSeq);
+  let pendingUser = slice.pendingUser;
   let shapeError = slice.shapeError;
 
-  for (const entry of incoming) {
-    const serverIndex = entry.bufferIndex;
-    const kind = wireRowKind(entry.kind);
-    const id = committedIdentity(entry.item, serverIndex);
+  const empty = slice.bySeq.size === 0;
 
-    let source: ChatRow | undefined;
-    if (isDetailUserEntry(entry.item, entry.kind)) {
-      source = takeAt(
-        rows,
-        (row) =>
-          isOptimisticUserShell(row) &&
-          itemPlainText(row.item) === itemPlainText(entry.item),
-      );
-    }
-    if (!source && !loadMeta) {
-      const liveIdx = findRowForSeal(rows, entry.item);
-      if (liveIdx >= 0 && rowBufferIndex(rows[liveIdx]) == null) {
-        source = rows.splice(liveIdx, 1)[0];
-      }
-    }
-    if (!source) {
-      source = takeAt(rows, (row) => {
-        if (row.id !== id) return false;
-        const rowAid = itemAuthorityId(row.item);
-        const entryAid = itemAuthorityId(entry.item);
-        // Stale live key whose Item mutated to a different authority id.
-        if (rowAid && entryAid && rowAid !== entryAid) return false;
-        return true;
-      });
+  for (const ev of events) {
+    if (!Number.isFinite(ev.seq) || ev.seq < 0) continue;
+    if (slice.blockLogGrowth && ev.seq >= slice.toSeq) continue;
+
+    const prev = bySeq.get(ev.seq);
+    const live = !isSealedItem(ev.item);
+    if (!prev) {
+      bySeq.set(ev.seq, rowFromEvent(ev, live));
     } else {
-      const dup = rows.findIndex((row) => row.id === id);
-      if (dup >= 0) rows.splice(dup, 1);
-    }
-
-    vacateIndex(rows, serverIndex, id);
-
-    if (source) {
-      const { row, mismatch } = sealProjectionRow(
-        source,
-        entry.item,
-        serverIndex,
-        kind,
-      );
+      const mismatch = sealMismatchError(prev.item, ev.item);
       if (mismatch) {
         shapeError = mismatch;
         useToastStore.getState().showToast(mismatch, "error");
-        rows.push({
-          id,
-          bufferIndex: serverIndex,
-          item: entry.item,
-          kind,
-          streaming: false,
-        });
+        bySeq.set(ev.seq, rowFromEvent(ev, live));
       } else {
-        rows.push({ ...row, id });
+        bySeq.set(ev.seq, {
+          ...prev,
+          item: mergeCommittedItem(prev.item, ev.item),
+          eventType: ev.type,
+          surfaceOp: ev.surface_op ?? prev.surfaceOp,
+          streaming: live,
+          childSessionId: ev.child_session_id ?? prev.childSessionId,
+        });
       }
-    } else {
-      rows.push({
-        id,
-        bufferIndex: serverIndex,
-        item: entry.item,
-        kind,
-        streaming: false,
-      });
+    }
+    rememberItemSeq(itemIdToSeq, ev.item, ev.seq);
+
+    if (pendingUser && isHumanUserRow(rowFromEvent(ev, false))) {
+      if (itemPlainText(pendingUser.item) === itemPlainText(ev.item)) {
+        pendingUser = null;
+      }
     }
   }
 
-  const dropIdleLive = loadMeta?.dropIdleLive === true;
-  const kept = dropIdleLive
-    ? rows.filter((row) => rowBufferIndex(row) != null || row.id.startsWith("user-"))
-    : rows;
-
-  const ordered = orderProjection(kept);
-  const nextCommitted = slice.blockLogGrowth
-    ? slice.committedBufferEnd
-    : derivedCommittedEnd(ordered);
-
-  const indices = incoming.map((i) => i.bufferIndex);
-  const minIdx = Math.min(...indices);
-  const maxIdx = Math.max(...indices) + 1;
-  const nextStart = hadSealed ? Math.min(slice.bufferViewStart, minIdx) : minIdx;
-
-  let userDetailBefore = slice.userDetailBefore;
-  if (loadMeta && (!hadSealed || loadMeta.start < slice.bufferViewStart)) {
-    userDetailBefore = loadMeta.userDetailBefore;
+  const messages = sortedMessages(bySeq);
+  let fromSeq = slice.fromSeq;
+  let toSeq = slice.toSeq;
+  const seqs = events.map((e) => e.seq).filter((s) => Number.isFinite(s) && s >= 0);
+  if (seqs.length > 0) {
+    const minSeq = Math.min(...seqs);
+    const maxExcl = Math.max(...seqs) + 1;
+    fromSeq = empty ? minSeq : Math.min(slice.fromSeq, minSeq);
+    toSeq = Math.max(slice.toSeq, maxExcl);
   }
 
-  const nextSlice: MessageSlice = {
+  return {
     ...slice,
-    messages: ordered,
-    bufferViewStart: nextStart,
-    bufferViewEnd: Math.max(slice.bufferViewEnd, maxIdx),
-    committedBufferEnd: nextCommitted,
-    userDetailBefore,
+    bySeq,
+    messages,
+    pendingUser,
+    itemIdToSeq,
+    fromSeq,
+    toSeq,
+    userDetailBefore: fromSeq === 0 ? 0 : slice.userDetailBefore,
     shapeError,
   };
+}
 
-  const bySession = new Map(state.bySession);
-  bySession.set(sessionId, nextSlice);
-  set({ bySession });
+interface MessageState {
+  bySession: Map<string, MessageSlice>;
 }
 
 interface MessageStore extends MessageState {
@@ -327,7 +223,7 @@ interface MessageStore extends MessageState {
   onBufferItem: (sessionId: string, bi: BufferItemNotification) => void;
   onBufferReverted: (
     sessionId: string,
-    rev: { session_id: string; committed_end: number },
+    rev: { session_id: string; last_seq: number; next_seq: number },
   ) => void;
   onSubagentBound: (sessionId: string, bound: SubagentBound) => void;
   allowLogGrowth: (sessionId: string) => void;
@@ -341,10 +237,9 @@ interface MessageStore extends MessageState {
   finalizeTurn: (sessionId: string, turnId: string) => void;
   setTurnEndNotice: (sessionId: string, notice: TurnEndNotice | null) => void;
 
-  pushUserMessage: (sessionId: string, row: ChatRow) => void;
-  /** Drop a failed optimistic user row by exact client id (MSG-01). */
-  discardOptimisticUserMessage: (sessionId: string, rowId: string) => void;
-  loadRange: (sessionId: string, start: number, end: number) => Promise<void>;
+  pushPendingUser: (sessionId: string, pending: PendingUser) => void;
+  discardOptimisticUserMessage: (sessionId: string, clientId: string) => void;
+  loadRange: (sessionId: string, fromSeq: number, toSeq: number) => Promise<void>;
   loadMoreHistory: (sessionId: string) => void;
   revertToUserAnchor: (sessionId: string, k: number) => void;
   revertFiles: (sessionId: string, k: number) => void;
@@ -373,45 +268,38 @@ export const useMessageStore = create<MessageStore>((set, get) => {
     bySession: new Map(),
 
     onBufferLoaded: (sessionId, loaded) => {
-      if (
-        !loaded.indices ||
-        loaded.indices.length !== loaded.items.length
-      ) {
-        reportShapeError(
-          patch,
-          sessionId,
-          "buffer/load rejected: missing or mismatched history indices",
-        );
+      if (!Array.isArray(loaded.events)) {
+        reportShapeError(patch, sessionId, "buffer/load rejected: missing events");
         patch(sessionId, { loadingHistory: false });
         return;
       }
-      const itemList: BufferRowItem[] = loaded.items.map((item, i) => ({
-        bufferIndex: loaded.indices[i]!,
-        item,
-        kind: loaded.kinds?.[i],
-      }));
-      const turn = useTurnStore.getState().byId.get(sessionId);
-      const turnLive =
-        turn?.runState === "running" || turn?.runState === "cancelling";
-      ingestBufferItems(set, get, sessionId, itemList, {
-        start: loaded.start,
-        userDetailBefore: loaded.user_detail_before ?? 0,
-        dropIdleLive: !turnLive,
-      });
-      const bindings = loaded.subagent_bindings ?? {};
-      const slice = getSlice(get().bySession, sessionId);
+      const missingSeq = loaded.events.some((e) => !Number.isFinite(e.seq));
+      if (missingSeq) {
+        reportShapeError(patch, sessionId, "buffer/load rejected: event missing seq");
+        patch(sessionId, { loadingHistory: false });
+        return;
+      }
+      const state = get();
+      const slice = getSlice(state.bySession, sessionId);
+      const next = upsertEvents(slice, loaded.events);
+      next.fromSeq = loaded.from_seq;
+      next.toSeq = Math.max(next.toSeq, loaded.to_seq);
+      next.userDetailBefore = loaded.from_seq === 0 ? 0 : slice.userDetailBefore;
+      next.loadingHistory = false;
+      next.subagentBindings = {
+        ...slice.subagentBindings,
+        ...(loaded.subagent_bindings ?? {}),
+      };
       debugTrace("buffer", "load", {
         sessionId,
-        start: loaded.start,
-        end: loaded.end,
-        items: loaded.items.length,
-        ...overlayStats(slice.messages),
-        committedEnd: slice.committedBufferEnd,
+        fromSeq: loaded.from_seq,
+        toSeq: loaded.to_seq,
+        events: loaded.events.length,
+        rows: next.messages.length,
       });
-      patch(sessionId, {
-        loadingHistory: false,
-        subagentBindings: { ...slice.subagentBindings, ...bindings },
-      });
+      const bySession = new Map(state.bySession);
+      bySession.set(sessionId, next);
+      set({ bySession });
     },
 
     onSubagentBound: (sessionId, bound) => {
@@ -429,188 +317,143 @@ export const useMessageStore = create<MessageStore>((set, get) => {
     },
 
     onBufferItem: (sessionId, bi) => {
-      const slice = getSlice(get().bySession, sessionId);
-      const itemMeta = {
-        sessionId,
-        index: bi.buffer_index,
-        type: bi.item.type,
-        committedEnd: slice.committedBufferEnd,
-      };
-
+      if (!Number.isFinite(bi.seq)) return;
       if (bi.child_session_id && bi.item.type === "function_call") {
         const callId = "call_id" in bi.item ? bi.item.call_id : undefined;
         if (callId) {
+          const slice = getSlice(get().bySession, sessionId);
           patch(sessionId, {
             subagentBindings: {
-              ...getSlice(get().bySession, sessionId).subagentBindings,
+              ...slice.subagentBindings,
               [callId]: bi.child_session_id,
             },
           });
         }
       }
-
-      ingestBufferItems(set, get, sessionId, [
-        {
-          bufferIndex: bi.buffer_index,
-          item: bi.item,
-          kind: bi.kind,
-        },
-      ]);
-      const after = getSlice(get().bySession, sessionId);
+      const state = get();
+      const slice = getSlice(state.bySession, sessionId);
+      const next = upsertEvents(slice, [bi]);
       debugTrace("buffer", "item.sealed", {
-        ...itemMeta,
-        kind: wireRowKind(bi.kind),
-        ...overlayStats(after.messages),
+        sessionId,
+        seq: bi.seq,
+        type: bi.type,
+        rows: next.messages.length,
       });
+      const bySession = new Map(state.bySession);
+      bySession.set(sessionId, next);
+      set({ bySession });
     },
 
     applyStreamEvent: (sessionId, turnId, _step, event) => {
       const slice = getSlice(get().bySession, sessionId);
       const turn = useTurnStore.getState().byId.get(sessionId);
 
-      // A turn-level failure (response.failed / error) invalidates every
-      // in-flight function_call — no half-streamed call may stay "in_progress".
-      // `response.incomplete` is a seal terminal, not a failure: live rows wait
-      // for buffer/item.
       if (isStreamFailureEvent(event)) {
-        debugTrace("buffer", "stream.failed", {
-          sessionId,
-          turnId,
-          type: event.type,
-          ...overlayStats(slice.messages),
-        });
-        const messages = slice.messages.map((m) => {
-          const failed = markFunctionCallsFailed([m.item])[0];
-          return failed !== m.item
-            ? { ...m, item: failed, streaming: false }
-            : m;
-        });
-        patch(sessionId, { messages });
+        const bySeq = new Map(slice.bySeq);
+        for (const [seq, row] of bySeq) {
+          const failed = markFunctionCallsFailed([row.item])[0];
+          if (failed !== row.item) {
+            bySeq.set(seq, { ...row, item: failed, streaming: false });
+          }
+        }
+        patch(sessionId, { bySeq, messages: sortedMessages(bySeq) });
         return;
       }
 
       const itemIdHint = streamEventItemIdHint(event);
-      const existingIdx = itemIdHint ? findRowByItemId(slice.messages, itemIdHint) : -1;
-      // Authority already sealed this slot (buffer/item). Ignore late deltas —
-      // rAF batches can land after seal and would append onto the full text.
-      if (existingIdx >= 0 && rowBufferIndex(slice.messages[existingIdx]) != null) {
-        return;
-      }
+      if (!itemIdHint) return;
+      const seq = slice.itemIdToSeq.get(itemIdHint);
+      if (seq == null) return;
+      const existing = slice.bySeq.get(seq);
+      if (!existing) return;
+      // Sealed seq: ignore late / reused item_id deltas (G4).
+      if (isSealedItem(existing.item)) return;
       if (
-        existingIdx < 0 &&
         turn &&
         (turn.runState !== "running" || turn.currentTurnId !== turnId)
       ) {
         return;
       }
-      const existingItem =
-        existingIdx >= 0 ? slice.messages[existingIdx].item : undefined;
 
-      const result = applyStreamEvent(existingItem, event);
+      const result = applyStreamEvent(existing.item, event);
       if (result.kind === "noop") return;
       if (result.kind === "error") {
         reportShapeError(patch, sessionId, result.message);
         return;
       }
 
-      const messages = [...slice.messages];
-      const rowId = liveItemRowId(result.itemId);
-      const idx = existingIdx >= 0 ? existingIdx : findRowByItemId(messages, result.itemId);
-      if (idx >= 0) {
-        messages[idx] = {
-          ...messages[idx],
-          id: rowId,
-          item: result.item,
-          streaming: true,
-        };
-      } else {
-        messages.push({
-          id: rowId,
-          item: result.item,
-          streaming: true,
-        });
-      }
+      const bySeq = new Map(slice.bySeq);
+      bySeq.set(seq, { ...existing, item: result.item, streaming: true });
       patch(sessionId, {
-        messages: orderProjection(messages),
+        bySeq,
+        messages: sortedMessages(bySeq),
         shapeError: null,
       });
     },
 
     finalizeTurn: (sessionId, _turnId) => {
       const slice = getSlice(get().bySession, sessionId);
-      let droppedLive = 0;
-      const messages = slice.messages.filter((m) => {
-        if (m.id.startsWith("live-") && rowBufferIndex(m) == null) {
-          droppedLive += 1;
-          return false;
-        }
-        return true;
-      }).map((m) => (m.streaming ? { ...m, streaming: false } : m));
-      debugTrace("buffer", "finalize", {
-        sessionId,
-        droppedLive,
-        ...overlayStats(messages),
-      });
-      patch(sessionId, {
-        messages: orderProjection(messages),
-      });
+      const bySeq = new Map(slice.bySeq);
+      for (const [seq, row] of bySeq) {
+        if (row.streaming) bySeq.set(seq, { ...row, streaming: false });
+      }
+      patch(sessionId, { bySeq, messages: sortedMessages(bySeq) });
     },
 
     setTurnEndNotice: (sessionId, notice) => {
       patch(sessionId, { turnEndNotice: notice });
-      // Surface turn-end failures (error / max steps / hook blocked) via toast
-      // instead of the old persistent in-panel banner.
       if (notice) {
         useToastStore.getState().showToast(notice.message, "error", 8000);
       }
     },
 
-    pushUserMessage: (sessionId, row) => {
+    pushPendingUser: (sessionId, pending) => {
       const slice = getSlice(get().bySession, sessionId);
-      patch(sessionId, {
-        messages: orderProjection([...slice.messages, row]),
-      });
+      patch(sessionId, { pendingUser: slice.pendingUser ?? pending });
     },
 
-    discardOptimisticUserMessage: (sessionId, rowId) => {
-      if (!rowId.startsWith("user-")) return;
+    discardOptimisticUserMessage: (sessionId, clientId) => {
       const slice = getSlice(get().bySession, sessionId);
-      const messages = slice.messages.filter((m) => m.id !== rowId);
-      if (messages.length === slice.messages.length) return;
-      patch(sessionId, { messages });
+      if (slice.pendingUser?.clientId !== clientId) return;
+      patch(sessionId, { pendingUser: null });
     },
 
     onBufferReverted: (sessionId, rev) => {
       const slice = getSlice(get().bySession, sessionId);
-      const messages = slice.messages.filter((m) => {
-        const idx = rowBufferIndex(m);
-        return idx !== null && idx < rev.committed_end;
-      });
+      const bySeq = new Map<number, ChatRow>();
+      const itemIdToSeq = new Map<string, number>();
+      for (const [seq, row] of slice.bySeq) {
+        if (seq < rev.next_seq) {
+          bySeq.set(seq, row);
+          rememberItemSeq(itemIdToSeq, row.item, seq);
+        }
+      }
+      const messages = sortedMessages(bySeq);
       debugTrace("buffer", "reverted", {
         sessionId,
-        committedEnd: rev.committed_end,
+        nextSeq: rev.next_seq,
         dropped: slice.messages.length - messages.length,
-        ...overlayStats(messages),
       });
-      const nextStart = Math.min(slice.bufferViewStart, rev.committed_end);
       patch(sessionId, {
+        bySeq,
         messages,
-        bufferViewStart: nextStart,
-        bufferViewEnd: rev.committed_end,
-        committedBufferEnd: rev.committed_end,
-        userDetailBefore: nextStart === 0 ? 0 : slice.userDetailBefore,
+        itemIdToSeq,
+        pendingUser: null,
+        fromSeq: Math.min(slice.fromSeq, rev.next_seq),
+        toSeq: rev.next_seq,
+        userDetailBefore: rev.next_seq === 0 ? 0 : slice.userDetailBefore,
         shapeError: null,
         blockLogGrowth: true,
         turnEndNotice: null,
       });
     },
 
-    loadRange: async (sessionId, start, end) => {
+    loadRange: async (sessionId, fromSeq, toSeq) => {
       const loaded = await useConnectionStore
         .getState()
         .sendRpc<BufferLoaded>("buffer/load", {
-          start,
-          end,
+          from_seq: fromSeq,
+          to_seq: toSeq,
           session_id: sessionId,
         });
       get().onBufferLoaded(sessionId, loaded);
@@ -618,16 +461,16 @@ export const useMessageStore = create<MessageStore>((set, get) => {
 
     loadMoreHistory: (sessionId) => {
       const slice = getSlice(get().bySession, sessionId);
-      if (slice.bufferViewStart <= 0) return;
-      const end = slice.bufferViewStart;
-      const start = Math.max(0, end - HISTORY_PAGE);
-      if (start >= end) return;
+      if (slice.fromSeq <= 0) return;
+      const toSeq = slice.fromSeq;
+      const fromSeq = Math.max(0, toSeq - HISTORY_PAGE);
+      if (fromSeq >= toSeq) return;
       patch(sessionId, { loadingHistory: true });
       useConnectionStore
         .getState()
         .sendRpc<BufferLoaded>("buffer/load", {
-          start,
-          end,
+          from_seq: fromSeq,
+          to_seq: toSeq,
           session_id: sessionId,
         })
         .then((loaded) => {
@@ -663,18 +506,9 @@ export const useMessageStore = create<MessageStore>((set, get) => {
     },
 
     reset: (sessionId) => {
-      patch(sessionId, {
-        messages: [],
-        bufferViewStart: 0,
-        bufferViewEnd: 0,
-        committedBufferEnd: 0,
-        userDetailBefore: 0,
-        loadingHistory: false,
-        shapeError: null,
-        subagentBindings: {},
-        blockLogGrowth: false,
-        turnEndNotice: null,
-      });
+      const bySession = new Map(get().bySession);
+      bySession.set(sessionId, emptySlice());
+      set({ bySession });
     },
   };
 });

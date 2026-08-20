@@ -106,7 +106,7 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
       project: "/p",
       agent_id: "default",
       api_model_id: "m",
-      buffer: { len, revision: 1, committed_end: len },
+      buffer: { last_seq: len - 1, next_seq: len, revision: 1 },
       turn,
       context_window: 0,
     };
@@ -118,10 +118,9 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
     useConnectionStore.setState({
       sendRpc: vi.fn(async () => ({
         session_id: "s-snap",
-        start: 0,
-        end: 0,
-        items: [],
-        user_detail_before: 0,
+        from_seq: 0,
+        to_seq: 0,
+        events: [],
       })),
     } as never);
   });
@@ -129,16 +128,15 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
   it("cold-opens a history session with buffer/load of the last 40", () => {
     const sendRpc = vi.fn(async () => ({
       session_id: "s-cold",
-      start: 0,
-      end: 3,
-      items: [],
-      user_detail_before: 0,
+      from_seq: 0,
+      to_seq: 3,
+      events: [],
     }));
     useConnectionStore.setState({ sendRpc } as never);
     useSessionStore.getState().applySnapshot(snap("s-cold", 3));
     expect(sendRpc).toHaveBeenCalledWith("buffer/load", {
-      start: 0,
-      end: 3,
+      from_seq: 0,
+      to_seq: 3,
       session_id: "s-cold",
     });
   });
@@ -149,16 +147,13 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
     useConnectionStore.setState({ sendRpc } as never);
     useMessageStore.getState().onBufferLoaded(sid, {
       session_id: sid,
-      start: 0,
-      end: 3,
-      items: [
-        { type: "message", role: "user", content: [{ type: "input_text", text: "a" }] },
-        { type: "message", role: "assistant", id: "a0", status: "completed", content: [{ type: "output_text", text: "b", annotations: [] }] },
-        { type: "message", role: "user", content: [{ type: "input_text", text: "c" }] },
+      from_seq: 0,
+      to_seq: 3,
+      events: [
+        { seq: 0, type: "item/user", surface_op: "append", item: { type: "message", role: "user", content: [{ type: "input_text", text: "a" }] } },
+        { seq: 1, type: "item/assistant", surface_op: "append", item: { type: "message", role: "assistant", id: "a0", status: "completed", content: [{ type: "output_text", text: "b", annotations: [] }] } },
+        { seq: 2, type: "item/user", surface_op: "append", item: { type: "message", role: "user", content: [{ type: "input_text", text: "c" }] } },
       ],
-      kinds: ["detail", "detail", "detail"],
-      indices: [0, 1, 2],
-      user_detail_before: 0,
     });
     useTurnStore.getState().onTurnStarted({
       session_id: sid,

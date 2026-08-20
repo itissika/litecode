@@ -97,7 +97,9 @@ vi.mock("../stores/sessionStore", () => ({
 const makeScrollRef = () => React.createRef<HTMLDivElement>();
 
 const liveReasoning: ChatRow = {
-  id: "live-rs_1",
+  seq: 0,
+  eventType: "item/assistant",
+  surfaceOp: "append",
   streaming: true,
   item: {
     type: "reasoning",
@@ -109,8 +111,9 @@ const liveReasoning: ChatRow = {
 };
 
 const sealedReasoning: ChatRow = {
-  id: "live-rs_1",
-  bufferIndex: 1,
+  seq: 1,
+  eventType: "item/assistant",
+  surfaceOp: "append",
   streaming: false,
   item: {
     type: "reasoning",
@@ -122,7 +125,9 @@ const sealedReasoning: ChatRow = {
 };
 
 const liveTool: ChatRow = {
-  id: "live-fc_1",
+  seq: 2,
+  eventType: "item/tool_call",
+  surfaceOp: "append",
   streaming: true,
   item: {
     type: "function_call",
@@ -263,8 +268,9 @@ describe("ProcessGroup header buckets", () => {
 describe("MessageList system reminder", () => {
   it("renders a one-line notice without revert or reminder body", () => {
     const reminder: ChatRow = {
-      id: "live-msg_rem",
-      bufferIndex: 0,
+      seq: 0,
+      eventType: "item/user",
+      surfaceOp: "append",
       item: {
         type: "message",
         role: "user",

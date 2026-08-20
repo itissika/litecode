@@ -311,7 +311,11 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
           }
 
           case "buffer/reverted": {
-            const rev = params as unknown as { session_id: string; committed_end: number };
+            const rev = params as unknown as {
+              session_id: string;
+              last_seq: number;
+              next_seq: number;
+            };
             turn?.clearPendingStream?.(rev.session_id);
             const turnSlice = turn?.byId?.get(rev.session_id);
             if (
