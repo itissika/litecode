@@ -212,6 +212,7 @@ impl AgentDeps for AgentRuntime {
             Ok(self.context_pipeline.commit_step(s, items)?)
         })?;
         if outcome.discarded {
+            // 回退 shortened the log; do not append this turn's tail.
             return Ok(true);
         }
         if outcome.committed {
@@ -393,6 +394,8 @@ impl AgentRuntime {
         // Split borrows so the stream closure can mutate token meters while the
         // provider call borrows the (disjoint) binding fields.
         let observer = std::sync::Arc::clone(&self.observer);
+        let sessions = Arc::clone(&self.sessions);
+        let session_id = self.session_id.clone();
         let provider = &self.turn_llm.provider;
         let api_key = &self.turn_llm.api_key;
         let stats = &mut self.turn_token_stats;
@@ -401,6 +404,17 @@ impl AgentRuntime {
         let request_item_count = request.input.len();
         let on_event: Option<Box<dyn FnMut(crate::types::StreamEvents) + Send + '_>> =
             Some(Box::new(move |ev| {
+                if let crate::types::StreamEvents::ResponseOutputItemAdded(added) = &ev {
+                    let item = Item::from(added.item.clone());
+                    match sessions.with_entry_store(&session_id, |s| {
+                        s.persist_item(&item)?;
+                        Ok(())
+                    })
+                    {
+                        Ok(()) => observer.on_internal(InternalEvent::StepCommitted),
+                        Err(e) => tracing::warn!(%e, "persist Item at output_item.added failed"),
+                    }
+                }
                 if let crate::types::StreamEvents::ResponseCompleted(cev) = &ev
                     && let Some(usage) = &cev.response.usage
                 {

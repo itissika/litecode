@@ -158,6 +158,13 @@ impl ContextPipeline {
             return Ok(false);
         }
 
+        if let Ok(from_log) = sessions.with_entry_store(session_id, |s| Ok(s.load_transcript()?))
+            && from_log.len() >= self.state.borrow().committed_model_len
+        {
+            *turn_items = from_log;
+            self.state.borrow_mut().committed_model_len = turn_items.len();
+        }
+
         let mut transcript = turn_items.clone();
         let committed_len = self.state.borrow().committed_model_len;
         let reminder = tail_reminders::build_compaction_content(task_state);

@@ -245,3 +245,14 @@ pub fn item_from_event(event: &SessionEvent) -> Result<Item> {
 pub fn skip_empty_assistant(event: &SessionEvent, item: &Item) -> bool {
     matches!(event.event_type, EventType::ItemAssistant) && item_text_preview(item).is_empty()
 }
+
+/// Unmatched tool output: omit from Surface Item[] like empty assistants. Do not DELETE the row.
+pub fn skip_unmatched_tool_output(
+    item: &Item,
+    valid_call_ids: &std::collections::HashSet<String>,
+) -> bool {
+    matches!(
+        item,
+        Item::FunctionCallOutput(out) if !valid_call_ids.contains(&out.call_id)
+    )
+}

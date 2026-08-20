@@ -4,6 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::event::{
     EventType, Seq, SessionEvent, item_from_event, shadowed_nodes, skip_empty_assistant,
+    skip_unmatched_tool_output,
 };
 use crate::types::{Item, LitecodeError, Result};
 
@@ -108,18 +109,32 @@ pub fn fold_surface(events: &[SessionEvent]) -> Result<Surface> {
 }
 
 /// Model-visible Items in `surface.nodes` order.
-/// Usage-only assistant rows (empty content) are omitted from the Item[] projection;
-/// the seq remains on `surface.nodes`.
+/// Usage-only assistant rows (empty content) and unmatched tool outputs are
+/// omitted from the Item[] projection; the seq remains on `surface.nodes`.
 pub fn derive_messages(events: &[SessionEvent]) -> Result<Vec<Item>> {
     let surface = fold_surface(events)?;
-    let mut out = Vec::with_capacity(surface.nodes.len());
+    let mut loaded = Vec::with_capacity(surface.nodes.len());
     for seq in surface.nodes {
         let event = events
             .iter()
             .find(|e| e.seq == seq)
             .ok_or_else(|| LitecodeError::InvalidSessionEvent(format!("surface seq {seq} missing")))?;
         let item = item_from_event(event)?;
+        loaded.push((event, item));
+    }
+    let valid_call_ids: std::collections::HashSet<String> = loaded
+        .iter()
+        .filter_map(|(_, item)| match item {
+            Item::FunctionCall(fc) => Some(fc.call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut out = Vec::with_capacity(loaded.len());
+    for (event, item) in loaded {
         if skip_empty_assistant(event, &item) {
+            continue;
+        }
+        if skip_unmatched_tool_output(&item, &valid_call_ids) {
             continue;
         }
         out.push(item);
@@ -134,10 +149,23 @@ pub fn derive_transcript_items(events: &[SessionEvent]) -> Result<Vec<Item>> {
         .filter(|event| event.surface_op.as_ref() == Some(&SurfaceOp::Append))
         .collect();
     origin.sort_by_key(|event| event.seq);
-    let mut out = Vec::with_capacity(origin.len());
+    let mut loaded = Vec::with_capacity(origin.len());
     for event in origin {
-        let item = item_from_event(event)?;
+        loaded.push((event, item_from_event(event)?));
+    }
+    let valid_call_ids: std::collections::HashSet<String> = loaded
+        .iter()
+        .filter_map(|(_, item)| match item {
+            Item::FunctionCall(fc) => Some(fc.call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut out = Vec::with_capacity(loaded.len());
+    for (event, item) in loaded {
         if skip_empty_assistant(event, &item) {
+            continue;
+        }
+        if skip_unmatched_tool_output(&item, &valid_call_ids) {
             continue;
         }
         out.push(item);

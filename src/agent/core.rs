@@ -144,7 +144,7 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
     TurnOutcome::Completed { final_text }
 }
 
-fn persist_or_stop(
+    fn persist_or_stop(
     deps: &impl AgentDeps,
     transcript: &mut Transcript,
     persist_at: usize,
@@ -155,6 +155,8 @@ fn persist_or_stop(
             transcript.truncate(persist_at);
             Some(TurnOutcome::Error(e))
         }
+        // `true` means persist skipped a write because the log shrank (回退).
+        // User 取消 is `is_cancelled()` plus 封口, not projection length.
         Ok(true) => Some(TurnOutcome::Cancelled {
             final_text: final_text.to_string(),
         }),

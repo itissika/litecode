@@ -1525,15 +1525,13 @@ async fn agent_persist_after_revert_does_not_replay_or_pad() {
     assert_eq!(litecode::types::item_text_preview(&db[0]), "keep");
 }
 
-// ── PROBE B: commit must clear orphans from memory AND DB, no drift ──────────
+// ── PROBE B: unmatched tool output stays on the log; Surface omits it ────────
 
 #[test]
-fn commit_snips_memory_and_db_orphan_without_drift() {
+fn commit_snips_memory_orphan_without_deleting_log_seq() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (db_path, sid) = setup_workspace_and_session(dir.path(), "default");
 
-    // Seed a valid call + output, plus an orphan output already persisted in DB
-    // (mirrors a DB that carries an orphan from an earlier snip).
     let fc = function_call_item("c1", "read", "{}", "fc_1");
     let live_out = Item::FunctionCallOutput(FunctionCallOutputItemParam {
         call_id: "c1".into(),
@@ -1551,33 +1549,35 @@ fn commit_snips_memory_and_db_orphan_without_drift() {
         let s = Session::resume(&db_path, &sid).unwrap();
         s.insert_detail_rows(&[fc, live_out.clone(), orphan_out])
             .unwrap();
+        assert_eq!(s.load_events().unwrap().len(), 3);
+        assert!(
+            !s.load_transcript()
+                .unwrap()
+                .iter()
+                .any(|i| matches!(i, Item::FunctionCallOutput(o) if o.call_id == "gone")),
+            "Surface must omit unmatched tool output without deleting the row"
+        );
     }
 
-    let sessions = test_sessions(&db_path);
-    sessions.register_for_test(Session::resume(&db_path, &sid).unwrap());
     let session = Session::resume(&db_path, &sid).unwrap();
     let ctx = test_context(dir.path());
     let pipeline = ContextPipeline::new(&session, 10_000, ctx.clone(), dir.path().to_path_buf());
 
-    // begin_turn loads [fc, live_out, orphan_out]; the orphan is in memory.
     let mut turn = pipeline.begin_turn(&session).unwrap();
-    assert!(
-        turn.iter()
-            .any(|i| matches!(i, Item::FunctionCallOutput(o) if o.call_id == "gone")),
-        "orphan must be present in memory before commit"
-    );
-
-    pipeline.commit_step(&session, &mut turn).unwrap();
-
-    // Memory no longer holds the orphan (commit snips in-memory orphans).
     assert!(
         !turn
             .iter()
             .any(|i| matches!(i, Item::FunctionCallOutput(o) if o.call_id == "gone")),
-        "commit must remove the orphan from memory"
+        "begin_turn working set is Surface, not the raw log"
     );
 
-    // DB no longer holds the orphan row.
+    pipeline.commit_step(&session, &mut turn).unwrap();
+    assert_eq!(
+        session.load_events().unwrap().len(),
+        3,
+        "persist must not DELETE a log seq to hide an unmatched output"
+    );
+
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let orphan_rows: i64 = conn
         .query_row(
@@ -1588,10 +1588,8 @@ fn commit_snips_memory_and_db_orphan_without_drift() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(orphan_rows, 0, "commit must delete the orphan row from DB");
+    assert_eq!(orphan_rows, 1, "orphan row remains; identity is seq");
 
-    // A second commit of the same (already-cleaned) set must not re-write or drift:
-    // row count stays stable and the live output survives exactly once.
     let rows_before = session.load_transcript().unwrap().len();
     let mut turn2 = turn.clone();
     pipeline.commit_step(&session, &mut turn2).unwrap();
@@ -1612,5 +1610,280 @@ fn commit_snips_memory_and_db_orphan_without_drift() {
     assert_eq!(
         live_rows, 1,
         "live FunctionCallOutput must survive exactly once"
+    );
+}
+
+/// Product path: compact already landed, user sends the next message.
+/// Mirrors `AgentRuntime::run_with_turn`: begin_turn → push user → commit_step
+/// → persist_item(added) → commit_step, plus the next-step `prepare_step` overlay.
+#[tokio::test(flavor = "current_thread")]
+async fn compact_then_send_message_matches_run_with_turn() {
+    use litecode::authority::responses::{
+        AssistantRole, MessageItem, OutputMessage, OutputMessageContent, OutputStatus,
+        OutputTextContent,
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (db_path, sid) = setup_workspace_and_session(dir.path(), "default");
+    let seed: Vec<Item> = (0..6).map(|i| user_text(format!("pre-{i}"))).collect();
+    {
+        let s = Session::resume(&db_path, &sid).unwrap();
+        s.insert_detail_rows(&seed).unwrap();
+        s.apply_compact_checkpoint_from(&user_text("[Conversation summary]\nrolled"), Some(4), 10)
+            .expect("BLAST-compact: apply_compact_checkpoint_from");
+    }
+
+    let session = Session::resume(&db_path, &sid).unwrap();
+    let log_len = session
+        .load_events()
+        .expect("BLAST-reload: load_events after compact")
+        .len();
+    let surface = session
+        .load_transcript()
+        .expect("BLAST-reload: load_transcript after compact");
+    assert_eq!(
+        log_len, 7,
+        "BLAST-geometry: log should be 6 appends + 1 replace, got {log_len}"
+    );
+    let surface_previews: Vec<String> = surface
+        .iter()
+        .map(litecode::types::item_text_preview)
+        .collect();
+    assert_eq!(
+        surface_previews,
+        vec![
+            "[Conversation summary]\nrolled".to_string(),
+            "pre-4".to_string(),
+            "pre-5".to_string(),
+        ],
+        "BLAST-geometry: surface after compact: {surface_previews:?}"
+    );
+
+    let ctx = test_context(dir.path());
+    let pipeline = ContextPipeline::new(&session, 10_000, ctx.clone(), dir.path().to_path_buf());
+    let mut items = pipeline
+        .begin_turn_with_id(&session, Some("turn-after-compact".into()))
+        .expect("BLAST-begin_turn after compact");
+    assert_eq!(
+        items.len(),
+        3,
+        "BLAST-begin_turn: working set must be surface, got {}",
+        items.len()
+    );
+    assert_eq!(
+        pipeline.persisted_prefix_len(),
+        3,
+        "BLAST-begin_turn: cursor is surface len {}, log len is {log_len}",
+        pipeline.persisted_prefix_len()
+    );
+
+    items.push(user_text("after compact"));
+    let user_commit = pipeline
+        .commit_step(&session, &mut items)
+        .expect("BLAST-user-commit: commit_step returned Err");
+    assert!(
+        !user_commit.discarded,
+        "BLAST-user-commit: Discarded after compact+new user (silent Cancelled). \
+         cursor={} log_len={} surface_now={} items={}",
+        pipeline.persisted_prefix_len(),
+        session.load_events().map(|e| e.len()).unwrap_or(usize::MAX),
+        session.load_transcript().map(|t| t.len()).unwrap_or(usize::MAX),
+        items.len()
+    );
+    assert!(
+        user_commit.committed,
+        "BLAST-user-commit: expected Applied, got {user_commit:?}"
+    );
+    let after_user: Vec<String> = session
+        .load_transcript()
+        .unwrap()
+        .iter()
+        .map(litecode::types::item_text_preview)
+        .collect();
+    assert_eq!(
+        after_user.last().map(String::as_str),
+        Some("after compact"),
+        "BLAST-user-commit: new user missing on surface {after_user:?}"
+    );
+
+    let live = Item::Message(MessageItem::Output(OutputMessage {
+        id: "asst_after_compact".into(),
+        role: AssistantRole::Assistant,
+        content: vec![OutputMessageContent::OutputText(OutputTextContent {
+            text: "hel".into(),
+            annotations: vec![],
+            logprobs: None,
+        })],
+        status: OutputStatus::InProgress,
+        phase: None,
+    }));
+    let added_seq = session
+        .persist_item(&live)
+        .expect("BLAST-added: persist_item at output_item.added");
+    let sealed = assistant_text_item("hello after compact", "asst_after_compact");
+    items.push(sealed.clone());
+    let seal_commit = pipeline
+        .commit_step(&session, &mut items)
+        .expect("BLAST-seal-commit: commit_step returned Err");
+    assert!(
+        !seal_commit.discarded,
+        "BLAST-seal-commit: Discarded after persist_item+commit. seq={added_seq} cursor={} items={}",
+        pipeline.persisted_prefix_len(),
+        items.len()
+    );
+
+    let sessions = test_sessions(&db_path);
+    sessions.register_for_test(Session::resume(&db_path, &sid).unwrap());
+    let session2 = Session::resume(&db_path, &sid).unwrap();
+    let mut prepared = session2.load_transcript().unwrap();
+    let prefix_before_prepare = pipeline.persisted_prefix_len();
+    prepare(
+        &pipeline,
+        &sessions,
+        &sid,
+        &ctx,
+        &mut prepared,
+        1,
+        0,
+    )
+    .await
+    .expect("BLAST-prepare_step after compact+user+assistant");
+    assert_eq!(
+        prepared.last().map(litecode::types::item_text_preview),
+        items.last().map(litecode::types::item_text_preview),
+        "BLAST-prepare_step: from_log overlay diverged. prefix_before={prefix_before_prepare} \
+         prepared_len={} items_len={} cursor_now={}",
+        prepared.len(),
+        items.len(),
+        pipeline.persisted_prefix_len()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn compact_then_agent_run_persists_assistant() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (db_path, sid) = setup_workspace_and_session(dir.path(), "default");
+    {
+        let s = Session::resume(&db_path, &sid).unwrap();
+        s.insert_detail_rows(&(0..6).map(|i| user_text(format!("pre-{i}"))).collect::<Vec<_>>())
+            .unwrap();
+        s.apply_compact_checkpoint_from(&user_text("[Conversation summary]\nrolled"), Some(4), 10)
+            .unwrap();
+    }
+    let session = Session::resume(&db_path, &sid).unwrap();
+    let ctx = test_context(dir.path());
+    let pipeline = ContextPipeline::new(&session, 10_000, ctx, dir.path().to_path_buf());
+    let mut transcript = pipeline.begin_turn(&session).unwrap();
+    transcript.push(user_text("after compact"));
+    let user_commit = pipeline.commit_step(&session, &mut transcript).unwrap();
+    assert!(
+        !user_commit.discarded,
+        "BLAST-agent-setup: user commit discarded"
+    );
+
+    let mut deps = PipelinePersistDeps {
+        pipeline,
+        session,
+        responses: vec![vec![assistant_text_item("reply", "msg_after")]],
+        call_index: Cell::new(0),
+        cancelled: Cell::new(false),
+        cancel_after_model: false,
+        revert_k: Cell::new(None),
+        execute_calls: Cell::new(0),
+    };
+    let outcome = agent::run(&mut deps, &mut transcript).await;
+    assert!(
+        matches!(outcome, litecode::agent::TurnOutcome::Completed { .. }),
+        "BLAST-agent-run: expected Completed after compact+new user, got {outcome:?}"
+    );
+    let db = deps.session.load_transcript().unwrap();
+    let previews: Vec<String> = db.iter().map(litecode::types::item_text_preview).collect();
+    assert_eq!(
+        previews.last().map(String::as_str),
+        Some("reply"),
+        "BLAST-agent-run: assistant missing on surface {previews:?}"
+    );
+}
+
+/// Coding-session shape: compact shadows a FunctionCall + Output, then the user
+/// sends a new message. Persist must not DELETE the shadowed output.
+#[test]
+fn compact_then_send_message_with_shadowed_tool_rows() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (db_path, sid) = setup_workspace_and_session(dir.path(), "default");
+    let fc = function_call_item("c_shadow", "bash", "{}", "fc_shadow");
+    let fco = Item::FunctionCallOutput(FunctionCallOutputItemParam {
+        call_id: "c_shadow".into(),
+        output: FunctionCallOutput::Text("ok".into()),
+        id: None,
+        status: None,
+    });
+    {
+        let s = Session::resume(&db_path, &sid).unwrap();
+        s.insert_detail_rows(&[
+            user_text("pre-0"),
+            fc,
+            fco,
+            user_text("keep-a"),
+            user_text("keep-b"),
+        ])
+        .unwrap();
+        // Keep last two user rows (seq 3, 4). Tool pair at 1–2 is shadowed, not deleted.
+        s.apply_compact_checkpoint_from(&user_text("[Conversation summary]\nrolled"), Some(3), 10)
+            .expect("BLAST-compact with tools");
+        let log = s.load_events().expect("BLAST-compact: load_events");
+        assert_eq!(log.len(), 6, "5 items + replace, got {}", log.len());
+    }
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let fco_before: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM transcript_items
+             WHERE session_id = ?1 AND item_type = 'function_call_output'",
+            [&sid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(fco_before, 1, "shadowed tool output must still be in the log");
+
+    let session = Session::resume(&db_path, &sid).unwrap();
+    let ctx = test_context(dir.path());
+    let pipeline = ContextPipeline::new(&session, 10_000, ctx, dir.path().to_path_buf());
+    let mut items = pipeline
+        .begin_turn(&session)
+        .expect("BLAST-begin_turn with shadowed tools");
+    items.push(user_text("after compact"));
+    let outcome = pipeline
+        .commit_step(&session, &mut items)
+        .expect("BLAST-user-commit with shadowed tools: commit_step Err");
+    assert!(
+        !outcome.discarded,
+        "BLAST-user-commit with shadowed tools: Discarded (silent cancel)"
+    );
+
+    let log_after = session.load_events();
+    assert!(
+        log_after.is_ok(),
+        "BLAST-seq-hole: load_events after new-user commit: {:?}",
+        log_after.err()
+    );
+    let fco_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM transcript_items
+             WHERE session_id = ?1 AND item_type = 'function_call_output'",
+            [&sid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        fco_rows, 1,
+        "BLAST-orphan-scan: compact-shadowed FunctionCallOutput was deleted as an orphan"
+    );
+    assert_eq!(
+        items
+            .last()
+            .map(litecode::types::item_text_preview)
+            .as_deref(),
+        Some("after compact"),
+        "BLAST-working-set after commit {items:?}"
     );
 }

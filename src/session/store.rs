@@ -357,8 +357,9 @@ fn normalize_model_id(model_id: Option<&str>) -> Option<String> {
 /// Result of inserting a turn delta into `transcript_items`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitDeltaOutcome {
-    /// Log is shorter than the caller's committed prefix; `items` was replaced
-    /// with the DB view and nothing was inserted.
+    /// The detail log is shorter than the caller's committed prefix (回退 deleted
+    /// rows). `items` was replaced with the DB view and nothing was inserted.
+    /// Not a projection-length check and not by itself a user 取消.
     Discarded,
     Applied {
         preview: Option<(String, i64)>,
@@ -423,6 +424,19 @@ fn item_type_of(item: &Item) -> String {
             .unwrap_or("unknown")
             .to_string(),
         Err(_) => "unknown".into(),
+    }
+}
+
+fn item_log_id(item: &Item) -> Option<String> {
+    match item {
+        Item::Message(MessageItem::Output(m)) if !m.id.is_empty() => Some(m.id.clone()),
+        Item::FunctionCall(fc) => fc
+            .id
+            .clone()
+            .filter(|s| !s.is_empty())
+            .or_else(|| (!fc.call_id.is_empty()).then(|| fc.call_id.clone())),
+        Item::Reasoning(r) => r.id.clone().filter(|s| !s.is_empty()),
+        _ => None,
     }
 }
 
@@ -1387,6 +1401,70 @@ impl Session {
         Ok(preview_updated)
     }
 
+    /// Append one Item (including `in_progress`) and return its `seq`.
+    pub fn persist_item(&self, item: &Item) -> Result<Seq> {
+        if let Some(id) = item_log_id(item) {
+            for event in self.load_events()? {
+                if let Ok(existing) = item_from_event(&event)
+                    && item_log_id(&existing).as_deref() == Some(id.as_str())
+                {
+                    self.seal_item(event.seq, item)?;
+                    return Ok(event.seq);
+                }
+            }
+        }
+        self.insert_detail_rows(std::slice::from_ref(item))?;
+        Ok(self.max_seq()? as Seq)
+    }
+
+    /// 封口: rewrite payload on an existing `seq`. Does not allocate a new row.
+    pub fn seal_item(&self, seq: Seq, item: &Item) -> Result<()> {
+        let seq_i = seq as i64;
+        let exists: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
+            rusqlite::params![self.id, seq_i],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            return Err(LitecodeError::InvalidSessionEvent(format!(
+                "seal_item: no row at seq {seq}"
+            )));
+        }
+        let item_type = item_type_of(item);
+        let (body, body_ref, token_estimate) =
+            encode_detail_row(item, &self.data_root, DEFAULT_SPILL_THRESHOLD)?;
+        let (event_type, surface_op, source_seqs) = encode_surface_envelope(item)?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+        tx.execute(
+            "UPDATE transcript_items
+             SET item_type = ?1, body = ?2, body_ref = ?3, token_estimate = ?4,
+                 event_type = ?5, surface_op = ?6, source_seqs = ?7
+             WHERE session_id = ?8 AND seq = ?9",
+            rusqlite::params![
+                item_type,
+                body,
+                body_ref,
+                token_estimate,
+                event_type,
+                surface_op,
+                source_seqs,
+                self.id,
+                seq_i,
+            ],
+        )?;
+        let plain = crate::types::item_text_preview(item);
+        crate::session::transcript_fts::upsert(&tx, &self.id, seq_i, &plain)?;
+        tx.commit()
+            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Persist the uncommitted suffix. Unmatched `FunctionCallOutput`s are not
+    /// inserted and are dropped from the in-memory working set. Historical log
+    /// rows are never DELETE'd here (only 回退 deletes seqs).
     pub fn commit_turn_delta_with_orphan_cleanup(
         &self,
         items: &mut Vec<Item>,
@@ -1423,8 +1501,8 @@ impl Session {
             .unchecked_transaction()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
 
-        let view_len = derive_messages(&self.load_events()?)?.len();
-        if view_len < expected_committed_len {
+        let log_len = self.load_events()?.len();
+        if log_len < expected_committed_len {
             drop(tx);
             *items = self.load_transcript()?;
             return Ok(CommitDeltaOutcome::Discarded);
@@ -1436,43 +1514,52 @@ impl Session {
             |row| row.get(0),
         )?;
 
-        let mut orphan_seqs: Vec<i64> = Vec::new();
-        {
-            let mut stmt = tx.prepare(
-                "SELECT seq, item_type, body FROM transcript_items
-                 WHERE session_id = ?1 ORDER BY seq ASC",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![self.id], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            })?;
-            for row in rows {
-                let (seq, item_type, body) = row?;
-                if item_type == "function_call_output" {
-                    let call_id = body
-                        .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
-                        .and_then(|v| v.get("call_id").and_then(|c| c.as_str()).map(String::from));
-                    if call_id
-                        .as_deref()
-                        .map(|id| !valid_call_ids.contains(id))
-                        .unwrap_or(true)
-                    {
-                        orphan_seqs.push(seq);
-                    }
-                }
-            }
-        }
-
         let tid = if turn_id.is_empty() {
             format!("orphan-{}", ulid::Ulid::new())
         } else {
             turn_id.to_string()
         };
-        for (i, msg) in insert.iter().enumerate() {
-            let seq = base_seq + 1 + i as i64;
+        let mut id_to_seq: std::collections::HashMap<String, Seq> = std::collections::HashMap::new();
+        for event in self.load_events()? {
+            if let Ok(item) = item_from_event(&event)
+                && let Some(id) = item_log_id(&item)
+            {
+                id_to_seq.insert(id, event.seq);
+            }
+        }
+        let mut next_insert = 0i64;
+        for msg in insert.iter() {
+            if let Some(id) = item_log_id(msg)
+                && let Some(&seq) = id_to_seq.get(&id)
+            {
+                let seq_i = seq as i64;
+                let item_type = item_type_of(msg);
+                let (body, body_ref, token_estimate) =
+                    encode_detail_row(msg, &self.data_root, DEFAULT_SPILL_THRESHOLD)?;
+                let (event_type, surface_op, source_seqs) = encode_surface_envelope(msg)?;
+                tx.execute(
+                    "UPDATE transcript_items
+                     SET item_type = ?1, body = ?2, body_ref = ?3, token_estimate = ?4,
+                         event_type = ?5, surface_op = ?6, source_seqs = ?7
+                     WHERE session_id = ?8 AND seq = ?9",
+                    rusqlite::params![
+                        item_type,
+                        body,
+                        body_ref,
+                        token_estimate,
+                        event_type,
+                        surface_op,
+                        source_seqs,
+                        self.id,
+                        seq_i,
+                    ],
+                )?;
+                let plain = crate::types::item_text_preview(msg);
+                crate::session::transcript_fts::upsert(&tx, &self.id, seq_i, &plain)?;
+                continue;
+            }
+            let seq = base_seq + 1 + next_insert;
+            next_insert += 1;
             let item_type = item_type_of(msg);
             let (body, body_ref, token_estimate) =
                 encode_detail_row(msg, &self.data_root, DEFAULT_SPILL_THRESHOLD)?;
@@ -1489,7 +1576,7 @@ impl Session {
                     self.id,
                     seq,
                     tid,
-                    i as i64,
+                    next_insert - 1,
                     item_type,
                     body,
                     body_ref,
@@ -1502,14 +1589,6 @@ impl Session {
             )?;
             let plain = crate::types::item_text_preview(msg);
             crate::session::transcript_fts::upsert(&tx, &self.id, seq, &plain)?;
-        }
-
-        for seq in orphan_seqs {
-            tx.execute(
-                "DELETE FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
-                rusqlite::params![self.id, seq],
-            )?;
-            crate::session::transcript_fts::delete_one(&tx, &self.id, seq)?;
         }
 
         let now = chrono::Utc::now().timestamp_millis();
@@ -2813,8 +2892,8 @@ mod tests {
         session
             .apply_compact_checkpoint_from(&user_text("summary"), Some(keep_from), 10)
             .unwrap();
-        // Revert anchors span all three immutable detail rows.
-        assert_eq!(session.user_detail_count().unwrap(), 4);
+        // Replace summaries are not revert k; three append-origin user rows remain.
+        assert_eq!(session.user_detail_count().unwrap(), 3);
 
         session.revert_to_user_anchor(1).unwrap();
 
@@ -3118,6 +3197,43 @@ mod tests {
     }
 
     #[test]
+    fn commit_delta_does_not_discard_when_empty_assistant_is_off_surface() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let empty_assistant = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_empty".into(),
+            role: AssistantRole::Assistant,
+            content: vec![],
+            status: OutputStatus::Completed,
+            phase: None,
+        }));
+        let fc = Item::FunctionCall(FunctionToolCall {
+            arguments: "{}".into(),
+            call_id: "c1".into(),
+            namespace: None,
+            name: "bash".into(),
+            id: None,
+            status: None,
+        });
+        session
+            .insert_detail_rows(&[user_text("u0"), empty_assistant.clone(), fc.clone()])
+            .unwrap();
+        let projected = session.load_transcript().unwrap().len();
+        assert!(
+            projected < 3,
+            "empty assistant must be off Surface so projection length would false-cancel"
+        );
+        let mut items = vec![user_text("u0"), empty_assistant, fc];
+        let outcome = session
+            .commit_turn_delta_with_orphan_cleanup(&mut items, &[], 3, "t1")
+            .unwrap();
+        assert!(
+            matches!(outcome, CommitDeltaOutcome::Applied { .. }),
+            "log still has 3 rows; persist must not treat skip-empty Surface as 回退"
+        );
+        assert_eq!(session.load_events().unwrap().len(), 3);
+    }
+
+    #[test]
     fn commit_delta_does_not_insert_orphan_output() {
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         let fc = Item::FunctionCall(FunctionToolCall {
@@ -3179,5 +3295,147 @@ mod tests {
                 .all(|r| r.kind != "compact_checkpoint"),
             "truncated log must not receive a compact checkpoint"
         );
+    }
+
+    #[test]
+    fn in_progress_item_is_retrievable_and_seal_keeps_seq() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let live = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_live".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hel".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::InProgress,
+            phase: None,
+        }));
+        let seq = session.persist_item(&live).unwrap();
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].seq, seq);
+        let loaded = crate::session::event::item_from_event(&events[0]).unwrap();
+        match &loaded {
+            Item::Message(MessageItem::Output(m)) => {
+                assert_eq!(m.status, OutputStatus::InProgress);
+                assert_eq!(item_text_preview(&loaded), "hel");
+            }
+            other => panic!("expected assistant item, got {other:?}"),
+        }
+
+        let sealed = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_live".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hello".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::Completed,
+            phase: None,
+        }));
+        session.seal_item(seq, &sealed).unwrap();
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), 1, "封口 must not append a new row");
+        assert_eq!(events[0].seq, seq);
+        let loaded = crate::session::event::item_from_event(&events[0]).unwrap();
+        match &loaded {
+            Item::Message(MessageItem::Output(m)) => {
+                assert_eq!(m.status, OutputStatus::Completed);
+                assert_eq!(item_text_preview(&loaded), "hello");
+            }
+            other => panic!("expected sealed assistant item, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn crashed_session_reload_keeps_in_progress_row_for_seal() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let db = db.to_str().unwrap();
+        let session = Session::open(db, "/tmp/proj", "default", Some("model")).unwrap();
+        let id = session.id.clone();
+        let live = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_crash".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hel".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::InProgress,
+            phase: None,
+        }));
+        let seq = session.persist_item(&live).unwrap();
+        drop(session);
+
+        let session = Session::resume(db, &id).unwrap();
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].seq, seq);
+        let loaded = crate::session::event::item_from_event(&events[0]).unwrap();
+        match &loaded {
+            Item::Message(MessageItem::Output(m)) => {
+                assert_eq!(m.status, OutputStatus::InProgress);
+            }
+            other => panic!("expected in_progress assistant, got {other:?}"),
+        }
+        let sealed = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_crash".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hello".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::Completed,
+            phase: None,
+        }));
+        session.seal_item(seq, &sealed).unwrap();
+        assert_eq!(session.load_events().unwrap().len(), 1);
+        let loaded = crate::session::event::item_from_event(&session.load_events().unwrap()[0])
+            .unwrap();
+        assert_eq!(item_text_preview(&loaded), "hello");
+    }
+
+    #[test]
+    fn commit_delta_seals_existing_seq_instead_of_appending() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let live = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_dup".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hel".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::InProgress,
+            phase: None,
+        }));
+        session.persist_item(&live).unwrap();
+        let sealed = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_dup".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hello".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::Completed,
+            phase: None,
+        }));
+        let mut items = vec![sealed.clone()];
+        session
+            .commit_turn_delta_with_orphan_cleanup(&mut items, &[sealed], 0, "t1")
+            .unwrap();
+        assert_eq!(
+            session.load_events().unwrap().len(),
+            1,
+            "added persist then step commit must 封口, not append"
+        );
+        let loaded = crate::session::event::item_from_event(&session.load_events().unwrap()[0])
+            .unwrap();
+        assert_eq!(item_text_preview(&loaded), "hello");
     }
 }
