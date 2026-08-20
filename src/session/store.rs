@@ -7,7 +7,9 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::authority::responses::{InputMessage, InputRole, MessageItem};
 use crate::platform_knobs::{ContextMode, ThinkingTier};
 use crate::session::estimate::compute_token_estimate;
+use crate::session::event::EventType;
 use crate::session::snapshot;
+use crate::session::surface::SurfaceOp;
 use crate::session::task_state::TodoItem;
 use crate::session::task_state::{PlanRef, TaskReminders};
 use crate::tool::output::{BLOB_PREFIX, DEFAULT_SPILL_THRESHOLD, blob_dir};
@@ -162,6 +164,9 @@ const TRANSCRIPT_REQUIRED_COLS: &[&str] = &[
     "body_ref",
     "token_estimate",
     "created_at",
+    "event_type",
+    "surface_op",
+    "source_seqs",
 ];
 
 fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
@@ -268,6 +273,9 @@ fn ensure_session_schema(conn: &Connection) -> Result<()> {
             body_ref        TEXT,
             token_estimate  INTEGER NOT NULL DEFAULT 0,
             created_at      INTEGER NOT NULL,
+            event_type      TEXT NOT NULL,
+            surface_op      TEXT NOT NULL,
+            source_seqs     TEXT,
             PRIMARY KEY (session_id, seq)
         );
         CREATE INDEX IF NOT EXISTS idx_transcript_items_session_seq
@@ -435,6 +443,24 @@ fn item_type_of(item: &Item) -> String {
             .to_string(),
         Err(_) => "unknown".into(),
     }
+}
+
+fn surface_event_type_of(item: &Item) -> EventType {
+    if is_user_message_item(item) {
+        EventType::ItemUser
+    } else if matches!(item, Item::FunctionCall(_)) {
+        EventType::ItemToolCall
+    } else if matches!(item, Item::FunctionCallOutput(_)) {
+        EventType::ItemToolResult
+    } else {
+        EventType::ItemAssistant
+    }
+}
+
+fn encode_surface_envelope(item: &Item) -> Result<(String, String, Option<String>)> {
+    let event_type = surface_event_type_of(item).as_str().to_string();
+    let surface_op = serde_json::to_string(&SurfaceOp::Append)?;
+    Ok((event_type, surface_op, None))
 }
 
 fn message_timestamp(_item: &Item) -> i64 {
@@ -1228,9 +1254,10 @@ impl Session {
                     "user detail item must keep inline body for anchors".into(),
                 ));
             }
+            let (event_type, surface_op, source_seqs) = encode_surface_envelope(msg)?;
             tx.execute(
-                "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'detail', ?6, ?7, ?8, ?9)",
+                "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'detail', ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 rusqlite::params![
                     self.id,
                     seq,
@@ -1241,6 +1268,9 @@ impl Session {
                     body_ref,
                     token_estimate,
                     message_timestamp(msg),
+                    event_type,
+                    surface_op,
+                    source_seqs,
                 ],
             )?;
             let plain = crate::types::item_text_preview(msg);
@@ -1366,9 +1396,10 @@ impl Session {
                     "user detail item must keep inline body for anchors".into(),
                 ));
             }
+            let (event_type, surface_op, source_seqs) = encode_surface_envelope(msg)?;
             tx.execute(
-                "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'detail', ?6, ?7, ?8, ?9)",
+                "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'detail', ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 rusqlite::params![
                     self.id,
                     seq,
@@ -1379,6 +1410,9 @@ impl Session {
                     body_ref,
                     token_estimate,
                     message_timestamp(msg),
+                    event_type,
+                    surface_op,
+                    source_seqs,
                 ],
             )?;
             let plain = crate::types::item_text_preview(msg);
@@ -1795,9 +1829,10 @@ impl Session {
             }
         }
 
+        let (event_type, surface_op, source_seqs) = encode_surface_envelope(summary)?;
         tx.execute(
-            "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at)
-             VALUES (?1, ?2, ?3, 0, ?4, 'compact_checkpoint', ?5, ?6, ?7, ?8)",
+            "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs)
+             VALUES (?1, ?2, ?3, 0, ?4, 'compact_checkpoint', ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 self.id,
                 n,
@@ -1806,7 +1841,10 @@ impl Session {
                 body,
                 body_ref,
                 token_estimate,
-                now
+                now,
+                event_type,
+                surface_op,
+                source_seqs,
             ],
         )?;
 
@@ -1888,6 +1926,76 @@ mod tests {
         assert!(session_cols.contains(&"thinking_tier".to_string()));
         assert!(session_cols.contains(&"context_mode".to_string()));
         assert!(!session_cols.contains(&"model".to_string()));
+        assert!(cols.contains(&"event_type".to_string()));
+        assert!(cols.contains(&"surface_op".to_string()));
+        assert!(cols.contains(&"source_seqs".to_string()));
+    }
+
+    #[test]
+    fn insert_detail_writes_append_surface_envelope() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("hello")])
+            .unwrap();
+        let (seq, event_type, surface_op, source_seqs): (i64, String, String, Option<String>) =
+            session
+                .conn
+                .query_row(
+                    "SELECT seq, event_type, surface_op, source_seqs FROM transcript_items WHERE session_id = ?1",
+                    rusqlite::params![session.id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+        assert_eq!(seq, 0);
+        assert_eq!(event_type, "item/user");
+        let op: crate::session::surface::SurfaceOp =
+            serde_json::from_str(&surface_op).expect("surface_op json");
+        assert_eq!(op, crate::session::surface::SurfaceOp::Append);
+        assert!(source_seqs.is_none());
+    }
+
+    #[test]
+    fn transcript_items_missing_envelope_columns_fails_closed() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                project TEXT NOT NULL,
+                last_message TEXT NOT NULL DEFAULT '',
+                agent_id TEXT NOT NULL,
+                model_id TEXT,
+                thinking_tier TEXT NOT NULL DEFAULT 'medium',
+                context_mode TEXT NOT NULL DEFAULT 'standard',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                checkpoint_seq INTEGER NOT NULL DEFAULT 0,
+                kept_from_seq INTEGER NOT NULL DEFAULT 0,
+                todos_json TEXT NOT NULL DEFAULT '[]',
+                active_plan_slug TEXT,
+                parent_session_id TEXT,
+                parent_call_id TEXT
+            );
+            CREATE TABLE transcript_items (
+                session_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                turn_id TEXT NOT NULL DEFAULT '',
+                turn_seq INTEGER NOT NULL DEFAULT 0,
+                item_type TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'detail',
+                body TEXT,
+                body_ref TEXT,
+                token_estimate INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, seq)
+            );",
+        )
+        .unwrap();
+        let err = ensure_session_schema(&conn).expect_err("missing envelope columns must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("event_type") || msg.contains("surface_op") || msg.contains("source_seqs"),
+            "error must name a missing envelope column: {msg}"
+        );
     }
 
     #[test]

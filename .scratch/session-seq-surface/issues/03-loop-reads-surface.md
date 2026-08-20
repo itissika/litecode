@@ -2,7 +2,7 @@
 
 **What to build:** 每一步打给模型的内容，只能从当前 session 日志 fold 出来：`derive_messages(fold_surface(log))`。内存里不再有一份无 seq 的 `Vec<Item>` 当真相，也不再把 compact 结果写成 `[summary]+kept` 再喂给下一步。前端和线协议仍可暂时残破。
 
-**Blocked by:** 02: 持久化权威是事件日志
+**Blocked by:** 02c: compact 只写 replace，turn 加载只 fold
 
 **Status:** ready-for-agent
 

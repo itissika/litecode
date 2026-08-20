@@ -1,13 +1,15 @@
-# 02: 持久化权威是事件日志
+# 02: 持久化权威是事件日志（拆分）
 
-**What to build:** 磁盘上的 session 加载后就是连续 `SessionEvent` 序列：按 seq ASC，不在 SQL 里重排。压缩成功写入 replace 事件，而不是改 `checkpoint_seq` / `kept_from_seq` 当模型窗口，也不是 `kind=compact_checkpoint` 插在 `MAX(seq)+1` 再当 cut。砸库允许。此时还不要求 agent loop 或前端改完。
+原单票过大：schema、append 落盘、compact=replace、关掉 SQL 重排绑在一起，中间态会让 loop 窗口既不是指针也不是 surface。
 
-**Blocked by:** 01: SessionEvent 信封与内存 surface
+**不要双写** `surface_op: replace` 与 `checkpoint_seq` 窗口。compact 与 turn-load 必须同一张票收口。
 
-**Status:** ready-for-agent
+拆成：
 
-- [ ] 加载路径不再使用 `ORDER BY CASE WHEN kind=compact_checkpoint` 把摘要提到前面（B1）
-- [ ] `checkpoint_seq` + `kept_from_seq` 不再是加载/派生模型窗口的权威（B2 存储侧）；派生只 fold 已加载事件
-- [ ] 旧 `apply_compact_checkpoint*` 生产路径删除；compact = `append` 带 `surface_op: replace`
-- [ ] 不变量：加载后 `event.seq` 等于磁盘 seq 列，且连续（无「enumerate(history) 冒充 seq」）
-- [ ] 旧 compact SQL 测试改为断言 surface，或删除；不用 `#[ignore]` 假装完成
+| 票 | 文件 | 做什么 | 仍允许残破 |
+|---|---|---|---|
+| 02a | [02a-schema-event-envelope.md](./02a-schema-event-envelope.md) | 砸库加信封列 | compact 仍是 checkpoint |
+| 02b | [02b-persist-load-events.md](./02b-persist-load-events.md) | append-origin 按 seq 读写 | turn 窗口仍走旧 SQL |
+| 02c | [02c-compact-replace-and-fold-load.md](./02c-compact-replace-and-fold-load.md) | replace 落盘 + fold 加载，指针不再当窗口 | loop 内存工作集仍可能是 `Vec<Item>`（03） |
+
+03 阻塞于 **02c**，不是 02a。
