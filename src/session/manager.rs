@@ -449,12 +449,21 @@ impl SessionManager {
         entry.store.with(|s| s.revert_to_user_anchor(k))
     }
 
+    /// User-message count for RPC `k` (file-revert maps `k` via [`Self::entry_snapshot_stem_for_user_k`]).
     pub fn entry_user_detail_count(&self, session_id: &str) -> Result<i64> {
         let records = self.records.lock().unwrap();
         let entry = records.get(session_id).ok_or_else(|| {
             LitecodeError::ToolExecution(format!("session {session_id} not found"))
         })?;
         entry.store.with(|s| s.user_detail_count())
+    }
+
+    pub fn entry_snapshot_stem_for_user_k(&self, session_id: &str, k: i64) -> Result<i64> {
+        let records = self.records.lock().unwrap();
+        let entry = records.get(session_id).ok_or_else(|| {
+            LitecodeError::ToolExecution(format!("session {session_id} not found"))
+        })?;
+        entry.store.with(|s| s.snapshot_stem_for_user_k(k))
     }
 
     /// Test probe (2.15 REV-5): true when the records lock is currently FREE.
@@ -1810,6 +1819,8 @@ mod child_session_tests {
             "revert must signal the turn cancel token"
         );
         assert!(mgr.is_turn_running_blocking(&sid));
+        assert_eq!(mgr.entry_user_detail_count(&sid).unwrap(), 3);
+        assert_eq!(mgr.entry_snapshot_stem_for_user_k(&sid, 0).unwrap(), 1);
 
         mgr.entry_revert_to_user_anchor(&sid, 1).unwrap();
         let len = mgr

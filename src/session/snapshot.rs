@@ -1096,7 +1096,8 @@ pub fn snapshot_record_patch(
     })
 }
 
-/// Restore **only** files touched by turns at anchors `>= k` (OpenCode file-level undo).
+/// Restore **only** files touched by turns at snapshot stems `>= k`.
+/// `k` is the track stem (`next_seq` at turn start), not a 0-based user index.
 ///
 /// Never does a whole-tree checkout. Paths outside the patch union are left alone.
 ///
@@ -1106,11 +1107,10 @@ pub fn snapshot_restore(
     snapshots_dir: &Path,
     session_id: &str,
     k: i64,
-    user_detail_count: i64,
 ) -> Result<RestoreOutcome> {
-    if k < 0 || k >= user_detail_count {
+    if k < 0 {
         return Err(LitecodeError::InvalidRevertAnchor(format!(
-            "invalid revert anchor k={k} (user items={user_detail_count})"
+            "invalid snapshot stem k={k}"
         )));
     }
 
@@ -1456,7 +1456,7 @@ mod tests {
             assert!(!patch.track_failed);
             assert_eq!(patch.files, vec!["a.txt".to_string()]);
 
-            let outcome = snapshot_restore(&ws, &snaps, "sess", 0, 1).unwrap();
+            let outcome = snapshot_restore(&ws, &snaps, "sess", 0).unwrap();
             assert!(matches!(outcome, RestoreOutcome::Restored { .. }));
             assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "v0");
             assert_eq!(std::fs::read_to_string(ws.join("b.txt")).unwrap(), "keep");
@@ -1482,7 +1482,7 @@ mod tests {
             assert!(patch.files.iter().any(|p| p == "gone.txt"));
             assert!(patch.files.iter().any(|p| p == "new.txt"));
 
-            let outcome = snapshot_restore(&ws, &snaps, "sess", 0, 1).unwrap();
+            let outcome = snapshot_restore(&ws, &snaps, "sess", 0).unwrap();
             assert!(matches!(outcome, RestoreOutcome::Restored { .. }));
             assert!(ws.join("gone.txt").exists());
             assert!(!ws.join("new.txt").exists());
@@ -1661,7 +1661,7 @@ mod tests {
             // restore must leave user.txt alone even if we also change it now).
             std::fs::write(ws.join("user.txt"), "user-edited").unwrap();
 
-            let outcome = snapshot_restore(&ws, &snaps, "sess", 0, 1).unwrap();
+            let outcome = snapshot_restore(&ws, &snaps, "sess", 0).unwrap();
             assert!(matches!(outcome, RestoreOutcome::Restored { .. }));
 
             assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "v0");
@@ -1693,7 +1693,7 @@ mod tests {
             snapshot_track(&ws, &snaps, "sess", 0).unwrap();
             std::fs::write(ws.join("a.txt"), "changed").unwrap();
             // No snapshot_record_patch → empty union → nothing to revert.
-            let outcome = snapshot_restore(&ws, &snaps, "sess", 0, 1).unwrap();
+            let outcome = snapshot_restore(&ws, &snaps, "sess", 0).unwrap();
             assert_eq!(outcome, RestoreOutcome::NothingToRevert);
             assert_eq!(
                 std::fs::read_to_string(ws.join("a.txt")).unwrap(),
@@ -1712,7 +1712,7 @@ mod tests {
             let snaps = snapshots_dir_for_workspace(&ws);
             init_snapshot_repo(&ws, &snaps).unwrap();
             // Never tracked — no refs/snapshots/.../0
-            let outcome = snapshot_restore(&ws, &snaps, "sess", 0, 1).unwrap();
+            let outcome = snapshot_restore(&ws, &snaps, "sess", 0).unwrap();
             assert_eq!(
                 outcome,
                 RestoreOutcome::Unavailable {
@@ -1753,7 +1753,7 @@ mod tests {
             snapshot_track(&ws, &snaps, "sess", 0).unwrap();
             write_patch(&snaps, "sess", 0, &[], PatchStatus::TrackFailed).unwrap();
             std::fs::write(ws.join("a.txt"), "changed").unwrap();
-            let outcome = snapshot_restore(&ws, &snaps, "sess", 0, 1).unwrap();
+            let outcome = snapshot_restore(&ws, &snaps, "sess", 0).unwrap();
             assert_eq!(
                 outcome,
                 RestoreOutcome::Unavailable {
@@ -1781,7 +1781,7 @@ mod tests {
             assert!(!patch.track_failed);
             assert!(patch.files.is_empty());
             std::fs::write(ws.join("a.txt"), "user-only-edit").unwrap();
-            let outcome = snapshot_restore(&ws, &snaps, "sess", 0, 1).unwrap();
+            let outcome = snapshot_restore(&ws, &snaps, "sess", 0).unwrap();
             assert_eq!(outcome, RestoreOutcome::NothingToRevert);
             assert_eq!(
                 std::fs::read_to_string(ws.join("a.txt")).unwrap(),
@@ -1923,16 +1923,33 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_restore_swallowed_anchor_returns_invalid() {
+    fn snapshot_restore_seq_stem_is_not_user_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_root = tempfile::tempdir().unwrap();
+        with_snapshots_root(snap_root.path(), || {
+            let ws = dir.path().to_path_buf();
+            std::fs::write(ws.join("a.txt"), "v0").unwrap();
+            let snaps = snapshots_dir_for_workspace(&ws);
+            warm_snapshot_repo(&ws, &snaps).unwrap();
+            snapshot_track(&ws, &snaps, "sess", 5).unwrap();
+            std::fs::write(ws.join("a.txt"), "changed").unwrap();
+            snapshot_record_patch(&ws, &snaps, "sess", 5).unwrap();
+
+            let outcome = snapshot_restore(&ws, &snaps, "sess", 5).unwrap();
+            assert!(matches!(outcome, RestoreOutcome::Restored { .. }));
+            assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "v0");
+        });
+    }
+
+    #[test]
+    fn snapshot_restore_negative_stem_is_invalid() {
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path().to_path_buf();
         let snaps = snapshots_dir_for_workspace(&ws);
-        // A swallowed anchor (k >= visible user detail count) fails closed before any
-        // repo/track work — the guard at the top of `snapshot_restore`.
-        let err = snapshot_restore(&ws, &snaps, "sess", 3, 1).unwrap_err();
+        let err = snapshot_restore(&ws, &snaps, "sess", -1).unwrap_err();
         assert!(
             matches!(err, crate::types::LitecodeError::InvalidRevertAnchor(_)),
-            "swallowed anchor must yield InvalidRevertAnchor, got {err:?}"
+            "negative stem must yield InvalidRevertAnchor, got {err:?}"
         );
     }
 }

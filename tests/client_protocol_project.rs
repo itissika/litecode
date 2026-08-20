@@ -288,7 +288,7 @@ fn turn_completed_projects_to_turn_finished() {
             final_text: Some("done".into()),
             reason: TurnEndReason::Completed,
             turn_token_stats: TurnTokenStats::default(),
-            committed_start: 0,
+            committed_next_seq: 0,
         },
         &snap,
     )

@@ -70,7 +70,7 @@ pub struct Projection {
     pub sessions: Arc<SessionManager>,
     pub buffer_revision: u64,
     pub next_seq: u64,
-    pub turn_committed_start: usize,
+    pub turn_committed_next_seq: u64,
     pub turn_id: Option<String>,
     pub phase: TurnPhase,
     pub step: u64,
@@ -158,7 +158,7 @@ impl Projection {
             sessions,
             buffer_revision: 0,
             next_seq,
-            turn_committed_start: 0,
+            turn_committed_next_seq: 0,
             turn_id: None,
             phase: TurnPhase::Idle,
             step: 0,
@@ -251,13 +251,13 @@ impl Projection {
                 final_text,
                 reason,
                 turn_token_stats,
-                committed_start: _,
+                committed_next_seq: _,
             } => InternalEvent::TurnCompleted {
                 turn_id,
                 final_text,
                 reason,
                 turn_token_stats,
-                committed_start: self.turn_committed_start,
+                committed_next_seq: self.turn_committed_next_seq,
             },
             other => other,
         };
@@ -521,13 +521,27 @@ impl Projection {
             }
             Err(e) => return Err(e.into()),
         };
-        let user_detail_count = self.sessions.entry_user_detail_count(&self.session_id)?;
+        let stem = match self
+            .sessions
+            .entry_snapshot_stem_for_user_k(&self.session_id, i64::from(k))
+        {
+            Ok(stem) => stem,
+            Err(LitecodeError::InvalidRevertAnchor(msg)) => {
+                self.push_operation_error(
+                    OperationKind::RevertFiles,
+                    ErrorCode::InvalidRevertAnchor,
+                    msg,
+                    project,
+                    binding,
+                );
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        };
         let workspace = std::path::PathBuf::from(workspace_root);
         let snaps = snapshots_dir.to_path_buf();
         let sid = self.session_id.clone();
-        let anchor = i64::from(k);
-        let restore_result =
-            run_snapshot_restore_off_async(workspace, snaps, sid, anchor, user_detail_count);
+        let restore_result = run_snapshot_restore_off_async(workspace, snaps, sid, stem);
         match restore_result {
             Ok(snapshot::RestoreOutcome::Restored { .. }) => {
                 self.push_operation_ok(OperationKind::RevertFiles, project, binding);
@@ -739,7 +753,7 @@ impl Projection {
                 final_text: _,
                 reason: _,
                 turn_token_stats,
-                committed_start: _,
+                committed_next_seq: _,
             } => {
                 if self.turn_completed_emitted {
                     return;
@@ -1201,20 +1215,13 @@ fn run_snapshot_restore_off_async(
     workspace: std::path::PathBuf,
     snapshots_dir: std::path::PathBuf,
     session_id: String,
-    k: i64,
-    user_detail_count: i64,
+    stem: i64,
 ) -> crate::types::Result<snapshot::RestoreOutcome> {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => tokio::task::block_in_place(|| {
             handle.block_on(async move {
                 tokio::task::spawn_blocking(move || {
-                    snapshot::snapshot_restore(
-                        &workspace,
-                        &snapshots_dir,
-                        &session_id,
-                        k,
-                        user_detail_count,
-                    )
+                    snapshot::snapshot_restore(&workspace, &snapshots_dir, &session_id, stem)
                 })
                 .await
                 .map_err(|e| {
@@ -1224,13 +1231,7 @@ fn run_snapshot_restore_off_async(
                 })?
             })
         }),
-        Err(_) => snapshot::snapshot_restore(
-            &workspace,
-            &snapshots_dir,
-            &session_id,
-            k,
-            user_detail_count,
-        ),
+        Err(_) => snapshot::snapshot_restore(&workspace, &snapshots_dir, &session_id, stem),
     }
 }
 

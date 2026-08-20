@@ -128,7 +128,7 @@ impl SessionController {
         let project_str = self.project.clone();
         let binding = self.session_binding(session_id);
         if let Some(proj) = self.projection_mut(session_id) {
-            proj.turn_committed_start = proj.next_seq as usize;
+            proj.turn_committed_next_seq = proj.next_seq;
             proj.apply_turn_started(turn_id, step_max);
             proj.push_outgoing(project::session_snapshot(
                 proj.snapshot(&project_str, &binding),

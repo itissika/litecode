@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 
+use crate::session::event::{EventType, Seq, SessionEvent};
 use crate::session::store::data_root_from_db_path;
+use crate::session::surface::fold_surface;
 use crate::tool::output::{BLOB_PREFIX, blob_dir};
 use crate::types::{Item, LitecodeError, Result, item_text_preview};
 
@@ -46,12 +48,12 @@ const FUZZY_BLOCK_CHARS: usize = 4096;
 /// Separator between transcript items in the session character stream.
 const ITEM_SEP: &str = "\n\n";
 
-/// Exclude the live context window of one session: drop `seq >= kept_from_seq`.
-/// Archived detail below `kept_from_seq` remains searchable.
+/// Exclude the live model window of one session: drop seqs currently on `surface.nodes`.
+/// Shadowed append-origin rows remain searchable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextWindowExclude {
     pub session_id: String,
-    pub kept_from_seq: i64,
+    pub surface_seqs: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -208,7 +210,7 @@ fn hit_allowed(h: &SessionTextHit, query: &SessionTextQuery) -> bool {
     }
     if let Some(win) = query.exclude_context_window.as_ref()
         && h.session_id == win.session_id
-        && h.seq >= win.kept_from_seq
+        && win.surface_seqs.iter().any(|s| *s == h.seq)
     {
         return false;
     }
@@ -303,22 +305,49 @@ fn ambiguous_session_ref(refer: &str, matches: &[String]) -> LitecodeError {
     ))
 }
 
-/// Read `kept_from_seq` for a session (context-window floor). `None` if missing.
-pub fn load_kept_from_seq(db_path: &Path, session_id: &str) -> Result<Option<i64>> {
+/// Fold the session log and return current surface seqs. Empty session → empty vec.
+///
+/// Opens SQLite read-only (search must not migrate or take a write lock).
+pub fn load_surface_seqs(db_path: &Path, session_id: &str) -> Result<Vec<i64>> {
     if !db_path.is_file() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))?;
-    match conn.query_row(
-        "SELECT kept_from_seq FROM sessions WHERE id = ?1",
-        rusqlite::params![session_id],
-        |r| r.get::<_, i64>(0),
-    ) {
-        Ok(v) => Ok(Some(v)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(LitecodeError::Config(format!("kept_from_seq: {e}"))),
+    let mut stmt = conn
+        .prepare(
+            "SELECT seq, event_type, surface_op FROM transcript_items
+             WHERE session_id = ?1 ORDER BY seq ASC",
+        )
+        .map_err(|e| LitecodeError::Config(format!("surface seqs prepare: {e}")))?;
+    let rows = stmt
+        .query_map(rusqlite::params![session_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| LitecodeError::Config(format!("surface seqs query: {e}")))?;
+    let mut events = Vec::new();
+    for row in rows {
+        let (seq, event_type, surface_op) =
+            row.map_err(|e| LitecodeError::Config(format!("surface seqs row: {e}")))?;
+        let seq = Seq::try_from(seq).map_err(|_| {
+            LitecodeError::InvalidSessionEvent(format!("negative seq {seq}"))
+        })?;
+        events.push(SessionEvent {
+            seq,
+            time: 0,
+            event_type: EventType::from_str_name(&event_type),
+            data: serde_json::Value::Null,
+            surface_op: Some(serde_json::from_str(&surface_op)?),
+            source_seqs: None,
+            ignorable: false,
+        });
     }
+    let surface = fold_surface(&events)?;
+    Ok(surface.nodes.iter().map(|s| *s as i64).collect())
 }
 
 /// Parsed agent filter tokens (`filter` field).
@@ -458,8 +487,8 @@ pub fn load_session_meta(
 
 /// Build character windows for each hit (independent; overlapping content OK).
 ///
-/// When `stream_limit` is set, the named session's stream is truncated to
-/// `seq < kept_from_seq` so expand cannot pull live context-window text.
+/// When `stream_limit` is set, the named session's stream omits current surface
+/// seqs so expand cannot pull live model-window text.
 pub fn expand_hit_windows(
     db_path: &Path,
     hits: &[SessionTextHit],
@@ -471,14 +500,15 @@ pub fn expand_hit_windows(
     let mut windows = Vec::with_capacity(hits.len());
     for hit in hits {
         if !cache.contains_key(&hit.session_id) {
-            let seq_lt = stream_limit.and_then(|w| {
+            let exclude = stream_limit.and_then(|w| {
                 if w.session_id == hit.session_id {
-                    Some(w.kept_from_seq)
+                    Some(w.surface_seqs.as_slice())
                 } else {
                     None
                 }
             });
-            let stream = load_session_char_stream(db_path, &data_root, &hit.session_id, seq_lt)?;
+            let stream =
+                load_session_char_stream(db_path, &data_root, &hit.session_id, exclude)?;
             cache.insert(hit.session_id.clone(), stream);
         }
         let stream = cache.get(&hit.session_id).unwrap();
@@ -498,7 +528,7 @@ fn load_session_char_stream(
     db_path: &Path,
     data_root: &Path,
     session_id: &str,
-    seq_lt: Option<i64>,
+    exclude_seqs: Option<&[i64]>,
 ) -> Result<SessionCharStream> {
     if !db_path.is_file() {
         return Ok(SessionCharStream {
@@ -508,70 +538,43 @@ fn load_session_char_stream(
     }
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))?;
-    let mut sql = String::from(
-        "SELECT seq, item_type, body, body_ref FROM transcript_items
-         WHERE session_id = ?1 AND kind = 'detail'",
-    );
-    if seq_lt.is_some() {
-        sql.push_str(" AND seq < ?2");
-    }
-    sql.push_str(" ORDER BY seq ASC");
     let mut stmt = conn
-        .prepare(&sql)
+        .prepare(
+            "SELECT seq, item_type, body, body_ref FROM transcript_items
+             WHERE session_id = ?1 AND kind = 'detail'
+             ORDER BY seq ASC",
+        )
         .map_err(|e| LitecodeError::Config(format!("session stream prepare: {e}")))?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![session_id], |row| {
+            Ok(RawRow {
+                session_id: session_id.to_string(),
+                seq: row.get(0)?,
+                item_type: row.get(1)?,
+                body: row.get(2)?,
+                body_ref: row.get(3)?,
+            })
+        })
+        .map_err(|e| LitecodeError::Config(format!("session stream query: {e}")))?;
 
     let mut text = String::new();
     let mut spans = Vec::new();
-    if let Some(lt) = seq_lt {
-        let rows = stmt
-            .query_map(rusqlite::params![session_id, lt], |row| {
-                Ok(RawRow {
-                    session_id: session_id.to_string(),
-                    seq: row.get(0)?,
-                    item_type: row.get(1)?,
-                    body: row.get(2)?,
-                    body_ref: row.get(3)?,
-                })
-            })
-            .map_err(|e| LitecodeError::Config(format!("session stream query: {e}")))?;
-        for row in rows {
-            let row = row.map_err(|e| LitecodeError::Config(format!("session stream row: {e}")))?;
-            let Some(plain) = row_plain_text(&row, data_root)? else {
-                continue;
-            };
-            if !text.is_empty() {
-                text.push_str(ITEM_SEP);
-            }
-            let start = text.chars().count();
-            text.push_str(&plain);
-            let end = text.chars().count();
-            spans.push((row.seq, start, end));
+    for row in rows {
+        let row = row.map_err(|e| LitecodeError::Config(format!("session stream row: {e}")))?;
+        if exclude_seqs.is_some_and(|ex| ex.contains(&row.seq)) {
+            continue;
         }
-    } else {
-        let rows = stmt
-            .query_map(rusqlite::params![session_id], |row| {
-                Ok(RawRow {
-                    session_id: session_id.to_string(),
-                    seq: row.get(0)?,
-                    item_type: row.get(1)?,
-                    body: row.get(2)?,
-                    body_ref: row.get(3)?,
-                })
-            })
-            .map_err(|e| LitecodeError::Config(format!("session stream query: {e}")))?;
-        for row in rows {
-            let row = row.map_err(|e| LitecodeError::Config(format!("session stream row: {e}")))?;
-            let Some(plain) = row_plain_text(&row, data_root)? else {
-                continue;
-            };
-            if !text.is_empty() {
-                text.push_str(ITEM_SEP);
-            }
-            let start = text.chars().count();
-            text.push_str(&plain);
-            let end = text.chars().count();
-            spans.push((row.seq, start, end));
+        let Some(plain) = row_plain_text(&row, data_root)? else {
+            continue;
+        };
+        if !text.is_empty() {
+            text.push_str(ITEM_SEP);
         }
+        let start = text.chars().count();
+        text.push_str(&plain);
+        let end = text.chars().count();
+        spans.push((row.seq, start, end));
     }
     Ok(SessionCharStream { text, spans })
 }
@@ -1372,7 +1375,7 @@ mod tests {
                 query: "NEEDLE_ONLY".into(),
                 exclude_context_window: Some(ContextWindowExclude {
                     session_id: sid.clone(),
-                    kept_from_seq: 1,
+                    surface_seqs: load_surface_seqs(&db, &sid).unwrap(),
                 }),
                 ..Default::default()
             },

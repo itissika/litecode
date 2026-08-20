@@ -52,7 +52,7 @@ pub struct RetrievalFilters {
     pub include_session_id: Option<String>,
     pub exclude_session_ids: Vec<String>,
     pub project: Option<String>,
-    /// Soft-exclude live context window: `(session_id, kept_from_seq)`.
+    /// Soft-exclude live model window (current surface seqs).
     pub exclude_context_window: Option<session_search::ContextWindowExclude>,
     /// Override sessions DB path; default = `<workspace>/.litecode/sessions.db`.
     pub sessions_db: Option<PathBuf>,

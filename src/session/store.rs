@@ -93,16 +93,17 @@ WHERE t.session_id = ?1
   AND t.kind IN ('detail', 'compact_checkpoint')
 ORDER BY t.seq ASC";
 
-/// UI revert anchors span all visible historical user detail.
+/// UI revert anchors: append-origin user messages only (replace summaries are not k).
 pub const SQL_USER_DETAIL_COUNT: &str = "\
 SELECT COUNT(*) FROM transcript_items t
 WHERE t.session_id = ?
   AND t.kind = 'detail'
   AND t.item_type = 'message'
   AND t.body IS NOT NULL
-  AND json_extract(t.body, '$.role') = 'user'";
+  AND json_extract(t.body, '$.role') = 'user'
+  AND t.surface_op = '\"append\"'";
 
-/// UI revert k → anchor_seq mapping across the full history.
+/// UI revert k → anchor_seq mapping across append-origin user messages.
 pub const SQL_ANCHOR_SEQ: &str = "\
 SELECT seq FROM (
     SELECT t.seq, ROW_NUMBER() OVER (ORDER BY t.seq) - 1 AS k
@@ -112,6 +113,7 @@ SELECT seq FROM (
       AND t.item_type = 'message'
       AND t.body IS NOT NULL
       AND json_extract(t.body, '$.role') = 'user'
+      AND t.surface_op = '\"append\"'
 ) WHERE k = ?";
 
 const SESSIONS_REQUIRED_COLS: &[&str] = &[
@@ -1544,6 +1546,20 @@ impl Session {
             .map_err(Into::into)
     }
 
+    /// Snapshot file stem written at turn start (`next_seq` after the k-th user append).
+    /// Track runs after that user row is last, so stem = `anchor_seq + 1`.
+    pub fn snapshot_stem_for_user_k(&self, k: i64) -> Result<i64> {
+        let anchor_seq: i64 = self
+            .conn
+            .query_row(SQL_ANCHOR_SEQ, rusqlite::params![self.id, k], |row| {
+                row.get(0)
+            })
+            .map_err(|_| LitecodeError::InvalidRevertAnchor(format!("k={k}")))?;
+        anchor_seq
+            .checked_add(1)
+            .ok_or_else(|| LitecodeError::InvalidRevertAnchor(format!("k={k} seq overflow")))
+    }
+
     /// Truncate DB from the k-th user detail anchor; zero file side effects.
     pub fn revert_to_user_anchor(&self, k: i64) -> Result<()> {
         let tx = self
@@ -1563,50 +1579,18 @@ impl Session {
         )?;
         crate::session::transcript_fts::delete_seq_ge(&tx, &self.id, anchor_seq)?;
 
-        let remaining_cp: Option<i64> = tx
-            .query_row(
-                "SELECT MAX(seq) FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'compact_checkpoint'",
-                rusqlite::params![self.id],
-                |row| row.get::<_, Option<i64>>(0),
-            )
-            .ok()
-            .flatten();
-
-        if let Some(cp) = remaining_cp {
-            // Earlier cuts that survived the seq truncate stay in history.
-            // The turn view follows the latest remaining checkpoint.
-            tx.execute(
-                "UPDATE sessions SET checkpoint_seq = ?1 WHERE id = ?2",
-                rusqlite::params![cp, self.id],
-            )?;
-        } else {
-            // No compact left → full remaining detail is the working set.
-            tx.execute(
-                "UPDATE sessions SET checkpoint_seq = 0, kept_from_seq = 0 WHERE id = ?1",
-                rusqlite::params![self.id],
-            )?;
-        }
-
         let now = chrono::Utc::now().timestamp_millis();
-        let kept_from: i64 = tx
-            .query_row(
-                "SELECT kept_from_seq FROM sessions WHERE id = ?1",
-                rusqlite::params![self.id],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
         let preview: String = tx
             .query_row(
                 "SELECT body FROM transcript_items
                  WHERE session_id = ?1
                    AND kind = 'detail'
-                   AND seq >= ?2
                    AND item_type = 'message'
                    AND body IS NOT NULL
                    AND json_extract(body, '$.role') = 'user'
+                   AND surface_op = '\"append\"'
                  ORDER BY seq DESC LIMIT 1",
-                rusqlite::params![self.id, kept_from],
+                rusqlite::params![self.id],
                 |row| row.get::<_, Option<String>>(0),
             )
             .ok()
@@ -2404,6 +2388,8 @@ mod tests {
             ])
             .unwrap();
         assert_eq!(session.user_detail_count().unwrap(), 2);
+        assert_eq!(session.snapshot_stem_for_user_k(0).unwrap(), 1);
+        assert_eq!(session.snapshot_stem_for_user_k(1).unwrap(), 3);
 
         let rows = session.load_turn_transcript().unwrap();
         assert_eq!(rows[0].item_type, "message");

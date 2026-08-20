@@ -119,7 +119,7 @@ pub enum InternalEvent {
         final_text: Option<String>,
         reason: TurnEndReason,
         turn_token_stats: TurnTokenStats,
-        committed_start: usize,
+        committed_next_seq: u64,
     },
     PhaseChanged {
         phase: TurnPhase,

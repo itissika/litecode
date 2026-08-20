@@ -521,7 +521,57 @@ fn session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept() {
     );
 }
 
-/// Ticket 04: wire + observer identity is seq. Store/search needles wait for 05/08.
+/// Ticket 05: search/revert must not use SQL window pointers as authority.
+#[test]
+fn session_seq_g6_derived_paths_use_surface_not_pointers() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk_rs_files(&root.join("src/engines/session_search"), &mut files);
+    files.push(root.join("src/tools/session_search.rs"));
+    files.sort();
+
+    let needles = ["kept_from_seq", "checkpoint_seq", "compact_checkpoint"];
+    let mut hits = Vec::new();
+    for path in &files {
+        let contents = fs::read_to_string(path).unwrap_or_default();
+        let mut in_tests = false;
+        for (i, line) in contents.lines().enumerate() {
+            if line.trim() == "#[cfg(test)]" {
+                in_tests = true;
+            }
+            if in_tests || is_comment_line(line) {
+                continue;
+            }
+            for needle in needles {
+                if identifier_boundary_contains(line, needle) {
+                    hits.push(format!("{}:{}: `{needle}`", path.display(), i + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "search still uses window pointers:\n{}",
+        hits.join("\n")
+    );
+
+    let store = fs::read_to_string(root.join("src/session/store.rs")).expect("store.rs");
+    let start = store
+        .find("pub fn revert_to_user_anchor")
+        .expect("revert_to_user_anchor");
+    let body = &store[start..];
+    let end = body[1..]
+        .find("\n    pub fn ")
+        .map(|i| i + 1)
+        .unwrap_or(body.len());
+    let revert = &body[..end];
+    for needle in needles {
+        assert!(
+            !revert.contains(needle),
+            "revert_to_user_anchor must not use `{needle}` as a window pointer"
+        );
+    }
+}
 #[test]
 fn session_seq_g4_wire_speaks_seq() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

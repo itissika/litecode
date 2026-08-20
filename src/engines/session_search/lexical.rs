@@ -82,10 +82,19 @@ pub fn search_lexical(db_path: &Path, query: &SessionTextQuery) -> Result<Vec<Se
         sql.push_str(" AND t.session_id != ?");
         params.push(Box::new(ex.clone()));
     }
-    if let Some(win) = query.exclude_context_window.as_ref() {
-        sql.push_str(" AND NOT (t.session_id = ? AND t.seq >= ?)");
+    if let Some(win) = query.exclude_context_window.as_ref()
+        && !win.surface_seqs.is_empty()
+    {
+        sql.push_str(" AND NOT (t.session_id = ? AND t.seq IN (");
         params.push(Box::new(win.session_id.clone()));
-        params.push(Box::new(win.kept_from_seq));
+        for (i, seq) in win.surface_seqs.iter().enumerate() {
+            if i > 0 {
+                sql.push(',');
+            }
+            sql.push('?');
+            params.push(Box::new(*seq));
+        }
+        sql.push_str("))");
     }
     if let Some(project) = query.project.as_ref().filter(|s| !s.is_empty()) {
         sql.push_str(" AND s.project = ?");

@@ -85,12 +85,11 @@ impl SessionSearchTool {
                 if !exclude_session_ids.iter().any(|e| e == sid)
                     && include_session.as_ref().map(|i| i == sid).unwrap_or(true) =>
             {
-                match session_search::load_kept_from_seq(&db, sid) {
-                    Ok(Some(kept)) => Some(ContextWindowExclude {
+                match session_search::load_surface_seqs(&db, sid) {
+                    Ok(surface_seqs) => Some(ContextWindowExclude {
                         session_id: sid.clone(),
-                        kept_from_seq: kept,
+                        surface_seqs,
                     }),
-                    Ok(None) => None,
                     Err(e) => return ToolCallResult::error(e.to_string()),
                 }
             }

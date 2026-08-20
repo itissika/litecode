@@ -701,7 +701,7 @@ impl AgentRuntime {
             final_text,
             reason,
             turn_token_stats: stats,
-            committed_start: 0,
+            committed_next_seq: 0,
         });
         match reason {
             TurnEndReason::Error => Err(LitecodeError::Llm(if text.is_empty() {
@@ -935,7 +935,8 @@ impl AgentRuntime {
             }
         }
 
-        let anchor_k = self.sessions.entry_user_detail_count(&self.session_id)?;
+        let (_last_seq, next_seq) = self.sessions.entry_wire_seq_cursor(&self.session_id);
+        let anchor_k = next_seq as i64;
         self.rctx().set_turn_anchor_k(anchor_k);
 
         // Snapshot workspace before tools run (OpenCode-style git-based snapshot).

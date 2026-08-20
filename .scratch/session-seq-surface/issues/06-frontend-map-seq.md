@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+04 留下的前端红是本票地图，不是意外：`buffer_index` / `buffer.len` / `committed_end` / `start`–`end` 加载窗。不要在 06 之前用 overlay 特例「修」compact 乱序。
+
 - [ ] `ChatRow` 必有 `seq`；删除 `bufferIndex` 与 `live-` / `ord-` / `user-*` 身份协议（A1、A2）
 - [ ] 删除 `orderProjection`、`findRowByItemId` / `findRowForSeal` / `vacateIndex` / `sealProjectionRow`（A3、A4）
 - [ ] 删除 `finalizeTurn` 丢 `live-*`，以及 overlay 生命周期补洞（A5、A6）

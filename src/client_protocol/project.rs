@@ -355,7 +355,7 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
             final_text,
             reason,
             turn_token_stats,
-            committed_start: _,
+            committed_next_seq: _,
         } => {
             let error = turn_error(reason, final_text);
             let mut params = serde_json::json!({
