@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::authority::responses::{InputMessage, InputRole, MessageItem};
 use crate::platform_knobs::{ContextMode, ThinkingTier};
 use crate::session::estimate::compute_token_estimate;
-use crate::session::event::EventType;
+use crate::session::event::{EventType, Seq, SessionEvent};
 use crate::session::snapshot;
 use crate::session::surface::SurfaceOp;
 use crate::session::task_state::TodoItem;
@@ -525,6 +525,51 @@ fn load_blob_text(body_ref: &str, data_root: &Path) -> Result<String> {
 
 fn rows_to_items(rows: &[TranscriptRow], data_root: &Path) -> Result<Transcript> {
     rows.iter().map(|row| row_to_item(row, data_root)).collect()
+}
+
+fn event_from_disk_row(
+    session_id: &str,
+    seq: i64,
+    created_at: i64,
+    event_type: String,
+    surface_op: String,
+    source_seqs: Option<String>,
+    kind: String,
+    body: Option<String>,
+    body_ref: Option<String>,
+    data_root: &Path,
+) -> Result<SessionEvent> {
+    let seq = Seq::try_from(seq).map_err(|_| {
+        LitecodeError::InvalidSessionEvent(format!("negative seq {seq}"))
+    })?;
+    let item = row_to_item(
+        &TranscriptRow {
+            session_id: session_id.to_string(),
+            seq: seq as i64,
+            turn_id: String::new(),
+            turn_seq: 0,
+            item_type: String::new(),
+            kind,
+            body,
+            body_ref,
+            token_estimate: 0,
+            created_at,
+        },
+        data_root,
+    )?;
+    let source_seqs = match source_seqs.as_deref() {
+        None | Some("") => None,
+        Some(raw) => Some(serde_json::from_str(raw)?),
+    };
+    Ok(SessionEvent {
+        seq,
+        time: created_at,
+        event_type: EventType::from_str_name(&event_type),
+        data: serde_json::to_value(&item)?,
+        surface_op: Some(serde_json::from_str(&surface_op)?),
+        source_seqs,
+        ignorable: false,
+    })
 }
 
 fn preview_from_item_json(body: &str) -> String {
@@ -1751,6 +1796,53 @@ impl Session {
             .map_err(Into::into)
     }
 
+    /// Append-only log in disk `seq` order. Does not apply the turn-window SQL view.
+    pub fn load_events(&self) -> Result<Vec<SessionEvent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref
+             FROM transcript_items WHERE session_id = ?1 ORDER BY seq ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![self.id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+            ))
+        })?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref) =
+                row?;
+            events.push(event_from_disk_row(
+                &self.id,
+                seq,
+                created_at,
+                event_type,
+                surface_op,
+                source_seqs,
+                kind,
+                body,
+                body_ref,
+                &self.data_root,
+            )?);
+        }
+        for (i, event) in events.iter().enumerate() {
+            let expected = i as Seq;
+            if event.seq != expected {
+                return Err(LitecodeError::InvalidSessionEvent(format!(
+                    "seq hole: expected {expected}, got {}",
+                    event.seq
+                )));
+            }
+        }
+        Ok(events)
+    }
+
     /// §5.1 compact success — summary checkpoint with empty keep (summary-only view).
     pub fn apply_compact_checkpoint(&self, summary: &Item, token_estimate: i64) -> Result<i64> {
         // `kept_from_seq = N` (checkpoint) → no pre-existing detail in the view.
@@ -1952,6 +2044,34 @@ mod tests {
             serde_json::from_str(&surface_op).expect("surface_op json");
         assert_eq!(op, crate::session::surface::SurfaceOp::Append);
         assert!(source_seqs.is_none());
+    }
+
+    #[test]
+    fn load_events_roundtrip_append_origin_is_contiguous_seq() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("a"), user_text("b"), user_text("c")])
+            .unwrap();
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), 3);
+        for (i, event) in events.iter().enumerate() {
+            assert_eq!(event.seq, i as u64);
+            let disk_seq: i64 = session
+                .conn
+                .query_row(
+                    "SELECT seq FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
+                    rusqlite::params![session.id, event.seq as i64],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(disk_seq, event.seq as i64);
+        }
+        let texts: Vec<_> = crate::session::derive_transcript_items(&events)
+            .unwrap()
+            .iter()
+            .map(item_text_preview)
+            .collect();
+        assert_eq!(texts, vec!["a", "b", "c"]);
     }
 
     #[test]

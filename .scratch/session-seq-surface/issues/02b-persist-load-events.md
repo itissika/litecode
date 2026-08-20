@@ -4,10 +4,14 @@
 
 **Blocked by:** 02a: 砸库加上事件信封列
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 写入走分配器给出的 seq（与磁盘列同一套），不是事后 `enumerate(history)`
-- [ ] `load_events`：seq ASC，连续，往返后 `derive_transcript_items` 与插入的 append-origin 一致
-- [ ] 不变量测试：加载后 `event.seq == 行.seq`，无空洞
-- [ ] 不在本票删除 `SQL_LOAD_TURN_TRANSCRIPT` 的 CASE WHEN 重排（留给 02c）
-- [ ] 不在本票把 compact 改成 replace
+- [x] 写入走分配器给出的 seq（与磁盘列同一套），不是事后 `enumerate(history)`
+- [x] `load_events`：seq ASC，连续，往返后 `derive_transcript_items` 与插入的 append-origin 一致
+- [x] 不变量测试：加载后 `event.seq == 行.seq`，无空洞
+- [x] 不在本票删除 `SQL_LOAD_TURN_TRANSCRIPT` 的 CASE WHEN 重排（留给 02c）
+- [x] 不在本票把 compact 改成 replace
+
+## Answer
+
+`Session::load_events` reads seq ASC and rejects holes. `load_transcript` still uses the old turn SQL view so compact windows stay intact until 02c.
