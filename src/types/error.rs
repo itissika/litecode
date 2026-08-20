@@ -43,6 +43,9 @@ pub enum LitecodeError {
     #[error("invalid revert anchor: {0}")]
     InvalidRevertAnchor(String),
 
+    #[error("invalid session event: {0}")]
+    InvalidSessionEvent(String),
+
     #[error("agent already running")]
     AgentAlreadyRunning,
 

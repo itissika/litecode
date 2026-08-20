@@ -9,7 +9,9 @@
 //! delete `.litecode/sessions.db` to recreate. Empty leftover `messages` may be DROP'd.
 
 pub mod estimate;
+pub mod event;
 pub mod gate;
+pub mod surface;
 pub mod live;
 pub mod manager;
 pub mod media;
@@ -22,6 +24,8 @@ pub mod transcript_fts;
 pub mod workspace_lock;
 
 pub use estimate::{autocompact_threshold, compact_prompt, compute_token_estimate};
+pub use event::{EventDraft, EventLog, EventType, Seq, SessionEvent};
+pub use surface::{Surface, SurfaceOp, derive_messages, derive_transcript_items, fold_surface};
 pub use gate::SessionGate;
 pub use live::{LifecycleEvent, LiveTurn, TurnProgress};
 pub use manager::{SessionManager, SessionRecord};

@@ -405,6 +405,69 @@ fn check_file(path: &Path) -> Vec<String> {
     hits
 }
 
+/// Session seq/surface (ticket 01): catalogued for later G3 full-src scan. Not asserted yet.
+const SESSION_SEQ_SURFACE_NEEDLES: &[&str] = &[
+    "buffer_index",
+    "bufferIndex",
+    "kept_from_seq",
+    "checkpoint_seq",
+    "compact_checkpoint",
+    "liveItemRowId",
+    "orderProjection",
+    "committedIdentity",
+];
+
+fn mental_model_or_spec_text() -> Option<String> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let candidates = [
+        root.join("dev/plans/session-seq-surface/MENTAL-MODEL.md"),
+        root.join(".scratch/session-seq-surface/spec.md"),
+    ];
+    for path in candidates {
+        if let Ok(text) = fs::read_to_string(&path) {
+            return Some(text);
+        }
+    }
+    None
+}
+
+#[test]
+fn session_seq_g1_envelope_vocab_matches_mental_model() {
+    let event_src =
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/session/event.rs"))
+            .expect("event.rs");
+    assert!(
+        event_src.contains("pub seq: Seq") || event_src.contains("pub seq: u64"),
+        "SessionEvent.seq must exist"
+    );
+    assert!(
+        event_src.contains("pub surface_op"),
+        "SessionEvent.surface_op must exist"
+    );
+    assert!(
+        event_src.contains("pub source_seqs"),
+        "SessionEvent.source_seqs must exist"
+    );
+    assert!(
+        !event_src.contains("buffer_index"),
+        "new envelope module must not take buffer_index as identity"
+    );
+
+    let Some(doc) = mental_model_or_spec_text() else {
+        panic!("MENTAL-MODEL.md or .scratch spec.md must exist for G1 vocab");
+    };
+    for needle in ["seq", "surface_op", "source_seqs"] {
+        assert!(
+            doc.contains(needle),
+            "domain doc must name `{needle}` so types stay aligned"
+        );
+    }
+    assert!(
+        SESSION_SEQ_SURFACE_NEEDLES.contains(&"buffer_index"),
+        "A/B/C needles must be catalogued (full scan is G3)"
+    );
+}
+
 #[test]
 fn death_list_dialect_tokens_absent_from_src() {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
