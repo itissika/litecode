@@ -7,7 +7,6 @@ import {
   itemAuthorityId,
   itemPlainText,
   markFunctionCallsFailed,
-  mergeCommittedItem,
   sealMismatchError,
 } from "../api/adapter";
 import type {
@@ -36,6 +35,11 @@ export interface MessageSlice {
   messages: ChatRow[];
   /** Optimistic composer row; not a seq key. At most one. */
   pendingUser: PendingUser | null;
+  /**
+   * `messages` plus pending user row. Stable until the next slice patch —
+   * zustand selectors must not allocate this on each snapshot.
+   */
+  display: ChatRow[];
   /** Loaded window `[fromSeq, toSeq)`. */
   fromSeq: number;
   toSeq: number;
@@ -58,10 +62,13 @@ export interface TurnEndNotice {
   message: string;
 }
 
+export const EMPTY_DISPLAY: ChatRow[] = [];
+
 export const EMPTY_SLICE: MessageSlice = {
   bySeq: new Map(),
-  messages: [],
+  messages: EMPTY_DISPLAY,
   pendingUser: null,
+  display: EMPTY_DISPLAY,
   fromSeq: 0,
   toSeq: 0,
   userDetailBefore: 0,
@@ -77,24 +84,36 @@ export function emptySlice(): MessageSlice {
   return {
     ...EMPTY_SLICE,
     bySeq: new Map(),
-    messages: [],
+    messages: EMPTY_DISPLAY,
+    display: EMPTY_DISPLAY,
     subagentBindings: {},
     itemIdToSeq: new Map(),
   };
 }
 
+function withDisplay(slice: MessageSlice): MessageSlice {
+  if (!slice.pendingUser) {
+    return slice.display === slice.messages
+      ? slice
+      : { ...slice, display: slice.messages };
+  }
+  return {
+    ...slice,
+    display: [
+      ...slice.messages,
+      {
+        seq: -1,
+        item: slice.pendingUser.item,
+        eventType: "item/user",
+        surfaceOp: "append",
+      },
+    ],
+  };
+}
+
 export function displayMessages(slice: MessageSlice | undefined): ChatRow[] {
-  if (!slice) return [];
-  if (!slice.pendingUser) return slice.messages;
-  return [
-    ...slice.messages,
-    {
-      seq: -1,
-      item: slice.pendingUser.item,
-      eventType: "item/user",
-      surfaceOp: "append",
-    },
-  ];
+  if (!slice) return EMPTY_DISPLAY;
+  return slice.display;
 }
 
 function getSlice(byId: Map<string, MessageSlice>, sessionId: string): MessageSlice {
@@ -173,7 +192,7 @@ function upsertEvents(slice: MessageSlice, events: WireBufferEvent[]): MessageSl
       } else {
         bySeq.set(ev.seq, {
           ...prev,
-          item: mergeCommittedItem(prev.item, ev.item),
+          item: ev.item,
           eventType: ev.type,
           surfaceOp: ev.surface_op ?? prev.surfaceOp,
           streaming: live,
@@ -259,7 +278,7 @@ export const useMessageStore = create<MessageStore>((set, get) => {
   function patch(sessionId: string, update: Partial<MessageSlice>): void {
     const state = get();
     const bySession = new Map(state.bySession);
-    const slice = { ...getSlice(bySession, sessionId), ...update };
+    const slice = withDisplay({ ...getSlice(bySession, sessionId), ...update });
     bySession.set(sessionId, slice);
     set({ bySession });
   }
@@ -298,7 +317,7 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         rows: next.messages.length,
       });
       const bySession = new Map(state.bySession);
-      bySession.set(sessionId, next);
+      bySession.set(sessionId, withDisplay(next));
       set({ bySession });
     },
 
@@ -340,7 +359,7 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         rows: next.messages.length,
       });
       const bySession = new Map(state.bySession);
-      bySession.set(sessionId, next);
+      bySession.set(sessionId, withDisplay(next));
       set({ bySession });
     },
 

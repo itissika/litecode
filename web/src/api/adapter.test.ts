@@ -57,7 +57,7 @@ describe("deriveUserAnchorK", () => {
     const messages = [
       // The buffer window the FE receives includes the compact checkpoint row
       // (kind='compact_checkpoint'), which the backend excludes from the count.
-      { item: userTextItem("summary"), surfaceOp: { op: "replace", start: 0, end: 1 } },
+      { item: userTextItem("summary"), surfaceOp: { op: "replace" as const, start: 0, end: 1 } },
       { item: userTextItem("u2") },
       { item: userTextItem("u3") },
     ];

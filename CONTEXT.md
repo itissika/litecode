@@ -4,6 +4,14 @@ Agent coding product. Kernel truth is OpenAI Responses `Item`. Session identity 
 
 ## Language
 
+**门**:
+The only writer for a session log. Three primitives: **append** (new `seq` = `MAX(seq)+1`), **seal** (same `seq`, in_progress → terminal), **truncate** (回退: delete from a user-message anchor). Compact is append with `surface_op=replace`. Loop and the UI do not invent a second authority.
+_Avoid_: a second INSERT path, `MAX(seq)+1` outside the gate, persist vs revert without the same lock
+
+**投影可丢**:
+Empty assistants and unmatched `function_call_output`s stay on the log. Model / wire / UI projections may skip them. Skipping is not DELETE and is not 回退.
+_Avoid_: DELETE to “clean” the surface, treating a shorter projection as persist failure
+
 **seq**:
 The identity and order of one row in the session log. What is in the database is authoritative. Modules key, sort, and address rows by `seq`.
 _Avoid_: buffer index, live overlay id, `Item.id` as the row’s identity, a second in-memory cursor

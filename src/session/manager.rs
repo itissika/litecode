@@ -398,49 +398,6 @@ impl SessionManager {
             .with(|s| s.load_events_range(from_seq, to_seq))
     }
 
-    pub fn entry_load_range(
-        &self,
-        session_id: &str,
-        start: usize,
-        end: usize,
-    ) -> Result<Vec<crate::types::Item>> {
-        let records = self.records.lock().unwrap();
-        let entry = records.get(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
-        })?;
-        entry.store.with(|s| s.load_by_buffer_index(start, end))
-    }
-
-    /// [`Self::entry_load_range`] plus each row's DB `kind` and history ordinal.
-    pub fn entry_load_range_with_kinds(
-        &self,
-        session_id: &str,
-        start: usize,
-        end: usize,
-    ) -> Result<(Vec<crate::types::Item>, Vec<String>, Vec<usize>)> {
-        let records = self.records.lock().unwrap();
-        let entry = records.get(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
-        })?;
-        entry
-            .store
-            .with(|s| s.load_by_buffer_index_with_kinds(start, end))
-    }
-
-    pub fn entry_user_detail_before_buffer_index(
-        &self,
-        session_id: &str,
-        start: usize,
-    ) -> Result<usize> {
-        let records = self.records.lock().unwrap();
-        let entry = records.get(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
-        })?;
-        entry
-            .store
-            .with(|s| s.user_detail_before_buffer_index(start))
-    }
-
     pub fn entry_revert_to_user_anchor(&self, session_id: &str, k: i64) -> Result<()> {
         let records = self.records.lock().unwrap();
         let entry = records.get(session_id).ok_or_else(|| {

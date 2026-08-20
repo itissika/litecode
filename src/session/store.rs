@@ -1,8 +1,10 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::authority::responses::{InputMessage, InputRole, MessageItem};
 use crate::platform_knobs::{ContextMode, ThinkingTier};
@@ -363,7 +365,22 @@ pub enum CommitDeltaOutcome {
     Discarded,
     Applied {
         preview: Option<(String, i64)>,
+        /// True when this commit sealed or appended at least one row.
+        mutated: bool,
     },
+}
+
+/// The three write primitives. All durable mutation goes through [`Session::apply`].
+pub enum SessionApply {
+    Append(EventDraft),
+    Seal { seq: Seq, item: Item },
+    Truncate { user_k: i64 },
+}
+
+pub enum ApplyOutcome {
+    Appended(Seq),
+    Sealed,
+    Truncated,
 }
 
 pub struct Session {
@@ -382,6 +399,8 @@ pub struct Session {
     db_path: Option<PathBuf>,
     ephemeral: bool,
     persisted_max_seq: Cell<i64>,
+    write_gate: Mutex<()>,
+    truncated_item_ids: RefCell<HashSet<String>>,
 }
 
 pub fn data_root_from_db_path(db_path: &str) -> PathBuf {
@@ -402,6 +421,7 @@ fn is_user_message_item(item: &Item) -> bool {
 }
 
 /// Same predicate as [`SQL_USER_DETAIL_COUNT`] / [`SQL_ANCHOR_SEQ`], on a turn row.
+#[cfg(test)]
 fn transcript_row_is_user_detail(row: &TranscriptRow) -> bool {
     if row.kind != "detail" || row.item_type != "message" {
         return false;
@@ -452,10 +472,123 @@ fn surface_event_type_of(item: &Item) -> EventType {
     }
 }
 
-fn encode_surface_envelope(item: &Item) -> Result<(String, String, Option<String>)> {
+fn event_sql_envelope(event: &SessionEvent) -> Result<(String, Option<String>)> {
+    let surface_op = match &event.surface_op {
+        Some(op) => serde_json::to_string(op)?,
+        None => String::new(),
+    };
+    let source_seqs = event
+        .source_seqs
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    Ok((surface_op, source_seqs))
+}
+
+fn insert_event_row(
+    tx: &Transaction<'_>,
+    session_id: &str,
+    data_root: &Path,
+    event: &SessionEvent,
+    item: Option<&Item>,
+    turn_id: &str,
+    turn_seq: i64,
+    kind: &str,
+    token_estimate: i64,
+) -> Result<()> {
+    let seq = event.seq as i64;
+    let (body, body_ref, encoded_tokens) = if let Some(item) = item {
+        if is_user_message_item(item) {
+            let (body, body_ref, tokens) =
+                encode_detail_row(item, data_root, DEFAULT_SPILL_THRESHOLD)?;
+            if body.is_none() {
+                return Err(LitecodeError::ToolExecution(
+                    "user detail item must keep inline body for anchors".into(),
+                ));
+            }
+            (body, body_ref, tokens)
+        } else {
+            encode_detail_row(item, data_root, DEFAULT_SPILL_THRESHOLD)?
+        }
+    } else {
+        (Some(event.data.to_string()), None, 0)
+    };
+    let tokens = if token_estimate > 0 {
+        token_estimate
+    } else {
+        encoded_tokens
+    };
+    let item_type = if let Some(item) = item {
+        item_type_of(item)
+    } else {
+        event.event_type.as_str().to_string()
+    };
+    let (surface_op, source_seqs) = event_sql_envelope(event)?;
+    tx.execute(
+        "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        rusqlite::params![
+            session_id,
+            seq,
+            turn_id,
+            turn_seq,
+            item_type,
+            kind,
+            body,
+            body_ref,
+            tokens,
+            event.time,
+            event.event_type.as_str(),
+            surface_op,
+            source_seqs,
+        ],
+    )?;
+    if let Some(item) = item {
+        let plain = crate::types::item_text_preview(item);
+        crate::session::transcript_fts::upsert(tx, session_id, seq, &plain)?;
+    }
+    Ok(())
+}
+
+fn seal_event_row(
+    tx: &Transaction<'_>,
+    session_id: &str,
+    data_root: &Path,
+    seq: Seq,
+    item: &Item,
+) -> Result<()> {
+    let seq_i = seq as i64;
+    let exists: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
+        rusqlite::params![session_id, seq_i],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        return Err(LitecodeError::InvalidSessionEvent(format!(
+            "seal_item: no row at seq {seq}"
+        )));
+    }
+    let item_type = item_type_of(item);
+    let (body, body_ref, token_estimate) =
+        encode_detail_row(item, data_root, DEFAULT_SPILL_THRESHOLD)?;
     let event_type = surface_event_type_of(item).as_str().to_string();
-    let surface_op = serde_json::to_string(&SurfaceOp::Append)?;
-    Ok((event_type, surface_op, None))
+    tx.execute(
+        "UPDATE transcript_items
+         SET item_type = ?1, body = ?2, body_ref = ?3, token_estimate = ?4, event_type = ?5
+         WHERE session_id = ?6 AND seq = ?7",
+        rusqlite::params![
+            item_type,
+            body,
+            body_ref,
+            token_estimate,
+            event_type,
+            session_id,
+            seq_i,
+        ],
+    )?;
+    let plain = crate::types::item_text_preview(item);
+    crate::session::transcript_fts::upsert(tx, session_id, seq_i, &plain)?;
+    Ok(())
 }
 
 fn replace_op_for_keep(
@@ -562,6 +695,7 @@ fn load_blob_text(body_ref: &str, data_root: &Path) -> Result<String> {
     fs::read_to_string(blob_path).map_err(Into::into)
 }
 
+#[cfg(test)]
 fn rows_to_items(rows: &[TranscriptRow], data_root: &Path) -> Result<Transcript> {
     rows.iter().map(|row| row_to_item(row, data_root)).collect()
 }
@@ -581,6 +715,27 @@ fn event_from_disk_row(
     let seq = Seq::try_from(seq).map_err(|_| {
         LitecodeError::InvalidSessionEvent(format!("negative seq {seq}"))
     })?;
+    let event_type = EventType::from_str_name(&event_type);
+    let source_seqs = match source_seqs.as_deref() {
+        None | Some("") => None,
+        Some(raw) => Some(serde_json::from_str(raw)?),
+    };
+    if !event_type.is_surface_eligible() {
+        let data = match body.as_deref() {
+            Some(raw) if !raw.is_empty() => serde_json::from_str(raw)?,
+            _ => serde_json::Value::Null,
+        };
+        let ignorable = matches!(event_type, EventType::Unknown(_));
+        return Ok(SessionEvent {
+            seq,
+            time: created_at,
+            event_type,
+            data,
+            surface_op: None,
+            source_seqs,
+            ignorable,
+        });
+    }
     let item = row_to_item(
         &TranscriptRow {
             session_id: session_id.to_string(),
@@ -596,16 +751,16 @@ fn event_from_disk_row(
         },
         data_root,
     )?;
-    let source_seqs = match source_seqs.as_deref() {
-        None | Some("") => None,
-        Some(raw) => Some(serde_json::from_str(raw)?),
+    let surface_op = match surface_op.as_str() {
+        "" => None,
+        raw => Some(serde_json::from_str(raw)?),
     };
     Ok(SessionEvent {
         seq,
         time: created_at,
-        event_type: EventType::from_str_name(&event_type),
+        event_type,
         data: serde_json::to_value(&item)?,
-        surface_op: Some(serde_json::from_str(&surface_op)?),
+        surface_op,
         source_seqs,
         ignorable: false,
     })
@@ -655,6 +810,8 @@ impl Session {
             db_path: None,
             ephemeral: true,
             persisted_max_seq: Cell::new(0),
+            write_gate: Mutex::new(()),
+            truncated_item_ids: RefCell::new(HashSet::new()),
         })
     }
 
@@ -729,6 +886,8 @@ impl Session {
             db_path: Some(PathBuf::from(db_path)),
             ephemeral: false,
             persisted_max_seq: Cell::new(0),
+            write_gate: Mutex::new(()),
+            truncated_item_ids: RefCell::new(HashSet::new()),
         })
     }
 
@@ -911,6 +1070,8 @@ impl Session {
             db_path: Some(PathBuf::from(db_path)),
             ephemeral: false,
             persisted_max_seq: Cell::new(0),
+            write_gate: Mutex::new(()),
+            truncated_item_ids: RefCell::new(HashSet::new()),
         })
     }
 
@@ -1241,15 +1402,16 @@ impl Session {
     }
 
     pub fn buffer_len(&self) -> usize {
-        self.buffer_index_len().unwrap_or(0)
+        self.load_events().map(|e| e.len()).unwrap_or(0)
     }
 
-    /// Wire buffer length — full UI history row count.
+    #[cfg(test)]
     pub fn buffer_index_len(&self) -> Result<usize> {
         Ok(self.load_history_transcript()?.len())
     }
 
     /// §5.1 Materialize — buffer index range `[start, end)`.
+    #[cfg(test)]
     pub fn load_by_buffer_index(&self, start: usize, end: usize) -> Result<Transcript> {
         let rows = self.load_by_buffer_index_rows(start, end)?;
         rows_to_items(&rows, &self.data_root)
@@ -1259,6 +1421,7 @@ impl Session {
     /// (`detail` | `compact_checkpoint`) and its history ordinal (position in
     /// `ORDER BY seq` UI history). The ordinal is the only index the client may
     /// use; it is not recomputed from `start + i` on the wire consumer.
+    #[cfg(test)]
     pub fn load_by_buffer_index_with_kinds(
         &self,
         start: usize,
@@ -1271,6 +1434,7 @@ impl Session {
     }
 
     /// History index and Item of the current turn-view checkpoint, if any.
+    #[cfg(test)]
     pub fn compact_checkpoint_buffer_item(&self) -> Result<Option<(usize, Item)>> {
         let cp_seq = self.checkpoint_seq()?;
         let rows = self.load_history_transcript()?;
@@ -1282,6 +1446,7 @@ impl Session {
         Ok(None)
     }
 
+    #[cfg(test)]
     fn load_by_buffer_index_rows(&self, start: usize, end: usize) -> Result<Vec<TranscriptRow>> {
         let len = self.buffer_index_len()?;
         if start > end || end > len {
@@ -1297,6 +1462,7 @@ impl Session {
     ///
     /// FE uses this as the absolute 0-based anchor baseline for a loaded window
     /// starting at `start` (`k = before + local user ordinal`).
+    #[cfg(test)]
     pub fn user_detail_before_buffer_index(&self, start: usize) -> Result<usize> {
         let rows = self.load_history_transcript()?;
         let end = start.min(rows.len());
@@ -1309,338 +1475,117 @@ impl Session {
         Ok(n)
     }
 
-    /// §5.1 step INSERT — append `delta` detail rows with consecutive seq allocation.
-    ///
-    /// Returns `Some((preview, updated_at))` when this delta contains a user
-    /// message and `last_message` was updated. Assistant/tool-only deltas no
-    /// longer wipe `last_message`.
-    pub fn insert_detail_rows(&self, delta: &[Item]) -> Result<Option<(String, i64)>> {
-        self.insert_detail_rows_with_turn(delta, "")
+    fn lock_write(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.write_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Append detail rows tagged with a real turn id.
-    pub fn insert_detail_rows_with_turn(
-        &self,
-        delta: &[Item],
-        turn_id: &str,
-    ) -> Result<Option<(String, i64)>> {
-        if delta.is_empty() {
-            return Ok(None);
-        }
-
-        let tx = self
-            .conn
-            .unchecked_transaction()
-            .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
-
-        let base_seq: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(seq), -1) FROM transcript_items WHERE session_id = ?1",
-            rusqlite::params![self.id],
-            |row| row.get(0),
-        )?;
-
-        let turn_id = if turn_id.is_empty() {
-            format!("orphan-{}", ulid::Ulid::new())
-        } else {
-            turn_id.to_string()
-        };
-
-        for (i, msg) in delta.iter().enumerate() {
-            let seq = base_seq + 1 + i as i64;
-            let item_type = item_type_of(msg);
-            let (body, body_ref, token_estimate) =
-                encode_detail_row(msg, &self.data_root, DEFAULT_SPILL_THRESHOLD)?;
-            // Fail closed: user anchors require inline body.
-            if is_user_message_item(msg) && body.is_none() {
-                return Err(LitecodeError::ToolExecution(
-                    "user detail item must keep inline body for anchors".into(),
-                ));
+    /// Sole durable write entry: append, seal, or truncate.
+    pub fn apply(&self, op: SessionApply) -> Result<ApplyOutcome> {
+        let _gate = self.lock_write();
+        match op {
+            SessionApply::Append(draft) => {
+                let kind = if draft.event_type.is_surface_eligible() {
+                    "detail"
+                } else {
+                    "log"
+                };
+                let seq = self.append_unlocked(draft, "", 0, kind)?;
+                Ok(ApplyOutcome::Appended(seq))
             }
-            let (event_type, surface_op, source_seqs) = encode_surface_envelope(msg)?;
-            tx.execute(
-                "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'detail', ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                rusqlite::params![
-                    self.id,
-                    seq,
-                    turn_id,
-                    i as i64,
-                    item_type,
-                    body,
-                    body_ref,
-                    token_estimate,
-                    message_timestamp(msg),
-                    event_type,
-                    surface_op,
-                    source_seqs,
-                ],
-            )?;
-            let plain = crate::types::item_text_preview(msg);
-            crate::session::transcript_fts::upsert(&tx, &self.id, seq, &plain)?;
+            SessionApply::Seal { seq, item } => {
+                self.seal_unlocked(seq, &item)?;
+                Ok(ApplyOutcome::Sealed)
+            }
+            SessionApply::Truncate { user_k } => {
+                self.truncate_unlocked(user_k)?;
+                Ok(ApplyOutcome::Truncated)
+            }
         }
+    }
 
-        let now = chrono::Utc::now().timestamp_millis();
-        let preview = Self::last_user_message_preview(delta);
-        let preview_updated = if !preview.is_empty() {
-            tx.execute(
-                "UPDATE sessions SET updated_at = ?1, last_message = ?2 WHERE id = ?3",
-                rusqlite::params![now, preview, self.id],
-            )?;
-            Some((preview, now))
+    fn append_unlocked(
+        &self,
+        mut draft: EventDraft,
+        turn_id: &str,
+        turn_seq: i64,
+        kind: &str,
+    ) -> Result<Seq> {
+        if draft.time == 0 {
+            draft.time = chrono::Utc::now().timestamp_millis();
+        }
+        let item = if draft.event_type.is_surface_eligible() {
+            Some(serde_json::from_value::<Item>(draft.data.clone())?)
         } else {
-            tx.execute(
-                "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
-                rusqlite::params![now, self.id],
-            )?;
             None
         };
-
-        tx.commit()
-            .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
-        self.persisted_max_seq.set(base_seq + delta.len() as i64);
-        Ok(preview_updated)
-    }
-
-    /// Append one Item (including `in_progress`) and return its `seq`.
-    pub fn persist_item(&self, item: &Item) -> Result<Seq> {
-        if let Some(id) = item_log_id(item) {
-            for event in self.load_events()? {
-                if let Ok(existing) = item_from_event(&event)
-                    && item_log_id(&existing).as_deref() == Some(id.as_str())
-                {
-                    self.seal_item(event.seq, item)?;
-                    return Ok(event.seq);
-                }
-            }
+        if let Some(id) = item.as_ref().and_then(item_log_id)
+            && self.truncated_item_ids.borrow().contains(&id)
+        {
+            return Err(LitecodeError::Canceled);
         }
-        self.insert_detail_rows(std::slice::from_ref(item))?;
-        Ok(self.max_seq()? as Seq)
-    }
-
-    /// 封口: rewrite payload on an existing `seq`. Does not allocate a new row.
-    pub fn seal_item(&self, seq: Seq, item: &Item) -> Result<()> {
-        let seq_i = seq as i64;
-        let exists: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
-            rusqlite::params![self.id, seq_i],
-            |row| row.get(0),
-        )?;
-        if exists == 0 {
-            return Err(LitecodeError::InvalidSessionEvent(format!(
-                "seal_item: no row at seq {seq}"
-            )));
-        }
-        let item_type = item_type_of(item);
-        let (body, body_ref, token_estimate) =
-            encode_detail_row(item, &self.data_root, DEFAULT_SPILL_THRESHOLD)?;
-        let (event_type, surface_op, source_seqs) = encode_surface_envelope(item)?;
         let tx = self
             .conn
             .unchecked_transaction()
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
-        tx.execute(
-            "UPDATE transcript_items
-             SET item_type = ?1, body = ?2, body_ref = ?3, token_estimate = ?4,
-                 event_type = ?5, surface_op = ?6, source_seqs = ?7
-             WHERE session_id = ?8 AND seq = ?9",
-            rusqlite::params![
-                item_type,
-                body,
-                body_ref,
-                token_estimate,
-                event_type,
-                surface_op,
-                source_seqs,
-                self.id,
-                seq_i,
-            ],
-        )?;
-        let plain = crate::types::item_text_preview(item);
-        crate::session::transcript_fts::upsert(&tx, &self.id, seq_i, &plain)?;
-        tx.commit()
-            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Persist the uncommitted suffix. Unmatched `FunctionCallOutput`s are not
-    /// inserted and are dropped from the in-memory working set. Historical log
-    /// rows are never DELETE'd here (only 回退 deletes seqs).
-    pub fn commit_turn_delta_with_orphan_cleanup(
-        &self,
-        items: &mut Vec<Item>,
-        delta: &[Item],
-        expected_committed_len: usize,
-        turn_id: &str,
-    ) -> Result<CommitDeltaOutcome> {
-        let valid_call_ids: std::collections::HashSet<String> = items
-            .iter()
-            .filter_map(|item| match item {
-                Item::FunctionCall(fc) => Some(fc.call_id.clone()),
-                _ => None,
-            })
-            .collect();
-        let is_orphan = |item: &Item| {
-            matches!(
-                item,
-                Item::FunctionCallOutput(out) if !valid_call_ids.contains(&out.call_id)
-            )
-        };
-        let kept: Vec<Item> = items
-            .iter()
-            .filter(|item| !is_orphan(item))
-            .cloned()
-            .collect();
-        let insert: Vec<Item> = delta
-            .iter()
-            .filter(|item| !is_orphan(item))
-            .cloned()
-            .collect();
-
-        let tx = self
-            .conn
-            .unchecked_transaction()
-            .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
-
-        let log_len = self.load_events()?.len();
-        if log_len < expected_committed_len {
-            drop(tx);
-            *items = self.load_transcript()?;
-            return Ok(CommitDeltaOutcome::Discarded);
-        }
-
-        let base_seq: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(seq), -1) FROM transcript_items WHERE session_id = ?1",
-            rusqlite::params![self.id],
-            |row| row.get(0),
-        )?;
-
+        let mut log = EventLog::from_events(self.load_events()?);
+        log.append(draft)?;
+        let event = log.events().last().expect("appended").clone();
         let tid = if turn_id.is_empty() {
             format!("orphan-{}", ulid::Ulid::new())
         } else {
             turn_id.to_string()
         };
-        let mut id_to_seq: std::collections::HashMap<String, Seq> = std::collections::HashMap::new();
-        for event in self.load_events()? {
-            if let Ok(item) = item_from_event(&event)
-                && let Some(id) = item_log_id(&item)
-            {
-                id_to_seq.insert(id, event.seq);
-            }
-        }
-        let mut next_insert = 0i64;
-        for msg in insert.iter() {
-            if let Some(id) = item_log_id(msg)
-                && let Some(&seq) = id_to_seq.get(&id)
-            {
-                let seq_i = seq as i64;
-                let item_type = item_type_of(msg);
-                let (body, body_ref, token_estimate) =
-                    encode_detail_row(msg, &self.data_root, DEFAULT_SPILL_THRESHOLD)?;
-                let (event_type, surface_op, source_seqs) = encode_surface_envelope(msg)?;
-                tx.execute(
-                    "UPDATE transcript_items
-                     SET item_type = ?1, body = ?2, body_ref = ?3, token_estimate = ?4,
-                         event_type = ?5, surface_op = ?6, source_seqs = ?7
-                     WHERE session_id = ?8 AND seq = ?9",
-                    rusqlite::params![
-                        item_type,
-                        body,
-                        body_ref,
-                        token_estimate,
-                        event_type,
-                        surface_op,
-                        source_seqs,
-                        self.id,
-                        seq_i,
-                    ],
-                )?;
-                let plain = crate::types::item_text_preview(msg);
-                crate::session::transcript_fts::upsert(&tx, &self.id, seq_i, &plain)?;
-                continue;
-            }
-            let seq = base_seq + 1 + next_insert;
-            next_insert += 1;
-            let item_type = item_type_of(msg);
-            let (body, body_ref, token_estimate) =
-                encode_detail_row(msg, &self.data_root, DEFAULT_SPILL_THRESHOLD)?;
-            if is_user_message_item(msg) && body.is_none() {
-                return Err(LitecodeError::ToolExecution(
-                    "user detail item must keep inline body for anchors".into(),
-                ));
-            }
-            let (event_type, surface_op, source_seqs) = encode_surface_envelope(msg)?;
-            tx.execute(
-                "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'detail', ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                rusqlite::params![
-                    self.id,
-                    seq,
-                    tid,
-                    next_insert - 1,
-                    item_type,
-                    body,
-                    body_ref,
-                    token_estimate,
-                    message_timestamp(msg),
-                    event_type,
-                    surface_op,
-                    source_seqs,
-                ],
-            )?;
-            let plain = crate::types::item_text_preview(msg);
-            crate::session::transcript_fts::upsert(&tx, &self.id, seq, &plain)?;
-        }
-
+        insert_event_row(
+            &tx,
+            &self.id,
+            &self.data_root,
+            &event,
+            item.as_ref(),
+            &tid,
+            turn_seq,
+            kind,
+            0,
+        )?;
         let now = chrono::Utc::now().timestamp_millis();
-        let preview = Self::last_user_message_preview(&insert);
-        let preview_updated = if !preview.is_empty() {
-            tx.execute(
-                "UPDATE sessions SET updated_at = ?1, last_message = ?2 WHERE id = ?3",
-                rusqlite::params![now, preview, self.id],
-            )?;
-            Some((preview, now))
+        if let Some(item) = item.as_ref() {
+            let preview = Self::last_user_message_preview(std::slice::from_ref(item));
+            if !preview.is_empty() {
+                tx.execute(
+                    "UPDATE sessions SET updated_at = ?1, last_message = ?2 WHERE id = ?3",
+                    rusqlite::params![now, preview, self.id],
+                )?;
+            } else {
+                tx.execute(
+                    "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
+                    rusqlite::params![now, self.id],
+                )?;
+            }
         } else {
             tx.execute(
                 "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
                 rusqlite::params![now, self.id],
             )?;
-            None
-        };
-
+        }
         tx.commit()
-            .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
-        *items = kept;
-        self.persisted_max_seq.set(self.max_seq()?);
-        Ok(CommitDeltaOutcome::Applied {
-            preview: preview_updated,
-        })
+            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+        self.persisted_max_seq.set(event.seq as i64);
+        Ok(event.seq)
     }
 
-    /// §5.1 k formula — persisted user detail count (C2 anchor input).
-    pub fn user_detail_count(&self) -> Result<i64> {
-        self.conn
-            .query_row(SQL_USER_DETAIL_COUNT, rusqlite::params![self.id], |row| {
-                row.get(0)
-            })
-            .map_err(Into::into)
-    }
-
-    /// Snapshot file stem written at turn start (`next_seq` after the k-th user append).
-    /// Track runs after that user row is last, so stem = `anchor_seq + 1`.
-    pub fn snapshot_stem_for_user_k(&self, k: i64) -> Result<i64> {
-        let anchor_seq: i64 = self
+    fn seal_unlocked(&self, seq: Seq, item: &Item) -> Result<()> {
+        let tx = self
             .conn
-            .query_row(SQL_ANCHOR_SEQ, rusqlite::params![self.id, k], |row| {
-                row.get(0)
-            })
-            .map_err(|_| LitecodeError::InvalidRevertAnchor(format!("k={k}")))?;
-        anchor_seq
-            .checked_add(1)
-            .ok_or_else(|| LitecodeError::InvalidRevertAnchor(format!("k={k} seq overflow")))
+            .unchecked_transaction()
+            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+        seal_event_row(&tx, &self.id, &self.data_root, seq, item)?;
+        tx.commit()
+            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+        Ok(())
     }
 
-    /// Truncate DB from the k-th user detail anchor; zero file side effects.
-    pub fn revert_to_user_anchor(&self, k: i64) -> Result<()> {
+    fn truncate_unlocked(&self, k: i64) -> Result<()> {
         let tx = self
             .conn
             .unchecked_transaction()
@@ -1651,6 +1596,45 @@ impl Session {
                 row.get(0)
             })
             .map_err(|_| LitecodeError::InvalidRevertAnchor(format!("k={k}")))?;
+
+        let mut stmt = tx.prepare(
+            "SELECT event_type, kind, body, body_ref FROM transcript_items
+             WHERE session_id = ?1 AND seq >= ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![self.id, anchor_seq], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        let mut tombstones = HashSet::new();
+        for row in rows {
+            let (event_type, kind, body, body_ref) = row?;
+            if !EventType::from_str_name(&event_type).is_surface_eligible() {
+                continue;
+            }
+            if let Ok(item) = row_to_item(
+                &TranscriptRow {
+                    session_id: self.id.clone(),
+                    seq: 0,
+                    turn_id: String::new(),
+                    turn_seq: 0,
+                    item_type: String::new(),
+                    kind,
+                    body,
+                    body_ref,
+                    token_estimate: 0,
+                    created_at: 0,
+                },
+                &self.data_root,
+            ) && let Some(id) = item_log_id(&item)
+            {
+                tombstones.insert(id);
+            }
+        }
+        drop(stmt);
 
         tx.execute(
             "DELETE FROM transcript_items WHERE session_id = ?1 AND seq >= ?2",
@@ -1684,7 +1668,270 @@ impl Session {
 
         tx.commit()
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+        self.truncated_item_ids.borrow_mut().extend(tombstones);
         self.persisted_max_seq.set(self.max_seq()?);
+        Ok(())
+    }
+
+    fn bump_session_updated(
+        &self,
+        tx: &Transaction<'_>,
+        items: &[Item],
+    ) -> Result<Option<(String, i64)>> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let preview = Self::last_user_message_preview(items);
+        if !preview.is_empty() {
+            tx.execute(
+                "UPDATE sessions SET updated_at = ?1, last_message = ?2 WHERE id = ?3",
+                rusqlite::params![now, preview, self.id],
+            )?;
+            Ok(Some((preview, now)))
+        } else {
+            tx.execute(
+                "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, self.id],
+            )?;
+            Ok(None)
+        }
+    }
+
+    /// §5.1 step INSERT — append `delta` detail rows with consecutive seq allocation.
+    ///
+    /// Returns `Some((preview, updated_at))` when this delta contains a user
+    /// message and `last_message` was updated. Assistant/tool-only deltas no
+    /// longer wipe `last_message`.
+    pub fn insert_detail_rows(&self, delta: &[Item]) -> Result<Option<(String, i64)>> {
+        self.insert_detail_rows_with_turn(delta, "")
+    }
+
+    /// Append detail rows tagged with a real turn id.
+    pub fn insert_detail_rows_with_turn(
+        &self,
+        delta: &[Item],
+        turn_id: &str,
+    ) -> Result<Option<(String, i64)>> {
+        if delta.is_empty() {
+            return Ok(None);
+        }
+        let _gate = self.lock_write();
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
+        let mut log = EventLog::from_events(self.load_events()?);
+        let turn_id = if turn_id.is_empty() {
+            format!("orphan-{}", ulid::Ulid::new())
+        } else {
+            turn_id.to_string()
+        };
+        for (i, msg) in delta.iter().enumerate() {
+            let mut draft =
+                EventDraft::surface_item(surface_event_type_of(msg), msg, SurfaceOp::Append)?;
+            draft.time = message_timestamp(msg);
+            log.append(draft)?;
+            let event = log.events().last().expect("appended").clone();
+            insert_event_row(
+                &tx,
+                &self.id,
+                &self.data_root,
+                &event,
+                Some(msg),
+                &turn_id,
+                i as i64,
+                "detail",
+                0,
+            )?;
+        }
+        let preview_updated = self.bump_session_updated(&tx, delta)?;
+        tx.commit()
+            .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
+        self.persisted_max_seq.set(self.max_seq()?);
+        Ok(preview_updated)
+    }
+
+    /// Append one Item (including `in_progress`) and return its `seq`.
+    pub fn persist_item(&self, item: &Item) -> Result<Seq> {
+        let _gate = self.lock_write();
+        if let Some(id) = item_log_id(item) {
+            if self.truncated_item_ids.borrow().contains(&id) {
+                return Err(LitecodeError::Canceled);
+            }
+            for event in self.load_events()? {
+                if let Ok(existing) = item_from_event(&event)
+                    && item_log_id(&existing).as_deref() == Some(id.as_str())
+                {
+                    self.seal_unlocked(event.seq, item)?;
+                    return Ok(event.seq);
+                }
+            }
+        }
+        let mut draft =
+            EventDraft::surface_item(surface_event_type_of(item), item, SurfaceOp::Append)?;
+        draft.time = message_timestamp(item);
+        self.append_unlocked(draft, "", 0, "detail")
+    }
+
+    /// 封口: rewrite payload on an existing `seq`. Does not allocate a new row.
+    pub fn seal_item(&self, seq: Seq, item: &Item) -> Result<()> {
+        self.apply(SessionApply::Seal {
+            seq,
+            item: item.clone(),
+        })?;
+        Ok(())
+    }
+
+    /// Persist the working set. Unmatched `FunctionCallOutput`s are not
+    /// inserted and are dropped from the in-memory working set. Historical log
+    /// rows are never DELETE'd here (only 回退 deletes seqs).
+    ///
+    /// `expected_max_seq` is the log `MAX(seq)` last observed by the caller
+    /// (`-1` if the log was empty). If the table is now shorter, this is 回退
+    /// and the delta is discarded.
+    pub fn commit_turn_delta_with_orphan_cleanup(
+        &self,
+        items: &mut Vec<Item>,
+        _delta: &[Item],
+        expected_max_seq: i64,
+        turn_id: &str,
+    ) -> Result<CommitDeltaOutcome> {
+        let _gate = self.lock_write();
+        let valid_call_ids: HashSet<String> = items
+            .iter()
+            .filter_map(|item| match item {
+                Item::FunctionCall(fc) => Some(fc.call_id.clone()),
+                _ => None,
+            })
+            .collect();
+        let is_orphan = |item: &Item| {
+            matches!(
+                item,
+                Item::FunctionCallOutput(out) if !valid_call_ids.contains(&out.call_id)
+            )
+        };
+        let kept: Vec<Item> = items
+            .iter()
+            .filter(|item| !is_orphan(item))
+            .cloned()
+            .collect();
+
+        if self.max_seq()? < expected_max_seq {
+            *items = self.load_transcript()?;
+            return Ok(CommitDeltaOutcome::Discarded);
+        }
+
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
+        let mut log = EventLog::from_events(self.load_events()?);
+        let tid = if turn_id.is_empty() {
+            format!("orphan-{}", ulid::Ulid::new())
+        } else {
+            turn_id.to_string()
+        };
+        let mut id_to_seq: std::collections::HashMap<String, Seq> =
+            std::collections::HashMap::new();
+        let mut unused_equals: Vec<(Seq, Item)> = Vec::new();
+        for event in log.events() {
+            if let Ok(item) = item_from_event(event) {
+                if let Some(id) = item_log_id(&item) {
+                    id_to_seq.insert(id, event.seq);
+                } else {
+                    unused_equals.push((event.seq, item));
+                }
+            }
+        }
+        let mut mutated = false;
+        let mut appended: Vec<Item> = Vec::new();
+        let mut next_turn_seq = 0i64;
+        for msg in kept.iter() {
+            if let Some(id) = item_log_id(msg)
+                && let Some(&seq) = id_to_seq.get(&id)
+            {
+                let same = log.events().iter().find(|e| e.seq == seq).is_some_and(|e| {
+                    item_from_event(e)
+                        .ok()
+                        .and_then(|existing| serde_json::to_value(existing).ok())
+                        == serde_json::to_value(msg).ok()
+                });
+                if !same {
+                    seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
+                    mutated = true;
+                }
+                continue;
+            }
+            if let Some(id) = item_log_id(msg)
+                && self.truncated_item_ids.borrow().contains(&id)
+            {
+                continue;
+            }
+            if item_log_id(msg).is_none() {
+                if let Some(pos) = unused_equals.iter().position(|(_, existing)| {
+                    serde_json::to_value(existing).ok() == serde_json::to_value(msg).ok()
+                })
+                {
+                    unused_equals.remove(pos);
+                    continue;
+                }
+            }
+            let mut draft =
+                EventDraft::surface_item(surface_event_type_of(msg), msg, SurfaceOp::Append)?;
+            draft.time = message_timestamp(msg);
+            log.append(draft)?;
+            let event = log.events().last().expect("appended").clone();
+            insert_event_row(
+                &tx,
+                &self.id,
+                &self.data_root,
+                &event,
+                Some(msg),
+                &tid,
+                next_turn_seq,
+                "detail",
+                0,
+            )?;
+            next_turn_seq += 1;
+            mutated = true;
+            appended.push(msg.clone());
+        }
+
+        let preview_updated = self.bump_session_updated(&tx, &appended)?;
+        tx.commit()
+            .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
+        *items = kept;
+        self.persisted_max_seq.set(self.max_seq()?);
+        Ok(CommitDeltaOutcome::Applied {
+            preview: preview_updated,
+            mutated,
+        })
+    }
+
+    /// §5.1 k formula — persisted user detail count (C2 anchor input).
+    pub fn user_detail_count(&self) -> Result<i64> {
+        self.conn
+            .query_row(SQL_USER_DETAIL_COUNT, rusqlite::params![self.id], |row| {
+                row.get(0)
+            })
+            .map_err(Into::into)
+    }
+
+    /// Snapshot file stem written at turn start (`next_seq` after the k-th user append).
+    /// Track runs after that user row is last, so stem = `anchor_seq + 1`.
+    pub fn snapshot_stem_for_user_k(&self, k: i64) -> Result<i64> {
+        let anchor_seq: i64 = self
+            .conn
+            .query_row(SQL_ANCHOR_SEQ, rusqlite::params![self.id, k], |row| {
+                row.get(0)
+            })
+            .map_err(|_| LitecodeError::InvalidRevertAnchor(format!("k={k}")))?;
+        anchor_seq
+            .checked_add(1)
+            .ok_or_else(|| LitecodeError::InvalidRevertAnchor(format!("k={k} seq overflow")))
+    }
+
+    /// Truncate DB from the k-th user detail anchor; zero file side effects.
+    pub fn revert_to_user_anchor(&self, k: i64) -> Result<()> {
+        self.apply(SessionApply::Truncate { user_k: k })?;
         Ok(())
     }
 
@@ -1814,6 +2061,7 @@ impl Session {
     /// §5.1 step 1 — authoritative checkpoint column (default 0 = no compact
     /// unless a `compact_checkpoint` row exists at that seq; empty-session
     /// compact may legitimately set this to 0 with a CP row present).
+    #[allow(dead_code)]
     pub fn checkpoint_seq(&self) -> Result<i64> {
         self.conn
             .query_row(SQL_CHECKPOINT_SEQ, rusqlite::params![self.id], |row| {
@@ -1825,6 +2073,7 @@ impl Session {
     /// Pi-style firstKept pointer — first `detail.seq` included in the turn view.
     /// Default 0 (no compact). Empty-keep compact sets this to the new checkpoint
     /// seq so the view is summary-only until newer detail arrives.
+    #[allow(dead_code)]
     pub fn kept_from_seq(&self) -> Result<i64> {
         self.conn
             .query_row(SQL_KEPT_FROM_SEQ, rusqlite::params![self.id], |row| {
@@ -2033,6 +2282,7 @@ impl Session {
         token_estimate: i64,
         expected_view_len: Option<usize>,
     ) -> Result<i64> {
+        let _gate = self.lock_write();
         let now = chrono::Utc::now().timestamp_millis();
         let tx = self
             .conn
@@ -2054,41 +2304,17 @@ impl Session {
         draft.source_seqs = source_seqs;
         log.append(draft)?;
         let event = log.events().last().expect("appended").clone();
-
-        let item_type = item_type_of(summary);
-        let (body, body_ref, _) =
-            encode_detail_row(summary, &self.data_root, DEFAULT_SPILL_THRESHOLD)?;
-        let surface_op = serde_json::to_string(
-            event
-                .surface_op
-                .as_ref()
-                .expect("surface compact event"),
+        insert_event_row(
+            &tx,
+            &self.id,
+            &self.data_root,
+            &event,
+            Some(summary),
+            &format!("compact-{}", event.seq),
+            0,
+            "detail",
+            token_estimate,
         )?;
-        let source_seqs_json = event
-            .source_seqs
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()?;
-
-        tx.execute(
-            "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs)
-             VALUES (?1, ?2, ?3, 0, ?4, 'detail', ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            rusqlite::params![
-                self.id,
-                event.seq as i64,
-                format!("compact-{}", event.seq),
-                item_type,
-                body,
-                body_ref,
-                token_estimate,
-                now,
-                event.event_type.as_str(),
-                surface_op,
-                source_seqs_json,
-            ],
-        )?;
-        let plain = crate::types::item_text_preview(summary);
-        crate::session::transcript_fts::upsert(&tx, &self.id, event.seq as i64, &plain)?;
 
         tx.commit()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
@@ -3157,7 +3383,7 @@ mod tests {
             .execute_batch("DROP TABLE transcript_items")
             .unwrap();
         let err = session
-            .commit_turn_delta_with_orphan_cleanup(&mut items, &[], 3, "t1")
+            .commit_turn_delta_with_orphan_cleanup(&mut items, &[], 2, "t1")
             .expect_err("dropped table must fail the transaction");
         let _ = err;
         assert_eq!(
@@ -3188,7 +3414,7 @@ mod tests {
             user_text("stale"),
         ];
         let outcome = session
-            .commit_turn_delta_with_orphan_cleanup(&mut items, &[user_text("stale")], 3, "t1")
+            .commit_turn_delta_with_orphan_cleanup(&mut items, &[user_text("stale")], 2, "t1")
             .unwrap();
         assert!(matches!(outcome, CommitDeltaOutcome::Discarded));
         assert_eq!(items.len(), 1);
@@ -3224,7 +3450,7 @@ mod tests {
         );
         let mut items = vec![user_text("u0"), empty_assistant, fc];
         let outcome = session
-            .commit_turn_delta_with_orphan_cleanup(&mut items, &[], 3, "t1")
+            .commit_turn_delta_with_orphan_cleanup(&mut items, &[], 2, "t1")
             .unwrap();
         assert!(
             matches!(outcome, CommitDeltaOutcome::Applied { .. }),
@@ -3259,7 +3485,7 @@ mod tests {
         session.insert_detail_rows(&[fc.clone()]).unwrap();
         let mut items = vec![fc, live.clone(), orphan.clone()];
         let outcome = session
-            .commit_turn_delta_with_orphan_cleanup(&mut items, &[live, orphan], 1, "t1")
+            .commit_turn_delta_with_orphan_cleanup(&mut items, &[live, orphan], 0, "t1")
             .unwrap();
         assert!(matches!(outcome, CommitDeltaOutcome::Applied { .. }));
         assert_eq!(items.len(), 2);
@@ -3437,5 +3663,88 @@ mod tests {
         let loaded = crate::session::event::item_from_event(&session.load_events().unwrap()[0])
             .unwrap();
         assert_eq!(item_text_preview(&loaded), "hello");
+    }
+
+    #[test]
+    fn persist_item_then_commit_does_not_duplicate_assistant() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session.insert_detail_rows(&[user_text("hi")]).unwrap();
+        let live = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_once".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hel".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::InProgress,
+            phase: None,
+        }));
+        session.persist_item(&live).unwrap();
+        let sealed = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_once".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hello".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::Completed,
+            phase: None,
+        }));
+        let mut items = vec![user_text("hi"), sealed];
+        session
+            .commit_turn_delta_with_orphan_cleanup(&mut items, &[], 1, "t1")
+            .unwrap();
+        assert_eq!(session.load_events().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn persist_item_after_truncate_does_not_restore_tail() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("u0"), user_text("u1")])
+            .unwrap();
+        let live = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_stale".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "tail".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::InProgress,
+            phase: None,
+        }));
+        session.persist_item(&live).unwrap();
+        session.revert_to_user_anchor(1).unwrap();
+        let err = session.persist_item(&live).unwrap_err();
+        assert!(matches!(err, LitecodeError::Canceled));
+        assert_eq!(session.load_transcript().unwrap().len(), 1);
+        assert_eq!(
+            item_text_preview(&session.load_transcript().unwrap()[0]),
+            "u0"
+        );
+    }
+
+    #[test]
+    fn apply_can_append_log_only_turn_start() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let outcome = session
+            .apply(SessionApply::Append(EventDraft {
+                time: 1,
+                event_type: EventType::TurnStart,
+                data: serde_json::json!({"turn_id": "t1"}),
+                surface_op: None,
+                source_seqs: None,
+                ignorable: false,
+            }))
+            .unwrap();
+        assert!(matches!(outcome, ApplyOutcome::Appended(0)));
+        session.insert_detail_rows(&[user_text("hi")]).unwrap();
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, EventType::TurnStart);
+        assert_eq!(session.load_transcript().unwrap().len(), 1);
     }
 }

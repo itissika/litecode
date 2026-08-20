@@ -1,11 +1,13 @@
 /**
  * Seq-keyed message store: load/item share one map; deltas only hit an existing seq.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { cleanup, render, screen } from "@testing-library/react";
 
 import { isCompactCutRow, itemPlainText } from "../api/adapter";
 import type { BufferLoaded, Item, WireBufferEvent } from "../api/types";
-import { useMessageStore } from "./messageStore";
+import { displayMessages, useMessageStore } from "./messageStore";
 import { EMPTY_SLICE as EMPTY_TURN, useTurnStore } from "./turnStore";
 import { useToastStore } from "./toastStore";
 
@@ -61,6 +63,7 @@ function markTurnRunning(sessionId: string, turnId = "t1"): void {
 
 describe("messageStore seq map", () => {
   beforeEach(() => {
+    cleanup();
     useMessageStore.setState({ bySession: new Map() });
     useTurnStore.setState({ byId: new Map() });
     useToastStore.setState({ toasts: [] });
@@ -145,6 +148,28 @@ describe("messageStore seq map", () => {
     expect(itemPlainText(row.item)).toBe("hello");
   });
 
+  it("buffer/item replaces live content on the same seq (no merge)", () => {
+    const sid = "s-replace";
+    markTurnRunning(sid);
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      seq: 3,
+      type: "item/assistant",
+      surface_op: "append",
+      item: assistantMsg("msg_r", "partial", "in_progress"),
+    });
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      seq: 3,
+      type: "item/assistant",
+      surface_op: "append",
+      item: assistantMsg("msg_r", "final from ledger", "completed"),
+    });
+    const row = useMessageStore.getState().bySession.get(sid)!.messages[0]!;
+    expect(itemPlainText(row.item)).toBe("final from ledger");
+    expect(row.streaming).toBe(false);
+  });
+
   it("G4: sealed seq ignores a later delta for the same item_id", () => {
     const sid = "s-g4";
     markTurnRunning(sid, "t-after");
@@ -185,6 +210,33 @@ describe("messageStore seq map", () => {
     expect(slice.pendingUser).toBeNull();
     expect(slice.messages).toHaveLength(1);
     expect(slice.messages[0]!.seq).toBe(0);
+  });
+
+  it("displayMessages snapshot is stable while pending user is set", () => {
+    const sid = "s-new-pending";
+    useMessageStore.getState().pushPendingUser(sid, {
+      clientId: "c1",
+      item: userMsg("hi"),
+    });
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(displayMessages(slice)).toBe(displayMessages(slice));
+    expect(displayMessages(undefined)).toBe(displayMessages(undefined));
+  });
+
+  it("subscribing to displayMessages does not trip max update depth on a new session send", () => {
+    const sid = "s-new-hook";
+    useMessageStore.getState().pushPendingUser(sid, {
+      clientId: "c1",
+      item: userMsg("hi"),
+    });
+    function Probe() {
+      const rows = useMessageStore((s) =>
+        displayMessages(s.bySession.get(sid)),
+      );
+      return createElement("div", { "data-testid": "n" }, String(rows.length));
+    }
+      expect(() => render(createElement(Probe))).not.toThrow();
+    expect(screen.getByTestId("n").textContent).toBe("1");
   });
 
   it("second pending user is dropped while one is already waiting", () => {

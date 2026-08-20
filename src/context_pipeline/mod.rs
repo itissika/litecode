@@ -41,9 +41,10 @@ pub struct CommitStepOutcome {
 struct PipelineState {
     hot: HotView,
     prepared: Option<PreparedView>,
-    /// Count of model-visible Items already on disk (derived), used only to slice
-    /// the uncommitted tail. Disk identity is `persisted_max_seq`.
-    committed_model_len: usize,
+    /// Model-visible working-set length — compact cut mapping only, not persist.
+    surface_len: usize,
+    /// Last observed log `MAX(seq)` (`-1` if empty). Discarded iff the table is shorter.
+    log_max_seq: i64,
     turn_id: Option<String>,
 }
 
@@ -69,7 +70,8 @@ impl ContextPipeline {
             state: RefCell::new(PipelineState {
                 hot: HotView::new(),
                 prepared: None,
-                committed_model_len: 0,
+                surface_len: 0,
+                log_max_seq: -1,
                 turn_id: None,
             }),
         }
@@ -110,20 +112,22 @@ impl ContextPipeline {
 
         let mut state = self.state.borrow_mut();
         state.turn_id = turn_id;
-        state.committed_model_len = items.len();
+        state.surface_len = items.len();
+        state.log_max_seq = session.max_seq()?;
         state.hot.replace(items.clone());
         state.prepared = None;
         Ok(items)
     }
 
     pub fn persisted_prefix_len(&self) -> usize {
-        self.state.borrow().committed_model_len
+        self.state.borrow().surface_len
     }
 
     pub fn end_turn(&self) {
         let mut state = self.state.borrow_mut();
         state.turn_id = None;
-        state.committed_model_len = 0;
+        state.surface_len = 0;
+        state.log_max_seq = -1;
         state.hot.replace(Vec::new());
         state.prepared = None;
     }
@@ -159,14 +163,16 @@ impl ContextPipeline {
         }
 
         if let Ok(from_log) = sessions.with_entry_store(session_id, |s| Ok(s.load_transcript()?))
-            && from_log.len() >= self.state.borrow().committed_model_len
         {
             *turn_items = from_log;
-            self.state.borrow_mut().committed_model_len = turn_items.len();
+            let max_seq = sessions.with_entry_store(session_id, |s| Ok(s.max_seq()?))?;
+            let mut state = self.state.borrow_mut();
+            state.surface_len = turn_items.len();
+            state.log_max_seq = max_seq;
         }
 
         let mut transcript = turn_items.clone();
-        let committed_len = self.state.borrow().committed_model_len;
+        let committed_len = self.state.borrow().surface_len;
         let reminder = tail_reminders::build_compaction_content(task_state);
 
         let compacted = self
@@ -196,11 +202,13 @@ impl ContextPipeline {
         }
 
         if compacted {
-            let persisted_count = sessions.with_entry_store(session_id, |s| {
+            let (persisted_count, max_seq) = sessions.with_entry_store(session_id, |s| {
                 s.reload_persisted_max_seq()?;
-                Ok(s.load_transcript()?.len())
+                Ok((s.load_transcript()?.len(), s.max_seq()?))
             })?;
-            self.state.borrow_mut().committed_model_len = persisted_count;
+            let mut state = self.state.borrow_mut();
+            state.surface_len = persisted_count;
+            state.log_max_seq = max_seq;
         }
 
         // Crash / force-kill recovery: dangling FunctionCalls must be padded on
@@ -244,7 +252,7 @@ impl ContextPipeline {
         items: &mut Vec<Item>,
         turn_id: &str,
     ) -> Result<CommitStepOutcome> {
-        let committed_len = self.state.borrow().committed_model_len;
+        let expected_max_seq = self.state.borrow().log_max_seq;
         let tid = {
             let state = self.state.borrow();
             if turn_id.is_empty() {
@@ -253,14 +261,13 @@ impl ContextPipeline {
                 turn_id.to_string()
             }
         };
-        let start = committed_len.min(items.len());
-        let delta = items[start..].to_vec();
         let outcome =
-            session.commit_turn_delta_with_orphan_cleanup(items, &delta, committed_len, &tid)?;
+            session.commit_turn_delta_with_orphan_cleanup(items, &[], expected_max_seq, &tid)?;
         match outcome {
             crate::session::store::CommitDeltaOutcome::Discarded => {
                 let mut state = self.state.borrow_mut();
-                state.committed_model_len = items.len();
+                state.surface_len = items.len();
+                state.log_max_seq = session.max_seq().unwrap_or(-1);
                 state.hot.replace(items.clone());
                 state.prepared = None;
                 Ok(CommitStepOutcome {
@@ -269,11 +276,12 @@ impl ContextPipeline {
                     preview: None,
                 })
             }
-            crate::session::store::CommitDeltaOutcome::Applied { preview } => {
+            crate::session::store::CommitDeltaOutcome::Applied { preview, mutated } => {
                 let mut state = self.state.borrow_mut();
-                state.committed_model_len = items.len();
+                state.surface_len = items.len();
+                state.log_max_seq = session.max_seq().unwrap_or(-1);
                 state.hot.replace(items.clone());
-                if delta.is_empty() {
+                if !mutated {
                     return Ok(CommitStepOutcome::default());
                 }
                 Ok(CommitStepOutcome {
