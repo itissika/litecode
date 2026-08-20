@@ -8,7 +8,7 @@ use crate::runtime::observer::{
     CompactionFailKind, CompactionStage, CompactionTrigger, InternalEvent,
 };
 use crate::session::manager::SessionManager;
-use crate::types::{Item, LitecodeError, Result, Transcript, item_text_preview, user_text};
+use crate::types::{LitecodeError, Result, Transcript, item_text_preview, user_text};
 
 use super::budget::{BudgetPolicy, ProviderPromptBaseline};
 use super::summary::{compact_summary_message_with_reminder, format_compact_summary_with_reminder};
@@ -335,17 +335,12 @@ impl CompactPolicy {
             return Err(err);
         }
 
-        // transcript = [summary] + kept (in-memory view); DB stores pointer only.
+        // Persist replace; memory working set is reloaded from fold, not rebuilt as [summary]+kept.
         let summary_item = transcript.first().cloned().unwrap_or_else(|| {
             crate::types::user_text(format_compact_summary_with_reminder(
                 &summary, false, reminder,
             ))
         });
-        let kept: Vec<Item> = if transcript.len() > 1 {
-            transcript[1..].to_vec()
-        } else {
-            Vec::new()
-        };
 
         if let Err(e) = sessions.with_entry_store(session_id, |s| {
             if cancel.is_cancelled() {
@@ -371,12 +366,28 @@ impl CompactPolicy {
             return Err(e.into());
         }
 
-        // Align in-memory working set with the pi view (summary + original kept)
-        // plus any unpersisted tail that was excluded from compaction.
-        transcript.clear();
-        transcript.push(summary_item);
-        transcript.extend(kept);
-        transcript.extend(tail);
+        // Align in-memory working set with the folded log, plus unpersisted tail.
+        let mut model = match sessions.with_entry_store(session_id, |s| {
+            s.reload_persisted_max_seq()?;
+            Ok(s.load_transcript()?)
+        }) {
+            Ok(items) => items,
+            Err(e) => {
+                *transcript = snapshot;
+                emit_compact_lifecycle(
+                    sessions,
+                    session_id,
+                    trigger,
+                    CompactionStage::Failed,
+                    operation_id,
+                    Some(CompactionFailKind::Failed),
+                    Some(e.to_string()),
+                );
+                return Err(e.into());
+            }
+        };
+        model.extend(tail);
+        *transcript = model;
 
         prompt_baseline.clear();
         emit_compact_lifecycle(

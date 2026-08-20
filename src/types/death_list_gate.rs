@@ -502,6 +502,26 @@ fn session_seq_g1_envelope_vocab_matches_mental_model() {
 }
 
 #[test]
+fn session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let compact =
+        fs::read_to_string(root.join("src/context_pipeline/compact.rs")).expect("compact.rs");
+    assert!(
+        compact.contains("s.load_transcript()"),
+        "after compact persist, working set must reload from fold"
+    );
+    assert!(
+        !compact.contains("Align in-memory working set with the pi view"),
+        "must not reconstruct the pi summary+kept view after persist"
+    );
+    let pipeline = fs::read_to_string(root.join("src/context_pipeline/mod.rs")).expect("mod.rs");
+    assert!(
+        !pipeline.contains("checkpoint_seq()"),
+        "pipeline must not use checkpoint_seq as the compact/commit cursor"
+    );
+}
+
+#[test]
 fn death_list_dialect_tokens_absent_from_src() {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     assert!(src.is_dir(), "src/ missing at {}", src.display());

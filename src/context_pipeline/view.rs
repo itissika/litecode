@@ -1,9 +1,9 @@
 use crate::types::{Item, Transcript};
 
-/// Turn-local hot ring view — working Items for the agent loop.
+/// Derived model-visible Items for this turn. Not a second persisted working set.
 #[derive(Debug, Clone, Default)]
 pub struct HotView {
-    items: Transcript,
+    model_items: Transcript,
 }
 
 impl HotView {
@@ -12,28 +12,20 @@ impl HotView {
     }
 
     pub fn replace(&mut self, items: Transcript) {
-        self.items = items;
+        self.model_items = items;
     }
 
-    /// Read-only view of turn-local working items.
-    pub fn as_slice(&self) -> &[Item] {
-        &self.items
-    }
-
-    pub fn items(&self) -> &[Item] {
-        self.as_slice()
-    }
-
-    pub fn as_mut_vec(&mut self) -> &mut Transcript {
-        &mut self.items
+    /// Derived `Item[]` for the agent loop (`derive_messages`), not persist/FE truth.
+    pub fn model_items(&self) -> &[Item] {
+        &self.model_items
     }
 
     pub fn len(&self) -> usize {
-        self.items.len()
+        self.model_items.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
+        self.model_items.is_empty()
     }
 }
 

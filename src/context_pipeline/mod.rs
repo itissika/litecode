@@ -41,7 +41,9 @@ pub struct CommitStepOutcome {
 struct PipelineState {
     hot: HotView,
     prepared: Option<PreparedView>,
-    committed_len: usize,
+    /// Count of model-visible Items already on disk (derived), used only to slice
+    /// the uncommitted tail. Disk identity is `persisted_max_seq`.
+    committed_model_len: usize,
     turn_id: Option<String>,
 }
 
@@ -67,7 +69,7 @@ impl ContextPipeline {
             state: RefCell::new(PipelineState {
                 hot: HotView::new(),
                 prepared: None,
-                committed_len: 0,
+                committed_model_len: 0,
                 turn_id: None,
             }),
         }
@@ -108,20 +110,20 @@ impl ContextPipeline {
 
         let mut state = self.state.borrow_mut();
         state.turn_id = turn_id;
-        state.committed_len = items.len();
+        state.committed_model_len = items.len();
         state.hot.replace(items.clone());
         state.prepared = None;
         Ok(items)
     }
 
     pub fn persisted_prefix_len(&self) -> usize {
-        self.state.borrow().committed_len
+        self.state.borrow().committed_model_len
     }
 
     pub fn end_turn(&self) {
         let mut state = self.state.borrow_mut();
         state.turn_id = None;
-        state.committed_len = 0;
+        state.committed_model_len = 0;
         state.hot.replace(Vec::new());
         state.prepared = None;
     }
@@ -157,7 +159,7 @@ impl ContextPipeline {
         }
 
         let mut transcript = turn_items.clone();
-        let committed_len = self.state.borrow().committed_len;
+        let committed_len = self.state.borrow().committed_model_len;
         let reminder = tail_reminders::build_compaction_content(task_state);
 
         let compacted = self
@@ -191,7 +193,7 @@ impl ContextPipeline {
                 s.reload_persisted_max_seq()?;
                 Ok(s.load_transcript()?.len())
             })?;
-            self.state.borrow_mut().committed_len = persisted_count;
+            self.state.borrow_mut().committed_model_len = persisted_count;
         }
 
         // Crash / force-kill recovery: dangling FunctionCalls must be padded on
@@ -235,7 +237,7 @@ impl ContextPipeline {
         items: &mut Vec<Item>,
         turn_id: &str,
     ) -> Result<CommitStepOutcome> {
-        let committed_len = self.state.borrow().committed_len;
+        let committed_len = self.state.borrow().committed_model_len;
         let tid = {
             let state = self.state.borrow();
             if turn_id.is_empty() {
@@ -251,7 +253,7 @@ impl ContextPipeline {
         match outcome {
             crate::session::store::CommitDeltaOutcome::Discarded => {
                 let mut state = self.state.borrow_mut();
-                state.committed_len = items.len();
+                state.committed_model_len = items.len();
                 state.hot.replace(items.clone());
                 state.prepared = None;
                 Ok(CommitStepOutcome {
@@ -262,7 +264,7 @@ impl ContextPipeline {
             }
             crate::session::store::CommitDeltaOutcome::Applied { preview } => {
                 let mut state = self.state.borrow_mut();
-                state.committed_len = items.len();
+                state.committed_model_len = items.len();
                 state.hot.replace(items.clone());
                 if delta.is_empty() {
                     return Ok(CommitStepOutcome::default());
