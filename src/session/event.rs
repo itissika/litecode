@@ -151,7 +151,7 @@ impl EventLog {
             )));
         }
 
-        let _frozen: Value = serde_json::from_str(&draft.data.to_string())?;
+        let frozen: Value = serde_json::from_str(&draft.data.to_string())?;
 
         if draft.event_type.is_surface_eligible() {
             if draft.surface_op.is_none() {
@@ -159,7 +159,7 @@ impl EventLog {
                     "surface-eligible event must carry surface_op".into(),
                 ));
             }
-            serde_json::from_value::<Item>(draft.data.clone()).map_err(|e| {
+            serde_json::from_value::<Item>(frozen.clone()).map_err(|e| {
                 LitecodeError::InvalidSessionEvent(format!("surface data is not an Item: {e}"))
             })?;
         } else if draft.surface_op.is_some() {
@@ -173,7 +173,7 @@ impl EventLog {
             seq,
             time: draft.time,
             event_type: draft.event_type,
-            data: draft.data,
+            data: frozen,
             surface_op: draft.surface_op,
             source_seqs: draft.source_seqs,
             ignorable: draft.ignorable,

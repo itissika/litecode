@@ -466,6 +466,39 @@ fn session_seq_g1_envelope_vocab_matches_mental_model() {
         SESSION_SEQ_SURFACE_NEEDLES.contains(&"buffer_index"),
         "A/B/C needles must be catalogued (full scan is G3)"
     );
+
+    use crate::session::event::{EventDraft, EventLog, EventType};
+    use crate::session::surface::{SurfaceOp, derive_messages, derive_transcript_items};
+    use crate::types::{item_text_preview, user_text};
+
+    let mut log = EventLog::new();
+    for text in ["d0", "d1", "d2", "d3", "d4"] {
+        log.append(
+            EventDraft::surface_item(EventType::ItemUser, &user_text(text), SurfaceOp::Append)
+                .expect("draft"),
+        )
+        .expect("append");
+    }
+    let mut summary = EventDraft::surface_item(
+        EventType::ItemUser,
+        &user_text("summary"),
+        SurfaceOp::Replace { start: 0, end: 1 },
+    )
+    .expect("draft");
+    summary.source_seqs = Some(vec![0, 1]);
+    log.append(summary).expect("replace");
+    let texts: Vec<_> = derive_messages(log.events())
+        .expect("derive_messages")
+        .iter()
+        .map(item_text_preview)
+        .collect();
+    assert_eq!(texts, vec!["summary", "d2", "d3", "d4"]);
+    let t: Vec<_> = derive_transcript_items(log.events())
+        .expect("transcript")
+        .iter()
+        .map(item_text_preview)
+        .collect();
+    assert_eq!(t, vec!["d0", "d1", "d2", "d3", "d4"]);
 }
 
 #[test]

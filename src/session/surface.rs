@@ -107,7 +107,9 @@ pub fn fold_surface(events: &[SessionEvent]) -> Result<Surface> {
     Ok(surface)
 }
 
-/// Model-visible Items in `surface.nodes` order. Empty assistant content is skipped.
+/// Model-visible Items in `surface.nodes` order.
+/// Usage-only assistant rows (empty content) are omitted from the Item[] projection;
+/// the seq remains on `surface.nodes`.
 pub fn derive_messages(events: &[SessionEvent]) -> Result<Vec<Item>> {
     let surface = fold_surface(events)?;
     let mut out = Vec::with_capacity(surface.nodes.len());
@@ -127,11 +129,13 @@ pub fn derive_messages(events: &[SessionEvent]) -> Result<Vec<Item>> {
 
 /// Human transcript: append-origin surface events only, seq ascending. Replace copies omitted.
 pub fn derive_transcript_items(events: &[SessionEvent]) -> Result<Vec<Item>> {
-    let mut out = Vec::new();
-    for event in events {
-        if event.surface_op.as_ref() != Some(&SurfaceOp::Append) {
-            continue;
-        }
+    let mut origin: Vec<&SessionEvent> = events
+        .iter()
+        .filter(|event| event.surface_op.as_ref() == Some(&SurfaceOp::Append))
+        .collect();
+    origin.sort_by_key(|event| event.seq);
+    let mut out = Vec::with_capacity(origin.len());
+    for event in origin {
         let item = item_from_event(event)?;
         if skip_empty_assistant(event, &item) {
             continue;
@@ -181,6 +185,18 @@ mod tests {
         let transcript = derive_transcript_items(log.events()).expect("transcript");
         let t: Vec<_> = transcript.iter().map(item_text_preview).collect();
         assert_eq!(t, vec!["d0", "d1", "d2", "d3", "d4"]);
+    }
+
+    #[test]
+    fn transcript_is_append_origin_sorted_by_seq_not_slice_order() {
+        let mut log = EventLog::new();
+        append_user(&mut log, "d0");
+        append_user(&mut log, "d1");
+        let mut shuffled = log.events().to_vec();
+        shuffled.reverse();
+        let transcript = derive_transcript_items(&shuffled).expect("transcript");
+        let t: Vec<_> = transcript.iter().map(item_text_preview).collect();
+        assert_eq!(t, vec!["d0", "d1"]);
     }
 
     #[test]
