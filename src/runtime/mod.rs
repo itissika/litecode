@@ -41,6 +41,7 @@ use crate::runtime::observer::{
 };
 use crate::session::manager::SessionManager;
 use crate::session::snapshot;
+use crate::session::working::{WorkingRow, align_working, project_items};
 use crate::tool::ToolPipeline;
 use crate::tool::output;
 use crate::tool::registry::build_tool_list;
@@ -835,11 +836,12 @@ impl AgentRuntime {
         let sid = self.session_id.clone();
         // Propagate begin_turn errors explicitly — a failed load must not start
         // the turn with an empty (silently truncated) transcript.
-        let mut items = self.sessions.with_entry_store(&sid, |s| {
+        let mut working = self.sessions.with_entry_store(&sid, |s| {
             Ok(self
                 .context_pipeline
                 .begin_turn_with_id(s, Some(turn_id.to_string()))?)
         })?;
+        let mut items = project_items(&working);
         let resumed = !items.is_empty();
         let ts = chrono::Utc::now().timestamp_millis();
 
@@ -871,6 +873,7 @@ impl AgentRuntime {
             .phase_applies_inject("SessionStart")
         {
             apply_hook_output(&mut items, start_output, ts);
+            align_working(&mut working, &items);
         }
 
         let prompt_payload = crate::hook::HookPayload::new(
@@ -898,6 +901,7 @@ impl AgentRuntime {
             .is_some_and(|m| item_text_preview(m) == user_prompt);
         if !already_last_user {
             items.push(user_text(user_prompt.to_string()));
+            working.push(WorkingRow::pending(user_text(user_prompt.to_string())));
         }
 
         if self
@@ -906,13 +910,14 @@ impl AgentRuntime {
             .phase_applies_inject("UserPromptSubmit")
         {
             apply_hook_output(&mut items, prompt_output, ts);
+            align_working(&mut working, &items);
         }
 
         // User (and inject) Items are complete before any model stream. Persist
         // so the working set and disk agree before InFlight begins.
         {
             let commit_outcome = self.sessions.with_entry_store(&self.session_id, |s| {
-                Ok(self.context_pipeline.commit_step(s, &mut items)?)
+                Ok(self.context_pipeline.commit_step(s, &mut working)?)
             })?;
             if commit_outcome.discarded {
                 return self.finalize_agent_outcome(
@@ -934,6 +939,8 @@ impl AgentRuntime {
                 );
             }
         }
+
+        items = project_items(&working);
 
         let (_last_seq, next_seq) = self.sessions.entry_wire_seq_cursor(&self.session_id);
         let anchor_k = next_seq as i64;
@@ -1019,8 +1026,9 @@ impl AgentRuntime {
 
         // Persist SessionEnd injects only when the turn is kept (not cancel/error).
         if should_commit {
+            align_working(&mut working, &items);
             let commit_outcome = self.sessions.with_entry_store(&self.session_id, |s| {
-                Ok(self.context_pipeline.commit_step(s, &mut items)?)
+                Ok(self.context_pipeline.commit_step(s, &mut working)?)
             })?;
             if !commit_outcome.discarded {
                 if commit_outcome.committed {

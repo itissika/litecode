@@ -1,6 +1,7 @@
 //! L1 persistence — session store and process-level session management.
 //!
-//! **Disk truth** is a transcript: `Transcript = Vec<Item>` (authority Responses Items).
+//! **Disk truth** is the session log: `seq` + envelope + Responses Item.
+//! `Item[]` is the LLM / tool projection, not persist identity.
 //! Detail and `compact_checkpoint` rows both store serialized `Item` JSON in `body` /
 //! `body_ref` in the `transcript_items` table (`item_type` = Responses Item type string;
 //! `kind` = row envelope `detail` | `compact_checkpoint`).
@@ -21,6 +22,7 @@ pub mod snapshot_paths;
 pub mod store;
 pub mod task_state;
 pub mod transcript_fts;
+pub mod working;
 pub mod workspace_lock;
 
 pub use estimate::{autocompact_threshold, compact_prompt, compute_token_estimate};
@@ -37,4 +39,5 @@ pub use store::{Session, SessionContextMeter, TranscriptRow, data_root_from_db_p
 pub use task_state::{
     PlanRef, TaskReminders, TodoItem, TodoStatus, plan_dir, prune_stale_active_plan, render_todos,
 };
+pub use working::{WorkingRow, align_working, project_items};
 pub use workspace_lock::WorkspaceLock;

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::event::{
-    EventType, Seq, SessionEvent, item_from_event, shadowed_nodes, skip_empty_assistant,
+    EventType, Seq, SessionEvent, item_from_event, skip_empty_assistant_item,
     skip_unmatched_tool_output,
 };
 use crate::types::{Item, LitecodeError, Result};
@@ -70,39 +70,109 @@ pub struct Surface {
     pub replace_generation: u64,
 }
 
+/// Validated surface transition that has not mutated fold state yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfacePlan {
+    Append { seq: Seq },
+    Replace {
+        seq: Seq,
+        start_idx: usize,
+        len: usize,
+    },
+}
+
+/// Locate an inclusive replace range on the current surface without mutating it.
+pub fn shadowed_nodes(surface: &Surface, start: Seq, end: Seq) -> Result<Vec<Seq>> {
+    let start_i = surface
+        .nodes
+        .iter()
+        .position(|s| *s == start)
+        .ok_or_else(|| {
+            LitecodeError::InvalidSessionEvent(format!("replace start {start} is not on surface"))
+        })?;
+    let end_i = surface
+        .nodes
+        .iter()
+        .position(|s| *s == end)
+        .ok_or_else(|| {
+            LitecodeError::InvalidSessionEvent(format!("replace end {end} is not on surface"))
+        })?;
+    if start_i > end_i {
+        return Err(LitecodeError::InvalidSessionEvent(
+            "replace start is after end on surface".into(),
+        ));
+    }
+    Ok(surface.nodes[start_i..=end_i].to_vec())
+}
+
+/// Validate one event against the current surface and return its fold transition.
+pub fn plan_surface(surface: &Surface, event: &SessionEvent) -> Result<Option<SurfacePlan>> {
+    if matches!(event.event_type, EventType::Unknown(_)) && !event.ignorable {
+        return Err(LitecodeError::InvalidSessionEvent(format!(
+            "unknown type `{}` is not ignorable",
+            event.event_type.as_str()
+        )));
+    }
+    let Some(op) = event.surface_op.as_ref() else {
+        return Ok(None);
+    };
+    if !event.event_type.is_surface_eligible() {
+        return Err(LitecodeError::InvalidSessionEvent(format!(
+            "non-surface type `{}` carries surface_op",
+            event.event_type.as_str()
+        )));
+    }
+    match op {
+        SurfaceOp::Append => Ok(Some(SurfacePlan::Append { seq: event.seq })),
+        SurfaceOp::Replace { start, end } => {
+            let shadowed = shadowed_nodes(surface, *start, *end)?;
+            let Some(sources) = event.source_seqs.as_ref() else {
+                return Err(LitecodeError::InvalidSessionEvent(
+                    "replace requires source_seqs covering shadowed surface nodes".into(),
+                ));
+            };
+            for seq in &shadowed {
+                if !sources.contains(seq) {
+                    return Err(LitecodeError::InvalidSessionEvent(format!(
+                        "source_seqs missing shadowed seq {seq}"
+                    )));
+                }
+            }
+            let start_idx = surface
+                .nodes
+                .iter()
+                .position(|s| *s == *start)
+                .expect("shadowed_nodes found start");
+            Ok(Some(SurfacePlan::Replace {
+                seq: event.seq,
+                start_idx,
+                len: shadowed.len(),
+            }))
+        }
+    }
+}
+
+/// Commit one previously validated surface transition.
+pub fn apply_plan(surface: &mut Surface, plan: SurfacePlan) {
+    match plan {
+        SurfacePlan::Append { seq } => surface.nodes.push(seq),
+        SurfacePlan::Replace {
+            seq,
+            start_idx,
+            len,
+        } => {
+            surface.nodes.splice(start_idx..start_idx + len, [seq]);
+            surface.replace_generation += 1;
+        }
+    }
+}
+
 /// Replay surface transfers. Unknown non-ignorable types refuse the whole session.
 pub fn fold_surface(events: &[SessionEvent]) -> Result<Surface> {
     let mut surface = Surface::default();
     for event in events {
-        if matches!(event.event_type, EventType::Unknown(_)) && !event.ignorable {
-            return Err(LitecodeError::InvalidSessionEvent(format!(
-                "unknown type `{}` is not ignorable",
-                event.event_type.as_str()
-            )));
-        }
-        let Some(op) = event.surface_op.as_ref() else {
-            continue;
-        };
-        if !event.event_type.is_surface_eligible() {
-            return Err(LitecodeError::InvalidSessionEvent(format!(
-                "non-surface type `{}` carries surface_op",
-                event.event_type.as_str()
-            )));
-        }
-        match op {
-            SurfaceOp::Append => surface.nodes.push(event.seq),
-            SurfaceOp::Replace { start, end } => {
-                let shadowed = shadowed_nodes(&surface, *start, *end)?;
-                let start_i = surface
-                    .nodes
-                    .iter()
-                    .position(|s| *s == *start)
-                    .expect("shadowed_nodes found start");
-                surface
-                    .nodes
-                    .splice(start_i..start_i + shadowed.len(), [event.seq]);
-                surface.replace_generation += 1;
-            }
+        if let Some(plan) = plan_surface(&surface, event)? {
+            apply_plan(&mut surface, plan);
         }
     }
     Ok(surface)
@@ -130,14 +200,44 @@ pub fn derive_messages(events: &[SessionEvent]) -> Result<Vec<Item>> {
         })
         .collect();
     let mut out = Vec::with_capacity(loaded.len());
-    for (event, item) in loaded {
-        if skip_empty_assistant(event, &item) {
+    for (_event, item) in loaded {
+        if skip_empty_assistant_item(&item) {
             continue;
         }
         if skip_unmatched_tool_output(&item, &valid_call_ids) {
             continue;
         }
         out.push(item);
+    }
+    Ok(out)
+}
+
+/// Model-visible `(seq, Item)` pairs in surface order, with the same skip rules
+/// as [`derive_messages`].
+pub fn project_working_pairs(
+    surface: &Surface,
+    lookup: impl Fn(Seq) -> Result<Item>,
+) -> Result<Vec<(Seq, Item)>> {
+    let mut loaded = Vec::with_capacity(surface.nodes.len());
+    for seq in &surface.nodes {
+        loaded.push((*seq, lookup(*seq)?));
+    }
+    let valid_call_ids: std::collections::HashSet<String> = loaded
+        .iter()
+        .filter_map(|(_, item)| match item {
+            Item::FunctionCall(fc) => Some(fc.call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut out = Vec::with_capacity(loaded.len());
+    for (seq, item) in loaded {
+        if skip_empty_assistant_item(&item) {
+            continue;
+        }
+        if skip_unmatched_tool_output(&item, &valid_call_ids) {
+            continue;
+        }
+        out.push((seq, item));
     }
     Ok(out)
 }
@@ -161,8 +261,8 @@ pub fn derive_transcript_items(events: &[SessionEvent]) -> Result<Vec<Item>> {
         })
         .collect();
     let mut out = Vec::with_capacity(loaded.len());
-    for (event, item) in loaded {
-        if skip_empty_assistant(event, &item) {
+    for (_event, item) in loaded {
+        if skip_empty_assistant_item(&item) {
             continue;
         }
         if skip_unmatched_tool_output(&item, &valid_call_ids) {
@@ -207,7 +307,7 @@ mod tests {
         log.append(summary).expect("replace");
 
         let pre = fold_surface(&log.events()[..5]).expect("pre");
-        let shadowed = crate::session::event::shadowed_nodes(&pre, 0, 1).expect("shadowed");
+        let shadowed = shadowed_nodes(&pre, 0, 1).expect("shadowed");
         assert_eq!(shadowed, vec![0, 1]);
         assert_eq!(
             &pre.nodes[shadowed.len()..],
@@ -286,5 +386,28 @@ mod tests {
         assert_eq!(seq, 0);
         assert!(event.surface_op.is_some());
         let _ = event.source_seqs.as_ref();
+    }
+
+    #[test]
+    fn incremental_surface_matches_full_fold() {
+        let mut log = EventLog::new();
+        append_user(&mut log, "d0");
+        append_user(&mut log, "d1");
+        append_user(&mut log, "d2");
+        let mut summary = EventDraft::surface_item(
+            EventType::ItemUser,
+            &user_text("summary"),
+            SurfaceOp::Replace { start: 0, end: 1 },
+        )
+        .expect("draft");
+        summary.source_seqs = Some(vec![0, 1]);
+        log.append(summary).expect("replace");
+        append_user(&mut log, "d3");
+
+        assert_eq!(
+            log.surface().nodes,
+            fold_surface(log.events()).expect("fold").nodes
+        );
+        assert_eq!(log.surface().nodes, vec![3, 2, 4]);
     }
 }

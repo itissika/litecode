@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -9,11 +9,16 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use crate::authority::responses::{InputMessage, InputRole, MessageItem};
 use crate::platform_knobs::{ContextMode, ThinkingTier};
 use crate::session::estimate::compute_token_estimate;
-use crate::session::event::{EventDraft, EventLog, EventType, Seq, SessionEvent, item_from_event, skip_empty_assistant};
+use crate::session::event::{
+    EventDraft, EventType, Seq, SessionEvent, finalize_draft, item_from_event,
+};
 use crate::session::snapshot;
-use crate::session::surface::{Surface, SurfaceOp, derive_messages, fold_surface};
+use crate::session::surface::{
+    Surface, SurfaceOp, apply_plan, fold_surface, plan_surface, project_working_pairs,
+};
 use crate::session::task_state::TodoItem;
 use crate::session::task_state::{PlanRef, TaskReminders};
+use crate::session::working::WorkingRow;
 use crate::tool::output::{BLOB_PREFIX, DEFAULT_SPILL_THRESHOLD, blob_dir};
 use crate::types::{Item, LitecodeError, Result, Transcript, item_text_preview};
 
@@ -383,6 +388,57 @@ pub enum ApplyOutcome {
     Truncated,
 }
 
+/// Incremental surface + seq identity for one live Session. Hydrated once on
+/// open; write primitives update it under the write gate.
+#[derive(Debug, Clone, Default)]
+struct LogProjection {
+    surface: Surface,
+    next_seq: Seq,
+    id_to_seq: HashMap<String, Seq>,
+    items_by_seq: HashMap<Seq, Item>,
+}
+
+impl LogProjection {
+    fn max_seq(&self) -> i64 {
+        if self.next_seq == 0 {
+            -1
+        } else {
+            self.next_seq as i64 - 1
+        }
+    }
+
+    fn apply_event(&mut self, event: &SessionEvent, item: Option<&Item>) -> Result<()> {
+        if let Some(plan) = plan_surface(&self.surface, event)? {
+            if let crate::session::surface::SurfacePlan::Replace { start_idx, len, .. } = &plan {
+                let shadowed: Vec<Seq> = self.surface.nodes[*start_idx..*start_idx + *len].to_vec();
+                for seq in shadowed {
+                    self.items_by_seq.remove(&seq);
+                }
+            }
+            apply_plan(&mut self.surface, plan);
+        }
+        self.next_seq = event.seq.saturating_add(1);
+        if let Some(item) = item {
+            if let Some(id) = item_log_id(item) {
+                self.id_to_seq.insert(id, event.seq);
+            }
+            if self.surface.nodes.contains(&event.seq) {
+                self.items_by_seq.insert(event.seq, item.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn seal_item(&mut self, seq: Seq, item: &Item) {
+        if let Some(id) = item_log_id(item) {
+            self.id_to_seq.insert(id, seq);
+        }
+        if self.surface.nodes.contains(&seq) {
+            self.items_by_seq.insert(seq, item.clone());
+        }
+    }
+}
+
 pub struct Session {
     conn: Connection,
     pub id: String,
@@ -401,6 +457,7 @@ pub struct Session {
     persisted_max_seq: Cell<i64>,
     write_gate: Mutex<()>,
     truncated_item_ids: RefCell<HashSet<String>>,
+    projection: RefCell<LogProjection>,
 }
 
 pub fn data_root_from_db_path(db_path: &str) -> PathBuf {
@@ -796,7 +853,7 @@ impl Session {
 
         let data_root = std::env::temp_dir().join("litecode");
 
-        Ok(Self {
+        let session = Self {
             conn,
             id,
             project: project.to_string(),
@@ -812,7 +869,10 @@ impl Session {
             persisted_max_seq: Cell::new(0),
             write_gate: Mutex::new(()),
             truncated_item_ids: RefCell::new(HashSet::new()),
-        })
+            projection: RefCell::new(LogProjection::default()),
+        };
+        session.hydrate_projection()?;
+        Ok(session)
     }
 
     pub fn is_ephemeral(&self) -> bool {
@@ -872,7 +932,7 @@ impl Session {
             ],
         )?;
 
-        Ok(Self {
+        let session = Self {
             conn,
             id,
             project: project.to_string(),
@@ -888,7 +948,10 @@ impl Session {
             persisted_max_seq: Cell::new(0),
             write_gate: Mutex::new(()),
             truncated_item_ids: RefCell::new(HashSet::new()),
-        })
+            projection: RefCell::new(LogProjection::default()),
+        };
+        session.hydrate_projection()?;
+        Ok(session)
     }
 
     /// Copy an in-memory ephemeral session into the on-disk database.
@@ -938,7 +1001,7 @@ impl Session {
         self.data_root = data_root;
         self.db_path = Some(PathBuf::from(db_path));
         self.ephemeral = false;
-        self.persisted_max_seq.set(self.max_seq()?);
+        self.hydrate_projection()?;
         Ok(())
     }
 
@@ -1056,7 +1119,7 @@ impl Session {
 
         let data_root = data_root_from_db_path(db_path);
 
-        Ok(Self {
+        let session = Self {
             conn,
             id: session_id.to_string(),
             project,
@@ -1072,7 +1135,10 @@ impl Session {
             persisted_max_seq: Cell::new(0),
             write_gate: Mutex::new(()),
             truncated_item_ids: RefCell::new(HashSet::new()),
-        })
+            projection: RefCell::new(LogProjection::default()),
+        };
+        session.hydrate_projection()?;
+        Ok(session)
     }
 
     pub fn db_path(&self) -> Option<&Path> {
@@ -1379,26 +1445,117 @@ impl Session {
     }
 
     pub fn load_transcript(&self) -> Result<Transcript> {
-        derive_messages(&self.load_events()?)
+        Ok(self
+            .load_working_set()?
+            .into_iter()
+            .map(|row| row.item)
+            .collect())
     }
 
-    /// Seqs of model-visible items (surface nodes, skipping empty assistants).
+    /// Model-visible working set: surface order, same skip rules as `derive_messages`.
+    pub fn load_working_set(&self) -> Result<Vec<WorkingRow>> {
+        let projection = self.projection.borrow();
+        let pairs = project_working_pairs(&projection.surface, |seq| {
+            projection.items_by_seq.get(&seq).cloned().ok_or_else(|| {
+                LitecodeError::InvalidSessionEvent(format!("surface seq {seq} missing from cache"))
+            })
+        })?;
+        Ok(pairs
+            .into_iter()
+            .map(|(seq, item)| WorkingRow::persisted(seq, item))
+            .collect())
+    }
+
+    /// Seqs of model-visible items (same skip rules as [`load_working_set`]).
     pub fn model_surface_seqs(&self) -> Result<Vec<Seq>> {
+        Ok(self
+            .load_working_set()?
+            .into_iter()
+            .filter_map(|row| row.seq)
+            .collect())
+    }
+
+    fn hydrate_projection(&self) -> Result<()> {
         let events = self.load_events()?;
         let surface = fold_surface(&events)?;
-        let mut seqs = Vec::new();
-        for seq in surface.nodes {
-            let event = events
-                .iter()
-                .find(|e| e.seq == seq)
-                .ok_or_else(|| LitecodeError::InvalidSessionEvent(format!("missing seq {seq}")))?;
-            let item = item_from_event(event)?;
-            if skip_empty_assistant(event, &item) {
-                continue;
+        let node_set: HashSet<Seq> = surface.nodes.iter().copied().collect();
+        let mut id_to_seq = HashMap::new();
+        let mut items_by_seq = HashMap::new();
+        for event in &events {
+            if let Ok(item) = item_from_event(event) {
+                if let Some(id) = item_log_id(&item) {
+                    id_to_seq.insert(id, event.seq);
+                }
+                if node_set.contains(&event.seq) {
+                    items_by_seq.insert(event.seq, item);
+                }
             }
-            seqs.push(seq);
         }
-        Ok(seqs)
+        let next_seq = events.last().map(|e| e.seq + 1).unwrap_or(0);
+        let projection = LogProjection {
+            surface,
+            next_seq,
+            id_to_seq,
+            items_by_seq,
+        };
+        self.persisted_max_seq.set(projection.max_seq());
+        *self.projection.borrow_mut() = projection;
+        Ok(())
+    }
+
+    fn cached_max_seq(&self) -> i64 {
+        self.projection.borrow().max_seq()
+    }
+
+    fn commit_projection(&self, projection: LogProjection) {
+        self.persisted_max_seq.set(projection.max_seq());
+        *self.projection.borrow_mut() = projection;
+    }
+
+    fn admit_draft_in_tx(
+        &self,
+        tx: &Transaction<'_>,
+        mut draft: EventDraft,
+        turn_id: &str,
+        turn_seq: i64,
+        kind: &str,
+        token_estimate: i64,
+        projection: &mut LogProjection,
+    ) -> Result<(Seq, Option<Item>)> {
+        if draft.time == 0 {
+            draft.time = chrono::Utc::now().timestamp_millis();
+        }
+        let item = if draft.event_type.is_surface_eligible() {
+            Some(serde_json::from_value::<Item>(draft.data.clone())?)
+        } else {
+            None
+        };
+        if let Some(id) = item.as_ref().and_then(item_log_id)
+            && self.truncated_item_ids.borrow().contains(&id)
+        {
+            return Err(LitecodeError::Canceled);
+        }
+        let seq = projection.next_seq;
+        let event = finalize_draft(seq, draft)?;
+        plan_surface(&projection.surface, &event)?;
+        let tid = if turn_id.is_empty() {
+            format!("orphan-{}", ulid::Ulid::new())
+        } else {
+            turn_id.to_string()
+        };
+        insert_event_row(
+            tx,
+            &self.id,
+            &self.data_root,
+            &event,
+            item.as_ref(),
+            &tid,
+            turn_seq,
+            kind,
+            token_estimate,
+        )?;
+        projection.apply_event(&event, item.as_ref())?;
+        Ok((seq, item))
     }
 
     pub fn buffer_len(&self) -> usize {
@@ -1507,47 +1664,18 @@ impl Session {
 
     fn append_unlocked(
         &self,
-        mut draft: EventDraft,
+        draft: EventDraft,
         turn_id: &str,
         turn_seq: i64,
         kind: &str,
     ) -> Result<Seq> {
-        if draft.time == 0 {
-            draft.time = chrono::Utc::now().timestamp_millis();
-        }
-        let item = if draft.event_type.is_surface_eligible() {
-            Some(serde_json::from_value::<Item>(draft.data.clone())?)
-        } else {
-            None
-        };
-        if let Some(id) = item.as_ref().and_then(item_log_id)
-            && self.truncated_item_ids.borrow().contains(&id)
-        {
-            return Err(LitecodeError::Canceled);
-        }
+        let mut projection = self.projection.borrow().clone();
         let tx = self
             .conn
             .unchecked_transaction()
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
-        let mut log = EventLog::from_events(self.load_events()?);
-        log.append(draft)?;
-        let event = log.events().last().expect("appended").clone();
-        let tid = if turn_id.is_empty() {
-            format!("orphan-{}", ulid::Ulid::new())
-        } else {
-            turn_id.to_string()
-        };
-        insert_event_row(
-            &tx,
-            &self.id,
-            &self.data_root,
-            &event,
-            item.as_ref(),
-            &tid,
-            turn_seq,
-            kind,
-            0,
-        )?;
+        let (seq, item) =
+            self.admit_draft_in_tx(&tx, draft, turn_id, turn_seq, kind, 0, &mut projection)?;
         let now = chrono::Utc::now().timestamp_millis();
         if let Some(item) = item.as_ref() {
             let preview = Self::last_user_message_preview(std::slice::from_ref(item));
@@ -1570,8 +1698,8 @@ impl Session {
         }
         tx.commit()
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
-        self.persisted_max_seq.set(event.seq as i64);
-        Ok(event.seq)
+        self.commit_projection(projection);
+        Ok(seq)
     }
 
     fn seal_unlocked(&self, seq: Seq, item: &Item) -> Result<()> {
@@ -1582,6 +1710,7 @@ impl Session {
         seal_event_row(&tx, &self.id, &self.data_root, seq, item)?;
         tx.commit()
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+        self.projection.borrow_mut().seal_item(seq, item);
         Ok(())
     }
 
@@ -1669,7 +1798,9 @@ impl Session {
         tx.commit()
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
         self.truncated_item_ids.borrow_mut().extend(tombstones);
-        self.persisted_max_seq.set(self.max_seq()?);
+        // Remaining log is 0..anchor-1. A deleted replace must unshadow earlier
+        // nodes; dropping `nodes >= anchor` from the live surface is not enough.
+        self.hydrate_projection()?;
         Ok(())
     }
 
@@ -1714,11 +1845,11 @@ impl Session {
             return Ok(None);
         }
         let _gate = self.lock_write();
+        let mut projection = self.projection.borrow().clone();
         let tx = self
             .conn
             .unchecked_transaction()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
-        let mut log = EventLog::from_events(self.load_events()?);
         let turn_id = if turn_id.is_empty() {
             format!("orphan-{}", ulid::Ulid::new())
         } else {
@@ -1728,24 +1859,12 @@ impl Session {
             let mut draft =
                 EventDraft::surface_item(surface_event_type_of(msg), msg, SurfaceOp::Append)?;
             draft.time = message_timestamp(msg);
-            log.append(draft)?;
-            let event = log.events().last().expect("appended").clone();
-            insert_event_row(
-                &tx,
-                &self.id,
-                &self.data_root,
-                &event,
-                Some(msg),
-                &turn_id,
-                i as i64,
-                "detail",
-                0,
-            )?;
+            self.admit_draft_in_tx(&tx, draft, &turn_id, i as i64, "detail", 0, &mut projection)?;
         }
         let preview_updated = self.bump_session_updated(&tx, delta)?;
         tx.commit()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
-        self.persisted_max_seq.set(self.max_seq()?);
+        self.commit_projection(projection);
         Ok(preview_updated)
     }
 
@@ -1756,13 +1875,9 @@ impl Session {
             if self.truncated_item_ids.borrow().contains(&id) {
                 return Err(LitecodeError::Canceled);
             }
-            for event in self.load_events()? {
-                if let Ok(existing) = item_from_event(&event)
-                    && item_log_id(&existing).as_deref() == Some(id.as_str())
-                {
-                    self.seal_unlocked(event.seq, item)?;
-                    return Ok(event.seq);
-                }
+            if let Some(&seq) = self.projection.borrow().id_to_seq.get(&id) {
+                self.seal_unlocked(seq, item)?;
+                return Ok(seq);
             }
         }
         let mut draft =
@@ -1789,15 +1904,15 @@ impl Session {
     /// and the delta is discarded.
     pub fn commit_turn_delta_with_orphan_cleanup(
         &self,
-        items: &mut Vec<Item>,
+        rows: &mut Vec<WorkingRow>,
         _delta: &[Item],
         expected_max_seq: i64,
         turn_id: &str,
     ) -> Result<CommitDeltaOutcome> {
         let _gate = self.lock_write();
-        let valid_call_ids: HashSet<String> = items
+        let valid_call_ids: HashSet<String> = rows
             .iter()
-            .filter_map(|item| match item {
+            .filter_map(|row| match &row.item {
                 Item::FunctionCall(fc) => Some(fc.call_id.clone()),
                 _ => None,
             })
@@ -1808,14 +1923,14 @@ impl Session {
                 Item::FunctionCallOutput(out) if !valid_call_ids.contains(&out.call_id)
             )
         };
-        let kept: Vec<Item> = items
+        let mut kept: Vec<WorkingRow> = rows
             .iter()
-            .filter(|item| !is_orphan(item))
+            .filter(|row| !is_orphan(&row.item))
             .cloned()
             .collect();
 
-        if self.max_seq()? < expected_max_seq {
-            *items = self.load_transcript()?;
+        if self.cached_max_seq() < expected_max_seq {
+            *rows = self.load_working_set()?;
             return Ok(CommitDeltaOutcome::Discarded);
         }
 
@@ -1823,73 +1938,55 @@ impl Session {
             .conn
             .unchecked_transaction()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
-        let mut log = EventLog::from_events(self.load_events()?);
+        let mut projection = self.projection.borrow().clone();
         let tid = if turn_id.is_empty() {
             format!("orphan-{}", ulid::Ulid::new())
         } else {
             turn_id.to_string()
         };
-        let mut id_to_seq: std::collections::HashMap<String, Seq> =
-            std::collections::HashMap::new();
-        let mut unused_equals: Vec<(Seq, Item)> = Vec::new();
-        for event in log.events() {
-            if let Ok(item) = item_from_event(event) {
-                if let Some(id) = item_log_id(&item) {
-                    id_to_seq.insert(id, event.seq);
-                } else {
-                    unused_equals.push((event.seq, item));
-                }
-            }
-        }
         let mut mutated = false;
         let mut appended: Vec<Item> = Vec::new();
         let mut next_turn_seq = 0i64;
-        for msg in kept.iter() {
-            if let Some(id) = item_log_id(msg)
-                && let Some(&seq) = id_to_seq.get(&id)
-            {
-                let same = log.events().iter().find(|e| e.seq == seq).is_some_and(|e| {
-                    item_from_event(e)
-                        .ok()
-                        .and_then(|existing| serde_json::to_value(existing).ok())
-                        == serde_json::to_value(msg).ok()
-                });
+        for row in kept.iter_mut() {
+            let msg = &row.item;
+            if let Some(seq) = row.seq {
+                let same = projection
+                    .items_by_seq
+                    .get(&seq)
+                    .and_then(|existing| serde_json::to_value(existing).ok())
+                    == serde_json::to_value(msg).ok();
                 if !same {
                     seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
+                    projection.seal_item(seq, msg);
                     mutated = true;
                 }
                 continue;
             }
-            if let Some(id) = item_log_id(msg)
-                && self.truncated_item_ids.borrow().contains(&id)
-            {
-                continue;
-            }
-            if item_log_id(msg).is_none() {
-                if let Some(pos) = unused_equals.iter().position(|(_, existing)| {
-                    serde_json::to_value(existing).ok() == serde_json::to_value(msg).ok()
-                })
-                {
-                    unused_equals.remove(pos);
+            if let Some(id) = item_log_id(msg) {
+                if self.truncated_item_ids.borrow().contains(&id) {
+                    continue;
+                }
+                if let Some(&seq) = projection.id_to_seq.get(&id) {
+                    row.seq = Some(seq);
+                    let same = projection
+                        .items_by_seq
+                        .get(&seq)
+                        .and_then(|existing| serde_json::to_value(existing).ok())
+                        == serde_json::to_value(msg).ok();
+                    if !same {
+                        seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
+                        projection.seal_item(seq, msg);
+                        mutated = true;
+                    }
                     continue;
                 }
             }
             let mut draft =
                 EventDraft::surface_item(surface_event_type_of(msg), msg, SurfaceOp::Append)?;
             draft.time = message_timestamp(msg);
-            log.append(draft)?;
-            let event = log.events().last().expect("appended").clone();
-            insert_event_row(
-                &tx,
-                &self.id,
-                &self.data_root,
-                &event,
-                Some(msg),
-                &tid,
-                next_turn_seq,
-                "detail",
-                0,
-            )?;
+            let (seq, _) =
+                self.admit_draft_in_tx(&tx, draft, &tid, next_turn_seq, "detail", 0, &mut projection)?;
+            row.seq = Some(seq);
             next_turn_seq += 1;
             mutated = true;
             appended.push(msg.clone());
@@ -1898,8 +1995,8 @@ impl Session {
         let preview_updated = self.bump_session_updated(&tx, &appended)?;
         tx.commit()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
-        *items = kept;
-        self.persisted_max_seq.set(self.max_seq()?);
+        *rows = kept;
+        self.commit_projection(projection);
         Ok(CommitDeltaOutcome::Applied {
             preview: preview_updated,
             mutated,
@@ -2099,7 +2196,7 @@ impl Session {
 
     /// Reload the cursor from the DB's current `MAX(seq)` (turn load, post-compact).
     pub fn reload_persisted_max_seq(&self) -> Result<()> {
-        self.persisted_max_seq.set(self.max_seq()?);
+        self.persisted_max_seq.set(self.cached_max_seq());
         Ok(())
     }
 
@@ -2284,42 +2381,42 @@ impl Session {
     ) -> Result<i64> {
         let _gate = self.lock_write();
         let now = chrono::Utc::now().timestamp_millis();
-        let tx = self
-            .conn
-            .unchecked_transaction()
-            .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
-
-        let mut log = EventLog::from_events(self.load_events()?);
+        let mut projection = self.projection.borrow().clone();
         if let Some(expected) = expected_view_len {
-            let view_len = derive_messages(log.events())?.len();
+            let view_len = project_working_pairs(&projection.surface, |seq| {
+                projection.items_by_seq.get(&seq).cloned().ok_or_else(|| {
+                    LitecodeError::InvalidSessionEvent(format!(
+                        "surface seq {seq} missing from cache"
+                    ))
+                })
+            })?
+            .len();
             if view_len != expected {
                 return Err(LitecodeError::Canceled);
             }
         }
 
-        let surface = fold_surface(log.events())?;
-        let (op, source_seqs) = replace_op_for_keep(&surface, kept_from_seq)?;
+        let (op, source_seqs) = replace_op_for_keep(&projection.surface, kept_from_seq)?;
         let mut draft = EventDraft::surface_item(EventType::ItemUser, summary, op)?;
         draft.time = now;
         draft.source_seqs = source_seqs;
-        log.append(draft)?;
-        let event = log.events().last().expect("appended").clone();
-        insert_event_row(
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
+        let (seq, _) = self.admit_draft_in_tx(
             &tx,
-            &self.id,
-            &self.data_root,
-            &event,
-            Some(summary),
-            &format!("compact-{}", event.seq),
+            draft,
+            &format!("compact-{}", projection.next_seq),
             0,
             "detail",
             token_estimate,
+            &mut projection,
         )?;
-
         tx.commit()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
-        self.persisted_max_seq.set(event.seq as i64);
-        Ok(event.seq as i64)
+        self.commit_projection(projection);
+        Ok(seq as i64)
     }
 }
 
@@ -3377,7 +3474,11 @@ mod tests {
             .insert_detail_rows(&[fc.clone(), live.clone(), orphan.clone()])
             .unwrap();
 
-        let mut items = vec![fc, live, orphan];
+        let mut items = vec![
+            WorkingRow::pending(fc),
+            WorkingRow::pending(live),
+            WorkingRow::pending(orphan),
+        ];
         session
             .conn
             .execute_batch("DROP TABLE transcript_items")
@@ -3392,7 +3493,7 @@ mod tests {
             "failed commit must not snip orphans from memory"
         );
         assert!(
-            items.iter().any(|i| match i {
+            items.iter().any(|row| match &row.item {
                 Item::FunctionCallOutput(o) => o.call_id == "gone",
                 _ => false,
             }),
@@ -3408,17 +3509,17 @@ mod tests {
             .unwrap();
         session.revert_to_user_anchor(1).unwrap();
         let mut items = vec![
-            user_text("u0"),
-            user_text("u1"),
-            user_text("u2"),
-            user_text("stale"),
+            WorkingRow::pending(user_text("u0")),
+            WorkingRow::pending(user_text("u1")),
+            WorkingRow::pending(user_text("u2")),
+            WorkingRow::pending(user_text("stale")),
         ];
         let outcome = session
             .commit_turn_delta_with_orphan_cleanup(&mut items, &[user_text("stale")], 2, "t1")
             .unwrap();
         assert!(matches!(outcome, CommitDeltaOutcome::Discarded));
         assert_eq!(items.len(), 1);
-        assert_eq!(item_text_preview(&items[0]), "u0");
+        assert_eq!(item_text_preview(&items[0].item), "u0");
         assert_eq!(session.load_transcript().unwrap().len(), 1);
     }
 
@@ -3448,7 +3549,7 @@ mod tests {
             projected < 3,
             "empty assistant must be off Surface so projection length would false-cancel"
         );
-        let mut items = vec![user_text("u0"), empty_assistant, fc];
+        let mut items = session.load_working_set().unwrap();
         let outcome = session
             .commit_turn_delta_with_orphan_cleanup(&mut items, &[], 2, "t1")
             .unwrap();
@@ -3483,7 +3584,9 @@ mod tests {
             status: None,
         });
         session.insert_detail_rows(&[fc.clone()]).unwrap();
-        let mut items = vec![fc, live.clone(), orphan.clone()];
+        let mut items = session.load_working_set().unwrap();
+        items.push(WorkingRow::pending(live.clone()));
+        items.push(WorkingRow::pending(orphan.clone()));
         let outcome = session
             .commit_turn_delta_with_orphan_cleanup(&mut items, &[live, orphan], 0, "t1")
             .unwrap();
@@ -3651,7 +3754,7 @@ mod tests {
             status: OutputStatus::Completed,
             phase: None,
         }));
-        let mut items = vec![sealed.clone()];
+        let mut items = vec![WorkingRow::pending(sealed.clone())];
         session
             .commit_turn_delta_with_orphan_cleanup(&mut items, &[sealed], 0, "t1")
             .unwrap();
@@ -3692,7 +3795,9 @@ mod tests {
             status: OutputStatus::Completed,
             phase: None,
         }));
-        let mut items = vec![user_text("hi"), sealed];
+        let mut items = session.load_working_set().unwrap();
+        assert_eq!(items.len(), 2);
+        items[1].item = sealed;
         session
             .commit_turn_delta_with_orphan_cleanup(&mut items, &[], 1, "t1")
             .unwrap();
@@ -3746,5 +3851,172 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, EventType::TurnStart);
         assert_eq!(session.load_transcript().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn compact_shadowed_user_same_text_appends_new_seq() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("hi"), user_text("keep")])
+            .unwrap();
+        session
+            .apply_compact_checkpoint_from(&user_text("summary"), Some(1), 10)
+            .unwrap();
+        let before = session.load_events().unwrap().len();
+        let mut rows = session.load_working_set().unwrap();
+        rows.push(WorkingRow::pending(user_text("hi")));
+        session
+            .commit_turn_delta_with_orphan_cleanup(&mut rows, &[], session.cached_max_seq(), "t1")
+            .unwrap();
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), before + 1, "same text after compact must append");
+        assert_eq!(
+            item_text_preview(&session.load_transcript().unwrap().last().unwrap()),
+            "hi"
+        );
+    }
+
+    #[test]
+    fn duplicate_hi_after_assistant_is_two_user_rows() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session.insert_detail_rows(&[user_text("hi")]).unwrap();
+        let asst = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_hi".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "yo".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::Completed,
+            phase: None,
+        }));
+        session.persist_item(&asst).unwrap();
+        let mut rows = session.load_working_set().unwrap();
+        rows.push(WorkingRow::pending(user_text("hi")));
+        session
+            .commit_turn_delta_with_orphan_cleanup(&mut rows, &[], session.cached_max_seq(), "t1")
+            .unwrap();
+        let users: Vec<_> = session
+            .load_events()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event_type == EventType::ItemUser)
+            .collect();
+        assert_eq!(users.len(), 2);
+    }
+
+    #[test]
+    fn incremental_surface_matches_fold_after_compact_and_append() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[
+                user_text("a"),
+                user_text("b"),
+                user_text("c"),
+                user_text("d"),
+            ])
+            .unwrap();
+        session
+            .apply_compact_checkpoint_from(&user_text("sum"), Some(2), 10)
+            .unwrap();
+        session.insert_detail_rows(&[user_text("e")]).unwrap();
+        let cached = session.projection.borrow().surface.nodes.clone();
+        let folded = fold_surface(&session.load_events().unwrap())
+            .unwrap()
+            .nodes;
+        assert_eq!(cached, folded);
+    }
+
+    #[test]
+    fn truncate_then_append_uses_new_max_plus_one() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("u0"), user_text("u1"), user_text("u2")])
+            .unwrap();
+        session.revert_to_user_anchor(1).unwrap();
+        let seq = session
+            .insert_detail_rows(&[user_text("fresh")])
+            .unwrap();
+        let _ = seq;
+        let events = session.load_events().unwrap();
+        assert_eq!(events.last().unwrap().seq, 1);
+        assert_eq!(session.cached_max_seq(), 1);
+        let folded = fold_surface(&events).unwrap().nodes;
+        assert_eq!(session.projection.borrow().surface.nodes, folded);
+    }
+
+    #[test]
+    fn load_working_set_matches_transcript_and_skips_empty_assistant() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let empty_assistant = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_empty".into(),
+            role: AssistantRole::Assistant,
+            content: vec![],
+            status: OutputStatus::Completed,
+            phase: None,
+        }));
+        session
+            .insert_detail_rows(&[user_text("u0"), empty_assistant, user_text("u1")])
+            .unwrap();
+        let rows = session.load_working_set().unwrap();
+        let items = session.load_transcript().unwrap();
+        assert_eq!(rows.len(), items.len());
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.seq.is_some()));
+        assert_eq!(session.load_events().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn compact_replace_validates_endpoints_on_cached_nodes() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("a"), user_text("b"), user_text("c")])
+            .unwrap();
+        let err = session
+            .apply_compact_checkpoint_from(&user_text("sum"), Some(99), 10)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("kept_from_seq") || matches!(err, LitecodeError::ToolExecution(_))
+        );
+        session
+            .apply_compact_checkpoint_from(&user_text("sum"), Some(1), 10)
+            .unwrap();
+        let cached = session.projection.borrow().surface.nodes.clone();
+        let folded = fold_surface(&session.load_events().unwrap())
+            .unwrap()
+            .nodes;
+        assert_eq!(cached, folded);
+        session.insert_detail_rows(&[user_text("after")]).unwrap();
+        assert_eq!(
+            session.load_events().unwrap().last().unwrap().seq,
+            session.cached_max_seq() as u64
+        );
+    }
+
+    #[test]
+    fn append_after_many_compact_shadows_uses_contiguous_next_seq() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&(0..8).map(|i| user_text(format!("u{i}"))).collect::<Vec<_>>())
+            .unwrap();
+        session
+            .apply_compact_checkpoint_from(&user_text("sum-1"), Some(4), 10)
+            .unwrap();
+        session
+            .apply_compact_checkpoint_from(&user_text("sum-2"), Some(6), 10)
+            .unwrap();
+        let events_before = session.load_events().unwrap();
+        let max_before = events_before.last().unwrap().seq;
+        assert!(
+            events_before.len() > session.projection.borrow().surface.nodes.len(),
+            "compact must leave shadowed rows so next seq is not a surface scan"
+        );
+        session
+            .insert_detail_rows(&[user_text("after-shadows")])
+            .unwrap();
+        let last = session.load_events().unwrap().last().unwrap().seq;
+        assert_eq!(last, max_before + 1, "append must be MAX+1 without rescanning shadows");
+        assert_eq!(session.cached_max_seq() as u64, last);
     }
 }

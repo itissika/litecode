@@ -21,7 +21,8 @@ use litecode::hook::{HookDispatcher, HookRegistry};
 use litecode::session::manager::SessionManager;
 use litecode::session::store::Session;
 use litecode::session::task_state::TaskReminders;
-use litecode::types::{FunctionToolCall, Item, LitecodeError, Transcript, user_text};
+use litecode::session::{WorkingRow, align_working, project_items};
+use litecode::types::{FunctionToolCall, Item, LitecodeError, Transcript, item_text_preview, user_text};
 
 use common::fake_deps::{assistant_text_item, function_call_item};
 use common::scripted_provider::ScriptedProvider;
@@ -76,7 +77,7 @@ async fn prepare(
     sessions: &Arc<SessionManager>,
     sid: &str,
     ctx: &Context,
-    turn: &mut litecode::types::Transcript,
+    turn: &mut Vec<WorkingRow>,
     step: u64,
     last_prompt_tokens: u64,
 ) -> litecode::types::Result<()> {
@@ -97,8 +98,9 @@ async fn prepare(
             capabilities: vec![litecode::config::schema::ModelCapability::Text],
         },
     };
+    let mut items = project_items(turn);
     let prompt_baseline = ProviderPromptBaseline::default();
-    prompt_baseline.record(last_prompt_tokens, turn.len());
+    prompt_baseline.record(last_prompt_tokens, items.len());
     pipeline
         .prepare_step(
             &HookDispatcher::from_registry(HookRegistry::default()),
@@ -111,14 +113,31 @@ async fn prepare(
             "system",
             1024,
             &prompt_baseline,
-            turn,
+            &mut items,
             step,
             &cancel,
             &TaskReminders::default(),
             &model,
         )
         .await
-        .map(|_| ())
+        .map(|_| ())?;
+    *turn = pipeline.working_set();
+    Ok(())
+}
+
+fn commit_via_gate(
+    pipeline: &ContextPipeline,
+    sessions: &Arc<SessionManager>,
+    sid: &str,
+    turn: &mut Vec<WorkingRow>,
+) -> litecode::context_pipeline::CommitStepOutcome {
+    sessions
+        .with_entry_store(sid, |s| Ok(pipeline.commit_step(s, turn)?))
+        .expect("commit via session gate")
+}
+
+fn row_previews(rows: &[WorkingRow]) -> Vec<String> {
+    rows.iter().map(|r| item_text_preview(&r.item)).collect()
 }
 
 fn setup_workspace_and_session(dir: &std::path::Path, agent: &str) -> (String, String) {
@@ -209,10 +228,7 @@ async fn compact_then_new_step_persists_and_resumes_full_content() {
         .expect("prepare_step (compact)");
 
     // Keep-recent: last seed survives verbatim; early seeds are summarized away.
-    let mid_previews: Vec<String> = turn
-        .iter()
-        .map(litecode::types::item_text_preview)
-        .collect();
+    let mid_previews: Vec<String> = row_previews(&turn);
     assert!(
         mid_previews.iter().any(|p| p.contains("compact summary")),
         "summary must be in working set after compact, got {mid_previews:?}"
@@ -227,9 +243,12 @@ async fn compact_then_new_step_persists_and_resumes_full_content() {
     );
 
     // After compact the working set is summary ‖ kept; add a fresh step's output.
-    turn.push(user_text("post-compact user"));
-    turn.push(assistant_text_item("post-compact reply", "msg_post"));
-    pipeline.commit_step(&session, &mut turn).unwrap();
+    turn.push(WorkingRow::pending(user_text("post-compact user")));
+    turn.push(WorkingRow::pending(assistant_text_item(
+        "post-compact reply",
+        "msg_post",
+    )));
+    commit_via_gate(&pipeline, &sessions, &sid, &mut turn);
 
     // Historical pre-replace detail must remain in DB (compact must not DELETE it).
     drop(pipeline);
@@ -303,10 +322,7 @@ async fn keep_recent_skip_still_enforces_hard_limit_when_over_budget() {
     let pipeline = ContextPipeline::new(&session, 10_000, ctx.clone(), dir.path().to_path_buf());
 
     let mut turn = pipeline.begin_turn(&session).unwrap();
-    let before: Vec<String> = turn
-        .iter()
-        .map(litecode::types::item_text_preview)
-        .collect();
+    let before: Vec<String> = row_previews(&turn);
 
     // Autocompact threshold = 80% of 10_000 = 8000; hard limit = 10_000.
     // 10_001 triggers should_compact then cut=None → must still hard-fail.
@@ -318,10 +334,7 @@ async fn keep_recent_skip_still_enforces_hard_limit_when_over_budget() {
         "expected TokenBudgetExceeded, got {err:?}"
     );
 
-    let after: Vec<String> = turn
-        .iter()
-        .map(litecode::types::item_text_preview)
-        .collect();
+    let after: Vec<String> = row_previews(&turn);
     assert_eq!(
         before, after,
         "skipped compact must leave the transcript unchanged"
@@ -365,10 +378,7 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
     let pipeline = ContextPipeline::new(&session, 10_000, ctx.clone(), dir.path().to_path_buf());
 
     let mut turn = pipeline.begin_turn(&session).unwrap();
-    let before: Vec<String> = turn
-        .iter()
-        .map(litecode::types::item_text_preview)
-        .collect();
+    let before: Vec<String> = row_previews(&turn);
 
     // 8500 > 8000 autocompact threshold, < 10_000 hard limit.
     // Empty ScriptedProvider: if compact/LLM ran, prepare would fail.
@@ -390,7 +400,8 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
         },
     };
     let prompt_baseline = ProviderPromptBaseline::default();
-    prompt_baseline.record(8_500, turn.len());
+    let mut items = project_items(&turn);
+    prompt_baseline.record(8_500, items.len());
     let compacted = pipeline
         .prepare_step(
             &HookDispatcher::from_registry(HookRegistry::default()),
@@ -403,7 +414,7 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
             "system",
             1024,
             &prompt_baseline,
-            &mut turn,
+            &mut items,
             1,
             &cancel,
             &TaskReminders::default(),
@@ -412,11 +423,9 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
         .await
         .expect("under hard limit + cut=None must Ok");
     assert!(!compacted, "keep-recent skip must report did_compact=false");
+    align_working(&mut turn, &items);
 
-    let after: Vec<String> = turn
-        .iter()
-        .map(litecode::types::item_text_preview)
-        .collect();
+    let after: Vec<String> = row_previews(&turn);
     assert_eq!(
         before, after,
         "transcript must be unchanged when compact is skipped"
@@ -458,15 +467,12 @@ async fn compact_eats_only_persisted_prefix_and_keeps_uncommitted_tail() {
         .with_keep_recent_tokens(1);
 
     let mut turn = pipeline.begin_turn(&session).unwrap();
-    turn.push(user_text("unpersisted-tail"));
+    turn.push(WorkingRow::pending(user_text("unpersisted-tail")));
     prepare(&pipeline, &sessions, &sid, &ctx, &mut turn, 2, 8_500)
         .await
         .expect("compact must not fail-closed on unpersisted tail");
 
-    let previews: Vec<String> = turn
-        .iter()
-        .map(litecode::types::item_text_preview)
-        .collect();
+    let previews: Vec<String> = row_previews(&turn);
     assert!(
         previews.iter().any(|p| p == "unpersisted-tail"),
         "uncommitted tail must survive compact, got {previews:?}"
@@ -537,7 +543,8 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         },
     };
     let prompt_baseline = ProviderPromptBaseline::default();
-    prompt_baseline.record(8_500, turn.len());
+    let mut items = project_items(&turn);
+    prompt_baseline.record(8_500, items.len());
     let task_state = sessions
         .with_entry_task_state(&sid, |s| Ok(s.clone()))
         .unwrap();
@@ -553,7 +560,7 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
             "system",
             1024,
             &prompt_baseline,
-            &mut turn,
+            &mut items,
             2,
             &cancel,
             &task_state,
@@ -561,10 +568,10 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         )
         .await
         .expect("compact with reminder");
+    turn = pipeline.working_set();
 
-    let summary = turn
-        .iter()
-        .map(litecode::types::item_text_preview)
+    let summary = row_previews(&turn)
+        .into_iter()
         .find(|p| p.contains("compact summary"))
         .expect("checkpoint text");
     assert!(
@@ -581,8 +588,8 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
     );
     let extra_reminder_items = turn
         .iter()
-        .filter(|i| {
-            let p = litecode::types::item_text_preview(i);
+        .filter(|r| {
+            let p = item_text_preview(&r.item);
             p.starts_with("<system-reminder>")
         })
         .count();
@@ -628,7 +635,7 @@ async fn unanswered_calls_pad_llm_view_only_not_disk() {
     assert!(
         !turn
             .iter()
-            .any(|i| matches!(i, Item::FunctionCallOutput(_))),
+            .any(|r| matches!(&r.item, Item::FunctionCallOutput(_))),
         "working set must keep the hanging FunctionCall, not a fake output"
     );
     let prepared = pipeline.prepared_view().expect("prepared");
@@ -673,9 +680,9 @@ async fn resumed_session_cursor_initialized_from_max_seq() {
         prepare(&pipeline, &sessions, &sid, &ctx, &mut turn, 2, 8_500)
             .await
             .unwrap();
-        turn.push(user_text("resume user"));
-        turn.push(assistant_text_item("resume reply", "msg_r"));
-        pipeline.commit_step(&session, &mut turn).unwrap();
+        turn.push(WorkingRow::pending(user_text("resume user")));
+        turn.push(WorkingRow::pending(assistant_text_item("resume reply", "msg_r")));
+        commit_via_gate(&pipeline, &sessions, &sid, &mut turn);
     }
 
     // Existing (resumed) session must behave like a fresh session: begin_turn loads
@@ -694,7 +701,7 @@ async fn resumed_session_cursor_initialized_from_max_seq() {
     let ctx = test_context(dir.path());
     let pipeline = ContextPipeline::new(&session, 10_000, ctx.clone(), dir.path().to_path_buf());
     let mut turn = pipeline.begin_turn(&session).unwrap();
-    turn.push(user_text("resume user 2"));
+    turn.push(WorkingRow::pending(user_text("resume user 2")));
     pipeline.commit_step(&session, &mut turn).unwrap();
 
     let after = session.load_transcript().unwrap().len();
@@ -744,16 +751,15 @@ async fn orphan_function_call_output_purged_from_db_in_commit_transaction() {
     let pipeline = ContextPipeline::new(&session, 10_000, ctx.clone(), dir.path().to_path_buf());
     let mut turn = pipeline.begin_turn(&session).unwrap();
 
-    // prepare_step runs `snip_stale_results`, dropping the orphan from the
-    // in-memory working set.
+    // prepare_step drops unmatched FCO from the in-memory working set (投影可丢).
     prepare(&pipeline, &sessions, &sid, &ctx, &mut turn, 1, 0)
         .await
         .expect("prepare_step (snip)");
 
-    turn.push(assistant_text_item("reply after snip", "msg_snip"));
+    turn.push(WorkingRow::pending(assistant_text_item("reply after snip", "msg_snip")));
     pipeline.commit_step(&session, &mut turn).unwrap();
 
-    // Same transaction as the delta insert must have purged the orphan from DB.
+    // Unmatched FCO stays on the log (投影可丢). Commit must not DELETE it.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let orphan_rows: i64 = conn
         .query_row(
@@ -765,8 +771,15 @@ async fn orphan_function_call_output_purged_from_db_in_commit_transaction() {
         )
         .unwrap();
     assert_eq!(
-        orphan_rows, 0,
-        "orphan FunctionCallOutput must be deleted from DB"
+        orphan_rows, 1,
+        "unmatched FunctionCallOutput stays on the log"
+    );
+    assert!(
+        !turn.iter().any(|row| matches!(
+            &row.item,
+            Item::FunctionCallOutput(out) if out.call_id == "gone"
+        )),
+        "unmatched FunctionCallOutput must not be in the working set"
     );
     let live_rows: i64 = conn
         .query_row(
@@ -1381,7 +1394,7 @@ fn commit_after_revert_discards_uncommitted_delta() {
     session.revert_to_user_anchor(1).unwrap();
     assert_eq!(session.load_transcript().unwrap().len(), 1);
 
-    turn.push(assistant_text_item("uncommitted tail", "msg_stale"));
+    turn.push(WorkingRow::pending(assistant_text_item("uncommitted tail", "msg_stale")));
     let outcome = pipeline.commit_step(&session, &mut turn).unwrap();
     assert!(
         outcome.discarded,
@@ -1471,7 +1484,7 @@ impl AgentDeps for PipelinePersistDeps {
         if let Some(k) = self.revert_k.take() {
             self.session.revert_to_user_anchor(k)?;
         }
-        Ok(self.pipeline.commit_step(&self.session, items)?.discarded)
+        Ok(self.pipeline.commit_step_from_items(&self.session, items)?.discarded)
     }
 
     fn begin_step(&mut self, _step: u64) {}
@@ -1489,8 +1502,8 @@ async fn agent_persist_after_revert_does_not_replay_or_pad() {
     let session = Session::resume(&db_path, &sid).unwrap();
     let ctx = test_context(dir.path());
     let pipeline = ContextPipeline::new(&session, 10_000, ctx, dir.path().to_path_buf());
-    let mut transcript = pipeline.begin_turn(&session).unwrap();
-    assert_eq!(transcript.len(), 2);
+    let mut working = pipeline.begin_turn(&session).unwrap();
+    assert_eq!(working.len(), 2);
 
     let mut deps = PipelinePersistDeps {
         pipeline,
@@ -1507,6 +1520,7 @@ async fn agent_persist_after_revert_does_not_replay_or_pad() {
         revert_k: Cell::new(Some(1)),
         execute_calls: Cell::new(0),
     };
+    let mut transcript = project_items(&working);
     let outcome = agent::run(&mut deps, &mut transcript).await;
     assert!(
         matches!(outcome, litecode::agent::TurnOutcome::Cancelled { .. }),
@@ -1567,7 +1581,7 @@ fn commit_snips_memory_orphan_without_deleting_log_seq() {
     assert!(
         !turn
             .iter()
-            .any(|i| matches!(i, Item::FunctionCallOutput(o) if o.call_id == "gone")),
+            .any(|r| matches!(&r.item, Item::FunctionCallOutput(o) if o.call_id == "gone")),
         "begin_turn working set is Surface, not the raw log"
     );
 
@@ -1677,7 +1691,7 @@ async fn compact_then_send_message_matches_run_with_turn() {
         pipeline.persisted_prefix_len()
     );
 
-    items.push(user_text("after compact"));
+    items.push(WorkingRow::pending(user_text("after compact")));
     let user_commit = pipeline
         .commit_step(&session, &mut items)
         .expect("BLAST-user-commit: commit_step returned Err");
@@ -1721,7 +1735,7 @@ async fn compact_then_send_message_matches_run_with_turn() {
         .persist_item(&live)
         .expect("BLAST-added: persist_item at output_item.added");
     let sealed = assistant_text_item("hello after compact", "asst_after_compact");
-    items.push(sealed.clone());
+    items.push(WorkingRow::pending(sealed.clone()));
     let seal_commit = pipeline
         .commit_step(&session, &mut items)
         .expect("BLAST-seal-commit: commit_step returned Err");
@@ -1735,7 +1749,7 @@ async fn compact_then_send_message_matches_run_with_turn() {
     let sessions = test_sessions(&db_path);
     sessions.register_for_test(Session::resume(&db_path, &sid).unwrap());
     let session2 = Session::resume(&db_path, &sid).unwrap();
-    let mut prepared = session2.load_transcript().unwrap();
+    let mut prepared = session2.load_working_set().unwrap();
     let prefix_before_prepare = pipeline.persisted_prefix_len();
     prepare(
         &pipeline,
@@ -1749,8 +1763,8 @@ async fn compact_then_send_message_matches_run_with_turn() {
     .await
     .expect("BLAST-prepare_step after compact+user+assistant");
     assert_eq!(
-        prepared.last().map(litecode::types::item_text_preview),
-        items.last().map(litecode::types::item_text_preview),
+        prepared.last().map(|r| item_text_preview(&r.item)),
+        items.last().map(|r| item_text_preview(&r.item)),
         "BLAST-prepare_step: from_log overlay diverged. prefix_before={prefix_before_prepare} \
          prepared_len={} items_len={} cursor_now={}",
         prepared.len(),
@@ -1773,9 +1787,9 @@ async fn compact_then_agent_run_persists_assistant() {
     let session = Session::resume(&db_path, &sid).unwrap();
     let ctx = test_context(dir.path());
     let pipeline = ContextPipeline::new(&session, 10_000, ctx, dir.path().to_path_buf());
-    let mut transcript = pipeline.begin_turn(&session).unwrap();
-    transcript.push(user_text("after compact"));
-    let user_commit = pipeline.commit_step(&session, &mut transcript).unwrap();
+    let mut working = pipeline.begin_turn(&session).unwrap();
+    working.push(WorkingRow::pending(user_text("after compact")));
+    let user_commit = pipeline.commit_step(&session, &mut working).unwrap();
     assert!(
         !user_commit.discarded,
         "BLAST-agent-setup: user commit discarded"
@@ -1791,6 +1805,7 @@ async fn compact_then_agent_run_persists_assistant() {
         revert_k: Cell::new(None),
         execute_calls: Cell::new(0),
     };
+    let mut transcript = project_items(&working);
     let outcome = agent::run(&mut deps, &mut transcript).await;
     assert!(
         matches!(outcome, litecode::agent::TurnOutcome::Completed { .. }),
@@ -1851,7 +1866,7 @@ fn compact_then_send_message_with_shadowed_tool_rows() {
     let mut items = pipeline
         .begin_turn(&session)
         .expect("BLAST-begin_turn with shadowed tools");
-    items.push(user_text("after compact"));
+    items.push(WorkingRow::pending(user_text("after compact")));
     let outcome = pipeline
         .commit_step(&session, &mut items)
         .expect("BLAST-user-commit with shadowed tools: commit_step Err");
@@ -1881,7 +1896,7 @@ fn compact_then_send_message_with_shadowed_tool_rows() {
     assert_eq!(
         items
             .last()
-            .map(litecode::types::item_text_preview)
+            .map(|r| item_text_preview(&r.item))
             .as_deref(),
         Some("after compact"),
         "BLAST-working-set after commit {items:?}"

@@ -209,7 +209,7 @@ impl AgentDeps for AgentRuntime {
 
     fn persist_items(&self, items: &mut Vec<Item>) -> Result<bool> {
         let outcome = self.sessions.with_entry_store(&self.session_id, |s| {
-            Ok(self.context_pipeline.commit_step(s, items)?)
+            Ok(self.context_pipeline.commit_step_from_items(s, items)?)
         })?;
         if outcome.discarded {
             // 回退 shortened the log; do not append this turn's tail.

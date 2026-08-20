@@ -13,8 +13,8 @@ Empty assistants and unmatched `function_call_output`s stay on the log. Model / 
 _Avoid_: DELETE to “clean” the surface, treating a shorter projection as persist failure
 
 **seq**:
-The identity and order of one row in the session log. What is in the database is authoritative. Modules key, sort, and address rows by `seq`.
-_Avoid_: buffer index, live overlay id, `Item.id` as the row’s identity, a second in-memory cursor
+The identity and order of one row in the session log. What is in the database is authoritative. Modules key, sort, and address rows by `seq`. The persist working set carries that doorplate into the gate; a row without `seq` is an append. Do not use full-log JSON equality as identity.
+_Avoid_: buffer index, live overlay id, `Item.id` as the row’s identity, a second in-memory cursor, scanning the whole log to decide “already persisted”
 
 **Surface**:
 Which log rows the model currently sees, and in what order. Compact may hide rows with replace; hidden rows keep their `seq`.
@@ -37,5 +37,5 @@ Writing `Item`s into the session log according to product intent (normally appen
 _Avoid_: persist ruler, prefix invalidation, `Discarded` meaning the user cancelled
 
 **从日志得到 Surface**:
-Walk log rows in `seq` order, apply append and replace, and you have the current Surface. A calculation, not a second store. Older notes say “fold” for this; prefer this phrase.
+Walk log rows in `seq` order, apply append and replace, and you have the current Surface. A calculation, not a second store. Open computes it once; the write gate updates it incrementally. Do not refold the whole log on every append. Older notes say “fold” for this; prefer this phrase.
 _Avoid_: fold as identity, fold as a fourth layer besides seq / Surface / Item

@@ -19,6 +19,7 @@ use crate::llm::LlmProvider;
 use crate::session::manager::SessionManager;
 use crate::session::store::Session;
 use crate::session::task_state::TaskReminders;
+use crate::session::working::{WorkingRow, align_working, project_items};
 use crate::types::{Item, Result, Transcript};
 
 pub use budget::{BudgetPolicy, ProviderPromptBaseline, manual_compact_eligible};
@@ -41,6 +42,7 @@ pub struct CommitStepOutcome {
 struct PipelineState {
     hot: HotView,
     prepared: Option<PreparedView>,
+    working: Vec<WorkingRow>,
     /// Model-visible working-set length — compact cut mapping only, not persist.
     surface_len: usize,
     /// Last observed log `MAX(seq)` (`-1` if empty). Discarded iff the table is shorter.
@@ -70,6 +72,7 @@ impl ContextPipeline {
             state: RefCell::new(PipelineState {
                 hot: HotView::new(),
                 prepared: None,
+                working: Vec::new(),
                 surface_len: 0,
                 log_max_seq: -1,
                 turn_id: None,
@@ -97,8 +100,13 @@ impl ContextPipeline {
         self.state.borrow_mut().prepared.take()
     }
 
+    /// Persist working set last synced from the session gate (and pending tail).
+    pub fn working_set(&self) -> Vec<WorkingRow> {
+        self.state.borrow().working.clone()
+    }
+
     /// Load turn working set from Session DB (§5.1 turn load — sole path).
-    pub fn begin_turn(&self, session: &Session) -> Result<Transcript> {
+    pub fn begin_turn(&self, session: &Session) -> Result<Vec<WorkingRow>> {
         self.begin_turn_with_id(session, None)
     }
 
@@ -106,17 +114,18 @@ impl ContextPipeline {
         &self,
         session: &Session,
         turn_id: Option<String>,
-    ) -> Result<Transcript> {
-        let items = session.load_transcript()?;
+    ) -> Result<Vec<WorkingRow>> {
+        let rows = session.load_working_set()?;
         session.reload_persisted_max_seq()?;
 
         let mut state = self.state.borrow_mut();
         state.turn_id = turn_id;
-        state.surface_len = items.len();
-        state.log_max_seq = session.max_seq()?;
-        state.hot.replace(items.clone());
+        state.surface_len = rows.len();
+        state.log_max_seq = session.persisted_max_seq();
+        state.working = rows.clone();
+        state.hot.replace(project_items(&rows));
         state.prepared = None;
-        Ok(items)
+        Ok(rows)
     }
 
     pub fn persisted_prefix_len(&self) -> usize {
@@ -128,6 +137,7 @@ impl ContextPipeline {
         state.turn_id = None;
         state.surface_len = 0;
         state.log_max_seq = -1;
+        state.working.clear();
         state.hot.replace(Vec::new());
         state.prepared = None;
     }
@@ -162,17 +172,37 @@ impl ContextPipeline {
             return Ok(false);
         }
 
-        if let Ok(from_log) = sessions.with_entry_store(session_id, |s| Ok(s.load_transcript()?))
-        {
-            *turn_items = from_log;
-            let max_seq = sessions.with_entry_store(session_id, |s| Ok(s.max_seq()?))?;
+        if let Ok((from_log, max_seq)) = sessions.with_entry_store(session_id, |s| {
+            s.reload_persisted_max_seq()?;
+            Ok((s.load_working_set()?, s.persisted_max_seq()))
+        }) {
+            let persisted_len = from_log.len();
+            let tail: Vec<Item> = if turn_items.len() > persisted_len {
+                turn_items[persisted_len..].to_vec()
+            } else {
+                Vec::new()
+            };
+            let mut rows = from_log;
+            for item in tail {
+                rows.push(WorkingRow::pending(item));
+            }
+            *turn_items = project_items(&rows);
             let mut state = self.state.borrow_mut();
-            state.surface_len = turn_items.len();
+            state.working = rows;
+            state.surface_len = persisted_len;
             state.log_max_seq = max_seq;
         }
 
         let mut transcript = turn_items.clone();
         let committed_len = self.state.borrow().surface_len;
+        let persisted_seqs: Vec<crate::session::event::Seq> = self
+            .state
+            .borrow()
+            .working
+            .iter()
+            .take(committed_len)
+            .filter_map(|row| row.seq)
+            .collect();
         let reminder = tail_reminders::build_compaction_content(task_state);
 
         let compacted = self
@@ -191,6 +221,7 @@ impl ContextPipeline {
                 prompt_baseline,
                 &mut transcript,
                 committed_len,
+                &persisted_seqs,
                 reminder.as_deref(),
                 step,
                 cancel,
@@ -202,22 +233,43 @@ impl ContextPipeline {
         }
 
         if compacted {
-            let (persisted_count, max_seq) = sessions.with_entry_store(session_id, |s| {
+            let (persisted, max_seq) = sessions.with_entry_store(session_id, |s| {
                 s.reload_persisted_max_seq()?;
-                Ok((s.load_transcript()?.len(), s.max_seq()?))
+                Ok((s.load_working_set()?, s.persisted_max_seq()))
             })?;
+            let mut rows = persisted;
+            for item in transcript.iter().skip(rows.len()) {
+                rows.push(WorkingRow::pending(item.clone()));
+            }
             let mut state = self.state.borrow_mut();
-            state.surface_len = persisted_count;
+            state.surface_len = rows.iter().filter(|r| r.seq.is_some()).count();
             state.log_max_seq = max_seq;
+            state.working = rows;
+        } else {
+            let mut rows = self.state.borrow().working.clone();
+            let valid_call_ids: std::collections::HashSet<String> = rows
+                .iter()
+                .filter_map(|row| match &row.item {
+                    Item::FunctionCall(fc) => Some(fc.call_id.clone()),
+                    _ => None,
+                })
+                .collect();
+            rows.retain(|row| {
+                !matches!(
+                    &row.item,
+                    Item::FunctionCallOutput(out) if !valid_call_ids.contains(&out.call_id)
+                )
+            });
+            self.state.borrow_mut().working = rows;
         }
 
         // Crash / force-kill recovery: dangling FunctionCalls must be padded on
         // the ephemeral LLM view so Chat providers accept the request. Do not
         // persist synthetic outputs as `detail` — the disk keeps the hanging
         // FunctionCall until a real result or abort seal.
-        *turn_items = transcript.clone();
+        *turn_items = project_items(&self.state.borrow().working);
 
-        let mut llm_items = transcript;
+        let mut llm_items = turn_items.clone();
         Session::pad_unanswered_calls(&mut llm_items);
         crate::runtime::project_llm_input_for_model(&mut llm_items, model);
 
@@ -236,20 +288,33 @@ impl ContextPipeline {
 
     /// Persist item delta since the last commit.
     ///
-    /// On success, orphan `FunctionCallOutput`s are removed from `items` (same
-    /// set the store deleted from DB). On commit failure, `items` is unchanged.
+    /// On success, orphan `FunctionCallOutput`s are removed from `rows` (same
+    /// set the store dropped from the in-memory working set). On commit failure,
+    /// `rows` is unchanged.
     pub fn commit_step(
+        &self,
+        session: &Session,
+        rows: &mut Vec<WorkingRow>,
+    ) -> Result<CommitStepOutcome> {
+        self.commit_step_with_turn(session, rows, "")
+    }
+
+    pub fn commit_step_from_items(
         &self,
         session: &Session,
         items: &mut Vec<Item>,
     ) -> Result<CommitStepOutcome> {
-        self.commit_step_with_turn(session, items, "")
+        let mut rows = self.state.borrow().working.clone();
+        align_working(&mut rows, items);
+        let outcome = self.commit_step(session, &mut rows)?;
+        *items = project_items(&rows);
+        Ok(outcome)
     }
 
     pub fn commit_step_with_turn(
         &self,
         session: &Session,
-        items: &mut Vec<Item>,
+        rows: &mut Vec<WorkingRow>,
         turn_id: &str,
     ) -> Result<CommitStepOutcome> {
         let expected_max_seq = self.state.borrow().log_max_seq;
@@ -262,13 +327,14 @@ impl ContextPipeline {
             }
         };
         let outcome =
-            session.commit_turn_delta_with_orphan_cleanup(items, &[], expected_max_seq, &tid)?;
+            session.commit_turn_delta_with_orphan_cleanup(rows, &[], expected_max_seq, &tid)?;
         match outcome {
             crate::session::store::CommitDeltaOutcome::Discarded => {
                 let mut state = self.state.borrow_mut();
-                state.surface_len = items.len();
-                state.log_max_seq = session.max_seq().unwrap_or(-1);
-                state.hot.replace(items.clone());
+                state.working = rows.clone();
+                state.surface_len = rows.len();
+                state.log_max_seq = session.persisted_max_seq();
+                state.hot.replace(project_items(rows));
                 state.prepared = None;
                 Ok(CommitStepOutcome {
                     committed: false,
@@ -278,9 +344,10 @@ impl ContextPipeline {
             }
             crate::session::store::CommitDeltaOutcome::Applied { preview, mutated } => {
                 let mut state = self.state.borrow_mut();
-                state.surface_len = items.len();
-                state.log_max_seq = session.max_seq().unwrap_or(-1);
-                state.hot.replace(items.clone());
+                state.working = rows.clone();
+                state.surface_len = rows.len();
+                state.log_max_seq = session.persisted_max_seq();
+                state.hot.replace(project_items(rows));
                 if !mutated {
                     return Ok(CommitStepOutcome::default());
                 }

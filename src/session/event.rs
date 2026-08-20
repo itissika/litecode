@@ -5,7 +5,8 @@ use serde_json::Value;
 
 use crate::types::{Item, LitecodeError, Result, item_text_preview};
 
-use super::surface::{Surface, SurfaceOp, fold_surface};
+use crate::authority::responses::MessageItem;
+use super::surface::{Surface, SurfaceOp, apply_plan, plan_surface};
 
 /// Monotonic log position. Never rewritten, never reused.
 pub type Seq = u64;
@@ -123,10 +124,11 @@ impl EventDraft {
     }
 }
 
-/// In-memory append-only log. Persistence is a later ticket.
+/// In-memory append-only log with an incremental surface.
 #[derive(Debug, Clone, Default)]
 pub struct EventLog {
     events: Vec<SessionEvent>,
+    surface: Surface,
 }
 
 impl EventLog {
@@ -134,12 +136,17 @@ impl EventLog {
         Self::default()
     }
 
-    pub fn from_events(events: Vec<SessionEvent>) -> Self {
-        Self { events }
+    pub fn from_events(events: Vec<SessionEvent>) -> Result<Self> {
+        let surface = super::surface::fold_surface(&events)?;
+        Ok(Self { events, surface })
     }
 
     pub fn events(&self) -> &[SessionEvent] {
         &self.events
+    }
+
+    pub fn surface(&self) -> &Surface {
+        &self.surface
     }
 
     pub fn next_seq(&self) -> Seq {
@@ -148,102 +155,63 @@ impl EventLog {
 
     /// Assign `seq`, freeze `data` as JSON, validate surface transfer. Failed drafts do not enter.
     pub fn append(&mut self, draft: EventDraft) -> Result<&SessionEvent> {
-        if matches!(&draft.event_type, EventType::Unknown(_)) && !draft.ignorable {
-            return Err(LitecodeError::InvalidSessionEvent(format!(
-                "unknown type `{}` is not ignorable",
-                draft.event_type.as_str()
-            )));
-        }
-
-        let frozen: Value = serde_json::from_str(&draft.data.to_string())?;
-
-        if draft.event_type.is_surface_eligible() {
-            if draft.surface_op.is_none() {
-                return Err(LitecodeError::InvalidSessionEvent(
-                    "surface-eligible event must carry surface_op".into(),
-                ));
-            }
-            serde_json::from_value::<Item>(frozen.clone()).map_err(|e| {
-                LitecodeError::InvalidSessionEvent(format!("surface data is not an Item: {e}"))
-            })?;
-        } else if draft.surface_op.is_some() {
-            return Err(LitecodeError::InvalidSessionEvent(
-                "log-only event must not carry surface_op".into(),
-            ));
-        }
-
         let seq = self.next_seq();
-        let event = SessionEvent {
-            seq,
-            time: draft.time,
-            event_type: draft.event_type,
-            data: frozen,
-            surface_op: draft.surface_op,
-            source_seqs: draft.source_seqs,
-            ignorable: draft.ignorable,
-        };
-
-        validate_surface_transfer(&self.events, &event)?;
+        let event = finalize_draft(seq, draft)?;
+        if let Some(plan) = plan_surface(&self.surface, &event)? {
+            apply_plan(&mut self.surface, plan);
+        }
         self.events.push(event);
         Ok(self.events.last().expect("just pushed"))
     }
 }
 
-fn validate_surface_transfer(existing: &[SessionEvent], incoming: &SessionEvent) -> Result<()> {
-    let Some(op) = incoming.surface_op.as_ref() else {
-        return Ok(());
-    };
-    let surface = fold_surface(existing)?;
-    match op {
-        SurfaceOp::Append => Ok(()),
-        SurfaceOp::Replace { start, end } => {
-            let shadowed = shadowed_nodes(&surface, *start, *end)?;
-            let Some(sources) = incoming.source_seqs.as_ref() else {
-                return Err(LitecodeError::InvalidSessionEvent(
-                    "replace requires source_seqs covering shadowed surface nodes".into(),
-                ));
-            };
-            for seq in &shadowed {
-                if !sources.contains(seq) {
-                    return Err(LitecodeError::InvalidSessionEvent(format!(
-                        "source_seqs missing shadowed seq {seq}"
-                    )));
-                }
-            }
-            Ok(())
-        }
+/// Freeze a draft at `seq` without folding. Does not mutate any log.
+pub fn finalize_draft(seq: Seq, draft: EventDraft) -> Result<SessionEvent> {
+    if matches!(&draft.event_type, EventType::Unknown(_)) && !draft.ignorable {
+        return Err(LitecodeError::InvalidSessionEvent(format!(
+            "unknown type `{}` is not ignorable",
+            draft.event_type.as_str()
+        )));
     }
-}
 
-pub(crate) fn shadowed_nodes(surface: &Surface, start: Seq, end: Seq) -> Result<Vec<Seq>> {
-    let start_i = surface
-        .nodes
-        .iter()
-        .position(|s| *s == start)
-        .ok_or_else(|| {
-            LitecodeError::InvalidSessionEvent(format!("replace start {start} is not on surface"))
+    let frozen: Value = serde_json::from_str(&draft.data.to_string())?;
+
+    if draft.event_type.is_surface_eligible() {
+        if draft.surface_op.is_none() {
+            return Err(LitecodeError::InvalidSessionEvent(
+                "surface-eligible event must carry surface_op".into(),
+            ));
+        }
+        serde_json::from_value::<Item>(frozen.clone()).map_err(|e| {
+            LitecodeError::InvalidSessionEvent(format!("surface data is not an Item: {e}"))
         })?;
-    let end_i = surface
-        .nodes
-        .iter()
-        .position(|s| *s == end)
-        .ok_or_else(|| {
-            LitecodeError::InvalidSessionEvent(format!("replace end {end} is not on surface"))
-        })?;
-    if start_i > end_i {
+    } else if draft.surface_op.is_some() {
         return Err(LitecodeError::InvalidSessionEvent(
-            "replace start is after end on surface".into(),
+            "log-only event must not carry surface_op".into(),
         ));
     }
-    Ok(surface.nodes[start_i..=end_i].to_vec())
+
+    Ok(SessionEvent {
+        seq,
+        time: draft.time,
+        event_type: draft.event_type,
+        data: frozen,
+        surface_op: draft.surface_op,
+        source_seqs: draft.source_seqs,
+        ignorable: draft.ignorable,
+    })
 }
 
 pub fn item_from_event(event: &SessionEvent) -> Result<Item> {
     serde_json::from_value(event.data.clone()).map_err(Into::into)
 }
 
+pub fn skip_empty_assistant_item(item: &Item) -> bool {
+    matches!(item, Item::Message(MessageItem::Output(_))) && item_text_preview(item).is_empty()
+}
+
 pub fn skip_empty_assistant(event: &SessionEvent, item: &Item) -> bool {
-    matches!(event.event_type, EventType::ItemAssistant) && item_text_preview(item).is_empty()
+    matches!(event.event_type, EventType::ItemAssistant) && skip_empty_assistant_item(item)
 }
 
 /// Unmatched tool output: omit from Surface Item[] like empty assistants. Do not DELETE the row.

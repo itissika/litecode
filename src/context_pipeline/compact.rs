@@ -7,6 +7,7 @@ use crate::llm::{LlmProvider, ModelRequest};
 use crate::runtime::observer::{
     CompactionFailKind, CompactionStage, CompactionTrigger, InternalEvent,
 };
+use crate::session::event::Seq;
 use crate::session::manager::SessionManager;
 use crate::types::{LitecodeError, Result, Transcript, item_text_preview, user_text};
 
@@ -53,6 +54,12 @@ impl CompactPolicy {
         }
         let prompt_baseline = ProviderPromptBaseline::default();
         let prefix_len = transcript.len();
+        let persisted_seqs: Vec<Seq> = sessions.with_entry_store(session_id, |s| {
+            Ok(s.load_working_set()?
+                .into_iter()
+                .filter_map(|row| row.seq)
+                .collect())
+        })?;
         let reminder = sessions
             .with_entry_task_state(session_id, |state| {
                 Ok(crate::context_pipeline::tail_reminders::build_compaction_content(state))
@@ -71,6 +78,7 @@ impl CompactPolicy {
             &prompt_baseline,
             transcript,
             prefix_len,
+            &persisted_seqs,
             reminder.as_deref(),
             cancel,
             CompactionTrigger::Manual,
@@ -107,6 +115,7 @@ impl CompactPolicy {
         prompt_baseline: &ProviderPromptBaseline,
         transcript: &mut Transcript,
         persisted_prefix_len: usize,
+        persisted_seqs: &[Seq],
         reminder: Option<&str>,
         step: u64,
         cancel: &CancellationToken,
@@ -175,6 +184,7 @@ impl CompactPolicy {
                 prompt_baseline,
                 transcript,
                 persisted_prefix_len,
+                persisted_seqs,
                 reminder,
                 cancel,
                 CompactionTrigger::Auto,
@@ -211,6 +221,7 @@ impl CompactPolicy {
         prompt_baseline: &ProviderPromptBaseline,
         transcript: &mut Transcript,
         persisted_prefix_len: usize,
+        persisted_seqs: &[Seq],
         reminder: Option<&str>,
         cancel: &CancellationToken,
         trigger: CompactionTrigger,
@@ -240,29 +251,32 @@ impl CompactPolicy {
             return Ok(false);
         };
 
-        // Pi firstKept: map in-memory cut → original DB detail seq. Compact
-        // only the persisted prefix; the uncommitted tail is restored after.
-        let kept_from_seq = sessions.with_entry_store(session_id, |s| {
-            let seqs = s.model_surface_seqs()?;
-            if seqs.len() != persisted_prefix_len {
-                return Err(LitecodeError::ToolExecution(format!(
-                    "compact cut map: persisted prefix len {persisted_prefix_len} != DB working set {}",
-                    seqs.len()
-                ))
-                .into());
-            }
-            let seq = seqs.get(cut).ok_or_else(|| {
-                LitecodeError::ToolExecution(format!(
-                    "compact cut {cut} out of range (persisted prefix len={})",
-                    seqs.len()
-                ))
-            })?;
-            Ok(*seq as i64)
-        });
-        let kept_from_seq = match kept_from_seq {
-            Ok(seq) => seq,
-            Err(e) => {
+        // Map in-memory cut → original DB seq from the persist working set.
+        if persisted_seqs.len() != persisted_prefix_len {
+            let err = LitecodeError::ToolExecution(format!(
+                "compact cut map: persisted prefix len {persisted_prefix_len} != working seqs {}",
+                persisted_seqs.len()
+            ));
+            *transcript = snapshot;
+            emit_compact_lifecycle(
+                sessions,
+                session_id,
+                trigger,
+                CompactionStage::Failed,
+                operation_id,
+                Some(CompactionFailKind::Failed),
+                Some(err.to_string()),
+            );
+            return Err(err.into());
+        }
+        let kept_from_seq = match persisted_seqs.get(cut).copied() {
+            Some(seq) => seq as i64,
+            None => {
                 *transcript = snapshot;
+                let err = LitecodeError::ToolExecution(format!(
+                    "compact cut {cut} out of range (persisted prefix len={})",
+                    persisted_seqs.len()
+                ));
                 emit_compact_lifecycle(
                     sessions,
                     session_id,
@@ -270,9 +284,9 @@ impl CompactPolicy {
                     CompactionStage::Failed,
                     operation_id,
                     Some(CompactionFailKind::Failed),
-                    Some(e.to_string()),
+                    Some(err.to_string()),
                 );
-                return Err(e.into());
+                return Err(err.into());
             }
         };
 
