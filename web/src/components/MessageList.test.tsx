@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MessageList, ProcessGroup, rowsToNodes } from "./MessageList";
 import type { ChatRow } from "../api/adapter";
 import { useBashStore } from "../stores/bashStore";
+import { clearFoldCardOpen } from "./foldCardState";
 
 const grantPermission = vi.fn();
 
@@ -111,7 +112,7 @@ const liveReasoning: ChatRow = {
 };
 
 const sealedReasoning: ChatRow = {
-  seq: 1,
+  seq: 0,
   eventType: "item/assistant",
   surfaceOp: "append",
   streaming: false,
@@ -143,11 +144,49 @@ afterEach(() => {
   cleanup();
   grantPermission.mockClear();
   useBashStore.getState().reset();
+  clearFoldCardOpen("session-1");
   const slice = turnState.byId.get("session-1");
   if (slice) {
     slice.compacting = false;
     slice.turnPhase = null;
   }
+});
+
+describe("MessageList G5 historical FoldCard", () => {
+  it("does not open a completed process group because the session is running", () => {
+    const completedReasoning: ChatRow = {
+      ...sealedReasoning,
+      seq: 0,
+    };
+    const completedTool: ChatRow = {
+      seq: 2,
+      eventType: "item/tool_call",
+      surfaceOp: "append",
+      streaming: false,
+      item: {
+        type: "function_call",
+        id: "fc_hist",
+        call_id: "call_hist",
+        name: "grep",
+        arguments: "{\"pattern\":\"foo\"}",
+        status: "completed",
+      },
+    };
+    render(
+      <MessageList
+        messages={[completedReasoning, completedTool]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    const header = screen.getByRole("button", { name: /1 reasoning, 1 tool/i });
+    expect(header.getAttribute("aria-expanded")).toBe("false");
+  });
 });
 
 describe("MessageList process group across seal", () => {
@@ -195,7 +234,9 @@ describe("ProcessGroup header buckets", () => {
     const rows: ChatRow[] = [
       liveReasoning,
       {
-        id: "fc_bash",
+        seq: 10,
+        eventType: "item/tool_call",
+        surfaceOp: "append",
         streaming: false,
         item: {
           type: "function_call",
@@ -207,7 +248,9 @@ describe("ProcessGroup header buckets", () => {
         },
       },
       {
-        id: "fc_edit",
+        seq: 11,
+        eventType: "item/tool_call",
+        surfaceOp: "append",
         streaming: false,
         item: {
           type: "function_call",
@@ -220,7 +263,9 @@ describe("ProcessGroup header buckets", () => {
       },
       liveTool,
       {
-        id: "fc_wait",
+        seq: 12,
+        eventType: "item/tool_call",
+        surfaceOp: "append",
         streaming: false,
         item: {
           type: "function_call",
@@ -232,7 +277,7 @@ describe("ProcessGroup header buckets", () => {
         },
       },
     ];
-    const nodes = rowsToNodes(rows, true);
+    const nodes = rowsToNodes(rows);
     const now = Date.now();
     useBashStore.getState().applySnapshot("session-1", {
       jobs: [],

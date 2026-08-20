@@ -4,11 +4,19 @@
 
 **Blocked by:** 06: 前端唯一 Map&lt;seq, Event&gt;
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `processGroupStreaming` / `isToolCallLive` 无 `turnActive`；输入是本组是否有 `in_progress` 的 seq（D1、D2）
-- [ ] `ItemBubble` 不以 session `isRunning` 为 streaming 源（D3）；禁止 `isRunning && isLastBubble`
-- [ ] cut 不 `push` 进上一 assistant 气泡（D5）；气泡 key = 组内 `min(seq)`，无 `assistant-after:user:`（D4）
-- [ ] FoldCard `streaming` 不回落到「turn 还在跑」（D6）
-- [ ] 探针：历史 completed process + `sessionRunning=true` → 推导 streaming false（G5）
-- [ ] D1–D6 清零
+- [x] `processGroupStreaming` / `isToolCallLive` 无 `turnActive`；输入是本组是否有 `in_progress` 的 seq（D1、D2）
+- [x] `ItemBubble` 不以 session `isRunning` 为 streaming 源（D3）；禁止 `isRunning && isLastBubble`
+- [x] cut 不 `push` 进上一 assistant 气泡（D5）；气泡 key = 组内 `min(seq)`，无 `assistant-after:user:`（D4）
+- [x] FoldCard `streaming` 不回落到「turn 还在跑」（D6）
+- [x] 探针：历史 completed process + `sessionRunning=true` → 推导 streaming false（G5）
+- [x] D1–D6 清零
+
+## Answer
+
+Live/FoldCard 只看本组 seq 的 `in_progress`（`row.streaming` 或 Item status），不再吃 session `isRunning` / `turnActive`。compact replace 单独成屏障；气泡虚拟 key 是组内 `min(seq)`。G5：历史 completed process 在 session 仍 running 时 FoldCard 保持收起。D 类死亡清单：`web/src/api/session-seq-d-death-list.test.ts`。
+
+## Comments
+
+`isRunning` 仍只用于禁用 Revert files 与空 subagent 文案，不当 streaming 源。08 再补 seq-at-added 流式。

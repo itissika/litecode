@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
 import { rowsToNodes, groupNodes, NodeView, ProcessGroup } from "./MessageList";
+import { processGroupStreaming } from "./toolCallStatus";
 import { displayMessages, useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
 import { useSessionStore } from "../stores/sessionStore";
@@ -35,7 +36,7 @@ export function SubagentViewport({
   const openFile = useEditorStore((s) => s.openFile);
 
   const isRunning = runState === "running" || runState === "cancelling";
-  const nodes = rowsToNodes(messages, isRunning);
+  const nodes = rowsToNodes(messages);
   const groups = groupNodes(nodes);
 
   if (messages.length === 0 && !isRunning) {
@@ -59,7 +60,9 @@ export function SubagentViewport({
           <ProcessGroup
             key={`proc-${gi}`}
             nodes={group.nodes}
-            streaming={isRunning}
+            streaming={processGroupStreaming({
+              hasInProgress: group.nodes.some((n) => n.streaming),
+            })}
             sessionId={childSessionId}
             groupIndex={gi}
           />

@@ -166,6 +166,10 @@ export function markFunctionCallsFailed(items: Item[]): Item[] {
   );
 }
 
+export function isInProgressItem(item: Item): boolean {
+  return "status" in item && (item as { status?: string }).status === "in_progress";
+}
+
 export function isFunctionCall(item: Item): item is FunctionCallItem {
   return item.type === "function_call" && "call_id" in item && "name" in item;
 }

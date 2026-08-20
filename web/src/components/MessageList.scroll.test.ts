@@ -62,30 +62,23 @@ const sealedTool: ChatRow = {
 };
 
 describe("bubbleIdentity", () => {
-  it("keeps the assistant bubble key when a later tool seals first", () => {
+  it("keys each bubble by min(seq) in the group", () => {
     const before = groupRowsForBubbles([userRow, liveReasoning, liveTool]);
     const after = groupRowsForBubbles([userRow, sealedTool, liveReasoning]);
 
     expect(before).toHaveLength(2);
     expect(after).toHaveLength(2);
     expect(bubbleIdentity(after, 1)).toBe(bubbleIdentity(before, 1));
-    expect(bubbleIdentity(before, 1)).toBe(
-      `assistant-after:user:${projectionRowKey(userRow)}`,
-    );
+    expect(bubbleIdentity(before, 0)).toBe(String(userRow.seq));
+    expect(bubbleIdentity(before, 1)).toBe(String(liveReasoning.seq));
   });
 
-  it("does not use the leading assistant row as the virtual key", () => {
+  it("does not use a later assistant seq as the virtual key", () => {
     const grouped = groupRowsForBubbles([userRow, liveReasoning, liveTool]);
-    expect(bubbleIdentity(grouped, 1)).not.toBe(projectionRowKey(liveReasoning));
     expect(bubbleIdentity(grouped, 1)).not.toBe(projectionRowKey(liveTool));
   });
 
-  it("keys a user bubble by the user row itself", () => {
-    const grouped = groupRowsForBubbles([userRow, liveReasoning]);
-    expect(bubbleIdentity(grouped, 0)).toBe(`user:${projectionRowKey(userRow)}`);
-  });
-
-  it("keys a system-reminder as a notice, not a user bubble", () => {
+  it("gives reminder and following assistant distinct min(seq) keys", () => {
     const reminder: ChatRow = {
       seq: 9,
       eventType: "item/user",
@@ -105,13 +98,11 @@ describe("bubbleIdentity", () => {
     };
     const grouped = groupRowsForBubbles([userRow, reminder, liveReasoning]);
     expect(grouped).toHaveLength(3);
-    expect(bubbleIdentity(grouped, 1)).toBe(`notice:${projectionRowKey(reminder)}`);
-    expect(bubbleIdentity(grouped, 2)).toBe(
-      `assistant-after:notice:${projectionRowKey(reminder)}`,
-    );
+    expect(bubbleIdentity(grouped, 1)).toBe(String(reminder.seq));
+    expect(bubbleIdentity(grouped, 2)).toBe(String(liveReasoning.seq));
   });
 
-  it("does not reuse assistant-after:user keys across a reminder split", () => {
+  it("does not collide keys across a reminder split", () => {
     const reminder: ChatRow = {
       seq: 9,
       eventType: "item/user",
@@ -137,10 +128,10 @@ describe("bubbleIdentity", () => {
     ]);
     const keys = grouped.map((_, i) => bubbleIdentity(grouped, i));
     expect(keys).toEqual([
-      `user:${projectionRowKey(userRow)}`,
-      `assistant-after:user:${projectionRowKey(userRow)}`,
-      `notice:${projectionRowKey(reminder)}`,
-      `assistant-after:notice:${projectionRowKey(reminder)}`,
+      String(userRow.seq),
+      String(liveReasoning.seq),
+      String(reminder.seq),
+      String(liveTool.seq),
     ]);
     expect(new Set(keys).size).toBe(keys.length);
   });
@@ -160,22 +151,27 @@ const compactCut = (seq: number): ChatRow => ({
 });
 
 describe("groupRowsForBubbles compact cut", () => {
-  it("does not turn the checkpoint into its own bubble", () => {
+  it("renders the replace event as its own barrier, not the next user bubble", () => {
     const grouped = groupRowsForBubbles([compactCut(0), userRow]);
-    expect(grouped).toHaveLength(1);
-    expect(grouped[0]?.map((r) => r.seq)).toEqual([0, userRow.seq]);
-    expect(bubbleIdentity(grouped, 0)).toBe(`user:${projectionRowKey(userRow)}`);
+    expect(grouped).toHaveLength(2);
+    expect(grouped[0]?.every(isCompactCutRow)).toBe(true);
+    expect(grouped[1]?.map((r) => r.seq)).toEqual([userRow.seq]);
+    expect(bubbleIdentity(grouped, 0)).toBe("0");
+    expect(bubbleIdentity(grouped, 1)).toBe(String(userRow.seq));
   });
 
-  it("keeps a cut between assistant items inside one bubble", () => {
+  it("does not push a cut into the previous assistant bubble", () => {
     const grouped = groupRowsForBubbles([
       liveReasoning,
       compactCut(5),
       liveTool,
     ]);
-    expect(grouped).toHaveLength(1);
-    expect(grouped[0]?.some(isCompactCutRow)).toBe(true);
-    expect(bubbleIdentity(grouped, 0)).toBe("assistant-lead");
+    expect(grouped).toHaveLength(3);
+    expect(grouped[1]?.every(isCompactCutRow)).toBe(true);
+    expect(grouped[0]?.map((r) => r.seq)).toEqual([liveReasoning.seq]);
+    expect(grouped[2]?.map((r) => r.seq)).toEqual([liveTool.seq]);
+    expect(bubbleIdentity(grouped, 0)).toBe(String(liveReasoning.seq));
+    expect(bubbleIdentity(grouped, 1)).toBe("5");
   });
 });
 
@@ -209,7 +205,7 @@ describe("locateBashTool", () => {
       },
     };
     const bubbles = groupRowsForBubbles([userRow, liveReasoning, bashRow]);
-    const found = locateBashTool(bubbles, "c1", "session-1", true);
+    const found = locateBashTool(bubbles, "c1", "session-1");
     expect(found?.bubbleIndex).toBe(1);
     expect(found?.foldIds[0]).toMatch(/:process:0$/);
     expect(found?.foldIds[1]).toMatch(/:tool:c1$/);

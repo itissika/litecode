@@ -9,6 +9,7 @@ import {
   isFunctionCall,
   isFunctionCallOutput,
   isHumanUserRow,
+  isInProgressItem,
   isMessageItem,
   isReasoningItem,
   isSystemReminderItem,
@@ -103,22 +104,26 @@ function outputsByCallId(items: Item[]): Map<string, FunctionCallOutputItem> {
   return map;
 }
 
+function rowInProgress(row: ChatRow): boolean {
+  return row.streaming === true || isInProgressItem(row.item);
+}
+
 /** Flatten ChatRows into render nodes; pair function_call + output by call_id. Only reads `row.item`. */
-export function rowsToNodes(rows: ChatRow[], turnActive = false): RenderNode[] {
+export function rowsToNodes(rows: ChatRow[]): RenderNode[] {
   const items = rows.map((r) => r.item);
   const outputs = outputsByCallId(items);
   // Per-output streaming state, so a tool node's flag reflects its result row too.
   const streamingByCallId = new Map<string, boolean>();
   for (const row of rows) {
     if (isFunctionCallOutput(row.item)) {
-      streamingByCallId.set(row.item.call_id, row.streaming === true);
+      streamingByCallId.set(row.item.call_id, rowInProgress(row));
     }
   }
   const nodes: RenderNode[] = [];
 
   for (const row of rows) {
     const item = row.item;
-    const streaming = row.streaming === true;
+    const streaming = rowInProgress(row);
     const key = projectionRowKey(row);
     if (isCompactCutRow(row)) {
       nodes.push({ kind: "compact_cut", key, streaming: false });
@@ -136,9 +141,7 @@ export function rowsToNodes(rows: ChatRow[], turnActive = false): RenderNode[] {
         output,
         key,
         streaming: isToolCallLive(
-          !!output,
           streaming,
-          turnActive,
           streamingByCallId.get(item.call_id) === true,
         ),
       });
@@ -429,7 +432,7 @@ function ItemBubbleImpl({
   showRevert: boolean;
   isRunning: boolean;
   sessionId: string;
-  /** Stable identity of this bubble (projection key of its first row). Namespaces
+  /** Stable identity of this bubble (`min(seq)`). Namespaces
    *  child FoldCard open-state so it survives virtual-list remounts. */
   bubbleKey?: string;
   showRevertFiles?: boolean;
@@ -441,9 +444,9 @@ function ItemBubbleImpl({
     return <SystemReminderMark />;
   }
   const isUser = first != null && isHumanUserRow(first);
-  const nodes = rowsToNodes(rows, isRunning);
+  const nodes = rowsToNodes(rows);
   const streaming =
-    rows.some((r) => r.streaming === true) || nodes.some((n) => n.streaming);
+    rows.some((r) => rowInProgress(r)) || nodes.some((n) => n.streaming);
   const hasContent = nodes.length > 0 || !streaming;
   const groups = groupNodes(nodes);
 
@@ -457,12 +460,8 @@ function ItemBubbleImpl({
         ));
       }
       if (group.type === "process") {
-        const hasTextAfter = groups
-          .slice(gi + 1)
-          .some((g) => g.type === "output");
         const groupLive = processGroupStreaming({
-          hasTextAfter,
-          turnActive: isRunning,
+          hasInProgress: group.nodes.some((n) => n.streaming),
         });
         return (
           <ProcessGroup
@@ -551,22 +550,13 @@ function firstContentRow(group: ChatRow[]): ChatRow | undefined {
   return group.find((row) => !isCompactCutRow(row));
 }
 
-function splitLeadingCuts(group: ChatRow[]): {
-  cutsBefore: ChatRow[];
-  rows: ChatRow[];
-} {
-  let i = 0;
-  while (i < group.length && isCompactCutRow(group[i]!)) i += 1;
-  return { cutsBefore: group.slice(0, i), rows: group.slice(i) };
-}
-
 /**
  * Group consecutive rows for display: each user message is its own bubble;
  * consecutive non-user Items (live shells or sealed) coalesce into one assistant bubble
  * so process/output grouping still works across Item atoms.
  *
- * Compact cuts sit between items: leading cuts ride on the next bubble (between
- * bubbles); a cut between assistant atoms stays inside that bubble.
+ * Compact replace is its own barrier (not pushed into the previous assistant
+ * bubble, not glued onto the next user bubble).
  */
 export function groupRowsForBubbles(rows: ChatRow[]): ChatRow[][] {
   const groups: ChatRow[][] = [];
@@ -581,17 +571,13 @@ export function groupRowsForBubbles(rows: ChatRow[]): ChatRow[][] {
 
   for (const row of rows) {
     if (isCompactCutRow(row)) {
-      current.push(row);
+      flush();
+      groups.push([row]);
       continue;
     }
     if (isHumanUserRow(row) || isSystemReminderItem(row.item)) {
-      if (current.length > 0 && current.every(isCompactCutRow)) {
-        groups.push([...current, row]);
-        current = [];
-      } else {
-        flush();
-        groups.push([row]);
-      }
+      flush();
+      groups.push([row]);
     } else {
       current.push(row);
     }
@@ -607,43 +593,15 @@ const COMPACTING_PENDING_KEY = "__compacting_pending__";
 const COMPACTING_LINE_HEIGHT = 22;
 
 /**
- * Stable virtual-item identity for a bubble.
- *
- * Must NOT be `projectionRowKey(firstRow)`: `orderSealedBeforeTransient`
- * can change which row leads an assistant group when a later tool seals
- * first. A key flip remounts the bubble at `estimateSize`, which is what
- * made the whole list jump while output was still streaming.
- *
- * Assistant bubbles are keyed by the nearest preceding user *or* system-
- * reminder bubble. Reminders split the list (user-role rows) so skipping
- * them in lookback would give two assistant groups the same
- * `assistant-after:user:…` key. Compact cuts are not bubbles and do not
- * affect identity.
+ * Stable virtual-item identity for a bubble: min(seq) in the group.
  */
 export function bubbleIdentity(bubbles: ChatRow[][], index: number): string {
-  const group = bubbles[index];
-  const first = firstContentRow(group ?? []) ?? group?.[0];
-  if (!first) return String(index);
-  if (isCompactCutRow(first)) {
-    return `compact:${projectionRowKey(first)}`;
+  const group = bubbles[index] ?? [];
+  let min: number | undefined;
+  for (const row of group) {
+    if (min === undefined || row.seq < min) min = row.seq;
   }
-  if (isSystemReminderItem(first.item)) {
-    return `notice:${projectionRowKey(first)}`;
-  }
-  if (isHumanUserRow(first)) {
-    return `user:${projectionRowKey(first)}`;
-  }
-  for (let i = index - 1; i >= 0; i--) {
-    const prev = firstContentRow(bubbles[i] ?? []) ?? bubbles[i]?.[0];
-    if (!prev) continue;
-    if (isSystemReminderItem(prev.item)) {
-      return `assistant-after:notice:${projectionRowKey(prev)}`;
-    }
-    if (isHumanUserRow(prev)) {
-      return `assistant-after:user:${projectionRowKey(prev)}`;
-    }
-  }
-  return "assistant-lead";
+  return min === undefined ? String(index) : String(min);
 }
 
 /** True when this user-detail anchor can file-revert (`k <= max` from snapshot). */
@@ -659,11 +617,10 @@ export function locateBashTool(
   bubbles: ChatRow[][],
   callId: string,
   sessionId: string,
-  turnActive: boolean,
 ): { bubbleIndex: number; foldIds: string[] } | null {
   for (let i = 0; i < bubbles.length; i++) {
     const rows = bubbles[i]!;
-    const groups = groupNodes(rowsToNodes(rows, turnActive));
+    const groups = groupNodes(rowsToNodes(rows));
     const bubbleKey = bubbleIdentity(bubbles, i);
     for (let gi = 0; gi < groups.length; gi++) {
       const grouped = groups[gi]!;
@@ -817,7 +774,7 @@ export const MessageList = memo(function MessageList({
   const revealBash = useCallback(
     (callId: string) => {
       setStick(false);
-      const located = locateBashTool(bubbles, callId, sessionId, isRunning);
+      const located = locateBashTool(bubbles, callId, sessionId);
       if (!located) return;
       for (const foldId of located.foldIds) requestFoldCardOpen(foldId);
       virtualizer.scrollToIndex(loader + located.bubbleIndex, {
@@ -837,7 +794,7 @@ export const MessageList = memo(function MessageList({
       };
       requestAnimationFrame(tick);
     },
-    [bubbles, isRunning, loader, sessionId, setStick, virtualizer],
+    [bubbles, loader, sessionId, setStick, virtualizer],
   );
   if (revealBashRef) revealBashRef.current = revealBash;
 
@@ -904,8 +861,8 @@ export const MessageList = memo(function MessageList({
             const group = bubbles[bubbleIndex];
             if (!group) return null;
 
-            const { cutsBefore, rows: contentRows } = splitLeadingCuts(group);
-            const first = contentRows[0];
+            const cutOnly = group.every(isCompactCutRow);
+            const first = firstContentRow(group);
             const firstIdx = first ? messages.indexOf(first) : -1;
             const sealed = first != null && first.seq >= 0;
             const isUser = first != null && isHumanUserRow(first);
@@ -925,12 +882,13 @@ export const MessageList = memo(function MessageList({
                 ref={virtualizer.measureElement}
                 style={itemStyle(virtualItem.start)}
               >
-                {cutsBefore.map((cut) => (
-                  <CompactCutMark key={projectionRowKey(cut)} />
-                ))}
-                {contentRows.length > 0 && (
+                {cutOnly
+                  ? group.map((cut) => (
+                      <CompactCutMark key={projectionRowKey(cut)} />
+                    ))
+                  : (
                   <ItemBubble
-                    rows={contentRows}
+                    rows={group}
                     userAnchorK={userAnchorK}
                     showRevert={showRevert}
                     showRevertFiles={showRevertFiles}

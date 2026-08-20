@@ -89,46 +89,30 @@ describe("deriveToolStatus", () => {
 });
 
 describe("isToolCallLive", () => {
-  it("stays live after early seal while turn is active and output is missing", () => {
-    expect(isToolCallLive(false, false, true)).toBe(true);
+  it("is not live when the call seq is sealed and output has not arrived", () => {
+    expect(isToolCallLive(false)).toBe(false);
   });
 
-  it("is not live after turn ends with sealed call and no output", () => {
-    expect(isToolCallLive(false, false, false)).toBe(false);
+  it("stays live while the call seq itself is in_progress", () => {
+    expect(isToolCallLive(true)).toBe(true);
   });
 
-  it("stops being live once output exists even if turn is still active", () => {
-    expect(isToolCallLive(true, false, true)).toBe(false);
+  it("stays live while the output seq is still streaming", () => {
+    expect(isToolCallLive(false, true)).toBe(true);
   });
 
-  it("stays live while the call row itself is still streaming", () => {
-    expect(isToolCallLive(false, true, false)).toBe(true);
+  it("is not live once both call and output seqs are sealed", () => {
+    expect(isToolCallLive(false, false)).toBe(false);
   });
 });
 
 describe("processGroupStreaming", () => {
-  it("stays open while turn runs and no text has followed yet", () => {
-    expect(
-      processGroupStreaming({ hasTextAfter: false, turnActive: true }),
-    ).toBe(true);
+  it("stays open while a seq in the group is in_progress", () => {
+    expect(processGroupStreaming({ hasInProgress: true })).toBe(true);
   });
 
-  it("collapses once an assistant text block follows the process group", () => {
-    expect(
-      processGroupStreaming({ hasTextAfter: true, turnActive: true }),
-    ).toBe(false);
-  });
-
-  it("collapses when the turn ends even without text after", () => {
-    expect(
-      processGroupStreaming({ hasTextAfter: false, turnActive: false }),
-    ).toBe(false);
-  });
-
-  it("stays collapsed when turn ended and text already followed", () => {
-    expect(
-      processGroupStreaming({ hasTextAfter: true, turnActive: false }),
-    ).toBe(false);
+  it("collapses when every seq in the group is sealed", () => {
+    expect(processGroupStreaming({ hasInProgress: false })).toBe(false);
   });
 });
 
