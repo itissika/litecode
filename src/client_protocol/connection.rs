@@ -50,7 +50,7 @@ fn operation_error(
             session_id,
             &session.project,
             &binding,
-            0,
+            -1,
             0,
             0,
             None,
@@ -854,8 +854,8 @@ pub async fn handle_jsonrpc(
         methods::BUFFER_LOAD => {
             #[derive(serde::Deserialize)]
             struct Params {
-                start: usize,
-                end: usize,
+                from_seq: crate::session::event::Seq,
+                to_seq: crate::session::event::Seq,
                 #[serde(default)]
                 session_id: String,
             }
@@ -875,12 +875,12 @@ pub async fn handle_jsonrpc(
                 }
             };
             let sid = resolve_sid(session, &params.session_id);
-            match session.materialize_range(&sid, params.start, params.end) {
+            match session.materialize_range(&sid, params.from_seq, params.to_seq) {
                 Ok(range) => {
                     for msg in session.take_outgoing_for(&sid) {
                         emit(sink, msg);
                     }
-                    let items_value = serde_json::to_value(&range.items).unwrap_or_default();
+                    let events_value = serde_json::to_value(&range.events).unwrap_or_default();
                     let subagent_bindings = session.child_bindings_for_parent(&sid);
                     emit(
                         sink,
@@ -888,12 +888,9 @@ pub async fn handle_jsonrpc(
                             id,
                             serde_json::json!({
                                 "session_id": sid,
-                                "start": params.start,
-                                "end": params.end,
-                                "items": items_value,
-                                "kinds": range.kinds,
-                                "indices": range.indices,
-                                "user_detail_before": range.user_detail_before,
+                                "from_seq": params.from_seq,
+                                "to_seq": params.to_seq,
+                                "events": events_value,
                                 "subagent_bindings": subagent_bindings,
                             }),
                         ))

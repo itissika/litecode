@@ -189,20 +189,19 @@ pub enum InternalEvent {
     PermissionAwaiting {
         awaiting: bool,
     },
-    /// Step delta persisted to DB; L2 bumps `buffer.revision` / `committed_end`.
+    /// Step delta persisted to DB; L2 bumps `buffer.revision` / `next_seq`.
     StepCommitted,
     /// Durable session preview (`last_message`) changed — fanout → lifecycle.
     SessionPreviewUpdated {
         preview: String,
         updated_at: i64,
     },
-    /// One Item was written to the buffer, with buffer_index and the full Item.
+    /// One log event was persisted. Identity is `seq`; payload is the Item.
     BufferItem {
-        buffer_index: usize,
+        seq: crate::session::event::Seq,
+        event_type: crate::session::event::EventType,
+        surface_op: Option<crate::session::surface::SurfaceOp>,
         item: crate::types::Item,
-        /// DB row `kind` (`detail` | `compact_checkpoint`) — lets the FE exclude
-        /// checkpoint rows from revert-anchor counting (2.2 / REV-11).
-        kind: Option<String>,
         /// When this item is a `subagent_launch` function_call (or its re-stamp),
         /// the durable child session id for FE subscribe/load.
         child_session_id: Option<String>,
@@ -213,9 +212,9 @@ pub enum InternalEvent {
         child_session_id: String,
     },
     BufferChanged {
-        len: usize,
+        last_seq: i64,
+        next_seq: u64,
         revision: u64,
-        committed_end: usize,
     },
     /// L2 broadcast subscriber lagged; session loop should re-bump buffer so
     /// dropped `StepCommitted` / seals can be healed from durable state.

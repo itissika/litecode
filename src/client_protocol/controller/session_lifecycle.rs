@@ -128,7 +128,7 @@ impl SessionController {
         let project_str = self.project.clone();
         let binding = self.session_binding(session_id);
         if let Some(proj) = self.projection_mut(session_id) {
-            proj.turn_committed_start = proj.committed_end;
+            proj.turn_committed_start = proj.next_seq as usize;
             proj.apply_turn_started(turn_id, step_max);
             proj.push_outgoing(project::session_snapshot(
                 proj.snapshot(&project_str, &binding),
@@ -235,9 +235,9 @@ impl SessionController {
 
         let binding = self.session_binding(&sid);
         let project = self.project.clone();
-        let buffer_len = self.sessions.entry_buffer_len(&sid);
+        let (last_seq, next_seq) = self.sessions.entry_wire_seq_cursor(&sid);
         let snapshot = project::buffer_snapshot(
-            &sid, &project, &binding, buffer_len, 0, buffer_len, None, None, None, 0, false,
+            &sid, &project, &binding, last_seq, next_seq, 0, None, None, None, 0, false,
         );
         self._workspace_outgoing.push(project::operation_result(
             OperationKind::NewSession,
@@ -282,7 +282,7 @@ impl SessionController {
             id,
             &project_str,
             &SessionBindingProjection::default(),
-            0,
+            -1,
             0,
             0,
             None,
@@ -515,11 +515,11 @@ impl SessionController {
     pub fn materialize_range(
         &self,
         session_id: &str,
-        start: usize,
-        end: usize,
+        from_seq: crate::session::event::Seq,
+        to_seq: crate::session::event::Seq,
     ) -> anyhow::Result<super::MaterializedRange> {
         self.projection(session_id)
             .ok_or_else(|| anyhow::anyhow!("no session bound"))?
-            .materialize_range(start, end)
+            .materialize_range(from_seq, to_seq)
     }
 }

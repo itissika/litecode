@@ -521,6 +521,48 @@ fn session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept() {
     );
 }
 
+/// Ticket 04: wire + observer identity is seq. Store/search needles wait for 05/08.
+#[test]
+fn session_seq_g4_wire_speaks_seq() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk_rs_files(&root.join("src/client_protocol"), &mut files);
+    files.push(root.join("src/runtime/observer.rs"));
+    files.sort();
+
+    let needles = [
+        "buffer_index",
+        "bufferIndex",
+        "kept_from_seq",
+        "checkpoint_seq",
+        "compact_checkpoint",
+        "committed_end",
+    ];
+    let mut hits = Vec::new();
+    for path in &files {
+        let contents = fs::read_to_string(path).unwrap_or_default();
+        let mut in_tests = false;
+        for (i, line) in contents.lines().enumerate() {
+            if line.trim() == "#[cfg(test)]" {
+                in_tests = true;
+            }
+            if in_tests || is_comment_line(line) {
+                continue;
+            }
+            for needle in needles {
+                if identifier_boundary_contains(line, needle) {
+                    hits.push(format!("{}:{}: `{needle}`", path.display(), i + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "wire/observer still speak buffer_index dialect:\n{}",
+        hits.join("\n")
+    );
+}
+
 #[test]
 fn death_list_dialect_tokens_absent_from_src() {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");

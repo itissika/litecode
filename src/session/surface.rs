@@ -178,9 +178,25 @@ mod tests {
         summary.source_seqs = Some(vec![0, 1]);
         log.append(summary).expect("replace");
 
+        let pre = fold_surface(&log.events()[..5]).expect("pre");
+        let shadowed = crate::session::event::shadowed_nodes(&pre, 0, 1).expect("shadowed");
+        assert_eq!(shadowed, vec![0, 1]);
+        assert_eq!(
+            &pre.nodes[shadowed.len()..],
+            &[2, 3, 4],
+            "cut is the shadowed/unshadowed surface boundary, not the log tail"
+        );
+
         let messages = derive_messages(log.events()).expect("derive_messages");
         let texts: Vec<_> = messages.iter().map(item_text_preview).collect();
         assert_eq!(texts, vec!["summary", "d2", "d3", "d4"]);
+        let after = fold_surface(log.events()).expect("after");
+        assert_eq!(after.nodes, vec![5, 2, 3, 4]);
+        assert_ne!(
+            after.nodes[0],
+            *shadowed.last().expect("non-empty"),
+            "replace seq is not the cut"
+        );
 
         let transcript = derive_transcript_items(log.events()).expect("transcript");
         let t: Vec<_> = transcript.iter().map(item_text_preview).collect();

@@ -217,9 +217,24 @@ pub struct LspNotification {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BufferState {
-    pub len: usize,
+    /// Highest persisted log seq, or `-1` when the log is empty.
+    pub last_seq: i64,
+    /// Next seq the allocator will assign (`last_seq + 1`, or `0` if empty).
+    pub next_seq: u64,
     pub revision: u64,
-    pub committed_end: usize,
+}
+
+/// One persisted log row as shipped on `buffer/item` and `buffer/load`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireBufferEvent {
+    pub seq: crate::session::event::Seq,
+    #[serde(rename = "type")]
+    pub event_type: crate::session::event::EventType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_op: Option<crate::session::surface::SurfaceOp>,
+    pub item: crate::types::Item,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -461,4 +476,23 @@ pub struct JsonRpcErrorBody {
 #[serde(rename_all = "snake_case")]
 pub enum TransportRequest {
     Quit,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffer_state_wire_is_seq_cursor_not_count_window() {
+        let json = serde_json::to_value(BufferState {
+            last_seq: 3,
+            next_seq: 4,
+            revision: 1,
+        })
+        .unwrap();
+        assert_eq!(json["last_seq"], 3);
+        assert_eq!(json["next_seq"], 4);
+        assert!(json.get("len").is_none());
+        assert!(json.get("committed_end").is_none());
+    }
 }

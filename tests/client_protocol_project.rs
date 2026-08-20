@@ -4,6 +4,8 @@ use litecode::client_protocol::protocol::{
     TurnEndReason, TurnTokenStats, WireEvent, WireTurnPhase, methods,
 };
 use litecode::runtime::observer::{InternalEvent, TurnPhase};
+use litecode::session::event::EventType;
+use litecode::session::surface::SurfaceOp;
 use litecode::types::{Item, user_text};
 
 fn sample_snapshot() -> litecode::client_protocol::protocol::SessionSnapshot {
@@ -24,7 +26,7 @@ fn sample_snapshot() -> litecode::client_protocol::protocol::SessionSnapshot {
         thinking_tier: "medium".into(),
         context_mode: "standard".into(),
     };
-    project::buffer_snapshot("s1", "/p", &binding, 0, 0, 0, turn, None, None, 0, false)
+    project::buffer_snapshot("s1", "/p", &binding, -1, 0, 0, turn, None, None, 0, false)
 }
 
 #[test]
@@ -106,9 +108,10 @@ fn buffer_item_projects_to_buffer_item_notification() {
     let item = user_text("hello");
     let msg = project::project(
         &InternalEvent::BufferItem {
-            buffer_index: 3,
+            seq: 3,
+            event_type: EventType::ItemUser,
+            surface_op: Some(SurfaceOp::Append),
             item: item.clone(),
-            kind: Some("detail".into()),
             child_session_id: None,
         },
         &snap,
@@ -116,8 +119,11 @@ fn buffer_item_projects_to_buffer_item_notification() {
     .unwrap();
     assert!(method_is(&msg, methods::BUFFER_ITEM));
     assert_eq!(msg["params"]["session_id"], "s1");
-    assert_eq!(msg["params"]["buffer_index"], 3);
-    assert_eq!(msg["params"]["kind"], "detail");
+    assert_eq!(msg["params"]["seq"], 3);
+    assert_eq!(msg["params"]["type"], "item/user");
+    assert_eq!(msg["params"]["surface_op"], "append");
+    assert!(msg["params"].get("buffer_index").is_none());
+    assert!(msg["params"].get("kind").is_none());
     assert!(msg["params"].get("child_session_id").is_none());
     let got: Item = serde_json::from_value(msg["params"]["item"].clone()).unwrap();
     assert_eq!(
@@ -132,9 +138,10 @@ fn buffer_item_includes_child_session_id_when_set() {
     let item = user_text("hello");
     let msg = project::project(
         &InternalEvent::BufferItem {
-            buffer_index: 1,
+            seq: 1,
+            event_type: EventType::ItemUser,
+            surface_op: Some(SurfaceOp::Append),
             item,
-            kind: None,
             child_session_id: Some("child-1".into()),
         },
         &snap,
@@ -145,22 +152,27 @@ fn buffer_item_includes_child_session_id_when_set() {
 }
 
 #[test]
-fn buffer_item_compact_checkpoint_kind_projects() {
+fn buffer_item_replace_projects_surface_op_and_cut() {
     let snap = sample_snapshot();
     let item = user_text("rolled-up");
     let msg = project::project(
         &InternalEvent::BufferItem {
-            buffer_index: 3,
+            seq: 3,
+            event_type: EventType::ItemUser,
+            surface_op: Some(SurfaceOp::Replace { start: 0, end: 2 }),
             item: item.clone(),
-            kind: Some("compact_checkpoint".into()),
             child_session_id: None,
         },
         &snap,
     )
     .unwrap();
     assert!(method_is(&msg, methods::BUFFER_ITEM));
-    assert_eq!(msg["params"]["buffer_index"], 3);
-    assert_eq!(msg["params"]["kind"], "compact_checkpoint");
+    assert_eq!(msg["params"]["seq"], 3);
+    assert_eq!(msg["params"]["type"], "item/user");
+    assert_eq!(msg["params"]["surface_op"]["op"], "replace");
+    assert_eq!(msg["params"]["surface_op"]["start"], 0);
+    assert_eq!(msg["params"]["surface_op"]["end"], 2);
+    assert!(msg["params"].get("buffer_index").is_none());
     let got: Item = serde_json::from_value(msg["params"]["item"].clone()).unwrap();
     assert_eq!(
         serde_json::to_value(&got).unwrap(),

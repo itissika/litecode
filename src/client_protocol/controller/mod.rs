@@ -20,7 +20,7 @@ use crate::runtime::observer::InternalEnvelope;
 use crate::runtime::observer::TurnPhase;
 use crate::session::manager::SessionManager;
 use crate::session::snapshot;
-use crate::types::{Item, LitecodeError};
+use crate::types::LitecodeError;
 
 #[derive(Debug)]
 pub enum StartTurnError {
@@ -54,17 +54,9 @@ impl StartTurnError {
     }
 }
 
-/// Loaded buffer window plus the absolute user-anchor baseline for `start`.
+/// Loaded log window `[from_seq, to_seq)`.
 pub struct MaterializedRange {
-    pub items: Vec<Item>,
-    /// DB row `kind` per item (`detail` | `compact_checkpoint`) — aligned with
-    /// `items`. The FE excludes checkpoint rows from revert-anchor counting
-    /// (2.2 / REV-11).
-    pub kinds: Vec<String>,
-    /// History ordinal per item (position in DB `ORDER BY seq`). Aligned with
-    /// `items`. The client must stamp this onto the row; it must not infer it.
-    pub indices: Vec<usize>,
-    pub user_detail_before: usize,
+    pub events: Vec<crate::client_protocol::protocol::WireBufferEvent>,
 }
 
 /// Per-session projection state. Each subscribed session on a connection gets
@@ -77,7 +69,7 @@ pub struct Projection {
     pub session_id: String,
     pub sessions: Arc<SessionManager>,
     pub buffer_revision: u64,
-    pub committed_end: usize,
+    pub next_seq: u64,
     pub turn_committed_start: usize,
     pub turn_id: Option<String>,
     pub phase: TurnPhase,
@@ -103,28 +95,16 @@ pub struct Projection {
 }
 
 impl Projection {
-    /// Read the store's buffer_len from the SessionManager (authoritative).
-    fn buffer_len(&self) -> usize {
-        self.sessions.entry_buffer_len_blocking(&self.session_id)
+    fn seq_cursor(&self) -> (i64, u64) {
+        self.sessions.entry_wire_seq_cursor(&self.session_id)
     }
 
-    /// Load transcript items from the authoritative store.
-    fn load_range(
-        &self,
-        start: usize,
-        end: usize,
-    ) -> crate::types::Result<Vec<crate::types::Item>> {
-        self.sessions.entry_load_range(&self.session_id, start, end)
-    }
-
-    /// Load items + their DB `kind` and history ordinal.
-    fn load_range_with_kinds(
-        &self,
-        start: usize,
-        end: usize,
-    ) -> crate::types::Result<(Vec<crate::types::Item>, Vec<String>, Vec<usize>)> {
-        self.sessions
-            .entry_load_range_with_kinds(&self.session_id, start, end)
+    fn last_seq(next_seq: u64) -> i64 {
+        if next_seq == 0 {
+            -1
+        } else {
+            (next_seq - 1) as i64
+        }
     }
 
     fn estimate_context_tokens(
@@ -149,7 +129,7 @@ impl Projection {
 
 impl Projection {
     fn new(session_id: String, sessions: Arc<SessionManager>, context_window: usize) -> Self {
-        let committed_end = sessions.entry_buffer_len_blocking(&session_id);
+        let (_, next_seq) = sessions.entry_wire_seq_cursor(&session_id);
         let context_tokens_estimate =
             Self::estimate_context_tokens(&sessions, &session_id, context_window);
         let meter = sessions
@@ -177,7 +157,7 @@ impl Projection {
             session_id,
             sessions,
             buffer_revision: 0,
-            committed_end,
+            next_seq,
             turn_committed_start: 0,
             turn_id: None,
             phase: TurnPhase::Idle,
@@ -213,13 +193,14 @@ impl Projection {
     // ── snapshot ──
 
     pub fn snapshot(&self, project: &str, binding: &SessionBindingProjection) -> SessionSnapshot {
+        let (last_seq, next_seq) = self.seq_cursor();
         let mut snap = project::buffer_snapshot(
             &self.session_id,
             project,
             binding,
-            self.buffer_len(),
+            last_seq,
+            next_seq,
             self.buffer_revision,
-            self.committed_end,
             self.turn_snapshot(),
             self.last_turn_token_stats.clone(),
             self.cumulative_token_stats.clone(),
@@ -326,17 +307,20 @@ impl Projection {
             call_id,
             child_session_id,
         } = &ev
-            && let Some((buffer_index, item)) = self
+            && let Some(event) = self
                 .sessions
-                .find_function_call_buffer_item(&self.session_id, call_id)
+                .find_function_call_event(&self.session_id, call_id)
         {
             let data_root = crate::session::store::data_root_from_db_path(&self.sessions.db_path());
-            if let Ok(encoded) = output::encode_client_item(item, &data_root) {
+            if let Ok(item) = crate::session::event::item_from_event(&event)
+                && let Ok(encoded) = output::encode_client_item(item, &data_root)
+            {
                 self.on_event(
                     InternalEvent::BufferItem {
-                        buffer_index,
+                        seq: event.seq,
+                        event_type: event.event_type,
+                        surface_op: event.surface_op,
                         item: encoded,
-                        kind: None,
                         child_session_id: Some(child_session_id.clone()),
                     },
                     project,
@@ -369,73 +353,79 @@ impl Projection {
 
     pub fn bump_buffer_revision(&mut self, project: &str, binding: &SessionBindingProjection) {
         self.buffer_revision = self.buffer_revision.saturating_add(1);
-        let old_end = self.committed_end;
-        self.committed_end = self.buffer_len();
+        let old_next = self.next_seq;
+        let (_, new_next) = self.seq_cursor();
+        self.next_seq = new_next;
         self.refresh_context_estimate();
-        if self.committed_end > old_end {
-            match self.load_range_with_kinds(old_end, self.committed_end) {
-                Ok((new_msgs, kinds, indices)) => {
+        if self.next_seq > old_next {
+            match self
+                .sessions
+                .entry_load_events_range(&self.session_id, old_next, self.next_seq)
+            {
+                Ok(events) => {
                     let data_root =
                         crate::session::store::data_root_from_db_path(&self.sessions.db_path());
-                    let encoded = match output::encode_client_items(new_msgs, &data_root) {
-                        Ok(msgs) => msgs,
-                        Err(e) => {
-                            tracing::error!(
-                                session_id = %self.session_id,
-                                error = %e,
-                                "bump_buffer_revision: failed to encode client items"
-                            );
-                            Vec::new()
-                        }
-                    };
-                    if encoded.len() != indices.len() || kinds.len() != indices.len() {
-                        tracing::error!(
-                            session_id = %self.session_id,
-                            encoded = encoded.len(),
-                            kinds = kinds.len(),
-                            indices = indices.len(),
-                            "bump_buffer_revision: history ordinals misaligned with items; refusing to invent indices"
+                    for event in events {
+                        let item = match crate::session::event::item_from_event(&event) {
+                            Ok(item) => item,
+                            Err(e) => {
+                                tracing::error!(
+                                    session_id = %self.session_id,
+                                    seq = event.seq,
+                                    error = %e,
+                                    "bump_buffer_revision: event payload is not an Item"
+                                );
+                                continue;
+                            }
+                        };
+                        let encoded = match output::encode_client_item(item, &data_root) {
+                            Ok(item) => item,
+                            Err(e) => {
+                                tracing::error!(
+                                    session_id = %self.session_id,
+                                    seq = event.seq,
+                                    error = %e,
+                                    "bump_buffer_revision: failed to encode client item"
+                                );
+                                continue;
+                            }
+                        };
+                        let child_session_id = match &encoded {
+                            crate::types::Item::FunctionCall(fc)
+                                if fc.name == "subagent_launch" =>
+                            {
+                                self.sessions
+                                    .child_session_id_for_call(&self.session_id, &fc.call_id)
+                            }
+                            _ => None,
+                        };
+                        self.on_event(
+                            InternalEvent::BufferItem {
+                                seq: event.seq,
+                                event_type: event.event_type,
+                                surface_op: event.surface_op,
+                                item: encoded,
+                                child_session_id,
+                            },
+                            project,
+                            binding,
                         );
-                    } else {
-                        for (i, msg) in encoded.into_iter().enumerate() {
-                            let buffer_index = indices[i];
-                            let kind = kinds.get(i).cloned();
-                            let child_session_id = match &msg {
-                                crate::types::Item::FunctionCall(fc)
-                                    if fc.name == "subagent_launch" =>
-                                {
-                                    self.sessions
-                                        .child_session_id_for_call(&self.session_id, &fc.call_id)
-                                }
-                                _ => None,
-                            };
-                            self.on_event(
-                                InternalEvent::BufferItem {
-                                    buffer_index,
-                                    item: msg,
-                                    kind,
-                                    child_session_id,
-                                },
-                                project,
-                                binding,
-                            );
-                        }
                     }
                 }
                 Err(e) => {
                     tracing::error!(
                         session_id = %self.session_id,
                         error = %e,
-                        "bump_buffer_revision: failed to load new transcript items"
+                        "bump_buffer_revision: failed to load new log events"
                     );
                 }
             }
         }
         self.on_event(
             InternalEvent::BufferChanged {
-                len: self.committed_end,
+                last_seq: Self::last_seq(self.next_seq),
+                next_seq: self.next_seq,
                 revision: self.buffer_revision,
-                committed_end: self.committed_end,
             },
             project,
             binding,
@@ -476,7 +466,8 @@ impl Projection {
                     "method": "buffer/reverted",
                     "params": {
                         "session_id": self.session_id,
-                        "committed_end": self.committed_end,
+                        "last_seq": Self::last_seq(self.next_seq),
+                        "next_seq": self.next_seq,
                     },
                 }));
                 self.push_operation_ok(OperationKind::RevertToUserAnchor, project, binding);
@@ -601,29 +592,35 @@ impl Projection {
 
     // ── materialize ──
 
-    pub fn materialize_range(&self, start: usize, end: usize) -> anyhow::Result<MaterializedRange> {
-        let (msgs, kinds, indices) =
-            self.sessions
-                .entry_load_range_with_kinds(&self.session_id, start, end)?;
-        let user_detail_before = self
+    pub fn materialize_range(
+        &self,
+        from_seq: crate::session::event::Seq,
+        to_seq: crate::session::event::Seq,
+    ) -> anyhow::Result<MaterializedRange> {
+        let events = self
             .sessions
-            .entry_user_detail_before_buffer_index(&self.session_id, start)?;
+            .entry_load_events_range(&self.session_id, from_seq, to_seq)?;
         let data_root = crate::session::store::data_root_from_db_path(&self.sessions.db_path());
-        let items = output::encode_client_items(msgs, &data_root)?;
-        if items.len() != indices.len() || kinds.len() != indices.len() {
-            anyhow::bail!(
-                "materialize_range: history ordinals misaligned (items={}, kinds={}, indices={})",
-                items.len(),
-                kinds.len(),
-                indices.len()
-            );
+        let mut out = Vec::with_capacity(events.len());
+        for event in events {
+            let item = crate::session::event::item_from_event(&event)?;
+            let item = output::encode_client_item(item, &data_root)?;
+            let child_session_id = match &item {
+                crate::types::Item::FunctionCall(fc) if fc.name == "subagent_launch" => {
+                    self.sessions
+                        .child_session_id_for_call(&self.session_id, &fc.call_id)
+                }
+                _ => None,
+            };
+            out.push(crate::client_protocol::protocol::WireBufferEvent {
+                seq: event.seq,
+                event_type: event.event_type,
+                surface_op: event.surface_op,
+                item,
+                child_session_id,
+            });
         }
-        Ok(MaterializedRange {
-            items,
-            kinds,
-            indices,
-            user_detail_before,
-        })
+        Ok(MaterializedRange { events: out })
     }
 
     // ── turn helpers ──
@@ -704,8 +701,7 @@ impl Projection {
                 tracing::warn!(
                     session_id = %self.session_id,
                     skipped,
-                    committed_end = self.committed_end,
-                    buffer_len = self.buffer_len(),
+                    next_seq = self.next_seq,
                     "session event subscriber lagged; re-bumping buffer for missing seals"
                 );
                 self.bump_buffer_revision(project, binding);
@@ -757,15 +753,12 @@ impl Projection {
                 }
             }
             crate::runtime::observer::InternalEvent::BufferChanged {
-                len,
+                last_seq: _,
+                next_seq,
                 revision,
-                committed_end,
             } => {
-                // Buffer length / revision only. Occupancy is provider usage
-                // (LlmCompleted / meter), never a running sum or estimate.
                 self.buffer_revision = *revision;
-                self.committed_end = *committed_end;
-                let _ = len;
+                self.next_seq = *next_seq;
             }
             crate::runtime::observer::InternalEvent::PermissionAsk {
                 tool,
@@ -1331,7 +1324,7 @@ mod compact_item_wire_tests {
     use super::*;
     use crate::runtime::observer::{CompactionStage, CompactionTrigger};
     use crate::session::store::Session;
-    use crate::types::{item_text_preview, user_text};
+    use crate::types::{Item, item_text_preview, user_text};
     use std::sync::Arc;
 
     fn binding() -> SessionBindingProjection {
@@ -1387,7 +1380,7 @@ mod compact_item_wire_tests {
     }
 
     #[test]
-    fn compact_succeeded_emits_checkpoint_buffer_item_not_compacted() {
+    fn compact_succeeded_emits_replace_buffer_item_not_compacted() {
         let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
         apply_compact(&sessions, &sid, "first-cut");
         let _ = proj.take_outgoing();
@@ -1401,8 +1394,12 @@ mod compact_item_wire_tests {
         );
         let items = buffer_item_frames(&out);
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0]["params"]["kind"], "compact_checkpoint");
-        assert_eq!(items[0]["params"]["buffer_index"], 3);
+        assert_eq!(items[0]["params"]["seq"], 3);
+        assert_eq!(items[0]["params"]["type"], "item/user");
+        assert_eq!(items[0]["params"]["surface_op"]["op"], "replace");
+        assert_eq!(items[0]["params"]["surface_op"]["start"], 0);
+        assert_eq!(items[0]["params"]["surface_op"]["end"], 2);
+        assert!(items[0]["params"].get("buffer_index").is_none());
         assert_eq!(items[0]["params"]["session_id"], sid);
         let item: Item = serde_json::from_value(items[0]["params"]["item"].clone()).unwrap();
         assert_eq!(item_text_preview(&item), "first-cut");
@@ -1411,8 +1408,8 @@ mod compact_item_wire_tests {
             .iter()
             .find(|msg| msg["method"] == "session/compact_lifecycle")
             .expect("lifecycle after checkpoint item");
-        assert_eq!(life["params"]["snapshot"]["buffer"]["committed_end"], 4);
-        assert_eq!(life["params"]["snapshot"]["buffer"]["len"], 4);
+        assert_eq!(life["params"]["snapshot"]["buffer"]["last_seq"], 3);
+        assert_eq!(life["params"]["snapshot"]["buffer"]["next_seq"], 4);
         assert_eq!(life["params"]["stage"], "succeeded");
         let item_pos = out
             .iter()
@@ -1424,7 +1421,7 @@ mod compact_item_wire_tests {
             .unwrap();
         assert!(
             item_pos < life_pos,
-            "checkpoint buffer/item must precede lifecycle snapshot"
+            "replace buffer/item must precede lifecycle snapshot"
         );
     }
 
@@ -1446,26 +1443,31 @@ mod compact_item_wire_tests {
         assert!(out.iter().all(|msg| msg["method"] != "buffer/compacted"));
         let items = buffer_item_frames(&out);
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0]["params"]["kind"], "compact_checkpoint");
-        assert_eq!(items[0]["params"]["buffer_index"], 5);
+        assert_eq!(items[0]["params"]["seq"], 5);
+        assert_eq!(items[0]["params"]["surface_op"]["op"], "replace");
+        assert!(items[0]["params"].get("buffer_index").is_none());
         let item: Item = serde_json::from_value(items[0]["params"]["item"].clone()).unwrap();
         assert_eq!(item_text_preview(&item), "second-cut");
 
-        let history = sessions
+        let events = sessions
             .with_entry_store(&sid, |s| {
-                s.load_history_transcript()
-                    .map_err(|e| anyhow::anyhow!("{e}"))
+                s.load_events().map_err(|e| anyhow::anyhow!("{e}"))
             })
             .unwrap();
-        assert_eq!(
-            history
-                .iter()
-                .filter(|r| r.kind == "compact_checkpoint")
-                .count(),
-            2
-        );
-        assert!(history
+        let replaces = events
             .iter()
-            .any(|r| r.body.as_deref().is_some_and(|b| b.contains("first-cut"))));
+            .filter(|e| {
+                matches!(
+                    e.surface_op,
+                    Some(crate::session::surface::SurfaceOp::Replace { .. })
+                )
+            })
+            .count();
+        assert_eq!(replaces, 2);
+        assert!(events
+            .iter()
+            .any(|e| crate::session::event::item_from_event(e)
+                .ok()
+                .is_some_and(|item| item_text_preview(&item) == "first-cut")));
     }
 }

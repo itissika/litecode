@@ -374,6 +374,30 @@ impl SessionManager {
         self.entry_buffer_len(session_id)
     }
 
+    pub fn entry_wire_seq_cursor(&self, session_id: &str) -> (i64, u64) {
+        self.records
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .and_then(|e| e.store.with(|s| s.wire_seq_cursor().ok()))
+            .unwrap_or((-1, 0))
+    }
+
+    pub fn entry_load_events_range(
+        &self,
+        session_id: &str,
+        from_seq: crate::session::event::Seq,
+        to_seq: crate::session::event::Seq,
+    ) -> Result<Vec<crate::session::event::SessionEvent>> {
+        let records = self.records.lock().unwrap();
+        let entry = records.get(session_id).ok_or_else(|| {
+            LitecodeError::ToolExecution(format!("session {session_id} not found"))
+        })?;
+        entry
+            .store
+            .with(|s| s.load_events_range(from_seq, to_seq))
+    }
+
     pub fn entry_load_range(
         &self,
         session_id: &str,
@@ -1103,25 +1127,26 @@ impl SessionManager {
         Session::child_bindings_for_parent(&self.db_path(), parent_session_id).unwrap_or_default()
     }
 
-    /// Find buffer index + item for a function_call `call_id` in a session transcript.
-    pub fn find_function_call_buffer_item(
+    /// Find the persisted function_call event for `call_id`.
+    pub fn find_function_call_event(
         &self,
         session_id: &str,
         call_id: &str,
-    ) -> Option<(usize, crate::types::Item)> {
+    ) -> Option<crate::session::event::SessionEvent> {
         let records = self.records.lock().unwrap();
         let record = records.get(session_id)?;
         record.store.with(|s| {
-            let len = s.buffer_len();
-            let items = s.load_by_buffer_index(0, len).ok()?;
-            for (idx, item) in items.into_iter().enumerate() {
-                if let crate::types::Item::FunctionCall(ref fc) = item
-                    && fc.call_id == call_id
-                {
-                    return Some((idx, item));
-                }
-            }
-            None
+            let events = s.load_events().ok()?;
+            events.into_iter().find(|event| {
+                crate::session::event::item_from_event(event)
+                    .ok()
+                    .is_some_and(|item| {
+                        matches!(
+                            item,
+                            crate::types::Item::FunctionCall(ref fc) if fc.call_id == call_id
+                        )
+                    })
+            })
         })
     }
 

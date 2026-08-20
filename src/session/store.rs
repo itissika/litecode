@@ -1881,6 +1881,61 @@ impl Session {
         Ok(events)
     }
 
+    /// Half-open log window `[from_seq, to_seq)` in append-origin seq order.
+    pub fn load_events_range(&self, from_seq: Seq, to_seq: Seq) -> Result<Vec<SessionEvent>> {
+        if from_seq >= to_seq {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref
+             FROM transcript_items WHERE session_id = ?1 AND seq >= ?2 AND seq < ?3 ORDER BY seq ASC",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![self.id, from_seq as i64, to_seq as i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            },
+        )?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref) =
+                row?;
+            events.push(event_from_disk_row(
+                &self.id,
+                seq,
+                created_at,
+                event_type,
+                surface_op,
+                source_seqs,
+                kind,
+                body,
+                body_ref,
+                &self.data_root,
+            )?);
+        }
+        Ok(events)
+    }
+
+    /// `(last_seq, next_seq)` for wire snapshots. Empty log → `(-1, 0)`.
+    pub fn wire_seq_cursor(&self) -> Result<(i64, u64)> {
+        let last = self.max_seq()?;
+        let next = if last < 0 {
+            0
+        } else {
+            (last as u64).saturating_add(1)
+        };
+        Ok((last, next))
+    }
+
     /// §5.1 compact success — summary checkpoint with empty keep (summary-only view).
     pub fn apply_compact_checkpoint(&self, summary: &Item, token_estimate: i64) -> Result<i64> {
         // `kept_from_seq = N` (checkpoint) → no pre-existing detail in the view.
@@ -2099,6 +2154,23 @@ mod tests {
             .map(item_text_preview)
             .collect();
         assert_eq!(texts, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn load_events_range_is_half_open_seq_window() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("a"), user_text("b"), user_text("c")])
+            .unwrap();
+        let window = session.load_events_range(1, 3).unwrap();
+        assert_eq!(
+            window.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(session.load_events_range(2, 2).unwrap().is_empty());
+        let (last, next) = session.wire_seq_cursor().unwrap();
+        assert_eq!(last, 2);
+        assert_eq!(next, 3);
     }
 
     #[test]

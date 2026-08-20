@@ -4,12 +4,16 @@
 
 **Blocked by:** 03: Loop / prepare 只读 surface
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 线上事件 payload 含 `seq` + 事件类型 + 可选 `surface_op`；无 `buffer_index` 身份字段（E1、E2、E4）
-- [ ] 加载：`from_seq` / `to_seq`（seq 半开区间），禁止平行 `indices[]` / `kinds[]` 与条数窗口（A8、E3）
-- [ ] snapshot 用 `last_seq` / `next_seq`，不用 `buffer.len` 当下一条下标（A9、E5）
-- [ ] compact 通知不再 `bump` 一个位置窗口，也不再 `buffer/compacted` 重载 last-40（C3、C5）
-- [ ] `src/` identifier 扫描：`buffer_index` / `bufferIndex` / `kept_from_seq` / `checkpoint_seq` / `compact_checkpoint` 生产路径为零（门禁文件豁免）
-- [ ] 线协议测试断言 replace 的 `surface_op` 与 cut 范围，而不是 `buffer_index == 3`
-- [ ] P3 探针：cut 插在 shadowed 边界（纯函数即可）
+- [x] 线上事件 payload 含 `seq` + 事件类型 + 可选 `surface_op`；无 `buffer_index` 身份字段（E1、E2、E4）
+- [x] 加载：`from_seq` / `to_seq`（seq 半开区间），禁止平行 `indices[]` / `kinds[]` 与条数窗口（A8、E3）
+- [x] snapshot 用 `last_seq` / `next_seq`，不用 `buffer.len` 当下一条下标（A9、E5）
+- [x] compact 通知不再 `bump` 一个位置窗口，也不再 `buffer/compacted` 重载 last-40（C3、C5）
+- [x] `src/` identifier 扫描：G4 扫 `client_protocol/` + `runtime/observer.rs`（门禁文件豁免；store/search 指针名留给 05）
+- [x] 线协议测试断言 replace 的 `surface_op` 与 cut 范围，而不是 `buffer_index == 3`
+- [x] P3 探针：cut 插在 shadowed 边界（纯函数即可）
+
+## Answer
+
+Wire `buffer/item` is `{ seq, type, surface_op, item }`. `buffer/load` is `[from_seq, to_seq)` of log events. Snapshot buffer is `last_seq` / `next_seq`. Compact success emits the replace event by seq, not `buffer/compacted` last-40. Frontend still on `buffer_index` (06). Store `load_by_buffer_index` / `kept_from_seq` remain for 05.

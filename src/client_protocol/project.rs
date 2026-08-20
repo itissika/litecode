@@ -319,18 +319,20 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
         InternalEvent::ProjectionLagged { .. } => None,
         InternalEvent::SessionPreviewUpdated { .. } => None,
         InternalEvent::BufferItem {
-            buffer_index,
+            seq,
+            event_type,
+            surface_op,
             item,
-            kind,
             child_session_id,
         } => {
             let mut params = serde_json::json!({
                 "session_id": snapshot.session_id,
-                "buffer_index": buffer_index,
+                "seq": seq,
+                "type": event_type.as_str(),
                 "item": item,
             });
-            if let Some(kind) = kind {
-                params["kind"] = serde_json::Value::String(kind.clone());
+            if let Some(op) = surface_op {
+                params["surface_op"] = serde_json::to_value(op).unwrap_or(serde_json::Value::Null);
             }
             if let Some(child_id) = child_session_id {
                 params["child_session_id"] = serde_json::Value::String(child_id.clone());
@@ -817,9 +819,9 @@ pub fn buffer_snapshot(
     session_id: &str,
     project: &str,
     binding: &SessionBindingProjection,
-    len: usize,
+    last_seq: i64,
+    next_seq: u64,
     revision: u64,
-    committed_end: usize,
     turn: Option<super::protocol::TurnSnapshot>,
     last_turn_token_stats: Option<TurnTokenStats>,
     cumulative_token_stats: Option<TurnTokenStats>,
@@ -834,9 +836,9 @@ pub fn buffer_snapshot(
         api_model_id: binding.api_model_id.clone(),
         label: binding.label.clone(),
         buffer: BufferState {
-            len,
+            last_seq,
+            next_seq,
             revision,
-            committed_end,
         },
         turn,
         context_window: binding.context_window,
