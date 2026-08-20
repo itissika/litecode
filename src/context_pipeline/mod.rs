@@ -159,8 +159,6 @@ impl ContextPipeline {
         let mut transcript = turn_items.clone();
         let committed_len = self.state.borrow().committed_len;
         let reminder = tail_reminders::build_compaction_content(task_state);
-        let checkpoint_before =
-            sessions.with_entry_store(session_id, |s| Ok(s.checkpoint_seq()?))?;
 
         let compacted = self
             .compact
@@ -188,12 +186,10 @@ impl ContextPipeline {
             return Ok(false);
         }
 
-        let checkpoint_after =
-            sessions.with_entry_store(session_id, |s| Ok(s.checkpoint_seq()?))?;
-        if checkpoint_after != checkpoint_before {
+        if compacted {
             let persisted_count = sessions.with_entry_store(session_id, |s| {
                 s.reload_persisted_max_seq()?;
-                Ok(s.load_turn_transcript()?.len())
+                Ok(s.load_transcript()?.len())
             })?;
             self.state.borrow_mut().committed_len = persisted_count;
         }

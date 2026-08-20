@@ -7,9 +7,9 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::authority::responses::{InputMessage, InputRole, MessageItem};
 use crate::platform_knobs::{ContextMode, ThinkingTier};
 use crate::session::estimate::compute_token_estimate;
-use crate::session::event::{EventType, Seq, SessionEvent};
+use crate::session::event::{EventDraft, EventLog, EventType, Seq, SessionEvent, item_from_event, skip_empty_assistant};
 use crate::session::snapshot;
-use crate::session::surface::SurfaceOp;
+use crate::session::surface::{Surface, SurfaceOp, derive_messages, fold_surface};
 use crate::session::task_state::TodoItem;
 use crate::session::task_state::{PlanRef, TaskReminders};
 use crate::tool::output::{BLOB_PREFIX, DEFAULT_SPILL_THRESHOLD, blob_dir};
@@ -73,35 +73,14 @@ pub const SQL_CHECKPOINT_SEQ: &str = "SELECT checkpoint_seq FROM sessions WHERE 
 
 pub const SQL_KEPT_FROM_SEQ: &str = "SELECT kept_from_seq FROM sessions WHERE id = ?";
 
-/// §5.1 turn load — pi-style working set:
-/// `compact_checkpoint` at `checkpoint_seq` (if that row exists), then original
-/// `detail` with `seq >= kept_from_seq` (and any newer detail after the checkpoint).
-/// Order: summary first, then detail by seq.
-///
-/// **Has-compact is row presence, not `checkpoint_seq > 0`.** Default
-/// `checkpoint_seq=0` with no CP row still means “no compact” (clause matches
-/// nothing). Empty-session compact may legitimately place the CP at `seq=0`;
-/// requiring `> 0` would orphan that summary.
+/// Turn load is no longer a SQL window: callers should use `load_transcript` /
+/// `derive_messages`. This query is seq-order log rows (no compact reorder).
 pub const SQL_LOAD_TURN_TRANSCRIPT: &str = "\
 SELECT t.session_id, t.seq, t.turn_id, t.turn_seq, t.item_type, t.kind, t.body, t.body_ref,
        t.token_estimate, t.created_at
 FROM transcript_items t
-JOIN sessions s ON s.id = t.session_id
 WHERE t.session_id = ?1
-  AND (
-    (t.kind = 'compact_checkpoint' AND t.seq = s.checkpoint_seq)
-    OR (t.kind = 'detail' AND t.seq >= s.kept_from_seq)
-  )
-ORDER BY CASE WHEN t.kind = 'compact_checkpoint' THEN 0 ELSE 1 END, t.seq ASC";
-
-pub const SQL_TURN_VIEW_COUNT: &str = "\
-SELECT COUNT(*) FROM transcript_items t
-JOIN sessions s ON s.id = t.session_id
-WHERE t.session_id = ?1
-  AND (
-    (t.kind = 'compact_checkpoint' AND t.seq = s.checkpoint_seq)
-    OR (t.kind = 'detail' AND t.seq >= s.kept_from_seq)
-  )";
+ORDER BY t.seq ASC";
 
 /// Full chronological UI history: every detail and every compact_checkpoint,
 /// in seq order. The turn working set (current `checkpoint_seq` only) is a
@@ -461,6 +440,50 @@ fn encode_surface_envelope(item: &Item) -> Result<(String, String, Option<String
     let event_type = surface_event_type_of(item).as_str().to_string();
     let surface_op = serde_json::to_string(&SurfaceOp::Append)?;
     Ok((event_type, surface_op, None))
+}
+
+fn replace_op_for_keep(
+    surface: &Surface,
+    kept_from_seq: Option<i64>,
+) -> Result<(SurfaceOp, Option<Vec<Seq>>)> {
+    if surface.nodes.is_empty() {
+        return Ok((SurfaceOp::Append, None));
+    }
+    match kept_from_seq {
+        None => {
+            let start = *surface.nodes.first().expect("non-empty");
+            let end = *surface.nodes.last().expect("non-empty");
+            Ok((
+                SurfaceOp::Replace { start, end },
+                Some(surface.nodes.clone()),
+            ))
+        }
+        Some(k) => {
+            let k = Seq::try_from(k).map_err(|_| {
+                LitecodeError::InvalidSessionEvent(format!("negative kept_from_seq {k}"))
+            })?;
+            let keep_i = surface
+                .nodes
+                .iter()
+                .position(|s| *s == k)
+                .ok_or_else(|| {
+                    LitecodeError::ToolExecution(format!(
+                        "kept_from_seq={k} is not on the current surface"
+                    ))
+                })?;
+            if keep_i == 0 {
+                return Err(LitecodeError::NothingToCompact);
+            }
+            let shadowed = surface.nodes[..keep_i].to_vec();
+            Ok((
+                SurfaceOp::Replace {
+                    start: shadowed[0],
+                    end: *shadowed.last().expect("keep_i > 0"),
+                },
+                Some(shadowed),
+            ))
+        }
+    }
 }
 
 fn message_timestamp(_item: &Item) -> i64 {
@@ -1179,8 +1202,26 @@ impl Session {
     }
 
     pub fn load_transcript(&self) -> Result<Transcript> {
-        let rows = self.load_turn_transcript()?;
-        rows_to_items(&rows, &self.data_root)
+        derive_messages(&self.load_events()?)
+    }
+
+    /// Seqs of model-visible items (surface nodes, skipping empty assistants).
+    pub fn model_surface_seqs(&self) -> Result<Vec<Seq>> {
+        let events = self.load_events()?;
+        let surface = fold_surface(&events)?;
+        let mut seqs = Vec::new();
+        for seq in surface.nodes {
+            let event = events
+                .iter()
+                .find(|e| e.seq == seq)
+                .ok_or_else(|| LitecodeError::InvalidSessionEvent(format!("missing seq {seq}")))?;
+            let item = item_from_event(event)?;
+            if skip_empty_assistant(event, &item) {
+                continue;
+            }
+            seqs.push(seq);
+        }
+        Ok(seqs)
     }
 
     pub fn buffer_len(&self) -> usize {
@@ -1380,11 +1421,8 @@ impl Session {
             .unchecked_transaction()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
 
-        let view_len: i64 =
-            tx.query_row(SQL_TURN_VIEW_COUNT, rusqlite::params![self.id], |row| {
-                row.get(0)
-            })?;
-        if (view_len as usize) < expected_committed_len {
+        let view_len = derive_messages(&self.load_events()?)?.len();
+        if view_len < expected_committed_len {
             drop(tx);
             *items = self.load_transcript()?;
             return Ok(CommitDeltaOutcome::Discarded);
@@ -1878,77 +1916,66 @@ impl Session {
         expected_view_len: Option<usize>,
     ) -> Result<i64> {
         let now = chrono::Utc::now().timestamp_millis();
-        let item_type = item_type_of(summary);
-        let (body, body_ref, _) =
-            encode_detail_row(summary, &self.data_root, DEFAULT_SPILL_THRESHOLD)?;
-
         let tx = self
             .conn
             .unchecked_transaction()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
 
+        let mut log = EventLog::from_events(self.load_events()?);
         if let Some(expected) = expected_view_len {
-            let view_len: i64 =
-                tx.query_row(SQL_TURN_VIEW_COUNT, rusqlite::params![self.id], |row| {
-                    row.get(0)
-                })?;
-            if view_len as usize != expected {
+            let view_len = derive_messages(log.events())?.len();
+            if view_len != expected {
                 return Err(LitecodeError::Canceled);
             }
         }
 
-        let n: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(seq), -1) + 1 FROM transcript_items WHERE session_id = ?1",
-            rusqlite::params![self.id],
-            |row| row.get(0),
+        let surface = fold_surface(log.events())?;
+        let (op, source_seqs) = replace_op_for_keep(&surface, kept_from_seq)?;
+        let mut draft = EventDraft::surface_item(EventType::ItemUser, summary, op)?;
+        draft.time = now;
+        draft.source_seqs = source_seqs;
+        log.append(draft)?;
+        let event = log.events().last().expect("appended").clone();
+
+        let item_type = item_type_of(summary);
+        let (body, body_ref, _) =
+            encode_detail_row(summary, &self.data_root, DEFAULT_SPILL_THRESHOLD)?;
+        let surface_op = serde_json::to_string(
+            event
+                .surface_op
+                .as_ref()
+                .expect("surface compact event"),
         )?;
+        let source_seqs_json = event
+            .source_seqs
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
 
-        let first_kept = kept_from_seq.unwrap_or(n);
-        if let Some(k) = kept_from_seq {
-            // Fail closed: pointer must land on an existing detail row.
-            let ok: bool = tx.query_row(
-                "SELECT EXISTS(
-                    SELECT 1 FROM transcript_items
-                    WHERE session_id = ?1 AND kind = 'detail' AND seq = ?2
-                 )",
-                rusqlite::params![self.id, k],
-                |row| row.get(0),
-            )?;
-            if !ok {
-                return Err(LitecodeError::ToolExecution(format!(
-                    "kept_from_seq={k} does not reference an existing detail row"
-                )));
-            }
-        }
-
-        let (event_type, surface_op, source_seqs) = encode_surface_envelope(summary)?;
         tx.execute(
             "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs)
-             VALUES (?1, ?2, ?3, 0, ?4, 'compact_checkpoint', ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             VALUES (?1, ?2, ?3, 0, ?4, 'detail', ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 self.id,
-                n,
-                format!("compact-{n}"),
+                event.seq as i64,
+                format!("compact-{}", event.seq),
                 item_type,
                 body,
                 body_ref,
                 token_estimate,
                 now,
-                event_type,
+                event.event_type.as_str(),
                 surface_op,
-                source_seqs,
+                source_seqs_json,
             ],
         )?;
-
-        tx.execute(
-            "UPDATE sessions SET checkpoint_seq = ?1, kept_from_seq = ?2 WHERE id = ?3",
-            rusqlite::params![n, first_kept, self.id],
-        )?;
+        let plain = crate::types::item_text_preview(summary);
+        crate::session::transcript_fts::upsert(&tx, &self.id, event.seq as i64, &plain)?;
 
         tx.commit()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
-        self.persisted_max_seq.set(n);
-        Ok(n)
+        self.persisted_max_seq.set(event.seq as i64);
+        Ok(event.seq as i64)
     }
 }
 
@@ -2072,6 +2099,36 @@ mod tests {
             .map(item_text_preview)
             .collect();
         assert_eq!(texts, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn derive_messages_after_replace_matches_surface_not_log_tail() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[
+                user_text("d0"),
+                user_text("d1"),
+                user_text("d2"),
+                user_text("d3"),
+                user_text("d4"),
+            ])
+            .unwrap();
+        session
+            .apply_compact_checkpoint_from(&user_text("summary"), Some(2), 10)
+            .unwrap();
+        let texts: Vec<_> = session
+            .load_transcript()
+            .unwrap()
+            .iter()
+            .map(item_text_preview)
+            .collect();
+        assert_eq!(texts, vec!["summary", "d2", "d3", "d4"]);
+        let origin: Vec<_> = crate::session::derive_transcript_items(&session.load_events().unwrap())
+            .unwrap()
+            .iter()
+            .map(item_text_preview)
+            .collect();
+        assert_eq!(origin, vec!["d0", "d1", "d2", "d3", "d4"]);
     }
 
     #[test]
@@ -2325,12 +2382,12 @@ mod tests {
         let summary = user_text("compact summary text");
         session.apply_compact_checkpoint(&summary, 10).unwrap();
         session.insert_detail_rows(&[user_text("after")]).unwrap();
-        // UI history: two archived users, checkpoint marker, then "after".
+        // Append-origin users plus replace summary (also a user Item) sit in history seq order.
         assert_eq!(session.user_detail_before_buffer_index(0).unwrap(), 0);
         assert_eq!(session.user_detail_before_buffer_index(1).unwrap(), 1);
         assert_eq!(session.user_detail_before_buffer_index(2).unwrap(), 2);
-        assert_eq!(session.user_detail_before_buffer_index(3).unwrap(), 2);
-        assert_eq!(session.user_detail_before_buffer_index(4).unwrap(), 3);
+        assert_eq!(session.user_detail_before_buffer_index(3).unwrap(), 3);
+        assert_eq!(session.user_detail_before_buffer_index(4).unwrap(), 4);
     }
 
     #[test]
@@ -2382,17 +2439,16 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        // Pi-style: no kept rewrite — detail count stays at the original 3.
         assert_eq!(
-            detail_after, 3,
-            "compact must not rewrite/copy kept detail (got {detail_after})"
+            detail_after, 4,
+            "compact appends a replace row and must not rewrite/copy kept detail (got {detail_after})"
         );
 
         let pre_kept_detail: i64 = session
             .conn
             .query_row(
                 "SELECT COUNT(*) FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'detail' AND seq < ?2",
+                 WHERE session_id = ?1 AND seq < ?2",
                 rusqlite::params![session.id, keep_tail_seq],
                 |row| row.get(0),
             )
@@ -2401,8 +2457,13 @@ mod tests {
             pre_kept_detail, 2,
             "archived detail below kept_from_seq must remain"
         );
-        assert_eq!(session.kept_from_seq().unwrap(), keep_tail_seq);
-        assert_eq!(session.checkpoint_seq().unwrap(), n);
+        let events = session.load_events().unwrap();
+        let last = events.last().unwrap();
+        assert_eq!(last.seq, n as u64);
+        assert!(matches!(
+            last.surface_op,
+            Some(crate::session::surface::SurfaceOp::Replace { .. })
+        ));
 
         // Working set still excludes archived history.
         let loaded = session.load_transcript().unwrap();
@@ -2445,14 +2506,6 @@ mod tests {
             .apply_compact_checkpoint_from(&summary, Some(keep_from), 42)
             .unwrap();
         assert!(n >= 0);
-        assert_eq!(session.kept_from_seq().unwrap(), keep_from);
-
-        let rows = session.load_turn_transcript().unwrap();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].kind, "compact_checkpoint");
-        assert_eq!(rows[1].kind, "detail");
-        assert_eq!(rows[1].seq, keep_from);
-        assert_eq!(rows[2].kind, "detail");
 
         let loaded = session.load_transcript().unwrap();
         let previews: Vec<String> = loaded.iter().map(item_text_preview).collect();
@@ -2490,7 +2543,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(detail_total, 4);
+        assert_eq!(detail_total, 5);
     }
 
     #[test]
@@ -2500,26 +2553,21 @@ mod tests {
         let summary = user_text("compact summary text");
         let n = session.apply_compact_checkpoint(&summary, 10).unwrap();
         assert!(n >= 0);
-        assert_eq!(
-            session.kept_from_seq().unwrap(),
-            n,
-            "empty keep sets kept_from_seq to checkpoint seq"
-        );
-
-        let rows = session.load_turn_transcript().unwrap();
-        assert_eq!(rows[0].kind, "compact_checkpoint");
-        assert_eq!(rows[0].item_type, "message");
-        let body = rows[0].body.as_deref().expect("inline body");
-        let parsed: Item = serde_json::from_str(body).expect("Item JSON");
-        assert_eq!(item_text_preview(&parsed), "compact summary text");
-        assert!(
-            body.trim_start().starts_with('{'),
-            "body must be JSON object"
-        );
 
         let loaded = session.load_transcript().unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(item_text_preview(&loaded[0]), "compact summary text");
+        let events = session.load_events().unwrap();
+        let last = events.last().unwrap();
+        assert!(matches!(
+            last.surface_op,
+            Some(crate::session::surface::SurfaceOp::Replace { .. })
+        ));
+        let body = serde_json::to_string(&last.data).expect("json");
+        assert!(
+            body.trim_start().starts_with('{'),
+            "body must be JSON object"
+        );
     }
 
     /// Adversarial probe: empty-session compact lands CP at `seq=0` /
@@ -2537,12 +2585,6 @@ mod tests {
             .apply_compact_checkpoint(&user_text("empty-session summary"), 10)
             .unwrap();
         assert_eq!(n, 0, "first transcript row on empty DB is seq 0");
-        assert_eq!(session.checkpoint_seq().unwrap(), 0);
-        assert_eq!(
-            session.kept_from_seq().unwrap(),
-            0,
-            "empty keep pins kept_from_seq to checkpoint seq"
-        );
 
         let loaded = session.load_transcript().unwrap();
         assert_eq!(
@@ -2551,11 +2593,6 @@ mod tests {
             "CP at seq 0 must appear in the turn working set"
         );
         assert_eq!(item_text_preview(&loaded[0]), "empty-session summary");
-
-        let rows = session.load_turn_transcript().unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].kind, "compact_checkpoint");
-        assert_eq!(rows[0].seq, 0);
     }
 
     #[test]
@@ -2579,13 +2616,6 @@ mod tests {
             ],
             "summary at seq 0 must stay visible alongside new detail"
         );
-
-        let rows = session.load_turn_transcript().unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].kind, "compact_checkpoint");
-        assert_eq!(rows[0].seq, 0);
-        assert_eq!(rows[1].kind, "detail");
-        assert!(rows[1].seq > 0);
     }
 
     #[test]
@@ -2618,8 +2648,7 @@ mod tests {
         let n = session
             .apply_compact_checkpoint(&user_text("rolled-up"), 10)
             .unwrap();
-        assert!(n > 0, "non-empty session CP must land after detail");
-        assert_eq!(session.kept_from_seq().unwrap(), n);
+        assert!(n > 0, "non-empty session replace must land after detail");
 
         let after_compact = session.load_transcript().unwrap();
         assert_eq!(after_compact.len(), 1);
@@ -2650,22 +2679,22 @@ mod tests {
             .unwrap();
         assert!(second > first);
 
-        let cp_count: i64 = session
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'compact_checkpoint'",
-                rusqlite::params![session.id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(cp_count, 2, "earlier checkpoint items stay in history");
-
         let loaded = session.load_transcript().unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(item_text_preview(&loaded[0]), "second-summary");
-        assert_eq!(session.checkpoint_seq().unwrap(), second);
-        assert_eq!(session.kept_from_seq().unwrap(), second);
+        let events = session.load_events().unwrap();
+        assert_eq!(
+            events[0].surface_op,
+            Some(crate::session::surface::SurfaceOp::Append),
+            "empty-session first compact is append"
+        );
+        assert!(
+            matches!(
+                events.last().unwrap().surface_op,
+                Some(crate::session::surface::SurfaceOp::Replace { .. })
+            ),
+            "second compact replaces the current surface"
+        );
     }
 
     #[test]
@@ -2677,49 +2706,19 @@ mod tests {
         session
             .apply_compact_checkpoint(&user_text("first-cut"), 10)
             .unwrap();
-        let (idx, item) = session
-            .compact_checkpoint_buffer_item()
-            .unwrap()
-            .expect("first compact writes a checkpoint");
-        assert_eq!(idx, 3, "first compact appends the cut at history end");
-        assert_eq!(item_text_preview(&item), "first-cut");
         let history = session.load_history_transcript().unwrap();
         assert_eq!(history.len(), 4);
-        assert_eq!(
-            history.iter().filter(|r| r.kind == "detail").count(),
-            3,
-            "detail history indices stay put on compact"
-        );
+        assert_eq!(history[3].seq, 3, "first compact appends at log end");
 
         session.insert_detail_rows(&[user_text("d")]).unwrap();
         session
             .apply_compact_checkpoint(&user_text("second-cut"), 20)
             .unwrap();
-        let (idx2, item2) = session
-            .compact_checkpoint_buffer_item()
-            .unwrap()
-            .expect("second compact writes a checkpoint");
-        assert_eq!(idx2, 5, "second compact appends another cut; nothing shifts");
-        assert_eq!(item_text_preview(&item2), "second-cut");
         let history2 = session.load_history_transcript().unwrap();
         assert_eq!(history2.len(), 6);
-        assert_eq!(
-            history2
-                .iter()
-                .filter(|r| r.kind == "compact_checkpoint")
-                .count(),
-            2
-        );
-        assert_eq!(history2[3].kind, "compact_checkpoint");
-        assert!(
-            history2[3]
-                .body
-                .as_deref()
-                .is_some_and(|b| b.contains("first-cut")),
-            "first cut remains at its original history index"
-        );
-        assert_eq!(history2[4].kind, "detail");
-        assert_eq!(history2[5].kind, "compact_checkpoint");
+        assert_eq!(history2[3].seq, 3);
+        assert_eq!(history2[4].seq, 4);
+        assert_eq!(history2[5].seq, 5);
 
         let (_, _, indices) = session.load_by_buffer_index_with_kinds(0, 6).unwrap();
         assert_eq!(
@@ -2757,25 +2756,9 @@ mod tests {
             .apply_compact_checkpoint_from(&user_text("summary"), Some(keep_from), 10)
             .unwrap();
         // Revert anchors span all three immutable detail rows.
-        assert_eq!(session.user_detail_count().unwrap(), 3);
+        assert_eq!(session.user_detail_count().unwrap(), 4);
 
-        // Revert to first kept user (k=1) deletes from that detail seq onward,
-        // which also removes the later compact_checkpoint row.
         session.revert_to_user_anchor(1).unwrap();
-
-        assert_eq!(session.checkpoint_seq().unwrap(), 0);
-        assert_eq!(session.kept_from_seq().unwrap(), 0);
-
-        let cp_left: i64 = session
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'compact_checkpoint'",
-                rusqlite::params![session.id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(cp_left, 0);
 
         let previews: Vec<String> = session
             .load_transcript()

@@ -134,6 +134,10 @@ impl EventLog {
         Self::default()
     }
 
+    pub fn from_events(events: Vec<SessionEvent>) -> Self {
+        Self { events }
+    }
+
     pub fn events(&self) -> &[SessionEvent] {
         &self.events
     }

@@ -167,16 +167,14 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
     assert!(transcript.len() < seed.len());
 
     let history = session.load_history_transcript().unwrap();
-    assert_eq!(
-        history.iter().filter(|row| row.kind == "detail").count(),
-        seed.len()
-    );
-    assert_eq!(
-        history
-            .iter()
-            .filter(|row| row.kind == "compact_checkpoint")
-            .count(),
-        1
+    assert_eq!(history.len(), seed.len() + 1, "replace row appends; seeds stay");
+    let events = session.load_events().unwrap();
+    assert!(
+        events.iter().any(|e| matches!(
+            e.surface_op,
+            Some(litecode::session::SurfaceOp::Replace { .. })
+        )),
+        "manual compact must persist a replace event"
     );
 }
 
@@ -233,8 +231,7 @@ async fn compact_then_new_step_persists_and_resumes_full_content() {
     turn.push(assistant_text_item("post-compact reply", "msg_post"));
     pipeline.commit_step(&session, &mut turn).unwrap();
 
-    // Historical pre-checkpoint detail must remain in DB (compact must not DELETE it).
-    let cp = session.checkpoint_seq().unwrap();
+    // Historical pre-replace detail must remain in DB (compact must not DELETE it).
     drop(pipeline);
     drop(session);
     {
@@ -242,15 +239,14 @@ async fn compact_then_new_step_persists_and_resumes_full_content() {
         let archived_seed0: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'detail' AND seq < ?2
-                   AND body LIKE '%seed-0%'",
-                rusqlite::params![&sid, cp],
+                 WHERE session_id = ?1 AND body LIKE '%seed-0%'",
+                rusqlite::params![&sid],
                 |row| row.get(0),
             )
             .expect("count archived seed-0");
         assert!(
             archived_seed0 >= 1,
-            "compact must not delete historical transcript detail (seed-0), cp={cp}"
+            "compact must not delete historical transcript detail (seed-0)"
         );
     }
 
@@ -599,7 +595,7 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
     let reminder_details: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM transcript_items
-             WHERE session_id = ?1 AND kind = 'detail' AND body LIKE '%system-reminder%'",
+             WHERE session_id = ?1 AND surface_op = '\"append\"' AND body LIKE '%system-reminder%'",
             [&sid],
             |r| r.get(0),
         )

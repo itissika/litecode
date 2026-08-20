@@ -4,11 +4,15 @@
 
 **Blocked by:** 02b: append-origin 事件按 seq 读写
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 删除生产路径 `apply_compact_checkpoint*`；调用方改为 append replace（`source_seqs` 覆盖被阴影 surface 节点）
-- [ ] 不再 UPDATE `checkpoint_seq` / `kept_from_seq` 当作模型窗口（B2 存储侧）
-- [ ] `SQL_LOAD_TURN_TRANSCRIPT` 的 CASE WHEN 重排删除（B1）；turn 加载按 seq ASC 读事件再 fold
-- [ ] 探针：磁盘上 detail 0..4 + replace `{start:0,end:1}` → `derive_messages` = `[摘要, seq2, seq3, seq4]`；append-origin 转写仍为 seq0..4
-- [ ] 旧 compact SQL 测试改断言 surface 或删除；不用 `#[ignore]`
-- [ ] 允许残破：agent loop 内存里仍可能握着派生 `Item[]`（03 再拔第二工作集）；线协议仍可说 `buffer_index`
+- [x] 删除生产路径 `apply_compact_checkpoint*`；调用方改为 append replace（`source_seqs` 覆盖被阴影 surface 节点）
+- [x] 不再 UPDATE `checkpoint_seq` / `kept_from_seq` 当作模型窗口（B2 存储侧）
+- [x] `SQL_LOAD_TURN_TRANSCRIPT` 的 CASE WHEN 重排删除（B1）；turn 加载按 seq ASC 读事件再 fold
+- [x] 探针：磁盘上 detail 0..4 + replace `{start:0,end:1}` → `derive_messages` = `[摘要, seq2, seq3, seq4]`；append-origin 转写仍为 seq0..4
+- [x] 旧 compact SQL 测试改断言 surface 或删除；不用 `#[ignore]`
+- [x] 允许残破：agent loop 内存里仍可能握着派生 `Item[]`（03 再拔第二工作集）；线协议仍可说 `buffer_index`
+
+## Answer
+
+`load_transcript` is `derive_messages(load_events)`. Compact appends `surface_op: replace` and does not write window pointers. `apply_compact_checkpoint*` names remain as a thin persist wrapper until callers are renamed.

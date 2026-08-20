@@ -243,30 +243,21 @@ impl CompactPolicy {
         // Pi firstKept: map in-memory cut → original DB detail seq. Compact
         // only the persisted prefix; the uncommitted tail is restored after.
         let kept_from_seq = sessions.with_entry_store(session_id, |s| {
-            let rows = s.load_turn_transcript()?;
-            if rows.len() != persisted_prefix_len {
+            let seqs = s.model_surface_seqs()?;
+            if seqs.len() != persisted_prefix_len {
                 return Err(LitecodeError::ToolExecution(format!(
                     "compact cut map: persisted prefix len {persisted_prefix_len} != DB working set {}",
-                    rows.len()
+                    seqs.len()
                 ))
                 .into());
             }
-            if cut >= rows.len() {
-                return Err(LitecodeError::ToolExecution(format!(
+            let seq = seqs.get(cut).ok_or_else(|| {
+                LitecodeError::ToolExecution(format!(
                     "compact cut {cut} out of range (persisted prefix len={})",
-                    rows.len()
+                    seqs.len()
                 ))
-                .into());
-            }
-            let row = &rows[cut];
-            if row.kind != "detail" {
-                return Err(LitecodeError::ToolExecution(format!(
-                    "compact firstKept must be detail (got kind={} seq={})",
-                    row.kind, row.seq
-                ))
-                .into());
-            }
-            Ok(row.seq)
+            })?;
+            Ok(*seq as i64)
         });
         let kept_from_seq = match kept_from_seq {
             Ok(seq) => seq,
