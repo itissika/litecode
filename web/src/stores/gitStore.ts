@@ -154,6 +154,9 @@ export const useGitStore = create<GitStore>((set, get) => ({
   clearSelection: () => set({ selected: new Set(), anchorId: null }),
 
   refresh: async (opts) => {
+    // Skip refreshes while the Source Control panel is hidden — the catch-up
+    // in setVisible() re-runs one when it becomes visible again.
+    if (!get().visible) return;
     if (refreshInFlight) {
       refreshQueued = true;
       return;
@@ -182,6 +185,9 @@ export const useGitStore = create<GitStore>((set, get) => ({
   },
 
   scheduleRefresh: (paths) => {
+    // No need to track changes while the panel is hidden; setVisible() does a
+    // catch-up refresh when it becomes visible again.
+    if (!get().visible) return;
     if (!watchPathsAffectGitWorktree(paths)) return;
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => {

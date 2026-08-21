@@ -22,7 +22,7 @@ export function MenuBar({ onAction, sessionMode = "local", items }: MenuBarProps
           variant="menu"
           trigger={({ open, toggle }) => (
             <button
-              className="px-2.5 h-[30px] text-xs transition-colors hover:brightness-125 active:brightness-75"
+              className="px-2.5 h-[35px] text-xs transition-colors hover:brightness-125 active:brightness-75"
               style={{
                 background: open ? "var(--_dk-line-visible)" : "transparent",
                 color: open

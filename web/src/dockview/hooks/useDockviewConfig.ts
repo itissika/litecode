@@ -1,7 +1,7 @@
 import { useCallback, useRef } from "react";
 import type { DockviewApi, DockviewWillDropEvent } from "dockview-react";
 
-import { buildDefaultLayout, ensureBottomEdge, ensureGitPanel, ensureSearchPanel, ensureTerminalPanel } from "../config/layout";
+import { buildDefaultLayout, ensureDefaultPanels } from "../config/layout";
 import { closingFlags } from "../config/sharedFlags";
 import { useEditorStore } from "../../stores/editorStore";
 import { useConnectionStore, setDockviewApi } from "../../stores/connectionStore";
@@ -116,12 +116,11 @@ export function useDockviewConfig() {
           if (gridGroups.length === 0) {
             buildDefaultLayout(api);
           }
-          ensureSearchPanel(api);
-          ensureGitPanel(api);
-          // fromJSON replaces the whole layout; re-ensure the always-visible
-          // Terminal panel and its bottom edge are present after a restore.
-          ensureBottomEdge(api);
-          ensureTerminalPanel(api);
+          // fromJSON replaces the whole layout; re-ensure every default panel
+          // (Explorer / Search / Source Control / Sessions / Terminal) is
+          // present so a version update that adds a new panel never leaves a
+          // side panel missing from a restored snapshot.
+          ensureDefaultPanels(api);
 
           // Restore editor tabs for persisted editor panels
           void restoreEditorTabs(api);
@@ -137,12 +136,7 @@ export function useDockviewConfig() {
             if (gridGroups.length === 0) {
               buildDefaultLayout(api);
             }
-            ensureSearchPanel(api);
-            ensureGitPanel(api);
-            // fromJSON replaces the whole layout; re-ensure the always-visible
-            // Terminal panel and its bottom edge are present after a restore.
-            ensureBottomEdge(api);
-            ensureTerminalPanel(api);
+            ensureDefaultPanels(api);
             // Restore editor tabs (safety net path)
             void restoreEditorTabs(api);
           }
