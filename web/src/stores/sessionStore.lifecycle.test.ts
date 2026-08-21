@@ -175,6 +175,32 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
     expect(turn.currentTurnId).toBe("t-next");
   });
 
+  it("truncates loaded transcript from a successful revert snapshot when buffer/reverted was missed", () => {
+    const sid = "s-revert-fallback";
+    useMessageStore.getState().onBufferLoaded(sid, {
+      session_id: sid,
+      from_seq: 0,
+      to_seq: 3,
+      events: [
+        { seq: 0, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "keep" }] } },
+        { seq: 1, kind: "item/assistant", body: { type: "message", role: "assistant", id: "a0", status: "completed", content: [{ type: "output_text", text: "drop", annotations: [] }] } },
+        { seq: 2, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "drop too" }] } },
+      ],
+    });
+
+    useSessionStore.getState().onOperationResult({
+      op: "revert_to_user_anchor",
+      ok: true,
+      error: null,
+      snapshot: snap(sid, 1),
+    });
+
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages.map((row) => row.seq)).toEqual([0]);
+    expect(slice.toSeq).toBe(1);
+    expect(slice.blockLogGrowth).toBe(true);
+  });
+
   it("turn_finished still forces idle after a compact-style snapshot", () => {
     const sid = "s-finish";
     useTurnStore.getState().applySnapshotTurn(sid, {

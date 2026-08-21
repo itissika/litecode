@@ -79,6 +79,35 @@ describe("turnStore convergence", () => {
     });
   });
 
+  it("serializes replay settings, transcript revert, then replacement run", async () => {
+    const sessionId = "s-replay";
+    const sendRpc = vi.fn(async (_method: string) => ({}));
+    useConnectionStore.setState({ sendRpc } as never);
+
+    await expect(
+      useTurnStore.getState().replayFromAnchor(sessionId, 2, "replacement", {
+        primaryId: "default",
+        modelId: "model-1",
+        thinkingTier: "high",
+        contextMode: "max",
+      }),
+    ).resolves.toBe(true);
+
+    expect(sendRpc.mock.calls.map(([method]) => method)).toEqual([
+      "agent/set-primary",
+      "agent/set-model",
+      "agent/set-thinking-tier",
+      "agent/set-context-mode",
+      "session/revert-to-user-anchor",
+      "agent/run",
+    ]);
+    expect(sendRpc).toHaveBeenCalledWith("session/revert-to-user-anchor", {
+      session_id: sessionId,
+      k: 2,
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.replaying).toBe(false);
+  });
+
   it("onCompactLifecycle started/succeeded drives compacting for auto and manual", () => {
     const sessionId = "s-life";
     useTurnStore.setState({

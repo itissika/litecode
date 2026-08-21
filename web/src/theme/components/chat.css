@@ -567,3 +567,37 @@
 .bash-view-reveal {
   animation: bash-view-reveal 900ms ease-out;
 }
+
+/* ── Mini chat input overlay ── */
+
+@keyframes mini-chat-enter {
+  0% {
+    opacity: 0;
+    width: 200px;
+    max-height: 40px;
+    transform: translateY(12px);
+  }
+  100% {
+    opacity: 1;
+    width: 100%;
+    max-height: 500px;
+    transform: translateY(0);
+  }
+}
+
+@keyframes mini-chat-exit {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.animate-mini-chat-enter {
+  animation: mini-chat-enter 200ms ease-out forwards;
+}
+
+.animate-mini-chat-exit {
+  animation: mini-chat-exit 150ms ease-in forwards;
+}

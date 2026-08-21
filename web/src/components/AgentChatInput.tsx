@@ -22,7 +22,7 @@ const DISABLED_CTRL = "disabled:cursor-not-allowed";
 const CTRL_BASE = `${CTRL_H} ${CTRL_TEXT} ${PRESS} ${DISABLED_CTRL} box-border flex items-center rounded-md border border-transparent px-2 leading-none text-(--_dk-text-muted) hover:text-(--_dk-ix-fg-hover)`;
 const CTRL_BTN = `${CTRL_BASE} hover:bg-(--_dk-ix-bg-hover)`;
 
-function AgentPicker({
+export function AgentPicker({
   agents,
   activeId,
   pendingId,
@@ -80,7 +80,7 @@ function AgentPicker({
   );
 }
 
-function ThinkSlider({
+export function ThinkSlider({
   sessionId,
   value,
   disabled,
@@ -134,7 +134,7 @@ function ThinkSlider({
   );
 }
 
-function ContextModeToggle({
+export function ContextModeToggle({
   mode,
   disabled,
   onChange,
@@ -171,6 +171,9 @@ export function AgentChatInput({ sessionId }: { sessionId: string }) {
   );
   const compacting = useTurnStore(
     (s) => s.byId.get(sessionId)?.compacting ?? false,
+  );
+  const replaying = useTurnStore(
+    (s) => s.byId.get(sessionId)?.replaying ?? false,
   );
   const startAction = useTurnStore((s) => s.start);
   const cancelAction = useTurnStore((s) => s.cancel);
@@ -269,7 +272,7 @@ export function AgentChatInput({ sessionId }: { sessionId: string }) {
 
   const isRunning = runState === "running" || runState === "cancelling";
   const hasModel = Boolean(sessionModelId);
-  const connBlocked = connection !== "connected" || isRunning || compacting;
+  const connBlocked = connection !== "connected" || isRunning || compacting || replaying;
   const isBlocked = connBlocked || !hasModel;
 
   const submit = (e?: FormEvent) => {

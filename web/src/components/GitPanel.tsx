@@ -4,6 +4,8 @@ import {
   ArrowUp,
   CaretDown,
   CaretRight,
+  Check,
+  Copy,
   GitBranch,
   Minus,
   Plus,
@@ -329,23 +331,33 @@ function ChangeGroup({
 
 function CommitRow({
   commit,
+  branch,
   graphWidthPx,
   selected,
   onSelect,
 }: {
   commit: GitCommitInfo;
+  branch: string | null;
   graphWidthPx: number;
   selected: boolean;
   onSelect: () => void;
 }) {
-  const tip = [commit.sha, "", commit.author, commit.date, "", commit.subject, commit.body]
-    .filter((line, i, arr) => !(line === "" && i === arr.length - 1))
-    .join("\n");
+  const [copied, setCopied] = useState(false);
+
+  const copySha = async () => {
+    try {
+      await navigator.clipboard.writeText(commit.sha);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
 
   return (
     <Popover
       triggerOn="click"
-      width="trigger"
+      width={320}
       placement="down-left"
       gap={4}
       className="block"
@@ -370,14 +382,56 @@ function CommitRow({
         </div>
       )}
     >
-      <div className="max-h-48 overflow-auto whitespace-pre-wrap p-2 text-dk-xs text-(--_dk-text-secondary)">
-        {tip}
+      <div className="p-2.5 text-dk-xs text-(--_dk-text-secondary)">
+        {branch && (
+          <div className="mb-1.5 flex items-center">
+            <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-(--_dk-line-visible) px-2 py-0.5 text-[10px] text-(--_dk-text-muted)">
+              <GitBranch size={10} className="shrink-0" />
+              <span className="truncate">{branch}</span>
+            </span>
+          </div>
+        )}
+        <div className="flex items-center gap-1.5">
+          <span className="truncate font-mono text-(--_dk-text-primary)">
+            {commit.sha.slice(0, 7)}
+          </span>
+          <button
+            type="button"
+            onClick={() => void copySha()}
+            aria-label={copied ? "Copied" : "Copy commit sha"}
+            title={copied ? "Copied" : "Copy full sha"}
+            className="shrink-0 rounded p-0.5 text-(--_dk-text-muted) transition-colors hover:bg-(--_dk-ix-bg-selected) hover:text-(--_dk-text-secondary)"
+          >
+            {copied ? (
+              <Check size={12} weight="bold" aria-hidden />
+            ) : (
+              <Copy size={12} aria-hidden />
+            )}
+          </button>
+        </div>
+        <div className="mt-1.5 font-medium leading-snug text-(--_dk-text-primary)">
+          {commit.subject}
+        </div>
+        <div className="mt-1 text-(--_dk-text-muted)">
+          {commit.author} · {commit.date}
+        </div>
+        {commit.body && (
+          <div className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap leading-relaxed text-(--_dk-text-secondary)">
+            {commit.body}
+          </div>
+        )}
       </div>
     </Popover>
   );
 }
 
-function CommitsPane({ commits }: { commits: GitCommitInfo[] }) {
+function CommitsPane({
+  commits,
+  branch,
+}: {
+  commits: GitCommitInfo[];
+  branch: string | null;
+}) {
   const paneRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
@@ -413,6 +467,7 @@ function CommitsPane({ commits }: { commits: GitCommitInfo[] }) {
             <CommitRow
               key={c.sha}
               commit={c}
+              branch={branch}
               graphWidthPx={graphWidthPx}
               selected={c.sha === selectedSha}
               onSelect={() => setSelectedSha(c.sha)}
@@ -591,7 +646,7 @@ export function GitPanel() {
         />
 
         <div className="min-h-0 overflow-auto" style={{ flex: 1 - split }}>
-          <CommitsPane commits={commits} />
+          <CommitsPane commits={commits} branch={status.branch} />
         </div>
       </div>
     </div>

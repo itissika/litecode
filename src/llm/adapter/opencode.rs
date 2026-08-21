@@ -19,7 +19,7 @@ use super::chat_completions::{
     ChatEncodeOpts, chat_post_url, complete_from_response, encode_chat_body, normalize_endpoint,
     stream_from_response,
 };
-use super::transport_error;
+use super::{llm_http_client, transport_error};
 
 /// Official Zen host. Empty Settings endpoint fills this; override for Go.
 pub(crate) const DEFAULT_ENDPOINT: &str = "https://opencode.ai/zen/v1";
@@ -41,9 +41,7 @@ impl OpencodeProvider {
         // cancel already covers "nothing happening". Idle `read_timeout` would
         // mis-kill silent thinking. Highest-ROI follow-up is retry on transport
         // timeout — shelved; dropping the cap is enough for now.
-        let client = Client::builder()
-            // .timeout(std::time::Duration::from_secs(120))
-            .build()?;
+        let client = llm_http_client()?;
         Ok(Self {
             client,
             endpoint_url: endpoint,

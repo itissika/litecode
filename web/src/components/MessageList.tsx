@@ -26,7 +26,6 @@ import { CategoryCount } from "./CategoryCount";
 import { FoldCard } from "./FoldCard";
 import { InlineToolRow } from "./InlineToolRow";
 import { requestFoldCardOpen } from "./foldCardState";
-import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useEditorStore } from "../stores/editorStore";
 import { useTurnStore } from "../stores/turnStore";
@@ -35,6 +34,7 @@ import { isInlineTool, processToolBucket } from "../lib/toolCategory";
 import { useStickToBottom } from "../lib/scrollStick";
 import { ToolCallCard } from "./ToolCallCard";
 import { isToolCallLive, processGroupAutoOpen } from "./toolCallStatus";
+import { MiniChatInput, type MiniChatInputSettings } from "./MiniChatInput";
 
 type RenderNode =
   | { kind: "text"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
@@ -48,6 +48,13 @@ type RenderNode =
       streaming: boolean;
       live: boolean;
     };
+
+export interface EditingUserAnchor {
+  bubbleKey: string;
+  userAnchorK: number;
+  draft: string;
+  settings: MiniChatInputSettings;
+}
 
 /** Cut mark between transcript items — not a divider bubble, not summary text. */
 export function CompactCutMark() {
@@ -209,7 +216,6 @@ export function groupNodes(nodes: RenderNode[]): NodeGroup[] {
 export function NodeView({
   node,
   streaming = false,
-  live = false,
   projectRoot,
   onOpenFile,
   sessionId,
@@ -217,7 +223,6 @@ export function NodeView({
 }: {
   node: RenderNode;
   streaming?: boolean;
-  live?: boolean;
   projectRoot?: string | null;
   onOpenFile?: (path: string) => void;
   sessionId?: string;
@@ -262,7 +267,6 @@ export function NodeView({
             call={node.call}
             output={node.output}
             streaming={node.live}
-            live={live}
             sessionId={sessionId}
           />
         );
@@ -272,7 +276,6 @@ export function NodeView({
           call={node.call}
           output={node.output}
           streaming={node.live}
-          live={live}
           projectRoot={projectRoot ?? null}
           onOpenFile={(path) => onOpenFile?.(path)}
           sessionId={sessionId}
@@ -402,7 +405,6 @@ export function ProcessGroup({
             key={node.key}
             node={node}
             streaming={node.streaming}
-            live={streaming}
             projectRoot={project}
             onOpenFile={(path) => void openFile(path)}
             sessionId={sessionId}
@@ -419,10 +421,13 @@ function ItemBubbleImpl({
   rows,
   userAnchorK,
   showRevert,
-  showRevertFiles = false,
-  isRunning,
   sessionId,
   bubbleKey,
+  editingAnchor,
+  onEditAnchor,
+  onDismissEdit,
+  miniPhase,
+  onMiniAnimationEnd,
 }: {
   rows: HumanRow[];
   userAnchorK?: number;
@@ -433,9 +438,15 @@ function ItemBubbleImpl({
    *  child FoldCard open-state so it survives virtual-list remounts. */
   bubbleKey?: string;
   showRevertFiles?: boolean;
+  editingAnchor: EditingUserAnchor | null;
+  onEditAnchor: (anchor: EditingUserAnchor) => void;
+  onDismissEdit: () => void;
+  miniPhase: "idle" | "entering" | "visible" | "exiting";
+  onMiniAnimationEnd: () => void;
 }) {
-  const revertToUserAnchor = useMessageStore((s) => s.revertToUserAnchor);
-  const revertFiles = useMessageStore((s) => s.revertFiles);
+  const sessionSettings = useSessionStore((s) => s.byId.get(sessionId));
+  const replayFromAnchor = useTurnStore((s) => s.replayFromAnchor);
+  const replaying = useTurnStore((s) => s.byId.get(sessionId)?.replaying ?? false);
   const first = rows.find((r) => !isCompactCutRow(r)) ?? rows[0];
   const isUser = first != null && isHumanUserRow(first);
   const nodes = rowsToNodes(rows);
@@ -443,6 +454,12 @@ function ItemBubbleImpl({
     rows.some((r) => rowInProgress(r)) || nodes.some((n) => n.streaming);
   const hasContent = nodes.length > 0 || !streaming;
   const groups = groupNodes(nodes);
+  const userText = nodes.find((node) => node.kind === "text")?.text ?? "";
+  const editing =
+    isUser &&
+    bubbleKey !== undefined &&
+    editingAnchor?.bubbleKey === bubbleKey &&
+    userAnchorK !== undefined;
 
   const body = !hasContent ? (
     <span className="inline-block h-4 w-2 bg-(--_dk-text-muted)" />
@@ -455,10 +472,11 @@ function ItemBubbleImpl({
       }
       if (group.type === "process") {
         const groupLive = group.nodes.some((n) => n.kind !== "compact_cut" && n.live);
+        const followedByMessage = groups[gi + 1]?.type === "output";
+        const hasTerminalStop = processGroupHasTerminalStop(group.nodes);
         const groupAutoOpen = processGroupAutoOpen({
-          hasLive: groupLive,
-          followedByMessage: groups[gi + 1]?.type === "output",
-          hasTerminalStop: processGroupHasTerminalStop(group.nodes),
+          followedByMessage,
+          hasTerminalStop,
         });
         return (
           <ProcessGroup
@@ -489,37 +507,55 @@ function ItemBubbleImpl({
   return (
     <div className={isUser ? "py-4" : "py-2"}>
       {isUser ? (
-        <div className="flex items-start gap-2">
+        editing ? (
+          <div
+            className={`relative z-10 w-full overflow-hidden origin-bottom ${
+              miniPhase === "entering" ? "animate-mini-chat-enter" : ""
+            } ${miniPhase === "exiting" ? "animate-mini-chat-exit" : ""}`}
+            onAnimationEnd={onMiniAnimationEnd}
+          >
+            <MiniChatInput
+              sessionId={sessionId}
+              draft={editingAnchor.draft}
+              settings={editingAnchor.settings}
+              disabled={replaying}
+              onDismiss={onDismissEdit}
+              onChange={(draft, settings) => {
+                onEditAnchor({ ...editingAnchor, draft, settings });
+              }}
+              onSubmit={(input, settings) => {
+                onDismissEdit();
+                void replayFromAnchor(sessionId, userAnchorK, input, settings);
+              }}
+            />
+          </div>
+        ) : (
+        <div
+          data-user-message-bubble
+          className="flex cursor-text items-start gap-2"
+          onClick={() => {
+            if (!showRevert || userAnchorK === undefined || !bubbleKey || editing) return;
+            onEditAnchor({
+              bubbleKey,
+              userAnchorK,
+              draft: userText,
+              settings: {
+                primaryId: sessionSettings?.activePrimary ?? "default",
+                modelId: sessionSettings?.modelId ?? "",
+                thinkingTier: sessionSettings?.thinkingTier ?? "medium",
+                contextMode: sessionSettings?.contextMode ?? "standard",
+              },
+            });
+          }}
+        >
           <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-accent-hover)" />
           <div className="min-w-0 flex-1">{body}</div>
         </div>
+        )
       ) : (
         <div className="flex items-start gap-2">
           <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-text-muted)" />
           <div className="min-w-0 flex-1">{body}</div>
-        </div>
-      )}
-      {showRevert && isUser && userAnchorK !== undefined && (
-        <div className="mt-1 flex justify-start gap-1 pl-[14px] opacity-80">
-          <button
-            type="button"
-            onClick={() => revertToUserAnchor(sessionId, userAnchorK)}
-            className="rounded px-1.5 py-0.5 text-dk-2xs text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-ix-fg-hover) disabled:cursor-not-allowed disabled:opacity-40"
-            title="Revert transcript to here"
-          >
-            Revert to here
-          </button>
-          {showRevertFiles && (
-            <button
-              type="button"
-              disabled={isRunning}
-              onClick={() => revertFiles(sessionId, userAnchorK)}
-              className="rounded px-1.5 py-0.5 text-dk-2xs text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-ix-fg-hover) disabled:cursor-not-allowed disabled:opacity-40"
-              title="Revert only files changed by the agent since this message (OpenCode-style)"
-            >
-              Revert files
-            </button>
-          )}
         </div>
       )}
     </div>
@@ -540,6 +576,7 @@ export const ItemBubble = memo(
     prev.showRevertFiles === next.showRevertFiles &&
     prev.userAnchorK === next.userAnchorK &&
     prev.bubbleKey === next.bubbleKey &&
+    prev.editingAnchor === next.editingAnchor &&
     prev.rows.length === next.rows.length &&
     prev.rows.every((r, i) => r === next.rows[i]),
 );
@@ -659,6 +696,11 @@ interface MessageListProps {
   onStickChange?: (stickToEnd: boolean) => void;
   jumpToEndRef?: RefObject<(() => void) | null>;
   revealBashRef?: RefObject<((callId: string) => void) | null>;
+  editingAnchor?: EditingUserAnchor | null;
+  onEditAnchor?: (anchor: EditingUserAnchor) => void;
+  onDismissEdit?: () => void;
+  miniPhase?: "idle" | "entering" | "visible" | "exiting";
+  onMiniAnimationEnd?: () => void;
 }
 
 export const MessageList = memo(function MessageList({
@@ -674,6 +716,11 @@ export const MessageList = memo(function MessageList({
   onStickChange,
   jumpToEndRef,
   revealBashRef,
+  editingAnchor,
+  onEditAnchor = () => {},
+  onDismissEdit = () => {},
+  miniPhase = "idle",
+  onMiniAnimationEnd = () => {},
 }: MessageListProps) {
   const bubbles = useMemo(() => groupRowsForBubbles(messages), [messages]);
   // Transient "compacting now" phase: manual compaction surfaces via `compacting`
@@ -893,6 +940,11 @@ export const MessageList = memo(function MessageList({
                     isRunning={isRunning}
                     sessionId={sessionId}
                     bubbleKey={bubbleKey}
+                    editingAnchor={editingAnchor ?? null}
+                    onEditAnchor={onEditAnchor}
+                    onDismissEdit={onDismissEdit}
+                    miniPhase={miniPhase}
+                    onMiniAnimationEnd={onMiniAnimationEnd}
                   />
                 )}
               </div>

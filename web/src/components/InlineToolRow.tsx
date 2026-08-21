@@ -9,7 +9,6 @@ interface InlineToolRowProps {
   call: FunctionCallItem;
   output?: FunctionCallOutputItem;
   streaming?: boolean;
-  live?: boolean;
   sessionId?: string;
 }
 
@@ -21,7 +20,6 @@ export function InlineToolRow({
   call,
   output,
   streaming = false,
-  live = false,
   sessionId,
 }: InlineToolRowProps) {
   const toolName = call.name;
@@ -30,7 +28,7 @@ export function InlineToolRow({
 
   return (
     <div className="flex items-center gap-1.5 py-1 pl-(--_dk-indent-card-head) text-xs text-(--_dk-text-muted)">
-      <ToolIcon name={toolName} status={status} live={live} />
+      <ToolIcon name={toolName} status={status} streaming={streaming} />
       {toolName === "wait_shell" ? (
         <WaitShellToolView
           name={toolName}

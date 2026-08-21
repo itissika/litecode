@@ -22,14 +22,8 @@ function cacheHitRate(hit: number, miss: number): number | null {
 
 type RGB = [number, number, number];
 
-function parseVar(name: string): RGB {
-  // Resolve a CSS custom property to an [r,g,b] triple at runtime so the
-  // gradient follows the active theme (dark/light).
-  if (typeof window === "undefined") return [0, 0, 0];
-  const raw = getComputedStyle(document.documentElement)
-    .getPropertyValue(name)
-    .trim();
-  const m = raw.match(/^#([0-9a-f]{6})$/i);
+function hexToRgb(hex: string): RGB {
+  const m = hex.match(/^#([0-9a-f]{6})$/i);
   if (!m) return [0, 0, 0];
   const n = parseInt(m[1], 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
@@ -43,13 +37,16 @@ function lerp(a: number, b: number, t: number): number {
 // 60% already signals cache utilization problems, so it is fully red. The scale
 // is squeezed toward the top: yellow tier (0.8) is where the breathing glow
 // kicks in, green is reserved for genuinely good rates.
-const RING_STOPS: { name: string; at: number }[] = [
-  { name: "--_dk-red-500", at: 0 },
-  { name: "--_dk-red-500", at: 0.6 },
-  { name: "--_dk-cat-orange", at: 0.7 },
-  { name: "--_dk-cat-yellow", at: 0.8 },
-  { name: "--_dk-cat-cyan", at: 0.9 },
-  { name: "--_dk-emerald-500", at: 1 },
+//
+// Colors are a fixed, theme-independent set (the brighter dark-theme hues), so
+// the ring reads the same on dark and light surfaces.
+const RING_STOPS: { color: string; at: number }[] = [
+  { color: "#ef4444", at: 0 },
+  { color: "#ef4444", at: 0.6 },
+  { color: "#f97316", at: 0.7 },
+  { color: "#eab308", at: 0.8 },
+  { color: "#06b6d4", at: 0.9 },
+  { color: "#10b981", at: 1 },
 ];
 
 // Exported for Remotion compositions (c-switch ring replica) so the hit-rate →
@@ -67,8 +64,8 @@ export function ringColorForHitRate(rate: number): string {
   }
   const span = hi.at - lo.at || 1;
   const t = (clamped - lo.at) / span;
-  const a = parseVar(lo.name);
-  const b = parseVar(hi.name);
+  const a = hexToRgb(lo.color);
+  const b = hexToRgb(hi.color);
   const r = Math.round(lerp(a[0], b[0], t));
   const g = Math.round(lerp(a[1], b[1], t));
   const bl = Math.round(lerp(a[2], b[2], t));

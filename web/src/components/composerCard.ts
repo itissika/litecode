@@ -14,5 +14,8 @@ export const composerCardClass = [
   // glass fill: 88% editor, rest shows the list through
   "[background:color-mix(in_srgb,var(--_dk-editor)_82%,transparent)]",
   "backdrop-blur-[12px]",
+  // quick shadow transition — the dock container flips the card-shadow var on
+  // panel focus change, and this eases the box-shadow instead of snapping it.
+  "transition-shadow duration-150",
   composerShadow,
 ].join(" ");

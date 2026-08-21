@@ -11,6 +11,7 @@ import {
   normalizeLang,
 } from "../lib/shiki";
 import { isMermaidLang } from "../lib/mermaid";
+import { useStreamingBuffer } from "../lib/streamingBuffer";
 import { MermaidBlock } from "./MermaidBlock";
 
 const GENERIC_LANGS = new Set(["", "text", "txt", "plain", "plaintext"]);
@@ -101,6 +102,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   text,
   streaming = false,
 }: AgentMarkdownProps) {
+  const displayText = useStreamingBuffer(text, streaming);
   const components = useMemo(
     () => ({
       p: ({ children }: { children?: ReactNode }) => (
@@ -202,7 +204,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   return (
     <div className="agent-markdown">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {text}
+        {displayText}
       </ReactMarkdown>
     </div>
   );

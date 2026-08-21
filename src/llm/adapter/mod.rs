@@ -29,6 +29,50 @@ use crate::config::schema::ProviderDefinition;
 use crate::llm::provider::LlmProvider;
 use crate::types::{LitecodeError, Result};
 
+/// Build an HTTP client safe to share across short-lived agent runtimes.
+///
+/// Agent turns run on per-turn Tokio runtimes. Keeping an idle pooled
+/// connection after its originating runtime exits leaves Hyper's dispatcher
+/// task unavailable to the next turn (`DispatchGone`). Disable idle pooling;
+/// an active stream remains unaffected.
+pub(super) fn llm_http_client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        .build()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::llm_http_client;
+
+    #[tokio::test]
+    async fn llm_client_does_not_reuse_idle_connections() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request).await.unwrap();
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let client = llm_http_client().unwrap();
+        let url = format!("http://{address}/");
+        client.get(&url).send().await.unwrap().error_for_status().unwrap();
+        client.get(&url).send().await.unwrap().error_for_status().unwrap();
+
+        server.await.unwrap();
+    }
+}
+
 /// Preserve useful transport diagnostics without exposing credentials or bodies.
 ///
 /// `reqwest::Error::Display` may include a full request URL. Keep only its

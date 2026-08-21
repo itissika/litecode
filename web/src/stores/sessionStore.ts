@@ -222,6 +222,19 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       }
       if (op.op === "revert_to_user_anchor") {
         applySnapshot(op.snapshot);
+        // `buffer/reverted` normally arrives before the operation result. If
+        // that notification was lost during a socket hiccup, the snapshot is
+        // still authoritative and must trim an already-loaded local window.
+        const local = useMessageStore.getState().bySession.get(op.snapshot.session_id);
+        if (local && local.toSeq > op.snapshot.buffer.next_seq) {
+          useTurnStore.getState().clearPendingStream(op.snapshot.session_id);
+          useTurnStore.getState().onTranscriptReverted(op.snapshot.session_id);
+          useMessageStore.getState().onBufferReverted(op.snapshot.session_id, {
+            session_id: op.snapshot.session_id,
+            last_seq: op.snapshot.buffer.last_seq,
+            next_seq: op.snapshot.buffer.next_seq,
+          });
+        }
         useToastStore
           .getState()
           .showToast("Transcript reverted", "success");

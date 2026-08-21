@@ -1,11 +1,44 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AgentMarkdown } from "./AgentMarkdown";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("AgentMarkdown raw HTML boundary", () => {
+  it("reveals a small stream one character at a time", () => {
+    vi.useFakeTimers();
+    const { container, rerender } = render(<AgentMarkdown text="" streaming />);
+
+    rerender(<AgentMarkdown text="abc" streaming />);
+    act(() => vi.advanceTimersByTime(28));
+
+    expect(container.textContent).toBe("a");
+  });
+
+  it("accelerates when the visual stream falls behind", () => {
+    vi.useFakeTimers();
+    const { container, rerender } = render(<AgentMarkdown text="" streaming />);
+
+    rerender(<AgentMarkdown text={"a".repeat(300)} streaming />);
+    act(() => vi.advanceTimersByTime(28));
+
+    expect(container.textContent).toHaveLength(5);
+  });
+
+  it("renders the complete text when a stream finishes between renders", () => {
+    const { container, rerender } = render(
+      <AgentMarkdown text="" streaming />,
+    );
+
+    rerender(<AgentMarkdown text="complete assistant response" streaming={false} />);
+
+    expect(container.textContent).toContain("complete assistant response");
+  });
+
   it("renders raw HTML as inert text instead of executable DOM", () => {
     const raw = [
       '<iframe srcdoc="<script>globalThis.pwned = true</script>"></iframe>',

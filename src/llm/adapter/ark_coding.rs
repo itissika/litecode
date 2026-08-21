@@ -22,7 +22,7 @@ use super::responses_sse::{SseLineReader, check_event_stream_content_type, sse_d
 use super::stream_contract::{
     StreamContractGate, StreamItemAccumulator, forward_stream_event, resolve_stream_outcome,
 };
-use super::transport_error;
+use super::{llm_http_client, transport_error};
 
 /// Settings / catalog root (Codex `base_url`). [`normalize_endpoint`] appends `/responses`.
 pub(crate) const DEFAULT_ENDPOINT: &str = "https://ark.cn-beijing.volces.com/api/coding/v3";
@@ -43,9 +43,7 @@ impl ArkCodingProvider {
         // cancel already covers "nothing happening". Idle `read_timeout` would
         // mis-kill silent thinking. Highest-ROI follow-up is retry on transport
         // timeout — shelved; dropping the cap is enough for now.
-        let client = Client::builder()
-            // .timeout(std::time::Duration::from_secs(120))
-            .build()?;
+        let client = llm_http_client()?;
         Ok(Self {
             client,
             endpoint_url: endpoint,

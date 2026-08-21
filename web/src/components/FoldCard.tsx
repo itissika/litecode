@@ -275,11 +275,15 @@ export function FoldCard({
         {icon != null ? (
           <span className={`${FOLDCARD_HEADER_TONE} inline-flex shrink-0`}>{icon}</span>
         ) : null}
-        {typeof label === "string" ? (
-          <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate`}>{label}</span>
-        ) : (
-          label
-        )}
+        <span
+          className="foldcard-title relative min-w-0 flex-1"
+        >
+          {typeof label === "string" ? (
+            <span className={`${FOLDCARD_HEADER_TONE} block truncate`}>{label}</span>
+          ) : (
+            label
+          )}
+        </span>
       </div>
       <div
         ref={bodyRef}

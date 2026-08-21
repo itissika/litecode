@@ -64,15 +64,16 @@ export function SubagentViewport({
       {groups.map((group, gi) => {
         if (group.type === "process") {
           const hasLive = group.nodes.some((n) => n.kind !== "compact_cut" && n.live);
+          const followedByMessage = groups[gi + 1]?.type === "output";
+          const hasTerminalStop = processGroupHasTerminalStop(group.nodes);
           return (
             <ProcessGroup
               key={`proc-${gi}`}
               nodes={group.nodes}
               streaming={hasLive}
               autoOpen={processGroupAutoOpen({
-                hasLive,
-                followedByMessage: groups[gi + 1]?.type === "output",
-                hasTerminalStop: processGroupHasTerminalStop(group.nodes),
+                followedByMessage,
+                hasTerminalStop,
               })}
               sessionId={childSessionId}
               groupIndex={gi}

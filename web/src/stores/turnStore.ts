@@ -3,6 +3,8 @@ import { create } from "zustand";
 import { applyTurnEventMeta, isHumanUserRow, itemFromRow, itemPlainText, newPendingUserId, userTextItem } from "../api/adapter";
 import type {
   AgentRunState,
+  ContextMode,
+  ThinkingTier,
   TurnPhase,
   TurnSnapshot,
   TurnStarted,
@@ -31,6 +33,8 @@ export interface PendingPermission {
 /** Per-session turn runtime state only — no composer/UI draft fields. */
 export interface TurnSlice {
   runState: AgentRunState;
+  /** A replay workflow owns this session between cancel and the replacement run. */
+  replaying: boolean;
   currentTurnId: string | null;
   pendingCancel: boolean;
   pendingPermission: PendingPermission | null;
@@ -64,6 +68,7 @@ export function emptySlice(): TurnSlice {
 
 export const EMPTY_SLICE: TurnSlice = {
   runState: "idle",
+  replaying: false,
   currentTurnId: null,
   pendingCancel: false,
   pendingPermission: null,
@@ -110,6 +115,13 @@ function todoPatchFromItems(
     todoInProgress: mapped.filter((t) => t.status === "in_progress").length,
     todoCompleted: mapped.filter((t) => t.status === "completed").length,
   };
+}
+
+export interface ReplaySettings {
+  primaryId: string;
+  modelId: string;
+  thinkingTier: ThinkingTier;
+  contextMode: ContextMode;
 }
 
 /**
@@ -196,6 +208,12 @@ interface TurnStore {
   byId: Map<string, TurnSlice>;
 
   start: (sessionId: string, input: string) => boolean;
+  replayFromAnchor: (
+    sessionId: string,
+    userAnchorK: number,
+    input: string,
+    settings: ReplaySettings,
+  ) => Promise<boolean>;
   compact: (sessionId: string) => void;
   cancel: (sessionId: string) => void;
   grantPermission: (sessionId: string, approved: boolean, always: boolean) => void;
@@ -246,6 +264,26 @@ interface PendingStream {
 }
 const pendingStreamBySession = new Map<string, PendingStream>();
 const rafBySession = new Map<string, number>();
+const replayBySession = new Map<string, Promise<boolean>>();
+
+function waitForTurnIdle(sessionId: string): Promise<void> {
+  if (getSlice(useTurnStore.getState().byId, sessionId).runState === "idle") {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      unsubscribe();
+      reject(new Error("Timed out waiting for the current turn to stop"));
+    }, 30_000);
+    const unsubscribe = useTurnStore.subscribe((state) => {
+      if (getSlice(state.byId, sessionId).runState !== "idle") return;
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve();
+    });
+  });
+}
 
 function flushStreamSession(sessionId: string): void {
   const raf = rafBySession.get(sessionId);
@@ -320,7 +358,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
 
       const ws = useConnectionStore.getState();
       const current = getSlice(get().byId, sessionId);
-      if (!ws.sendRpc || current.runState !== "idle") {
+      if (!ws.sendRpc || current.runState !== "idle" || current.replaying) {
         debugTrace("turn", "start.rejected", {
           sessionId,
           runState: current.runState,
@@ -357,6 +395,78 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         }
       });
       return true;
+    },
+
+    replayFromAnchor: (sessionId, userAnchorK, input, settings) => {
+      const trimmed = input.trim();
+      if (!trimmed || !settings.modelId) return Promise.resolve(false);
+
+      const existing = replayBySession.get(sessionId);
+      if (existing) return existing;
+
+      let task: Promise<boolean>;
+      task = (async () => {
+        const current = getSlice(get().byId, sessionId);
+        if (current.compacting) {
+          useToastStore.getState().showToast(
+            "Wait for context compaction to finish before replaying",
+            "error",
+          );
+          return false;
+        }
+
+        patch(sessionId, { replaying: true });
+        try {
+          if (current.runState !== "idle") {
+            get().cancel(sessionId);
+            await waitForTurnIdle(sessionId);
+          }
+
+          const ws = useConnectionStore.getState();
+          await ws.sendRpc("agent/set-primary", {
+            agent_id: settings.primaryId,
+            session_id: sessionId,
+          });
+          await ws.sendRpc("agent/set-model", {
+            model_id: settings.modelId,
+            session_id: sessionId,
+          });
+          await ws.sendRpc("agent/set-thinking-tier", {
+            thinking_tier: settings.thinkingTier,
+            session_id: sessionId,
+          });
+          await ws.sendRpc("agent/set-context-mode", {
+            context_mode: settings.contextMode,
+            session_id: sessionId,
+          });
+          await ws.sendRpc("session/revert-to-user-anchor", {
+            k: userAnchorK,
+            session_id: sessionId,
+          });
+
+          // `start` rejects concurrent user sends while replaying. Release the
+          // workflow lock only for this synchronous, owned replacement start.
+          patch(sessionId, { replaying: false });
+          if (!get().start(sessionId, trimmed)) {
+            throw new Error("Unable to start the replacement turn");
+          }
+          return true;
+        } catch (error) {
+          useToastStore.getState().showToast(
+            error instanceof Error ? error.message : "Replay failed",
+            "error",
+          );
+          return false;
+        } finally {
+          patch(sessionId, { replaying: false });
+        }
+      })().finally(() => {
+        if (replayBySession.get(sessionId) === task) {
+          replayBySession.delete(sessionId);
+        }
+      });
+      replayBySession.set(sessionId, task);
+      return task;
     },
 
     compact: (sessionId) => {

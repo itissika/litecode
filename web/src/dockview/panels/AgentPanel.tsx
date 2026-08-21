@@ -9,7 +9,7 @@ import { useTurnStore } from "../../stores/turnStore";
 import { displayMessages, useMessageStore } from "../../stores/messageStore";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { AgentChatInput } from "../../components/AgentChatInput";
-import { MessageList } from "../../components/MessageList";
+import { MessageList, type EditingUserAnchor } from "../../components/MessageList";
 import { PermissionCard } from "../../components/PermissionModal";
 import { clearFoldCardOpen } from "../../components/foldCardState";
 import { ProgressiveBlur } from "../../components/ProgressiveBlur";
@@ -136,14 +136,77 @@ export function AgentChatShell({
   isActive?: boolean;
 }) {
   const [stickToEnd, setStickToEnd] = useState(true);
+  const [editingAnchor, setEditingAnchor] = useState<EditingUserAnchor | null>(null);
+  const [miniPhase, setMiniPhase] = useState<"idle" | "entering" | "visible" | "exiting">("idle");
+  const dismissTimerRef = useRef<number | null>(null);
   const jumpToEndRef = useRef<(() => void) | null>(null);
   const revealBashRef = useRef<((callId: string) => void) | null>(null);
+
+  const openMini = useCallback((anchor: EditingUserAnchor) => {
+    if (dismissTimerRef.current !== null) {
+      clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
+    setEditingAnchor(anchor);
+    setMiniPhase("entering");
+  }, []);
+
+  const finishDismiss = useCallback(() => {
+    if (dismissTimerRef.current !== null) {
+      clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
+    setMiniPhase("idle");
+    setEditingAnchor(null);
+  }, []);
+
+  const dismiss = useCallback(() => {
+    if (miniPhase === "visible" || miniPhase === "entering") {
+      setMiniPhase("exiting");
+      dismissTimerRef.current = window.setTimeout(finishDismiss, 180);
+    }
+  }, [finishDismiss, miniPhase]);
+
+  useEffect(
+    () => () => {
+      if (dismissTimerRef.current !== null) {
+        clearTimeout(dismissTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!editingAnchor) return;
+    const dismissOutside = (event: MouseEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest(
+          "[data-mini-chat-input], [data-user-message-bubble], [data-dropdown-panel]",
+        )
+      ) {
+        return;
+      }
+      dismiss();
+    };
+    document.addEventListener("mousedown", dismissOutside);
+    return () => document.removeEventListener("mousedown", dismissOutside);
+  }, [editingAnchor, dismiss]);
 
   return (
     <div className="relative flex h-full flex-col">
       <MessageListRegion
         sessionId={sessionId}
         isActive={isActive}
+        editingAnchor={editingAnchor}
+        onEditAnchor={openMini}
+        onDismissEdit={dismiss}
+        miniPhase={miniPhase}
+        onMiniAnimationEnd={() => {
+          if (miniPhase === "entering") setMiniPhase("visible");
+          if (miniPhase === "exiting") finishDismiss();
+        }}
         onStickChange={setStickToEnd}
         jumpToEndRef={jumpToEndRef}
         revealBashRef={revealBashRef}
@@ -166,12 +229,22 @@ export function AgentChatShell({
 function MessageListRegion({
   sessionId,
   isActive,
+  editingAnchor,
+  onEditAnchor,
+  onDismissEdit,
+  miniPhase,
+  onMiniAnimationEnd,
   onStickChange,
   jumpToEndRef,
   revealBashRef,
 }: {
   sessionId: string;
   isActive: boolean;
+  editingAnchor: EditingUserAnchor | null;
+  onEditAnchor: (anchor: EditingUserAnchor) => void;
+  onDismissEdit: () => void;
+  miniPhase: "idle" | "entering" | "visible" | "exiting";
+  onMiniAnimationEnd: () => void;
   onStickChange: (stickToEnd: boolean) => void;
   jumpToEndRef: RefObject<(() => void) | null>;
   revealBashRef: RefObject<((callId: string) => void) | null>;
@@ -224,24 +297,20 @@ function MessageListRegion({
              This is the element the virtualizer measures (ref/listRef).
           3. Content column (inner): centered reading measure only (mx-auto
              max-w) — no padding here, the frame already provides the inset. */}
-      <div className="flex min-h-0 flex-1 flex-col bg-(--_dk-editor) px-4 pt-4">
-        <div
-          ref={listRef}
-          onScroll={onScroll}
-          className="min-h-0 flex-1 overflow-y-auto bg-(--_dk-editor) [container-type:size]"
-        >
-          {/*
-            Size to content, not to the viewport. `flex-1 min-h-0` on this
-            column made the virtualizer's scrollHeight fight the flex box
-            (viewport-sized child + overflowing absolute items), which is one
-            of the "list drifts while streaming" sources.
-          */}
-          <div className="mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col bg-(--_dk-editor)">
-            <div
-              className={`transition-opacity duration-200 ease-out ${
-                isActive ? "" : "opacity-85"
-              }`}
-            >
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col bg-(--_dk-editor) px-4 pt-4">
+          <div
+            ref={listRef}
+            onScroll={onScroll}
+            className="min-h-0 flex-1 overflow-y-auto bg-(--_dk-editor) [container-type:size]"
+          >
+            {/*
+              Size to content, not to the viewport. `flex-1 min-h-0` on this
+              column made the virtualizer's scrollHeight fight the flex box
+              (viewport-sized child + overflowing absolute items), which is one
+              of the "list drifts while streaming" sources.
+            */}
+            <div className="mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col bg-(--_dk-editor)">
               <MessageList
                 key={sessionId}
                 messages={messages}
@@ -256,10 +325,27 @@ function MessageListRegion({
                 onStickChange={onStickChange}
                 jumpToEndRef={jumpToEndRef}
                 revealBashRef={revealBashRef}
+                editingAnchor={editingAnchor}
+                onEditAnchor={onEditAnchor}
+                onDismissEdit={onDismissEdit}
+                miniPhase={miniPhase}
+                onMiniAnimationEnd={onMiniAnimationEnd}
               />
             </div>
           </div>
         </div>
+        {/* Unfocused dimming — pure visual mask, never touches content alpha.
+            Instead of fading the list's own opacity (which re-composites every
+            message and can break nested backdrop-filter), a translucent
+            panel-color veil is painted on top. pointer-events-none so it never
+            blocks or intercepts any interaction (scroll, click, drag, hover). */}
+        <div
+          aria-hidden
+          className={`pointer-events-none absolute inset-0 transition-opacity duration-200 ease-out ${
+            isActive ? "opacity-0" : "opacity-[0.33]"
+          }`}
+          style={{ background: "var(--_dk-editor)" }}
+        />
       </div>
       <ProgressiveBlur
         side="top"
@@ -297,12 +383,12 @@ export function ComposerDock({
   const grantPermission = useTurnStore((s) => s.grantPermission);
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-3">
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-4">
       <div
-        className={`pointer-events-auto mx-auto flex w-full max-w-[var(--_dk-prose-measure)] origin-bottom flex-col gap-2 transition-transform duration-200 ease-out ${
+        className={`pointer-events-auto mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col gap-2 ${
           isActive
             ? "[--_dk-composer-card-shadow:var(--_dk-composer-focus-shadow)]"
-            : "scale-[0.98]"
+            : ""
         }`}
       >
         {!stickToEnd && (

@@ -114,27 +114,21 @@ describe("isToolCallLive", () => {
 });
 
 describe("processGroupAutoOpen", () => {
-  it("stays open while work in the group is live", () => {
-    expect(
-      processGroupAutoOpen({ hasLive: true, followedByMessage: false, hasTerminalStop: false }),
-    ).toBe(true);
-  });
-
   it("stays open between completed tool-loop steps", () => {
     expect(
-      processGroupAutoOpen({ hasLive: false, followedByMessage: false, hasTerminalStop: false }),
+      processGroupAutoOpen({ followedByMessage: false, hasTerminalStop: false }),
     ).toBe(true);
   });
 
   it("collapses once the following assistant message closes the segment", () => {
     expect(
-      processGroupAutoOpen({ hasLive: false, followedByMessage: true, hasTerminalStop: false }),
+      processGroupAutoOpen({ followedByMessage: true, hasTerminalStop: false }),
     ).toBe(false);
   });
 
   it("collapses on a terminal failure without a following message", () => {
     expect(
-      processGroupAutoOpen({ hasLive: false, followedByMessage: false, hasTerminalStop: true }),
+      processGroupAutoOpen({ followedByMessage: false, hasTerminalStop: true }),
     ).toBe(false);
   });
 });
@@ -178,10 +172,10 @@ describe("ToolCallCard open state", () => {
     expect(header.getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("mounts a live tool card expanded", () => {
+  it("mounts a live tool card collapsed by default", () => {
     renderCard({ streaming: true });
     const header = screen.getByRole("button", { name: /write/i });
-    expect(header.getAttribute("aria-expanded")).toBe("true");
+    expect(header.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("shows Kill on a live bash card and calls bash/kill", () => {

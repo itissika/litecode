@@ -66,24 +66,25 @@ type ToolAnim = "pop" | "fail" | null;
  *   - settling to ok        → bounce + green flash once, then settle to static
  *   - settling to failed    → shrink + red flash + shockwave once, then red
  *
- * The animation fires when status is ok/failed *and* `live` is true (the
- * owning process group is still the streaming phase). A completed call often
- * mounts directly at `ok` after buffer seal rather than transitioning out of
- * `running`; `live` is what distinguishes that from a remount of a sealed card
- * (FoldCard expand / virtualizer recycle), which must stay static.
+ * The animation fires exactly once: when `streaming` (tool-level work-live)
+ * transitions from true → false, meaning the tool item has sealed. The
+ * animation class is derived from `status` at that moment. After the
+ * transition, any remount (FoldCard expand / virtualizer recycle) stays
+ * static because `streaming` is already false and no transition occurs.
  */
 export function ToolIcon({
   name,
   status,
-  live = false,
+  streaming = false,
 }: {
   name: string;
   status: ToolStatus;
-  live?: boolean;
+  streaming?: boolean;
 }) {
   const Glyph = glyphFor(name);
   const [anim, setAnim] = useState<ToolAnim>(null);
   const clearTimer = useRef<number | null>(null);
+  const prevStreaming = useRef(streaming);
 
   useEffect(() => {
     if (clearTimer.current !== null) {
@@ -98,16 +99,17 @@ export function ToolIcon({
       return () => window.clearInterval(id);
     }
 
-    if (!live) {
-      setAnim(null);
+    const wasStreaming = prevStreaming.current;
+    prevStreaming.current = streaming;
+
+    // Only fire on the true→false transition (item sealed).
+    if (!wasStreaming || streaming) {
       return;
     }
 
     if (status === "ok") {
       setAnim("pop");
       clearTimer.current = window.setTimeout(() => setAnim(null), 700);
-    } else if (status === "warning") {
-      setAnim(null);
     } else if (status === "failed") {
       setAnim("fail");
       clearTimer.current = window.setTimeout(() => setAnim(null), 900);
@@ -120,7 +122,7 @@ export function ToolIcon({
         clearTimer.current = null;
       }
     };
-  }, [status, live]);
+  }, [streaming, status]);
 
   const colorClass =
     status === "failed"

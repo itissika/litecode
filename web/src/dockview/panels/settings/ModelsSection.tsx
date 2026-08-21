@@ -9,6 +9,11 @@ import {
 } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { Select } from "../../../components/ui/Select";
+import {
+  Dropdown,
+  dropdownItemClass,
+  dropdownItemActiveClass,
+} from "../../../components/ui/Dropdown";
 import { FoldCard } from "../../../components/FoldCard";
 import {
   FieldLabel,
@@ -69,6 +74,25 @@ function hasRemoteModelCatalog(
   return adapters.find((a) => a.id === adapterId)?.remote_model_catalog === true;
 }
 
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 10 10"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="shrink-0 text-(--_dk-text-disabled) transition-transform duration-150"
+      style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+    >
+      <path d="M3 1.5l4 3.5-4 3.5" />
+    </svg>
+  );
+}
+
 function RemoteCatalogModelId({
   providerId,
   value,
@@ -83,8 +107,17 @@ function RemoteCatalogModelId({
   const [ids, setIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
 
-  const refresh = async () => {
+  // Reset catalog state when the provider changes so a stale directory from a
+  // previous provider is never shown.
+  useEffect(() => {
+    setIds([]);
+    setError(null);
+    setQuery("");
+  }, [providerId]);
+
+  const load = async () => {
     if (!providerId) {
       setError("Select a provider first");
       return;
@@ -101,35 +134,82 @@ function RemoteCatalogModelId({
     }
   };
 
+  // Auto-fetch on first open (and re-open after an error); once loaded the
+  // cached list shows instantly on later opens.
+  const ensureLoaded = () => {
+    if (ids.length === 0 && !busy) void load();
+  };
+
   const catalog = value && !ids.includes(value) ? [value, ...ids] : ids;
-  const apiModelOptions = [
-    { value: "", label: "— select —" as ReactNode },
-    ...catalog.map((id) => ({ value: id, label: id as ReactNode })),
-  ];
+  const q = query.trim().toLowerCase();
+  const filtered = q ? catalog.filter((id) => id.toLowerCase().includes(q)) : catalog;
+  const selected = catalog.includes(value);
 
   return (
     <div>
       <FieldLabel required>API model id</FieldLabel>
-      <div className="flex gap-2">
-        <Select
-          value={value}
-          onChange={onChange}
-          options={apiModelOptions}
-          disabled={disabled}
-          className="min-w-0 flex-1"
-        />
-        <button
-          type="button"
-          className="btn btn-sm shrink-0"
-          disabled={disabled || busy || !providerId}
-          onClick={() => void refresh()}
-        >
-          {busy ? "…" : "Refresh"}
-        </button>
-      </div>
-      {error ? (
-        <p className="mt-1 text-xs text-(--_dk-danger)">{error}</p>
-      ) : null}
+      <Dropdown
+        variant="select"
+        closeOnSelect={false}
+        className="w-full"
+        trigger={({ open, toggle }) => (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              if (!open) ensureLoaded();
+              toggle();
+            }}
+            className="flex w-full items-center justify-between gap-1 border-0 border-b border-(--_dk-line) bg-transparent px-1 py-[0.375rem] text-left text-[0.875rem] text-(--_dk-text-muted) hover:brightness-110 focus-visible:border-(--_dk-line-visible) disabled:opacity-40"
+          >
+            <span className={selected ? "text-(--_dk-text-primary)" : "text-(--_dk-text-disabled)"}>
+              {selected ? value : "— select —"}
+            </span>
+            <Chevron open={open} />
+          </button>
+        )}
+      >
+        {({ close }) => (
+          <div className="flex flex-col">
+            <div className="sticky top-0 z-10 bg-(--_dk-overlay)">
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Filter…"
+                autoFocus
+                className="w-full rounded-none border-0 bg-transparent px-3 py-1.5 text-[11px] text-(--_dk-text-primary) outline-none focus:shadow-none focus:outline-none placeholder:text-(--_dk-text-disabled)"
+              />
+              <div className="mx-3 border-t border-(--_dk-line)" />
+            </div>
+            {busy ? (
+              <div className="px-3 py-2 text-[11px] text-(--_dk-text-muted)">Loading…</div>
+            ) : error ? (
+              <div className="px-3 py-2 text-[11px] text-(--_dk-danger)">
+                {error} — reopen to retry
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="px-3 py-2 text-[11px] text-(--_dk-text-disabled)">
+                {q ? "No match" : "No models"}
+              </div>
+            ) : (
+              filtered.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={`${dropdownItemClass} ${id === value ? dropdownItemActiveClass : ""}`}
+                  onClick={() => {
+                    onChange(id);
+                    close();
+                  }}
+                >
+                  {id}
+                </button>
+              ))
+            )}
+          </div>
+        )}
+      </Dropdown>
     </div>
   );
 }
@@ -385,16 +465,6 @@ export function ModelsSection() {
                         }
                         disabled={saveBlocked}
                       />
-                      {selectedAdapter === "ark_coding" ? (
-                        <p className="mt-1 text-xs text-(--_dk-text-tertiary)">
-                          Coding Plan names from the Ark console (e.g.{" "}
-                          <span className="font-mono">doubao-seed-2.1-turbo</span>
-                          , <span className="font-mono">ark-code-latest</span>
-                          ). The gateway{" "}
-                          <span className="font-mono">/models</span> list is the
-                          pay-as-you-go catalog and is not used here.
-                        </p>
-                      ) : null}
                     </div>
                   )}
                 </div>

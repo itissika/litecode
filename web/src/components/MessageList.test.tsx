@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MessageList, ProcessGroup, rowsToNodes } from "./MessageList";
 import type { HumanRow } from "../api/types";
 import { useBashStore } from "../stores/bashStore";
-import { useMessageStore } from "../stores/messageStore";
 import { clearFoldCardOpen } from "./foldCardState";
 
 const grantPermission = vi.fn();
@@ -93,7 +92,7 @@ vi.mock("../stores/editorStore", () => ({
 
 vi.mock("../stores/sessionStore", () => ({
   useSessionStore: (selector: (state: Record<string, unknown>) => unknown) =>
-    selector({ project: "/test/project" }),
+    selector({ project: "/test/project", byId: new Map() }),
 }));
 
 const makeScrollRef = () => React.createRef<HTMLDivElement>();
@@ -462,8 +461,8 @@ describe("MessageList reminder rows", () => {
     expect(screen.queryByText("do not render")).toBeNull();
   });
 
-  it("revert k uses server userDetailBefore on a partial window", () => {
-    const spy = vi.spyOn(useMessageStore.getState(), "revertToUserAnchor");
+  it("opens a user-message editor with the server-derived anchor", () => {
+    const onEditAnchor = vi.fn();
     const user: HumanRow = {
       seq: 12,
       kind: "item/user",
@@ -476,11 +475,12 @@ describe("MessageList reminder rows", () => {
     render(
       <MessageList messages={[user]} loadingHistory={false} canLoadMore={false}
         onLoadMore={() => {}} userDetailBefore={4} isRunning={false}
-        scrollRef={makeScrollRef()} sessionId="session-1" />,
+        scrollRef={makeScrollRef()} sessionId="session-1" onEditAnchor={onEditAnchor} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Revert to here" }));
-    expect(spy).toHaveBeenCalledWith("session-1", 4);
-    spy.mockRestore();
+    fireEvent.click(screen.getByText("later ask"));
+    expect(onEditAnchor).toHaveBeenCalledWith(
+      expect.objectContaining({ userAnchorK: 4, draft: "later ask" }),
+    );
   });
 });
 

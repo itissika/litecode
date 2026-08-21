@@ -24,15 +24,16 @@ export function isToolCallLive(opts: {
 
 /**
  * Process FoldCards represent a contiguous tool/reasoning segment, not a single
- * tool invocation. Intermediate tool output must not close the segment before
- * the following assistant message arrives.
+ * tool invocation. The group stays open until the following assistant message
+ * arrives (closing the segment) or a terminal stop (failed/incomplete) occurs.
+ * Streaming state is irrelevant — a live node cannot coexist with a following
+ * message or terminal stop, so the product semantics reduce to two conditions.
  */
 export function processGroupAutoOpen(opts: {
-  hasLive: boolean;
   followedByMessage: boolean;
   hasTerminalStop: boolean;
 }): boolean {
-  return opts.hasLive || (!opts.followedByMessage && !opts.hasTerminalStop);
+  return !opts.followedByMessage && !opts.hasTerminalStop;
 }
 
 /** Shared tool-call status used by both the tool card and the process group.

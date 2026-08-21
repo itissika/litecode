@@ -8,13 +8,28 @@ afterEach(() => {
 });
 
 describe("ToolIcon settle animation", () => {
-  it("pops when a live group lands on ok", () => {
-    const { container } = render(<ToolIcon name="write" status="ok" live />);
+  it("pops when streaming transitions true→false on ok", () => {
+    const { container, rerender } = render(
+      <ToolIcon name="write" status="ok" streaming />,
+    );
+    expect(container.querySelector(".tool-icon--pop")).toBeNull();
+    rerender(<ToolIcon name="write" status="ok" streaming={false} />);
     expect(container.querySelector(".tool-icon--pop")).toBeTruthy();
   });
 
-  it("stays static when remounted outside the live window", () => {
-    const { container } = render(<ToolIcon name="write" status="ok" live={false} />);
+  it("stays static when mounted with streaming=false (no transition)", () => {
+    const { container } = render(
+      <ToolIcon name="write" status="ok" streaming={false} />,
+    );
     expect(container.querySelector(".tool-icon--pop")).toBeNull();
+  });
+
+  it("plays fail animation when streaming transitions true→false on failed", () => {
+    const { container, rerender } = render(
+      <ToolIcon name="write" status="failed" streaming />,
+    );
+    expect(container.querySelector(".tool-icon--fail-anim")).toBeNull();
+    rerender(<ToolIcon name="write" status="failed" streaming={false} />);
+    expect(container.querySelector(".tool-icon--fail-anim")).toBeTruthy();
   });
 });

@@ -224,6 +224,7 @@ export function Dropdown({
         createPortal(
           <div
             ref={panelRef}
+            data-dropdown-panel
             className={`fixed z-[10000] ${SHADOW[direction]} ${BORDER[direction]} ${bgClassName ?? DEFAULT_BG} ${VARIANT_PANEL[variant]} ${panelClassName}`}
             style={pos}
             onClick={autoClose ? () => setOpen(false) : undefined}

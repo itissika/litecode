@@ -250,36 +250,6 @@ export function ConnectionSection() {
                       disabled={saveBlocked}
                       autoComplete="off"
                     />
-                    {row.adapter_id === "opencode" ? (
-                      <p className="mt-1 text-xs text-(--_dk-text-tertiary)">
-                        Default is Zen. For Go, use{" "}
-                        <span className="font-mono">https://opencode.ai/zen/go/v1</span>{" "}
-                        (same key if subscribed). Keys at{" "}
-                        <a
-                          href="https://opencode.ai/auth"
-                          target="_blank"
-                          rel="noreferrer"
-                          className="underline"
-                        >
-                          opencode.ai/auth
-                        </a>
-                        .
-                      </p>
-                    ) : null}
-                    {row.adapter_id === "ark_coding" ? (
-                      <p className="mt-1 text-xs text-(--_dk-text-tertiary)">
-                        Default is the Coding Plan OpenAI path{" "}
-                        <span className="font-mono">
-                          https://ark.cn-beijing.volces.com/api/coding/v3
-                        </span>
-                        {" "}(Responses at <span className="font-mono">/responses</span>).
-                        Use the Ark console API key. Coding Plan quota is licensed for
-                        listed tools; LiteCode is an unofficial client. Do not use the
-                        general <span className="font-mono">/api/v3</span> host.
-                        Type Coding Plan model names in Settings → Models; this
-                        adapter does not fetch <span className="font-mono">/models</span>.
-                      </p>
-                    ) : null}
                   </div>
                   <div>
                     <FieldLabel required>API key</FieldLabel>

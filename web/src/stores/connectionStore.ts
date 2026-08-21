@@ -331,19 +331,19 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
 
           case "session/compact_lifecycle": {
             const life = params as unknown as CompactLifecycle;
-            turn?.onCompactLifecycle?.(life);
             session?.applySnapshot(life.snapshot);
+            turn?.onCompactLifecycle?.(life);
             return;
           }
 
           case "session/compact_started": {
             const started = params as unknown as CompactLifecycle;
+            session?.applySnapshot(started.snapshot);
             turn?.onCompactLifecycle?.({
               ...started,
               trigger: started.trigger ?? "manual",
               stage: "started",
             });
-            session?.applySnapshot(started.snapshot);
             return;
           }
 

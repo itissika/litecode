@@ -15,13 +15,17 @@ function triggerBase(open: boolean): string {
 export function ModelSwitcher({
   sessionId,
   disabled = false,
+  modelId: controlledModelId,
+  onChange,
 }: {
   sessionId: string;
   disabled?: boolean;
+  modelId?: string | null;
+  onChange?: (modelId: string) => void;
 }) {
   const availableModels = useSessionStore((s) => s.availableModels);
   const sessionSlice = useSessionStore((s) => s.byId.get(sessionId));
-  const modelId = sessionSlice?.modelId ?? null;
+  const modelId = controlledModelId === undefined ? sessionSlice?.modelId ?? null : controlledModelId;
   const label = sessionSlice?.label ?? "";
   const setModel = useSessionStore((s) => s.setModel);
 
@@ -80,7 +84,8 @@ export function ModelSwitcher({
             key={m.id}
             type="button"
             onClick={() => {
-              setModel(sessionId, m.id);
+              if (onChange) onChange(m.id);
+              else setModel(sessionId, m.id);
             }}
             className={`${dropdownItemClass} ${PRESS} ${isActive ? dropdownItemActiveClass : ""}`}
           >
