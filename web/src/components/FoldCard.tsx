@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { ProgressiveBlur } from "./ProgressiveBlur";
-import { getFoldCardOpen, setFoldCardOpen, subscribeFoldCardOpenRequest } from "./foldCardState";
+import {
+  getFoldCardOpenIntent,
+  setFoldCardOpenIntent,
+  subscribeFoldCardOpenRequest,
+  type FoldCardOpenIntent,
+} from "./foldCardState";
 import { isNearScrollEnd, useStickToBottom } from "../lib/scrollStick";
 
 /** Marks header chrome that should brighten/dim with the FoldCard row. */
@@ -13,9 +18,10 @@ interface FoldCardProps {
   id?: string;
   /** Controlled open state. If set, parent manages open/close. */
   open?: boolean;
-  /** Default open state (uncontrolled), used only when the card has never been
-   *  persisted (first mount, or no `id`). */
+  /** Fallback system state when `autoOpen` is omitted. */
   defaultOpen?: boolean;
+  /** Current system open state. Only applies while the user intent is `none`. */
+  autoOpen?: boolean;
   onToggle?: (open: boolean) => void;
   icon?: ReactNode;
   label: ReactNode;
@@ -45,6 +51,7 @@ export function FoldCard({
   id,
   open: controlledOpen,
   defaultOpen,
+  autoOpen,
   onToggle,
   icon,
   label,
@@ -55,32 +62,19 @@ export function FoldCard({
   contentClassName = "",
   children,
 }: FoldCardProps) {
-  // Open/collapsed state is persisted under `id` on EVERY change (including
-  // while streaming), so a remount — virtual-list scroll-out/in — restores the
-  // exact state the card had when it unmounted. Keeping the remounted height
-  // equal to the height the virtualizer measured last time is what prevents
-  // list jumps. The persisted value is authoritative:
-  //   - a card the user collapsed (even mid-stream) stays collapsed on remount;
-  //   - a card whose turn ended while scrolled out of view stays open — the
-  //     auto-collapse effect never ran for it, and reopening keeps its measured
-  //     height stable (mounting it collapsed instead would re-measure short and
-  //     jitter the list).
-  // `defaultOpen` / `streaming` only supply a fallback for cards that have
-  // never been persisted (first mount).
-  const persisted = id !== undefined ? getFoldCardOpen(id) : undefined;
-  const initialOpen =
-    controlledOpen !== undefined
-      ? controlledOpen
-      : persisted !== undefined
-        ? persisted
-        : defaultOpen !== undefined
-          ? defaultOpen
-          : streaming === true
-            ? true
-            : false;
-  const [internalOpen, setInternalOpen] = useState(initialOpen);
+  // The persisted state is the user's explicit preference only. If there is no
+  // preference, the caller's current system state owns the card on every render.
+  const initialIntent = id !== undefined ? getFoldCardOpenIntent(id) : "none";
+  const [intent, setIntent] = useState<FoldCardOpenIntent>(initialIntent);
   const isControlled = controlledOpen !== undefined;
-  const open = isControlled ? controlledOpen : internalOpen;
+  const systemOpen = autoOpen ?? defaultOpen ?? (streaming === true);
+  const open = isControlled
+    ? controlledOpen
+    : intent === "keepopen"
+      ? true
+      : intent === "keepclosed"
+        ? false
+        : systemOpen;
 
   // Readiness: the horizontal entrance has finished playing. Nested FoldCards
   // cascade in (parent → child). Live cards start ready so a remount does not
@@ -88,7 +82,10 @@ export function FoldCard({
   // mount (streaming, or restored from persisted state) must also start ready:
   // otherwise it would mount collapsed, measure short, then pop open 260ms
   // later and jitter the virtual list.
-  const [ready, setReady] = useState(streaming === true || internalOpen === true);
+  const [ready, setReady] = useState(streaming === true || open === true);
+  useLayoutEffect(() => {
+    if (open && !ready) setReady(true);
+  }, [open, ready]);
   const wantOpen = open && ready;
 
   // Body grid (`0fr` → `1fr`) needs content mounted to interpolate height.
@@ -138,33 +135,19 @@ export function FoldCard({
 
   const contentRef = useRef<HTMLDivElement>(null);
 
-  // Auto-collapse when streaming ends (process phase done / turn finished).
-  // Do NOT auto-reopen on false→true — that caused close→open flicker when the
-  // streaming signal briefly dipped between tool batches.
-  const prevStreaming = useRef(streaming);
-  useLayoutEffect(() => {
-    if (prevStreaming.current && !streaming && !isControlled) {
-      setInternalOpen(false);
-    }
-    prevStreaming.current = streaming;
-  }, [streaming, isControlled]);
-
-  // Persist the open/collapsed choice on every change so a virtual-list remount
-  // (scroll out/in) restores the exact state at unmount — including live cards:
-  // a card streaming when it unmounts stays open when it remounts (still live
-  // or already sealed), keeping its measured height stable. Skipped for
-  // controlled cards and cards without a stable id.
+  // System state owns a card with no explicit user intent. It may open or close
+  // on every render; only `keepopen` / `keepclosed` survive a virtual-list remount.
   useEffect(() => {
     if (id === undefined || isControlled) return;
-    setFoldCardOpen(id, internalOpen);
-  }, [id, isControlled, internalOpen]);
+    setFoldCardOpenIntent(id, intent);
+  }, [id, isControlled, intent]);
 
   useEffect(() => {
     if (id === undefined || isControlled) return;
     return subscribeFoldCardOpenRequest((requested) => {
       if (requested !== id) return;
       setReady(true);
-      setInternalOpen(true);
+      setIntent("keepopen");
     });
   }, [id, isControlled]);
 
@@ -249,7 +232,7 @@ export function FoldCard({
   const toggle = useCallback(() => {
     if (!ready) return;
     const next = !open;
-    if (!isControlled) setInternalOpen(next);
+    if (!isControlled) setIntent(next ? "keepopen" : "keepclosed");
     onToggle?.(next);
   }, [ready, open, isControlled, onToggle]);
 

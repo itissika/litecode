@@ -95,16 +95,15 @@ describe("FoldCard remount persistence", () => {
     expect(header().getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("keeps a card open when its turn ended while it was unmounted (remount == unmount)", () => {
+  it("lets the system close an untouched card that ended while unmounted", () => {
     const { unmount } = renderCard({ streaming: true });
     expect(header().getAttribute("aria-expanded")).toBe("true");
     unmount();
 
-    // Turn ended while scrolled out of view: the auto-collapse effect never
-    // ran. Remount must restore the open state so the measured height stays
-    // valid — mounting collapsed would re-measure short and jitter the list.
+    // No explicit user intent was stored, so the current system state owns the
+    // remount rather than preserving a stale live measurement.
     renderCard({ streaming: false });
-    expect(header().getAttribute("aria-expanded")).toBe("true");
+    expect(header().getAttribute("aria-expanded")).toBe("false");
   });
 });
 
@@ -213,8 +212,15 @@ describe("FoldCard inner stick-to-bottom", () => {
 });
 
 describe("FoldCard streaming transitions", () => {
-  it("auto-collapses when streaming ends while mounted, and persists the collapse", () => {
-    const { unmount, rerender } = renderCard({ streaming: true });
+  it("follows the system state while the user has not chosen", () => {
+    const { rerender } = renderCard({ streaming: false });
+    expect(header().getAttribute("aria-expanded")).toBe("false");
+
+    rerender(
+      <FoldCard id={ID} label="bash" streaming>
+        body
+      </FoldCard>,
+    );
     expect(header().getAttribute("aria-expanded")).toBe("true");
 
     rerender(
@@ -223,12 +229,20 @@ describe("FoldCard streaming transitions", () => {
       </FoldCard>,
     );
     expect(header().getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByText("body")).toBeNull();
+  });
 
-    unmount();
-    renderCard({ streaming: false });
-    expect(header().getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByText("body")).toBeNull();
+  it("keeps a user-opened card open after the system work ends", () => {
+    const { rerender } = renderCard({ streaming: true });
+    fireEvent.click(header()); // explicit keepclosed
+    fireEvent.click(header()); // explicit keepopen
+    expect(header().getAttribute("aria-expanded")).toBe("true");
+
+    rerender(
+      <FoldCard id={ID} label="bash" streaming={false}>
+        body
+      </FoldCard>,
+    );
+    expect(header().getAttribute("aria-expanded")).toBe("true");
   });
 
   it("opens a mounted collapsed card when requested", () => {

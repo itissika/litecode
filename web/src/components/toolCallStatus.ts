@@ -2,27 +2,42 @@ import { functionCallOutputText } from "../api/adapter";
 import type { FunctionCallOutputItem } from "../api/types";
 import type { ToolStatus } from "./ToolIcon";
 
-/**
- * Tool cards stay live while the call seq or its output seq is in_progress.
- * Session/turn running is not an input.
- */
-export function isToolCallLive(
-  rowStreaming: boolean,
-  outputRowStreaming = false,
-): boolean {
-  return rowStreaming || outputRowStreaming;
+function callWillNotProduceOutput(status?: string): boolean {
+  return status === "failed" || status === "incomplete";
 }
 
 /**
- * Process FoldCard open/live signal — only seqs in this group.
+ * Tool-card / process-group work signal. Session/turn running is not an input.
+ *
+ * `function_call` completed means arguments are sealed, not that the tool ran.
+ * Stay live until a matching output exists (or the call is failed/incomplete).
  */
-export function processGroupStreaming(opts: { hasInProgress: boolean }): boolean {
-  return opts.hasInProgress;
+export function isToolCallLive(opts: {
+  callStatus?: string;
+  hasOutput: boolean;
+  outputInProgress?: boolean;
+}): boolean {
+  if (callWillNotProduceOutput(opts.callStatus)) return false;
+  if (opts.hasOutput) return opts.outputInProgress === true;
+  return true;
+}
+
+/**
+ * Process FoldCards represent a contiguous tool/reasoning segment, not a single
+ * tool invocation. Intermediate tool output must not close the segment before
+ * the following assistant message arrives.
+ */
+export function processGroupAutoOpen(opts: {
+  hasLive: boolean;
+  followedByMessage: boolean;
+  hasTerminalStop: boolean;
+}): boolean {
+  return opts.hasLive || (!opts.followedByMessage && !opts.hasTerminalStop);
 }
 
 /** Shared tool-call status used by both the tool card and the process group.
  *
- * `streaming` covers live argument streaming and a still-in_progress output seq.
+ * `streaming` here is work-live: arguments still open, or waiting for / streaming output.
  */
 export function deriveToolStatus(
   output?: FunctionCallOutputItem,

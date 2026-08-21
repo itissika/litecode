@@ -19,6 +19,7 @@ use super::chat_completions::{
     ChatEncodeOpts, chat_post_url, complete_from_response, encode_chat_body, normalize_endpoint,
     stream_from_response,
 };
+use super::transport_error;
 
 /// Official Zen host. Empty Settings endpoint fills this; override for Go.
 pub(crate) const DEFAULT_ENDPOINT: &str = "https://opencode.ai/zen/v1";
@@ -135,7 +136,7 @@ impl LlmProvider for OpencodeProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| crate::types::LitecodeError::Llm(e.to_string()))?;
+            .map_err(|e| transport_error("sending OpenCode response", &e))?;
             complete_from_response(resp, ERROR_PREFIX).await
         })
     }
@@ -163,7 +164,7 @@ impl LlmProvider for OpencodeProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| crate::types::LitecodeError::Llm(e.to_string()))?;
+            .map_err(|e| transport_error("opening OpenCode event stream", &e))?;
             stream_from_response(resp, &request.model, ERROR_PREFIX, on_event, cancel).await
         })
     }

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deriveToolStatus,
   isToolCallLive,
-  processGroupStreaming,
+  processGroupAutoOpen,
 } from "./toolCallStatus";
 import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
 import { useBashStore } from "../stores/bashStore";
@@ -89,30 +89,53 @@ describe("deriveToolStatus", () => {
 });
 
 describe("isToolCallLive", () => {
-  it("is not live when the call seq is sealed and output has not arrived", () => {
-    expect(isToolCallLive(false)).toBe(false);
+  it("stays live after the call seq is sealed until output arrives", () => {
+    expect(isToolCallLive({ callStatus: "completed", hasOutput: false })).toBe(true);
   });
 
   it("stays live while the call seq itself is in_progress", () => {
-    expect(isToolCallLive(true)).toBe(true);
+    expect(isToolCallLive({ callStatus: "in_progress", hasOutput: false })).toBe(true);
   });
 
-  it("stays live while the output seq is still streaming", () => {
-    expect(isToolCallLive(false, true)).toBe(true);
+  it("stays live while the output seq is still in_progress", () => {
+    expect(
+      isToolCallLive({ callStatus: "completed", hasOutput: true, outputInProgress: true }),
+    ).toBe(true);
   });
 
-  it("is not live once both call and output seqs are sealed", () => {
-    expect(isToolCallLive(false, false)).toBe(false);
+  it("is not live once the output seq exists and is sealed", () => {
+    expect(isToolCallLive({ callStatus: "completed", hasOutput: true })).toBe(false);
+  });
+
+  it("is not live when the call failed or is incomplete (no output expected)", () => {
+    expect(isToolCallLive({ callStatus: "failed", hasOutput: false })).toBe(false);
+    expect(isToolCallLive({ callStatus: "incomplete", hasOutput: false })).toBe(false);
   });
 });
 
-describe("processGroupStreaming", () => {
-  it("stays open while a seq in the group is in_progress", () => {
-    expect(processGroupStreaming({ hasInProgress: true })).toBe(true);
+describe("processGroupAutoOpen", () => {
+  it("stays open while work in the group is live", () => {
+    expect(
+      processGroupAutoOpen({ hasLive: true, followedByMessage: false, hasTerminalStop: false }),
+    ).toBe(true);
   });
 
-  it("collapses when every seq in the group is sealed", () => {
-    expect(processGroupStreaming({ hasInProgress: false })).toBe(false);
+  it("stays open between completed tool-loop steps", () => {
+    expect(
+      processGroupAutoOpen({ hasLive: false, followedByMessage: false, hasTerminalStop: false }),
+    ).toBe(true);
+  });
+
+  it("collapses once the following assistant message closes the segment", () => {
+    expect(
+      processGroupAutoOpen({ hasLive: false, followedByMessage: true, hasTerminalStop: false }),
+    ).toBe(false);
+  });
+
+  it("collapses on a terminal failure without a following message", () => {
+    expect(
+      processGroupAutoOpen({ hasLive: false, followedByMessage: false, hasTerminalStop: true }),
+    ).toBe(false);
   });
 });
 

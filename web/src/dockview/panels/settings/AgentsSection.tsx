@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Plus, ArrowClockwise, ListChecks } from "@phosphor-icons/react";
 
 import {
@@ -98,6 +99,19 @@ function McpToolVisibilityControl({
     onChange(tools.filter((tool) => next.has(tool.name)).map((tool) => tool.name));
   };
 
+  // Virtualize the tool list: MCP servers can expose hundreds of tools, so
+  // only the visible rows are mounted (same tanstack virtualizer as MessageList).
+  // The scroll element lives inside the Dropdown's portal and only mounts once
+  // the panel opens, so it's stored via a callback ref → state: that forces a
+  // re-render when it mounts, letting the virtualizer attach its observers.
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const virtualizer = useVirtualizer({
+    count: tools.length,
+    getScrollElement: () => scrollEl,
+    estimateSize: () => 32,
+    overscan: 6,
+  });
+
   return (
     <Dropdown
       variant="panel"
@@ -133,36 +147,60 @@ function McpToolVisibilityControl({
             No tools listed. Start this MCP server from the MCP settings page.
           </p>
         ) : (
-          tools.map((tool) => {
-            const checked = selected.has(tool.name);
-            return (
-              <FoldCard
-                key={tool.name}
-                label={(
-                  <label
-                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
-                    onClick={(event) => event.stopPropagation()}
+          <div ref={setScrollEl} className="max-h-64 overflow-y-auto">
+            <div
+              style={{
+                height: `${virtualizer.getTotalSize()}px`,
+                position: "relative",
+                width: "100%",
+              }}
+            >
+              {virtualizer.getVirtualItems().map((vi) => {
+                const tool = tools[vi.index];
+                const checked = selected.has(tool.name);
+                return (
+                  <div
+                    key={vi.key}
+                    data-index={vi.index}
+                    ref={virtualizer.measureElement}
+                    className="py-1"
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${vi.start}px)`,
+                    }}
                   >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={disabled}
-                      onChange={() => toggleTool(tool.name)}
-                      className="accent-(--_dk-accent-hover)"
-                    />
-                    <span className="min-w-0 truncate font-mono text-xs text-(--_dk-text-primary)">
-                      {tool.name}
-                    </span>
-                  </label>
-                )}
-                headerAriaLabel={`Show details for MCP tool ${tool.name}`}
-                className="border-b border-(--_dk-line-subtle) last:border-b-0"
-                contentClassName="px-5 pb-2 text-xs text-(--_dk-text-secondary)"
-              >
-                {tool.description || "No description provided by this MCP server."}
-              </FoldCard>
-            );
-          })
+                    <FoldCard
+                      label={(
+                        <label
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={disabled}
+                            onChange={() => toggleTool(tool.name)}
+                            className="accent-(--_dk-accent-hover)"
+                          />
+                          <span className="min-w-0 truncate font-mono text-xs text-(--_dk-text-primary)">
+                            {tool.name}
+                          </span>
+                        </label>
+                      )}
+                      headerAriaLabel={`Show details for MCP tool ${tool.name}`}
+                      className="border-b border-(--_dk-line)"
+                      contentClassName="px-5 pb-2 text-xs text-(--_dk-text-secondary)"
+                    >
+                      {tool.description || "No description provided by this MCP server."}
+                    </FoldCard>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
       </div>
     </Dropdown>

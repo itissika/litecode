@@ -34,11 +34,11 @@ import { WaveText } from "./WaveText";
 import { isInlineTool, processToolBucket } from "../lib/toolCategory";
 import { useStickToBottom } from "../lib/scrollStick";
 import { ToolCallCard } from "./ToolCallCard";
-import { isToolCallLive, processGroupStreaming } from "./toolCallStatus";
+import { isToolCallLive, processGroupAutoOpen } from "./toolCallStatus";
 
 type RenderNode =
-  | { kind: "text"; text: string; key: string; streaming: boolean; incomplete?: boolean }
-  | { kind: "reasoning"; text: string; key: string; streaming: boolean; incomplete?: boolean }
+  | { kind: "text"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
+  | { kind: "reasoning"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
   | { kind: "compact_cut"; key: string; streaming: boolean }
   | {
       kind: "tool";
@@ -46,6 +46,7 @@ type RenderNode =
       output?: FunctionCallOutputItem;
       key: string;
       streaming: boolean;
+      live: boolean;
     };
 
 /** Cut mark between transcript items — not a divider bubble, not summary text. */
@@ -111,11 +112,13 @@ function rowInProgress(row: HumanRow): boolean {
 /** Flatten HumanView rows into nodes; only `item/*` bodies are Items. */
 export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
   const outputs = outputsByCallId(rows);
-  const streamingByCallId = new Map<string, boolean>();
+  const outputInProgressByCallId = new Map<string, boolean>();
   for (const row of rows) {
     if (row.kind !== "item/tool_result") continue;
     const item = itemFromRow(row);
-    if (item && isFunctionCallOutput(item)) streamingByCallId.set(item.call_id, rowInProgress(row));
+    if (item && isFunctionCallOutput(item)) {
+      outputInProgressByCallId.set(item.call_id, isInProgressItem(item));
+    }
   }
   const nodes: RenderNode[] = [];
   for (const row of rows) {
@@ -129,26 +132,58 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
     const item = itemFromRow(row);
     if (!item) continue;
     if (row.kind === "item/tool_call" && isFunctionCall(item)) {
+      const output = outputs.get(item.call_id);
+      const live = isToolCallLive({
+        callStatus: item.status,
+        hasOutput: output != null,
+        outputInProgress: outputInProgressByCallId.get(item.call_id) === true,
+      });
       nodes.push({
-        kind: "tool", call: item, output: outputs.get(item.call_id), key,
-        streaming: isToolCallLive(streaming, streamingByCallId.get(item.call_id) === true),
+        kind: "tool", call: item, output, key, streaming, live,
       });
       continue;
     }
     if (row.kind === "item/assistant" && isReasoningItem(item)) {
       const text = itemPlainText(item);
-      if (text) nodes.push({ kind: "reasoning", text, key, streaming, incomplete: item.status === "incomplete" });
+      if (text) {
+        nodes.push({
+          kind: "reasoning",
+          text,
+          key,
+          streaming,
+          live: isInProgressItem(item),
+          incomplete: item.status === "incomplete",
+        });
+      }
       continue;
     }
     if ((row.kind === "item/user" || row.kind === "item/assistant") && isMessageItem(item)) {
       const text = itemPlainText(item);
-      if (text) nodes.push({ kind: "text", text, key, streaming, incomplete: item.status === "incomplete" });
+      if (text) {
+        nodes.push({
+          kind: "text",
+          text,
+          key,
+          streaming,
+          live: isInProgressItem(item),
+          incomplete: item.status === "incomplete",
+        });
+      }
     }
   }
   return nodes;
 }
 
 type NodeGroup = { type: "process" | "output" | "cut"; nodes: RenderNode[] };
+
+export function processGroupHasTerminalStop(nodes: RenderNode[]): boolean {
+  return nodes.some(
+    (node) =>
+      (node.kind === "reasoning" && node.incomplete === true) ||
+      (node.kind === "tool" &&
+        (node.call.status === "failed" || node.call.status === "incomplete")),
+  );
+}
 
 export function groupNodes(nodes: RenderNode[]): NodeGroup[] {
   const groups: NodeGroup[] = [];
@@ -203,6 +238,7 @@ export function NodeView({
           contentClassName="text-(--_dk-text-secondary)"
           icon={<BrainIcon size={13} aria-hidden className="shrink-0 text-(--_dk-text-muted)" />}
           label={node.incomplete ? "Reasoning (incomplete)" : "Reasoning"}
+          autoOpen={node.live}
           streaming={streaming}
         >
           <AgentMarkdown text={node.text} streaming={streaming} />
@@ -225,7 +261,7 @@ export function NodeView({
           <InlineToolRow
             call={node.call}
             output={node.output}
-            streaming={streaming}
+            streaming={node.live}
             live={live}
             sessionId={sessionId}
           />
@@ -235,7 +271,7 @@ export function NodeView({
         <ToolCallCard
           call={node.call}
           output={node.output}
-          streaming={streaming}
+          streaming={node.live}
           live={live}
           projectRoot={projectRoot ?? null}
           onOpenFile={(path) => onOpenFile?.(path)}
@@ -255,12 +291,14 @@ export function NodeView({
 export function ProcessGroup({
   nodes,
   streaming,
+  autoOpen,
   sessionId,
   bubbleKey,
   groupIndex,
 }: {
   nodes: RenderNode[];
   streaming: boolean;
+  autoOpen: boolean;
   sessionId?: string;
   /** Stable bubble identity, used to namespace this group's FoldCard state. */
   bubbleKey?: string;
@@ -355,6 +393,7 @@ export function ProcessGroup({
         </span>
       }
       headerAriaLabel={headerAriaLabel}
+      autoOpen={autoOpen}
       streaming={streaming}
     >
       <div className="space-y-1">
@@ -415,8 +454,11 @@ function ItemBubbleImpl({
         ));
       }
       if (group.type === "process") {
-        const groupLive = processGroupStreaming({
-          hasInProgress: group.nodes.some((n) => n.streaming),
+        const groupLive = group.nodes.some((n) => n.kind !== "compact_cut" && n.live);
+        const groupAutoOpen = processGroupAutoOpen({
+          hasLive: groupLive,
+          followedByMessage: groups[gi + 1]?.type === "output",
+          hasTerminalStop: processGroupHasTerminalStop(group.nodes),
         });
         return (
           <ProcessGroup
@@ -425,6 +467,7 @@ function ItemBubbleImpl({
             key={`process-${gi}`}
             nodes={group.nodes}
             streaming={groupLive}
+            autoOpen={groupAutoOpen}
             sessionId={sessionId}
             bubbleKey={bubbleKey}
             groupIndex={gi}

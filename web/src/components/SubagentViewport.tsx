@@ -1,6 +1,12 @@
 import type { ReactElement } from "react";
-import { rowsToNodes, groupNodes, NodeView, ProcessGroup } from "./MessageList";
-import { processGroupStreaming } from "./toolCallStatus";
+import {
+  rowsToNodes,
+  groupNodes,
+  NodeView,
+  ProcessGroup,
+  processGroupHasTerminalStop,
+} from "./MessageList";
+import { processGroupAutoOpen } from "./toolCallStatus";
 import { displayMessages, useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
 import { useSessionStore } from "../stores/sessionStore";
@@ -55,30 +61,35 @@ export function SubagentViewport({
           : "flex flex-col gap-1"
       }
     >
-      {groups.map((group, gi) =>
-        group.type === "process" ? (
-          <ProcessGroup
-            key={`proc-${gi}`}
-            nodes={group.nodes}
-            streaming={processGroupStreaming({
-              hasInProgress: group.nodes.some((n) => n.streaming),
-            })}
-            sessionId={childSessionId}
-            groupIndex={gi}
-          />
-        ) : (
-          group.nodes.map((n) => (
-            <NodeView
-              key={n.key}
-              node={n}
-              streaming={n.streaming}
+      {groups.map((group, gi) => {
+        if (group.type === "process") {
+          const hasLive = group.nodes.some((n) => n.kind !== "compact_cut" && n.live);
+          return (
+            <ProcessGroup
+              key={`proc-${gi}`}
+              nodes={group.nodes}
+              streaming={hasLive}
+              autoOpen={processGroupAutoOpen({
+                hasLive,
+                followedByMessage: groups[gi + 1]?.type === "output",
+                hasTerminalStop: processGroupHasTerminalStop(group.nodes),
+              })}
               sessionId={childSessionId}
-              projectRoot={project}
-              onOpenFile={(path) => void openFile(path)}
+              groupIndex={gi}
             />
-          ))
-        ),
-      )}
+          );
+        }
+        return group.nodes.map((n) => (
+          <NodeView
+            key={n.key}
+            node={n}
+            streaming={n.streaming}
+            sessionId={childSessionId}
+            projectRoot={project}
+            onOpenFile={(path) => void openFile(path)}
+          />
+        ));
+      })}
     </div>
   );
 }

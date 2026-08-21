@@ -11,6 +11,7 @@ use super::super::responses_sse::{
 use super::super::stream_contract::{
     StreamContractGate, StreamItemAccumulator, forward_stream_event, resolve_stream_outcome,
 };
+use super::super::transport_error;
 use super::decode::items_from_chat_message;
 use super::stream::ChatSynth;
 
@@ -34,7 +35,7 @@ pub(crate) async fn complete_from_response(
     let text = resp
         .text()
         .await
-        .map_err(|e| LitecodeError::Llm(e.to_string()))?;
+        .map_err(|e| transport_error("reading chat-completions response", &e))?;
     let value: Value = serde_json::from_str(&text).map_err(|e| {
         LitecodeError::Llm(format!("{error_prefix}. not Chat JSON: {e}; body={text}"))
     })?;
@@ -86,7 +87,9 @@ pub(crate) async fn stream_from_response<'a>(
             }
             chunk = stream.next() => {
                 let Some(chunk) = chunk else { break; };
-                let chunk = chunk.map_err(|e| LitecodeError::Llm(e.to_string()))?;
+                let chunk = chunk.map_err(|e| {
+                    transport_error("reading chat-completions event stream", &e)
+                })?;
                 for line in reader.feed(&chunk)? {
                     let Some(data) = sse_data_payload(&line) else {
                         continue;

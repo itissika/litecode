@@ -241,6 +241,7 @@ export function ToolCallCard({
           </span>
         )
       }
+      autoOpen={streaming}
       streaming={streaming}
     >
       <ToolContentView

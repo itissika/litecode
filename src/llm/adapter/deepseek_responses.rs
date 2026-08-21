@@ -28,6 +28,7 @@ use super::responses_sse::{SseLineReader, check_event_stream_content_type, sse_d
 use super::stream_contract::{
     StreamContractGate, StreamItemAccumulator, forward_stream_event, resolve_stream_outcome,
 };
+use super::transport_error;
 
 /// Platform Default context budget for this closed adapter.
 pub(crate) const CONTEXT_WINDOW_DEFAULT: usize = 256_000;
@@ -252,7 +253,7 @@ impl LlmProvider for DeepseekResponsesProvider {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| LitecodeError::Llm(e.to_string()))?;
+                .map_err(|e| transport_error("sending DeepSeek response", &e))?;
 
             if !resp.status().is_success() {
                 let status = resp.status();
@@ -263,7 +264,7 @@ impl LlmProvider for DeepseekResponsesProvider {
             let text = resp
                 .text()
                 .await
-                .map_err(|e| LitecodeError::Llm(e.to_string()))?;
+                .map_err(|e| transport_error("reading DeepSeek response", &e))?;
             let response = parse_response(&text)?;
             Ok(output_items_to_items(response.output))
         })
@@ -288,7 +289,7 @@ impl LlmProvider for DeepseekResponsesProvider {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| LitecodeError::Llm(e.to_string()))?;
+                .map_err(|e| transport_error("opening DeepSeek event stream", &e))?;
 
             if !resp.status().is_success() {
                 let status = resp.status();
@@ -313,7 +314,9 @@ impl LlmProvider for DeepseekResponsesProvider {
                     }
                     chunk = stream.next() => {
                         let Some(chunk) = chunk else { break; };
-                        let chunk = chunk.map_err(|e| LitecodeError::Llm(e.to_string()))?;
+                        let chunk = chunk.map_err(|e| {
+                            transport_error("reading DeepSeek event stream", &e)
+                        })?;
                         for line in reader.feed(&chunk)? {
                             let Some(data) = sse_data_payload(&line) else {
                                 continue;

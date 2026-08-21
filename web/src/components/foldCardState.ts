@@ -15,31 +15,32 @@
  * slot, namespaced by session id) so an expanded card stays expanded after it
  * scrolls out of view and back, keeping its measured height stable.
  *
- * Invariant: a remounted card renders the exact state it had when it unmounted
- * (FoldCard persists on *every* change, including while streaming). This keeps
- * the remounted height equal to the height the virtualizer measured last time,
- * which is what prevents list jumps. Consequence: a card whose turn ended while
- * it was scrolled out of view stays open on remount — the auto-collapse effect
- * never ran for it, and its cached (open) measurement must stay valid.
+ * Only explicit user intent is persisted. A card with no user choice is owned
+ * by its caller's current system state, including after a virtual-list remount.
+ * This prevents an old live measurement from overriding a completed group.
  *
  * State is dropped per session when its panel closes (`clearFoldCardOpen`).
  */
-const openState = new Map<string, boolean>();
+export type FoldCardOpenIntent = "none" | "keepopen" | "keepclosed";
 
-/** Stable id → persisted open state, or `undefined` if never touched. */
-export function getFoldCardOpen(id: string): boolean | undefined {
-  return openState.get(id);
+/** Explicit user choice only. `none` is deliberately absent so the system owns the state. */
+const openIntent = new Map<string, Exclude<FoldCardOpenIntent, "none">>();
+
+/** Stable id → explicit user intent, or `none` when the system controls the card. */
+export function getFoldCardOpenIntent(id: string): FoldCardOpenIntent {
+  return openIntent.get(id) ?? "none";
 }
 
-export function setFoldCardOpen(id: string, open: boolean): void {
-  openState.set(id, open);
+export function setFoldCardOpenIntent(id: string, intent: FoldCardOpenIntent): void {
+  if (intent === "none") openIntent.delete(id);
+  else openIntent.set(id, intent);
 }
 
 const openRequests = new Set<(id: string) => void>();
 
-/** Open a mounted FoldCard (persist + notify). Used to reveal a bash view. */
+/** Explicitly open a mounted FoldCard (persist + notify). Used to reveal a bash view. */
 export function requestFoldCardOpen(id: string): void {
-  setFoldCardOpen(id, true);
+  setFoldCardOpenIntent(id, "keepopen");
   for (const notify of openRequests) notify(id);
 }
 
@@ -53,7 +54,7 @@ export function subscribeFoldCardOpenRequest(notify: (id: string) => void): () =
 /** Drop all state for a session (prefix is `sessionId:`). */
 export function clearFoldCardOpen(sessionId: string): void {
   const prefix = `${sessionId}:`;
-  for (const key of openState.keys()) {
-    if (key.startsWith(prefix)) openState.delete(key);
+  for (const key of openIntent.keys()) {
+    if (key.startsWith(prefix)) openIntent.delete(key);
   }
 }

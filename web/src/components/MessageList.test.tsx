@@ -173,9 +173,31 @@ describe("MessageList G5 historical FoldCard", () => {
         status: "completed",
       },
     };
+    const completedToolOutput: HumanRow = {
+      seq: 3,
+      kind: "item/tool_result",
+      streaming: false,
+      body: {
+        type: "function_call_output",
+        call_id: "call_hist",
+        output: "ok",
+      },
+    };
+    const finalMessage: HumanRow = {
+      seq: 4,
+      kind: "item/assistant",
+      streaming: false,
+      body: {
+        type: "message",
+        id: "msg_hist",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: "done", annotations: [] }],
+      },
+    };
     render(
       <MessageList
-        messages={[completedReasoning, completedTool]}
+        messages={[completedReasoning, completedTool, completedToolOutput, finalMessage]}
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
@@ -227,6 +249,97 @@ describe("MessageList process group across seal", () => {
     // Same DOM node ⇒ ProcessGroup/FoldCard did not remount on seal.
     expect(headerAfterSeal).toBe(header);
     expect(headerAfterSeal.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("keeps the process FoldCard expanded after the call seals until output arrives", () => {
+    const sealedCall: HumanRow = {
+      ...liveTool,
+      streaming: false,
+    };
+    const { rerender } = render(
+      <MessageList
+        messages={[sealedReasoning, sealedCall]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    const header = screen.getByRole("button", { name: /1 reasoning, 1 tool/i });
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+
+    rerender(
+      <MessageList
+        messages={[
+          sealedReasoning,
+          sealedCall,
+          {
+            seq: 3,
+            kind: "item/tool_result",
+            streaming: false,
+            body: {
+              type: "function_call_output",
+              call_id: "call_1",
+              output: "hits",
+            },
+          },
+        ]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /1 reasoning, 1 tool/i }).getAttribute("aria-expanded"),
+    ).toBe("true");
+
+    rerender(
+      <MessageList
+        messages={[
+          sealedReasoning,
+          sealedCall,
+          {
+            seq: 3,
+            kind: "item/tool_result",
+            streaming: false,
+            body: {
+              type: "function_call_output",
+              call_id: "call_1",
+              output: "hits",
+            },
+          },
+          {
+            seq: 4,
+            kind: "item/assistant",
+            streaming: false,
+            body: {
+              type: "message",
+              id: "msg_1",
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: "done", annotations: [] }],
+            },
+          },
+        ]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /1 reasoning, 1 tool/i }).getAttribute("aria-expanded"),
+    ).toBe("false");
   });
 });
 
@@ -295,6 +408,7 @@ describe("ProcessGroup header buckets", () => {
       <ProcessGroup
         nodes={nodes}
         streaming={true}
+        autoOpen={true}
         sessionId="session-1"
         bubbleKey="bubble-1"
         groupIndex={0}
