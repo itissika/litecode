@@ -221,6 +221,9 @@ pub struct AgentToolBinding {
     pub path_mode: crate::permission::BindingPathMode,
     #[serde(default)]
     pub last_applied_preset: Option<ToolPreset>,
+    /// Static MCP server tool allowlist. `None` preserves the server's full catalog.
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// Agent profile (global layer; uses `role` + `model_ref`).

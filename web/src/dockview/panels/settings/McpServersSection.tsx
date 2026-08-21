@@ -229,7 +229,7 @@ export function McpServersSection() {
       {probe ? (
         probe.ready ? (
           <p className="text-xs text-(--_dk-text-secondary)">
-            Ready — tools: {probe.tools.length ? probe.tools.join(", ") : "(none listed)"}
+            Ready — tools: {probe.tools.length ? probe.tools.map((tool) => tool.name).join(", ") : "(none listed)"}
           </p>
         ) : (
           <p className="text-sm text-(--_dk-red-500)">{probe.error || "Probe failed"}</p>

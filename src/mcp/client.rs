@@ -112,7 +112,7 @@ impl McpStdioClient {
 
     /// Fetch tool schemas from MCP server (initializes if needed, calls tools/list).
     /// Returns Vec of (tool_name, inputSchema).
-    pub async fn tool_schemas(&mut self) -> Result<Vec<(String, Value)>> {
+    pub async fn tool_schemas(&mut self) -> Result<Vec<crate::mcp::McpToolSchema>> {
         self.initialize().await?;
         let result = self.list_tools().await?;
         let tools = result
@@ -122,11 +122,20 @@ impl McpStdioClient {
                 arr.iter()
                     .filter_map(|tool| {
                         let name = tool.get("name")?.as_str()?.to_string();
-                        let schema = tool
+                        let input_schema = tool
                             .get("inputSchema")
                             .cloned()
                             .unwrap_or(serde_json::json!({"type": "object", "properties": {}}));
-                        Some((name, schema))
+                        let description = tool
+                            .get("description")
+                            .and_then(|description| description.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        Some(crate::mcp::McpToolSchema {
+                            name,
+                            description,
+                            input_schema,
+                        })
                     })
                     .collect()
             })

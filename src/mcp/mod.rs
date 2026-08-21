@@ -8,9 +8,19 @@ pub use pool::{McpConnectionPool, McpRunState, McpServerSnapshot};
 #[cfg(feature = "remote-mcp")]
 pub use remote::McpRemoteClient;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::Result;
+
+/// A tool advertised by an MCP server's `tools/list` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolSchema {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub input_schema: Value,
+}
 
 pub enum McpClient {
     Stdio(McpStdioClient),
@@ -52,7 +62,7 @@ impl McpClient {
         }
     }
 
-    pub async fn tool_schemas(&mut self) -> Result<Vec<(String, Value)>> {
+    pub async fn tool_schemas(&mut self) -> Result<Vec<McpToolSchema>> {
         match self {
             McpClient::Stdio(c) => c.tool_schemas().await,
             #[cfg(feature = "remote-mcp")]

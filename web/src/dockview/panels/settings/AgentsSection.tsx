@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { Plus, ArrowClockwise } from "@phosphor-icons/react";
+import { Plus, ArrowClockwise, ListChecks } from "@phosphor-icons/react";
 
 import {
   isConfigurableTool,
@@ -17,6 +17,8 @@ import {
 } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { Select } from "../../../components/ui/Select";
+import { Dropdown } from "../../../components/ui/Dropdown";
+import { FoldCard } from "../../../components/FoldCard";
 import { AgentTypeIcon, agentColor } from "../../../components/agentIdentity";
 import {
   FieldLabel,
@@ -72,6 +74,99 @@ function bindingFor(
   toolId: string,
 ): AgentToolBinding {
   return tools[toolId] ?? { enabled: false, last_applied_preset: "ALL" };
+}
+
+function McpToolVisibilityControl({
+  serverId,
+  binding,
+  tools,
+  disabled,
+  onChange,
+}: {
+  serverId: string;
+  binding: AgentToolBinding;
+  tools: { name: string; description: string }[];
+  disabled: boolean;
+  onChange: (allowed_tools: string[]) => void;
+}) {
+  const selected = binding.allowed_tools == null ? new Set(tools.map((tool) => tool.name)) : new Set(binding.allowed_tools);
+
+  const toggleTool = (name: string) => {
+    const next = new Set(selected);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    onChange(tools.filter((tool) => next.has(tool.name)).map((tool) => tool.name));
+  };
+
+  return (
+    <Dropdown
+      variant="panel"
+      align="right"
+      closeOnSelect={false}
+      panelClassName="w-[360px] max-w-[calc(100vw-16px)] p-2"
+      trigger={({ open, toggle }) => (
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label={`Select visible tools for MCP server ${serverId}`}
+          aria-expanded={open}
+          className={[
+            disabled ? "" : "tool-binding-action",
+            "btn btn-ghost btn-xs",
+          ].filter(Boolean).join(" ")}
+          onClick={(event) => {
+            event.stopPropagation();
+            toggle();
+          }}
+        >
+          <ListChecks size={14} />
+          Tools
+        </button>
+      )}
+    >
+      <div className="space-y-1">
+        <p className="px-1 pb-1 text-xs text-(--_dk-text-muted)">
+          Visible to the model next turn
+        </p>
+        {tools.length === 0 ? (
+          <p className="px-1 py-2 text-xs text-(--_dk-text-disabled)">
+            No tools listed. Start this MCP server from the MCP settings page.
+          </p>
+        ) : (
+          tools.map((tool) => {
+            const checked = selected.has(tool.name);
+            return (
+              <FoldCard
+                key={tool.name}
+                label={(
+                  <label
+                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={disabled}
+                      onChange={() => toggleTool(tool.name)}
+                      className="accent-(--_dk-accent-hover)"
+                    />
+                    <span className="min-w-0 truncate font-mono text-xs text-(--_dk-text-primary)">
+                      {tool.name}
+                    </span>
+                  </label>
+                )}
+                headerAriaLabel={`Show details for MCP tool ${tool.name}`}
+                className="border-b border-(--_dk-line-subtle) last:border-b-0"
+                contentClassName="px-5 pb-2 text-xs text-(--_dk-text-secondary)"
+              >
+                {tool.description || "No description provided by this MCP server."}
+              </FoldCard>
+            );
+          })
+        )}
+      </div>
+    </Dropdown>
+  );
 }
 
 function AgentProfileFields({
@@ -238,12 +333,14 @@ function SubagentToolsMultiSelect({
 export function AgentToolsGrid({
   draft,
   bindableTools,
+  mcpServers,
   saveBlocked,
   onBindingChange,
   gridStyle,
 }: {
   draft: AgentProfile;
   bindableTools: ToolCatalogEntry[];
+  mcpServers: { id: string; tools?: { name: string; description: string }[] }[];
   saveBlocked: boolean;
   onBindingChange: (toolId: string, patch: Partial<AgentToolBinding>) => void;
   /** Inline style for the card grid (e.g. force columns below sm breakpoint). */
@@ -272,6 +369,10 @@ export function AgentToolsGrid({
           const configurable = isConfigurableTool(entry.id);
           const enabled = binding.enabled;
           const preset = binding.last_applied_preset ?? "ALL";
+          const serverId = entry.id.slice("mcp_".length);
+          const mcpTools = entry.tier === "mcp"
+            ? mcpServers.find((server) => server.id === serverId)?.tools ?? []
+            : [];
 
           const toggleEnabled = () => {
             if (saveBlocked) return;
@@ -334,9 +435,20 @@ export function AgentToolsGrid({
                       ))}
                     </div>
                   ) : (
-                    <p className="text-xs text-(--_dk-text-disabled)">
-                      {entry.tier === "mcp" ? "No preset" : "Not configurable"}
-                    </p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs text-(--_dk-text-disabled)">
+                        {entry.tier === "mcp" ? "No preset" : "Not configurable"}
+                      </p>
+                      {entry.tier === "mcp" ? (
+                        <McpToolVisibilityControl
+                          serverId={serverId}
+                          binding={binding}
+                          tools={mcpTools}
+                          disabled={saveBlocked || !enabled}
+                          onChange={(allowed_tools) => onBindingChange(entry.id, { allowed_tools })}
+                        />
+                      ) : null}
+                    </div>
                   )}
                 </div>
               </div>
@@ -382,6 +494,7 @@ function agentPersistPayload(
 export function AgentsSection() {
   const toolCatalog = useSettingsStore((s) => s.toolCatalog);
   const models = useSettingsStore((s) => s.models);
+  const mcpServers = useSettingsStore((s) => s.mcpServers);
   const agentIds = useSettingsStore((s) => s.agentIds);
   const selectedAgentId = useSettingsStore((s) => s.selectedAgentId);
   const agents = useSettingsStore((s) => s.agents);
@@ -700,6 +813,7 @@ export function AgentsSection() {
           <AgentToolsGrid
               draft={draft}
               bindableTools={bindableToolsPrimary}
+              mcpServers={mcpServers ?? []}
               saveBlocked={saveBlocked}
               onBindingChange={updateBinding}
             />

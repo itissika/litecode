@@ -1,14 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde_json::Value;
-
 use crate::config::global_db::tools::mcp_catalog_id;
 use crate::config::resolved::ResolvedConfig;
 use crate::engines::WorkspaceEngines;
 use crate::ide_base::IdeBaseHandle;
 use crate::llm::LlmProvider;
-use crate::mcp::McpConnectionPool;
+use crate::mcp::{McpConnectionPool, McpToolSchema};
 use crate::optional::EngineManager;
 use crate::session::manager::SessionManager;
 use crate::tool::catalog::should_include_in_llm_list;
@@ -44,12 +42,13 @@ fn builtin_tool(
 
 fn instantiate_tool(
     resolved: &ResolvedConfig,
+    agent_id: &str,
     tool_id: &str,
     engines: &EngineManager,
     workspace_engines: &WorkspaceEngines,
     ide: Arc<IdeBaseHandle>,
     sessions: &Arc<SessionManager>,
-    mcp_schemas: &HashMap<String, Vec<(String, Value)>>,
+    mcp_schemas: &HashMap<String, Vec<McpToolSchema>>,
     mcp_pool: Arc<crate::mcp::McpConnectionPool>,
 ) -> Vec<Arc<dyn Tool>> {
     if let Some(tool) = builtin_tool(tool_id, Arc::clone(sessions), workspace_engines, ide) {
@@ -69,14 +68,24 @@ fn instantiate_tool(
         let Some(tool_schemas) = mcp_schemas.get(server_id) else {
             return vec![];
         };
+        let allowed_tools = resolved
+            .agents()
+            .get(agent_id)
+            .and_then(|agent| agent.tools.get(tool_id))
+            .and_then(|binding| binding.allowed_tools.as_ref());
         return tool_schemas
             .iter()
-            .map(|(tool_name, schema)| {
+            .filter(|tool| allowed_tools.map_or(true, |allowed| allowed.contains(&tool.name)))
+            .map(|tool| {
                 Arc::new(McpTool::new(
-                    format!("MCP tool {tool_name} from server '{server_id}'"),
-                    schema.clone(),
+                    if tool.description.is_empty() {
+                        format!("MCP tool {} from server '{server_id}'", tool.name)
+                    } else {
+                        tool.description.clone()
+                    },
+                    tool.input_schema.clone(),
                     crate::tools::mcp_tool::McpServerConnection {
-                        tool_name: tool_name.clone(),
+                        tool_name: tool.name.clone(),
                         server_name: server_id.to_string(),
                         command: mcp.command.clone(),
                         args: mcp.args.clone(),
@@ -137,7 +146,7 @@ pub async fn build_tool_list(
     sessions: Arc<SessionManager>,
     mcp_pool: Arc<McpConnectionPool>,
 ) -> Vec<Arc<dyn Tool>> {
-    let mut mcp_schemas: HashMap<String, Vec<(String, Value)>> = HashMap::new();
+    let mut mcp_schemas: HashMap<String, Vec<McpToolSchema>> = HashMap::new();
     for (server_id, mcp_def) in resolved.mcp_servers() {
         let catalog_id = mcp_catalog_id(server_id);
         if !should_include_in_llm_list(
@@ -194,6 +203,7 @@ pub async fn build_tool_list(
 
         let new_tools = instantiate_tool(
             resolved,
+            agent_id,
             &tool_id,
             &engines,
             &workspace_engines,
@@ -286,6 +296,7 @@ mod tests {
                     policy,
                     path_mode,
                     last_applied_preset: Some(ToolPreset::All),
+                    allowed_tools: None,
                 },
             );
         }
@@ -297,6 +308,7 @@ mod tests {
                     policy: crate::permission::ToolPolicy::allow_all(),
                     path_mode: crate::permission::BindingPathMode::default(),
                     last_applied_preset: None,
+                    allowed_tools: None,
                 },
             );
         }
@@ -393,6 +405,7 @@ mod tests {
                 )
                 .1,
                 last_applied_preset: Some(ToolPreset::Safe),
+                allowed_tools: None,
             },
         );
         let mut global = GlobalSettings::default();
@@ -492,6 +505,7 @@ mod tests {
                 policy: crate::permission::ToolPolicy::allow_all(),
                 path_mode: crate::permission::BindingPathMode::default(),
                 last_applied_preset: None,
+                allowed_tools: None,
             },
         );
         let mut global = GlobalSettings::default();

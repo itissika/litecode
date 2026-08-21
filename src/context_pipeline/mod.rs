@@ -37,6 +37,8 @@ pub struct CommitStepOutcome {
     pub committed: bool,
     pub discarded: bool,
     pub preview: Option<(String, i64)>,
+    /// Existing log rows sealed by this commit and requiring live re-stamps.
+    pub sealed_seqs: Vec<crate::session::event::Seq>,
 }
 
 struct PipelineState {
@@ -340,9 +342,14 @@ impl ContextPipeline {
                     committed: false,
                     discarded: true,
                     preview: None,
+                    sealed_seqs: Vec::new(),
                 })
             }
-            crate::session::store::CommitDeltaOutcome::Applied { preview, mutated } => {
+            crate::session::store::CommitDeltaOutcome::Applied {
+                preview,
+                sealed_seqs,
+                mutated,
+            } => {
                 let mut state = self.state.borrow_mut();
                 state.working = rows.clone();
                 state.surface_len = rows.len();
@@ -355,6 +362,7 @@ impl ContextPipeline {
                     committed: true,
                     discarded: false,
                     preview,
+                    sealed_seqs,
                 })
             }
         }

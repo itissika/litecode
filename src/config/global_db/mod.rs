@@ -464,7 +464,7 @@ pub mod store {
         agent_id: &str,
     ) -> Result<HashMap<String, AgentToolBinding>> {
         let mut stmt = conn.prepare(
-            "SELECT tool_id, enabled, policy_json, path_mode, last_applied_preset FROM agent_tools WHERE agent_id = ?1",
+            "SELECT tool_id, enabled, policy_json, path_mode, last_applied_preset, allowed_tools_json FROM agent_tools WHERE agent_id = ?1",
         )?;
         let mut rows = stmt.query([agent_id])?;
         let mut map = HashMap::new();
@@ -473,14 +473,23 @@ pub mod store {
             let policy_json: String = row.get(2)?;
             let path_mode_str: String = row.get(3)?;
             let last_preset: Option<String> = row.get(4)?;
+            let allowed_tools_json: Option<String> = row.get(5)?;
             let policy = serde_json::from_str(&policy_json).map_err(|e| {
                 LitecodeError::Config(format!("invalid policy_json for {tool_id}: {e}"))
             })?;
+            let allowed_tools = allowed_tools_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|e| {
+                    LitecodeError::Config(format!("invalid allowed_tools_json for {tool_id}: {e}"))
+                })?;
             let binding = AgentToolBinding {
                 enabled: row.get::<_, i64>(1)? != 0,
                 policy,
                 path_mode: parse_path_mode(&path_mode_str)?,
                 last_applied_preset: last_preset.as_deref().map(parse_preset).transpose()?,
+                allowed_tools,
             };
             map.insert(tool_id, binding);
         }
@@ -536,14 +545,20 @@ pub mod store {
             .last_applied_preset
             .map(preset_to_str)
             .map(String::from);
+        let allowed_tools_json = binding
+            .allowed_tools
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         conn.execute(
-            "INSERT INTO agent_tools (agent_id, tool_id, enabled, policy_json, path_mode, last_applied_preset)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO agent_tools (agent_id, tool_id, enabled, policy_json, path_mode, last_applied_preset, allowed_tools_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(agent_id, tool_id) DO UPDATE SET
                enabled = excluded.enabled,
                policy_json = excluded.policy_json,
                path_mode = excluded.path_mode,
-               last_applied_preset = excluded.last_applied_preset",
+               last_applied_preset = excluded.last_applied_preset,
+               allowed_tools_json = excluded.allowed_tools_json",
             params![
                 agent_id,
                 tool_id,
@@ -551,6 +566,7 @@ pub mod store {
                 policy_json,
                 path_mode,
                 last_preset,
+                allowed_tools_json,
             ],
         )?;
         Ok(())

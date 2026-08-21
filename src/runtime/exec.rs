@@ -218,6 +218,11 @@ impl AgentDeps for AgentRuntime {
         if outcome.committed {
             self.emit_internal(InternalEvent::StepCommitted);
         }
+        if !outcome.sealed_seqs.is_empty() {
+            self.emit_internal(InternalEvent::BufferRestamp {
+                seqs: outcome.sealed_seqs,
+            });
+        }
         if let Some((preview, updated_at)) = outcome.preview {
             self.emit_internal(InternalEvent::SessionPreviewUpdated {
                 preview,

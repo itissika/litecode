@@ -19,7 +19,7 @@ use crate::config::workspace;
 use crate::llm::{
     chat_models_url, has_remote_model_catalog, list_adapters, parse_chat_model_catalog,
 };
-use crate::mcp::{McpConnectionPool, McpRunState, McpServerSnapshot};
+use crate::mcp::{McpConnectionPool, McpRunState, McpServerSnapshot, McpToolSchema};
 use crate::serve::state::ServeState;
 use crate::tool::catalog::{effective_readiness, prune_non_catalog_agent_bindings};
 use crate::types::LitecodeError;
@@ -519,7 +519,7 @@ struct McpServerItem {
     #[serde(flatten)]
     def: McpServerDefinition,
     status: McpRunState,
-    tools: Vec<String>,
+    tools: Vec<McpToolSchema>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -542,7 +542,7 @@ fn mcp_item(id: String, def: McpServerDefinition, snap: McpServerSnapshot) -> Mc
 struct McpProbeResult {
     ready: bool,
     status: McpRunState,
-    tools: Vec<String>,
+    tools: Vec<McpToolSchema>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -637,7 +637,7 @@ async fn stop_mcp_server(State(state): State<ServeState>, Path(id): Path<String>
 }
 
 async fn mcp_lifecycle_result(
-    result: crate::types::Result<Vec<(String, serde_json::Value)>>,
+    result: crate::types::Result<Vec<McpToolSchema>>,
     id: String,
     state: &ServeState,
 ) -> Response {
@@ -646,7 +646,7 @@ async fn mcp_lifecycle_result(
         Ok(schemas) => ok_json(McpProbeResult {
             ready: true,
             status: snap.status,
-            tools: schemas.into_iter().map(|(name, _)| name).collect(),
+            tools: schemas,
             error: None,
         }),
         Err(e) => ok_json(McpProbeResult {

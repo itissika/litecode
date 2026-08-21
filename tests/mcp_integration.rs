@@ -73,10 +73,17 @@ async fn initialize_is_single_shot_per_connection() {
 async fn list_tools_returns_mock_catalog() {
     let mut client = mcp_client();
     let tools = client.tool_schemas().await.expect("tool_schemas");
-    let names: Vec<String> = tools.iter().map(|(n, _)| n.clone()).collect();
+    let names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
     assert!(names.contains(&"echo".to_string()));
     assert!(names.contains(&"crash".to_string()));
     assert!(names.contains(&"hang".to_string()));
+    assert_eq!(
+        tools
+            .iter()
+            .find(|tool| tool.name == "echo")
+            .map(|tool| tool.description.as_str()),
+        Some("Echo the arguments back")
+    );
 }
 
 /// `tools/call` round-trips through the mock server.
@@ -186,16 +193,16 @@ async fn turn_runtime_start_list_and_tool_call() {
     let def = mock_def();
     let tools = pool.start("mock", &def).await.expect("start");
     assert!(
-        tools.iter().any(|(t, _)| t == "echo"),
+        tools.iter().any(|tool| tool.name == "echo"),
         "start must return tools/list schemas, got {tools:?}"
     );
     let snap = pool.snapshot("mock").await;
     assert_eq!(snap.status, McpRunState::Running);
-    assert!(snap.tools.iter().any(|t| t == "echo"));
+    assert!(snap.tools.iter().any(|tool| tool.name == "echo"));
 
     let schemas = pool.schemas("mock").await;
     assert!(
-        schemas.iter().any(|(n, _)| n == "echo"),
+        schemas.iter().any(|tool| tool.name == "echo"),
         "schemas used by build_tool_list must include echo"
     );
 
@@ -282,6 +289,7 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
             policy: litecode::permission::ToolPolicy::allow_all(),
             path_mode: litecode::permission::BindingPathMode::default(),
             last_applied_preset: None,
+            allowed_tools: Some(vec!["echo".into()]),
         },
     );
     global.agents.insert(
@@ -333,6 +341,10 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
     assert!(
         names.contains(&"echo".to_string()),
         "LLM list must use the server tool name, got {names:?}"
+    );
+    assert!(
+        !names.contains(&"crash".to_string()),
+        "MCP allowlist must hide unselected tools, got {names:?}"
     );
     assert!(
         !names.iter().any(|n| n.starts_with("mcp_")),

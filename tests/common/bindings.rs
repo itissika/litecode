@@ -11,6 +11,7 @@ pub fn binding_all_for(tool_id: &str) -> AgentToolBinding {
         policy,
         path_mode,
         last_applied_preset: Some(ToolPreset::All),
+        allowed_tools: None,
     }
 }
 
@@ -22,6 +23,7 @@ pub fn binding_safe_for(tool_id: &str) -> AgentToolBinding {
         policy,
         path_mode,
         last_applied_preset: Some(ToolPreset::Safe),
+        allowed_tools: None,
     }
 }
 
@@ -31,5 +33,6 @@ pub fn binding_none_tool() -> AgentToolBinding {
         policy: ToolPolicy::allow_all(),
         path_mode: BindingPathMode::default(),
         last_applied_preset: None,
+        allowed_tools: None,
     }
 }

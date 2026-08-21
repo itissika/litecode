@@ -57,6 +57,14 @@ function PanelCrash({ onClose }: { onClose: () => void }) {
 export function AgentPanel(props: IDockviewPanelProps) {
   const sessionId = (props.params as { sessionId?: string }).sessionId ?? "";
   const connState = useConnectionStore((s) => s.state);
+  const [isActive, setIsActive] = useState(props.api.isActive);
+
+  // Track the dockview panel active state — drives the focused/unfocused
+  // emphasis (bigger + brighter vs smaller + dimmer) on the whole chat shell.
+  useEffect(() => {
+    const d = props.api.onDidActiveChange((e) => setIsActive(e.isActive));
+    return () => d.dispose();
+  }, [props.api]);
 
   // (Re)subscribe while the socket is usable. Re-runs on every transition to
   // "connected", including reconnects, so a dropped subscription self-heals.
@@ -111,7 +119,7 @@ export function AgentPanel(props: IDockviewPanelProps) {
 
   return (
     <AgentErrorBoundary onClose={close}>
-      <AgentChatShell sessionId={sessionId} />
+      <AgentChatShell sessionId={sessionId} isActive={isActive} />
     </AgentErrorBoundary>
   );
 }
@@ -120,7 +128,13 @@ export function AgentPanel(props: IDockviewPanelProps) {
  * Exported for Remotion compositions (c_msg_stream) that render the real
  * chat shell against a mocked store — the dockview panel entry above is
  * not usable headless. */
-export function AgentChatShell({ sessionId }: { sessionId: string }) {
+export function AgentChatShell({
+  sessionId,
+  isActive = true,
+}: {
+  sessionId: string;
+  isActive?: boolean;
+}) {
   const [stickToEnd, setStickToEnd] = useState(true);
   const jumpToEndRef = useRef<(() => void) | null>(null);
   const revealBashRef = useRef<((callId: string) => void) | null>(null);
@@ -129,12 +143,14 @@ export function AgentChatShell({ sessionId }: { sessionId: string }) {
     <div className="relative flex h-full flex-col">
       <MessageListRegion
         sessionId={sessionId}
+        isActive={isActive}
         onStickChange={setStickToEnd}
         jumpToEndRef={jumpToEndRef}
         revealBashRef={revealBashRef}
       />
       <ComposerDock
         sessionId={sessionId}
+        isActive={isActive}
         stickToEnd={stickToEnd}
         onJumpToEnd={() => jumpToEndRef.current?.()}
         onRevealBash={(callId) => revealBashRef.current?.(callId)}
@@ -149,11 +165,13 @@ export function AgentChatShell({ sessionId }: { sessionId: string }) {
  */
 function MessageListRegion({
   sessionId,
+  isActive,
   onStickChange,
   jumpToEndRef,
   revealBashRef,
 }: {
   sessionId: string;
+  isActive: boolean;
   onStickChange: (stickToEnd: boolean) => void;
   jumpToEndRef: RefObject<(() => void) | null>;
   revealBashRef: RefObject<((callId: string) => void) | null>;
@@ -219,21 +237,27 @@ function MessageListRegion({
             of the "list drifts while streaming" sources.
           */}
           <div className="mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col bg-(--_dk-editor)">
-            <MessageList
-              key={sessionId}
-              messages={messages}
-              loadingHistory={loadingHistory}
-              canLoadMore={canLoadMore}
-              onLoadMore={loadMoreHistory}
-              userDetailBefore={userDetailBefore}
-              isRunning={isRunning}
-              scrollRef={listRef}
-              sessionId={sessionId}
-              maxFileRevertK={maxFileRevertK}
-              onStickChange={onStickChange}
-              jumpToEndRef={jumpToEndRef}
-              revealBashRef={revealBashRef}
-            />
+            <div
+              className={`transition-opacity duration-200 ease-out ${
+                isActive ? "" : "opacity-85"
+              }`}
+            >
+              <MessageList
+                key={sessionId}
+                messages={messages}
+                loadingHistory={loadingHistory}
+                canLoadMore={canLoadMore}
+                onLoadMore={loadMoreHistory}
+                userDetailBefore={userDetailBefore}
+                isRunning={isRunning}
+                scrollRef={listRef}
+                sessionId={sessionId}
+                maxFileRevertK={maxFileRevertK}
+                onStickChange={onStickChange}
+                jumpToEndRef={jumpToEndRef}
+                revealBashRef={revealBashRef}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -256,11 +280,13 @@ function MessageListRegion({
  *  so the list can scroll under it instead of being clipped above. */
 export function ComposerDock({
   sessionId,
+  isActive = true,
   stickToEnd = true,
   onJumpToEnd,
   onRevealBash,
 }: {
   sessionId: string;
+  isActive?: boolean;
   stickToEnd?: boolean;
   onJumpToEnd?: () => void;
   onRevealBash?: (callId: string) => void;
@@ -272,12 +298,18 @@ export function ComposerDock({
 
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-3">
-      <div className="pointer-events-auto mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col gap-2">
+      <div
+        className={`pointer-events-auto mx-auto flex w-full max-w-[var(--_dk-prose-measure)] origin-bottom flex-col gap-2 transition-transform duration-200 ease-out ${
+          isActive
+            ? "[--_dk-composer-card-shadow:var(--_dk-composer-focus-shadow)]"
+            : "scale-[0.98]"
+        }`}
+      >
         {!stickToEnd && (
           <div className="flex justify-center">
             <button
               type="button"
-              className={`${composerCardClass} inline-flex items-center gap-1 px-2.5 py-1 text-xs text-(--_dk-text-secondary)`}
+              className={`${composerCardClass} inline-flex items-center gap-1 px-2.5 py-1 text-xs text-(--_dk-text-secondary) transition-transform duration-100 hover:scale-105 active:scale-90 active:brightness-90`}
               onClick={onJumpToEnd}
             >
               <CaretDownIcon size={12} weight="bold" aria-hidden />

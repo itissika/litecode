@@ -112,6 +112,8 @@ export interface AgentToolBinding {
   policy?: ToolPolicy;
   path_mode?: BindingPathMode;
   last_applied_preset?: ToolPreset | null;
+  /** Static MCP tool allowlist; null/undefined exposes the server's full catalog. */
+  allowed_tools?: string[] | null;
 }
 
 export type BindingPathMode = "workspace_only" | "unrestricted";
@@ -186,17 +188,22 @@ export interface McpServerDefinition {
 
 export type McpRunState = "stopped" | "starting" | "running" | "error";
 
+export interface McpToolInfo {
+  name: string;
+  description: string;
+}
+
 export interface McpServerItem extends McpServerDefinition {
   id: string;
   status?: McpRunState;
-  tools?: string[];
+  tools?: McpToolInfo[];
   error?: string | null;
 }
 
 export interface McpProbeResult {
   ready: boolean;
   status?: McpRunState;
-  tools: string[];
+  tools: McpToolInfo[];
   error?: string | null;
 }
 

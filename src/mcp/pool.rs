@@ -15,7 +15,7 @@ use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use super::{McpClient, McpStdioClient};
+use super::{McpClient, McpStdioClient, McpToolSchema};
 use crate::config::schema::McpServerDefinition;
 use crate::types::{LitecodeError, Result};
 
@@ -33,7 +33,7 @@ pub enum McpRunState {
 #[derive(Debug, Clone, Serialize)]
 pub struct McpServerSnapshot {
     pub status: McpRunState,
-    pub tools: Vec<String>,
+    pub tools: Vec<McpToolSchema>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -52,7 +52,7 @@ struct Entry {
     status: McpRunState,
     error: Option<String>,
     client: Option<Arc<Mutex<McpClient>>>,
-    schemas: Vec<(String, serde_json::Value)>,
+    schemas: Vec<McpToolSchema>,
 }
 
 impl Entry {
@@ -68,7 +68,7 @@ impl Entry {
     fn snapshot(&self) -> McpServerSnapshot {
         McpServerSnapshot {
             status: self.status,
-            tools: self.schemas.iter().map(|(n, _)| n.clone()).collect(),
+            tools: self.schemas.clone(),
             error: self.error.clone(),
         }
     }
@@ -171,7 +171,7 @@ impl McpConnectionPool {
         .unwrap_or_default()
     }
 
-    pub async fn schemas(&self, id: &str) -> Vec<(String, serde_json::Value)> {
+    pub async fn schemas(&self, id: &str) -> Vec<McpToolSchema> {
         let inner = Arc::clone(&self.inner);
         let id = id.to_string();
         self.on_hub(async move {
@@ -188,11 +188,7 @@ impl McpConnectionPool {
 
     /// Spawn (or reuse a live process) and handshake. Idempotent while Running.
     /// Returns `tools/list` schemas used to instantiate LLM tools.
-    pub async fn start(
-        &self,
-        id: &str,
-        def: &McpServerDefinition,
-    ) -> Result<Vec<(String, serde_json::Value)>> {
+    pub async fn start(&self, id: &str, def: &McpServerDefinition) -> Result<Vec<McpToolSchema>> {
         let inner = Arc::clone(&self.inner);
         let id = id.to_string();
         let def = def.clone();
@@ -210,11 +206,7 @@ impl McpConnectionPool {
             .await;
     }
 
-    pub async fn restart(
-        &self,
-        id: &str,
-        def: &McpServerDefinition,
-    ) -> Result<Vec<(String, serde_json::Value)>> {
+    pub async fn restart(&self, id: &str, def: &McpServerDefinition) -> Result<Vec<McpToolSchema>> {
         let inner = Arc::clone(&self.inner);
         let id = id.to_string();
         let def = def.clone();
@@ -336,7 +328,7 @@ async fn start_inner(
     inner: &Inner,
     id: &str,
     def: &McpServerDefinition,
-) -> Result<Vec<(String, serde_json::Value)>> {
+) -> Result<Vec<McpToolSchema>> {
     if matches!(
         def.transport,
         crate::config::schema::McpTransport::Remote { .. }
@@ -468,7 +460,7 @@ async fn spawn_and_list(
     command: &str,
     args: &[String],
     env: &HashMap<String, String>,
-) -> Result<(McpClient, Vec<(String, serde_json::Value)>)> {
+) -> Result<(McpClient, Vec<McpToolSchema>)> {
     let mut client = McpClient::Stdio(McpStdioClient::new(command, args, env)?);
     let schemas = client.tool_schemas().await?;
     Ok((client, schemas))

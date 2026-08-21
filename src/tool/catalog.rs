@@ -357,6 +357,7 @@ mod tests {
                 policy: crate::permission::ToolPolicy::allow_all(),
                 path_mode: crate::permission::BindingPathMode::default(),
                 last_applied_preset: None,
+                allowed_tools: None,
             },
         )]);
         let runtime_state = RuntimeCatalogState::default();
@@ -384,6 +385,7 @@ mod tests {
                 policy: crate::permission::ToolPolicy::allow_all(),
                 path_mode: crate::permission::BindingPathMode::default(),
                 last_applied_preset: None,
+                allowed_tools: None,
             },
         )]);
         let runtime_state = RuntimeCatalogState::default();
@@ -419,6 +421,7 @@ mod tests {
                         policy: crate::permission::ToolPolicy::allow_all(),
                         path_mode: crate::permission::BindingPathMode::default(),
                         last_applied_preset: None,
+                        allowed_tools: None,
                     },
                 )]),
                 ..Default::default()
@@ -487,6 +490,7 @@ mod tests {
                         )
                         .1,
                         last_applied_preset: Some(ToolPreset::All),
+                        allowed_tools: None,
                     },
                 )]),
                 ..Default::default()

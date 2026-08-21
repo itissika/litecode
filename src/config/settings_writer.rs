@@ -823,8 +823,12 @@ fn validate_agent_id(id: &str) -> Result<()> {
 /// NONE tools (`plan` / `todo` / `subagent_launch`) are left untouched.
 fn expand_binding_presets(tools: &mut HashMap<String, AgentToolBinding>) {
     for (tool_id, binding) in tools.iter_mut() {
-        if tools::core_none_tools().contains(&tool_id.as_str()) || tools::is_mcp_catalog_id(tool_id)
-        {
+        if tools::is_mcp_catalog_id(tool_id) {
+            binding.last_applied_preset = None;
+            continue;
+        }
+        binding.allowed_tools = None;
+        if tools::core_none_tools().contains(&tool_id.as_str()) {
             binding.last_applied_preset = None;
             continue;
         }

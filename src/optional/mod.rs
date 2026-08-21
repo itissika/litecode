@@ -323,6 +323,7 @@ mod tests {
                         )
                         .1,
                         last_applied_preset: Some(ToolPreset::All),
+                        allowed_tools: None,
                     },
                 )]),
                 ..Default::default()

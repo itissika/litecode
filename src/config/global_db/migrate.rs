@@ -18,6 +18,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
 
     if version == CURRENT_USER_VERSION {
+        ensure_agent_tools_allowed_tools_column(conn)?;
         return Ok(());
     }
 
@@ -25,6 +26,26 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "incompatible global DB user_version {version} (expected {CURRENT_USER_VERSION} or empty). \
          Schema is delete-and-rebuild only; `global_db::open` archives the old file and recreates."
     )))
+}
+
+/// Extend the current schema in-place for additive agent binding metadata.
+///
+/// The global DB intentionally has no historical migration ladder: incompatible
+/// epochs are rebuilt. This column is additive and must instead be available to
+/// existing current-epoch databases without losing settings.
+fn ensure_agent_tools_allowed_tools_column(conn: &Connection) -> Result<()> {
+    let exists = conn
+        .prepare(
+            "SELECT 1 FROM pragma_table_info('agent_tools') WHERE name = 'allowed_tools_json'",
+        )?
+        .exists([])?;
+    if !exists {
+        conn.execute(
+            "ALTER TABLE agent_tools ADD COLUMN allowed_tools_json TEXT",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -52,6 +73,15 @@ mod tests {
         let col: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name='allowed_subagents_json'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(col, 1);
+
+        let col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_tools') WHERE name='allowed_tools_json'",
                 [],
                 |row| row.get(0),
             )
@@ -93,6 +123,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(description, 1);
+    }
+
+    #[test]
+    fn current_epoch_adds_allowed_tools_column_without_rebuild() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE agent_tools (
+                agent_id TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                policy_json TEXT NOT NULL,
+                path_mode TEXT NOT NULL,
+                last_applied_preset TEXT,
+                PRIMARY KEY (agent_id, tool_id)
+            );
+            PRAGMA user_version = {CURRENT_USER_VERSION};",
+        ))
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_tools') WHERE name='allowed_tools_json'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(col, 1);
     }
 
     #[test]

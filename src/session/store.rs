@@ -394,6 +394,8 @@ pub enum CommitDeltaOutcome {
     Discarded,
     Applied {
         preview: Option<(String, i64)>,
+        /// Existing rows changed in place and must be re-sent to live clients.
+        sealed_seqs: Vec<Seq>,
         /// True when this commit sealed or appended at least one row.
         mutated: bool,
     },
@@ -2247,6 +2249,7 @@ impl Session {
             turn_id.to_string()
         };
         let mut mutated = false;
+        let mut sealed_seqs = Vec::new();
         let mut appended: Vec<Item> = Vec::new();
         let mut next_turn_seq = 0i64;
         for row in kept.iter_mut() {
@@ -2260,6 +2263,7 @@ impl Session {
                 if !same {
                     seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
                     projection.seal_item(seq, msg);
+                    sealed_seqs.push(seq);
                     mutated = true;
                 }
                 continue;
@@ -2278,6 +2282,7 @@ impl Session {
                     if !same {
                         seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
                         projection.seal_item(seq, msg);
+                        sealed_seqs.push(seq);
                         mutated = true;
                     }
                     continue;
@@ -2302,6 +2307,7 @@ impl Session {
         self.commit_projection(projection);
         Ok(CommitDeltaOutcome::Applied {
             preview: preview_updated,
+            sealed_seqs,
             mutated,
         })
     }
@@ -4223,9 +4229,17 @@ mod tests {
             phase: None,
         }));
         let mut items = vec![WorkingRow::pending(sealed.clone())];
-        session
+        let outcome = session
             .commit_turn_delta_with_orphan_cleanup(&mut items, &[sealed], 0, "t1")
             .unwrap();
+        assert!(matches!(
+            outcome,
+            CommitDeltaOutcome::Applied {
+                sealed_seqs,
+                mutated: true,
+                ..
+            } if sealed_seqs == vec![0]
+        ));
         assert_eq!(
             session.load_events().unwrap().len(),
             1,

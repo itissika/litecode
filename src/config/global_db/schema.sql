@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS agent_tools (
     policy_json           TEXT NOT NULL DEFAULT '{}',
     path_mode             TEXT NOT NULL DEFAULT 'unrestricted',
     last_applied_preset   TEXT,
+    allowed_tools_json    TEXT,
     PRIMARY KEY (agent_id, tool_id)
 );
 

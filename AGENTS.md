@@ -39,5 +39,3 @@ LiteCode 把 Tool 和 Context 做到极致。契约与系统提示词优先于�
 - 做：先升并同步版本号（`Cargo.toml` 为准），再构建，再 Publish GitHub Release
 - 不做：仅为 CI、文档、内部重构发版
 - 不做：未升版本号就构建发布；擅自改版本号、打 tag、Publish、force 移动已有 tag
-
-## 使用serena mcp进行精准的代码编辑

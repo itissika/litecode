@@ -97,6 +97,7 @@ fn seed_default_agent_bindings(conn: &Connection) -> Result<()> {
             policy,
             path_mode,
             last_applied_preset: Some(ToolPreset::All),
+            allowed_tools: None,
         };
         store::upsert_agent_tool(conn, "default", tool, &binding)?;
     }
@@ -106,6 +107,7 @@ fn seed_default_agent_bindings(conn: &Connection) -> Result<()> {
             policy: crate::permission::ToolPolicy::allow_all(),
             path_mode: crate::permission::BindingPathMode::default(),
             last_applied_preset: None,
+            allowed_tools: None,
         };
         store::upsert_agent_tool(conn, "default", tool, &binding)?;
     }
@@ -176,6 +178,7 @@ fn ensure_default_core_bindings(conn: &Connection) -> Result<()> {
                 policy,
                 path_mode,
                 last_applied_preset: Some(ToolPreset::All),
+                allowed_tools: None,
             };
             store::upsert_agent_tool(conn, "default", tool, &binding)?;
         }
@@ -195,6 +198,7 @@ fn ensure_default_core_bindings(conn: &Connection) -> Result<()> {
                 policy: crate::permission::ToolPolicy::allow_all(),
                 path_mode: crate::permission::BindingPathMode::default(),
                 last_applied_preset: None,
+                allowed_tools: None,
             };
             store::upsert_agent_tool(conn, "default", tool, &binding)?;
         }

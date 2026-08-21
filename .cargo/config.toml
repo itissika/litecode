@@ -1,1 +1,4 @@
+[build]
+# Keep cold builds responsive on machines with limited RAM.
+jobs = 2
 

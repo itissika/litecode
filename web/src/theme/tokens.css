@@ -144,6 +144,17 @@
   /* ── Elevation ── */
   --_dk-elevation: 0 8px 32px rgba(0, 0, 0, 0.5);
 
+  /* ── Composer card shadows (chat input + todo + latest) ──
+     Dark theme: no dark drop layer (invisible on black) — only the subtle
+     panel-tint glow. Focus adds no glow either; the border brightening
+     (focus-within:border) carries the focus state. */
+  --_dk-composer-shadow:
+    0 2px 24px 6px color-mix(in srgb, var(--_dk-sidepanel) 80%, transparent);
+  --_dk-composer-focus-shadow: var(--_dk-composer-shadow);
+  /* Current shadow the cards actually render — defaults to base; the dock
+     container overrides it to the focus variant while its panel is active. */
+  --_dk-composer-card-shadow: var(--_dk-composer-shadow);
+
   /* ── Window controls ── */
   --_dk-close-hover-color: #f87171;
   --_dk-close-hover-bg:    rgba(127, 29, 29, 0.4);
@@ -267,6 +278,18 @@
   --_dk-border-visible: rgba(0, 0, 0, 0.18);   /* L3: prominent */
   --_dk-border-strong:  rgba(0, 0, 0, 0.30);   /* L4: strongest — primary/important buttons */
   --_dk-elevation:    0 4px 20px rgba(0, 0, 0, 0.10);
+
+  /* ── Composer card shadows — light override ──
+     Keeps the panel-tint glow + adds a dark drop layer for depth; focus
+     additionally lights up with a soft accent halo + glow. */
+  --_dk-composer-shadow:
+    0 2px 24px 6px color-mix(in srgb, var(--_dk-sidepanel) 80%, transparent),
+    0 1px 9px 0px rgba(0, 0, 0, 0.06);
+  --_dk-composer-focus-shadow:
+    0 2px 24px 6px color-mix(in srgb, var(--_dk-sidepanel) 80%, transparent),
+    0 1px 9px 0px rgba(0, 0, 0, 0.06),
+    0 0 0 1px var(--_dk-accent-halo),
+    0 0 12px 0px var(--_dk-accent-glow);
 
   /* ── Surface extensions ── */
   --_dk-surface-raised:  #f3f3f5;

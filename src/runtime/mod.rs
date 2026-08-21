@@ -976,6 +976,11 @@ impl AgentRuntime {
             if commit_outcome.committed {
                 self.emit_internal(crate::runtime::observer::InternalEvent::StepCommitted);
             }
+            if !commit_outcome.sealed_seqs.is_empty() {
+                self.emit_internal(crate::runtime::observer::InternalEvent::BufferRestamp {
+                    seqs: commit_outcome.sealed_seqs,
+                });
+            }
             if let Some((preview, updated_at)) = commit_outcome.preview {
                 self.emit_internal(
                     crate::runtime::observer::InternalEvent::SessionPreviewUpdated {
@@ -1084,6 +1089,11 @@ impl AgentRuntime {
             if !commit_outcome.discarded {
                 if commit_outcome.committed {
                     self.emit_internal(crate::runtime::observer::InternalEvent::StepCommitted);
+                }
+                if !commit_outcome.sealed_seqs.is_empty() {
+                    self.emit_internal(crate::runtime::observer::InternalEvent::BufferRestamp {
+                        seqs: commit_outcome.sealed_seqs,
+                    });
                 }
                 if let Some((preview, updated_at)) = commit_outcome.preview {
                     self.emit_internal(
