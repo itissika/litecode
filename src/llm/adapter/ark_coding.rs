@@ -131,10 +131,7 @@ fn harden_ark_json(value: &mut Value) {
 fn harden_ark_value(value: &mut Value, event_type: Option<&str>) {
     match value {
         Value::Object(map) => {
-            let ty = map
-                .get("type")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let ty = map.get("type").and_then(Value::as_str).map(str::to_owned);
             let event = ty.as_deref().or(event_type);
             fill_ark_typed_object(map);
             if let Some(Value::Object(resp)) = map.get_mut("response") {
@@ -295,12 +292,15 @@ impl LlmProvider for ArkCodingProvider {
         Box::pin(async move {
             let body = Self::build_body(request, false)?;
             let (header_name, header_value) = self.auth_header(api_key);
-            let resp =
-                apply_ark_headers(self.client.post(&self.endpoint_url), header_name, header_value)
-                    .json(&body)
-                    .send()
-                    .await
-                    .map_err(|e| LitecodeError::Llm(e.to_string()))?;
+            let resp = apply_ark_headers(
+                self.client.post(&self.endpoint_url),
+                header_name,
+                header_value,
+            )
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LitecodeError::Llm(e.to_string()))?;
 
             if !resp.status().is_success() {
                 let status = resp.status();
@@ -327,13 +327,16 @@ impl LlmProvider for ArkCodingProvider {
         Box::pin(async move {
             let body = Self::build_body(request, true)?;
             let (header_name, header_value) = self.auth_header(api_key);
-            let resp =
-                apply_ark_headers(self.client.post(&self.endpoint_url), header_name, header_value)
-                    .header("accept", "text/event-stream")
-                    .json(&body)
-                    .send()
-                    .await
-                    .map_err(|e| LitecodeError::Llm(e.to_string()))?;
+            let resp = apply_ark_headers(
+                self.client.post(&self.endpoint_url),
+                header_name,
+                header_value,
+            )
+            .header("accept", "text/event-stream")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LitecodeError::Llm(e.to_string()))?;
 
             if !resp.status().is_success() {
                 let status = resp.status();
@@ -553,9 +556,7 @@ mod tests {
             "https://ark.cn-beijing.volces.com/api/coding/v3/responses"
         );
         assert_eq!(
-            normalize_endpoint(
-                "https://ark.cn-beijing.volces.com/api/coding/v3/responses".into()
-            ),
+            normalize_endpoint("https://ark.cn-beijing.volces.com/api/coding/v3/responses".into()),
             "https://ark.cn-beijing.volces.com/api/coding/v3/responses"
         );
     }
@@ -655,10 +656,7 @@ mod tests {
             !lower.contains("x-opencode-"),
             "must not send OpenCode headers in {raw}"
         );
-        assert!(
-            raw.contains("/responses"),
-            "must POST responses in {raw}"
-        );
+        assert!(raw.contains("/responses"), "must POST responses in {raw}");
         assert!(
             !raw.contains("/chat/completions"),
             "must not POST chat completions in {raw}"
@@ -767,10 +765,7 @@ mod tests {
             }
         });
         let event = parse_stream_event(&raw.to_string()).expect("ark created");
-        assert!(matches!(
-            event,
-            ResponseStreamEvent::ResponseCreated(_)
-        ));
+        assert!(matches!(event, ResponseStreamEvent::ResponseCreated(_)));
     }
 
     #[test]
@@ -812,9 +807,7 @@ mod tests {
             .filter_map(|i| match i {
                 Item::Message(MessageItem::Output(OutputMessage { content, .. })) => {
                     content.iter().find_map(|c| match c {
-                        OutputMessageContent::OutputText(t) => {
-                            Some(t.text.as_str())
-                        }
+                        OutputMessageContent::OutputText(t) => Some(t.text.as_str()),
                         _ => None,
                     })
                 }

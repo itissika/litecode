@@ -22,7 +22,9 @@ use litecode::session::manager::SessionManager;
 use litecode::session::store::Session;
 use litecode::session::task_state::TaskReminders;
 use litecode::session::{WorkingRow, align_working, project_items};
-use litecode::types::{FunctionToolCall, Item, LitecodeError, Transcript, item_text_preview, user_text};
+use litecode::types::{
+    FunctionToolCall, Item, LitecodeError, Transcript, item_text_preview, user_text,
+};
 
 use common::fake_deps::{assistant_text_item, function_call_item};
 use common::scripted_provider::ScriptedProvider;
@@ -186,7 +188,11 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
     assert!(transcript.len() < seed.len());
 
     let history = session.load_history_transcript().unwrap();
-    assert_eq!(history.len(), seed.len() + 1, "replace row appends; seeds stay");
+    assert_eq!(
+        history.len(),
+        seed.len() + 1,
+        "replace row appends; seeds stay"
+    );
     let events = session.load_events().unwrap();
     assert!(
         events.iter().any(|e| matches!(
@@ -681,7 +687,10 @@ async fn resumed_session_cursor_initialized_from_max_seq() {
             .await
             .unwrap();
         turn.push(WorkingRow::pending(user_text("resume user")));
-        turn.push(WorkingRow::pending(assistant_text_item("resume reply", "msg_r")));
+        turn.push(WorkingRow::pending(assistant_text_item(
+            "resume reply",
+            "msg_r",
+        )));
         commit_via_gate(&pipeline, &sessions, &sid, &mut turn);
     }
 
@@ -756,7 +765,10 @@ async fn orphan_function_call_output_purged_from_db_in_commit_transaction() {
         .await
         .expect("prepare_step (snip)");
 
-    turn.push(WorkingRow::pending(assistant_text_item("reply after snip", "msg_snip")));
+    turn.push(WorkingRow::pending(assistant_text_item(
+        "reply after snip",
+        "msg_snip",
+    )));
     pipeline.commit_step(&session, &mut turn).unwrap();
 
     // Unmatched FCO stays on the log (投影可丢). Commit must not DELETE it.
@@ -1394,7 +1406,10 @@ fn commit_after_revert_discards_uncommitted_delta() {
     session.revert_to_user_anchor(1).unwrap();
     assert_eq!(session.load_transcript().unwrap().len(), 1);
 
-    turn.push(WorkingRow::pending(assistant_text_item("uncommitted tail", "msg_stale")));
+    turn.push(WorkingRow::pending(assistant_text_item(
+        "uncommitted tail",
+        "msg_stale",
+    )));
     let outcome = pipeline.commit_step(&session, &mut turn).unwrap();
     assert!(
         outcome.discarded,
@@ -1484,7 +1499,10 @@ impl AgentDeps for PipelinePersistDeps {
         if let Some(k) = self.revert_k.take() {
             self.session.revert_to_user_anchor(k)?;
         }
-        Ok(self.pipeline.commit_step_from_items(&self.session, items)?.discarded)
+        Ok(self
+            .pipeline
+            .commit_step_from_items(&self.session, items)?
+            .discarded)
     }
 
     fn begin_step(&mut self, _step: u64) {}
@@ -1701,7 +1719,10 @@ async fn compact_then_send_message_matches_run_with_turn() {
          cursor={} log_len={} surface_now={} items={}",
         pipeline.persisted_prefix_len(),
         session.load_events().map(|e| e.len()).unwrap_or(usize::MAX),
-        session.load_transcript().map(|t| t.len()).unwrap_or(usize::MAX),
+        session
+            .load_transcript()
+            .map(|t| t.len())
+            .unwrap_or(usize::MAX),
         items.len()
     );
     assert!(
@@ -1751,17 +1772,9 @@ async fn compact_then_send_message_matches_run_with_turn() {
     let session2 = Session::resume(&db_path, &sid).unwrap();
     let mut prepared = session2.load_working_set().unwrap();
     let prefix_before_prepare = pipeline.persisted_prefix_len();
-    prepare(
-        &pipeline,
-        &sessions,
-        &sid,
-        &ctx,
-        &mut prepared,
-        1,
-        0,
-    )
-    .await
-    .expect("BLAST-prepare_step after compact+user+assistant");
+    prepare(&pipeline, &sessions, &sid, &ctx, &mut prepared, 1, 0)
+        .await
+        .expect("BLAST-prepare_step after compact+user+assistant");
     assert_eq!(
         prepared.last().map(|r| item_text_preview(&r.item)),
         items.last().map(|r| item_text_preview(&r.item)),
@@ -1779,8 +1792,12 @@ async fn compact_then_agent_run_persists_assistant() {
     let (db_path, sid) = setup_workspace_and_session(dir.path(), "default");
     {
         let s = Session::resume(&db_path, &sid).unwrap();
-        s.insert_detail_rows(&(0..6).map(|i| user_text(format!("pre-{i}"))).collect::<Vec<_>>())
-            .unwrap();
+        s.insert_detail_rows(
+            &(0..6)
+                .map(|i| user_text(format!("pre-{i}")))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
         s.apply_compact_checkpoint_from(&user_text("[Conversation summary]\nrolled"), Some(4), 10)
             .unwrap();
     }
@@ -1858,7 +1875,10 @@ fn compact_then_send_message_with_shadowed_tool_rows() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(fco_before, 1, "shadowed tool output must still be in the log");
+    assert_eq!(
+        fco_before, 1,
+        "shadowed tool output must still be in the log"
+    );
 
     let session = Session::resume(&db_path, &sid).unwrap();
     let ctx = test_context(dir.path());
@@ -1894,10 +1914,7 @@ fn compact_then_send_message_with_shadowed_tool_rows() {
         "BLAST-orphan-scan: compact-shadowed FunctionCallOutput was deleted as an orphan"
     );
     assert_eq!(
-        items
-            .last()
-            .map(|r| item_text_preview(&r.item))
-            .as_deref(),
+        items.last().map(|r| item_text_preview(&r.item)).as_deref(),
         Some("after compact"),
         "BLAST-working-set after commit {items:?}"
     );

@@ -409,8 +409,7 @@ impl AgentRuntime {
                     match sessions.with_entry_store(&session_id, |s| {
                         s.persist_item(&item)?;
                         Ok(())
-                    })
-                    {
+                    }) {
                         Ok(()) => observer.on_internal(InternalEvent::StepCommitted),
                         Err(e) => tracing::warn!(%e, "persist Item at output_item.added failed"),
                     }

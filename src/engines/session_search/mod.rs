@@ -316,7 +316,7 @@ pub fn load_surface_seqs(db_path: &Path, session_id: &str) -> Result<Vec<i64>> {
         .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))?;
     let mut stmt = conn
         .prepare(
-            "SELECT seq, event_type, surface_op FROM transcript_items
+            "SELECT seq, event_type, surface_op, body, source_seqs FROM transcript_items
              WHERE session_id = ?1 ORDER BY seq ASC",
         )
         .map_err(|e| LitecodeError::Config(format!("surface seqs prepare: {e}")))?;
@@ -326,24 +326,38 @@ pub fn load_surface_seqs(db_path: &Path, session_id: &str) -> Result<Vec<i64>> {
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         })
         .map_err(|e| LitecodeError::Config(format!("surface seqs query: {e}")))?;
     let mut events = Vec::new();
     for row in rows {
-        let (seq, event_type, surface_op) =
+        let (seq, event_type, surface_op, body, source_seqs) =
             row.map_err(|e| LitecodeError::Config(format!("surface seqs row: {e}")))?;
-        let seq = Seq::try_from(seq).map_err(|_| {
-            LitecodeError::InvalidSessionEvent(format!("negative seq {seq}"))
-        })?;
+        let seq = Seq::try_from(seq)
+            .map_err(|_| LitecodeError::InvalidSessionEvent(format!("negative seq {seq}")))?;
+        let event_type = EventType::from_str_name(&event_type);
+        let data = if matches!(event_type, EventType::Compacted) {
+            serde_json::from_str(body.as_deref().unwrap_or(""))?
+        } else {
+            serde_json::Value::Null
+        };
         events.push(SessionEvent {
             seq,
             time: 0,
-            event_type: EventType::from_str_name(&event_type),
-            data: serde_json::Value::Null,
-            surface_op: Some(serde_json::from_str(&surface_op)?),
-            source_seqs: None,
+            event_type,
+            data,
+            surface_op: (!surface_op.is_empty())
+                .then(|| serde_json::from_str(&surface_op))
+                .transpose()?,
+            source_seqs: source_seqs
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .map(serde_json::from_str)
+                .transpose()?,
             ignorable: false,
+            state: crate::session::LogState::Final,
         });
     }
     let surface = fold_surface(&events)?;
@@ -507,8 +521,7 @@ pub fn expand_hit_windows(
                     None
                 }
             });
-            let stream =
-                load_session_char_stream(db_path, &data_root, &hit.session_id, exclude)?;
+            let stream = load_session_char_stream(db_path, &data_root, &hit.session_id, exclude)?;
             cache.insert(hit.session_id.clone(), stream);
         }
         let stream = cache.get(&hit.session_id).unwrap();
@@ -541,7 +554,8 @@ fn load_session_char_stream(
     let mut stmt = conn
         .prepare(
             "SELECT seq, item_type, body, body_ref FROM transcript_items
-             WHERE session_id = ?1 AND kind = 'detail'
+             WHERE session_id = ?1
+               AND kind IN ('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted')
              ORDER BY seq ASC",
         )
         .map_err(|e| LitecodeError::Config(format!("session stream prepare: {e}")))?;
@@ -697,7 +711,8 @@ fn load_item_plain_text(
         .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))?;
     let row = conn.query_row(
         "SELECT item_type, body, body_ref FROM transcript_items
-         WHERE session_id = ?1 AND seq = ?2 AND kind = 'detail'",
+         WHERE session_id = ?1 AND seq = ?2
+           AND kind IN ('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted')",
         rusqlite::params![session_id, seq],
         |r| {
             Ok(RawRow {
@@ -838,19 +853,18 @@ pub(crate) fn row_plain_text(row: &RawRow, data_root: &Path) -> Result<Option<St
     } else {
         return Ok(None);
     };
-    let item: Item = match serde_json::from_str(&json) {
-        Ok(i) => i,
-        Err(e) => {
-            tracing::warn!(
-                session_id = %row.session_id,
-                seq = row.seq,
-                error = %e,
-                "session search skip bad item json"
-            );
-            return Ok(None);
-        }
+    let text = if let Ok(item) = serde_json::from_str::<Item>(&json) {
+        item_text_preview(&item)
+    } else if let Ok(body) = serde_json::from_str::<crate::session::model::CompactedBody>(&json) {
+        item_text_preview(&body.agent_item())
+    } else {
+        tracing::warn!(
+            session_id = %row.session_id,
+            seq = row.seq,
+            "session search skip bad item json"
+        );
+        return Ok(None);
     };
-    let text = item_text_preview(&item);
     if text.trim().is_empty() {
         Ok(None)
     } else {
@@ -963,7 +977,7 @@ pub(crate) fn iter_detail_texts(db_path: &Path) -> Result<Vec<(String, i64, Stri
         .prepare(
             "SELECT t.session_id, t.seq, t.item_type, t.body, t.body_ref
              FROM transcript_items t
-             WHERE t.kind = 'detail'
+             WHERE t.kind IN ('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted')
              ORDER BY t.session_id ASC, t.seq ASC",
         )
         .map_err(|e| LitecodeError::Config(format!("session index prepare: {e}")))?;

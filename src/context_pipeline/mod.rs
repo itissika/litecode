@@ -201,7 +201,7 @@ impl ContextPipeline {
             .working
             .iter()
             .take(committed_len)
-            .filter_map(|row| row.seq)
+            .filter_map(|row| row.log_seq)
             .collect();
         let reminder = tail_reminders::build_compaction_content(task_state);
 
@@ -242,7 +242,7 @@ impl ContextPipeline {
                 rows.push(WorkingRow::pending(item.clone()));
             }
             let mut state = self.state.borrow_mut();
-            state.surface_len = rows.iter().filter(|r| r.seq.is_some()).count();
+            state.surface_len = rows.iter().filter(|r| r.log_seq.is_some()).count();
             state.log_max_seq = max_seq;
             state.working = rows;
         } else {

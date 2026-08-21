@@ -138,6 +138,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               // per-socket subscriptions (a fresh socket starts empty).
               // Clear the local record so each AgentPanel re-subscribes
               // itself on (re)connect via its own connection-state effect.
+              siblingStores.turn?.getState().clearAllPendingStreams?.();
               set({ state: connection, subscribedSessions: new Set() });
             }
             siblingStores.telemetry?.getState().onConnectionChange(connection);

@@ -327,6 +327,11 @@ impl SessionManager {
             Some(parent_call_id),
         )
         .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+        let parent_depth = Session::subagent_depth_for(&db, parent_session_id)
+            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+        store
+            .set_subagent_depth(parent_depth.saturating_add(1))
+            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
         let sid = store.id.clone();
         let mut task_state = store.load_task_state().unwrap_or_default();
         if prune_stale_active_plan(&mut task_state) {
@@ -393,9 +398,7 @@ impl SessionManager {
         let entry = records.get(session_id).ok_or_else(|| {
             LitecodeError::ToolExecution(format!("session {session_id} not found"))
         })?;
-        entry
-            .store
-            .with(|s| s.load_events_range(from_seq, to_seq))
+        entry.store.with(|s| s.load_events_range(from_seq, to_seq))
     }
 
     pub fn entry_revert_to_user_anchor(&self, session_id: &str, k: i64) -> Result<()> {
@@ -413,6 +416,18 @@ impl SessionManager {
             LitecodeError::ToolExecution(format!("session {session_id} not found"))
         })?;
         entry.store.with(|s| s.user_detail_count())
+    }
+
+    pub fn entry_user_detail_before_seq(
+        &self,
+        session_id: &str,
+        from_seq: crate::session::event::Seq,
+    ) -> Result<i64> {
+        let records = self.records.lock().unwrap();
+        let entry = records.get(session_id).ok_or_else(|| {
+            LitecodeError::ToolExecution(format!("session {session_id} not found"))
+        })?;
+        entry.store.with(|s| s.user_detail_before_seq(from_seq))
     }
 
     pub fn entry_snapshot_stem_for_user_k(&self, session_id: &str, k: i64) -> Result<i64> {

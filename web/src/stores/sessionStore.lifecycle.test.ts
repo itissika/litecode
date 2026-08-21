@@ -150,9 +150,9 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
       from_seq: 0,
       to_seq: 3,
       events: [
-        { seq: 0, type: "item/user", surface_op: "append", item: { type: "message", role: "user", content: [{ type: "input_text", text: "a" }] } },
-        { seq: 1, type: "item/assistant", surface_op: "append", item: { type: "message", role: "assistant", id: "a0", status: "completed", content: [{ type: "output_text", text: "b", annotations: [] }] } },
-        { seq: 2, type: "item/user", surface_op: "append", item: { type: "message", role: "user", content: [{ type: "input_text", text: "c" }] } },
+        { seq: 0, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "a" }] } },
+        { seq: 1, kind: "item/assistant", body: { type: "message", role: "assistant", id: "a0", status: "completed", content: [{ type: "output_text", text: "b", annotations: [] }] } },
+        { seq: 2, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "c" }] } },
       ],
     });
     useTurnStore.getState().onTurnStarted({

@@ -3,8 +3,9 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MessageList, ProcessGroup, rowsToNodes } from "./MessageList";
-import type { ChatRow } from "../api/adapter";
+import type { HumanRow } from "../api/types";
 import { useBashStore } from "../stores/bashStore";
+import { useMessageStore } from "../stores/messageStore";
 import { clearFoldCardOpen } from "./foldCardState";
 
 const grantPermission = vi.fn();
@@ -97,12 +98,12 @@ vi.mock("../stores/sessionStore", () => ({
 
 const makeScrollRef = () => React.createRef<HTMLDivElement>();
 
-const liveReasoning: ChatRow = {
+const liveReasoning: HumanRow = {
   seq: 0,
-  eventType: "item/assistant",
-  surfaceOp: "append",
+  kind: "item/assistant",
+
   streaming: true,
-  item: {
+  body: {
     type: "reasoning",
     id: "rs_1",
     summary: [{ type: "summary_text", text: "thinking" }],
@@ -111,12 +112,12 @@ const liveReasoning: ChatRow = {
   },
 };
 
-const sealedReasoning: ChatRow = {
+const sealedReasoning: HumanRow = {
   seq: 0,
-  eventType: "item/assistant",
-  surfaceOp: "append",
+  kind: "item/assistant",
+
   streaming: false,
-  item: {
+  body: {
     type: "reasoning",
     id: "rs_1",
     summary: [{ type: "summary_text", text: "thinking" }],
@@ -125,12 +126,12 @@ const sealedReasoning: ChatRow = {
   },
 };
 
-const liveTool: ChatRow = {
+const liveTool: HumanRow = {
   seq: 2,
-  eventType: "item/tool_call",
-  surfaceOp: "append",
+  kind: "item/tool_call",
+
   streaming: true,
-  item: {
+  body: {
     type: "function_call",
     id: "fc_1",
     call_id: "call_1",
@@ -154,16 +155,16 @@ afterEach(() => {
 
 describe("MessageList G5 historical FoldCard", () => {
   it("does not open a completed process group because the session is running", () => {
-    const completedReasoning: ChatRow = {
+    const completedReasoning: HumanRow = {
       ...sealedReasoning,
       seq: 0,
     };
-    const completedTool: ChatRow = {
+    const completedTool: HumanRow = {
       seq: 2,
-      eventType: "item/tool_call",
-      surfaceOp: "append",
+      kind: "item/tool_call",
+
       streaming: false,
-      item: {
+      body: {
         type: "function_call",
         id: "fc_hist",
         call_id: "call_hist",
@@ -231,14 +232,14 @@ describe("MessageList process group across seal", () => {
 
 describe("ProcessGroup header buckets", () => {
   it("shows icon counts per category and excludes wait_shell from bash bucket", () => {
-    const rows: ChatRow[] = [
+    const rows: HumanRow[] = [
       liveReasoning,
       {
         seq: 10,
-        eventType: "item/tool_call",
-        surfaceOp: "append",
+        kind: "item/tool_call",
+
         streaming: false,
-        item: {
+        body: {
           type: "function_call",
           id: "fc_bash",
           call_id: "call_bash",
@@ -249,10 +250,10 @@ describe("ProcessGroup header buckets", () => {
       },
       {
         seq: 11,
-        eventType: "item/tool_call",
-        surfaceOp: "append",
+        kind: "item/tool_call",
+
         streaming: false,
-        item: {
+        body: {
           type: "function_call",
           id: "fc_edit",
           call_id: "call_edit",
@@ -264,10 +265,10 @@ describe("ProcessGroup header buckets", () => {
       liveTool,
       {
         seq: 12,
-        eventType: "item/tool_call",
-        surfaceOp: "append",
+        kind: "item/tool_call",
+
         streaming: false,
-        item: {
+        body: {
           type: "function_call",
           id: "fc_wait",
           call_id: "call_wait",
@@ -310,41 +311,62 @@ describe("ProcessGroup header buckets", () => {
   });
 });
 
-describe("MessageList system reminder", () => {
-  it("renders a one-line notice without revert or reminder body", () => {
-    const reminder: ChatRow = {
+describe("MessageList reminder rows", () => {
+  it("hides explicit reminder log rows without inspecting their text", () => {
+    const reminder: HumanRow = {
       seq: 0,
-      eventType: "item/user",
-      surfaceOp: "append",
-      item: {
+      kind: "reminder/job_exit",
+      body: { job_id: "bg_a", reason: "kill", text: "hidden reminder" },
+    };
+    render(
+      <MessageList messages={[reminder]} loadingHistory={false} canLoadMore={false}
+        onLoadMore={() => {}} userDetailBefore={0} isRunning={false}
+        scrollRef={makeScrollRef()} sessionId="session-1" />,
+    );
+    expect(screen.queryByText(/hidden reminder/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Revert to here" })).toBeNull();
+  });
+
+  it("does not render unknown kinds even when body looks like an assistant message", () => {
+    const unknown = {
+      seq: 1,
+      kind: "future/widget",
+      body: {
+        type: "message",
+        role: "assistant",
+        id: "ghost",
+        status: "completed",
+        content: [{ type: "output_text", text: "do not render", annotations: [] }],
+      },
+    } as unknown as HumanRow;
+    expect(rowsToNodes([unknown])).toEqual([]);
+    render(
+      <MessageList messages={[unknown]} loadingHistory={false} canLoadMore={false}
+        onLoadMore={() => {}} userDetailBefore={0} isRunning={false}
+        scrollRef={makeScrollRef()} sessionId="session-1" />,
+    );
+    expect(screen.queryByText("do not render")).toBeNull();
+  });
+
+  it("revert k uses server userDetailBefore on a partial window", () => {
+    const spy = vi.spyOn(useMessageStore.getState(), "revertToUserAnchor");
+    const user: HumanRow = {
+      seq: 12,
+      kind: "item/user",
+      body: {
         type: "message",
         role: "user",
-        id: "msg_rem",
-        status: "completed",
-        content: [
-          {
-            type: "input_text",
-            text: "<system-reminder>\nThe user stopped background bash bg_a (Kill).\n</system-reminder>",
-          },
-        ],
+        content: [{ type: "input_text", text: "later ask" }],
       },
     };
     render(
-      <MessageList
-        messages={[reminder]}
-        loadingHistory={false}
-        canLoadMore={false}
-        onLoadMore={() => {}}
-        userDetailBefore={0}
-        isRunning={false}
-        scrollRef={makeScrollRef()}
-        sessionId="session-1"
-      />,
+      <MessageList messages={[user]} loadingHistory={false} canLoadMore={false}
+        onLoadMore={() => {}} userDetailBefore={4} isRunning={false}
+        scrollRef={makeScrollRef()} sessionId="session-1" />,
     );
-    expect(screen.getByRole("status", { name: "Terminal killed" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Revert to here" })).toBeNull();
-    expect(screen.queryByText(/system-reminder/)).toBeNull();
-    expect(screen.queryByText(/bg_a/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Revert to here" }));
+    expect(spy).toHaveBeenCalledWith("session-1", 4);
+    spy.mockRestore();
   });
 });
 

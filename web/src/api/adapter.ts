@@ -1,59 +1,87 @@
 import type {
   FunctionCallItem,
   FunctionCallOutputItem,
+  HumanRow,
   InputMessageItem,
   Item,
   MessageItem,
   OutputMessageItem,
   ReasoningItem,
   ResponseStreamEvent,
-  SurfaceOp,
   TurnMeta,
   WireEvent,
 } from "./types";
 import { toWorkspacePath } from "../utils/path";
 
-/**
- * UI projection row over an authority Item. Identity is log `seq`.
- * Rows without seq never enter the message store.
- */
-export interface ChatRow {
-  seq: number;
-  item: Item;
-  eventType: string;
-  surfaceOp?: SurfaceOp;
-  streaming?: boolean;
-  childSessionId?: string;
+/** Extract an authority Item only from an `item/*` log body. */
+export function itemFromRow(row: HumanRow): Item | undefined {
+  switch (row.kind) {
+    case "item/user":
+    case "item/assistant":
+    case "item/tool_call":
+    case "item/tool_result":
+      return row.body;
+    default:
+      return undefined;
+  }
 }
 
-export function isReplaceSurfaceOp(
-  op: SurfaceOp | undefined,
-): op is { op: "replace"; start: number; end: number } {
-  return typeof op === "object" && op !== null && op.op === "replace";
+/** Compaction is a first-class log kind, rendered as a cut rather than summary text. */
+export function isCompactCutRow(row: HumanRow): boolean {
+  return row.kind === "compacted";
 }
 
-/** Compact replace event — UI cut mark, never a chat bubble. */
-export function isCompactCutRow(row: { surfaceOp?: SurfaceOp }): boolean {
-  return isReplaceSurfaceOp(row.surfaceOp);
+/** Only explicit user log rows are composer bubbles and revert anchors. */
+export function isHumanUserRow(row: HumanRow): boolean {
+  return row.kind === "item/user";
 }
 
-/**
- * Human composer row. Replace summaries are user-role Items but not chat bubbles.
- */
-export function isHumanUserRow(row: { item: Item; surfaceOp?: SurfaceOp }): boolean {
-  if (isCompactCutRow(row)) return false;
-  return isUserMessage(row.item) && !isSystemReminderItem(row.item);
+/** Injected and control-plane rows remain in the log but are hidden in HumanView. */
+export function isHiddenHumanRow(row: HumanRow): boolean {
+  return row.kind.startsWith("hook/") || row.kind.startsWith("reminder/") || row.kind.startsWith("turn/") || row.kind.startsWith("request/");
+}
+
+const HUMAN_VIEW_KINDS = new Set([
+  "item/user",
+  "item/assistant",
+  "item/tool_call",
+  "item/tool_result",
+  "compacted",
+]);
+
+/** Kinds HumanView may group or render. Unknown/future kinds stay in the log. */
+export function isHumanViewKind(kind: string): boolean {
+  return HUMAN_VIEW_KINDS.has(kind);
+}
+
+/** True when the row has seq, kind, and body — the current buffer/item shape. */
+export function isWellFormedBufferRow(ev: unknown): ev is HumanRow {
+  if (ev === null || typeof ev !== "object") return false;
+  const rec = ev as Record<string, unknown>;
+  if (typeof rec.seq !== "number" || !Number.isFinite(rec.seq) || rec.seq < 0) {
+    return false;
+  }
+  if (typeof rec.kind !== "string" || rec.kind.length === 0) return false;
+  return "body" in rec;
+}
+
+/** Server prefix of user rows before this window; 0 when the window starts at seq 0. */
+export function hydrateUserDetailBefore(
+  fromSeq: number,
+  serverValue: number | undefined,
+  previous: number,
+): number {
+  if (fromSeq === 0) return 0;
+  if (typeof serverValue === "number" && Number.isFinite(serverValue) && serverValue >= 0) {
+    return serverValue;
+  }
+  return previous;
 }
 
 let nextPendingId = 0;
 export function newPendingUserId(): string {
   nextPendingId += 1;
   return `pending-${nextPendingId}-${Date.now()}`;
-}
-
-/** Log identity. Pending display rows use seq < 0 and are not store keys. */
-export function rowSeq(row: ChatRow): number {
-  return row.seq;
 }
 
 /** Optimistic user text Item (OpenAI Responses shape). */
@@ -108,38 +136,18 @@ export function isUserMessage(item: Item): item is InputMessageItem {
 }
 
 /**
- * Idle auto-turn (and similar) injects `<system-reminder>…` as a user-role
- * buffer item so the agent turn input is unchanged. The transcript still
- * stores it as a user detail; the chat view must not treat it as a human
- * bubble (no composer styling, no revert).
- */
-export function isSystemReminderItem(item: Item): boolean {
-  if (!isUserMessage(item)) return false;
-  const text = itemPlainText(item).trim();
-  return text.startsWith("<system-reminder>") && text.includes("</system-reminder>");
-}
-
-/** Item-only chat-user check (no envelope). Prefer `isHumanUserRow` when a ChatRow exists. */
-export function isChatUserMessage(item: Item): boolean {
-  return isUserMessage(item) && !isSystemReminderItem(item);
-}
-
-/**
- * Absolute 0-based revert anchor for the user row at `rowIndex`.
- * `userDetailBefore` is the server count of user details with buffer index
- * Counts append-origin user messages before `rowIndex` in the loaded window.
- * Replace summaries are not revert anchors.
+ * Absolute 0-based revert anchor for the explicit `item/user` row at `rowIndex`.
+ * `userDetailBefore` is the server count of user rows before the loaded window.
  */
 export function deriveUserAnchorK(
-  messages: { item: Item; surfaceOp?: SurfaceOp }[],
+  messages: HumanRow[],
   rowIndex: number,
   userDetailBefore: number,
 ): number {
   let local = 0;
   const end = Math.max(0, Math.min(rowIndex, messages.length));
   for (let i = 0; i < end; i++) {
-    if (isCompactCutRow(messages[i])) continue;
-    if (isUserMessage(messages[i].item)) local += 1;
+    if (isHumanUserRow(messages[i]!)) local += 1;
   }
   return userDetailBefore + local;
 }
@@ -193,7 +201,7 @@ export function itemAuthorityId(item: Item): string | undefined {
 }
 
 /** React key is log seq. */
-export function projectionRowKey(row: ChatRow): string {
+export function projectionRowKey(row: HumanRow): string {
   return String(row.seq);
 }
 

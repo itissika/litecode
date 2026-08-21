@@ -5,8 +5,9 @@ use serde_json::Value;
 
 use crate::config::schema::{
     ADAPTER_ARK_CODING, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES,
-    ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE, ModelAdapterConfig, ModelCapability, ModelDefinition,
-    ProviderAuth, ProviderConnectionConfig, ProviderDefinition, ReasoningEffort, ThinkingMode,
+    ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE, ModelAdapterConfig, ModelCapability,
+    ModelDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition, ReasoningEffort,
+    ThinkingMode,
 };
 use crate::llm::provider::LlmProvider;
 use crate::types::{LitecodeError, Result};

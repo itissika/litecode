@@ -219,19 +219,61 @@ export interface WireServerHello {
   models?: ModelInfo[];
 }
 
-/** Compact replace range on a surface-eligible log event. */
-export type SurfaceOp =
-  | "append"
-  | { op: "replace"; start: number; end: number };
+/** Persisted SessionLog rows. `kind` is the only projection discriminator. */
+export type ItemLogKind =
+  | "item/user"
+  | "item/assistant"
+  | "item/tool_call"
+  | "item/tool_result";
 
-/** One persisted log row on `buffer/item` and `buffer/load`. */
-export interface WireBufferEvent {
+export interface ItemLogRow {
   seq: number;
-  type: string;
-  surface_op?: SurfaceOp;
-  item: Item;
+  kind: ItemLogKind;
+  body: Item;
   child_session_id?: string;
 }
+
+export interface CompactedLogRow {
+  seq: number;
+  kind: "compacted";
+  body: { summary: string; from: number; to: number };
+}
+
+export interface HookPromptLogRow {
+  seq: number;
+  kind: "hook/prompt";
+  body: { text: string; hook_run_id: string; placement?: string };
+}
+
+export interface JobExitReminderLogRow {
+  seq: number;
+  kind: "reminder/job_exit";
+  body: { job_id?: string; reason: "exit" | "kill" | "timeout"; text: string };
+}
+
+export interface TurnAbortedReminderLogRow {
+  seq: number;
+  kind: "reminder/turn_aborted";
+  body: { text: string };
+}
+
+export interface ControlLogRow {
+  seq: number;
+  kind: "turn/start" | "turn/end" | "request/header" | "request/context";
+  body: Record<string, unknown>;
+}
+
+/** A committed wire row. Unknown kinds are skipped by HumanView at runtime. */
+export type WireBufferEvent =
+  | ItemLogRow
+  | CompactedLogRow
+  | HookPromptLogRow
+  | JobExitReminderLogRow
+  | TurnAbortedReminderLogRow
+  | ControlLogRow;
+
+/** HumanView row: a committed log row with transient UI-only state. */
+export type HumanRow = WireBufferEvent & { streaming?: boolean };
 
 export interface BufferLoaded {
   session_id: string;
@@ -240,12 +282,14 @@ export interface BufferLoaded {
   events: WireBufferEvent[];
   /** `subagent_launch` call_id → durable child session id (rebuild path). */
   subagent_bindings?: Record<string, string>;
+  /** Server count of user-detail rows with seq < from_seq. */
+  user_detail_before?: number;
 }
 
-export interface BufferItemNotification extends WireBufferEvent {
+export type BufferItemNotification = WireBufferEvent & {
   session_id: string;
   parent_session_id?: string;
-}
+};
 
 /** Parent session: child created for a `subagent_launch` call (immediate bind). */
 export interface SubagentBound {

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import { applyTurnEventMeta, isCompactCutRow, isUserMessage, itemPlainText, newPendingUserId, userTextItem } from "../api/adapter";
+import { applyTurnEventMeta, isHumanUserRow, itemFromRow, itemPlainText, newPendingUserId, userTextItem } from "../api/adapter";
 import type {
   AgentRunState,
   TurnPhase,
@@ -220,6 +220,8 @@ interface TurnStore {
   flushPendingStream: (sessionId: string) => void;
   /** Drop queued stream deltas without applying them (transcript revert). */
   clearPendingStream: (sessionId: string) => void;
+  /** Drop every session's queued rAF stream (socket drop / resubscribe). */
+  clearAllPendingStreams: () => void;
 }
 
 function deriveRunState(turn: TurnSnapshot | null | undefined): AgentRunState {
@@ -282,6 +284,7 @@ function enqueueStreamEvent(
   }
   if (rafBySession.has(sessionId)) return;
   const raf = requestAnimationFrame(() => {
+    if (rafBySession.get(sessionId) !== raf) return;
     rafBySession.delete(sessionId);
     flushStreamSession(sessionId);
   });
@@ -472,9 +475,10 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         const rows =
           useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
         const lastUser = [...rows].reverse().find(
-          (m) => !isCompactCutRow(m) && isUserMessage(m.item),
+          (m) => isHumanUserRow(m),
         );
-        if (!lastUser || itemPlainText(lastUser.item) !== trimmed) {
+        const lastUserItem = lastUser && itemFromRow(lastUser);
+        if (!lastUserItem || itemPlainText(lastUserItem) !== trimmed) {
           useMessageStore.getState().pushPendingUser(sessionId, {
             clientId: newPendingUserId(),
             item: userTextItem(trimmed),
@@ -777,6 +781,15 @@ export const useTurnStore = create<TurnStore>((set, get) => {
 
     clearPendingStream: (sessionId) => {
       clearStreamSession(sessionId);
+    },
+
+    clearAllPendingStreams: () => {
+      for (const sessionId of new Set([
+        ...pendingStreamBySession.keys(),
+        ...rafBySession.keys(),
+      ])) {
+        clearStreamSession(sessionId);
+      }
     },
   };
 });

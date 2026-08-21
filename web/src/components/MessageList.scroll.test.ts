@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import type { ChatRow } from "../api/adapter";
+import type { HumanRow } from "../api/types";
 import { isCompactCutRow, projectionRowKey } from "../api/adapter";
 import { bubbleIdentity, canRevertFiles, groupRowsForBubbles, locateBashTool } from "./MessageList";
 
-const userRow: ChatRow = {
+const userRow: HumanRow = {
   seq: 0,
-  eventType: "item/user",
-  surfaceOp: "append",
-  item: {
+  kind: "item/user",
+
+  body: {
     type: "message",
     role: "user",
     id: "msg_user",
@@ -17,12 +17,12 @@ const userRow: ChatRow = {
   },
 };
 
-const liveReasoning: ChatRow = {
+const liveReasoning: HumanRow = {
   seq: 1,
-  eventType: "item/assistant",
-  surfaceOp: "append",
+  kind: "item/assistant",
+
   streaming: true,
-  item: {
+  body: {
     type: "reasoning",
     id: "rs_1",
     summary: [{ type: "summary_text", text: "thinking" }],
@@ -31,12 +31,12 @@ const liveReasoning: ChatRow = {
   },
 };
 
-const liveTool: ChatRow = {
+const liveTool: HumanRow = {
   seq: 2,
-  eventType: "item/tool_call",
-  surfaceOp: "append",
+  kind: "item/tool_call",
+
   streaming: true,
-  item: {
+  body: {
     type: "function_call",
     id: "fc_1",
     call_id: "call_1",
@@ -46,12 +46,12 @@ const liveTool: ChatRow = {
   },
 };
 
-const sealedTool: ChatRow = {
+const sealedTool: HumanRow = {
   seq: 2,
-  eventType: "item/tool_call",
-  surfaceOp: "append",
+  kind: "item/tool_call",
+
   streaming: false,
-  item: {
+  body: {
     type: "function_call",
     id: "fc_1",
     call_id: "call_1",
@@ -79,11 +79,11 @@ describe("bubbleIdentity", () => {
   });
 
   it("gives reminder and following assistant distinct min(seq) keys", () => {
-    const reminder: ChatRow = {
+    const reminder: HumanRow = {
       seq: 9,
-      eventType: "item/user",
-      surfaceOp: "append",
-      item: {
+      kind: "item/user",
+
+      body: {
         type: "message",
         role: "user",
         id: "msg_reminder",
@@ -102,12 +102,29 @@ describe("bubbleIdentity", () => {
     expect(bubbleIdentity(grouped, 2)).toBe(String(liveReasoning.seq));
   });
 
+  it("skips unknown kinds instead of folding them into assistant bubbles", () => {
+    const unknown = {
+      seq: 1,
+      kind: "future/widget",
+      body: {
+        type: "message",
+        role: "assistant",
+        id: "ghost",
+        status: "completed",
+        content: [{ type: "output_text", text: "do not render", annotations: [] }],
+      },
+    } as unknown as HumanRow;
+    const grouped = groupRowsForBubbles([userRow, unknown, liveReasoning]);
+    expect(grouped).toHaveLength(2);
+    expect(grouped.flat().map((r) => r.kind)).toEqual(["item/user", "item/assistant"]);
+  });
+
   it("does not collide keys across a reminder split", () => {
-    const reminder: ChatRow = {
+    const reminder: HumanRow = {
       seq: 9,
-      eventType: "item/user",
-      surfaceOp: "append",
-      item: {
+      kind: "item/user",
+
+      body: {
         type: "message",
         role: "user",
         id: "msg_reminder",
@@ -137,17 +154,10 @@ describe("bubbleIdentity", () => {
   });
 });
 
-const compactCut = (seq: number): ChatRow => ({
+const compactCut = (seq: number): HumanRow => ({
   seq,
-  eventType: "item/user",
-  surfaceOp: { op: "replace", start: 0, end: seq },
-  item: {
-    type: "message",
-    role: "user",
-    id: `sum_${seq}`,
-    status: "completed",
-    content: [{ type: "input_text", text: "[Conversation summary]\nhidden" }],
-  },
+  kind: "compacted",
+  body: { summary: "hidden", from: 0, to: seq },
 });
 
 describe("groupRowsForBubbles compact cut", () => {
@@ -190,12 +200,12 @@ describe("canRevertFiles", () => {
 
 describe("locateBashTool", () => {
   it("returns the assistant bubble and process+tool fold ids", () => {
-    const bashRow: ChatRow = {
+    const bashRow: HumanRow = {
       seq: 3,
-      eventType: "item/tool_call",
-      surfaceOp: "append",
+      kind: "item/tool_call",
+
       streaming: true,
-      item: {
+      body: {
         type: "function_call",
         id: "fc_bash",
         call_id: "c1",

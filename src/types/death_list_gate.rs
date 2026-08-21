@@ -422,6 +422,7 @@ fn mental_model_or_spec_text() -> Option<String> {
     let candidates = [
         root.join("dev/plans/session-seq-surface/MENTAL-MODEL.md"),
         root.join(".scratch/session-seq-surface/spec.md"),
+        root.join("src/session/DATA.md"),
     ];
     for path in candidates {
         if let Ok(text) = fs::read_to_string(&path) {
@@ -454,9 +455,9 @@ fn session_seq_g1_envelope_vocab_matches_mental_model() {
     );
 
     let Some(doc) = mental_model_or_spec_text() else {
-        panic!("MENTAL-MODEL.md or .scratch spec.md must exist for G1 vocab");
+        panic!("session domain documentation must exist for G1 vocab");
     };
-    for needle in ["seq", "surface_op", "source_seqs"] {
+    for needle in ["SessionLog", "kind", "cites"] {
         assert!(
             doc.contains(needle),
             "domain doc must name `{needle}` so types stay aligned"

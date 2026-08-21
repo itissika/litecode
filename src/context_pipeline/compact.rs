@@ -12,7 +12,7 @@ use crate::session::manager::SessionManager;
 use crate::types::{LitecodeError, Result, Transcript, item_text_preview, user_text};
 
 use super::budget::{BudgetPolicy, ProviderPromptBaseline};
-use super::summary::{compact_summary_message_with_reminder, format_compact_summary_with_reminder};
+use super::summary::compact_summary_message_with_reminder;
 
 /// Compaction policy and execution.
 pub struct CompactPolicy;
@@ -57,7 +57,7 @@ impl CompactPolicy {
         let persisted_seqs: Vec<Seq> = sessions.with_entry_store(session_id, |s| {
             Ok(s.load_working_set()?
                 .into_iter()
-                .filter_map(|row| row.seq)
+                .filter_map(|row| row.log_seq)
                 .collect())
         })?;
         let reminder = sessions
@@ -350,11 +350,10 @@ impl CompactPolicy {
         }
 
         // Persist replace; memory working set is reloaded from fold, not rebuilt as [summary]+kept.
-        let summary_item = transcript.first().cloned().unwrap_or_else(|| {
-            crate::types::user_text(format_compact_summary_with_reminder(
-                &summary, false, reminder,
-            ))
-        });
+        let summary_item = transcript
+            .first()
+            .cloned()
+            .unwrap_or_else(|| compact_summary_message_with_reminder(&summary, false, reminder));
 
         if let Err(e) = sessions.with_entry_store(session_id, |s| {
             if cancel.is_cancelled() {

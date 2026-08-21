@@ -1,4 +1,4 @@
-use crate::types::{Item, item_text_preview, user_text};
+use crate::types::{Item, assistant_text, item_text_preview};
 
 pub const CONVERSATION_SUMMARY_PREFIX: &str = "[Conversation summary]";
 pub const AGGRESSIVE_SUMMARY_PREFIX: &str = "[Aggressive summary]";
@@ -40,12 +40,12 @@ pub fn compact_summary_message_with_reminder(
     aggressive: bool,
     reminder: Option<&str>,
 ) -> Item {
-    user_text(format_compact_summary_with_reminder(
+    assistant_text(format_compact_summary_with_reminder(
         text, aggressive, reminder,
     ))
 }
 
-/// True when this item is a prior compaction summary (labeled user message).
+/// True when this item is a prior compaction summary (labeled assistant message).
 pub fn is_compact_summary_item(item: &Item) -> bool {
     let text = item_text_preview(item);
     text.starts_with(CONVERSATION_SUMMARY_PREFIX) || text.starts_with(AGGRESSIVE_SUMMARY_PREFIX)
@@ -117,5 +117,18 @@ mod tests {
     fn summary_body_without_reminder_is_prose() {
         let item = compact_summary_message("just prose", false);
         assert_eq!(summary_body_text(&item), "just prose");
+    }
+
+    #[test]
+    fn compact_summary_is_assistant_message_not_user() {
+        use crate::authority::responses::{AssistantRole, MessageItem};
+        let item = compact_summary_message("prose", false);
+        match &item {
+            Item::Message(MessageItem::Output(out)) => {
+                assert_eq!(out.role, AssistantRole::Assistant);
+            }
+            other => panic!("expected assistant Output message, got {other:?}"),
+        }
+        assert!(!matches!(item, Item::Message(MessageItem::Input(_))));
     }
 }

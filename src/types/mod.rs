@@ -13,5 +13,6 @@ pub use media::{MediaArtifact, MediaKind, MediaSource, ToolOutputPart};
 pub use result::{ToolCallResult, ToolSignalLevel};
 pub use transcript::{
     FunctionCallOutputItemParam, FunctionToolCall, InputItem, Item, OutputItem, OutputMessage,
-    ReasoningItem, Response, StreamEvents, Transcript, item_text_preview, user_text,
+    ReasoningItem, Response, StreamEvents, Transcript, assistant_text, item_text_preview,
+    user_text,
 };

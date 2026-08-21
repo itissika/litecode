@@ -2,24 +2,24 @@ import { BrainIcon, PencilIcon, TerminalIcon, WrenchIcon } from "@phosphor-icons
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
-import type { ChatRow } from "../api/adapter";
 import {
   deriveUserAnchorK,
   isCompactCutRow,
   isFunctionCall,
   isFunctionCallOutput,
   isHumanUserRow,
+  isHumanViewKind,
   isInProgressItem,
   isMessageItem,
   isReasoningItem,
-  isSystemReminderItem,
+  itemFromRow,
   itemPlainText,
   projectionRowKey,
 } from "../api/adapter";
 import type {
   FunctionCallItem,
   FunctionCallOutputItem,
-  Item,
+  HumanRow,
 } from "../api/types";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { CategoryCount } from "./CategoryCount";
@@ -46,8 +46,7 @@ type RenderNode =
       output?: FunctionCallOutputItem;
       key: string;
       streaming: boolean;
-    }
-  | { kind: "unknown"; type: string; key: string; streaming: boolean };
+    };
 
 /** Cut mark between transcript items — not a divider bubble, not summary text. */
 export function CompactCutMark() {
@@ -94,93 +93,58 @@ export function SystemReminderMark() {
   );
 }
 
-function outputsByCallId(items: Item[]): Map<string, FunctionCallOutputItem> {
+function outputsByCallId(rows: HumanRow[]): Map<string, FunctionCallOutputItem> {
   const map = new Map<string, FunctionCallOutputItem>();
-  for (const item of items) {
-    if (isFunctionCallOutput(item)) {
-      map.set(item.call_id, item);
-    }
+  for (const row of rows) {
+    if (row.kind !== "item/tool_result") continue;
+    const item = itemFromRow(row);
+    if (item && isFunctionCallOutput(item)) map.set(item.call_id, item);
   }
   return map;
 }
 
-function rowInProgress(row: ChatRow): boolean {
-  return row.streaming === true || isInProgressItem(row.item);
+function rowInProgress(row: HumanRow): boolean {
+  const item = itemFromRow(row);
+  return row.streaming === true || (item ? isInProgressItem(item) : false);
 }
 
-/** Flatten ChatRows into render nodes; pair function_call + output by call_id. Only reads `row.item`. */
-export function rowsToNodes(rows: ChatRow[]): RenderNode[] {
-  const items = rows.map((r) => r.item);
-  const outputs = outputsByCallId(items);
-  // Per-output streaming state, so a tool node's flag reflects its result row too.
+/** Flatten HumanView rows into nodes; only `item/*` bodies are Items. */
+export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
+  const outputs = outputsByCallId(rows);
   const streamingByCallId = new Map<string, boolean>();
   for (const row of rows) {
-    if (isFunctionCallOutput(row.item)) {
-      streamingByCallId.set(row.item.call_id, rowInProgress(row));
-    }
+    if (row.kind !== "item/tool_result") continue;
+    const item = itemFromRow(row);
+    if (item && isFunctionCallOutput(item)) streamingByCallId.set(item.call_id, rowInProgress(row));
   }
   const nodes: RenderNode[] = [];
-
   for (const row of rows) {
-    const item = row.item;
     const streaming = rowInProgress(row);
     const key = projectionRowKey(row);
     if (isCompactCutRow(row)) {
       nodes.push({ kind: "compact_cut", key, streaming: false });
       continue;
     }
-    if (isFunctionCallOutput(item)) {
-      // Rendered with matching function_call
-      continue;
-    }
-    if (isFunctionCall(item)) {
-      const output = outputs.get(item.call_id);
+    if (!isHumanViewKind(row.kind) || row.kind === "item/tool_result") continue;
+    const item = itemFromRow(row);
+    if (!item) continue;
+    if (row.kind === "item/tool_call" && isFunctionCall(item)) {
       nodes.push({
-        kind: "tool",
-        call: item,
-        output,
-        key,
-        streaming: isToolCallLive(
-          streaming,
-          streamingByCallId.get(item.call_id) === true,
-        ),
+        kind: "tool", call: item, output: outputs.get(item.call_id), key,
+        streaming: isToolCallLive(streaming, streamingByCallId.get(item.call_id) === true),
       });
       continue;
     }
-    if (isReasoningItem(item)) {
+    if (row.kind === "item/assistant" && isReasoningItem(item)) {
       const text = itemPlainText(item);
-      if (text) {
-        nodes.push({
-          kind: "reasoning",
-          text,
-          key,
-          streaming,
-          incomplete: item.status === "incomplete",
-        });
-      }
+      if (text) nodes.push({ kind: "reasoning", text, key, streaming, incomplete: item.status === "incomplete" });
       continue;
     }
-    if (isMessageItem(item)) {
+    if ((row.kind === "item/user" || row.kind === "item/assistant") && isMessageItem(item)) {
       const text = itemPlainText(item);
-      if (text) {
-        nodes.push({
-          kind: "text",
-          text,
-          key,
-          streaming,
-          incomplete: item.status === "incomplete",
-        });
-      }
-      continue;
+      if (text) nodes.push({ kind: "text", text, key, streaming, incomplete: item.status === "incomplete" });
     }
-    nodes.push({
-      kind: "unknown",
-      type: String(item.type),
-      key,
-      streaming,
-    });
   }
-
   return nodes;
 }
 
@@ -285,12 +249,6 @@ export function NodeView({
       );
     case "compact_cut":
       return <CompactCutMark />;
-    case "unknown":
-      return (
-        <div className="text-xs text-(--_dk-text-disabled) italic pl-(--_dk-indent-card-head) pr-2 py-1">
-          [{node.type}]
-        </div>
-      );
   }
 }
 
@@ -427,7 +385,7 @@ function ItemBubbleImpl({
   sessionId,
   bubbleKey,
 }: {
-  rows: ChatRow[];
+  rows: HumanRow[];
   userAnchorK?: number;
   showRevert: boolean;
   isRunning: boolean;
@@ -440,9 +398,6 @@ function ItemBubbleImpl({
   const revertToUserAnchor = useMessageStore((s) => s.revertToUserAnchor);
   const revertFiles = useMessageStore((s) => s.revertFiles);
   const first = rows.find((r) => !isCompactCutRow(r)) ?? rows[0];
-  if (first != null && isSystemReminderItem(first.item)) {
-    return <SystemReminderMark />;
-  }
   const isUser = first != null && isHumanUserRow(first);
   const nodes = rowsToNodes(rows);
   const streaming =
@@ -528,11 +483,11 @@ function ItemBubbleImpl({
   );
 }
 
-// Memoized so that during streaming only the bubble whose ChatRow set changed
-// re-renders. The store keeps unchanged ChatRow object references across a
+// Memoized so that during streaming only the bubble whose HumanRow set changed
+// re-renders. The store keeps unchanged HumanRow object references across a
 // flush (messageStore applies `[...messages]` but only replaces the one
 // streaming row), so an element-wise reference compare on `rows` lets every
-// other visible bubble bail — only the live ChatRow's bubble moves.
+// other visible bubble bail — only the live HumanRow's bubble moves.
 export const ItemBubble = memo(
   ItemBubbleImpl,
   (prev, next) =>
@@ -546,7 +501,7 @@ export const ItemBubble = memo(
     prev.rows.every((r, i) => r === next.rows[i]),
 );
 
-function firstContentRow(group: ChatRow[]): ChatRow | undefined {
+function firstContentRow(group: HumanRow[]): HumanRow | undefined {
   return group.find((row) => !isCompactCutRow(row));
 }
 
@@ -558,9 +513,9 @@ function firstContentRow(group: ChatRow[]): ChatRow | undefined {
  * Compact replace is its own barrier (not pushed into the previous assistant
  * bubble, not glued onto the next user bubble).
  */
-export function groupRowsForBubbles(rows: ChatRow[]): ChatRow[][] {
-  const groups: ChatRow[][] = [];
-  let current: ChatRow[] = [];
+export function groupRowsForBubbles(rows: HumanRow[]): HumanRow[][] {
+  const groups: HumanRow[][] = [];
+  let current: HumanRow[] = [];
 
   const flush = () => {
     if (current.length) {
@@ -570,12 +525,13 @@ export function groupRowsForBubbles(rows: ChatRow[]): ChatRow[][] {
   };
 
   for (const row of rows) {
+    if (!isHumanViewKind(row.kind)) continue;
     if (isCompactCutRow(row)) {
       flush();
       groups.push([row]);
       continue;
     }
-    if (isHumanUserRow(row) || isSystemReminderItem(row.item)) {
+    if (isHumanUserRow(row)) {
       flush();
       groups.push([row]);
     } else {
@@ -595,7 +551,7 @@ const COMPACTING_LINE_HEIGHT = 22;
 /**
  * Stable virtual-item identity for a bubble: min(seq) in the group.
  */
-export function bubbleIdentity(bubbles: ChatRow[][], index: number): string {
+export function bubbleIdentity(bubbles: HumanRow[][], index: number): string {
   const group = bubbles[index] ?? [];
   let min: number | undefined;
   for (const row of group) {
@@ -614,7 +570,7 @@ export function canRevertFiles(
 
 /** Find the virtual bubble + FoldCard ids for a live bash job's tool card. */
 export function locateBashTool(
-  bubbles: ChatRow[][],
+  bubbles: HumanRow[][],
   callId: string,
   sessionId: string,
 ): { bubbleIndex: number; foldIds: string[] } | null {
@@ -646,7 +602,7 @@ function bashCallSelector(callId: string): string {
 }
 
 interface MessageListProps {
-  messages: ChatRow[];
+  messages: HumanRow[];
   loadingHistory: boolean;
   canLoadMore: boolean;
   onLoadMore: () => void;
@@ -727,7 +683,6 @@ export const MessageList = memo(function MessageList({
       if (i >= bubbles.length) return COMPACTING_LINE_HEIGHT;
       const first = firstContentRow(bubbles[i] ?? []);
       if (!first) return 28;
-      if (isSystemReminderItem(first.item)) return 28;
       if (isHumanUserRow(first)) return 88;
       return 240;
     },

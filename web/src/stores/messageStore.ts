@@ -1,8 +1,10 @@
 import { create } from "zustand";
-import type { ChatRow } from "../api/adapter";
 import {
   applyStreamEvent,
+  hydrateUserDetailBefore,
   isHumanUserRow,
+  isWellFormedBufferRow,
+  itemFromRow,
   isStreamFailureEvent,
   itemAuthorityId,
   itemPlainText,
@@ -12,6 +14,7 @@ import {
 import type {
   BufferItemNotification,
   BufferLoaded,
+  HumanRow,
   Item,
   ResponseStreamEvent,
   SubagentBound,
@@ -31,21 +34,21 @@ export interface PendingUser {
 
 export interface MessageSlice {
   /** Seq → row. Sorted projection is `messages`. */
-  bySeq: Map<number, ChatRow>;
-  messages: ChatRow[];
+  bySeq: Map<number, HumanRow>;
+  messages: HumanRow[];
   /** Optimistic composer row; not a seq key. At most one. */
   pendingUser: PendingUser | null;
   /**
    * `messages` plus pending user row. Stable until the next slice patch —
    * zustand selectors must not allocate this on each snapshot.
    */
-  display: ChatRow[];
+  display: HumanRow[];
   /** Loaded window `[fromSeq, toSeq)`. */
   fromSeq: number;
   toSeq: number;
   /**
-   * Append-origin users with seq `< fromSeq` when the window starts at 0;
-   * otherwise 0 until history is loaded from seq 0.
+   * Server count of user-detail rows with seq `< fromSeq` (`buffer/load`
+   * `user_detail_before`). 0 when the loaded window starts at seq 0.
    */
   userDetailBefore: number;
   loadingHistory: boolean;
@@ -62,7 +65,7 @@ export interface TurnEndNotice {
   message: string;
 }
 
-export const EMPTY_DISPLAY: ChatRow[] = [];
+export const EMPTY_DISPLAY: HumanRow[] = [];
 
 export const EMPTY_SLICE: MessageSlice = {
   bySeq: new Map(),
@@ -103,15 +106,14 @@ function withDisplay(slice: MessageSlice): MessageSlice {
       ...slice.messages,
       {
         seq: -1,
-        item: slice.pendingUser.item,
-        eventType: "item/user",
-        surfaceOp: "append",
+        kind: "item/user",
+        body: slice.pendingUser.item,
       },
     ],
   };
 }
 
-export function displayMessages(slice: MessageSlice | undefined): ChatRow[] {
+export function displayMessages(slice: MessageSlice | undefined): HumanRow[] {
   if (!slice) return EMPTY_DISPLAY;
   return slice.display;
 }
@@ -125,13 +127,14 @@ function getSlice(byId: Map<string, MessageSlice>, sessionId: string): MessageSl
   return slice;
 }
 
-function sortedMessages(bySeq: Map<number, ChatRow>): ChatRow[] {
+function sortedMessages(bySeq: Map<number, HumanRow>): HumanRow[] {
   return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
 }
 
-function rememberItemSeq(itemIdToSeq: Map<string, number>, item: Item, seq: number): void {
-  const aid = itemAuthorityId(item);
-  if (aid) itemIdToSeq.set(aid, seq);
+function rememberRowItem(itemIdToSeq: Map<string, number>, row: HumanRow): void {
+  const item = itemFromRow(row);
+  const aid = item && itemAuthorityId(item);
+  if (aid) itemIdToSeq.set(aid, row.seq);
 }
 
 function streamEventItemIdHint(event: ResponseStreamEvent): string | undefined {
@@ -142,9 +145,7 @@ function streamEventItemIdHint(event: ResponseStreamEvent): string | undefined {
   const nested = (event as { item?: { id?: unknown; call_id?: unknown } }).item;
   if (nested && typeof nested === "object") {
     if (typeof nested.id === "string" && nested.id.length > 0) return nested.id;
-    if (typeof nested.call_id === "string" && nested.call_id.length > 0) {
-      return nested.call_id;
-    }
+    if (typeof nested.call_id === "string" && nested.call_id.length > 0) return nested.call_id;
   }
   return undefined;
 }
@@ -156,15 +157,14 @@ function isSealedItem(item: Item): boolean {
   return true;
 }
 
-function rowFromEvent(ev: WireBufferEvent, streaming: boolean): ChatRow {
-  return {
-    seq: ev.seq,
-    item: ev.item,
-    eventType: ev.type,
-    surfaceOp: ev.surface_op,
-    streaming,
-    childSessionId: ev.child_session_id,
-  };
+function rowFromEvent(ev: WireBufferEvent, streaming: boolean): HumanRow {
+  return { ...ev, streaming };
+}
+
+function malformedSeq(ev: unknown): number | undefined {
+  if (ev === null || typeof ev !== "object") return undefined;
+  const seq = (ev as { seq?: unknown }).seq;
+  return typeof seq === "number" && Number.isFinite(seq) && seq >= 0 ? seq : undefined;
 }
 
 function upsertEvents(slice: MessageSlice, events: WireBufferEvent[]): MessageSlice {
@@ -172,64 +172,52 @@ function upsertEvents(slice: MessageSlice, events: WireBufferEvent[]): MessageSl
   const itemIdToSeq = new Map(slice.itemIdToSeq);
   let pendingUser = slice.pendingUser;
   let shapeError = slice.shapeError;
-
   const empty = slice.bySeq.size === 0;
 
   for (const ev of events) {
-    if (!Number.isFinite(ev.seq) || ev.seq < 0) continue;
+    if (!isWellFormedBufferRow(ev)) {
+      const seq = malformedSeq(ev);
+      const prev = seq != null ? bySeq.get(seq) : undefined;
+      if (prev && isWellFormedBufferRow(prev)) {
+        shapeError = "buffer/item rejected: missing kind/body";
+        useToastStore.getState().showToast(shapeError, "error");
+      }
+      continue;
+    }
     if (slice.blockLogGrowth && ev.seq >= slice.toSeq) continue;
-
+    const nextRow = rowFromEvent(ev, false);
+    const nextItem = itemFromRow(nextRow);
+    nextRow.streaming = nextItem ? !isSealedItem(nextItem) : false;
     const prev = bySeq.get(ev.seq);
-    const live = !isSealedItem(ev.item);
-    if (!prev) {
-      bySeq.set(ev.seq, rowFromEvent(ev, live));
-    } else {
-      const mismatch = sealMismatchError(prev.item, ev.item);
+    const prevItem = prev && itemFromRow(prev);
+    if (prev && prevItem && nextItem) {
+      const mismatch = sealMismatchError(prevItem, nextItem);
       if (mismatch) {
         shapeError = mismatch;
         useToastStore.getState().showToast(mismatch, "error");
-        bySeq.set(ev.seq, rowFromEvent(ev, live));
-      } else {
-        bySeq.set(ev.seq, {
-          ...prev,
-          item: ev.item,
-          eventType: ev.type,
-          surfaceOp: ev.surface_op ?? prev.surfaceOp,
-          streaming: live,
-          childSessionId: ev.child_session_id ?? prev.childSessionId,
-        });
       }
     }
-    rememberItemSeq(itemIdToSeq, ev.item, ev.seq);
-
-    if (pendingUser && isHumanUserRow(rowFromEvent(ev, false))) {
-      if (itemPlainText(pendingUser.item) === itemPlainText(ev.item)) {
-        pendingUser = null;
-      }
+    bySeq.set(ev.seq, { ...nextRow, streaming: nextRow.streaming });
+    rememberRowItem(itemIdToSeq, nextRow);
+    if (pendingUser && nextItem && isHumanUserRow(nextRow) && itemPlainText(pendingUser.item) === itemPlainText(nextItem)) {
+      pendingUser = null;
     }
   }
 
   const messages = sortedMessages(bySeq);
   let fromSeq = slice.fromSeq;
   let toSeq = slice.toSeq;
-  const seqs = events.map((e) => e.seq).filter((s) => Number.isFinite(s) && s >= 0);
+  const seqs = events
+    .filter(isWellFormedBufferRow)
+    .map((e) => e.seq)
+    .filter((s) => Number.isFinite(s) && s >= 0);
   if (seqs.length > 0) {
-    const minSeq = Math.min(...seqs);
-    const maxExcl = Math.max(...seqs) + 1;
-    fromSeq = empty ? minSeq : Math.min(slice.fromSeq, minSeq);
-    toSeq = Math.max(slice.toSeq, maxExcl);
+    fromSeq = empty ? Math.min(...seqs) : Math.min(slice.fromSeq, Math.min(...seqs));
+    toSeq = Math.max(slice.toSeq, Math.max(...seqs) + 1);
   }
-
   return {
-    ...slice,
-    bySeq,
-    messages,
-    pendingUser,
-    itemIdToSeq,
-    fromSeq,
-    toSeq,
-    userDetailBefore: fromSeq === 0 ? 0 : slice.userDetailBefore,
-    shapeError,
+    ...slice, bySeq, messages, pendingUser, itemIdToSeq, fromSeq, toSeq,
+    userDetailBefore: hydrateUserDetailBefore(fromSeq, undefined, slice.userDetailBefore), shapeError,
   };
 }
 
@@ -303,7 +291,11 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       const next = upsertEvents(slice, loaded.events);
       next.fromSeq = loaded.from_seq;
       next.toSeq = Math.max(next.toSeq, loaded.to_seq);
-      next.userDetailBefore = loaded.from_seq === 0 ? 0 : slice.userDetailBefore;
+      next.userDetailBefore = hydrateUserDetailBefore(
+        loaded.from_seq,
+        loaded.user_detail_before,
+        slice.userDetailBefore,
+      );
       next.loadingHistory = false;
       next.subagentBindings = {
         ...slice.subagentBindings,
@@ -336,9 +328,20 @@ export const useMessageStore = create<MessageStore>((set, get) => {
     },
 
     onBufferItem: (sessionId, bi) => {
-      if (!Number.isFinite(bi.seq)) return;
-      if (bi.child_session_id && bi.item.type === "function_call") {
-        const callId = "call_id" in bi.item ? bi.item.call_id : undefined;
+      if (!isWellFormedBufferRow(bi)) {
+        const state = get();
+        const slice = getSlice(state.bySession, sessionId);
+        const next = upsertEvents(slice, [bi as WireBufferEvent]);
+        const bySession = new Map(state.bySession);
+        bySession.set(sessionId, withDisplay(next));
+        set({ bySession });
+        return;
+      }
+      if (bi.kind === "item/tool_call" && bi.child_session_id) {
+        const bufferItem = bi.body;
+        const callId = bufferItem.type === "function_call" && "call_id" in bufferItem && typeof bufferItem.call_id === "string"
+          ? bufferItem.call_id
+          : undefined;
         if (callId) {
           const slice = getSlice(get().bySession, sessionId);
           patch(sessionId, {
@@ -355,7 +358,7 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       debugTrace("buffer", "item.sealed", {
         sessionId,
         seq: bi.seq,
-        type: bi.type,
+        kind: bi.kind,
         rows: next.messages.length,
       });
       const bySession = new Map(state.bySession);
@@ -370,10 +373,10 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       if (isStreamFailureEvent(event)) {
         const bySeq = new Map(slice.bySeq);
         for (const [seq, row] of bySeq) {
-          const failed = markFunctionCallsFailed([row.item])[0];
-          if (failed !== row.item) {
-            bySeq.set(seq, { ...row, item: failed, streaming: false });
-          }
+          const item = itemFromRow(row);
+          if (!item) continue;
+          const failed = markFunctionCallsFailed([item])[0];
+          if (failed !== item) bySeq.set(seq, { ...row, body: failed, streaming: false } as HumanRow);
         }
         patch(sessionId, { bySeq, messages: sortedMessages(bySeq) });
         return;
@@ -384,30 +387,19 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       const seq = slice.itemIdToSeq.get(itemIdHint);
       if (seq == null) return;
       const existing = slice.bySeq.get(seq);
-      if (!existing) return;
-      // Sealed seq: ignore late / reused item_id deltas (G4).
-      if (isSealedItem(existing.item)) return;
-      if (
-        turn &&
-        (turn.runState !== "running" || turn.currentTurnId !== turnId)
-      ) {
-        return;
-      }
+      const existingItem = existing && itemFromRow(existing);
+      if (!existing || !existingItem || isSealedItem(existingItem)) return;
+      if (turn && (turn.runState !== "running" || turn.currentTurnId !== turnId)) return;
 
-      const result = applyStreamEvent(existing.item, event);
+      const result = applyStreamEvent(existingItem, event);
       if (result.kind === "noop") return;
       if (result.kind === "error") {
         reportShapeError(patch, sessionId, result.message);
         return;
       }
-
       const bySeq = new Map(slice.bySeq);
-      bySeq.set(seq, { ...existing, item: result.item, streaming: true });
-      patch(sessionId, {
-        bySeq,
-        messages: sortedMessages(bySeq),
-        shapeError: null,
-      });
+      bySeq.set(seq, { ...existing, body: result.item, streaming: true } as HumanRow);
+      patch(sessionId, { bySeq, messages: sortedMessages(bySeq), shapeError: null });
     },
 
     finalizeTurn: (sessionId, _turnId) => {
@@ -439,12 +431,12 @@ export const useMessageStore = create<MessageStore>((set, get) => {
 
     onBufferReverted: (sessionId, rev) => {
       const slice = getSlice(get().bySession, sessionId);
-      const bySeq = new Map<number, ChatRow>();
+      const bySeq = new Map<number, HumanRow>();
       const itemIdToSeq = new Map<string, number>();
       for (const [seq, row] of slice.bySeq) {
         if (seq < rev.next_seq) {
           bySeq.set(seq, row);
-          rememberItemSeq(itemIdToSeq, row.item, seq);
+          rememberRowItem(itemIdToSeq, row);
         }
       }
       const messages = sortedMessages(bySeq);
@@ -460,7 +452,11 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         pendingUser: null,
         fromSeq: Math.min(slice.fromSeq, rev.next_seq),
         toSeq: rev.next_seq,
-        userDetailBefore: rev.next_seq === 0 ? 0 : slice.userDetailBefore,
+        userDetailBefore: hydrateUserDetailBefore(
+          Math.min(slice.fromSeq, rev.next_seq),
+          undefined,
+          slice.userDetailBefore,
+        ),
         shapeError: null,
         blockLogGrowth: true,
         turnEndNotice: null,

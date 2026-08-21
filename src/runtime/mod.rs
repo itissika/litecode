@@ -41,7 +41,9 @@ use crate::runtime::observer::{
 };
 use crate::session::manager::SessionManager;
 use crate::session::snapshot;
+use crate::session::store::SessionApply;
 use crate::session::working::{WorkingRow, align_working, project_items};
+use crate::session::{EventDraft, EventType};
 use crate::tool::ToolPipeline;
 use crate::tool::output;
 use crate::tool::registry::build_tool_list;
@@ -696,6 +698,27 @@ impl AgentRuntime {
                 );
             }
         }
+        // Turn ownership remains in Live, but its durable terminal fact belongs
+        // in SessionLog so replay never infers completion from a disconnected
+        // stream.
+        let reason_name = reason.as_log_reason();
+        if let Err(error) = self.sessions.with_entry_store(&self.session_id, |store| {
+            store.apply(SessionApply::Append(EventDraft {
+                time: chrono::Utc::now().timestamp_millis(),
+                event_type: EventType::TurnEnd,
+                data: serde_json::json!({
+                    "turn": turn_id,
+                    "reason": reason_name,
+                }),
+                surface_op: None,
+                source_seqs: None,
+                ignorable: false,
+                state: crate::session::LogState::Final,
+            }))?;
+            Ok(())
+        }) {
+            tracing::warn!(session_id = %self.session_id, %error, "failed to append turn/end");
+        }
         let _ = self.sessions.finish_turn(&self.session_id, turn_id);
         self.emit_internal(InternalEvent::TurnCompleted {
             turn_id: turn_id.to_string(),
@@ -719,11 +742,25 @@ impl AgentRuntime {
             TurnOutcome::Completed { final_text } => {
                 self.emit_turn_completed(turn_id, TurnEndReason::Completed, Some(final_text))
             }
-            TurnOutcome::Cancelled { final_text } => self.emit_turn_completed(
-                turn_id,
-                TurnEndReason::Cancelled,
-                (!final_text.is_empty()).then_some(final_text),
-            ),
+            TurnOutcome::Cancelled { final_text } => {
+                match self
+                    .sessions
+                    .with_entry_store(&self.session_id, |s| Ok(s.seal_in_progress_items()?))
+                {
+                    Ok(seqs) if !seqs.is_empty() => {
+                        self.emit_internal(InternalEvent::BufferRestamp { seqs });
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(session_id = %self.session_id, %error, "failed to seal in_progress rows on cancel");
+                    }
+                }
+                self.emit_turn_completed(
+                    turn_id,
+                    TurnEndReason::Cancelled,
+                    (!final_text.is_empty()).then_some(final_text),
+                )
+            }
             TurnOutcome::MaxSteps { final_text } => {
                 self.emit_turn_completed(
                     turn_id,
@@ -837,6 +874,15 @@ impl AgentRuntime {
         // Propagate begin_turn errors explicitly — a failed load must not start
         // the turn with an empty (silently truncated) transcript.
         let mut working = self.sessions.with_entry_store(&sid, |s| {
+            s.apply(SessionApply::Append(EventDraft {
+                time: chrono::Utc::now().timestamp_millis(),
+                event_type: EventType::TurnStart,
+                data: serde_json::json!({ "turn": turn_id }),
+                surface_op: None,
+                source_seqs: None,
+                ignorable: false,
+                state: crate::session::LogState::Final,
+            }))?;
             Ok(self
                 .context_pipeline
                 .begin_turn_with_id(s, Some(turn_id.to_string()))?)
@@ -1026,9 +1072,14 @@ impl AgentRuntime {
 
         // Persist SessionEnd injects only when the turn is kept (not cancel/error).
         if should_commit {
-            align_working(&mut working, &items);
             let commit_outcome = self.sessions.with_entry_store(&self.session_id, |s| {
-                Ok(self.context_pipeline.commit_step(s, &mut working)?)
+                // The pipeline owns the committed GateRow set. Reconcile hook
+                // injection against that set, never against the stale turn-start
+                // copy in `working`; otherwise id-less tool outputs are appended
+                // a second time at SessionEnd.
+                Ok(self
+                    .context_pipeline
+                    .commit_step_from_items(s, &mut items)?)
             })?;
             if !commit_outcome.discarded {
                 if commit_outcome.committed {

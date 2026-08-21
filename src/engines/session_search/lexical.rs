@@ -68,7 +68,7 @@ pub fn search_lexical(db_path: &Path, query: &SessionTextQuery) -> Result<Vec<Se
         "SELECT t.session_id, t.seq, t.item_type, t.body, t.body_ref
          FROM transcript_items t
          INNER JOIN sessions s ON s.id = t.session_id
-         WHERE t.kind = 'detail'",
+         WHERE t.kind IN ('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted')",
     );
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     if let Some(sid) = query.include_session_id.as_ref().filter(|s| !s.is_empty()) {
@@ -190,7 +190,8 @@ fn hit_from_row(
     let mut stmt = conn
         .prepare(
             "SELECT session_id, seq, item_type, body, body_ref FROM transcript_items
-             WHERE session_id = ?1 AND seq = ?2 AND kind = 'detail'",
+             WHERE session_id = ?1 AND seq = ?2
+               AND kind IN ('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted')",
         )
         .map_err(|e| LitecodeError::Config(format!("fts hydrate prepare: {e}")))?;
     let row = stmt
@@ -259,7 +260,8 @@ fn backfill_fts(conn: &Connection, db_path: &Path) -> Result<()> {
     let mut stmt = conn
         .prepare(
             "SELECT session_id, seq, item_type, body, body_ref FROM transcript_items
-             WHERE kind = 'detail' ORDER BY session_id, seq",
+             WHERE kind IN ('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted')
+             ORDER BY session_id, seq",
         )
         .map_err(|e| LitecodeError::Config(format!("fts backfill prepare: {e}")))?;
     let rows = stmt

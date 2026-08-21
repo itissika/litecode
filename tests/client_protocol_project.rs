@@ -4,9 +4,10 @@ use litecode::client_protocol::protocol::{
     TurnEndReason, TurnTokenStats, WireEvent, WireTurnPhase, methods,
 };
 use litecode::runtime::observer::{InternalEvent, TurnPhase};
-use litecode::session::event::EventType;
+use litecode::session::event::{EventType, SessionEvent};
+use litecode::session::model::LogState;
 use litecode::session::surface::SurfaceOp;
-use litecode::types::{Item, user_text};
+use litecode::types::user_text;
 
 fn sample_snapshot() -> litecode::client_protocol::protocol::SessionSnapshot {
     let turn = Some(litecode::client_protocol::protocol::TurnSnapshot {
@@ -102,16 +103,38 @@ fn stream_event_projects_to_turn_event() {
     }
 }
 
+fn buffer_event(
+    seq: u64,
+    event_type: EventType,
+    item: litecode::types::Item,
+    surface_op: Option<SurfaceOp>,
+    state: LogState,
+) -> SessionEvent {
+    SessionEvent {
+        seq,
+        time: 0,
+        event_type,
+        data: serde_json::to_value(item).unwrap(),
+        surface_op,
+        source_seqs: None,
+        ignorable: false,
+        state,
+    }
+}
+
 #[test]
 fn buffer_item_projects_to_buffer_item_notification() {
     let snap = sample_snapshot();
     let item = user_text("hello");
     let msg = project::project(
         &InternalEvent::BufferItem {
-            seq: 3,
-            event_type: EventType::ItemUser,
-            surface_op: Some(SurfaceOp::Append),
-            item: item.clone(),
+            event: buffer_event(
+                3,
+                EventType::ItemUser,
+                item,
+                Some(SurfaceOp::Append),
+                LogState::Final,
+            ),
             child_session_id: None,
         },
         &snap,
@@ -120,16 +143,14 @@ fn buffer_item_projects_to_buffer_item_notification() {
     assert!(method_is(&msg, methods::BUFFER_ITEM));
     assert_eq!(msg["params"]["session_id"], "s1");
     assert_eq!(msg["params"]["seq"], 3);
-    assert_eq!(msg["params"]["type"], "item/user");
+    assert_eq!(msg["params"]["kind"], "item/user");
+    assert_eq!(msg["params"]["state"], "final");
     assert_eq!(msg["params"]["surface_op"], "append");
     assert!(msg["params"].get("buffer_index").is_none());
-    assert!(msg["params"].get("kind").is_none());
+    assert!(msg["params"].get("type").is_none());
+    assert!(msg["params"].get("item").is_none());
     assert!(msg["params"].get("child_session_id").is_none());
-    let got: Item = serde_json::from_value(msg["params"]["item"].clone()).unwrap();
-    assert_eq!(
-        serde_json::to_value(&got).unwrap(),
-        serde_json::to_value(&item).unwrap()
-    );
+    assert_eq!(msg["params"]["body"]["type"], "message");
 }
 
 #[test]
@@ -138,10 +159,13 @@ fn buffer_item_includes_child_session_id_when_set() {
     let item = user_text("hello");
     let msg = project::project(
         &InternalEvent::BufferItem {
-            seq: 1,
-            event_type: EventType::ItemUser,
-            surface_op: Some(SurfaceOp::Append),
-            item,
+            event: buffer_event(
+                1,
+                EventType::ItemUser,
+                item,
+                Some(SurfaceOp::Append),
+                LogState::Final,
+            ),
             child_session_id: Some("child-1".into()),
         },
         &snap,
@@ -157,10 +181,13 @@ fn buffer_item_replace_projects_surface_op_and_cut() {
     let item = user_text("rolled-up");
     let msg = project::project(
         &InternalEvent::BufferItem {
-            seq: 3,
-            event_type: EventType::ItemUser,
-            surface_op: Some(SurfaceOp::Replace { start: 0, end: 2 }),
-            item: item.clone(),
+            event: buffer_event(
+                3,
+                EventType::ItemUser,
+                item,
+                Some(SurfaceOp::Replace { start: 0, end: 2 }),
+                LogState::Final,
+            ),
             child_session_id: None,
         },
         &snap,
@@ -168,16 +195,67 @@ fn buffer_item_replace_projects_surface_op_and_cut() {
     .unwrap();
     assert!(method_is(&msg, methods::BUFFER_ITEM));
     assert_eq!(msg["params"]["seq"], 3);
-    assert_eq!(msg["params"]["type"], "item/user");
+    assert_eq!(msg["params"]["kind"], "item/user");
+    assert_eq!(msg["params"]["state"], "final");
     assert_eq!(msg["params"]["surface_op"]["op"], "replace");
     assert_eq!(msg["params"]["surface_op"]["start"], 0);
     assert_eq!(msg["params"]["surface_op"]["end"], 2);
     assert!(msg["params"].get("buffer_index").is_none());
-    let got: Item = serde_json::from_value(msg["params"]["item"].clone()).unwrap();
-    assert_eq!(
-        serde_json::to_value(&got).unwrap(),
-        serde_json::to_value(&item).unwrap()
-    );
+    assert!(msg["params"].get("type").is_none());
+    assert!(msg["params"].get("item").is_none());
+}
+
+#[test]
+fn buffer_item_threads_current_state_not_hardcoded_final() {
+    let snap = sample_snapshot();
+    let item = user_text("hello");
+    let msg = project::project(
+        &InternalEvent::BufferItem {
+            event: buffer_event(
+                4,
+                EventType::ItemAssistant,
+                item,
+                Some(SurfaceOp::Append),
+                LogState::InProgress,
+            ),
+            child_session_id: None,
+        },
+        &snap,
+    )
+    .unwrap();
+    assert_eq!(msg["params"]["state"], "in_progress");
+    assert_eq!(msg["params"]["kind"], "item/assistant");
+}
+
+#[test]
+fn control_plane_turn_end_is_on_buffer_item_not_views() {
+    let snap = sample_snapshot();
+    let event = SessionEvent {
+        seq: 9,
+        time: 1,
+        event_type: EventType::TurnEnd,
+        data: serde_json::json!({"turn": "t1", "reason": "max_steps"}),
+        surface_op: None,
+        source_seqs: None,
+        ignorable: false,
+        state: LogState::Final,
+    };
+    let live = project::buffer_log_row("s1", &event, None);
+    let via_internal = project::project(
+        &InternalEvent::BufferItem {
+            event: event.clone(),
+            child_session_id: None,
+        },
+        &snap,
+    )
+    .unwrap();
+    assert_eq!(live["params"]["kind"], "turn/end");
+    assert_eq!(live["params"]["body"]["reason"], "max_steps");
+    assert_eq!(live["params"]["state"], via_internal["params"]["state"]);
+    assert_eq!(live["params"]["kind"], via_internal["params"]["kind"]);
+    assert_eq!(live["params"]["body"], via_internal["params"]["body"]);
+    assert_eq!(live["params"]["cites"], via_internal["params"]["cites"]);
+    assert!(EventType::TurnEnd.is_control_plane());
 }
 
 #[test]

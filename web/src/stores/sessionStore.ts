@@ -177,6 +177,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     }
 
     if (snap.buffer.next_seq === 0) {
+      useTurnStore.getState().clearPendingStream(sessionId);
       set({ pendingSessionOp: null });
       return;
     }
@@ -188,6 +189,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       (msgSlice.toSeq === 0 && msgSlice.messages.length === 0);
 
     if (needsInitialLoad) {
+      useTurnStore.getState().clearPendingStream(sessionId);
       const toSeq = snap.buffer.next_seq;
       const fromSeq = Math.max(0, toSeq - 40);
       useConnectionStore.getState().sendRpc<BufferLoaded>("buffer/load", { from_seq: fromSeq, to_seq: toSeq, session_id: sessionId })

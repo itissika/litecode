@@ -82,6 +82,19 @@ pub enum TurnEndReason {
     HookBlocked,
 }
 
+impl TurnEndReason {
+    /// Durable `turn/end.reason` schema: `completed | cancelled | error | max_steps | hook_blocked`.
+    pub fn as_log_reason(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Error => "error",
+            Self::MaxSteps => "max_steps",
+            Self::HookBlocked => "hook_blocked",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TurnTokenStats {
     /// Last LLM request in this turn (not summed across tool-loop steps).
@@ -196,15 +209,19 @@ pub enum InternalEvent {
         preview: String,
         updated_at: i64,
     },
-    /// One log event was persisted. Identity is `seq`; payload is the Item.
+    /// One durable SessionLog row. Live `buffer/item` uses this same envelope
+    /// (`kind`/`body`/`cites`/`state`); control-plane kinds are included here
+    /// and excluded from HumanView/AgentView by spine fold.
     BufferItem {
-        seq: crate::session::event::Seq,
-        event_type: crate::session::event::EventType,
-        surface_op: Option<crate::session::surface::SurfaceOp>,
-        item: crate::types::Item,
+        event: crate::session::event::SessionEvent,
         /// When this item is a `subagent_launch` function_call (or its re-stamp),
         /// the durable child session id for FE subscribe/load.
         child_session_id: Option<String>,
+    },
+    /// Same-seq restamp of already-allocated log rows (seal/cancel). Ordered,
+    /// unique seqs. Empty means no-op. Does not imply `next_seq` growth.
+    BufferRestamp {
+        seqs: Vec<crate::session::event::Seq>,
     },
     /// Parent session: a subagent child was created for `call_id` (immediate bind).
     SubagentBound {
@@ -282,4 +299,25 @@ pub struct NoopObserver;
 
 impl RuntimeObserver for NoopObserver {
     fn on_internal(&self, _ev: InternalEvent) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TurnEndReason;
+
+    #[test]
+    fn turn_end_reason_log_schema_is_snake_case_for_every_variant() {
+        let cases = [
+            (TurnEndReason::Completed, "completed"),
+            (TurnEndReason::Cancelled, "cancelled"),
+            (TurnEndReason::Error, "error"),
+            (TurnEndReason::MaxSteps, "max_steps"),
+            (TurnEndReason::HookBlocked, "hook_blocked"),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(reason.as_log_reason(), expected);
+            let v = serde_json::to_value(reason).unwrap();
+            assert_eq!(v, expected);
+        }
+    }
 }

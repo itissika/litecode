@@ -57,6 +57,7 @@ impl StartTurnError {
 /// Loaded log window `[from_seq, to_seq)`.
 pub struct MaterializedRange {
     pub events: Vec<crate::client_protocol::protocol::WireBufferEvent>,
+    pub user_detail_before: i64,
 }
 
 /// Per-session projection state. Each subscribed session on a connection gets
@@ -104,6 +105,70 @@ impl Projection {
             -1
         } else {
             (next_seq - 1) as i64
+        }
+    }
+
+    fn child_session_id_for_encoded(&self, encoded: Option<&crate::types::Item>) -> Option<String> {
+        match encoded {
+            Some(crate::types::Item::FunctionCall(fc)) if fc.name == "subagent_launch" => self
+                .sessions
+                .child_session_id_for_call(&self.session_id, &fc.call_id),
+            _ => None,
+        }
+    }
+
+    fn push_buffer_log_row(
+        &mut self,
+        event: &crate::session::event::SessionEvent,
+        child_session_id: Option<String>,
+    ) {
+        self.outgoing.push(project::buffer_log_row(
+            &self.session_id,
+            event,
+            child_session_id,
+        ));
+    }
+
+    /// Current-envelope restamp for already-allocated seqs. Order is caller-defined.
+    /// Idempotent: the durable row is re-projected as-is.
+    fn restamp_changed_seqs(&mut self, seqs: &[crate::session::event::Seq]) {
+        let data_root = crate::session::store::data_root_from_db_path(&self.sessions.db_path());
+        for seq in seqs {
+            let events = match self.sessions.entry_load_events_range(
+                &self.session_id,
+                *seq,
+                seq.saturating_add(1),
+            ) {
+                Ok(events) => events,
+                Err(e) => {
+                    tracing::error!(
+                        session_id = %self.session_id,
+                        seq,
+                        error = %e,
+                        "restamp_changed_seqs: failed to load sealed log row"
+                    );
+                    continue;
+                }
+            };
+            for event in events {
+                let encoded = crate::session::event::item_from_event(&event)
+                    .ok()
+                    .map(|item| output::encode_client_item(item, &data_root))
+                    .transpose();
+                let encoded = match encoded {
+                    Ok(item) => item,
+                    Err(_) => {
+                        tracing::error!(
+                            session_id = %self.session_id,
+                            seq = event.seq,
+                            "restamp_changed_seqs: failed to encode item body"
+                        );
+                        None
+                    }
+                };
+                let child_session_id = self.child_session_id_for_encoded(encoded.as_ref());
+                self.push_buffer_log_row(&event, child_session_id);
+            }
         }
     }
 
@@ -212,6 +277,29 @@ impl Projection {
             .sessions
             .with_entry_task_state(&self.session_id, |state| Ok(state.todos.clone()))
             .unwrap_or_default();
+        if let Ok(meta) = self
+            .sessions
+            .with_entry_store(&self.session_id, |store| Ok(store.meta()?))
+        {
+            snap.meta = crate::client_protocol::protocol::SessionMetaWire {
+                id: meta.id,
+                project: meta.project,
+                created_at: meta.created_at,
+                updated_at: meta.updated_at,
+                parent_session_id: meta.parent_session_id,
+                parent_call_id: meta.parent_call_id,
+                subagent_depth: meta.subagent_depth,
+                agent_id: meta.agent_id,
+                model_id: meta.model_id,
+                thinking_tier: meta.thinking_tier,
+                context_mode: meta.context_mode,
+                compacted_seq: meta.compacted_seq,
+                spine_from: meta.spine_from,
+                todos: meta.todos,
+                plan_slug: meta.plan_slug,
+                preview: meta.preview,
+            };
+        }
         snap
     }
 
@@ -301,6 +389,9 @@ impl Projection {
             }
             _ => {}
         }
+        if let InternalEvent::BufferRestamp { seqs } = &ev {
+            self.restamp_changed_seqs(seqs);
+        }
         // Re-stamp the parent `subagent_launch` function_call so live FE item
         // stores see `child_session_id` without waiting for tool completion.
         if let InternalEvent::SubagentBound {
@@ -311,22 +402,11 @@ impl Projection {
                 .sessions
                 .find_function_call_event(&self.session_id, call_id)
         {
-            let data_root = crate::session::store::data_root_from_db_path(&self.sessions.db_path());
-            if let Ok(item) = crate::session::event::item_from_event(&event)
-                && let Ok(encoded) = output::encode_client_item(item, &data_root)
-            {
-                self.on_event(
-                    InternalEvent::BufferItem {
-                        seq: event.seq,
-                        event_type: event.event_type,
-                        surface_op: event.surface_op,
-                        item: encoded,
-                        child_session_id: Some(child_session_id.clone()),
-                    },
-                    project,
-                    binding,
-                );
-            }
+            self.outgoing.push(project::buffer_log_row(
+                &self.session_id,
+                &event,
+                Some(child_session_id.clone()),
+            ));
         }
         if let Some(msg) = project::project(&ev, &self.snapshot(project, binding)) {
             self.outgoing.push(msg);
@@ -366,50 +446,17 @@ impl Projection {
                     let data_root =
                         crate::session::store::data_root_from_db_path(&self.sessions.db_path());
                     for event in events {
-                        let item = match crate::session::event::item_from_event(&event) {
-                            Ok(item) => item,
-                            Err(e) => {
-                                tracing::error!(
-                                    session_id = %self.session_id,
-                                    seq = event.seq,
-                                    error = %e,
-                                    "bump_buffer_revision: event payload is not an Item"
-                                );
-                                continue;
-                            }
+                        let encoded = crate::session::event::item_from_event(&event)
+                            .ok()
+                            .map(|item| output::encode_client_item(item, &data_root))
+                            .transpose();
+                        let Ok(encoded) = encoded else {
+                            tracing::error!(session_id = %self.session_id, seq = event.seq,
+                                "bump_buffer_revision: failed to encode item body");
+                            continue;
                         };
-                        let encoded = match output::encode_client_item(item, &data_root) {
-                            Ok(item) => item,
-                            Err(e) => {
-                                tracing::error!(
-                                    session_id = %self.session_id,
-                                    seq = event.seq,
-                                    error = %e,
-                                    "bump_buffer_revision: failed to encode client item"
-                                );
-                                continue;
-                            }
-                        };
-                        let child_session_id = match &encoded {
-                            crate::types::Item::FunctionCall(fc)
-                                if fc.name == "subagent_launch" =>
-                            {
-                                self.sessions
-                                    .child_session_id_for_call(&self.session_id, &fc.call_id)
-                            }
-                            _ => None,
-                        };
-                        self.on_event(
-                            InternalEvent::BufferItem {
-                                seq: event.seq,
-                                event_type: event.event_type,
-                                surface_op: event.surface_op,
-                                item: encoded,
-                                child_session_id,
-                            },
-                            project,
-                            binding,
-                        );
+                        let child_session_id = self.child_session_id_for_encoded(encoded.as_ref());
+                        self.push_buffer_log_row(&event, child_session_id);
                     }
                 }
                 Err(e) => {
@@ -617,24 +664,28 @@ impl Projection {
         let data_root = crate::session::store::data_root_from_db_path(&self.sessions.db_path());
         let mut out = Vec::with_capacity(events.len());
         for event in events {
-            let item = crate::session::event::item_from_event(&event)?;
-            let item = output::encode_client_item(item, &data_root)?;
-            let child_session_id = match &item {
-                crate::types::Item::FunctionCall(fc) if fc.name == "subagent_launch" => {
-                    self.sessions
-                        .child_session_id_for_call(&self.session_id, &fc.call_id)
-                }
-                _ => None,
-            };
+            let encoded = crate::session::event::item_from_event(&event)
+                .ok()
+                .map(|item| output::encode_client_item(item, &data_root))
+                .transpose()?;
+            let child_session_id = self.child_session_id_for_encoded(encoded.as_ref());
             out.push(crate::client_protocol::protocol::WireBufferEvent {
                 seq: event.seq,
                 event_type: event.event_type,
+                body: event.data,
+                cites: event.source_seqs.unwrap_or_default(),
+                state: event.state,
                 surface_op: event.surface_op,
-                item,
                 child_session_id,
             });
         }
-        Ok(MaterializedRange { events: out })
+        let user_detail_before = self
+            .sessions
+            .entry_user_detail_before_seq(&self.session_id, from_seq)?;
+        Ok(MaterializedRange {
+            events: out,
+            user_detail_before,
+        })
     }
 
     // ── turn helpers ──
@@ -1324,8 +1375,9 @@ mod merged_channel_tests {
 mod compact_item_wire_tests {
     use super::*;
     use crate::runtime::observer::{CompactionStage, CompactionTrigger};
+    use crate::session::EventType;
     use crate::session::store::Session;
-    use crate::types::{Item, item_text_preview, user_text};
+    use crate::types::user_text;
     use std::sync::Arc;
 
     fn binding() -> SessionBindingProjection {
@@ -1381,7 +1433,7 @@ mod compact_item_wire_tests {
     }
 
     #[test]
-    fn compact_succeeded_emits_replace_buffer_item_not_compacted() {
+    fn compact_succeeded_emits_compacted_buffer_row() {
         let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
         apply_compact(&sessions, &sid, "first-cut");
         let _ = proj.take_outgoing();
@@ -1389,21 +1441,14 @@ mod compact_item_wire_tests {
         proj.on_event(succeeded(CompactionTrigger::Manual), "/p", &binding());
         let out = proj.take_outgoing();
 
-        assert!(
-            out.iter().all(|msg| msg["method"] != "buffer/compacted"),
-            "compact must not emit buffer/compacted"
-        );
         let items = buffer_item_frames(&out);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["params"]["seq"], 3);
-        assert_eq!(items[0]["params"]["type"], "item/user");
-        assert_eq!(items[0]["params"]["surface_op"]["op"], "replace");
-        assert_eq!(items[0]["params"]["surface_op"]["start"], 0);
-        assert_eq!(items[0]["params"]["surface_op"]["end"], 2);
-        assert!(items[0]["params"].get("buffer_index").is_none());
+        assert_eq!(items[0]["params"]["kind"], "compacted");
+        assert_eq!(items[0]["params"]["body"]["from"], 0);
+        assert_eq!(items[0]["params"]["body"]["to"], 3);
         assert_eq!(items[0]["params"]["session_id"], sid);
-        let item: Item = serde_json::from_value(items[0]["params"]["item"].clone()).unwrap();
-        assert_eq!(item_text_preview(&item), "first-cut");
+        assert_eq!(items[0]["params"]["body"]["summary"], "first-cut");
 
         let life = out
             .iter()
@@ -1422,7 +1467,7 @@ mod compact_item_wire_tests {
             .unwrap();
         assert!(
             item_pos < life_pos,
-            "replace buffer/item must precede lifecycle snapshot"
+            "compacted buffer/item must precede lifecycle snapshot"
         );
     }
 
@@ -1441,34 +1486,260 @@ mod compact_item_wire_tests {
         proj.on_event(succeeded(CompactionTrigger::Auto), "/p", &binding());
         let out = proj.take_outgoing();
 
-        assert!(out.iter().all(|msg| msg["method"] != "buffer/compacted"));
         let items = buffer_item_frames(&out);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["params"]["seq"], 5);
-        assert_eq!(items[0]["params"]["surface_op"]["op"], "replace");
-        assert!(items[0]["params"].get("buffer_index").is_none());
-        let item: Item = serde_json::from_value(items[0]["params"]["item"].clone()).unwrap();
-        assert_eq!(item_text_preview(&item), "second-cut");
+        assert_eq!(items[0]["params"]["kind"], "compacted");
+        assert_eq!(items[0]["params"]["body"]["summary"], "second-cut");
 
         let events = sessions
             .with_entry_store(&sid, |s| {
                 s.load_events().map_err(|e| anyhow::anyhow!("{e}"))
             })
             .unwrap();
-        let replaces = events
+        let compacts = events
             .iter()
-            .filter(|e| {
-                matches!(
-                    e.surface_op,
-                    Some(crate::session::surface::SurfaceOp::Replace { .. })
-                )
-            })
+            .filter(|e| e.event_type == EventType::Compacted)
             .count();
-        assert_eq!(replaces, 2);
-        assert!(events
-            .iter()
-            .any(|e| crate::session::event::item_from_event(e)
-                .ok()
-                .is_some_and(|item| item_text_preview(&item) == "first-cut")));
+        assert_eq!(compacts, 2);
+    }
+
+    #[test]
+    fn subagent_bound_restamps_kind_body_envelope() {
+        use crate::authority::responses::FunctionToolCall;
+        use crate::types::Item;
+
+        let sessions = Arc::new(SessionManager::ephemeral_registry());
+        let session = Session::ephemeral("/p", "default", Some("m")).unwrap();
+        let sid = session.id.clone();
+        session
+            .persist_item(&Item::FunctionCall(FunctionToolCall {
+                arguments: "{}".into(),
+                call_id: "call_sub".into(),
+                namespace: None,
+                name: "subagent_launch".into(),
+                id: None,
+                status: None,
+            }))
+            .unwrap();
+        sessions.insert_session_for_test(session);
+        let mut proj = Projection::new(sid.clone(), sessions, 0);
+        proj.on_event(
+            InternalEvent::SubagentBound {
+                call_id: "call_sub".into(),
+                child_session_id: "child-sid".into(),
+            },
+            "/p",
+            &binding(),
+        );
+        let out = proj.take_outgoing();
+        let items = buffer_item_frames(&out);
+        assert_eq!(items.len(), 1);
+        let params = &items[0]["params"];
+        assert_eq!(params["kind"], "item/tool_call");
+        assert_eq!(params["state"], "final");
+        assert_eq!(params["child_session_id"], "child-sid");
+        assert!(params.get("type").is_none());
+        assert!(params.get("item").is_none());
+        assert!(params["body"].is_object());
+        assert!(params["cites"].is_array());
+        assert!(
+            out.iter().any(|msg| msg["method"]
+                == crate::client_protocol::protocol::methods::AGENT_SUBAGENT_BOUND)
+        );
+    }
+
+    #[test]
+    fn materialize_range_threads_log_state_and_user_detail_before() {
+        use crate::authority::responses::{
+            AssistantRole, MessageItem, OutputMessage, OutputMessageContent, OutputStatus,
+            OutputTextContent,
+        };
+        use crate::session::model::LogState;
+        use crate::types::Item;
+
+        let (proj, sid, sessions) = setup_with_details(&["u0", "u1"]);
+        sessions
+            .with_entry_store(&sid, |s| {
+                s.persist_item(&Item::Message(MessageItem::Output(OutputMessage {
+                    id: "asst_live".into(),
+                    role: AssistantRole::Assistant,
+                    content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                        text: "hel".into(),
+                        annotations: vec![],
+                        logprobs: None,
+                    })],
+                    status: OutputStatus::InProgress,
+                    phase: None,
+                })))
+                .map(|_| ())
+                .map_err(|e| anyhow::anyhow!("{e}"))
+            })
+            .unwrap();
+        let range = proj.materialize_range(0, 10).unwrap();
+        assert_eq!(range.user_detail_before, 0);
+        assert_eq!(range.events.len(), 3);
+        assert_eq!(range.events[0].state, LogState::Final);
+        assert_eq!(range.events[2].state, LogState::InProgress);
+        let tail = proj.materialize_range(1, 10).unwrap();
+        assert_eq!(tail.user_detail_before, 1);
+    }
+
+    #[test]
+    fn live_and_materialize_share_kind_body_cites_state_including_control() {
+        use crate::session::event::EventDraft;
+        use crate::session::model::LogState;
+        use crate::session::store::SessionApply;
+
+        let (mut proj, sid, sessions) = setup_with_details(&["u0"]);
+        sessions
+            .with_entry_store(&sid, |s| {
+                s.apply(SessionApply::Append(EventDraft {
+                    time: 1,
+                    event_type: EventType::TurnEnd,
+                    data: serde_json::json!({"turn": "t1", "reason": "cancelled"}),
+                    surface_op: None,
+                    source_seqs: None,
+                    ignorable: false,
+                    state: LogState::Final,
+                }))
+                .map(|_| ())
+                .map_err(|e| anyhow::anyhow!("{e}"))
+            })
+            .unwrap();
+        let _ = proj.take_outgoing();
+        proj.bump_buffer_revision("/p", &binding());
+        let outgoing = proj.take_outgoing();
+        let live = buffer_item_frames(&outgoing);
+        let loaded = proj.materialize_range(0, 10).unwrap();
+        assert!(
+            live.iter().any(|msg| msg["params"]["kind"] == "turn/end"
+                && msg["params"]["body"]["reason"] == "cancelled"),
+            "control-plane turn/end must be on live buffer/item"
+        );
+        for msg in &live {
+            let seq = msg["params"]["seq"].as_u64().unwrap();
+            let row = loaded
+                .events
+                .iter()
+                .find(|e| e.seq == seq)
+                .expect("live seq must exist on buffer/load");
+            assert_eq!(msg["params"]["kind"], row.event_type.as_str());
+            assert_eq!(msg["params"]["state"], row.state.as_str());
+            assert_eq!(msg["params"]["body"], row.body);
+            assert_eq!(
+                msg["params"]["cites"],
+                serde_json::to_value(&row.cites).unwrap()
+            );
+            assert!(msg["params"].get("item").is_none());
+            let loaded_json = serde_json::to_value(row).unwrap();
+            assert!(
+                loaded_json.get("item").is_none(),
+                "buffer/load must omit item like live buffer/item"
+            );
+        }
+    }
+
+    #[test]
+    fn cancel_seal_restamps_changed_seqs_without_next_seq_growth() {
+        use crate::authority::responses::{
+            AssistantRole, FunctionToolCall, MessageItem, OutputMessage, OutputMessageContent,
+            OutputStatus, OutputTextContent,
+        };
+        use crate::types::Item;
+
+        let (mut proj, sid, sessions) = setup_with_details(&["u0"]);
+        sessions
+            .with_entry_store(&sid, |s| {
+                s.persist_item(&Item::Message(MessageItem::Output(OutputMessage {
+                    id: "asst_live".into(),
+                    role: AssistantRole::Assistant,
+                    content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                        text: "hel".into(),
+                        annotations: vec![],
+                        logprobs: None,
+                    })],
+                    status: OutputStatus::InProgress,
+                    phase: None,
+                })))
+                .map(|_| ())
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                s.persist_item(&Item::FunctionCall(FunctionToolCall {
+                    arguments: "{\"cmd\":\"ls\"}".into(),
+                    call_id: "call_live".into(),
+                    namespace: None,
+                    name: "bash".into(),
+                    id: Some("fc_live".into()),
+                    status: Some(OutputStatus::InProgress),
+                }))
+                .map(|_| ())
+                .map_err(|e| anyhow::anyhow!("{e}"))
+            })
+            .unwrap();
+        proj.bump_buffer_revision("/p", &binding());
+        let _ = proj.take_outgoing();
+        let next_before_seal = proj.next_seq;
+
+        let seqs = sessions
+            .with_entry_store(&sid, |s| {
+                Ok(s.seal_in_progress_items()
+                    .map_err(|e| anyhow::anyhow!("{e}"))?)
+            })
+            .unwrap();
+        assert_eq!(seqs, vec![1, 2]);
+
+        proj.bump_buffer_revision("/p", &binding());
+        let after_bump = proj.take_outgoing();
+        let after_next_only = buffer_item_frames(&after_bump);
+        assert!(
+            after_next_only.is_empty(),
+            "seal must not be shipped by next_seq-only revision (next_seq={next_before_seal})"
+        );
+        assert_eq!(proj.next_seq, next_before_seal);
+
+        proj.on_event(
+            InternalEvent::BufferRestamp { seqs: seqs.clone() },
+            "/p",
+            &binding(),
+        );
+        let restamp_out = proj.take_outgoing();
+        let restamp = buffer_item_frames(&restamp_out);
+        assert_eq!(restamp.len(), 2);
+        assert_eq!(restamp[0]["params"]["seq"], 1);
+        assert_eq!(restamp[1]["params"]["seq"], 2);
+        for frame in &restamp {
+            let params = &frame["params"];
+            assert!(params["kind"].as_str().unwrap().starts_with("item/"));
+            assert_eq!(params["state"], "final");
+            assert_eq!(params["body"]["status"], "incomplete");
+            assert!(params["body"].is_object());
+            assert!(params["cites"].is_array());
+            assert!(params.get("item").is_none());
+            assert!(params.get("type").is_none());
+        }
+
+        proj.on_event(
+            InternalEvent::TurnCompleted {
+                turn_id: "t-cancel".into(),
+                final_text: None,
+                reason: crate::runtime::observer::TurnEndReason::Cancelled,
+                turn_token_stats: crate::runtime::observer::TurnTokenStats::default(),
+                committed_next_seq: 0,
+            },
+            "/p",
+            &binding(),
+        );
+        let after_end = proj.take_outgoing();
+        assert!(
+            buffer_item_frames(&after_end).is_empty(),
+            "TurnCompleted must not be the restamp vehicle"
+        );
+
+        proj.on_event(InternalEvent::BufferRestamp { seqs }, "/p", &binding());
+        let again_out = proj.take_outgoing();
+        let again = buffer_item_frames(&again_out);
+        assert_eq!(again.len(), 2);
+        assert_eq!(again[0]["params"]["body"]["status"], "incomplete");
+        assert_eq!(again[1]["params"]["body"]["status"], "incomplete");
     }
 }

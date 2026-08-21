@@ -3,7 +3,10 @@
 //! **Hard rule:** do not define parallel `Message` / `ContentBlock` types.
 //! All atoms are [`async_openai::types::responses`] types (via [`crate::authority`]).
 
-use crate::authority::responses::{InputContent, InputMessage, InputRole, InputTextContent};
+use crate::authority::responses::{
+    AssistantRole, InputContent, InputMessage, InputRole, InputTextContent, OutputMessageContent,
+    OutputStatus, OutputTextContent,
+};
 
 pub use crate::authority::responses::{
     FunctionCallOutputItemParam, FunctionToolCall, InputItem, Item, MessageItem, OutputItem,
@@ -24,6 +27,21 @@ pub fn user_text(text: impl Into<String>) -> Item {
         })],
         role: InputRole::User,
         status: None,
+    }))
+}
+
+/// Build an assistant text `Item` (AgentView synthesis, never a user message).
+pub fn assistant_text(text: impl Into<String>) -> Item {
+    Item::Message(MessageItem::Output(OutputMessage {
+        id: String::new(),
+        role: AssistantRole::Assistant,
+        content: vec![OutputMessageContent::OutputText(OutputTextContent {
+            text: text.into(),
+            annotations: vec![],
+            logprobs: None,
+        })],
+        status: OutputStatus::Completed,
+        phase: None,
     }))
 }
 
@@ -92,5 +110,17 @@ mod tests {
         assert_eq!(v["role"], "user");
         let back: Item = serde_json::from_value(v).expect("deserialize");
         assert_eq!(item_text_preview(&back), "hello");
+    }
+
+    #[test]
+    fn assistant_text_item_is_output_assistant_role() {
+        use crate::authority::responses::{AssistantRole, MessageItem};
+        let item = assistant_text("hello");
+        match item {
+            Item::Message(MessageItem::Output(out)) => {
+                assert_eq!(out.role, AssistantRole::Assistant);
+            }
+            other => panic!("expected assistant output, got {other:?}"),
+        }
     }
 }

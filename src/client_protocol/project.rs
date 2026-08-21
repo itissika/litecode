@@ -14,6 +14,29 @@ use super::protocol::{
     StructuredError, TurnSnapshot, TurnTokenStats, WireEvent, WireTurnPhase,
 };
 
+/// Project one durable SessionLog row for `buffer/item`.
+pub fn buffer_log_row(
+    session_id: &str,
+    event: &crate::session::event::SessionEvent,
+    child_session_id: Option<String>,
+) -> Value {
+    let mut params = json!({
+        "session_id": session_id,
+        "seq": event.seq,
+        "kind": event.event_type.as_str(),
+        "body": event.data,
+        "cites": event.source_seqs.clone().unwrap_or_default(),
+        "state": event.state.as_str(),
+    });
+    if let Some(op) = &event.surface_op {
+        params["surface_op"] = serde_json::to_value(op).unwrap_or(Value::Null);
+    }
+    if let Some(child_id) = child_session_id {
+        params["child_session_id"] = Value::String(child_id);
+    }
+    notification(super::protocol::methods::BUFFER_ITEM, params)
+}
+
 /// Project sticky session binding + catalog effective fields for wire.
 pub fn binding_projection(
     sessions: &SessionManager,
@@ -319,26 +342,14 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
         InternalEvent::ProjectionLagged { .. } => None,
         InternalEvent::SessionPreviewUpdated { .. } => None,
         InternalEvent::BufferItem {
-            seq,
-            event_type,
-            surface_op,
-            item,
+            event,
             child_session_id,
-        } => {
-            let mut params = serde_json::json!({
-                "session_id": snapshot.session_id,
-                "seq": seq,
-                "type": event_type.as_str(),
-                "item": item,
-            });
-            if let Some(op) = surface_op {
-                params["surface_op"] = serde_json::to_value(op).unwrap_or(serde_json::Value::Null);
-            }
-            if let Some(child_id) = child_session_id {
-                params["child_session_id"] = serde_json::Value::String(child_id.clone());
-            }
-            Some(notification(super::protocol::methods::BUFFER_ITEM, params))
-        }
+        } => Some(buffer_log_row(
+            &snapshot.session_id,
+            event,
+            child_session_id.clone(),
+        )),
+        InternalEvent::BufferRestamp { .. } => None,
         InternalEvent::SubagentBound {
             call_id,
             child_session_id,
@@ -829,6 +840,25 @@ pub fn buffer_snapshot(
     compacting: bool,
 ) -> SessionSnapshot {
     SessionSnapshot {
+        meta: super::protocol::SessionMetaWire {
+            id: session_id.to_string(),
+            project: project.to_string(),
+            created_at: 0,
+            updated_at: 0,
+            parent_session_id: None,
+            parent_call_id: None,
+            subagent_depth: 0,
+            agent_id: binding.agent_id.clone(),
+            model_id: binding.model_id.clone(),
+            thinking_tier: binding.thinking_tier.clone(),
+            context_mode: binding.context_mode.clone(),
+            compacted_seq: None,
+            spine_from: 0,
+            todos: Vec::new(),
+            plan_slug: None,
+            preview: String::new(),
+        },
+        live: turn.clone(),
         session_id: session_id.to_string(),
         project: project.to_string(),
         agent_id: binding.agent_id.clone(),

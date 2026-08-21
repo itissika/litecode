@@ -5,8 +5,11 @@ use serde_json::Value;
 
 use crate::types::{Item, LitecodeError, Result, item_text_preview};
 
-use crate::authority::responses::MessageItem;
+use super::model::{
+    CompactedBody, HookPromptBody, LogState, ReminderJobExitBody, ReminderTurnAbortedBody,
+};
 use super::surface::{Surface, SurfaceOp, apply_plan, plan_surface};
+use crate::authority::responses::{MessageItem, OutputStatus};
 
 /// Monotonic log position. Never rewritten, never reused.
 pub type Seq = u64;
@@ -18,6 +21,10 @@ pub enum EventType {
     ItemAssistant,
     ItemToolCall,
     ItemToolResult,
+    Compacted,
+    HookPrompt,
+    ReminderJobExit,
+    ReminderTurnAborted,
     TurnStart,
     TurnEnd,
     StepStart,
@@ -48,6 +55,10 @@ impl EventType {
             "item/assistant" => Self::ItemAssistant,
             "item/tool_call" => Self::ItemToolCall,
             "item/tool_result" => Self::ItemToolResult,
+            "compacted" => Self::Compacted,
+            "hook/prompt" => Self::HookPrompt,
+            "reminder/job_exit" => Self::ReminderJobExit,
+            "reminder/turn_aborted" => Self::ReminderTurnAborted,
             "turn/start" => Self::TurnStart,
             "turn/end" => Self::TurnEnd,
             "step/start" => Self::StepStart,
@@ -65,6 +76,10 @@ impl EventType {
             Self::ItemAssistant => "item/assistant",
             Self::ItemToolCall => "item/tool_call",
             Self::ItemToolResult => "item/tool_result",
+            Self::Compacted => "compacted",
+            Self::HookPrompt => "hook/prompt",
+            Self::ReminderJobExit => "reminder/job_exit",
+            Self::ReminderTurnAborted => "reminder/turn_aborted",
             Self::TurnStart => "turn/start",
             Self::TurnEnd => "turn/end",
             Self::StepStart => "step/start",
@@ -79,7 +94,38 @@ impl EventType {
     pub fn is_surface_eligible(&self) -> bool {
         matches!(
             self,
+            Self::ItemUser
+                | Self::ItemAssistant
+                | Self::ItemToolCall
+                | Self::ItemToolResult
+                | Self::Compacted
+        )
+    }
+
+    pub fn is_item(&self) -> bool {
+        matches!(
+            self,
             Self::ItemUser | Self::ItemAssistant | Self::ItemToolCall | Self::ItemToolResult
+        )
+    }
+
+    /// Injection kinds enter the spine; HumanView hides them; AgentView tags them.
+    pub fn is_injection(&self) -> bool {
+        matches!(
+            self,
+            Self::HookPrompt | Self::ReminderJobExit | Self::ReminderTurnAborted
+        )
+    }
+
+    pub fn enters_spine(&self) -> bool {
+        self.is_item() || matches!(self, Self::Compacted) || self.is_injection()
+    }
+
+    /// Control-plane kinds are stored in SessionLog but never enter the spine.
+    pub fn is_control_plane(&self) -> bool {
+        matches!(
+            self,
+            Self::TurnStart | Self::TurnEnd | Self::RequestHeader | Self::RequestContext
         )
     }
 }
@@ -96,6 +142,8 @@ pub struct SessionEvent {
     pub surface_op: Option<SurfaceOp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_seqs: Option<Vec<Seq>>,
+    #[serde(default)]
+    pub state: LogState,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ignorable: bool,
 }
@@ -109,6 +157,7 @@ pub struct EventDraft {
     pub surface_op: Option<SurfaceOp>,
     pub source_seqs: Option<Vec<Seq>>,
     pub ignorable: bool,
+    pub state: LogState,
 }
 
 impl EventDraft {
@@ -120,6 +169,7 @@ impl EventDraft {
             surface_op: Some(surface_op),
             source_seqs: None,
             ignorable: false,
+            state: log_state_of_item(item),
         })
     }
 }
@@ -176,7 +226,23 @@ pub fn finalize_draft(seq: Seq, draft: EventDraft) -> Result<SessionEvent> {
 
     let frozen: Value = serde_json::from_str(&draft.data.to_string())?;
 
-    if draft.event_type.is_surface_eligible() {
+    if matches!(draft.event_type, EventType::Compacted) {
+        let _compacted: CompactedBody = serde_json::from_value(frozen.clone()).map_err(|e| {
+            LitecodeError::InvalidSessionEvent(format!("compacted body is invalid: {e}"))
+        })?;
+        if draft.surface_op.is_some() {
+            return Err(LitecodeError::InvalidSessionEvent(
+                "compacted derives its spine replacement from body".into(),
+            ));
+        }
+    } else if draft.event_type.is_injection() {
+        parse_injection_body(&draft.event_type, &frozen)?;
+        if draft.surface_op.is_some() {
+            return Err(LitecodeError::InvalidSessionEvent(
+                "injection kinds derive spine append from kind".into(),
+            ));
+        }
+    } else if draft.event_type.is_surface_eligible() {
         if draft.surface_op.is_none() {
             return Err(LitecodeError::InvalidSessionEvent(
                 "surface-eligible event must carry surface_op".into(),
@@ -199,11 +265,63 @@ pub fn finalize_draft(seq: Seq, draft: EventDraft) -> Result<SessionEvent> {
         surface_op: draft.surface_op,
         source_seqs: draft.source_seqs,
         ignorable: draft.ignorable,
+        state: draft.state,
     })
+}
+
+pub fn log_state_of_item(item: &Item) -> LogState {
+    let in_progress = match item {
+        Item::Message(MessageItem::Output(m)) => m.status == OutputStatus::InProgress,
+        Item::FunctionCall(fc) => matches!(fc.status, Some(OutputStatus::InProgress)),
+        Item::Reasoning(r) => matches!(r.status, Some(OutputStatus::InProgress)),
+        _ => false,
+    };
+    if in_progress {
+        LogState::InProgress
+    } else {
+        LogState::Final
+    }
 }
 
 pub fn item_from_event(event: &SessionEvent) -> Result<Item> {
     serde_json::from_value(event.data.clone()).map_err(Into::into)
+}
+
+fn parse_injection_body(event_type: &EventType, data: &Value) -> Result<()> {
+    match event_type {
+        EventType::HookPrompt => serde_json::from_value::<HookPromptBody>(data.clone()).map(|_| ()),
+        EventType::ReminderJobExit => {
+            serde_json::from_value::<ReminderJobExitBody>(data.clone()).map(|_| ())
+        }
+        EventType::ReminderTurnAborted => {
+            serde_json::from_value::<ReminderTurnAbortedBody>(data.clone()).map(|_| ())
+        }
+        _ => Ok(()),
+    }
+    .map_err(|e| LitecodeError::InvalidSessionEvent(format!("invalid injection body: {e}")))
+}
+
+/// AgentView assembly for a spine row. Injection/compacted bodies are not `Item`.
+pub fn spine_agent_item(event: &SessionEvent) -> Result<Item> {
+    match event.event_type {
+        EventType::Compacted => {
+            let body: CompactedBody = serde_json::from_value(event.data.clone())?;
+            Ok(body.agent_item())
+        }
+        EventType::HookPrompt => {
+            let body: HookPromptBody = serde_json::from_value(event.data.clone())?;
+            Ok(body.agent_item())
+        }
+        EventType::ReminderJobExit => {
+            let body: ReminderJobExitBody = serde_json::from_value(event.data.clone())?;
+            Ok(body.agent_item())
+        }
+        EventType::ReminderTurnAborted => {
+            let body: ReminderTurnAbortedBody = serde_json::from_value(event.data.clone())?;
+            Ok(body.agent_item())
+        }
+        _ => item_from_event(event),
+    }
 }
 
 pub fn skip_empty_assistant_item(item: &Item) -> bool {

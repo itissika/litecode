@@ -10,7 +10,12 @@ use crate::authority::responses::{InputMessage, InputRole, MessageItem};
 use crate::platform_knobs::{ContextMode, ThinkingTier};
 use crate::session::estimate::compute_token_estimate;
 use crate::session::event::{
-    EventDraft, EventType, Seq, SessionEvent, finalize_draft, item_from_event,
+    EventDraft, EventType, Seq, SessionEvent, finalize_draft, item_from_event, log_state_of_item,
+    spine_agent_item,
+};
+use crate::session::model::{
+    CompactedBody, HookPromptBody, LogState, ReminderJobExitBody, ReminderTurnAbortedBody,
+    SESSION_LOG_SCHEMA_VERSION,
 };
 use crate::session::snapshot;
 use crate::session::surface::{
@@ -58,9 +63,8 @@ impl SessionContextMeter {
 
 /// One row from the `transcript_items` table.
 ///
-/// Body is serialized authority [`Item`] JSON (detail and compact_checkpoint alike).
-/// `item_type` is the Responses Item `type` string (`message`, `reasoning`, …).
-/// `kind` is the row envelope only: `detail` | `compact_checkpoint`.
+/// `kind` is the durable product discriminator. `body` follows its schema;
+/// `item/*` bodies are serialized Responses Items.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptRow {
     pub session_id: String,
@@ -97,18 +101,20 @@ SELECT t.session_id, t.seq, t.turn_id, t.turn_seq, t.item_type, t.kind, t.body, 
        t.token_estimate, t.created_at
 FROM transcript_items t
 WHERE t.session_id = ?1
-  AND t.kind IN ('detail', 'compact_checkpoint')
 ORDER BY t.seq ASC";
 
 /// UI revert anchors: append-origin user messages only (replace summaries are not k).
 pub const SQL_USER_DETAIL_COUNT: &str = "\
 SELECT COUNT(*) FROM transcript_items t
 WHERE t.session_id = ?
-  AND t.kind = 'detail'
-  AND t.item_type = 'message'
-  AND t.body IS NOT NULL
-  AND json_extract(t.body, '$.role') = 'user'
-  AND t.surface_op = '\"append\"'";
+  AND t.kind = 'item/user'";
+
+/// User-detail rows with `seq < from_seq` (buffer/load `user_detail_before`).
+pub const SQL_USER_DETAIL_BEFORE_SEQ: &str = "\
+SELECT COUNT(*) FROM transcript_items t
+WHERE t.session_id = ?
+  AND t.kind = 'item/user'
+  AND t.seq < ?";
 
 /// UI revert k → anchor_seq mapping across append-origin user messages.
 pub const SQL_ANCHOR_SEQ: &str = "\
@@ -116,14 +122,11 @@ SELECT seq FROM (
     SELECT t.seq, ROW_NUMBER() OVER (ORDER BY t.seq) - 1 AS k
     FROM transcript_items t
     WHERE t.session_id = ?
-      AND t.kind = 'detail'
-      AND t.item_type = 'message'
-      AND t.body IS NOT NULL
-      AND json_extract(t.body, '$.role') = 'user'
-      AND t.surface_op = '\"append\"'
+      AND t.kind = 'item/user'
 ) WHERE k = ?";
 
 const SESSIONS_REQUIRED_COLS: &[&str] = &[
+    "schema_version",
     "id",
     "project",
     "last_message",
@@ -135,6 +138,9 @@ const SESSIONS_REQUIRED_COLS: &[&str] = &[
     "updated_at",
     "checkpoint_seq",
     "kept_from_seq",
+    "compacted_seq",
+    "spine_from",
+    "subagent_depth",
     "todos_json",
     "active_plan_slug",
     "parent_session_id",
@@ -155,6 +161,8 @@ const TRANSCRIPT_REQUIRED_COLS: &[&str] = &[
     "event_type",
     "surface_op",
     "source_seqs",
+    "cites",
+    "state",
 ];
 
 fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
@@ -213,6 +221,16 @@ fn ensure_session_schema(conn: &Connection) -> Result<()> {
                 )));
             }
         }
+        let stale: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE schema_version != ?1",
+            rusqlite::params![SESSION_LOG_SCHEMA_VERSION],
+            |row| row.get(0),
+        )?;
+        if stale > 0 {
+            return Err(incompatible_session_db(&format!(
+                "sessions.schema_version is not {SESSION_LOG_SCHEMA_VERSION} (compacted [from,to) semantics)"
+            )));
+        }
     }
 
     if table_exists(conn, "transcript_items")? {
@@ -229,6 +247,7 @@ fn ensure_session_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS sessions (
             id                TEXT PRIMARY KEY,
+            schema_version    INTEGER NOT NULL DEFAULT 3,
             project           TEXT NOT NULL,
             last_message      TEXT NOT NULL DEFAULT '',
             agent_id          TEXT NOT NULL,
@@ -239,6 +258,9 @@ fn ensure_session_schema(conn: &Connection) -> Result<()> {
             updated_at        INTEGER NOT NULL,
             checkpoint_seq    INTEGER NOT NULL DEFAULT 0,
             kept_from_seq     INTEGER NOT NULL DEFAULT 0,
+            compacted_seq     INTEGER,
+            spine_from        INTEGER NOT NULL DEFAULT 0,
+            subagent_depth    INTEGER NOT NULL DEFAULT 0,
             todos_json        TEXT NOT NULL DEFAULT '[]',
             active_plan_slug  TEXT,
             parent_session_id TEXT,
@@ -256,7 +278,7 @@ fn ensure_session_schema(conn: &Connection) -> Result<()> {
             turn_id         TEXT NOT NULL DEFAULT '',
             turn_seq        INTEGER NOT NULL DEFAULT 0,
             item_type       TEXT NOT NULL,
-            kind            TEXT NOT NULL DEFAULT 'detail',
+            kind            TEXT NOT NULL,
             body            TEXT,
             body_ref        TEXT,
             token_estimate  INTEGER NOT NULL DEFAULT 0,
@@ -264,6 +286,8 @@ fn ensure_session_schema(conn: &Connection) -> Result<()> {
             event_type      TEXT NOT NULL,
             surface_op      TEXT NOT NULL,
             source_seqs     TEXT,
+            cites           TEXT,
+            state           TEXT NOT NULL DEFAULT 'final',
             PRIMARY KEY (session_id, seq)
         );
         CREATE INDEX IF NOT EXISTS idx_transcript_items_session_seq
@@ -425,6 +449,11 @@ impl LogProjection {
             if self.surface.nodes.contains(&event.seq) {
                 self.items_by_seq.insert(event.seq, item.clone());
             }
+        } else if event.event_type.enters_spine()
+            && self.surface.nodes.contains(&event.seq)
+            && let Ok(assembled) = spine_agent_item(event)
+        {
+            self.items_by_seq.insert(event.seq, assembled);
         }
         Ok(())
     }
@@ -480,16 +509,7 @@ fn is_user_message_item(item: &Item) -> bool {
 /// Same predicate as [`SQL_USER_DETAIL_COUNT`] / [`SQL_ANCHOR_SEQ`], on a turn row.
 #[cfg(test)]
 fn transcript_row_is_user_detail(row: &TranscriptRow) -> bool {
-    if row.kind != "detail" || row.item_type != "message" {
-        return false;
-    }
-    let Some(body) = row.body.as_deref() else {
-        return false;
-    };
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| v.get("role").and_then(|r| r.as_str()).map(|r| r == "user"))
-        .unwrap_or(false)
+    row.kind == "item/user"
 }
 
 /// Responses Item `type` string (`message`, `reasoning`, `function_call`, …).
@@ -506,13 +526,21 @@ fn item_type_of(item: &Item) -> String {
 
 fn item_log_id(item: &Item) -> Option<String> {
     match item {
-        Item::Message(MessageItem::Output(m)) if !m.id.is_empty() => Some(m.id.clone()),
+        Item::Message(MessageItem::Output(m)) if !m.id.is_empty() => Some(format!("item:{}", m.id)),
         Item::FunctionCall(fc) => fc
             .id
             .clone()
             .filter(|s| !s.is_empty())
-            .or_else(|| (!fc.call_id.is_empty()).then(|| fc.call_id.clone())),
-        Item::Reasoning(r) => r.id.clone().filter(|s| !s.is_empty()),
+            .map(|id| format!("item:{id}"))
+            .or_else(|| (!fc.call_id.is_empty()).then(|| format!("call:{}", fc.call_id))),
+        Item::FunctionCallOutput(out) if !out.call_id.is_empty() => {
+            Some(format!("result:{}", out.call_id))
+        }
+        Item::Reasoning(r) => {
+            r.id.clone()
+                .filter(|s| !s.is_empty())
+                .map(|id| format!("item:{id}"))
+        }
         _ => None,
     }
 }
@@ -529,7 +557,7 @@ fn surface_event_type_of(item: &Item) -> EventType {
     }
 }
 
-fn event_sql_envelope(event: &SessionEvent) -> Result<(String, Option<String>)> {
+fn event_sql_envelope(event: &SessionEvent) -> Result<(String, Option<String>, Option<String>)> {
     let surface_op = match &event.surface_op {
         Some(op) => serde_json::to_string(op)?,
         None => String::new(),
@@ -539,7 +567,10 @@ fn event_sql_envelope(event: &SessionEvent) -> Result<(String, Option<String>)> 
         .as_ref()
         .map(serde_json::to_string)
         .transpose()?;
-    Ok((surface_op, source_seqs))
+    // `source_seqs` remains a transient legacy fold encoding until all readers
+    // consume `compacted.body`; `cites` is the durable generic relation.
+    let cites = source_seqs.clone();
+    Ok((surface_op, source_seqs, cites))
 }
 
 fn insert_event_row(
@@ -580,10 +611,10 @@ fn insert_event_row(
     } else {
         event.event_type.as_str().to_string()
     };
-    let (surface_op, source_seqs) = event_sql_envelope(event)?;
+    let (surface_op, source_seqs, cites) = event_sql_envelope(event)?;
     tx.execute(
-        "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs, cites, state)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         rusqlite::params![
             session_id,
             seq,
@@ -598,11 +629,17 @@ fn insert_event_row(
             event.event_type.as_str(),
             surface_op,
             source_seqs,
+            cites,
+            event.state.as_str(),
         ],
     )?;
     if let Some(item) = item {
         let plain = crate::types::item_text_preview(item);
         crate::session::transcript_fts::upsert(tx, session_id, seq, &plain)?;
+    } else if event.event_type == EventType::Compacted
+        && let Ok(body) = serde_json::from_value::<CompactedBody>(event.data.clone())
+    {
+        crate::session::transcript_fts::upsert(tx, session_id, seq, &body.summary)?;
     }
     Ok(())
 }
@@ -615,14 +652,24 @@ fn seal_event_row(
     item: &Item,
 ) -> Result<()> {
     let seq_i = seq as i64;
-    let exists: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
-        rusqlite::params![session_id, seq_i],
-        |row| row.get(0),
-    )?;
-    if exists == 0 {
+    let current_kind: Option<String> = tx
+        .query_row(
+            "SELECT event_type FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
+            rusqlite::params![session_id, seq_i],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(current_kind) = current_kind else {
         return Err(LitecodeError::InvalidSessionEvent(format!(
             "seal_item: no row at seq {seq}"
+        )));
+    };
+    if !matches!(
+        EventType::from_str_name(&current_kind),
+        EventType::ItemAssistant | EventType::ItemToolCall
+    ) {
+        return Err(LitecodeError::InvalidSessionEvent(format!(
+            "seal_item: kind `{current_kind}` is not sealable"
         )));
     }
     let item_type = item_type_of(item);
@@ -631,14 +678,15 @@ fn seal_event_row(
     let event_type = surface_event_type_of(item).as_str().to_string();
     tx.execute(
         "UPDATE transcript_items
-         SET item_type = ?1, body = ?2, body_ref = ?3, token_estimate = ?4, event_type = ?5
-         WHERE session_id = ?6 AND seq = ?7",
+         SET item_type = ?1, body = ?2, body_ref = ?3, token_estimate = ?4, event_type = ?5, state = ?6
+         WHERE session_id = ?7 AND seq = ?8",
         rusqlite::params![
             item_type,
             body,
             body_ref,
             token_estimate,
             event_type,
+            log_state_of_item(item).as_str(),
             session_id,
             seq_i,
         ],
@@ -668,15 +716,11 @@ fn replace_op_for_keep(
             let k = Seq::try_from(k).map_err(|_| {
                 LitecodeError::InvalidSessionEvent(format!("negative kept_from_seq {k}"))
             })?;
-            let keep_i = surface
-                .nodes
-                .iter()
-                .position(|s| *s == k)
-                .ok_or_else(|| {
-                    LitecodeError::ToolExecution(format!(
-                        "kept_from_seq={k} is not on the current surface"
-                    ))
-                })?;
+            let keep_i = surface.nodes.iter().position(|s| *s == k).ok_or_else(|| {
+                LitecodeError::ToolExecution(format!(
+                    "kept_from_seq={k} is not on the current surface"
+                ))
+            })?;
             if keep_i == 0 {
                 return Err(LitecodeError::NothingToCompact);
             }
@@ -690,6 +734,61 @@ fn replace_op_for_keep(
             ))
         }
     }
+}
+
+fn write_compact_pointers(
+    tx: &Transaction<'_>,
+    session_id: &str,
+    checkpoint_seq: i64,
+    compacted_seq: Option<i64>,
+    kept_from_seq: i64,
+    spine_from: i64,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE sessions
+         SET checkpoint_seq = ?1, compacted_seq = ?2, kept_from_seq = ?3, spine_from = ?4
+         WHERE id = ?5",
+        rusqlite::params![
+            checkpoint_seq,
+            compacted_seq,
+            kept_from_seq,
+            spine_from,
+            session_id
+        ],
+    )?;
+    Ok(())
+}
+
+/// Rebuild compact window pointers from the latest surviving `compacted` row.
+/// `spine_from` is the compact event seq, never the kept-detail seq.
+fn refresh_compact_pointers_from_log(tx: &Transaction<'_>, session_id: &str) -> Result<()> {
+    let latest: Option<(i64, Option<String>)> = tx
+        .query_row(
+            "SELECT seq, body FROM transcript_items
+             WHERE session_id = ?1 AND kind = 'compacted'
+             ORDER BY seq DESC LIMIT 1",
+            rusqlite::params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((seq, body)) = latest else {
+        return write_compact_pointers(tx, session_id, 0, None, 0, 0);
+    };
+    let raw = body.ok_or_else(|| {
+        LitecodeError::InvalidSessionEvent(format!("compacted row {seq} has no body"))
+    })?;
+    let compacted: CompactedBody = serde_json::from_str(&raw)?;
+    let kept: Option<i64> = tx.query_row(
+        "SELECT MIN(seq) FROM transcript_items
+         WHERE session_id = ?1 AND seq >= ?2 AND seq < ?3
+           AND kind IN (
+             'item/user', 'item/assistant', 'item/tool_call', 'item/tool_result',
+             'hook/prompt', 'reminder/job_exit', 'reminder/turn_aborted'
+           )",
+        rusqlite::params![session_id, compacted.to as i64, seq],
+        |row| row.get(0),
+    )?;
+    write_compact_pointers(tx, session_id, seq, Some(seq), kept.unwrap_or(seq), seq)
 }
 
 fn message_timestamp(_item: &Item) -> i64 {
@@ -721,8 +820,44 @@ fn encode_detail_row(
 
 fn row_to_item(row: &TranscriptRow, data_root: &Path) -> Result<Item> {
     match row.kind.as_str() {
-        // Disk truth: both kinds store serialized Item JSON (no plain-text synthesize).
-        "compact_checkpoint" | "detail" => {
+        // During the storage cut-over compact still carries a serialized Item.
+        // All ordinary item/* rows do too.
+        "compacted" => {
+            let raw = row.body.as_deref().ok_or_else(|| {
+                LitecodeError::ToolExecution(format!("compacted row seq {} has no body", row.seq))
+            })?;
+            let body: crate::session::model::CompactedBody = serde_json::from_str(raw)?;
+            Ok(body.agent_item())
+        }
+        "hook/prompt" => {
+            let raw = row.body.as_deref().ok_or_else(|| {
+                LitecodeError::ToolExecution(format!("hook/prompt row seq {} has no body", row.seq))
+            })?;
+            let body: HookPromptBody = serde_json::from_str(raw)?;
+            Ok(body.agent_item())
+        }
+        "reminder/job_exit" => {
+            let raw = row.body.as_deref().ok_or_else(|| {
+                LitecodeError::ToolExecution(format!(
+                    "reminder/job_exit row seq {} has no body",
+                    row.seq
+                ))
+            })?;
+            let body: ReminderJobExitBody = serde_json::from_str(raw)?;
+            Ok(body.agent_item())
+        }
+        "reminder/turn_aborted" => {
+            let raw = row.body.as_deref().ok_or_else(|| {
+                LitecodeError::ToolExecution(format!(
+                    "reminder/turn_aborted row seq {} has no body",
+                    row.seq
+                ))
+            })?;
+            let body: ReminderTurnAbortedBody = serde_json::from_str(raw)?;
+            Ok(body.agent_item())
+        }
+        "compact_checkpoint" | "detail" | "item/user" | "item/assistant" | "item/tool_call"
+        | "item/tool_result" => {
             if let Some(body) = &row.body {
                 return serde_json::from_str(body).map_err(Into::into);
             }
@@ -767,16 +902,37 @@ fn event_from_disk_row(
     kind: String,
     body: Option<String>,
     body_ref: Option<String>,
+    state: Option<String>,
     data_root: &Path,
 ) -> Result<SessionEvent> {
-    let seq = Seq::try_from(seq).map_err(|_| {
-        LitecodeError::InvalidSessionEvent(format!("negative seq {seq}"))
-    })?;
+    let seq = Seq::try_from(seq)
+        .map_err(|_| LitecodeError::InvalidSessionEvent(format!("negative seq {seq}")))?;
     let event_type = EventType::from_str_name(&event_type);
+    let state = LogState::from_str_name(state.as_deref().unwrap_or("final"));
     let source_seqs = match source_seqs.as_deref() {
         None | Some("") => None,
         Some(raw) => Some(serde_json::from_str(raw)?),
     };
+    if matches!(event_type, EventType::Compacted) {
+        let data = match body.as_deref() {
+            Some(raw) if !raw.is_empty() => serde_json::from_str(raw)?,
+            _ => {
+                return Err(LitecodeError::InvalidSessionEvent(format!(
+                    "compacted row {seq} has no body"
+                )));
+            }
+        };
+        return Ok(SessionEvent {
+            seq,
+            time: created_at,
+            event_type,
+            data,
+            surface_op: None,
+            source_seqs,
+            ignorable: false,
+            state,
+        });
+    }
     if !event_type.is_surface_eligible() {
         let data = match body.as_deref() {
             Some(raw) if !raw.is_empty() => serde_json::from_str(raw)?,
@@ -791,6 +947,7 @@ fn event_from_disk_row(
             surface_op: None,
             source_seqs,
             ignorable,
+            state,
         });
     }
     let item = row_to_item(
@@ -820,6 +977,7 @@ fn event_from_disk_row(
         surface_op,
         source_seqs,
         ignorable: false,
+        state,
     })
 }
 
@@ -837,6 +995,116 @@ fn preview_from_item_json(body: &str) -> String {
 }
 
 impl Session {
+    pub fn subagent_depth_for(db_path: &str, session_id: &str) -> Result<u32> {
+        let conn = Connection::open(db_path)?;
+        ensure_session_schema(&conn)?;
+        conn.query_row(
+            "SELECT subagent_depth FROM sessions WHERE id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+    }
+
+    pub fn set_subagent_depth(&self, depth: u32) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET subagent_depth = ?1 WHERE id = ?2",
+            rusqlite::params![depth, self.id],
+        )?;
+        Ok(())
+    }
+
+    /// Load the durable session metadata without leaking Live or catalog
+    /// projection fields into the session domain.
+    pub fn meta(&self) -> Result<crate::session::model::SessionMeta> {
+        let (
+            project,
+            created_at,
+            parent_session_id,
+            parent_call_id,
+            subagent_depth,
+            agent_id,
+            model_id,
+            thinking_tier,
+            context_mode,
+            updated_at,
+            compacted_seq,
+            spine_from,
+            todos_json,
+            plan_slug,
+            preview,
+        ): (
+            String,
+            i64,
+            Option<String>,
+            Option<String>,
+            u32,
+            String,
+            Option<String>,
+            String,
+            String,
+            i64,
+            Option<i64>,
+            i64,
+            String,
+            Option<String>,
+            String,
+        ) = self.conn.query_row(
+            "SELECT project, created_at, parent_session_id, parent_call_id, subagent_depth,
+                    agent_id, model_id, thinking_tier, context_mode, updated_at,
+                    compacted_seq, spine_from, todos_json, active_plan_slug, last_message
+             FROM sessions WHERE id = ?1",
+            rusqlite::params![self.id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                    row.get(14)?,
+                ))
+            },
+        )?;
+        let compacted_seq = compacted_seq
+            .map(|seq| {
+                Seq::try_from(seq).map_err(|_| {
+                    LitecodeError::InvalidSessionEvent(format!("negative compacted_seq {seq}"))
+                })
+            })
+            .transpose()?;
+        let spine_from = Seq::try_from(spine_from).map_err(|_| {
+            LitecodeError::InvalidSessionEvent(format!("negative spine_from {spine_from}"))
+        })?;
+        Ok(crate::session::model::SessionMeta {
+            id: self.id.clone(),
+            project,
+            created_at,
+            parent_session_id,
+            parent_call_id,
+            subagent_depth,
+            agent_id,
+            model_id,
+            thinking_tier,
+            context_mode,
+            updated_at,
+            compacted_seq,
+            spine_from,
+            todos: serde_json::from_str(&todos_json).unwrap_or_default(),
+            plan_slug,
+            preview,
+        })
+    }
+
     pub fn ephemeral(project: &str, agent_id: &str, model_id: Option<&str>) -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         ensure_session_schema(&conn)?;
@@ -846,9 +1114,18 @@ impl Session {
         let model_id_owned = normalize_model_id(model_id);
 
         conn.execute(
-            "INSERT INTO sessions (id, project, last_message, agent_id, model_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![id, project, "", agent_id, model_id_owned, now, now],
+            "INSERT INTO sessions (id, schema_version, project, last_message, agent_id, model_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                id,
+                SESSION_LOG_SCHEMA_VERSION,
+                project,
+                "",
+                agent_id,
+                model_id_owned,
+                now,
+                now
+            ],
         )?;
 
         let data_root = std::env::temp_dir().join("litecode");
@@ -915,12 +1192,13 @@ impl Session {
 
         conn.execute(
             "INSERT INTO sessions (
-                id, project, last_message, agent_id, model_id, created_at, updated_at,
+                id, schema_version, project, last_message, agent_id, model_id, created_at, updated_at,
                 parent_session_id, parent_call_id
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 id,
+                SESSION_LOG_SCHEMA_VERSION,
                 project,
                 "",
                 agent_id,
@@ -974,13 +1252,14 @@ impl Session {
         let now = chrono::Utc::now().timestamp_millis();
         tx.execute(
             "INSERT INTO sessions (
-                id, project, last_message, agent_id, model_id, thinking_tier, context_mode,
+                id, schema_version, project, last_message, agent_id, model_id, thinking_tier, context_mode,
                 created_at, updated_at, todos_json, active_plan_slug,
                 parent_session_id, parent_call_id
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             rusqlite::params![
                 self.id,
+                SESSION_LOG_SCHEMA_VERSION,
                 self.project,
                 "",
                 self.agent_id,
@@ -1471,7 +1750,7 @@ impl Session {
         Ok(self
             .load_working_set()?
             .into_iter()
-            .filter_map(|row| row.seq)
+            .filter_map(|row| row.log_seq)
             .collect())
     }
 
@@ -1482,7 +1761,8 @@ impl Session {
         let mut id_to_seq = HashMap::new();
         let mut items_by_seq = HashMap::new();
         for event in &events {
-            if let Ok(item) = item_from_event(event) {
+            let item = spine_agent_item(event).ok();
+            if let Some(item) = item {
                 if let Some(id) = item_log_id(&item) {
                     id_to_seq.insert(id, event.seq);
                 }
@@ -1525,7 +1805,7 @@ impl Session {
         if draft.time == 0 {
             draft.time = chrono::Utc::now().timestamp_millis();
         }
-        let item = if draft.event_type.is_surface_eligible() {
+        let item = if draft.event_type.is_item() {
             Some(serde_json::from_value::<Item>(draft.data.clone())?)
         } else {
             None
@@ -1596,7 +1876,7 @@ impl Session {
         let cp_seq = self.checkpoint_seq()?;
         let rows = self.load_history_transcript()?;
         for (i, row) in rows.iter().enumerate() {
-            if row.kind == "compact_checkpoint" && row.seq == cp_seq {
+            if row.kind == "compacted" && row.seq == cp_seq {
                 return Ok(Some((i, row_to_item(row, &self.data_root)?)));
             }
         }
@@ -1633,9 +1913,7 @@ impl Session {
     }
 
     fn lock_write(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.write_gate
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        self.write_gate.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Sole durable write entry: append, seal, or truncate.
@@ -1643,12 +1921,8 @@ impl Session {
         let _gate = self.lock_write();
         match op {
             SessionApply::Append(draft) => {
-                let kind = if draft.event_type.is_surface_eligible() {
-                    "detail"
-                } else {
-                    "log"
-                };
-                let seq = self.append_unlocked(draft, "", 0, kind)?;
+                let kind = draft.event_type.as_str().to_owned();
+                let seq = self.append_unlocked(draft, "", 0, &kind)?;
                 Ok(ApplyOutcome::Appended(seq))
             }
             SessionApply::Seal { seq, item } => {
@@ -1776,11 +2050,8 @@ impl Session {
             .query_row(
                 "SELECT body FROM transcript_items
                  WHERE session_id = ?1
-                   AND kind = 'detail'
-                   AND item_type = 'message'
+                   AND kind = 'item/user'
                    AND body IS NOT NULL
-                   AND json_extract(body, '$.role') = 'user'
-                   AND surface_op = '\"append\"'
                  ORDER BY seq DESC LIMIT 1",
                 rusqlite::params![self.id],
                 |row| row.get::<_, Option<String>>(0),
@@ -1791,9 +2062,13 @@ impl Session {
             .unwrap_or_default();
 
         tx.execute(
-            "UPDATE sessions SET updated_at = ?1, last_message = ?2 WHERE id = ?3",
+            "UPDATE sessions
+             SET updated_at = ?1,
+                 last_message = ?2
+             WHERE id = ?3",
             rusqlite::params![now, preview, self.id],
         )?;
+        refresh_compact_pointers_from_log(&tx, &self.id)?;
 
         tx.commit()
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
@@ -1856,10 +2131,11 @@ impl Session {
             turn_id.to_string()
         };
         for (i, msg) in delta.iter().enumerate() {
+            let kind = surface_event_type_of(msg).as_str().to_owned();
             let mut draft =
                 EventDraft::surface_item(surface_event_type_of(msg), msg, SurfaceOp::Append)?;
             draft.time = message_timestamp(msg);
-            self.admit_draft_in_tx(&tx, draft, &turn_id, i as i64, "detail", 0, &mut projection)?;
+            self.admit_draft_in_tx(&tx, draft, &turn_id, i as i64, &kind, 0, &mut projection)?;
         }
         let preview_updated = self.bump_session_updated(&tx, delta)?;
         tx.commit()
@@ -1883,7 +2159,8 @@ impl Session {
         let mut draft =
             EventDraft::surface_item(surface_event_type_of(item), item, SurfaceOp::Append)?;
         draft.time = message_timestamp(item);
-        self.append_unlocked(draft, "", 0, "detail")
+        let kind = draft.event_type.as_str().to_owned();
+        self.append_unlocked(draft, "", 0, &kind)
     }
 
     /// 封口: rewrite payload on an existing `seq`. Does not allocate a new row.
@@ -1893,6 +2170,31 @@ impl Session {
             item: item.clone(),
         })?;
         Ok(())
+    }
+
+    /// Seal durable `in_progress` rows with established `seal_item` (Incomplete + final).
+    /// Returns sealed seqs in log order. Already-final rows are skipped (idempotent).
+    pub fn seal_in_progress_items(&self) -> Result<Vec<Seq>> {
+        use crate::authority::responses::OutputStatus;
+        let events = self.load_events()?;
+        let mut sealed = Vec::new();
+        for event in events {
+            if event.state != LogState::InProgress {
+                continue;
+            }
+            let Ok(mut item) = item_from_event(&event) else {
+                continue;
+            };
+            match &mut item {
+                Item::Message(MessageItem::Output(m)) => m.status = OutputStatus::Incomplete,
+                Item::FunctionCall(fc) => fc.status = Some(OutputStatus::Incomplete),
+                Item::Reasoning(r) => r.status = Some(OutputStatus::Incomplete),
+                _ => {}
+            }
+            self.seal_item(event.seq, &item)?;
+            sealed.push(event.seq);
+        }
+        Ok(sealed)
     }
 
     /// Persist the working set. Unmatched `FunctionCallOutput`s are not
@@ -1949,7 +2251,7 @@ impl Session {
         let mut next_turn_seq = 0i64;
         for row in kept.iter_mut() {
             let msg = &row.item;
-            if let Some(seq) = row.seq {
+            if let Some(seq) = row.log_seq {
                 let same = projection
                     .items_by_seq
                     .get(&seq)
@@ -1967,7 +2269,7 @@ impl Session {
                     continue;
                 }
                 if let Some(&seq) = projection.id_to_seq.get(&id) {
-                    row.seq = Some(seq);
+                    row.log_seq = Some(seq);
                     let same = projection
                         .items_by_seq
                         .get(&seq)
@@ -1981,12 +2283,13 @@ impl Session {
                     continue;
                 }
             }
+            let kind = surface_event_type_of(msg).as_str().to_owned();
             let mut draft =
                 EventDraft::surface_item(surface_event_type_of(msg), msg, SurfaceOp::Append)?;
             draft.time = message_timestamp(msg);
             let (seq, _) =
-                self.admit_draft_in_tx(&tx, draft, &tid, next_turn_seq, "detail", 0, &mut projection)?;
-            row.seq = Some(seq);
+                self.admit_draft_in_tx(&tx, draft, &tid, next_turn_seq, &kind, 0, &mut projection)?;
+            row.log_seq = Some(seq);
             next_turn_seq += 1;
             mutated = true;
             appended.push(msg.clone());
@@ -2009,6 +2312,17 @@ impl Session {
             .query_row(SQL_USER_DETAIL_COUNT, rusqlite::params![self.id], |row| {
                 row.get(0)
             })
+            .map_err(Into::into)
+    }
+
+    /// Count `item/user` rows with `seq < from_seq`.
+    pub fn user_detail_before_seq(&self, from_seq: Seq) -> Result<i64> {
+        self.conn
+            .query_row(
+                SQL_USER_DETAIL_BEFORE_SEQ,
+                rusqlite::params![self.id, from_seq as i64],
+                |row| row.get(0),
+            )
             .map_err(Into::into)
     }
 
@@ -2246,7 +2560,7 @@ impl Session {
     /// Append-only log in disk `seq` order. Does not apply the turn-window SQL view.
     pub fn load_events(&self) -> Result<Vec<SessionEvent>> {
         let mut stmt = self.conn.prepare(
-            "SELECT seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref
+            "SELECT seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref, state
              FROM transcript_items WHERE session_id = ?1 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![self.id], |row| {
@@ -2259,11 +2573,12 @@ impl Session {
                 row.get::<_, String>(5)?,
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
             ))
         })?;
         let mut events = Vec::new();
         for row in rows {
-            let (seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref) =
+            let (seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref, state) =
                 row?;
             events.push(event_from_disk_row(
                 &self.id,
@@ -2275,6 +2590,7 @@ impl Session {
                 kind,
                 body,
                 body_ref,
+                state,
                 &self.data_root,
             )?);
         }
@@ -2296,7 +2612,7 @@ impl Session {
             return Ok(Vec::new());
         }
         let mut stmt = self.conn.prepare(
-            "SELECT seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref
+            "SELECT seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref, state
              FROM transcript_items WHERE session_id = ?1 AND seq >= ?2 AND seq < ?3 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map(
@@ -2311,12 +2627,13 @@ impl Session {
                     row.get::<_, String>(5)?,
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             },
         )?;
         let mut events = Vec::new();
         for row in rows {
-            let (seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref) =
+            let (seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref, state) =
                 row?;
             events.push(event_from_disk_row(
                 &self.id,
@@ -2328,6 +2645,7 @@ impl Session {
                 kind,
                 body,
                 body_ref,
+                state,
                 &self.data_root,
             )?);
         }
@@ -2397,9 +2715,22 @@ impl Session {
         }
 
         let (op, source_seqs) = replace_op_for_keep(&projection.surface, kept_from_seq)?;
-        let mut draft = EventDraft::surface_item(EventType::ItemUser, summary, op)?;
-        draft.time = now;
-        draft.source_seqs = source_seqs;
+        let (from, to) = match (&op, kept_from_seq) {
+            (SurfaceOp::Append, _) => (projection.next_seq, projection.next_seq),
+            (SurfaceOp::Replace { start, .. }, Some(k)) => (*start, k as Seq),
+            (SurfaceOp::Replace { start, .. }, None) => (*start, projection.next_seq),
+        };
+        let summary = item_text_preview(summary);
+        let compacted = crate::session::model::CompactedBody { summary, from, to };
+        let draft = EventDraft {
+            time: now,
+            event_type: EventType::Compacted,
+            data: serde_json::to_value(&compacted)?,
+            surface_op: None,
+            source_seqs,
+            ignorable: false,
+            state: crate::session::model::LogState::Final,
+        };
         let tx = self
             .conn
             .unchecked_transaction()
@@ -2409,9 +2740,21 @@ impl Session {
             draft,
             &format!("compact-{}", projection.next_seq),
             0,
-            "detail",
+            "compacted",
             token_estimate,
             &mut projection,
+        )?;
+        if projection.surface.nodes.contains(&seq) {
+            projection.items_by_seq.insert(seq, compacted.agent_item());
+        }
+        tx.execute(
+            "UPDATE sessions SET checkpoint_seq = ?1, compacted_seq = ?1, kept_from_seq = ?2, spine_from = ?1, updated_at = ?3 WHERE id = ?4",
+            rusqlite::params![
+                seq as i64,
+                kept_from_seq.unwrap_or(seq as i64),
+                now,
+                self.id
+            ],
         )?;
         tx.commit()
             .map_err(|e| crate::types::LitecodeError::ToolExecution(e.to_string()))?;
@@ -2428,6 +2771,17 @@ mod tests {
         MessageItem, OutputMessage, OutputMessageContent, OutputStatus, OutputTextContent,
     };
     use crate::types::user_text;
+
+    fn session_compact_pointers(session: &Session) -> (i64, Option<i64>, i64, i64) {
+        session
+            .conn
+            .query_row(
+                "SELECT checkpoint_seq, compacted_seq, kept_from_seq, spine_from FROM sessions WHERE id = ?1",
+                rusqlite::params![session.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap()
+    }
 
     #[test]
     fn item_roundtrip_insert_load() {
@@ -2494,9 +2848,7 @@ mod tests {
     #[test]
     fn insert_detail_writes_append_surface_envelope() {
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
-        session
-            .insert_detail_rows(&[user_text("hello")])
-            .unwrap();
+        session.insert_detail_rows(&[user_text("hello")]).unwrap();
         let (seq, event_type, surface_op, source_seqs): (i64, String, String, Option<String>) =
             session
                 .conn
@@ -2549,10 +2901,7 @@ mod tests {
             .insert_detail_rows(&[user_text("a"), user_text("b"), user_text("c")])
             .unwrap();
         let window = session.load_events_range(1, 3).unwrap();
-        assert_eq!(
-            window.iter().map(|e| e.seq).collect::<Vec<_>>(),
-            vec![1, 2]
-        );
+        assert_eq!(window.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 2]);
         assert!(session.load_events_range(2, 2).unwrap().is_empty());
         let (last, next) = session.wire_seq_cursor().unwrap();
         assert_eq!(last, 2);
@@ -2581,11 +2930,12 @@ mod tests {
             .map(item_text_preview)
             .collect();
         assert_eq!(texts, vec!["summary", "d2", "d3", "d4"]);
-        let origin: Vec<_> = crate::session::derive_transcript_items(&session.load_events().unwrap())
-            .unwrap()
-            .iter()
-            .map(item_text_preview)
-            .collect();
+        let origin: Vec<_> =
+            crate::session::derive_transcript_items(&session.load_events().unwrap())
+                .unwrap()
+                .iter()
+                .map(item_text_preview)
+                .collect();
         assert_eq!(origin, vec!["d0", "d1", "d2", "d3", "d4"]);
     }
 
@@ -2628,7 +2978,13 @@ mod tests {
         let err = ensure_session_schema(&conn).expect_err("missing envelope columns must fail");
         let msg = err.to_string();
         assert!(
-            msg.contains("event_type") || msg.contains("surface_op") || msg.contains("source_seqs"),
+            msg.contains("event_type")
+                || msg.contains("surface_op")
+                || msg.contains("source_seqs")
+                || msg.contains("schema_version")
+                || msg.contains("compacted_seq")
+                || msg.contains("spine_from")
+                || msg.contains("subagent_depth"),
             "error must name a missing envelope column: {msg}"
         );
     }
@@ -2655,7 +3011,10 @@ mod tests {
         );
         assert!(msg.contains("sessions.db") || msg.contains("delete-and-rebuild"));
         assert!(
-            msg.contains("agent_id") || msg.contains("model_id") || msg.contains("last_message"),
+            msg.contains("schema_version")
+                || msg.contains("agent_id")
+                || msg.contains("model_id")
+                || msg.contains("last_message"),
             "error must name a missing required column: {msg}"
         );
     }
@@ -2842,12 +3201,26 @@ mod tests {
         let summary = user_text("compact summary text");
         session.apply_compact_checkpoint(&summary, 10).unwrap();
         session.insert_detail_rows(&[user_text("after")]).unwrap();
-        // Append-origin users plus replace summary (also a user Item) sit in history seq order.
+        // Compaction is not a user row, even though AgentView synthesizes an
+        // Item for it.
         assert_eq!(session.user_detail_before_buffer_index(0).unwrap(), 0);
         assert_eq!(session.user_detail_before_buffer_index(1).unwrap(), 1);
         assert_eq!(session.user_detail_before_buffer_index(2).unwrap(), 2);
-        assert_eq!(session.user_detail_before_buffer_index(3).unwrap(), 3);
-        assert_eq!(session.user_detail_before_buffer_index(4).unwrap(), 4);
+        assert_eq!(session.user_detail_before_buffer_index(3).unwrap(), 2);
+        assert_eq!(session.user_detail_before_buffer_index(4).unwrap(), 3);
+    }
+
+    #[test]
+    fn user_detail_before_seq_counts_users_with_lower_seq() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("u0"), user_text("u1"), user_text("u2")])
+            .unwrap();
+        assert_eq!(session.user_detail_before_seq(0).unwrap(), 0);
+        assert_eq!(session.user_detail_before_seq(1).unwrap(), 1);
+        assert_eq!(session.user_detail_before_seq(2).unwrap(), 2);
+        assert_eq!(session.user_detail_before_seq(3).unwrap(), 3);
+        assert_eq!(session.user_detail_count().unwrap(), 3);
     }
 
     #[test]
@@ -2864,7 +3237,7 @@ mod tests {
             .conn
             .query_row(
                 "SELECT COUNT(*) FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'detail'",
+                 WHERE session_id = ?1 AND kind = 'item/user'",
                 rusqlite::params![session.id],
                 |row| row.get(0),
             )
@@ -2875,7 +3248,7 @@ mod tests {
             .conn
             .query_row(
                 "SELECT seq FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'detail'
+                 WHERE session_id = ?1 AND kind = 'item/user'
                  ORDER BY seq DESC LIMIT 1",
                 rusqlite::params![session.id],
                 |row| row.get(0),
@@ -2894,14 +3267,14 @@ mod tests {
             .conn
             .query_row(
                 "SELECT COUNT(*) FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'detail'",
+                 WHERE session_id = ?1 AND kind IN ('item/user', 'compacted')",
                 rusqlite::params![session.id],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(
             detail_after, 4,
-            "compact appends a replace row and must not rewrite/copy kept detail (got {detail_after})"
+            "compact appends a log row and must not rewrite/copy kept detail (got {detail_after})"
         );
 
         let pre_kept_detail: i64 = session
@@ -2920,10 +3293,7 @@ mod tests {
         let events = session.load_events().unwrap();
         let last = events.last().unwrap();
         assert_eq!(last.seq, n as u64);
-        assert!(matches!(
-            last.surface_op,
-            Some(crate::session::surface::SurfaceOp::Replace { .. })
-        ));
+        assert_eq!(last.event_type, EventType::Compacted);
 
         // Working set still excludes archived history.
         let loaded = session.load_transcript().unwrap();
@@ -2954,7 +3324,7 @@ mod tests {
             .conn
             .query_row(
                 "SELECT seq FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'detail'
+                 WHERE session_id = ?1 AND kind = 'item/user'
                  ORDER BY seq ASC LIMIT 1 OFFSET 2",
                 rusqlite::params![session.id],
                 |row| row.get(0),
@@ -2983,7 +3353,7 @@ mod tests {
             .conn
             .query_row(
                 "SELECT COUNT(*) FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'detail' AND seq < ?2
+                 WHERE session_id = ?1 AND kind = 'item/user' AND seq < ?2
                    AND (body LIKE '%old-a%' OR body LIKE '%old-b%')",
                 rusqlite::params![session.id, keep_from],
                 |row| row.get(0),
@@ -2998,7 +3368,7 @@ mod tests {
             .conn
             .query_row(
                 "SELECT COUNT(*) FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'detail'",
+                 WHERE session_id = ?1 AND kind IN ('item/user', 'compacted')",
                 rusqlite::params![session.id],
                 |row| row.get(0),
             )
@@ -3019,10 +3389,7 @@ mod tests {
         assert_eq!(item_text_preview(&loaded[0]), "compact summary text");
         let events = session.load_events().unwrap();
         let last = events.last().unwrap();
-        assert!(matches!(
-            last.surface_op,
-            Some(crate::session::surface::SurfaceOp::Replace { .. })
-        ));
+        assert_eq!(last.event_type, EventType::Compacted);
         let body = serde_json::to_string(&last.data).expect("json");
         assert!(
             body.trim_start().starts_with('{'),
@@ -3095,7 +3462,7 @@ mod tests {
             vec!["a".to_string(), "b".to_string(), "c".to_string()]
         );
         let rows = session.load_turn_transcript().unwrap();
-        assert!(rows.iter().all(|r| r.kind == "detail"));
+        assert!(rows.iter().all(|r| r.kind == "item/user"));
         assert_eq!(rows.len(), 3);
     }
 
@@ -3143,18 +3510,8 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(item_text_preview(&loaded[0]), "second-summary");
         let events = session.load_events().unwrap();
-        assert_eq!(
-            events[0].surface_op,
-            Some(crate::session::surface::SurfaceOp::Append),
-            "empty-session first compact is append"
-        );
-        assert!(
-            matches!(
-                events.last().unwrap().surface_op,
-                Some(crate::session::surface::SurfaceOp::Replace { .. })
-            ),
-            "second compact replaces the current surface"
-        );
+        assert_eq!(events[0].event_type, EventType::Compacted);
+        assert_eq!(events.last().unwrap().event_type, EventType::Compacted);
     }
 
     #[test]
@@ -3205,7 +3562,7 @@ mod tests {
             .conn
             .query_row(
                 "SELECT seq FROM transcript_items
-                 WHERE session_id = ?1 AND kind = 'detail'
+                 WHERE session_id = ?1 AND kind = 'item/user'
                  ORDER BY seq ASC LIMIT 1 OFFSET 1",
                 rusqlite::params![session.id],
                 |row| row.get(0),
@@ -3231,6 +3588,85 @@ mod tests {
             vec!["keep-visible-after-revert".to_string()],
             "after last CP is gone, full remaining detail must be visible"
         );
+        let (checkpoint_seq, compacted_seq, kept_from_seq, spine_from) =
+            session_compact_pointers(&session);
+        assert_eq!(checkpoint_seq, 0);
+        assert_eq!(compacted_seq, None);
+        assert_eq!(kept_from_seq, 0);
+        assert_eq!(spine_from, 0);
+    }
+
+    #[test]
+    fn compact_keep_sets_spine_from_to_compact_seq_not_kept_detail() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("a"), user_text("b"), user_text("c")])
+            .unwrap();
+        let keep_from: i64 = session
+            .conn
+            .query_row(
+                "SELECT seq FROM transcript_items
+                 WHERE session_id = ?1 AND kind = 'item/user'
+                 ORDER BY seq ASC LIMIT 1 OFFSET 1",
+                rusqlite::params![session.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let n = session
+            .apply_compact_checkpoint_from(&user_text("summary"), Some(keep_from), 10)
+            .unwrap();
+        let (checkpoint_seq, compacted_seq, kept_from_seq, spine_from) =
+            session_compact_pointers(&session);
+        assert_eq!(checkpoint_seq, n);
+        assert_eq!(compacted_seq, Some(n));
+        assert_eq!(kept_from_seq, keep_from);
+        assert_eq!(spine_from, n, "spine_from is the compact event seq");
+        assert_ne!(spine_from, keep_from);
+    }
+
+    #[test]
+    fn revert_retaining_earlier_compact_restores_pointers() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("a"), user_text("b"), user_text("c")])
+            .unwrap();
+        let keep_first: i64 = session
+            .conn
+            .query_row(
+                "SELECT seq FROM transcript_items
+                 WHERE session_id = ?1 AND kind = 'item/user'
+                 ORDER BY seq ASC LIMIT 1 OFFSET 1",
+                rusqlite::params![session.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let first = session
+            .apply_compact_checkpoint_from(&user_text("cut-1"), Some(keep_first), 10)
+            .unwrap();
+        session
+            .insert_detail_rows(&[user_text("d"), user_text("e")])
+            .unwrap();
+        let keep_second: i64 = session
+            .conn
+            .query_row(
+                "SELECT seq FROM transcript_items
+                 WHERE session_id = ?1 AND kind = 'item/user'
+                 ORDER BY seq ASC LIMIT 1 OFFSET 3",
+                rusqlite::params![session.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        session
+            .apply_compact_checkpoint_from(&user_text("cut-2"), Some(keep_second), 10)
+            .unwrap();
+        // Users: a,b,c,d,e → k=3 is `d`. Truncate from d removes the second compact.
+        session.revert_to_user_anchor(3).unwrap();
+        let (checkpoint_seq, compacted_seq, kept_from_seq, spine_from) =
+            session_compact_pointers(&session);
+        assert_eq!(checkpoint_seq, first);
+        assert_eq!(compacted_seq, Some(first));
+        assert_eq!(kept_from_seq, keep_first);
+        assert_eq!(spine_from, first);
     }
 
     #[test]
@@ -3478,6 +3914,7 @@ mod tests {
             WorkingRow::pending(fc),
             WorkingRow::pending(live),
             WorkingRow::pending(orphan),
+            WorkingRow::pending(user_text("fresh")),
         ];
         session
             .conn
@@ -3489,7 +3926,7 @@ mod tests {
         let _ = err;
         assert_eq!(
             items.len(),
-            3,
+            4,
             "failed commit must not snip orphans from memory"
         );
         assert!(
@@ -3644,6 +4081,7 @@ mod tests {
         let events = session.load_events().unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].seq, seq);
+        assert_eq!(events[0].state, LogState::InProgress);
         let loaded = crate::session::event::item_from_event(&events[0]).unwrap();
         match &loaded {
             Item::Message(MessageItem::Output(m)) => {
@@ -3668,6 +4106,7 @@ mod tests {
         let events = session.load_events().unwrap();
         assert_eq!(events.len(), 1, "封口 must not append a new row");
         assert_eq!(events[0].seq, seq);
+        assert_eq!(events[0].state, LogState::Final);
         let loaded = crate::session::event::item_from_event(&events[0]).unwrap();
         match &loaded {
             Item::Message(MessageItem::Output(m)) => {
@@ -3675,6 +4114,34 @@ mod tests {
                 assert_eq!(item_text_preview(&loaded), "hello");
             }
             other => panic!("expected sealed assistant item, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn seal_in_progress_items_marks_incomplete_and_final() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let live = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_cancel".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hel".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::InProgress,
+            phase: None,
+        }));
+        session.persist_item(&live).unwrap();
+        assert_eq!(session.seal_in_progress_items().unwrap(), vec![0]);
+        assert!(session.seal_in_progress_items().unwrap().is_empty());
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].state, LogState::Final);
+        match item_from_event(&events[0]).unwrap() {
+            Item::Message(MessageItem::Output(m)) => {
+                assert_eq!(m.status, OutputStatus::Incomplete);
+            }
+            other => panic!("expected sealed assistant, got {other:?}"),
         }
     }
 
@@ -3703,6 +4170,7 @@ mod tests {
         let events = session.load_events().unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].seq, seq);
+        assert_eq!(events[0].state, LogState::InProgress);
         let loaded = crate::session::event::item_from_event(&events[0]).unwrap();
         match &loaded {
             Item::Message(MessageItem::Output(m)) => {
@@ -3723,8 +4191,8 @@ mod tests {
         }));
         session.seal_item(seq, &sealed).unwrap();
         assert_eq!(session.load_events().unwrap().len(), 1);
-        let loaded = crate::session::event::item_from_event(&session.load_events().unwrap()[0])
-            .unwrap();
+        let loaded =
+            crate::session::event::item_from_event(&session.load_events().unwrap()[0]).unwrap();
         assert_eq!(item_text_preview(&loaded), "hello");
     }
 
@@ -3763,8 +4231,8 @@ mod tests {
             1,
             "added persist then step commit must 封口, not append"
         );
-        let loaded = crate::session::event::item_from_event(&session.load_events().unwrap()[0])
-            .unwrap();
+        let loaded =
+            crate::session::event::item_from_event(&session.load_events().unwrap()[0]).unwrap();
         assert_eq!(item_text_preview(&loaded), "hello");
     }
 
@@ -3843,6 +4311,7 @@ mod tests {
                 surface_op: None,
                 source_seqs: None,
                 ignorable: false,
+                state: crate::session::model::LogState::Final,
             }))
             .unwrap();
         assert!(matches!(outcome, ApplyOutcome::Appended(0)));
@@ -3851,6 +4320,55 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, EventType::TurnStart);
         assert_eq!(session.load_transcript().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn injection_append_roundtrips_into_agent_working_set() {
+        use crate::session::model::{HookPromptBody, ReminderTurnAbortedBody};
+        use crate::types::item_text_preview;
+
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session.insert_detail_rows(&[user_text("hi")]).unwrap();
+        session
+            .apply(SessionApply::Append(EventDraft {
+                time: 1,
+                event_type: EventType::HookPrompt,
+                data: serde_json::to_value(HookPromptBody {
+                    text: "hook text".into(),
+                    hook_run_id: "hr1".into(),
+                    placement: None,
+                })
+                .unwrap(),
+                surface_op: None,
+                source_seqs: None,
+                ignorable: false,
+                state: crate::session::model::LogState::Final,
+            }))
+            .unwrap();
+        session
+            .apply(SessionApply::Append(EventDraft {
+                time: 2,
+                event_type: EventType::ReminderTurnAborted,
+                data: serde_json::to_value(ReminderTurnAbortedBody {
+                    text: "aborted".into(),
+                })
+                .unwrap(),
+                surface_op: None,
+                source_seqs: None,
+                ignorable: false,
+                state: crate::session::model::LogState::Final,
+            }))
+            .unwrap();
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events[1].event_type.enters_spine());
+        let working = session.load_working_set().unwrap();
+        assert_eq!(working.len(), 3);
+        assert_eq!(item_text_preview(&working[0].item), "hi");
+        assert!(item_text_preview(&working[1].item).contains("[hook/prompt hr1]"));
+        assert!(item_text_preview(&working[2].item).contains("[reminder/turn_aborted]"));
+        let human = crate::session::derive_transcript_items(&events).unwrap();
+        assert_eq!(human.len(), 1);
     }
 
     #[test]
@@ -3869,7 +4387,11 @@ mod tests {
             .commit_turn_delta_with_orphan_cleanup(&mut rows, &[], session.cached_max_seq(), "t1")
             .unwrap();
         let events = session.load_events().unwrap();
-        assert_eq!(events.len(), before + 1, "same text after compact must append");
+        assert_eq!(
+            events.len(),
+            before + 1,
+            "same text after compact must append"
+        );
         assert_eq!(
             item_text_preview(&session.load_transcript().unwrap().last().unwrap()),
             "hi"
@@ -3922,9 +4444,7 @@ mod tests {
             .unwrap();
         session.insert_detail_rows(&[user_text("e")]).unwrap();
         let cached = session.projection.borrow().surface.nodes.clone();
-        let folded = fold_surface(&session.load_events().unwrap())
-            .unwrap()
-            .nodes;
+        let folded = fold_surface(&session.load_events().unwrap()).unwrap().nodes;
         assert_eq!(cached, folded);
     }
 
@@ -3935,9 +4455,7 @@ mod tests {
             .insert_detail_rows(&[user_text("u0"), user_text("u1"), user_text("u2")])
             .unwrap();
         session.revert_to_user_anchor(1).unwrap();
-        let seq = session
-            .insert_detail_rows(&[user_text("fresh")])
-            .unwrap();
+        let seq = session.insert_detail_rows(&[user_text("fresh")]).unwrap();
         let _ = seq;
         let events = session.load_events().unwrap();
         assert_eq!(events.last().unwrap().seq, 1);
@@ -3963,7 +4481,7 @@ mod tests {
         let items = session.load_transcript().unwrap();
         assert_eq!(rows.len(), items.len());
         assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|r| r.seq.is_some()));
+        assert!(rows.iter().all(|r| r.log_seq.is_some()));
         assert_eq!(session.load_events().unwrap().len(), 3);
     }
 
@@ -3977,15 +4495,14 @@ mod tests {
             .apply_compact_checkpoint_from(&user_text("sum"), Some(99), 10)
             .unwrap_err();
         assert!(
-            err.to_string().contains("kept_from_seq") || matches!(err, LitecodeError::ToolExecution(_))
+            err.to_string().contains("kept_from_seq")
+                || matches!(err, LitecodeError::ToolExecution(_))
         );
         session
             .apply_compact_checkpoint_from(&user_text("sum"), Some(1), 10)
             .unwrap();
         let cached = session.projection.borrow().surface.nodes.clone();
-        let folded = fold_surface(&session.load_events().unwrap())
-            .unwrap()
-            .nodes;
+        let folded = fold_surface(&session.load_events().unwrap()).unwrap().nodes;
         assert_eq!(cached, folded);
         session.insert_detail_rows(&[user_text("after")]).unwrap();
         assert_eq!(
@@ -3998,7 +4515,11 @@ mod tests {
     fn append_after_many_compact_shadows_uses_contiguous_next_seq() {
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         session
-            .insert_detail_rows(&(0..8).map(|i| user_text(format!("u{i}"))).collect::<Vec<_>>())
+            .insert_detail_rows(
+                &(0..8)
+                    .map(|i| user_text(format!("u{i}")))
+                    .collect::<Vec<_>>(),
+            )
             .unwrap();
         session
             .apply_compact_checkpoint_from(&user_text("sum-1"), Some(4), 10)
@@ -4016,7 +4537,173 @@ mod tests {
             .insert_detail_rows(&[user_text("after-shadows")])
             .unwrap();
         let last = session.load_events().unwrap().last().unwrap().seq;
-        assert_eq!(last, max_before + 1, "append must be MAX+1 without rescanning shadows");
+        assert_eq!(
+            last,
+            max_before + 1,
+            "append must be MAX+1 without rescanning shadows"
+        );
         assert_eq!(session.cached_max_seq() as u64, last);
+    }
+
+    #[test]
+    fn compact_summary_agent_view_is_assistant_and_survives_reload() {
+        use crate::authority::responses::MessageItem;
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("old"), user_text("keep")])
+            .unwrap();
+        session
+            .apply_compact_checkpoint_from(&user_text("rolled-up"), Some(1), 10)
+            .unwrap();
+        let loaded = session.load_transcript().unwrap();
+        match &loaded[0] {
+            Item::Message(MessageItem::Output(out)) => {
+                assert_eq!(out.role, AssistantRole::Assistant);
+            }
+            other => panic!("expected assistant compact summary, got {other:?}"),
+        }
+        assert!(item_text_preview(&loaded[0]).contains("rolled-up"));
+        let body: CompactedBody = serde_json::from_value(
+            session
+                .load_events()
+                .unwrap()
+                .into_iter()
+                .find(|e| e.event_type == EventType::Compacted)
+                .unwrap()
+                .data,
+        )
+        .unwrap();
+        assert_eq!(body.from, 0);
+        assert_eq!(body.to, 1, "keep-recent exclusive end is first kept seq");
+        session.hydrate_projection().unwrap();
+        match &session.load_transcript().unwrap()[0] {
+            Item::Message(MessageItem::Output(out)) => {
+                assert_eq!(out.role, AssistantRole::Assistant);
+            }
+            other => panic!("reload must keep assistant summary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_keep_compact_interval_is_half_open_to_compact_seq() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("a"), user_text("b"), user_text("c")])
+            .unwrap();
+        let n = session
+            .apply_compact_checkpoint(&user_text("all"), 10)
+            .unwrap();
+        let body: CompactedBody = serde_json::from_value(
+            session
+                .load_events()
+                .unwrap()
+                .into_iter()
+                .find(|e| e.event_type == EventType::Compacted)
+                .unwrap()
+                .data,
+        )
+        .unwrap();
+        assert_eq!(body.from, 0);
+        assert_eq!(body.to, n as u64);
+        assert_eq!(session.load_transcript().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn persist_then_commit_idless_tool_result_does_not_duplicate() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let fc = Item::FunctionCall(FunctionToolCall {
+            arguments: "{}".into(),
+            call_id: "call_dup".into(),
+            namespace: None,
+            name: "read".into(),
+            id: None,
+            status: None,
+        });
+        session.persist_item(&fc).unwrap();
+        let out = Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: "call_dup".into(),
+            output: FunctionCallOutput::Text("ok".into()),
+            id: None,
+            status: None,
+        });
+        session.persist_item(&out).unwrap();
+        let other = Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: "call_other".into(),
+            output: FunctionCallOutput::Text("other".into()),
+            id: None,
+            status: None,
+        });
+        let fc2 = Item::FunctionCall(FunctionToolCall {
+            arguments: "{}".into(),
+            call_id: "call_other".into(),
+            namespace: None,
+            name: "bash".into(),
+            id: None,
+            status: None,
+        });
+        session.persist_item(&fc2).unwrap();
+        let mut rows = session.load_working_set().unwrap();
+        // Simulate commit_step_from_items seeing the same result again.
+        rows.push(WorkingRow::pending(out.clone()));
+        session
+            .commit_turn_delta_with_orphan_cleanup(&mut rows, &[], session.cached_max_seq(), "t1")
+            .unwrap();
+        let results: Vec<_> = session
+            .load_events()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event_type == EventType::ItemToolResult)
+            .collect();
+        assert_eq!(
+            results.len(),
+            1,
+            "same call_id must not append a second result"
+        );
+        let mut rows = session.load_working_set().unwrap();
+        rows.push(WorkingRow::pending(other));
+        session
+            .commit_turn_delta_with_orphan_cleanup(&mut rows, &[], session.cached_max_seq(), "t1")
+            .unwrap();
+        let results: Vec<_> = session
+            .load_events()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event_type == EventType::ItemToolResult)
+            .collect();
+        assert_eq!(
+            results.len(),
+            2,
+            "distinct call_id results must both persist"
+        );
+    }
+
+    #[test]
+    fn turn_end_reason_schema_covers_every_variant() {
+        use crate::runtime::observer::TurnEndReason;
+        let cases = [
+            (TurnEndReason::Completed, "completed"),
+            (TurnEndReason::Cancelled, "cancelled"),
+            (TurnEndReason::Error, "error"),
+            (TurnEndReason::MaxSteps, "max_steps"),
+            (TurnEndReason::HookBlocked, "hook_blocked"),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(reason.as_log_reason(), expected);
+            let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+            session
+                .apply(SessionApply::Append(EventDraft {
+                    time: 1,
+                    event_type: EventType::TurnEnd,
+                    data: serde_json::json!({"turn": "t", "reason": reason.as_log_reason()}),
+                    surface_op: None,
+                    source_seqs: None,
+                    ignorable: false,
+                    state: LogState::Final,
+                }))
+                .unwrap();
+            let events = session.load_events().unwrap();
+            assert_eq!(events[0].data["reason"], expected);
+            assert!(session.load_transcript().unwrap().is_empty());
+        }
     }
 }

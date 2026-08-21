@@ -880,19 +880,20 @@ pub async fn handle_jsonrpc(
                     for msg in session.take_outgoing_for(&sid) {
                         emit(sink, msg);
                     }
-                    let events_value = serde_json::to_value(&range.events).unwrap_or_default();
                     let subagent_bindings = session.child_bindings_for_parent(&sid);
+                    let result = crate::client_protocol::protocol::BufferLoadResult {
+                        session_id: sid.clone(),
+                        from_seq: params.from_seq,
+                        to_seq: params.to_seq,
+                        events: range.events,
+                        subagent_bindings,
+                        user_detail_before: range.user_detail_before,
+                    };
                     emit(
                         sink,
                         serde_json::to_value(ok_response(
                             id,
-                            serde_json::json!({
-                                "session_id": sid,
-                                "from_seq": params.from_seq,
-                                "to_seq": params.to_seq,
-                                "events": events_value,
-                                "subagent_bindings": subagent_bindings,
-                            }),
+                            serde_json::to_value(result).unwrap_or_default(),
                         ))
                         .unwrap(),
                     );

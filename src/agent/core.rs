@@ -144,7 +144,7 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
     TurnOutcome::Completed { final_text }
 }
 
-    fn persist_or_stop(
+fn persist_or_stop(
     deps: &impl AgentDeps,
     transcript: &mut Transcript,
     persist_at: usize,

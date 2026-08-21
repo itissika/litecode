@@ -232,7 +232,8 @@ pub fn search(
 pub fn needs_backfill(conn: &Connection) -> Result<bool> {
     let details: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM transcript_items WHERE kind = 'detail'",
+            "SELECT COUNT(*) FROM transcript_items
+             WHERE kind IN ('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result')",
             [],
             |r| r.get(0),
         )

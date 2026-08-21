@@ -6,6 +6,7 @@ import { useConnectionStore } from "./connectionStore";
 import { useMessageStore } from "./messageStore";
 import { useNotificationStore } from "./notificationStore";
 import { useToastStore } from "./toastStore";
+import { useSessionStore } from "./sessionStore";
 import { EMPTY_SLICE, shouldApplyTurnEnd, useTurnStore } from "./turnStore";
 
 vi.stubGlobal(
@@ -622,16 +623,7 @@ describe("grantPermission receipt (FE-04)", () => {
       from_seq: 0,
       to_seq: 1,
       events: [
-        {
-          seq: 0,
-          type: "item/user",
-          surface_op: { op: "replace", start: 0, end: 0 },
-          item: {
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: "rolled-up" }],
-          },
-        },
+        { seq: 0, kind: "compacted", body: { summary: "rolled-up", from: 0, to: 0 } },
       ],
     });
     useTurnStore.getState().onTurnStarted({
@@ -646,5 +638,131 @@ describe("grantPermission receipt (FE-04)", () => {
     expect(isCompactCutRow(rows[0]!)).toBe(true);
     expect(pending).toBeTruthy();
     expect(itemPlainText(pending!.item)).toBe("rolled-up");
+  });
+});
+
+describe("queued stream deltas vs snapshot", () => {
+  const callbacks: Array<{ id: number; fn: FrameRequestCallback }> = [];
+  const cancelled = new Set<number>();
+  let nextId = 0;
+
+  function flushQueuedFrames(): void {
+    const pending = [...callbacks];
+    callbacks.length = 0;
+    for (const { id, fn } of pending) {
+      if (!cancelled.has(id)) fn(id);
+    }
+  }
+
+  beforeEach(() => {
+    callbacks.length = 0;
+    cancelled.clear();
+    nextId = 0;
+    vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => {
+      nextId += 1;
+      const id = nextId;
+      callbacks.push({ id, fn });
+      return id;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+      cancelled.add(id);
+    });
+    useTurnStore.setState({ byId: new Map() });
+    useMessageStore.setState({ bySession: new Map() });
+    useConnectionStore.setState({
+      sendRpc: vi.fn(async () => ({
+        session_id: "s-raf",
+        from_seq: 0,
+        to_seq: 0,
+        events: [],
+      })),
+    } as never);
+  });
+
+  function seedLive(sessionId: string, turnId: string): void {
+    useTurnStore.getState().applySnapshotTurn(sessionId, {
+      turn_id: turnId,
+      phase: "streaming",
+      step: 1,
+      step_max: 5,
+      started_at_ms: 1,
+    });
+    useMessageStore.getState().onBufferItem(sessionId, {
+      session_id: sessionId,
+      seq: 1,
+      kind: "item/assistant",
+      body: {
+        type: "message",
+        role: "assistant",
+        id: "msg_live",
+        status: "in_progress",
+        content: [{ type: "output_text", text: "hello", annotations: [] }],
+      },
+    });
+  }
+
+  function enqueueDelta(sessionId: string, turnId: string, delta: string): void {
+    useTurnStore.getState().onTurnEvent({
+      session_id: sessionId,
+      turn_id: turnId,
+      event: {
+        type: "stream_event",
+        event: {
+          type: "response.output_text.delta",
+          sequence_number: 1,
+          item_id: "msg_live",
+          output_index: 0,
+          content_index: 0,
+          delta,
+        },
+      },
+    });
+  }
+
+  it("does not flush stale rAF deltas after a fresh-transcript snapshot", () => {
+    const sid = "s-raf-stale";
+    seedLive(sid, "t1");
+    enqueueDelta(sid, "t1", " stale");
+    expect(itemPlainText(useMessageStore.getState().bySession.get(sid)!.messages[0]!.body as import("../api/types").Item)).toBe("hello");
+
+    useSessionStore.getState().applySnapshot({
+      session_id: sid,
+      project: "/p",
+      agent_id: "default",
+      api_model_id: "m",
+      buffer: { last_seq: -1, next_seq: 0, revision: 1 },
+      turn: {
+        turn_id: "t1",
+        phase: "streaming",
+        step: 1,
+        step_max: 5,
+        started_at_ms: 1,
+      },
+      context_window: 0,
+    });
+
+    flushQueuedFrames();
+    const row = useMessageStore.getState().bySession.get(sid)!.messages[0];
+    expect(row ? itemPlainText(row.body as import("../api/types").Item) : "").not.toContain("stale");
+  });
+
+  it("still flushes in-progress deltas when snapshot keeps the existing window", () => {
+    const sid = "s-raf-keep";
+    seedLive(sid, "t1");
+    enqueueDelta(sid, "t1", " there");
+
+    useSessionStore.getState().applySnapshot({
+      session_id: sid,
+      project: "/p",
+      agent_id: "default",
+      api_model_id: "m",
+      buffer: { last_seq: 1, next_seq: 2, revision: 1 },
+      turn: null,
+      compacting: false,
+      context_window: 0,
+    });
+
+    flushQueuedFrames();
+    expect(itemPlainText(useMessageStore.getState().bySession.get(sid)!.messages[0]!.body as import("../api/types").Item)).toBe("hello there");
   });
 });

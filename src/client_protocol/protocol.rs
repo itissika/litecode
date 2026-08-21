@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 pub use crate::runtime::observer::{
     CompactionFailKind, CompactionKind, CompactionStage, CompactionTrigger, TurnEndReason,
@@ -224,17 +225,58 @@ pub struct BufferState {
     pub revision: u64,
 }
 
+/// Durable session metadata. This deliberately excludes process-local turn,
+/// token, terminal, and catalog projection state.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionMetaWire {
+    pub id: String,
+    pub project: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub parent_session_id: Option<String>,
+    pub parent_call_id: Option<String>,
+    pub subagent_depth: u32,
+    pub agent_id: String,
+    pub model_id: Option<String>,
+    pub thinking_tier: String,
+    pub context_mode: String,
+    pub compacted_seq: Option<u64>,
+    pub spine_from: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub todos: Vec<serde_json::Value>,
+    pub plan_slug: Option<String>,
+    pub preview: String,
+}
+
 /// One persisted log row as shipped on `buffer/item` and `buffer/load`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireBufferEvent {
     pub seq: crate::session::event::Seq,
-    #[serde(rename = "type")]
+    #[serde(rename = "kind")]
     pub event_type: crate::session::event::EventType,
+    /// Kind-specific durable body. Consumers must switch on `type`; this is
+    /// the authoritative session product payload.
+    pub body: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cites: Vec<crate::session::event::Seq>,
+    #[serde(default)]
+    pub state: crate::session::model::LogState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_op: Option<crate::session::surface::SurfaceOp>,
-    pub item: crate::types::Item,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_session_id: Option<String>,
+}
+
+/// RPC result for `buffer/load`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BufferLoadResult {
+    pub session_id: String,
+    pub from_seq: crate::session::event::Seq,
+    pub to_seq: crate::session::event::Seq,
+    pub events: Vec<WireBufferEvent>,
+    #[serde(default)]
+    pub subagent_bindings: HashMap<String, String>,
+    pub user_detail_before: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +292,12 @@ pub struct TurnSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSnapshot {
+    /// New session contract. Legacy flattened fields remain only while all
+    /// snapshot producers are migrated in this release.
+    #[serde(default)]
+    pub meta: SessionMetaWire,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<TurnSnapshot>,
     pub session_id: String,
     pub project: String,
     pub agent_id: String,
@@ -494,5 +542,21 @@ mod tests {
         assert_eq!(json["next_seq"], 4);
         assert!(json.get("len").is_none());
         assert!(json.get("committed_end").is_none());
+    }
+
+    #[test]
+    fn buffer_load_result_includes_user_detail_before() {
+        let json = serde_json::to_value(BufferLoadResult {
+            session_id: "s1".into(),
+            from_seq: 2,
+            to_seq: 5,
+            events: Vec::new(),
+            subagent_bindings: HashMap::new(),
+            user_detail_before: 3,
+        })
+        .unwrap();
+        assert_eq!(json["user_detail_before"], 3);
+        assert_eq!(json["from_seq"], 2);
+        assert_eq!(json["to_seq"], 5);
     }
 }

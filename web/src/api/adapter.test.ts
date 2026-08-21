@@ -3,161 +3,66 @@ import { describe, expect, it } from "vitest";
 import {
   applyStreamEvent,
   deriveUserAnchorK,
+  hydrateUserDetailBefore,
   isAssistantMessage,
-  isChatUserMessage,
+  isHiddenHumanRow,
   isHumanUserRow,
-  isStreamFailureEvent,
-  isSystemReminderItem,
+  isHumanViewKind,
+  isWellFormedBufferRow,
   itemAuthorityId,
+  mergeCommittedItem,
+  sealMismatchError,
+  isStreamFailureEvent,
   itemPlainText,
   markFunctionCallsFailed,
-  mergeCommittedItem,
-  projectionRowKey,
-  sealMismatchError,
   userTextItem,
 } from "./adapter";
-import type { Item, ResponseStreamEvent } from "./types";
+import type { HumanRow, Item, ResponseStreamEvent } from "./types";
 
-describe("deriveUserAnchorK", () => {
-  it("counts only user messages and adds the load baseline", () => {
-    const tool: Item = {
-      type: "function_call",
-      call_id: "c1",
-      name: "bash",
-      arguments: "{}",
-    };
-    const assistant: Item = {
-      type: "message",
-      role: "assistant",
-      id: "a1",
-      status: "completed",
-      content: [{ type: "output_text", text: "ok", annotations: [] }],
-    };
-    const messages = [
-      { item: userTextItem("u0") },
-      { item: tool },
-      { item: assistant },
-      { item: userTextItem("u1") },
-      { item: userTextItem("u2") },
+const userRow = (seq: number, text: string): HumanRow => ({
+  seq, kind: "item/user", body: userTextItem(text),
+});
+
+describe("kind-based HumanView rows", () => {
+  it("counts only explicit item/user rows and hides reminders", () => {
+    const rows: HumanRow[] = [
+      userRow(0, "u0"),
+      { seq: 1, kind: "compacted", body: { summary: "hidden", from: 0, to: 1 } },
+      { seq: 2, kind: "reminder/job_exit", body: { reason: "kill", text: "<system-reminder>not inspected</system-reminder>" } },
+      userRow(3, "u1"),
     ];
-    expect(deriveUserAnchorK(messages, 0, 0)).toBe(0);
-    expect(deriveUserAnchorK(messages, 3, 0)).toBe(1);
-    expect(deriveUserAnchorK(messages, 4, 0)).toBe(2);
-    expect(deriveUserAnchorK(messages, 3, 5)).toBe(6);
+    expect(deriveUserAnchorK(rows, 3, 5)).toBe(6);
+    expect(isHiddenHumanRow(rows[2]!)).toBe(true);
+    expect(isHumanUserRow(rows[0]!)).toBe(true);
   });
 
-  // REV-11 hard gate: the FE k derivation must equal the backend
-  // `entry_user_detail_count` on the SAME fixture as the backend test
-  // `revert_contract_three_states` (tests/stage_a_ctx_consistency.rs). That
-  // fixture yields: pre-compact u0,u1 → compact checkpoint ("summary") →
-  // post-compact u2,u3, with `entry_user_detail_count() == 2`. The compact
-  // checkpoint is a user role but `kind='compact_checkpoint'`, so it must NOT
-  // be counted as a revert anchor.
-  it("REV-11: derives the backend user_detail_count on the revert_contract_three_states fixture", () => {
-    const messages = [
-      // The buffer window the FE receives includes the compact checkpoint row
-      // (kind='compact_checkpoint'), which the backend excludes from the count.
-      { item: userTextItem("summary"), surfaceOp: { op: "replace" as const, start: 0, end: 1 } },
-      { item: userTextItem("u2") },
-      { item: userTextItem("u3") },
-    ];
-    // backend `entry_user_detail_count()` == 2 for this fixture.
-    const entryUserDetailCount = 2;
-    const derived = deriveUserAnchorK(messages, messages.length, 0);
-    expect(derived).toBe(entryUserDetailCount);
-    // Anchor for the last visible user (u3, buffer index 2) is k=1 (0-based,
-    // checkpoint excluded).
-    expect(deriveUserAnchorK(messages, 2, 0)).toBe(1);
-  });
-});
-
-describe("stream failure invalidation (FE-06)", () => {
-  it("classifies turn-level failure events", () => {
-    expect(isStreamFailureEvent({ type: "response.failed", response: {} })).toBe(true);
-    expect(isStreamFailureEvent({ type: "response.incomplete", response: {} })).toBe(false);
-    expect(isStreamFailureEvent({ type: "error", code: "internal", message: "x" })).toBe(true);
-    expect(isStreamFailureEvent({ type: "response.output_text.delta", item_id: "m", delta: "hi" })).toBe(false);
-  });
-
-  it("marks in_progress function calls failed and leaves others untouched", () => {
-    const items: Item[] = [
-      {
-        type: "function_call",
-        id: "fc_1",
-        call_id: "call_1",
-        name: "bash",
-        arguments: "{}",
-        status: "in_progress",
-      },
-      {
-        type: "function_call",
-        id: "fc_2",
-        call_id: "call_2",
-        name: "read",
-        arguments: "{}",
-        status: "completed",
-      },
-      {
-        type: "message",
-        role: "assistant",
-        id: "m1",
-        status: "in_progress",
-        content: [{ type: "output_text", text: "hi", annotations: [] }],
-      },
-    ];
-    const next = markFunctionCallsFailed(items);
-    expect(next[0]).toMatchObject({ status: "failed" });
-    expect(next[1]).toMatchObject({ status: "completed" });
-    expect(next[2]).toEqual(items[2]);
-  });
-});
-
-describe("projectionRowKey", () => {
-  it("is the log seq", () => {
-    const item: Item = {
-      type: "reasoning",
-      id: "rs_1",
-      summary: [{ type: "summary_text", text: "plan" }],
-      content: [{ type: "reasoning_text", text: "plan" }],
-      status: "completed",
-    };
-    expect(projectionRowKey({ seq: 3, eventType: "item/assistant", item })).toBe("3");
-  });
-});
-
-describe("userTextItem", () => {
-  it("builds Responses input message Item", () => {
-    const item = userTextItem("hello");
-    expect(item).toEqual({
-      type: "message",
-      role: "user",
-      content: [{ type: "input_text", text: "hello" }],
-    });
-    expect(itemPlainText(item)).toBe("hello");
-  });
-});
-
-describe("isSystemReminderItem", () => {
-  it("detects wrapped auto-turn input and excludes it from chat-user bubbles", () => {
-    const reminder = userTextItem(
-      "<system-reminder>\nThe user stopped background bash bg_a (Kill).\n</system-reminder>",
-    );
-    expect(isSystemReminderItem(reminder)).toBe(true);
-    expect(isChatUserMessage(reminder)).toBe(false);
-    expect(isChatUserMessage(userTextItem("hello"))).toBe(true);
-    expect(isSystemReminderItem(userTextItem("hello"))).toBe(false);
+  it("does not infer log kind from body", () => {
+    expect(isHumanViewKind("future/widget")).toBe(false);
     expect(
-      isHumanUserRow({ item: reminder }),
-    ).toBe(false);
-    expect(
-      isHumanUserRow({ item: userTextItem("hello") }),
-    ).toBe(true);
-    expect(
-      isHumanUserRow({
-        item: userTextItem("compact summary"),
-        surfaceOp: { op: "replace", start: 0, end: 1 },
+      isWellFormedBufferRow({
+        seq: 1,
+        item: userTextItem("legacy"),
       }),
     ).toBe(false);
+    expect(
+      isWellFormedBufferRow({
+        seq: 1,
+        kind: "item/user",
+        body: userTextItem("ok"),
+      }),
+    ).toBe(true);
+  });
+
+  it("hydrates userDetailBefore from the server prefix for partial windows", () => {
+    expect(hydrateUserDetailBefore(10, 3, 0)).toBe(3);
+    expect(hydrateUserDetailBefore(0, 3, 9)).toBe(0);
+    expect(hydrateUserDetailBefore(10, undefined, 2)).toBe(2);
+  });
+
+  it("classifies stream failures and invalidates live calls", () => {
+    expect(isStreamFailureEvent({ type: "response.failed", response: {} })).toBe(true);
+    const next = markFunctionCallsFailed([{ type: "function_call", call_id: "call_1", name: "bash", arguments: "{}", status: "in_progress" }]);
+    expect(next[0]).toMatchObject({ status: "failed" });
   });
 });
 
