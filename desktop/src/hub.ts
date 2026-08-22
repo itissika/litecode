@@ -48,6 +48,29 @@ function loadLogoFontBase64(): string {
 }
 
 /**
+ * Resolve the official app icon (web/public/icon.png) as a base64 data URI so
+ * the file:// hub page can render it next to the wordmark (CSP: img-src data:).
+ * Mirrors loadLogoFontBase64's fallback chain. Returns "" when not found.
+ */
+function loadLogoIconBase64(): string {
+  const candidates = [
+    path.resolve(__dirname, "..", "..", "web", "public", "icon.png"),
+    path.resolve(__dirname, "..", "..", "web", "dist", "icon.png"),
+    path.resolve(__dirname, "..", "web", "public", "icon.png"),
+    path.resolve(process.cwd(), "web", "public", "icon.png"),
+    path.resolve(process.cwd(), "web", "dist", "icon.png"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      return fs.readFileSync(candidate).toString("base64");
+    } catch {
+      // try next candidate
+    }
+  }
+  return "";
+}
+
+/**
  * Render the LiteCode wordmark the same way the web `Logo` component does
  * (per-letter spans, LogoFont, 600 weight, 0.025em tracking) but with the
  * entrance animation disabled — the hub is a static landing page.
@@ -73,12 +96,22 @@ function hubLayoutCss(logoFontSrc: string): string {
   const logoStyles = `
 .litecode-logo{display:inline-flex;align-items:center}
 .litecode-logo span{display:inline-block;font-family:LogoFont,var(--_dk-font-ui),system-ui,sans-serif;font-weight:600;letter-spacing:0.025em}
-.logo-hero{display:flex;justify-content:center;margin:4px 0 8px}
+.logo-hero{display:flex;align-items:center;justify-content:center;gap:var(--hub-gap)}
+.logo-hero .logo-icon{width:var(--hub-icon);height:var(--hub-icon);flex-shrink:0;display:block}
 `;
   return `
 ${fontFace}
 ${logoStyles}
 *{box-sizing:border-box}
+/* Scrollbars: thin, low-contrast — matches web/src/theme/index.css (agent
+   panel message list). Applied app-wide so the home list's vertical scrollbar
+   uses the same theme styling. */
+*{scrollbar-width:thin;scrollbar-color:var(--_dk-line) transparent}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-track{background:transparent;border:0 none}
+*::-webkit-scrollbar-thumb{background:var(--_dk-line);border-radius:4px;border:0 none;outline:0 none}
+*::-webkit-scrollbar-thumb:hover{background:var(--_dk-text-disabled)}
+*::-webkit-scrollbar-corner{background:transparent}
 html,body{height:100%;margin:0;overflow:hidden}
 body{
   background:var(--_dk-root);
@@ -92,6 +125,17 @@ body{
   --font-sans:system-ui,-apple-system,"Segoe UI",sans-serif;
   --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   --radius-sm:0.375rem;
+  /* Home layout: the list column is centered and only slightly wider than the
+     icon+wordmark logo. --hub-text-w is the measured "LiteCode" width ratio
+     (4.623em incl. 0.025em tracking, LexendDeca 600) so the list tracks the
+     logo width exactly when --hub-text changes. */
+  --hub-icon:56px;
+  --hub-gap:14px;
+  --hub-text:56px;
+  --hub-text-w:4.623;
+  --hub-logo-width:calc(var(--hub-icon) + var(--hub-gap) + var(--hub-text) * var(--hub-text-w));
+  /* Hand-tuned: percentage-based, clamped. 80% of the container, 340px floor, 666px cap. */
+  --hub-list-max:clamp(340px, 80%, 666px);
 }
 #titlebar{
   height:30px;flex-shrink:0;display:flex;align-items:center;
@@ -110,27 +154,43 @@ body{
 main{
   flex:1;min-height:0;overflow:hidden;
   max-width:1080px;width:100%;margin:0 auto;
-  padding:28px 32px 24px;
+  padding:20px 32px 16px;
   display:flex;flex-direction:column;
 }
 #home-view,#remote-view{flex:1;min-height:0;display:flex;flex-direction:column}
-.home-hero{flex-shrink:0}
-h1{font-size:2rem;font-weight:var(--_dk-text-weight-semibold);margin:0 0 8px;color:var(--_dk-text-primary)}
-.lead{color:var(--_dk-text-muted);margin:0 0 16px;font-size:var(--_dk-text-md)}
-.actions{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:4px;justify-content:center}
-.home-columns{
+.home-column{
   flex:1;min-height:0;
-  display:grid;grid-template-columns:1fr 1fr;grid-template-rows:minmax(0,1fr);
-  gap:20px;align-items:stretch;margin-top:8px;
+  width:100%;max-width:var(--hub-list-max);margin:0 auto;
+  display:flex;flex-direction:column;
 }
+.logo-hero{flex-shrink:0}
+.lead{
+  flex-shrink:0;color:var(--_dk-text-muted);margin:10px 0 0;
+  font-size:var(--_dk-text-md);text-align:center;
+}
+.home-header{
+  flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:16px;
+  margin-top:28px;
+}
+.home-title{
+  font-size:var(--_dk-text-xl);font-weight:var(--_dk-text-weight-semibold);
+  color:var(--_dk-text-primary);margin:0;
+}
+.home-actions{display:flex;gap:8px}
+.home-divider{
+  flex-shrink:0;height:1px;background:var(--_dk-line-visible);
+  margin:12px 0;
+}
+h1{font-size:2rem;font-weight:var(--_dk-text-weight-semibold);margin:0 0 8px;color:var(--_dk-text-primary)}
 .hidden{display:none !important}
-button.btn-primary,button.btn,button.btn-ghost,button.btn-sm{
+button.btn-primary,button.btn,button.btn-ghost,button.btn-danger,button.btn-icon,button.btn-sm{
   display:inline-flex;align-items:center;justify-content:center;gap:0.375rem;
   border-radius:var(--radius-sm);border:1px solid transparent;background:transparent;
   color:var(--_dk-ix-fg);cursor:pointer;user-select:none;white-space:nowrap;font:inherit;
 }
 button.btn-primary,button.btn{padding:0.375rem 0.75rem;font-size:0.875rem;line-height:1.25rem}
 button.btn-sm{padding:0.25rem 0.5rem;font-size:var(--_dk-text-sm);line-height:1.125rem}
+button.btn-icon{padding:0.375rem;aspect-ratio:1}
 button.btn-primary{border-color:var(--_dk-line-visible);color:var(--_dk-text-primary)}
 button.btn-primary:hover{background:var(--_dk-ix-bg-hover)}
 button.btn-primary:active{background:var(--_dk-ix-bg-pressed)}
@@ -138,23 +198,43 @@ button.btn{border-color:var(--_dk-line)}
 button.btn:hover{background:var(--_dk-ix-bg-hover);color:var(--_dk-ix-fg-hover)}
 button.btn:active{background:var(--_dk-ix-bg-pressed)}
 button.btn-ghost:hover{background:var(--_dk-ix-bg-hover);color:var(--_dk-ix-fg-hover)}
+button.btn-danger{color:var(--_dk-ix-danger-fg)}
+button.btn-danger:hover{background:var(--_dk-ix-danger-bg-hover)}
+button.btn-danger:active{background:var(--_dk-ix-danger-bg-pressed)}
 button:disabled{opacity:0.5;cursor:not-allowed}
 #status{flex-shrink:0;min-height:0;margin:0;color:var(--_dk-amber-500);font-size:var(--_dk-text-sm)}
 #status:not(:empty){min-height:22px;margin:8px 0 0}
 #status.error{color:var(--_dk-red-500)}
-.recent{
-  margin:0;min-height:0;height:100%;
-  display:flex;flex-direction:column;overflow:hidden;
+.home-list{
+  flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;
+  /* Horizontal padding gives the hover scale-up (1.015) room to grow so the
+     enlarged row is not clipped by overflow-x:hidden. */
+  padding:0 8px;
 }
-.recent h2{flex-shrink:0;margin:0 0 8px;font-size:var(--_dk-text-md);font-weight:var(--_dk-text-weight-medium);color:var(--_dk-text-secondary)}
-.recent-list{
-  flex:1;min-height:0;overflow:auto;
-  border:1px solid var(--_dk-line);border-radius:var(--radius-sm);
+.row{
+  display:flex;align-items:center;gap:12px;padding:4px 4px;border-radius:var(--radius-sm);
+  transition:background-color 120ms ease, transform 120ms ease;
 }
-.row{display:flex;align-items:center;gap:10px;padding:12px;border-top:1px solid var(--_dk-line)}
-.recent-list .row:first-child{border-top:0}
-.row .path{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
-.row .meta{display:block;font-size:var(--_dk-text-sm);color:var(--_dk-text-muted);margin-top:2px}
+.row:hover{background:var(--_dk-ix-bg-hover);transform:scale(1.015)}
+.row:active{background:var(--_dk-ix-bg-pressed);transform:scale(0.985)}
+.row .path{
+  flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;
+  padding:0;border:0;background:transparent;color:var(--_dk-text-primary);cursor:pointer;font:inherit;
+}
+.row .path:hover{color:var(--_dk-accent-hover)}
+/* Remote meta sits inline on the same line as the label, separated by a dot. */
+.row .meta{display:inline;font-size:var(--_dk-text-sm);color:var(--_dk-text-muted);margin-left:8px}
+.row .meta::before{content:"·";margin-right:6px;color:var(--_dk-text-muted)}
+.tag{
+  flex-shrink:0;display:inline-flex;align-items:center;
+  padding:1px 8px;border-radius:999px;border:1px solid transparent;
+  font-size:var(--_dk-text-2xs);font-weight:var(--_dk-text-weight-medium);
+  line-height:1.6;text-transform:uppercase;letter-spacing:0.04em;
+}
+.tag-local{color:var(--_dk-tag-ok-fg);background:var(--_dk-tag-ok-bg);border-color:var(--_dk-tag-ok-border)}
+.tag-remote{color:var(--_dk-tag-warn-fg);background:var(--_dk-tag-warn-bg);border-color:var(--_dk-tag-warn-border)}
+.row .pin{flex-shrink:0}
+.row .pin.pinned{color:var(--_dk-accent-hover)}
 .empty{color:var(--_dk-text-disabled);padding:16px;font-size:var(--_dk-text-sm)}
 .panel{
   margin-top:20px;padding:16px;border:1px solid var(--_dk-line-visible);
@@ -189,9 +269,6 @@ button:disabled{opacity:0.5;cursor:not-allowed}
 }
 .panel-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
 #remote-view{overflow:auto}
-@media (max-width:720px){
-  .home-columns{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) minmax(0,1fr)}
-}
 `.trim();
 }
 
@@ -205,7 +282,6 @@ function hubScript(): string {
   const remoteView = $("remote-view");
   const statusEl = $("status");
   const list = $("list");
-  const remoteList = $("remote-list");
   const maxBtn = $("max");
   const progressBar = $("progress-bar");
   const progressMsg = $("progress-msg");
@@ -426,74 +502,49 @@ function hubScript(): string {
     }
   };
 
-  async function renderLocal() {
-    const rows = await bridge.listRecents();
-    list.replaceChildren();
-    if (!rows.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "No local workspaces yet.";
-      list.append(empty);
-      return;
-    }
-    for (const row of rows) {
-      const el = document.createElement("div");
-      el.className = "row";
-      const openButton = document.createElement("button");
-      openButton.className = "btn path";
-      openButton.textContent = row.path;
-      openButton.title = row.path;
-      openButton.onclick = () => openLocal(row.path);
-      const pin = document.createElement("button");
-      pin.className = "btn-ghost btn-sm";
-      pin.textContent = row.pinned ? "Unpin" : "Pin";
-      pin.onclick = async () => { await bridge.setRecentPinned(row.path, !row.pinned); render(); };
-      const remove = document.createElement("button");
-      remove.className = "btn-ghost btn-sm";
-      remove.textContent = "Remove";
-      remove.onclick = async () => { await bridge.removeRecent(row.path); render(); };
-      el.append(openButton, pin, remove);
-      list.append(el);
-    }
+  function pinIconSvg(filled) {
+    const fill = filled ? ' fill="currentColor"' : ' fill="none"';
+    return '<svg width="14" height="14" viewBox="0 0 24 24"' + fill +
+      ' stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg>';
   }
 
-  async function renderRemote() {
-    const rows = await bridge.listRemoteHistory();
-    remoteList.replaceChildren();
-    if (!rows.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "No remotes yet. Use Open remote to connect once.";
-      remoteList.append(empty);
-      return;
+  /** Build one merged workspace row: kind tag + left-aligned text + pin icon + remove. */
+  function buildRow({ kind, title, meta, pinned, onOpen, onPin, onRemove }) {
+    const el = document.createElement("div");
+    el.className = "row";
+
+    const tag = document.createElement("span");
+    tag.className = "tag tag-" + kind;
+    tag.textContent = kind;
+
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "path";
+    openButton.title = title;
+    if (meta) {
+      openButton.innerHTML = "<span>" + escapeHtml(title) + '</span><span class="meta">' + escapeHtml(meta) + "</span>";
+    } else {
+      openButton.textContent = title;
     }
-    for (const row of rows) {
-      const el = document.createElement("div");
-      el.className = "row";
-      const openButton = document.createElement("button");
-      openButton.className = "btn path";
-      openButton.innerHTML = "<span>" + escapeHtml(row.label) + '</span><span class="meta">' + escapeHtml(row.lastWorkspace || "") + "</span>";
-      openButton.title = row.label;
-      openButton.onclick = async () => {
-        try {
-          message("Reconnecting to " + row.label + "…");
-          bindProgress();
-          await bridge.reconnectRemote(row.id);
-        } catch (error) {
-          message(error instanceof Error ? error.message : String(error), true);
-        }
-      };
-      const pin = document.createElement("button");
-      pin.className = "btn-ghost btn-sm";
-      pin.textContent = row.pinned ? "Unpin" : "Pin";
-      pin.onclick = async () => { await bridge.setRemoteHistoryPinned(row.id, !row.pinned); render(); };
-      const remove = document.createElement("button");
-      remove.className = "btn-ghost btn-sm";
-      remove.textContent = "Remove";
-      remove.onclick = async () => { await bridge.removeSshTarget(row.id); render(); };
-      el.append(openButton, pin, remove);
-      remoteList.append(el);
-    }
+    openButton.onclick = onOpen;
+
+    const pinBtn = document.createElement("button");
+    pinBtn.type = "button";
+    pinBtn.className = "btn-ghost btn-icon btn-sm pin" + (pinned ? " pinned" : "");
+    pinBtn.title = pinned ? "Unpin" : "Pin";
+    pinBtn.setAttribute("aria-label", pinned ? "Unpin" : "Pin");
+    pinBtn.innerHTML = pinIconSvg(pinned);
+    pinBtn.onclick = onPin;
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "btn-danger btn-sm";
+    remove.textContent = "Remove";
+    remove.onclick = onRemove;
+
+    el.append(tag, openButton, pinBtn, remove);
+    return el;
   }
 
   function escapeHtml(value) {
@@ -506,8 +557,61 @@ function hubScript(): string {
 
   async function render() {
     try {
-      await renderLocal();
-      await renderRemote();
+      const [localRows, remoteRows] = await Promise.all([
+        bridge.listRecents(),
+        bridge.listRemoteHistory(),
+      ]);
+      list.replaceChildren();
+      if (!localRows.length && !remoteRows.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No workspaces yet. Open a local folder, or connect a remote machine over SSH.";
+        list.append(empty);
+        return;
+      }
+      // Merge local + remote into one list, pinned items always first (across
+      // both kinds) so pinning actually brings a workspace to the front.
+      const items = [];
+      for (const row of localRows) {
+        items.push({
+          pinned: row.pinned,
+          lastUsedAt: row.lastOpenedAt,
+          build: () => buildRow({
+            kind: "local",
+            title: row.path,
+            meta: "",
+            pinned: row.pinned,
+            onOpen: () => openLocal(row.path),
+            onPin: async () => { await bridge.setRecentPinned(row.path, !row.pinned); render(); },
+            onRemove: async () => { await bridge.removeRecent(row.path); render(); },
+          }),
+        });
+      }
+      for (const row of remoteRows) {
+        items.push({
+          pinned: Boolean(row.pinned),
+          lastUsedAt: row.lastConnectedAt ?? 0,
+          build: () => buildRow({
+            kind: "remote",
+            title: row.label,
+            meta: row.lastWorkspace || "",
+            pinned: Boolean(row.pinned),
+            onOpen: async () => {
+              try {
+                message("Reconnecting to " + row.label + "…");
+                bindProgress();
+                await bridge.reconnectRemote(row.id);
+              } catch (error) {
+                message(error instanceof Error ? error.message : String(error), true);
+              }
+            },
+            onPin: async () => { await bridge.setRemoteHistoryPinned(row.id, !row.pinned); render(); },
+            onRemove: async () => { await bridge.removeSshTarget(row.id); render(); },
+          }),
+        });
+      }
+      items.sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.lastUsedAt - a.lastUsedAt);
+      for (const item of items) list.append(item.build());
     } catch (error) {
       message(error instanceof Error ? error.message : String(error), true);
     }
@@ -532,6 +636,10 @@ export function buildHubHtml(theme: UiThemeName = readUiTheme()): string {
   const dvTheme = dvThemeAttr(theme);
   const logoFontB64 = loadLogoFontBase64();
   const logoFontSrc = logoFontB64 ? `data:font/ttf;base64,${logoFontB64}` : "";
+  const logoIconB64 = loadLogoIconBase64();
+  const logoIconHtml = logoIconB64
+    ? `<img class="logo-icon" src="data:image/png;base64,${logoIconB64}" alt="" draggable="false" />`
+    : "";
   return `<!doctype html>
 <html lang="en" data-dv-theme="${dvTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src data:">
@@ -549,17 +657,18 @@ ${hubLayoutCss(logoFontSrc)}
 <div id="status" role="status"></div>
 
 <section id="home-view">
-  <div class="home-hero">
-    <div class="logo-hero">${litecodeLogoHtml(80, "var(--_dk-text-primary)")}</div>
-    <p class="lead" style="text-align:center">Open a local folder, or connect a remote machine over SSH.</p>
-    <div class="actions">
-      <button type="button" class="btn-primary" id="open-local">Open local</button>
-      <button type="button" class="btn" id="open-remote">Open remote</button>
+  <div class="home-column">
+    <div class="logo-hero">${logoIconHtml}${litecodeLogoHtml(56, "var(--_dk-text-primary)")}</div>
+    <p class="lead">Open a local folder, or connect a remote machine over SSH.</p>
+    <div class="home-header">
+      <h1 class="home-title">workspace</h1>
+      <div class="home-actions">
+        <button type="button" class="btn-primary" id="open-local">Local</button>
+        <button type="button" class="btn" id="open-remote">Remote</button>
+      </div>
     </div>
-  </div>
-  <div class="home-columns">
-    <section class="recent"><h2>Local history</h2><div id="list" class="recent-list"></div></section>
-    <section class="recent"><h2>Remote history</h2><div id="remote-list" class="recent-list"></div></section>
+    <div class="home-divider"></div>
+    <div id="list" class="home-list"></div>
   </div>
 </section>
 

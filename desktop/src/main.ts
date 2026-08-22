@@ -120,11 +120,13 @@ async function safeLoadURL(win: BrowserWindow, url: string): Promise<void> {
 }
 
 async function createWindow(content: BootContent): Promise<BrowserWindow> {
+  const iconPath = path.join(__dirname, "..", "build", "icon.ico");
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     show: false,
     frame: false,
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
     backgroundColor: "#0a0a0a",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),

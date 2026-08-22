@@ -115,7 +115,7 @@ jobs:
           if ($env:CSC_LINK -and $env:CSC_KEY_PASSWORD) {
             Write-Host "Code signing secrets detected — signing enabled"
             # Enable electron-builder signing for this job
-            (Get-Content desktop/package.json -Raw) -replace '"signAndEditExecutable": false','"signAndEditExecutable": true' |
+            (Get-Content desktop/package.json -Raw) -replace '"signExecutable": false','"signExecutable": true' |
               Set-Content -Encoding utf8 desktop/package.json
           } else {
             Write-Host "No signing secrets — building unsigned artifacts"

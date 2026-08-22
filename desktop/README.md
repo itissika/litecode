@@ -133,7 +133,7 @@ Set secrets / env before `electron-builder`:
 | `CSC_KEY_PASSWORD` | PFX password |
 | `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` | Windows-specific aliases |
 
-When these are unset, builds stay unsigned (`signAndEditExecutable: false` by default). The release workflow only attaches installers to a GitHub Release when signing env is present.
+When these are unset, builds stay unsigned (`signExecutable: false`) but still embed the app icon into the `.exe`. The release workflow only attaches installers to a GitHub Release when signing env is present.
 
 ## Contracts
 

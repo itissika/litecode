@@ -21,6 +21,7 @@
     },
     "files": [
       "dist/**/*",
+      "build/icon.ico",
       "package.json"
     ],
     "extraResources": [
@@ -57,7 +58,7 @@
         }
       ],
       "artifactName": "Litecode-${version}-${os}-${arch}.${ext}",
-      "signAndEditExecutable": false
+      "signExecutable": false
     },
     "nsis": {
       "oneClick": false,
