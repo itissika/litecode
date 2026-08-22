@@ -504,32 +504,6 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Reconcile loaded sessions whose active plan was deleted from disk.
-    /// Returns the session ids whose in-memory task state was cleared.
-    pub fn prune_stale_active_plans(&self) -> Vec<String> {
-        let session_ids: Vec<String> = self.records.lock().unwrap().keys().cloned().collect();
-        let mut pruned = Vec::new();
-        for session_id in session_ids {
-            let changed = self
-                .with_entry_task_state_mut(&session_id, |state| {
-                    Ok(prune_stale_active_plan(state))
-                })
-                .unwrap_or(false);
-            if !changed {
-                continue;
-            }
-            if let Err(error) = self.save_task_state(&session_id) {
-                tracing::warn!(
-                    %error,
-                    session_id,
-                    "failed to persist cleared stale active plan"
-                );
-            }
-            pruned.push(session_id);
-        }
-        pruned
-    }
-
     /// Attach a viewer; returns cached progress when a turn is running.
     pub fn attach(&self, session_id: &str) -> Option<TurnProgress> {
         let mut records = self.records.lock().unwrap();

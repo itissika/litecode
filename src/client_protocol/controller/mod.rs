@@ -22,14 +22,6 @@ use crate::session::manager::SessionManager;
 use crate::session::snapshot;
 use crate::types::LitecodeError;
 
-fn workspace_change_may_affect_plan(path: &str) -> bool {
-    let normalized = path.replace('\\', "/");
-    let path = normalized.trim_start_matches("./").trim_matches('/');
-    path == ".litecode"
-        || path == ".litecode/plan"
-        || path.starts_with(".litecode/plan/")
-}
-
 #[derive(Debug)]
 pub enum StartTurnError {
     AgentAlreadyRunning,
@@ -1168,29 +1160,6 @@ impl SessionController {
         self.sessions.child_bindings_for_parent(parent_session_id)
     }
 
-    // ── workspace ──
-
-    pub fn on_workspace_change(&mut self, paths: Vec<String>, kind: String) {
-        if paths.iter().any(|path| workspace_change_may_affect_plan(path)) {
-            let project = self.project.clone();
-            for session_id in self.sessions.prune_stale_active_plans() {
-                let binding = self.session_binding(&session_id);
-                if let Some(proj) = self.projection_mut(&session_id) {
-                    proj.push_outgoing(session_snapshot(proj.snapshot(&project, &binding)));
-                }
-            }
-        }
-        // workspace/changed is a global frame — emit it regardless of projections.
-        self._workspace_outgoing.push(serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "workspace/changed",
-            "params": {
-                "paths": paths,
-                "kind": kind,
-            },
-        }));
-    }
-
     // ── runtime helpers ──
 
     pub fn session_binding(&self, session_id: &str) -> SessionBindingProjection {
@@ -1325,16 +1294,6 @@ mod merged_channel_tests {
             event: InternalEvent::ProjectionLagged { skipped },
             parent_session_id: None,
         }
-    }
-
-    #[test]
-    fn plan_workspace_changes_include_plan_files_and_parent_directories() {
-        assert!(workspace_change_may_affect_plan(".litecode/plan/a.md"));
-        assert!(workspace_change_may_affect_plan(".litecode/plan"));
-        assert!(workspace_change_may_affect_plan(".litecode"));
-        assert!(workspace_change_may_affect_plan(r".litecode\plan\a.md"));
-        assert!(!workspace_change_may_affect_plan("src/main.rs"));
-        assert!(!workspace_change_may_affect_plan(".litecode/bash/job.output"));
     }
 
     #[test]
