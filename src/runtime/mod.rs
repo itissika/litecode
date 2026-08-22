@@ -374,51 +374,6 @@ pub fn spawn_turn(
     })
 }
 
-/// Spawn a turn whose triggering information already exists in SessionLog.
-/// The agent starts from AgentView and never appends a synthetic `item/user`.
-pub fn spawn_system_turn(
-    runtime: &RuntimeHandle,
-    session_id: String,
-    sessions: Arc<SessionManager>,
-    permission_sink: Arc<dyn PermissionSink>,
-    turn_id: String,
-) -> anyhow::Result<TurnHandle> {
-    let default_primary = runtime.desired_primary_agent();
-    let primary_agent = sessions
-        .resolve_primary_agent(&session_id, default_primary, &runtime.resolved)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let (tx, rx) = mpsc::unbounded_channel::<InternalEnvelope>();
-    let observer = ChannelObserver::new(tx);
-    let mut agent_loop = runtime.build_runtime(
-        session_id,
-        sessions,
-        &primary_agent,
-        0,
-        permission_sink,
-        observer,
-    )?;
-
-    let cancel = agent_loop.cancel_token();
-    let step_max = agent_loop.agent_config.max_steps;
-    let workspace_paths = runtime.workspace.paths.clone();
-    let turn_id_for_thread = turn_id.clone();
-    let handle = std::thread::spawn(move || {
-        set_runtime_paths(workspace_paths);
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(agent_loop.run_existing_context_with_turn(&turn_id_for_thread, step_max))
-    });
-
-    Ok(TurnHandle {
-        handle: Some(handle),
-        rx,
-        cancel,
-        turn_id,
-        step_max,
-    })
-}
-
 pub struct AgentRuntime {
     pub resolved: ResolvedConfig,
     pub session_id: String,
@@ -818,25 +773,6 @@ impl AgentRuntime {
         turn_id: &str,
         step_max: u32,
     ) -> Result<String> {
-        self.run_turn(Some(user_prompt), turn_id, step_max).await
-    }
-
-    /// Run a turn from durable AgentView context without appending a new
-    /// human `item/user` row. Used by system events such as job exits.
-    pub async fn run_existing_context_with_turn(
-        &mut self,
-        turn_id: &str,
-        step_max: u32,
-    ) -> Result<String> {
-        self.run_turn(None, turn_id, step_max).await
-    }
-
-    async fn run_turn(
-        &mut self,
-        user_prompt: Option<&str>,
-        turn_id: &str,
-        step_max: u32,
-    ) -> Result<String> {
         // Lazy-init: build tool list (async MCP schema fetch) on first turn.
         if self.tool_pipeline.is_none() {
             let params = self.build_tool_params.take().unwrap();
@@ -901,7 +837,7 @@ impl AgentRuntime {
             self.tool_pipeline = Some(tool_pipeline);
         }
 
-        tracing::info!(input = ?user_prompt, "agent loop start");
+        tracing::info!(input = %user_prompt, "agent loop start");
 
         // Fresh per-turn meters (defensive if a prior turn exited without finalize).
         self.turn_token_stats = TurnTokenStats::default();
@@ -909,7 +845,7 @@ impl AgentRuntime {
 
         self.emit_internal(InternalEvent::TurnStarted {
             turn_id: turn_id.to_string(),
-            input: user_prompt.unwrap_or_default().to_string(),
+            input: user_prompt.to_string(),
             step_max,
         });
         self.emit_internal(InternalEvent::PhaseChanged {
@@ -936,14 +872,12 @@ impl AgentRuntime {
         })?;
         let mut items = project_items(&working);
 
-        if let Some(user_prompt) = user_prompt {
-            let already_last_user = items
-                .last()
-                .is_some_and(|m| item_text_preview(m) == user_prompt);
-            if !already_last_user {
-                items.push(user_text(user_prompt.to_string()));
-                working.push(WorkingRow::pending(user_text(user_prompt.to_string())));
-            }
+        let already_last_user = items
+            .last()
+            .is_some_and(|m| item_text_preview(m) == user_prompt);
+        if !already_last_user {
+            items.push(user_text(user_prompt.to_string()));
+            working.push(WorkingRow::pending(user_text(user_prompt.to_string())));
         }
 
         // User Items are complete before any model stream. Persist

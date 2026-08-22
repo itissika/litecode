@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use crate::permission::{PermissionSink, deny_permission_sink};
-use crate::runtime::{RuntimeHandle, spawn_system_turn};
-use crate::session::{LifecycleEvent, ReminderJobExitBody, ReminderJobExitReason, SessionManager};
+use crate::runtime::{RuntimeHandle, spawn_turn};
+use crate::session::{LifecycleEvent, SessionManager};
 use crate::terminal::TerminalHub;
 use crate::tools::bash_status;
 use crate::types::LitecodeError;
@@ -16,6 +16,7 @@ pub enum IdleAutoTurn {
         turn_id: String,
         primary_agent: String,
         project: String,
+        input: String,
         sink: Arc<dyn PermissionSink>,
     },
     SkippedBusy,
@@ -72,27 +73,13 @@ pub fn try_begin_idle_auto_turn(
         return IdleAutoTurn::SkippedEmptyMailbox;
     }
     let jobs = hub.jobs.running(sid);
+    let input = bash_status::format_exit_reminder(&notices, &jobs, workspace_root);
     let append_result = sessions.with_entry_store(sid, |session| {
-        for notice in &notices {
-            let text = bash_status::format_exit_reminder(
-                std::slice::from_ref(notice),
-                &jobs,
-                workspace_root,
-            );
-            session.append_job_exit(ReminderJobExitBody {
-                job_id: Some(notice.bash_id.clone()),
-                reason: if notice.user_killed {
-                    ReminderJobExitReason::Kill
-                } else {
-                    ReminderJobExitReason::Exit
-                },
-                text,
-            })?;
-        }
+        session.append_job_exit(&crate::types::user_text(&input))?;
         Ok(())
     });
     if let Err(error) = append_result {
-        tracing::warn!(session_id = sid, %error, "failed to persist bash exit reminders");
+        tracing::warn!(session_id = sid, %error, "failed to persist bash exit reminder");
         sessions.release_turn_reservation(sid, &turn_id);
         return IdleAutoTurn::SkippedSessionGone;
     }
@@ -104,6 +91,7 @@ pub fn try_begin_idle_auto_turn(
         turn_id,
         primary_agent,
         project,
+        input,
         sink,
     }
 }
@@ -118,16 +106,18 @@ fn spawn_prepared_idle_auto_turn(
         turn_id,
         primary_agent,
         project,
+        input,
         sink,
     } = decision
     else {
         return;
     };
     let sessions = Arc::clone(sessions);
-    let handle = match spawn_system_turn(
+    let handle = match spawn_turn(
         runtime,
         session_id.clone(),
         Arc::clone(&sessions),
+        input,
         sink,
         turn_id.clone(),
     ) {
@@ -342,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_with_subscribers_persists_exit_reminder_before_preparing_turn() {
+    fn idle_with_subscribers_prepares_turn_using_exit_reminder() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions, hub) = test_runtime(dir.path());
         let session =
@@ -352,18 +342,30 @@ mod tests {
         let _ = sessions.attach(&sid);
         let id = spawn_echo(&hub, dir.path(), &sid);
         wait_job_exit(&hub, &id);
+        let notice = hub.jobs.notice_snapshot(&id).expect("notice");
+        let expected = bash_status::format_exit_reminder(
+            std::slice::from_ref(&notice),
+            &hub.jobs.running(&sid),
+            dir.path(),
+        );
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
             IdleAutoTurn::Prepared {
+                input,
                 turn_id,
                 session_id,
                 ..
             } => {
                 assert_eq!(session_id, sid);
+                assert_eq!(input, expected);
+                assert!(input.starts_with("<system-reminder>"));
+                assert!(!input.contains("status: exited"));
                 let events = sessions
                     .with_entry_store(&sid, |s| Ok(s.load_events()?))
                     .unwrap();
-                assert_eq!(events.len(), 1);
-                assert_eq!(events[0].event_type, crate::session::EventType::ReminderJobExit);
+                assert_eq!(
+                    events.last().unwrap().event_type,
+                    crate::session::EventType::ReminderJobExit
+                );
                 sessions.release_turn_reservation(&sid, &turn_id);
             }
             _ => panic!("expected prepared, got non-prepared variant"),
@@ -402,14 +404,12 @@ mod tests {
         assert!(hub.jobs.mailbox_pending(&sid));
         sessions.release_turn_reservation(&sid, "turn-busy");
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
-            IdleAutoTurn::Prepared { turn_id, .. } => {
-                let events = sessions
-                    .with_entry_store(&sid, |s| Ok(s.load_events()?))
-                    .unwrap();
-                let body: ReminderJobExitBody =
-                    serde_json::from_value(events.last().unwrap().data.clone()).unwrap();
-                assert_eq!(body.reason, ReminderJobExitReason::Kill);
-                assert!(body.text.contains("The user stopped background bash"));
+            IdleAutoTurn::Prepared { input, turn_id, .. } => {
+                assert!(
+                    input.contains("The user stopped background bash"),
+                    "got: {input}"
+                );
+                assert!(input.contains("(Kill)"));
                 sessions.release_turn_reservation(&sid, &turn_id);
             }
             _ => panic!("expected prepared after idle"),

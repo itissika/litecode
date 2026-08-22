@@ -19,11 +19,16 @@ pub struct ExcludeMatcher {
 }
 
 impl ExcludeMatcher {
-    pub fn from_globs(globs: &[&str]) -> Self {
+    pub fn from_globs<I, S>(globs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         let mut segments = HashSet::new();
         let mut basenames = HashSet::new();
         let mut patterns = Vec::new();
         for g in globs {
+            let g = g.as_ref();
             match classify_exclude_glob(g) {
                 ExcludeClass::Segment(name) => {
                     segments.insert(name);
@@ -46,8 +51,7 @@ impl ExcludeMatcher {
     }
 
     pub fn for_preset(preset: FilterPreset) -> Self {
-        let globs = exclude_globs(preset);
-        Self::from_globs(&globs)
+        Self::from_globs(exclude_globs(preset))
     }
 
     pub fn is_empty(&self) -> bool {

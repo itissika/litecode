@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { stat } from "node:fs/promises";
 
+import { MODEL_STAMP_FILE, hashModelDir } from "./bundle-paths";
+
 /**
  * Connection details for system OpenSSH. Authentication is deliberately left
  * to OpenSSH: callers may provide `identityFile`, or use `host` as an SSH
@@ -461,10 +463,16 @@ export class SshSession {
     const relativeModel = relativeHomePath(options.relativeModelPath, "model path");
     const local = await stat(options.localModelDir);
     if (!local.isDirectory()) throw new Error("Model source must be a directory.");
+    const expected = hashModelDir(options.localModelDir);
+    if (!SHA256.test(expected)) throw new Error("Embed model fingerprint is invalid.");
     const home = await this.requireHome();
     const parentRel = relativeModel.split("/").slice(0, -1).join("/");
     const parent = parentRel ? absoluteHomePath(home, `${destination}/${parentRel}`) : absoluteHomePath(home, destination);
     const target = absoluteHomePath(home, `${destination}/${relativeModel}`);
+    const stamp = absoluteHomePath(home, `${destination}/${MODEL_STAMP_FILE}`);
+    if (await this.modelMatchesInstalled(stamp, expected)) {
+      return;
+    }
     const script = [
       "set -eu",
       `home=${posixShellQuote(home)}`,
@@ -481,6 +489,36 @@ export class SshSession {
       buildScpUploadArgs(this.config, options.localModelDir, target, { recursive: true }),
       this.config.askPassCommand,
     );
+    const writeStamp = [
+      "set -eu",
+      `home=${posixShellQuote(home)}`,
+      `stamp=${posixShellQuote(stamp)}`,
+      `expected=${posixShellQuote(expected.toLowerCase())}`,
+      'stampdir=$(dirname -- "$stamp")',
+      'mkdir -p -- "$stampdir"',
+      'stampdir=$(realpath -e -- "$stampdir")',
+      'case "$stampdir" in "$home"|"$home"/*) ;; *) echo "model stamp escapes remote home" >&2; exit 64;; esac',
+      'printf "%s\\n" "$expected" > "$stamp"',
+    ].join("; ");
+    await this.exec(writeStamp);
+  }
+
+  private async modelMatchesInstalled(stamp: string, expectedSha256: string): Promise<boolean> {
+    const expected = expectedSha256.toLowerCase();
+    const script = [
+      "set -eu",
+      `stamp=${posixShellQuote(stamp)}`,
+      `expected=${posixShellQuote(expected)}`,
+      'test -f "$stamp"',
+      'actual=$(tr -d "[:space:]" < "$stamp")',
+      '[ "$actual" = "$expected" ]',
+    ].join("; ");
+    try {
+      await this.exec(script);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** True when an extracted bundle matches the local tar SHA-256 (not app version). */

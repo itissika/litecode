@@ -1,4 +1,5 @@
-//! Authoritative default exclude globs — do not invent replacements.
+//! Built-in exclude globs — seed for `.litecode/excludes.json` on first open.
+//! After seed, the workspace file is the source of truth (Settings can edit it).
 //!
 //! Sources (tracked against upstream):
 //! - VS Code `files.exclude` / `files.watcherExclude`:

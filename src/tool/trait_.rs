@@ -75,7 +75,7 @@ pub trait Tool: Send + Sync {
     /// run concurrently (same-path read/write share one lock graph).
     ///
     /// Write/edit/read return [`ResourceKey::File`]; bash returns per-path keys
-    /// or [`ResourceKey::Workspace`] when paths cannot be attributed.
+    /// when paths can be attributed, otherwise none.
     fn resource_keys(
         &self,
         _input: &Value,

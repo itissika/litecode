@@ -229,6 +229,8 @@ pub fn init_workspace(workspace_root: &Path) -> Result<()> {
     // Persist / reconcile stable workspace_id (move vs copy).
     super::workspace_identity::ensure_workspace_identity(workspace_root)?;
 
+    crate::workspace::filter::ensure_workspace_excludes(workspace_root)?;
+
     Ok(())
 }
 
@@ -467,6 +469,10 @@ mod tests {
             litecode.join("workspace.json").is_file(),
             "init_workspace must persist workspace identity"
         );
+        let excludes = litecode.join("excludes.json");
+        assert!(excludes.is_file(), "init_workspace must seed excludes.json");
+        let body = std::fs::read_to_string(&excludes).unwrap();
+        assert!(body.contains("node_modules"));
     }
 
     #[test]

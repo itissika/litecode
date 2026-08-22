@@ -1,0 +1,45 @@
+/* Milkdown Crepe host: map Crepe tokens onto LiteCode surfaces. */
+
+.milkdown-host {
+  height: 100%;
+  overflow: auto;
+  background: var(--_dk-editor);
+}
+
+.milkdown-host .milkdown {
+  --crepe-color-background: var(--_dk-editor);
+  --crepe-color-on-background: var(--_dk-text-primary);
+  --crepe-color-surface: var(--_dk-sidepanel);
+  --crepe-color-surface-low: var(--_dk-side);
+  --crepe-color-on-surface: var(--_dk-text-primary);
+  --crepe-color-on-surface-variant: var(--_dk-text-secondary);
+  --crepe-color-outline: var(--_dk-text-muted);
+  --crepe-color-primary: var(--_dk-accent-hover);
+  --crepe-color-secondary: var(--_dk-accent);
+  --crepe-color-on-secondary: var(--_dk-text-primary);
+  --crepe-color-inverse: var(--_dk-text-primary);
+  --crepe-color-on-inverse: var(--_dk-editor);
+  --crepe-color-inline-code: var(--_dk-text-body);
+  --crepe-color-error: var(--_dk-red-500);
+  --crepe-color-hover: var(--_dk-accent-halo);
+  --crepe-color-selected: var(--_dk-accent);
+  --crepe-color-inline-area: var(--_dk-sidepanel);
+
+  --crepe-base-font-size: var(--_dk-text-base);
+  --crepe-font-title: var(--_dk-font-ui);
+  --crepe-font-default: var(--_dk-font-ui);
+  --crepe-font-code: var(--_dk-font-code);
+
+  --crepe-shadow-1: none;
+  --crepe-shadow-2: none;
+
+  min-height: 100%;
+  padding: 8px 40px 48px;
+  background: var(--_dk-editor);
+  color: var(--_dk-text-primary);
+}
+
+.milkdown-host .ProseMirror {
+  min-height: 100%;
+  outline: none;
+}

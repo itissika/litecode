@@ -6,7 +6,9 @@ import {
   writeFile,
   type WorkspaceChangeKind,
 } from "../api/workspace";
+import { flushMarkdownEditor } from "../lib/markdownFlush";
 import { languageFromPath, fileNameFromPath } from "../utils/language";
+import { isWysiwygMarkdownPath, type MdEditorView } from "../utils/wysiwygMarkdown";
 import { remapPathPrefix } from "../utils/path";
 import { closingFlags } from "../dockview/config/sharedFlags";
 import { attachSiblingStores } from "./connectionStore";
@@ -36,6 +38,8 @@ interface EditorStore {
   saving: boolean;
   dockviewApi: DockviewApi | null;
   pendingReveal: { path: string; line: number } | null;
+  /** Per-tab Markdown view. Missing means default (wysiwyg for `.md`). */
+  mdViewByPath: Record<string, MdEditorView>;
 
   openFile: (path: string) => Promise<void>;
   /** Open file and reveal a 1-based line (workspace search / go-to). */
@@ -54,6 +58,7 @@ interface EditorStore {
   closeDeleted: (path: string) => void;
   clearConflict: (path: string) => void;
   setDockviewApi: (api: DockviewApi | null) => void;
+  setMdView: (path: string, view: MdEditorView) => void;
 }
 
 function makeTab(path: string, content: string): EditorTab {
@@ -75,11 +80,23 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   saving: false,
   dockviewApi: null,
   pendingReveal: null,
+  mdViewByPath: {},
 
   setDockviewApi: (api) => set({ dockviewApi: api }),
 
+  setMdView: (path, view) => {
+    set((s) => ({
+      mdViewByPath: { ...s.mdViewByPath, [path]: view },
+    }));
+  },
+
   openFileAt: async (path, line) => {
-    set({ pendingReveal: { path, line: Math.max(1, Math.floor(line)) } });
+    set((s) => ({
+      pendingReveal: { path, line: Math.max(1, Math.floor(line)) },
+      mdViewByPath: isWysiwygMarkdownPath(path)
+        ? { ...s.mdViewByPath, [path]: "source" }
+        : s.mdViewByPath,
+    }));
     await get().openFile(path);
   },
 
@@ -216,7 +233,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         nextActive = neighbor?.path ?? null;
       }
 
-      return { tabs: nextTabs, activePath: nextActive };
+      const mdViewByPath = { ...s.mdViewByPath };
+      delete mdViewByPath[path];
+      return { tabs: nextTabs, activePath: nextActive, mdViewByPath };
     });
   },
 
@@ -243,6 +262,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   save: async (pathArg) => {
     const path = pathArg ?? get().activePath;
     if (!path) return;
+
+    const flushed = flushMarkdownEditor(path);
+    if (flushed != null) {
+      get().setContent(path, flushed);
+    }
 
     const tab = get().tabs.find((t) => t.path === path);
     if (!tab || tab.loading) return;
@@ -344,6 +368,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         const nextKey = remapPathPrefix(key, from, to);
         nextConflicts[nextKey] = { ...value, path: nextKey };
       }
+      const mdViewByPath: Record<string, MdEditorView> = {};
+      for (const [key, value] of Object.entries(s.mdViewByPath)) {
+        mdViewByPath[remapPathPrefix(key, from, to)] = value;
+      }
       return {
         tabs: s.tabs.map((t) => {
           const path = remapPathPrefix(t.path, from, to);
@@ -354,6 +382,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           ? remapPathPrefix(s.activePath, from, to)
           : null,
         conflicts: nextConflicts,
+        mdViewByPath,
       };
     });
 

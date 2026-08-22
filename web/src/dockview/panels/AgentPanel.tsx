@@ -364,7 +364,10 @@ function MessageListRegion({
 
 /** Composer + todos + permission — no messageStore subscription.
  *  Floats over the transcript at the same reading measure as MessageList,
- *  so the list can scroll under it instead of being clipped above. */
+ *  so the list can scroll under it instead of being clipped above.
+ *  Collapsible: the whole dock (Latest / permission / chips / input — no
+ *  exceptions) slides straight down out of view via a plain icon toggle
+ *  floating at the bottom center. */
 export function ComposerDock({
   sessionId,
   isActive = true,
@@ -382,47 +385,99 @@ export function ComposerDock({
     (s) => s.byId.get(sessionId)?.pendingPermission ?? null,
   );
   const grantPermission = useTurnStore((s) => s.grantPermission);
+  const [collapsed, setCollapsed] = useState(false);
 
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-4">
       <div
-        className={`pointer-events-auto mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col gap-2 ${
+        className={`pointer-events-auto mx-auto relative w-full max-w-[var(--_dk-prose-measure)] ${
           isActive
             ? "[--_dk-composer-card-shadow:var(--_dk-composer-focus-shadow)]"
             : ""
         }`}
       >
-        {!stickToEnd && (
-          <div className="flex justify-center">
-            <button
-              type="button"
-              className={`${composerCardClass} inline-flex items-center gap-1 px-2.5 py-1 text-xs text-(--_dk-text-secondary) transition-transform duration-100 hover:scale-105 active:scale-90 active:brightness-90`}
-              onClick={onJumpToEnd}
-            >
-              <CaretDownIcon size={12} weight="bold" aria-hidden />
-              Latest
-            </button>
-          </div>
-        )}
-        {pendingPermission && (
-          <PermissionCard
-            tool={pendingPermission.tool}
-            ruleId={pendingPermission.rule_id}
-            summary={pendingPermission.summary}
-            requestId={pendingPermission.request_id}
-            onGrant={(approved, always) => {
-              grantPermission(sessionId, approved, always);
-            }}
-          />
-        )}
-        <div className="flex items-end gap-2">
-          <TerminalStatusBar sessionId={sessionId} onRevealBash={onRevealBash} />
-          <ActivePlanChip sessionId={sessionId} />
-          <div className="min-w-0 flex-1">
-            <TodoPanel sessionId={sessionId} />
+        {/* Collapsible content — slides straight down out of view on collapse.
+            A pure transform (no layout reflow, no clip) keeps the cards' wide
+            box shadows intact, and the panel's own overflow:hidden (dockview
+            .dv-pane/.dv-groupview) clips it at the bottom edge. The translate
+            is 100% of the content's own height plus 2rem — the 1rem clears the
+            dock's own pb-4 padding, the extra 1rem guarantees the top edge
+            lands below the panel even with subpixel rounding. Opacity fades to
+            0 alongside the slide, so the content is fully gone regardless of
+            the clip boundary. pointer-events-none while collapsed so the
+            vacated area doesn't block the transcript. */}
+        <div
+          data-testid="composer-dock-content"
+          data-collapsed={collapsed}
+          className={`transition-[transform,opacity] duration-200 ease-in-out ${
+            collapsed
+              ? "pointer-events-none translate-y-[calc(100%_+_2rem)] opacity-0"
+              : "opacity-100"
+          }`}
+        >
+          <div className="flex flex-col gap-2">
+            {!stickToEnd && (
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  className={`${composerCardClass} inline-flex items-center gap-1 px-2.5 py-1 text-xs text-(--_dk-text-secondary) transition-transform duration-100 hover:scale-105 active:scale-90 active:brightness-90`}
+                  onClick={onJumpToEnd}
+                >
+                  <CaretDownIcon size={12} weight="bold" aria-hidden />
+                  Latest
+                </button>
+              </div>
+            )}
+            {pendingPermission && (
+              <PermissionCard
+                tool={pendingPermission.tool}
+                ruleId={pendingPermission.rule_id}
+                summary={pendingPermission.summary}
+                requestId={pendingPermission.request_id}
+                onGrant={(approved, always) => {
+                  grantPermission(sessionId, approved, always);
+                }}
+              />
+            )}
+            <div className="flex items-end gap-2">
+              <TerminalStatusBar
+                sessionId={sessionId}
+                onRevealBash={onRevealBash}
+              />
+              <ActivePlanChip sessionId={sessionId} />
+              <div className="min-w-0 flex-1">
+                <TodoPanel sessionId={sessionId} />
+              </div>
+            </div>
+            <AgentChatInput key={sessionId} sessionId={sessionId} />
           </div>
         </div>
-        <AgentChatInput key={sessionId} sessionId={sessionId} />
+
+        {/* Collapse/expand toggle — floating at the bottom center. While the
+            dock is expanded it sits on the chat input and stays transparent;
+            once the content has slid out it gets the exact same card treatment
+            (border + shadow + glass) as the composer cards so it stays legible
+            alone at the bottom. Chevron flips. */}
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          aria-label={collapsed ? "Expand composer" : "Collapse composer"}
+          title={collapsed ? "Expand composer" : "Collapse composer"}
+          className={`absolute bottom-1.5 left-1/2 z-20 flex h-5 w-9 -translate-x-1/2 cursor-pointer items-center justify-center active:brightness-90 ${
+            collapsed
+              ? `${composerCardClass} relative text-(--_dk-text-secondary) after:pointer-events-none after:absolute after:inset-0 after:rounded-md after:bg-(--_dk-ix-bg-hover) after:content-[''] after:opacity-0 after:transition-opacity after:duration-150 hover:after:opacity-100`
+              : "rounded text-(--_dk-text-muted) transition-colors duration-200 hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary)"
+          }`}
+        >
+          <CaretDownIcon
+            size={12}
+            weight="bold"
+            aria-hidden
+            className={`transition-transform duration-200 ${
+              collapsed ? "rotate-180" : ""
+            }`}
+          />
+        </button>
       </div>
     </div>
   );

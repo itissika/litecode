@@ -39,6 +39,19 @@ export function isJobExitReminderRow(
   return row.kind === "reminder/job_exit";
 }
 
+/** HumanView kinds that are marks, not user/assistant bubbles. */
+export type TranscriptMarkKind = "compact_cut" | "job_exit";
+
+export function isTranscriptMarkRow(row: HumanRow): boolean {
+  return isCompactCutRow(row) || isJobExitReminderRow(row);
+}
+
+export function transcriptMarkKind(row: HumanRow): TranscriptMarkKind | null {
+  if (isCompactCutRow(row)) return "compact_cut";
+  if (isJobExitReminderRow(row)) return "job_exit";
+  return null;
+}
+
 /** Only explicit user log rows are composer bubbles and revert anchors. */
 export function isHumanUserRow(row: HumanRow): boolean {
   return row.kind === "item/user";

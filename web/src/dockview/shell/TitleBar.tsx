@@ -28,7 +28,7 @@ export function TitleBar({ onMenuAction, sessionMode = "local" }: TitleBarProps)
   const noDrag = { WebkitAppRegion: "no-drag" } as CSSProperties;
 
   return (
-    <div className="flex h-[35px] shrink-0 select-none" style={dragStyle}>
+    <div className="flex h-[32px] shrink-0 select-none" style={dragStyle}>
       <div className="flex items-center">
         <img
           src="/icon.png"
@@ -62,7 +62,7 @@ export function TitleBar({ onMenuAction, sessionMode = "local" }: TitleBarProps)
           <button
             type="button"
             aria-label="Minimize"
-            className="px-3 py-0 h-[35px] text-xs hover:brightness-125 active:brightness-75"
+            className="px-3 py-0 h-[32px] text-xs hover:brightness-125 active:brightness-75"
             onClick={() => void window.litecode?.windowMinimize?.()}
           >
             <svg width="10" height="10" viewBox="0 0 10 10">
@@ -72,7 +72,7 @@ export function TitleBar({ onMenuAction, sessionMode = "local" }: TitleBarProps)
           <button
             type="button"
             aria-label={maximized ? "Restore" : "Maximize"}
-            className="px-3 py-0 h-[35px] text-xs hover:brightness-125 active:brightness-75"
+            className="px-3 py-0 h-[32px] text-xs hover:brightness-125 active:brightness-75"
             onClick={() => {
               void window.litecode?.windowMaximizeToggle?.().then(setMaximized);
             }}
@@ -104,7 +104,7 @@ export function TitleBar({ onMenuAction, sessionMode = "local" }: TitleBarProps)
           <button
             type="button"
             aria-label="Close"
-            className="px-3 py-0 h-[35px] text-xs lc-titlebar-close active:brightness-75"
+            className="px-3 py-0 h-[32px] text-xs lc-titlebar-close active:brightness-75"
             onClick={() => void window.litecode?.windowClose?.()}
           >
             <svg width="10" height="10" viewBox="0 0 10 10">

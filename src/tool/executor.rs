@@ -89,6 +89,15 @@ fn batch_conflicts_with(
     false
 }
 
+/// Cross-session process lock is write/edit only. bash and read still expose
+/// `resource_keys` for same-turn partitioning; they must not fail other sessions.
+fn cross_session_lock_keys(tool_name: &str, keys: Vec<ResourceKey>) -> Vec<ResourceKey> {
+    match tool_name {
+        "write" | "edit" => keys,
+        _ => Vec::new(),
+    }
+}
+
 fn resource_keys_conflict(a: &[ResourceKey], b: &[ResourceKey]) -> bool {
     for x in a {
         for y in b {
@@ -337,7 +346,10 @@ pub async fn run_tool(
     };
 
     let path_mode = permission.path_mode(&tu_name).to_tool_path_mode();
-    let resource_keys: Vec<ResourceKey> = tool.resource_keys(&effective_input, path_mode, &ctx.cwd);
+    let resource_keys = cross_session_lock_keys(
+        &tu_name,
+        tool.resource_keys(&effective_input, path_mode, &ctx.cwd),
+    );
     let _lock_guard = if !resource_keys.is_empty() {
         match write_lock.try_acquire(&resource_keys, session_id) {
             Ok(()) => Some(WriteLockGuard {
@@ -499,6 +511,15 @@ mod tests {
     use super::*;
     use crate::session::media::write_media_blob;
     use crate::types::{MediaArtifact, MediaSource, ToolOutputPart};
+
+    #[test]
+    fn cross_session_lock_is_write_edit_only() {
+        let file = vec![ResourceKey::File("/a".into())];
+        assert_eq!(cross_session_lock_keys("write", file.clone()), file);
+        assert_eq!(cross_session_lock_keys("edit", file.clone()), file);
+        assert!(cross_session_lock_keys("bash", file.clone()).is_empty());
+        assert!(cross_session_lock_keys("read", file).is_empty());
+    }
 
     #[test]
     fn blob_ref_image_becomes_input_image_data_url() {

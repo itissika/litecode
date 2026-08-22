@@ -8,6 +8,7 @@ import {
   isHiddenHumanRow,
   isHumanUserRow,
   isHumanViewKind,
+  isTranscriptMarkRow,
   isWellFormedBufferRow,
   itemAuthorityId,
   mergeCommittedItem,
@@ -24,15 +25,18 @@ const userRow = (seq: number, text: string): HumanRow => ({
 });
 
 describe("kind-based HumanView rows", () => {
-  it("counts only explicit item/user rows and hides reminders", () => {
+  it("counts only explicit item/user rows; job-exit is not a user anchor", () => {
     const rows: HumanRow[] = [
       userRow(0, "u0"),
       { seq: 1, kind: "compacted", body: { summary: "hidden", from: 0, to: 1 } },
-      { seq: 2, kind: "reminder/job_exit", body: { reason: "kill", text: "<system-reminder>not inspected</system-reminder>" } },
+      { seq: 2, kind: "reminder/job_exit", body: userTextItem("<system-reminder>not inspected</system-reminder>") },
       userRow(3, "u1"),
     ];
     expect(deriveUserAnchorK(rows, 3, 5)).toBe(6);
-    expect(isHiddenHumanRow(rows[2]!)).toBe(true);
+    expect(isHiddenHumanRow(rows[2]!)).toBe(false);
+    expect(isHumanUserRow(rows[2]!)).toBe(false);
+    expect(isTranscriptMarkRow(rows[1]!)).toBe(true);
+    expect(isTranscriptMarkRow(rows[2]!)).toBe(true);
     expect(isHumanUserRow(rows[0]!)).toBe(true);
   });
 

@@ -9,8 +9,9 @@ use std::sync::LazyLock;
 
 use super::defaults::{FILES_EXCLUDE, PRODUCT_INTERNAL_DIRS, SEARCH_EXCLUDE, SNAPSHOT_ONLY_DIRS};
 use super::exclude::segment_name_from_exclude_glob;
+use super::workspace_excludes::active_workspace_excludes;
 
-static DISCOVERY_DIR_BASENAMES: LazyLock<HashSet<String>> = LazyLock::new(|| {
+fn discovery_basenames_from_static() -> HashSet<String> {
     let mut out = HashSet::new();
     for g in FILES_EXCLUDE.iter().chain(SEARCH_EXCLUDE.iter()) {
         if let Some(name) = segment_name_from_exclude_glob(g) {
@@ -18,10 +19,10 @@ static DISCOVERY_DIR_BASENAMES: LazyLock<HashSet<String>> = LazyLock::new(|| {
         }
     }
     out
-});
+}
 
 static SNAPSHOT_DIR_BASENAMES: LazyLock<Vec<String>> = LazyLock::new(|| {
-    let mut set = DISCOVERY_DIR_BASENAMES.clone();
+    let mut set = discovery_basenames_from_static();
     for d in PRODUCT_INTERNAL_DIRS {
         set.insert((*d).to_string());
     }
@@ -33,9 +34,16 @@ static SNAPSHOT_DIR_BASENAMES: LazyLock<Vec<String>> = LazyLock::new(|| {
     v
 });
 
-/// Segment-class directory basenames from VS Code `files.exclude`∪`search.exclude`.
-pub fn discovery_exclude_dir_basenames() -> &'static HashSet<String> {
-    &DISCOVERY_DIR_BASENAMES
+/// Segment-class directory basenames from the active workspace files∪search lists.
+pub fn discovery_exclude_dir_basenames() -> HashSet<String> {
+    let cfg = active_workspace_excludes();
+    let mut out = HashSet::new();
+    for g in cfg.files_exclude.iter().chain(cfg.search_exclude.iter()) {
+        if let Some(name) = segment_name_from_exclude_glob(g) {
+            out.insert(name);
+        }
+    }
+    out
 }
 
 /// Sorted basenames for snapshot `$GIT_DIR/info/exclude` and path filters:
@@ -54,7 +62,7 @@ pub fn path_has_product_internal_dir(rel: &str) -> bool {
 
 /// True when `name` is a discovery segment or product-internal dir (LSP / shallow walks).
 pub fn is_discovery_or_product_dir_name(name: &str) -> bool {
-    is_product_internal_dir_name(name) || DISCOVERY_DIR_BASENAMES.contains(name)
+    is_product_internal_dir_name(name) || discovery_exclude_dir_basenames().contains(name)
 }
 
 #[cfg(test)]

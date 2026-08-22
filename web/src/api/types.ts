@@ -241,7 +241,7 @@ export interface CompactedLogRow {
 export interface JobExitReminderLogRow {
   seq: number;
   kind: "reminder/job_exit";
-  body: { job_id?: string; reason: "exit" | "kill" | "timeout"; text: string };
+  body: Item;
 }
 
 export interface ControlLogRow {

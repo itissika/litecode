@@ -5,7 +5,7 @@ use std::sync::{Arc, LazyLock};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ResourceKey {
     File(String),
-    /// Coarse workspace lock used by bash.
+    /// Coarse workspace lock. Production bash no longer acquires this.
     Workspace,
 }
 
@@ -16,9 +16,8 @@ pub struct LockInfo {
 
 /// Process-wide write-lock registry.
 ///
-/// Implements DESIGN §1.3 resource-level exclusion across sessions:
-/// - write/edit lock by file path
-/// - bash uses [`ResourceKey::Workspace`], exclusive with every other writer
+/// File-level exclusion for structured writers (`write` / `edit`) across sessions.
+/// [`ResourceKey::Workspace`] remains a coarse primitive; production bash does not take it.
 ///
 /// Backed by a sync `std::sync::Mutex`: the critical section only touches a
 /// HashMap and never `.await`s, so acquire/release can be synchronous. That
@@ -45,16 +44,16 @@ impl WorkspaceWriteLock {
     /// **Same-session re-entrant:** requesting a key this session already holds
     /// succeeds.
     ///
-    /// **Coarse-lock exclusion:** `ResourceKey::Workspace` (bash) conflicts with
-    /// any held lock (Workspace or File) and vice versa. Distinct `File` keys
-    /// do not conflict and may run concurrently.
+    /// **Coarse-lock exclusion:** `ResourceKey::Workspace` conflicts with any
+    /// held lock (Workspace or File) and vice versa. Distinct `File` keys do
+    /// not conflict. Production tools only acquire File keys.
     pub fn try_acquire(&self, keys: &[ResourceKey], session_id: &str) -> Result<(), String> {
         let mut locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
 
         // Pass 1: detect conflicts.
         // A requested key conflicts with a held lock when:
         //   - the same key is held by another session (same File or Workspace)
-        //   - either side is the Workspace coarse lock (bash vs all writers)
+        //   - either side is the Workspace coarse lock
         for key in keys {
             for (held, info) in locks.iter() {
                 if info.session_id == session_id {

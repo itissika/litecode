@@ -241,19 +241,17 @@ impl Tool for BashTool {
         path_mode: crate::workspace::ToolPathMode,
         workspace_root: &std::path::Path,
     ) -> Vec<ResourceKey> {
-        // B2-3.3: return per-path keys so same-path read/write serialize while
-        // different paths run in parallel, instead of one coarse workspace lock.
-        // TOCTOU (read-stale-value) is an accepted boundary: the lock only
-        // guarantees same-path read/write exclusivity, not cross-command snapshots.
+        // Per-path keys only, for same-turn partition (same-path read/write
+        // serialize). Unparseable commands take no key: cross-session bash
+        // races are accepted; mutating bash is already serial via
+        // `is_concurrency_safe`.
         let command = match input["command"].as_str() {
             Some(c) => c,
-            None => return vec![ResourceKey::Workspace],
+            None => return vec![],
         };
         let paths = super::bash_safety::extract_bash_paths(command);
         if paths.is_empty() {
-            // Heuristic fallback: a command we can't attribute to a path keeps the
-            // coarse workspace lock so it stays mutually exclusive with writes.
-            return vec![ResourceKey::Workspace];
+            return vec![];
         }
         let mut keys = Vec::new();
         for raw in paths {
@@ -798,10 +796,8 @@ mod tests {
         });
     }
 
-    // B2-3.3: bash's `resource_keys` returns per-path keys (not the coarse
-    // workspace lock) so same-path read/write serialize while different paths
-    // run in parallel. Unparseable commands fall back to the coarse workspace
-    // key so they stay mutually exclusive with writes.
+    // bash's `resource_keys` returns per-path keys for same-turn partition.
+    // Unparseable commands return no keys: they do not take a workspace lock.
     #[test]
     fn resource_keys_are_per_path_for_readonly_and_write_commands() {
         let tool = test_tool();
@@ -856,17 +852,15 @@ mod tests {
     }
 
     #[test]
-    fn resource_keys_fall_back_to_workspace_for_unparseable_command() {
+    fn resource_keys_are_empty_for_unparseable_command() {
         let tool = test_tool();
         let root = std::path::Path::new("/proj");
         let mode = crate::workspace::ToolPathMode::All;
 
-        // A command with no extractable path keeps the coarse workspace lock.
         let keys = tool.resource_keys(&serde_json::json!({"command": "make"}), mode, root);
-        assert!(keys.contains(&ResourceKey::Workspace));
+        assert!(keys.is_empty(), "unparseable bash must not take a lock: {keys:?}");
 
-        // Missing command arg also falls back.
         let keys = tool.resource_keys(&serde_json::json!({}), mode, root);
-        assert!(keys.contains(&ResourceKey::Workspace));
+        assert!(keys.is_empty());
     }
 }

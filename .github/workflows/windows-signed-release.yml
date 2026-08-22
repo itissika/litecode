@@ -14,10 +14,8 @@ on:
 
 jobs:
   linux-bundle:
-    # Builds the Linux remote-server tarball that the Windows installer embeds
-    # under extraResources (Open Remote). Uploaded as an artifact for the
-    # Windows release job below. Previously this was only built manually in WSL,
-    # which made the Windows package fail on `ensure_linux_bundle.ps1 -Require`.
+    # Builds the slim Linux remote-server tarball (kernel + web, no embed)
+    # that the Windows installer embeds under extraResources (Open Remote).
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -36,16 +34,11 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Cache embed models
-        uses: actions/cache@v4
-        with:
-          path: models/ibm-granite
-          key: embed-models-${{ hashFiles('scripts/bundle_embed_model.sh') }}
-
       - name: Build Linux server bundle
         shell: bash
         env:
           LITECODE_CHANNEL: official
+          LITECODE_BUNDLE_MODEL: "0"
         run: |
           if [ -d web/node_modules ]; then
             echo "web deps present"  # reuse if present

@@ -4,18 +4,18 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 
 import {
   deriveUserAnchorK,
-  isCompactCutRow,
   isFunctionCall,
   isFunctionCallOutput,
   isHumanUserRow,
   isHumanViewKind,
   isInProgressItem,
-  isJobExitReminderRow,
   isMessageItem,
   isReasoningItem,
+  isTranscriptMarkRow,
   itemFromRow,
   itemPlainText,
   projectionRowKey,
+  transcriptMarkKind,
 } from "../api/adapter";
 import type {
   FunctionCallItem,
@@ -30,18 +30,18 @@ import { requestFoldCardOpen } from "./foldCardState";
 import { useSessionStore } from "../stores/sessionStore";
 import { useEditorStore } from "../stores/editorStore";
 import { useTurnStore } from "../stores/turnStore";
-import { WaveText } from "./WaveText";
 import { isInlineTool, processToolBucket } from "../lib/toolCategory";
 import { useStickToBottom } from "../lib/scrollStick";
 import { ToolCallCard } from "./ToolCallCard";
 import { isToolCallLive, processGroupAutoOpen } from "./toolCallStatus";
 import { MiniChatInput, type MiniChatInputSettings } from "./MiniChatInput";
+import { CompactingMark, TranscriptMark, TranscriptMarkForRow } from "./transcriptMarks";
 
 type RenderNode =
   | { kind: "text"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
   | { kind: "reasoning"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
-  | { kind: "compact_cut"; key: string; streaming: boolean }
-  | { kind: "job_exit"; reason: "exit" | "kill" | "timeout"; key: string; streaming: boolean; live: false }
+  | { kind: "compact_cut"; key: string; streaming: boolean; live: false }
+  | { kind: "job_exit"; key: string; streaming: boolean; live: false }
   | {
       kind: "tool";
       call: FunctionCallItem;
@@ -56,69 +56,6 @@ export interface EditingUserAnchor {
   userAnchorK: number;
   draft: string;
   settings: MiniChatInputSettings;
-}
-
-/** Cut mark between transcript items — not a divider bubble, not summary text. */
-export function CompactCutMark() {
-  return (
-    <div
-      role="separator"
-      aria-label="Context compacted here"
-      className="flex items-center gap-1.5 py-1"
-    >
-      <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
-      <span className="text-dk-2xs text-(--_dk-text-disabled)">compaction point</span>
-    </div>
-  );
-}
-
-export function JobExitMark({ reason }: { reason: "exit" | "kill" | "timeout" }) {
-  const label = reason === "kill"
-    ? "Background terminal stopped"
-    : reason === "timeout"
-      ? "Background terminal timed out"
-      : "Background terminal exited";
-  return (
-    <div
-      role="status"
-      aria-label={label}
-      className="flex items-center gap-1.5 py-1"
-    >
-      <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
-      <span className="text-dk-2xs text-(--_dk-text-disabled)">{label}</span>
-    </div>
-  );
-}
-
-/** Transient "compacting in progress" line — shown while a compaction runs,
- *  replaced by the `CompactCutMark` (compaction point) when the checkpoint
- *  item lands. Uses the same per-character wave as the wait-shell text. */
-export function CompactingMark() {
-  return (
-    <div
-      role="status"
-      aria-label="Compacting context"
-      data-testid="compacting-now"
-      className="flex items-center gap-1.5 py-1"
-    >
-      <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
-      <WaveText text="compacting…" className="text-dk-2xs" />
-    </div>
-  );
-}
-
-/** Bash-exit auto-turn input is a user-role reminder; show a one-line notice. */
-export function SystemReminderMark() {
-  return (
-    <div
-      role="status"
-      aria-label="Terminal killed"
-      className="flex items-center gap-1.5 py-1"
-    >
-      <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
-      <span className="text-dk-2xs text-(--_dk-text-disabled)">Terminal killed</span>
-    </div>
-  );
 }
 
 function outputsByCallId(rows: HumanRow[]): Map<string, FunctionCallOutputItem> {
@@ -151,12 +88,9 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
   for (const row of rows) {
     const streaming = rowInProgress(row);
     const key = projectionRowKey(row);
-    if (isCompactCutRow(row)) {
-      nodes.push({ kind: "compact_cut", key, streaming: false });
-      continue;
-    }
-    if (isJobExitReminderRow(row)) {
-      nodes.push({ kind: "job_exit", reason: row.body.reason, key, streaming: false, live: false });
+    const mark = transcriptMarkKind(row);
+    if (mark) {
+      nodes.push({ kind: mark, key, streaming: false, live: false });
       continue;
     }
     if (!isHumanViewKind(row.kind) || row.kind === "item/tool_result") continue;
@@ -311,9 +245,8 @@ export function NodeView({
         />
       );
     case "compact_cut":
-      return <CompactCutMark />;
     case "job_exit":
-      return <JobExitMark reason={node.reason} />;
+      return <TranscriptMark kind={node.kind} />;
   }
 }
 
@@ -473,7 +406,7 @@ function ItemBubbleImpl({
   const sessionSettings = useSessionStore((s) => s.byId.get(sessionId));
   const replayFromAnchor = useTurnStore((s) => s.replayFromAnchor);
   const replaying = useTurnStore((s) => s.byId.get(sessionId)?.replaying ?? false);
-  const first = rows.find((r) => !isCompactCutRow(r)) ?? rows[0];
+  const first = rows.find((r) => !isTranscriptMarkRow(r)) ?? rows[0];
   const isUser = first != null && isHumanUserRow(first);
   const nodes = rowsToNodes(rows);
   const streaming =
@@ -612,7 +545,7 @@ export const ItemBubble = memo(
 );
 
 function firstContentRow(group: HumanRow[]): HumanRow | undefined {
-  return group.find((row) => !isCompactCutRow(row));
+  return group.find((row) => !isTranscriptMarkRow(row));
 }
 
 /**
@@ -620,8 +553,8 @@ function firstContentRow(group: HumanRow[]): HumanRow | undefined {
  * consecutive non-user Items (live shells or sealed) coalesce into one assistant bubble
  * so process/output grouping still works across Item atoms.
  *
- * Compact replace is its own barrier (not pushed into the previous assistant
- * bubble, not glued onto the next user bubble).
+ * Transcript marks (`compacted`, `reminder/job_exit`) are their own barrier
+ * (not pushed into the previous assistant bubble, not glued onto the next user bubble).
  */
 export function groupRowsForBubbles(rows: HumanRow[]): HumanRow[][] {
   const groups: HumanRow[][] = [];
@@ -636,7 +569,7 @@ export function groupRowsForBubbles(rows: HumanRow[]): HumanRow[][] {
 
   for (const row of rows) {
     if (!isHumanViewKind(row.kind)) continue;
-    if (isCompactCutRow(row) || isJobExitReminderRow(row)) {
+    if (isTranscriptMarkRow(row)) {
       flush();
       groups.push([row]);
       continue;
@@ -753,13 +686,10 @@ export const MessageList = memo(function MessageList({
   onMiniAnimationEnd = () => {},
 }: MessageListProps) {
   const bubbles = useMemo(() => groupRowsForBubbles(messages), [messages]);
-  // Transient "compacting now" phase: manual compaction surfaces via `compacting`
-  // (exclusive lease), auto via `turnPhase === "compacting"`. The real checkpoint
-  // item replaces the pending row with a CompactCutMark on success.
-  const compactingNow = useTurnStore((s) => {
-    const t = s.byId.get(sessionId);
-    return (t?.compacting ?? false) || t?.turnPhase === "compacting";
-  });
+  // Transient "compacting now" line: `compacting` is set on started and cleared
+  // on succeeded/failed. Do not key off `turnPhase`, which can stay compacting
+  // after the checkpoint lands.
+  const compactingNow = useTurnStore((s) => s.byId.get(sessionId)?.compacting ?? false);
   const loader = canLoadMore ? 1 : 0;
   const count = loader + bubbles.length + (compactingNow ? 1 : 0);
 
@@ -938,7 +868,7 @@ export const MessageList = memo(function MessageList({
             const group = bubbles[bubbleIndex];
             if (!group) return null;
 
-            const cutOnly = group.every(isCompactCutRow);
+            const cutOnly = group.every(isTranscriptMarkRow);
             const first = firstContentRow(group);
             const firstIdx = first ? messages.indexOf(first) : -1;
             const sealed = first != null && first.seq >= 0;
@@ -961,7 +891,7 @@ export const MessageList = memo(function MessageList({
               >
                 {cutOnly
                   ? group.map((cut) => (
-                      <CompactCutMark key={projectionRowKey(cut)} />
+                      <TranscriptMarkForRow key={projectionRowKey(cut)} row={cut} />
                     ))
                   : (
                   <ItemBubble

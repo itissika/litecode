@@ -12,6 +12,8 @@
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
+    "@milkdown/crepe": "^7.22.1",
+    "@milkdown/kit": "^7.22.1",
     "@monaco-editor/react": "^4.7.0",
     "@phosphor-icons/react": "^2.1.10",
     "@tanstack/react-virtual": "^3.14.4",

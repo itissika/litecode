@@ -138,13 +138,13 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 |---|---|---|---|---|
 | `compacted` | 本行替换 `[from, to)`。被换行仍在 SessionLog | 切痕，不展示摘要 | 脊骨**最前**一条由 `summary` 装配的 assistant `Item`（不回写） | `{ summary, from, to }` |
 
-#### 后台任务事件 — 不是人键入；`body` 不是 `Item`
+#### 后台任务事件 — 不是人键入；body 仍是 user `Item`
 
 | kind | 脊骨 | HumanView | AgentView | body |
 |---|---|---|---|---|
-| `reminder/job_exit` | 追加 | 终端退出系统标记 | 带标记的 user `Item` | `{ job_id?, reason: exit \| kill \| timeout, text }` |
+| `reminder/job_exit` | 追加 | 切痕，同 `compacted` | 原样 user `Item` | 与 `item/user` 相同的 message JSON |
 
-后台 job 结束先记为 `reminder/job_exit`，再由 Live 决定是否开一轮；不用 `seal`，也不写成 `item/user`。
+后台 job 结束先以 `reminder/job_exit` 写入同一条 item 通道，再 `spawn_turn`；`already_last_user` 避免再写一条 `item/user`。锚点仍只认 `item/user`。
 
 #### 控制面 — 不进脊骨，两 View 都不读
 
@@ -173,7 +173,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 | 职责 | 模型原子 |
 | 身份 | 无（`ItemId` / `CallId` 都不是 `LogSeq`） |
 | 形状 | SDK `message` / `reasoning` / `function_call` / `function_call_output` |
-| 规则 | 入账的 user `message` 只有 `item/user`。AgentView 可另造带标记的 user/developer `Item`。bash、websearch 仍是 `function_call` |
+| 规则 | 人键入的 user `message` 记 `item/user`。后台退出记 `reminder/job_exit`，body 同形。AgentView 可另造带标记的 user/developer `Item`。bash、websearch 仍是 `function_call` |
 
 ---
 
@@ -205,7 +205,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 |---|---|
 | 职责 | 这一步发给 provider 的 `Item[]` |
 | 身份 | 无 |
-| 形状 | 按脊骨取 `body`，再按 kind 装配 |
+| 形状 | 按脊骨取 `body`（`compacted` 抽成 assistant Item） |
 | 规则 | 可跳过、裁剪、补未完成 call。不回写 SessionLog |
 
 ---

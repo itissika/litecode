@@ -4,9 +4,9 @@
 /// also build custom layer sets without inventing new glob tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FilterLayers {
-    /// VS Code `files.exclude` defaults.
+    /// Workspace `files.exclude` list.
     pub files_exclude: bool,
-    /// VS Code `search.exclude` defaults (always composed with `files_exclude`
+    /// Workspace `search.exclude` list (always composed with `files_exclude`
     /// when both are on — same as VS Code `getExcludes`).
     pub search_exclude: bool,
     /// VS Code `files.watcherExclude` defaults.

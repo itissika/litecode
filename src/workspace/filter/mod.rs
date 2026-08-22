@@ -1,7 +1,8 @@
 //! Unified workspace path filtering: orthogonal layers + named presets.
 //!
-//! Defaults come from VS Code (`files.exclude` / `search.exclude` /
-//! `files.watcherExclude`) and ripgrep (gitignore / hidden / binary). Index
+//! Exclude globs are workspace-owned (`.litecode/excludes.json`), seeded from
+//! VS Code (`files.exclude` / `search.exclude` / `files.watcherExclude`).
+//! Walks also compose ripgrep (gitignore / hidden / binary). Index
 //! content gates are the product [`index_policy`] migrated from code_search.
 //! Directory discovery for search / Agent / Index shares files∪search; product
 //! internal dirs and snapshot-only trees compose via [`dirs`].
@@ -16,6 +17,7 @@ mod path;
 mod path_glob;
 mod preset;
 mod walk;
+mod workspace_excludes;
 
 pub use binary::looks_binary;
 pub use defaults::{
@@ -40,4 +42,10 @@ pub use preset::{FilterPreset, exclude_globs, search_and_files_exclude_globs};
 pub use walk::{
     WalkOptions, configure_walk, configure_walk_under, configure_walk_with, walk_builder,
     walk_builder_with,
+};
+pub use workspace_excludes::{
+    WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView,
+    activate_workspace_excludes, active_workspace_excludes, ensure_workspace_excludes,
+    persist_workspace_excludes, read_workspace_excludes, workspace_excludes_path,
+    write_workspace_excludes,
 };

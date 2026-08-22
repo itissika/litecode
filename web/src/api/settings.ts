@@ -211,6 +211,17 @@ export interface LogSettings {
   level: string | null;
 }
 
+export interface WorkspaceExcludesLists {
+  files_exclude: string[];
+  search_exclude: string[];
+  watcher_exclude: string[];
+  git_ignore: boolean;
+}
+
+export interface WorkspaceExcludes extends WorkspaceExcludesLists {
+  defaults: WorkspaceExcludesLists;
+}
+
 export interface RevisionResponse {
   revision: number;
 }
@@ -523,6 +534,20 @@ export async function putLog(level: string | null): Promise<RevisionResponse> {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ level }),
+  });
+}
+
+export async function getExcludes(): Promise<WorkspaceExcludes> {
+  return requestJson<WorkspaceExcludes>("/api/settings/excludes");
+}
+
+export async function putExcludes(
+  body: WorkspaceExcludesLists,
+): Promise<WorkspaceExcludes> {
+  return requestJson<WorkspaceExcludes>("/api/settings/excludes", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
 }
 

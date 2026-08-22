@@ -1,4 +1,4 @@
-import { Link, Cube, WrenchIcon, Robot, GearSix, Cpu, Code, Plugs } from "@phosphor-icons/react";
+import { Link, Cube, WrenchIcon, Robot, GearSix, Cpu, Code, Plugs, Tree } from "@phosphor-icons/react";
 
 import { useSettingsStore, type SettingsSection } from "../../stores/settingsStore";
 import { SettingsSkeleton } from "../../components/ui/Skeleton";
@@ -10,6 +10,7 @@ import { CustomToolsSection } from "./settings/CustomToolsSection";
 import { McpServersSection } from "./settings/McpServersSection";
 import { AgentsSection } from "./settings/AgentsSection";
 import { AdvancedSection } from "./settings/AdvancedSection";
+import { FilesSection } from "./settings/FilesSection";
 import { EnginesSection } from "./settings/engines/EnginesSection";
 
 const NAV_GROUPS: {
@@ -36,6 +37,7 @@ const NAV_GROUPS: {
     title: "System",
     items: [
       { id: "engines", label: "Engines", Icon: Cpu },
+      { id: "files", label: "Files", Icon: Tree },
       { id: "advanced", label: "Advanced", Icon: GearSix },
     ],
   },
@@ -59,6 +61,8 @@ function SectionContent({ section }: { section: SettingsSection }) {
       return <ModelsSection />;
     case "engines":
       return <EnginesSection />;
+    case "files":
+      return <FilesSection />;
     case "tool-catalog":
       return <ToolCatalogSection />;
     case "custom-tools":

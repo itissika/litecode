@@ -141,6 +141,81 @@ async fn settings_log_get_put() {
 }
 
 #[tokio::test]
+async fn settings_excludes_seed_and_put() {
+    let _restore = RestoreBuiltinExcludes;
+    let ws = TempDir::new().expect("ws");
+    let db_dir = TempDir::new().expect("db");
+    let db_path = db_dir.path().join("litecode.db");
+    seed_global_db(&db_path);
+
+    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path.clone());
+    let addr = spawn_server(state, web_dist).await;
+    let base = format!("http://{addr}/api/settings/excludes");
+    let client = test_http_client();
+
+    let get: Value = client
+        .get(&base)
+        .send()
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    assert!(get["ok"].as_bool().unwrap_or(false));
+    let search = get["search_exclude"]
+        .as_array()
+        .expect("search_exclude");
+    assert!(
+        search
+            .iter()
+            .any(|v| v.as_str().is_some_and(|s| s.contains("node_modules"))),
+        "{search:?}"
+    );
+    assert_eq!(get["git_ignore"].as_bool(), Some(true));
+
+    let put = client
+        .put(&base)
+        .json(&serde_json::json!({
+            "files_exclude": ["**/.git"],
+            "search_exclude": ["**/vendor"],
+            "watcher_exclude": ["*.litecode-tmp*"],
+            "git_ignore": false
+        }))
+        .send()
+        .await
+        .expect("put");
+    assert!(put.status().is_success());
+    let body: Value = put.json().await.expect("json");
+    assert_eq!(body["git_ignore"].as_bool(), Some(false));
+    let search2 = body["search_exclude"].as_array().expect("search after put");
+    assert!(
+        !search2
+            .iter()
+            .any(|v| v.as_str().is_some_and(|s| s.contains("node_modules")))
+    );
+    assert!(
+        search2
+            .iter()
+            .any(|v| v.as_str() == Some("**/vendor"))
+    );
+
+    let disk = std::fs::read_to_string(ws.path().join(".litecode").join("excludes.json"))
+        .expect("excludes.json");
+    assert!(disk.contains("**/vendor"));
+    assert!(!disk.contains("node_modules"));
+}
+
+struct RestoreBuiltinExcludes;
+
+impl Drop for RestoreBuiltinExcludes {
+    fn drop(&mut self) {
+        litecode::workspace::filter::activate_workspace_excludes(
+            litecode::workspace::filter::WorkspaceExcludesFile::builtin_defaults(),
+        );
+    }
+}
+
+#[tokio::test]
 async fn settings_auth_endpoint_removed() {
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");

@@ -139,47 +139,6 @@ impl CompactedBody {
     }
 }
 
-fn tagged_user_item(kind: &str, text: &str) -> crate::types::Item {
-    crate::types::user_text(format!("[{kind}]\n{text}"))
-}
-
-/// Body for `reminder/job_exit`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReminderJobExitBody {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub job_id: Option<String>,
-    pub reason: ReminderJobExitReason,
-    pub text: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReminderJobExitReason {
-    Exit,
-    Kill,
-    Timeout,
-}
-
-impl ReminderJobExitBody {
-    pub fn agent_item(&self) -> crate::types::Item {
-        let label = match self.job_id.as_deref() {
-            Some(id) => format!("reminder/job_exit {} {id}", self.reason.as_str()),
-            None => format!("reminder/job_exit {}", self.reason.as_str()),
-        };
-        tagged_user_item(&label, &self.text)
-    }
-}
-
-impl ReminderJobExitReason {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Exit => "exit",
-            Self::Kill => "kill",
-            Self::Timeout => "timeout",
-        }
-    }
-}
-
 /// The only persisted SessionMeta fields. Live and catalog projections do not
 /// belong in this type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

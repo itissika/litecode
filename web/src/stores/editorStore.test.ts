@@ -35,6 +35,7 @@ beforeEach(() => {
     conflicts: {},
     activePath: null,
     saving: false,
+    mdViewByPath: {},
   });
   mockedReadFile.mockReset();
   mockedWriteFile.mockReset();
@@ -189,5 +190,19 @@ describe("remapTabs on rename", () => {
     await useEditorStore.getState().handleWorkspaceChange(["src/a.ts"], "deleted");
     expect(useEditorStore.getState().tabs).toHaveLength(1);
     expect(useEditorStore.getState().tabs[0]?.path).toBe("src/b.ts");
+  });
+});
+
+describe("markdown editor view", () => {
+  it("forces source when opening a markdown file at a line", async () => {
+    mockedReadFile.mockResolvedValue("# hi\n");
+    await useEditorStore.getState().openFileAt("docs/readme.md", 2);
+    expect(useEditorStore.getState().mdViewByPath["docs/readme.md"]).toBe(
+      "source",
+    );
+    expect(useEditorStore.getState().pendingReveal).toEqual({
+      path: "docs/readme.md",
+      line: 2,
+    });
   });
 });

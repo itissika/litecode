@@ -6,6 +6,7 @@ import {
   getAgent,
   getAdapters,
   getLog,
+  getExcludes,
   getModels,
   getProviders,
   getWebSearch,
@@ -16,6 +17,7 @@ import {
   putAgent,
   applyAgentToolPreset,
   putLog,
+  putExcludes,
   putModels,
   putProviders,
   putWebSearch,
@@ -38,6 +40,8 @@ import {
   type McpServerDefinition,
   type McpServerItem,
   type LogSettings,
+  type WorkspaceExcludes,
+  type WorkspaceExcludesLists,
   type ModelDefinition,
   type ProviderDefinition,
   type ProviderView,
@@ -67,6 +71,7 @@ export type SettingsSection =
   | "custom-tools"
   | "mcp"
   | "agents"
+  | "files"
   | "advanced";
 
 // Catalog warmup poll: exponential backoff, then a quiet keep-alive at the
@@ -144,6 +149,7 @@ interface SettingsStoreState {
   selectedAgentId: string;
   agents: Record<string, AgentProfile>;
   log: LogSettings | null;
+  excludes: WorkspaceExcludes | null;
   loading: boolean;
   saving: boolean;
   loadError: string | null;
@@ -183,6 +189,7 @@ interface SettingsStore extends SettingsStoreState {
   createAgent: (id: string, profile: AgentProfile) => Promise<void>;
   removeAgent: (id: string) => Promise<void>;
   saveLog: (level: string | null) => Promise<void>;
+  saveExcludes: (body: WorkspaceExcludesLists) => Promise<void>;
   isSaveBlocked: () => boolean;
 }
 
@@ -295,6 +302,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   selectedAgentId: "default",
   agents: {},
   log: null,
+  excludes: null,
   loading: false,
   saving: false,
   loadError: null,
@@ -425,7 +433,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
     try {
       const summary = await getSettingsSummary();
-      const [adapters, providers, websearch, models, catalogPayload, customTools, mcpServers, log] =
+      const [adapters, providers, websearch, models, catalogPayload, customTools, mcpServers, log, excludes] =
         await Promise.all([
           getAdapters(),
           getProviders(),
@@ -435,6 +443,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
           getCustomTools(),
           getMcpServers(),
           getLog(),
+          getExcludes(),
         ]);
       const agentIds = await loadSettingsAgentIds();
       const agents: Record<string, AgentProfile> = {};
@@ -462,6 +471,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
           ? get().selectedAgentId
           : agentIds[0] ?? "default",
         log,
+        excludes,
         loading: false,
       });
     } catch (err) {
@@ -795,6 +805,23 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     try {
       const { revision } = await putLog(level);
       set({ revision, log: { level }, saving: false });
+    } catch (err) {
+      set({ saving: false });
+      handleSaveError(err);
+      throw err;
+    }
+  },
+
+  saveExcludes: async (body) => {
+    if (turnInProgress()) {
+      const err = new SettingsApiError(409, "turn_in_progress");
+      handleSaveError(err);
+      throw err;
+    }
+    set({ saving: true });
+    try {
+      const excludes = await putExcludes(body);
+      set({ excludes, saving: false });
     } catch (err) {
       set({ saving: false });
       handleSaveError(err);

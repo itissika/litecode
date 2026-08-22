@@ -1,7 +1,7 @@
 //! Named presets: fixed compositions of [`super::layers::FilterLayers`].
 
-use super::defaults::{FILES_EXCLUDE, SEARCH_EXCLUDE, WATCHER_EXCLUDE};
 use super::layers::FilterLayers;
+use super::workspace_excludes::active_workspace_excludes;
 
 /// Consumer-facing filter presets. Semantics follow VS Code / ripgrep / product
 /// index policy — not ad-hoc denylists.
@@ -33,7 +33,7 @@ pub enum FilterPreset {
 
 impl FilterPreset {
     pub fn layers(self) -> FilterLayers {
-        match self {
+        let mut layers = match self {
             Self::Explorer => FilterLayers {
                 files_exclude: true,
                 search_exclude: false,
@@ -102,29 +102,37 @@ impl FilterPreset {
                 skip_binary: true,
                 index_content: true,
             },
+        };
+        if !active_workspace_excludes().git_ignore {
+            layers.git_ignore = false;
+            layers.git_global = false;
+            layers.git_exclude = false;
         }
+        layers
     }
 }
 
 /// VS Code `getExcludes(includeSearchExcludes=true)`: files ∪ search.
-pub fn search_and_files_exclude_globs() -> Vec<&'static str> {
-    let mut out = Vec::with_capacity(FILES_EXCLUDE.len() + SEARCH_EXCLUDE.len());
-    out.extend_from_slice(FILES_EXCLUDE);
-    out.extend_from_slice(SEARCH_EXCLUDE);
+pub fn search_and_files_exclude_globs() -> Vec<String> {
+    let cfg = active_workspace_excludes();
+    let mut out = Vec::with_capacity(cfg.files_exclude.len() + cfg.search_exclude.len());
+    out.extend(cfg.files_exclude);
+    out.extend(cfg.search_exclude);
     out
 }
 
 /// Glob patterns active for a preset's exclude expression (path matching).
-pub fn exclude_globs(preset: FilterPreset) -> Vec<&'static str> {
+pub fn exclude_globs(preset: FilterPreset) -> Vec<String> {
+    let cfg = active_workspace_excludes();
     let layers = preset.layers();
     let mut out = Vec::new();
     if layers.watcher_exclude {
-        out.extend_from_slice(WATCHER_EXCLUDE);
+        out.extend(cfg.watcher_exclude);
     }
     if layers.search_exclude {
         out.extend(search_and_files_exclude_globs());
     } else if layers.files_exclude {
-        out.extend_from_slice(FILES_EXCLUDE);
+        out.extend(cfg.files_exclude);
     }
     out
 }

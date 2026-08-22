@@ -5,9 +5,7 @@ use serde_json::Value;
 
 use crate::types::{Item, LitecodeError, Result, item_text_preview};
 
-use super::model::{
-    CompactedBody, LogState, ReminderJobExitBody,
-};
+use super::model::{CompactedBody, LogState};
 use super::surface::{Surface, SurfaceOp, apply_plan, plan_surface};
 use crate::authority::responses::{MessageItem, OutputStatus};
 
@@ -93,6 +91,7 @@ impl EventType {
                 | Self::ItemToolCall
                 | Self::ItemToolResult
                 | Self::Compacted
+                | Self::ReminderJobExit
         )
     }
 
@@ -103,13 +102,8 @@ impl EventType {
         )
     }
 
-    /// System reminder kinds enter the spine; AgentView tags them.
-    pub fn is_injection(&self) -> bool {
-        matches!(self, Self::ReminderJobExit)
-    }
-
     pub fn enters_spine(&self) -> bool {
-        self.is_item() || matches!(self, Self::Compacted) || self.is_injection()
+        self.is_item() || matches!(self, Self::Compacted | Self::ReminderJobExit)
     }
 
     /// Control-plane kinds are stored in SessionLog but never enter the spine.
@@ -226,13 +220,6 @@ pub fn finalize_draft(seq: Seq, draft: EventDraft) -> Result<SessionEvent> {
                 "compacted derives its spine replacement from body".into(),
             ));
         }
-    } else if draft.event_type.is_injection() {
-        parse_injection_body(&draft.event_type, &frozen)?;
-        if draft.surface_op.is_some() {
-            return Err(LitecodeError::InvalidSessionEvent(
-                "injection kinds derive spine append from kind".into(),
-            ));
-        }
     } else if draft.event_type.is_surface_eligible() {
         if draft.surface_op.is_none() {
             return Err(LitecodeError::InvalidSessionEvent(
@@ -278,25 +265,11 @@ pub fn item_from_event(event: &SessionEvent) -> Result<Item> {
     serde_json::from_value(event.data.clone()).map_err(Into::into)
 }
 
-fn parse_injection_body(event_type: &EventType, data: &Value) -> Result<()> {
-    match event_type {
-        EventType::ReminderJobExit => {
-            serde_json::from_value::<ReminderJobExitBody>(data.clone()).map(|_| ())
-        }
-        _ => Ok(()),
-    }
-    .map_err(|e| LitecodeError::InvalidSessionEvent(format!("invalid injection body: {e}")))
-}
-
-/// AgentView assembly for a spine row. Injection/compacted bodies are not `Item`.
+/// AgentView assembly for a spine row. Compacted bodies are not `Item`.
 pub fn spine_agent_item(event: &SessionEvent) -> Result<Item> {
     match event.event_type {
         EventType::Compacted => {
             let body: CompactedBody = serde_json::from_value(event.data.clone())?;
-            Ok(body.agent_item())
-        }
-        EventType::ReminderJobExit => {
-            let body: ReminderJobExitBody = serde_json::from_value(event.data.clone())?;
             Ok(body.agent_item())
         }
         _ => item_from_event(event),

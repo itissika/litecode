@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 export const LINUX_TAR_NAME = "litecode-server-linux-x64.tar.gz";
 export const BUNDLED_MODEL_REL = "ibm-granite/granite-embedding-97m-multilingual-r2";
+/** Written beside the extracted server; SHA-256 of the local embed tree (not app version). */
+export const MODEL_STAMP_FILE = ".model.sha256";
 
 const HF_TOKENIZER = "tokenizer.json";
 const HF_CONFIG = "config.json";
@@ -25,6 +28,27 @@ export function isModelDirReady(dir: string): boolean {
     fs.existsSync(path.join(dir, HF_CONFIG)) &&
     (fs.existsSync(path.join(dir, ONNX_Q8Q4)) || fs.existsSync(path.join(dir, ONNX_LEGACY)))
   );
+}
+
+const MODEL_HASH_RELS = [
+  HF_TOKENIZER,
+  HF_CONFIG,
+  path.join("1_Pooling", "config.json"),
+  ONNX_Q8Q4,
+  `${ONNX_Q8Q4}.data`,
+  ONNX_LEGACY,
+];
+
+/** Stable fingerprint of a ready HF embed directory for remote skip-if-match. */
+export function hashModelDir(dir: string): string {
+  const hash = createHash("sha256");
+  for (const rel of MODEL_HASH_RELS) {
+    const file = path.join(dir, rel);
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) continue;
+    hash.update(rel.replaceAll("\\", "/"));
+    hash.update(fs.readFileSync(file));
+  }
+  return hash.digest("hex");
 }
 
 /** Accept HF dir, models/ root, or bundle root. */

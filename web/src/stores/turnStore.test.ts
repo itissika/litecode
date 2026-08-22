@@ -638,7 +638,7 @@ describe("grantPermission receipt (FE-04)", () => {
     expect(toasts).toContain("Workspace snapshot track failed");
   });
 
-  it("onTurnStarted hydrates a user row for server-initiated input", () => {
+  it("onTurnStarted does not hydrate a user row for server-initiated input", () => {
     const sessionId = "s-idle-kill";
     useTurnStore.getState().onTurnStarted({
       session_id: sessionId,
@@ -651,21 +651,7 @@ describe("grantPermission receipt (FE-04)", () => {
     expect(slice.currentTurnId).toBe("t-idle");
     const rows = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
     expect(rows).toHaveLength(0);
-    const pending = useMessageStore.getState().bySession.get(sessionId)?.pendingUser;
-    expect(pending).toBeTruthy();
-    expect(itemPlainText(pending!.item)).toBe(
-      "<system-reminder>bash exited</system-reminder>",
-    );
-
-    useTurnStore.getState().onTurnStarted({
-      session_id: sessionId,
-      turn_id: "t-idle",
-      input: "<system-reminder>bash exited</system-reminder>",
-      step_max: 8,
-    });
-    const again = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
-    expect(again).toHaveLength(0);
-    expect(useMessageStore.getState().bySession.get(sessionId)?.pendingUser).toBeTruthy();
+    expect(useMessageStore.getState().bySession.get(sessionId)?.pendingUser).toBeNull();
   });
 
   it("onTurnStarted does not duplicate an optimistic start() user row", () => {
@@ -682,7 +668,7 @@ describe("grantPermission receipt (FE-04)", () => {
     expect(useMessageStore.getState().bySession.get(sessionId)?.pendingUser).toBeTruthy();
   });
 
-  it("onTurnStarted does not treat a compact checkpoint as the last human user", () => {
+  it("onTurnStarted does not treat a compact checkpoint as a user message", () => {
     const sessionId = "s-cp-last-user";
     useMessageStore.getState().onBufferLoaded(sessionId, {
       session_id: sessionId,
@@ -699,11 +685,9 @@ describe("grantPermission receipt (FE-04)", () => {
       step_max: 5,
     });
     const rows = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
-    const pending = useMessageStore.getState().bySession.get(sessionId)?.pendingUser;
     expect(rows).toHaveLength(1);
     expect(isCompactCutRow(rows[0]!)).toBe(true);
-    expect(pending).toBeTruthy();
-    expect(itemPlainText(pending!.item)).toBe("rolled-up");
+    expect(useMessageStore.getState().bySession.get(sessionId)?.pendingUser).toBeNull();
   });
 });
 

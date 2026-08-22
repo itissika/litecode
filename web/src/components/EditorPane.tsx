@@ -1,5 +1,6 @@
 import Editor from "@monaco-editor/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { CodeIcon, MarkdownLogoIcon } from "@phosphor-icons/react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { DockviewPanelApi } from "dockview-react";
 import type { editor } from "monaco-editor";
 
@@ -21,6 +22,16 @@ import {
 } from "../theme/monaco";
 import { getTheme, THEME_CHANGE_EVENT } from "../lib/theme";
 import { languageFromPath } from "../utils/language";
+import {
+  isWysiwygMarkdownPath,
+  resolveMdEditorView,
+  WYSIWYG_MARKDOWN_MAX_CHARS,
+} from "../utils/wysiwygMarkdown";
+
+const MilkdownMarkdownEditor = lazy(async () => {
+  const mod = await import("./MilkdownMarkdownEditor");
+  return { default: mod.MilkdownMarkdownEditor };
+});
 
 export function EditorPane({ filePath, api }: { filePath: string; api?: DockviewPanelApi }) {
   const tab = useEditorStore((s) => s.tabs.find((t) => t.path === filePath) ?? null);
@@ -36,16 +47,32 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
     return s.engineStatuses.lsp?.desired === true;
   });
   const setContent = useEditorStore((s) => s.setContent);
+  const setMdView = useEditorStore((s) => s.setMdView);
+  const mdViewOverride = useEditorStore((s) => s.mdViewByPath[filePath]);
   const pendingReveal = useEditorStore((s) => s.pendingReveal);
   const conflict = useEditorStore((s) => s.conflicts[filePath] ?? null);
   const clearConflict = useEditorStore((s) => s.clearConflict);
 
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
   const editorRef = useRef<editor.ICodeEditor | null>(null);
+  const milkdownHostRef = useRef<HTMLDivElement | null>(null);
   const lspDisposeRef = useRef<(() => void) | null>(null);
   const [monacoTheme, setMonacoTheme] = useState(
     () => getTheme() === "light" ? LITECODE_MONACO_THEME_LIGHT : LITECODE_MONACO_THEME_DARK
   );
+
+  const mdView = resolveMdEditorView(
+    filePath,
+    tab?.content.length ?? 0,
+    mdViewOverride,
+  );
+  const showMdToggle = isWysiwygMarkdownPath(filePath)
+    && (tab?.content.length ?? 0) <= WYSIWYG_MARKDOWN_MAX_CHARS;
+  const useWysiwyg = mdView === "wysiwyg";
+
+  useEffect(() => {
+    if (useWysiwyg) editorRef.current = null;
+  }, [useWysiwyg]);
 
   const syncLspRegistration = useCallback(
     (monaco: typeof import("monaco-editor")) => {
@@ -78,6 +105,10 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
           // so workbench-level Ctrl+S targets the file the user is looking at.
           useEditorStore.setState({ activePath: filePath });
           editorRef.current?.focus();
+          const prose = milkdownHostRef.current?.querySelector<HTMLElement>(
+            ".ProseMirror",
+          );
+          prose?.focus();
         }
       }),
     ];
@@ -141,6 +172,30 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
 
   return (
     <div className="flex h-full flex-col">
+      {showMdToggle && (
+        <div className="flex h-7 shrink-0 items-center justify-end gap-1 border-b border-(--_dk-line-visible) bg-(--_dk-editor) px-2">
+          <button
+            type="button"
+            className={`btn-xs inline-flex items-center gap-1 ${useWysiwyg ? "btn-primary" : "btn-ghost"}`}
+            title="Markdown"
+            aria-pressed={useWysiwyg}
+            onClick={() => setMdView(filePath, "wysiwyg")}
+          >
+            <MarkdownLogoIcon size={12} />
+            Markdown
+          </button>
+          <button
+            type="button"
+            className={`btn-xs inline-flex items-center gap-1 ${!useWysiwyg ? "btn-primary" : "btn-ghost"}`}
+            title="Source"
+            aria-pressed={!useWysiwyg}
+            onClick={() => setMdView(filePath, "source")}
+          >
+            <CodeIcon size={12} />
+            Source
+          </button>
+        </div>
+      )}
       <div className="relative min-h-0 flex-1 h-full">
         {tab ? (
           <>
@@ -161,6 +216,25 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
                 onDismiss={() => clearConflict(conflict.path)}
               />
             )}
+            {useWysiwyg ? (
+              tab.loading ? null : (
+              <div ref={milkdownHostRef} className="h-full">
+                <Suspense
+                  fallback={
+                    <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-muted)">
+                      Loading editor…
+                    </div>
+                  }
+                >
+                  <MilkdownMarkdownEditor
+                    filePath={filePath}
+                    content={tab.content ?? ""}
+                    onChange={(markdown) => setContent(filePath, markdown)}
+                  />
+                </Suspense>
+              </div>
+              )
+            ) : (
             <Editor
               path={tab.path ?? filePath}
               height="100%"
@@ -210,6 +284,7 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
                 tabSize: 2,
               }}
             />
+            )}
           </>
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-disabled)">

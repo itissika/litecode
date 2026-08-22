@@ -121,8 +121,14 @@ export function toolTitle(
   }
   if (["bash", "shell", "command"].includes(toolName)) {
     const description = stringField(obj, "description");
-    if (toolName === "bash") return { summary: description ? truncate(description) : "" };
-    return { summary: truncate(description ?? stringField(obj, "command") ?? "") };
+    const command = stringField(obj, "command");
+    if (toolName === "bash") {
+      // The bash schema has no `description` field (agents sometimes add it as
+      // an extra arg, but usually omit it) — the command is the reliable,
+      // informative title.
+      return { summary: truncate(command ?? description ?? "") };
+    }
+    return { summary: truncate(description ?? command ?? "") };
   }
   return { summary: fallbackSummary(input) };
 }

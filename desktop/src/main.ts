@@ -386,39 +386,41 @@ async function stopManagedRemote(): Promise<void> {
 }
 
 async function installLinuxBundle(session: SshSession): Promise<void> {
+  const dest = remoteBundleInstallDir();
+  const repoRoot = app.isPackaged ? undefined : path.resolve(app.getAppPath(), "..");
+  const modelDir = resolveBundledModelDir({
+    sidecarRoot: sidecarRoot(),
+    repoRoot,
+  });
+  if (modelDir) {
+    emitRemoteProgress({
+      stage: "upload",
+      ratio: 0.12,
+      message: "Uploading embed model to remote server…",
+    });
+    await session.installModelDir({
+      localModelDir: modelDir,
+      destination: dest,
+      relativeModelPath: `models/${BUNDLED_MODEL_REL}`,
+    });
+  } else {
+    console.warn("Embed model not found at convention paths; remote code search will be unavailable until models are synced.");
+  }
+
   const { tar, checksum } = linuxBundlePaths();
   const hash = fs.readFileSync(checksum, "utf8").trim().split(/\s+/)[0];
   if (!hash) throw new Error("Linux server checksum file is invalid.");
   await session.installTar({
     localTarPath: tar,
     sha256: hash,
-    destination: remoteBundleInstallDir(),
+    destination: dest,
     onProgress: (progress) => {
       emitRemoteProgress({
         stage: progress.stage,
-        ratio: 0.15 + progress.ratio * 0.55,
+        ratio: 0.4 + progress.ratio * 0.45,
         message: progress.message,
       });
     },
-  });
-  const repoRoot = app.isPackaged ? undefined : path.resolve(app.getAppPath(), "..");
-  const modelDir = resolveBundledModelDir({
-    sidecarRoot: sidecarRoot(),
-    repoRoot,
-  });
-  if (!modelDir) {
-    console.warn("Embed model not found at convention paths; remote code search will be unavailable until models are synced.");
-    return;
-  }
-  emitRemoteProgress({
-    stage: "upload",
-    ratio: 0.78,
-    message: "Uploading embed model to remote server…",
-  });
-  await session.installModelDir({
-    localModelDir: modelDir,
-    destination: remoteBundleInstallDir(),
-    relativeModelPath: `models/${BUNDLED_MODEL_REL}`,
   });
 }
 

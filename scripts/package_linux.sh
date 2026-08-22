@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Package litecode-server-*-linux-x64.tar.gz (headless remote kernel).
-# Intended for native Linux or WSL self-test — not the Windows Electron package.
-# Formal release CI (ubuntu-latest) is postposed; WSL is not release authority.
+# Package litecode-server-*-linux-x64.tar.gz (headless remote kernel + web).
+# Product SKU omits embed weights (LITECODE_BUNDLE_MODEL=0): Windows sidecar
+# ships models/, Open Remote uploads them separately. Set BUNDLE_MODEL=1 only
+# for a self-contained Linux tree.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILE="${LITECODE_PROFILE:-release}"
-BUNDLE_MODEL="${LITECODE_BUNDLE_MODEL:-1}"
+BUNDLE_MODEL="${LITECODE_BUNDLE_MODEL:-0}"
 VERSION="${LITECODE_VERSION:-}"
 
 if [[ -z "$VERSION" ]]; then
@@ -58,7 +59,7 @@ Recommended install when the cloud network is flaky:
 Layout:
   litecode      kernel binary
   web/dist/     UI (served by litecode)
-  models/       present on full SKU (LITECODE_BUNDLE_MODEL=1)
+  models/       omitted on the product SKU (uploaded from Windows on Open Remote)
   *.so          native runtime deps when present
 
 See scripts/litecode.service.example.
@@ -77,7 +78,7 @@ else
   echo "warning: no sha256sum/shasum; skipped .sha256" >&2
 fi
 
-# Stable embed path for Windows Electron (dev + electron-builder extraResources).
+# Stable extraResources path for Windows Electron.
 LINUX_STAGE="$DIST_DIR/linux"
 STABLE_TAR="$LINUX_STAGE/litecode-server-linux-x64.tar.gz"
 mkdir -p "$LINUX_STAGE"

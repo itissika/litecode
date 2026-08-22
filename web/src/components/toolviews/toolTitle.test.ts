@@ -59,6 +59,16 @@ describe("toolTitle", () => {
     ).toBe(".litecode/plan/active.md");
   });
 
+  it("uses the command as the bash title (description is optional)", () => {
+    expect(
+      toolTitle("bash", { command: "cargo test --workspace", workdir: "web" }).summary,
+    ).toBe("cargo test --workspace");
+    // description is not in the bash schema; the command wins even if present.
+    expect(
+      toolTitle("bash", { command: "git status", description: "Check repo state" }).summary,
+    ).toBe("git status");
+  });
+
   it("keeps a deterministic readable fallback", () => {
     expect(toolTitle("custom", { offset: 0, query: "later" }).summary).toBe('query="later"');
   });

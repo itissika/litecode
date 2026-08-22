@@ -143,15 +143,6 @@ pub fn plan_surface(surface: &Surface, event: &SessionEvent) -> Result<Option<Su
             event.event_type.as_str()
         )));
     }
-    if event.event_type.is_injection() {
-        if event.surface_op.is_some() {
-            return Err(LitecodeError::InvalidSessionEvent(format!(
-                "injection type `{}` must not carry surface_op",
-                event.event_type.as_str()
-            )));
-        }
-        return Ok(Some(SurfacePlan::Append { seq: event.seq }));
-    }
     if matches!(event.event_type, EventType::Compacted) {
         let body: CompactedBody = serde_json::from_value(event.data.clone()).map_err(|e| {
             LitecodeError::InvalidSessionEvent(format!("invalid compacted body: {e}"))
@@ -313,7 +304,7 @@ pub fn derive_transcript_items(events: &[SessionEvent]) -> Result<Vec<Item>> {
     origin.sort_by_key(|event| event.seq);
     let mut loaded = Vec::with_capacity(origin.len());
     for event in origin {
-        if event.event_type.is_injection() {
+        if matches!(event.event_type, EventType::ReminderJobExit) {
             continue;
         }
         loaded.push((event, item_from_event(event)?));
@@ -564,26 +555,19 @@ mod tests {
     }
 
     #[test]
-    fn job_exit_appends_to_spine_and_assembles_tagged_agent_item() {
+    fn job_exit_appends_as_spine_item() {
         use crate::authority::responses::{InputRole, MessageItem};
-        use crate::session::model::{ReminderJobExitBody, ReminderJobExitReason};
 
         let mut log = EventLog::new();
         append_user(&mut log, "hi");
-        log.append(EventDraft {
-            time: 0,
-            event_type: EventType::ReminderJobExit,
-            data: serde_json::to_value(ReminderJobExitBody {
-                job_id: Some("job-9".into()),
-                reason: ReminderJobExitReason::Timeout,
-                text: "job timed out".into(),
-            })
+        log.append(
+            EventDraft::surface_item(
+                EventType::ReminderJobExit,
+                &user_text("<system-reminder>\nBackground bash job-9 exited with code 0.\n</system-reminder>"),
+                SurfaceOp::Append,
+            )
             .unwrap(),
-            surface_op: None,
-            source_seqs: None,
-            ignorable: false,
-            state: crate::session::model::LogState::Final,
-        })
+        )
         .expect("job_exit");
         assert_eq!(
             fold_surface(log.events()).expect("fold").nodes,
@@ -596,9 +580,9 @@ mod tests {
             crate::types::Item::Message(MessageItem::Input(input)) => {
                 assert_eq!(input.role, InputRole::User);
             }
-            other => panic!("job exit AgentView must be tagged user Item, got {other:?}"),
+            other => panic!("job exit AgentView must be a user Item, got {other:?}"),
         }
-        assert!(item_text_preview(&agent[1]).contains("[reminder/job_exit timeout job-9]"));
+        assert!(item_text_preview(&agent[1]).contains("Background bash job-9"));
         let human = derive_transcript_items(log.events()).expect("human");
         assert_eq!(human.len(), 1);
         assert_eq!(item_text_preview(&human[0]), "hi");

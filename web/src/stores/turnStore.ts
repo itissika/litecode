@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import { applyTurnEventMeta, isHumanUserRow, itemFromRow, itemPlainText, newPendingUserId, userTextItem } from "../api/adapter";
+import { applyTurnEventMeta, newPendingUserId, userTextItem } from "../api/adapter";
 import type {
   AgentRunState,
   ContextMode,
@@ -572,25 +572,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         pendingPermission: null,
         pendingCancel: false,
       });
-
-      // Server-initiated turns (idle bash auto-turn) never went through `start()`,
-      // so there is no optimistic user row. Surface the turn input so the panel
-      // matches a normal agent/run. `buffer/item` later seals this `user-*` row.
-      const trimmed = (ts.input ?? "").trim();
-      if (trimmed) {
-        const rows =
-          useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
-        const lastUser = [...rows].reverse().find(
-          (m) => isHumanUserRow(m),
-        );
-        const lastUserItem = lastUser && itemFromRow(lastUser);
-        if (!lastUserItem || itemPlainText(lastUserItem) !== trimmed) {
-          useMessageStore.getState().pushPendingUser(sessionId, {
-            clientId: newPendingUserId(),
-            item: userTextItem(trimmed),
-          });
-        }
-      }
     },
 
     onTurnEvent: (te) => {

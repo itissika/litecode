@@ -338,6 +338,7 @@ function TreeNode({
           focusPath === entry.path ? "ring-1 ring-inset ring-(--_dk-line-visible)" : ""
         }`}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
+        data-path={entry.path}
         title={entry.path}
       >
         <span className="w-4 shrink-0 text-center text-[10px] text-(--_dk-text-disabled)">
@@ -433,7 +434,12 @@ export function FileTree() {
   const select = useExplorerStore((s) => s.select);
   const setFocus = useExplorerStore((s) => s.setFocus);
   const clearSelection = useExplorerStore((s) => s.clearSelection);
+  const activePath = useEditorStore((s) => s.activePath);
   const rootRef = useRef<HTMLDivElement>(null);
+  // Last path we scrolled into view. Guards the scroll effect so it only
+  // scrolls when the active file *becomes* visible (tree re-renders on
+  // expansion / refresh), never fighting the user's own browsing.
+  const revealedRef = useRef<string | null>(null);
 
   const gitStatus = useGitStore((s) => s.status);
   const gitLetters = useMemo(() => gitFileLetters(gitStatus), [gitStatus]);
@@ -447,6 +453,24 @@ export function FileTree() {
   useEffect(() => {
     void loadRoot();
   }, [loadRoot]);
+
+  // Follow the active editor file: expand its ancestor dirs, then scroll the
+  // row into view once it is rendered. Runs whenever the active file changes
+  // (tab switch, clicking into an editor panel, agent-opened files) — the
+  // tree no longer needs the file pre-expanded to show it.
+  useEffect(() => {
+    if (!activePath) return;
+    void useTreeStore.getState().revealPath(activePath);
+  }, [activePath]);
+
+  useEffect(() => {
+    const p = activePath;
+    if (!p || !rootRef.current || revealedRef.current === p) return;
+    const row = rootRef.current.querySelector(`[data-path="${CSS.escape(p)}"]`);
+    if (!row) return; // collapsed or still loading; re-runs when children land
+    revealedRef.current = p;
+    row.scrollIntoView({ block: "nearest" });
+  }, [activePath, childrenMap, expanded]);
 
   // Seed git status on mount so change badges render even when the Source
   // Control panel has never been opened (its own refresh only runs there).

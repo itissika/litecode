@@ -7,6 +7,7 @@ import { afterEach, describe, it } from "node:test";
 import {
   BUNDLED_MODEL_REL,
   LINUX_TAR_NAME,
+  hashModelDir,
   isModelDirReady,
   resolveBundledModelDir,
   resolveHfModelDir,
@@ -77,5 +78,16 @@ describe("bundle-paths", () => {
     process.env.LITECODE_BUNDLE_ROOT = tmp;
     const found = resolveLinuxBundle({});
     assert.equal(found.tar, tar);
+  });
+
+  it("fingerprints a ready model directory stably", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "litecode-model-hash-"));
+    const dir = writeReadyModel(tmp);
+    const a = hashModelDir(dir);
+    const b = hashModelDir(dir);
+    assert.equal(a, b);
+    assert.match(a, /^[a-f0-9]{64}$/);
+    fs.appendFileSync(path.join(dir, "tokenizer.json"), "x");
+    assert.notEqual(hashModelDir(dir), a);
   });
 });

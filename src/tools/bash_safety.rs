@@ -476,10 +476,9 @@ const PATH_ARG_COMMANDS: &[&str] = &[
     "wc", "ls", "mkdir",
 ];
 
-/// Best-effort extraction of file paths a bash command touches. Used to return
-/// per-path resource keys instead of the coarse workspace lock. This is a
-/// heuristic floor: if nothing can be confidently extracted, the caller falls
-/// back to the coarse workspace key.
+/// Best-effort extraction of file paths a bash command touches. Used for
+/// same-turn per-path resource keys. If nothing can be extracted, the caller
+/// takes no key (cross-session bash races are accepted).
 pub(crate) fn extract_bash_paths(command: &str) -> Vec<String> {
     let normalized = preprocess_command(command);
     let mut paths = Vec::new();

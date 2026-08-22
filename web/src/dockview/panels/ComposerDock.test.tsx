@@ -80,3 +80,36 @@ describe("ComposerDock permission overlay", () => {
     expect(screen.queryByRole("button", { name: "Latest" })).toBeNull();
   });
 });
+
+describe("ComposerDock collapse", () => {
+  it("folds the whole dock (permission card included) into the bar and flips the toggle", async () => {
+    const user = userEvent.setup();
+    render(<ComposerDock sessionId="session-1" />);
+
+    // Expanded: permission card + input visible, toggle offers collapse.
+    expect(screen.getByTestId("permission-card")).toBeTruthy();
+    expect(screen.getByTestId("chat-input")).toBeTruthy();
+    expect(screen.getByTestId("composer-dock-content").dataset.collapsed).toBe(
+      "false",
+    );
+    expect(screen.getByRole("button", { name: "Collapse composer" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Collapse composer" }));
+
+    // Collapsed: content slid out (permission card included), no fake bar,
+    // toggle flips to expand.
+    expect(screen.getByTestId("composer-dock-content").dataset.collapsed).toBe(
+      "true",
+    );
+    expect(screen.queryByTestId("composer-collapsed-bar")).toBeNull();
+    expect(screen.getByRole("button", { name: "Expand composer" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Expand composer" }));
+
+    // Expanded again.
+    expect(screen.getByTestId("composer-dock-content").dataset.collapsed).toBe(
+      "false",
+    );
+    expect(screen.getByRole("button", { name: "Collapse composer" })).toBeTruthy();
+  });
+});

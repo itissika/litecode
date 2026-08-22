@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MessageList, ProcessGroup, rowsToNodes } from "./MessageList";
 import type { HumanRow } from "../api/types";
+import { userTextItem } from "../api/adapter";
 import { useBashStore } from "../stores/bashStore";
 import { clearFoldCardOpen } from "./foldCardState";
 
@@ -429,7 +430,7 @@ describe("MessageList reminder rows", () => {
     const reminder: HumanRow = {
       seq: 0,
       kind: "reminder/job_exit",
-      body: { job_id: "bg_a", reason: "kill", text: "hidden reminder" },
+      body: userTextItem("hidden reminder"),
     };
     render(
       <MessageList messages={[reminder]} loadingHistory={false} canLoadMore={false}
@@ -437,6 +438,7 @@ describe("MessageList reminder rows", () => {
         scrollRef={makeScrollRef()} sessionId="session-1" />,
     );
     expect(screen.queryByText(/hidden reminder/)).toBeNull();
+    expect(screen.getByRole("status", { name: "Background terminal exited" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Revert to here" })).toBeNull();
   });
 
@@ -545,7 +547,8 @@ describe("MessageList compacting now marker", () => {
     expect(screen.queryByTestId("compacting-now")).toBeNull();
   });
 
-  it("shows the compacting line for auto compaction via turnPhase", () => {
+  it("does not keep the compacting line after auto compact when only turnPhase is stuck", () => {
+    slice().compacting = false;
     slice().turnPhase = "compacting";
     render(
       <MessageList
@@ -559,7 +562,6 @@ describe("MessageList compacting now marker", () => {
         sessionId="session-1"
       />,
     );
-    expect(screen.getByTestId("compacting-now")).toBeTruthy();
-    expect(document.querySelectorAll(".wait-wave-char").length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("compacting-now")).toBeNull();
   });
 });

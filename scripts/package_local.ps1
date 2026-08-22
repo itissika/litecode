@@ -1,5 +1,5 @@
-# Local nightly slim SKU: Windows installers without models/linux tar + WSL slim server tar.
-# Does not publish a GitHub Release. Default CI packaging is unchanged.
+# Local nightly desktop SKU: Windows installers with embed weights + WSL slim
+# Linux tar (kernel + web, no models). Does not publish a GitHub Release.
 #
 # Usage (repo root, PowerShell):
 #   ./scripts/package_local.ps1
@@ -91,14 +91,17 @@ if ($env:LITECODE_CHANNEL -ne "official") {
   $env:LITECODE_CHANNEL = "nightly"
 }
 
-Write-Host "==> Windows slim assemble + installers (v$Version)"
+Write-Host "==> Windows assemble + installers (embed + slim linux tar, v$Version)"
 $assembleArgs = @{
   Profile = $Profile
-  SkipModel = $true
 }
 if ($skipWebAssemble) { $assembleArgs.SkipWeb = $true }
 & (Join-Path $Root "scripts\assemble_product.ps1") @assembleArgs
-& (Join-Path $Root "scripts\package_win.ps1") -SkipAssemble -SkipModel -SkipLinuxBundle -Profile $Profile
+$ModelDir = Join-Path $Root "models\ibm-granite\granite-embedding-97m-multilingual-r2"
+if (-not (Test-Path (Join-Path $ModelDir "artifacts\ort-lin-q8-emb-q4-bs128-a1.onnx"))) {
+  throw "embed weights missing at $ModelDir — cannot build the product SKU"
+}
+& (Join-Path $Root "scripts\package_win.ps1") -SkipAssemble -Profile $Profile
 
 $outDir = Join-Path $Root "desktop\out"
 $portable = Get-ChildItem -LiteralPath $outDir -Filter "Litecode-Portable-*.exe" -ErrorAction SilentlyContinue |
@@ -110,18 +113,12 @@ if ($portable) {
 
 Write-Host @"
 
-==> nightly slim artifacts (v$Version)
-  Linux tar:  $(Join-Path $winDist "litecode-server-$Version-linux-x64.tar.gz")
+==> nightly artifacts (v$Version, LITECODE_CHANNEL=nightly)
+  Linux tar (no embed):  $(Join-Path $winDist "litecode-server-$Version-linux-x64.tar.gz")
   Linux staged: $(Join-Path $winDist "linux\litecode-server-linux-x64.tar.gz")
-  Windows:    $outDir
+  Windows (embed + tar): $outDir
   Portable copy: $(if ($portable) { Join-Path $winDist $portable.Name } else { "(not found)" })
 
-Embed weights are not in either package. Point the app at:
-  LITECODE_MODEL_DIR  or  LITECODE_BUNDLE_ROOT\models\
-  default %LOCALAPPDATA%\litecode\bundles\models\
-
-Open Remote tar:
-  LITECODE_LINUX_BUNDLE  or  LITECODE_BUNDLE_ROOT\linux\
-  default %LOCALAPPDATA%\litecode\bundles\linux\
+Open Remote uploads embed from sidecar/models, then the slim linux tar.
 
 "@

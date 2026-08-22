@@ -33,7 +33,7 @@ pub use media_tokens::{
     IMAGE_TILE_TOKENS, VIDEO_FALLBACK_TOKENS, input_content_media_tokens,
 };
 pub use model::{
-    CompactedBody, LogState, ReminderJobExitBody, ReminderJobExitReason, SESSION_LOG_SCHEMA_VERSION,
+    CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION,
     SessionKind, SessionLogRow, SessionMeta,
 };
 pub use store::{Session, SessionContextMeter, TranscriptRow, data_root_from_db_path};

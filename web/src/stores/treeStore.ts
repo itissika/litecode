@@ -21,6 +21,8 @@ interface TreeStore {
   collapseAll: () => void;
   refreshAll: () => Promise<void>;
   expandDir: (path: string) => Promise<void>;
+  /** Expand every ancestor of `path` so the file becomes visible in the tree. */
+  revealPath: (path: string) => Promise<void>;
   handleWorkspaceChange: (
     paths: string[],
     kind: WorkspaceChangeKind,
@@ -204,6 +206,19 @@ export const useTreeStore = create<TreeStore>((set, get) => {
       set({ expanded: next });
       if (!get().children[path]) {
         await get().loadChildren(path);
+      }
+    },
+
+    revealPath: async (path) => {
+      if (!path) return;
+      const dirs: string[] = [];
+      let cur = parentPath(path);
+      while (cur) {
+        dirs.unshift(cur);
+        cur = parentPath(cur);
+      }
+      for (const dir of dirs) {
+        await get().expandDir(dir);
       }
     },
 

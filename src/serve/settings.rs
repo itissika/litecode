@@ -16,6 +16,10 @@ use crate::config::schema::{
     ToolTier,
 };
 use crate::config::workspace;
+use crate::workspace::filter::{
+    WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView, ensure_workspace_excludes,
+    write_workspace_excludes,
+};
 use crate::llm::{
     chat_models_url, has_remote_model_catalog, list_adapters, parse_chat_model_catalog,
 };
@@ -129,6 +133,7 @@ pub fn router() -> Router<ServeState> {
         .route("/mcp-servers/{id}/stop", post(stop_mcp_server))
         .route("/mcp-servers/{id}/restart", post(restart_mcp_server))
         .route("/log", get(get_log).put(put_log))
+        .route("/excludes", get(get_excludes).put(put_excludes))
 }
 
 async fn get_settings(State(state): State<ServeState>) -> Response {
@@ -665,6 +670,32 @@ fn reload_runtime_after_settings_write(state: &ServeState, what: &str) {
     let mut runtime = state.runtime.write().expect("runtime lock");
     if let Err(e) = runtime.reload_if_needed() {
         tracing::warn!(error = %e, "{what}: runtime reload failed");
+    }
+}
+
+async fn get_excludes(State(state): State<ServeState>) -> Response {
+    let root = state.workspace.sandbox().root();
+    match ensure_workspace_excludes(root) {
+        Ok(file) => ok_json(WorkspaceExcludesView::from_file(&file)),
+        Err(e) => settings_error(e),
+    }
+}
+
+async fn put_excludes(
+    State(state): State<ServeState>,
+    Json(body): Json<WorkspaceExcludesLists>,
+) -> Response {
+    let root = state.workspace.sandbox().root();
+    let file = WorkspaceExcludesFile {
+        version: 1,
+        files_exclude: body.files_exclude,
+        search_exclude: body.search_exclude,
+        watcher_exclude: body.watcher_exclude,
+        git_ignore: body.git_ignore,
+    };
+    match write_workspace_excludes(root, file) {
+        Ok(saved) => ok_json(WorkspaceExcludesView::from_file(&saved)),
+        Err(e) => settings_error(e),
     }
 }
 

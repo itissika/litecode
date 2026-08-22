@@ -14,7 +14,7 @@ use crate::session::event::{
     spine_agent_item,
 };
 use crate::session::model::{
-    CompactedBody, LogState, ReminderJobExitBody, SessionKind, SESSION_LOG_SCHEMA_VERSION,
+    CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION,
 };
 use crate::session::snapshot;
 use crate::session::surface::{
@@ -421,7 +421,6 @@ struct LogProjection {
     next_seq: Seq,
     id_to_seq: HashMap<String, Seq>,
     items_by_seq: HashMap<Seq, Item>,
-    kinds_by_seq: HashMap<Seq, SessionKind>,
 }
 
 impl LogProjection {
@@ -439,7 +438,6 @@ impl LogProjection {
                 let shadowed: Vec<Seq> = self.surface.nodes[*start_idx..*start_idx + *len].to_vec();
                 for seq in shadowed {
                     self.items_by_seq.remove(&seq);
-                    self.kinds_by_seq.remove(&seq);
                 }
             }
             apply_plan(&mut self.surface, plan);
@@ -451,16 +449,12 @@ impl LogProjection {
             }
             if self.surface.nodes.contains(&event.seq) {
                 self.items_by_seq.insert(event.seq, item.clone());
-                self.kinds_by_seq
-                    .insert(event.seq, session_kind_of(&event.event_type));
             }
         } else if event.event_type.enters_spine()
             && self.surface.nodes.contains(&event.seq)
             && let Ok(assembled) = spine_agent_item(event)
         {
             self.items_by_seq.insert(event.seq, assembled);
-            self.kinds_by_seq
-                .insert(event.seq, session_kind_of(&event.event_type));
         }
         Ok(())
     }
@@ -472,25 +466,6 @@ impl LogProjection {
         if self.surface.nodes.contains(&seq) {
             self.items_by_seq.insert(seq, item.clone());
         }
-    }
-}
-
-fn session_kind_of(event_type: &EventType) -> SessionKind {
-    match event_type {
-        EventType::ItemUser => SessionKind::ItemUser,
-        EventType::ItemAssistant => SessionKind::ItemAssistant,
-        EventType::ItemToolCall => SessionKind::ItemToolCall,
-        EventType::ItemToolResult => SessionKind::ItemToolResult,
-        EventType::Compacted => SessionKind::Compacted,
-        EventType::ReminderJobExit => SessionKind::ReminderJobExit,
-        EventType::TurnStart => SessionKind::TurnStart,
-        EventType::TurnEnd => SessionKind::TurnEnd,
-        EventType::RequestHeader => SessionKind::RequestHeader,
-        EventType::RequestContext => SessionKind::RequestContext,
-        EventType::StepStart => SessionKind::Unknown("step/start".into()),
-        EventType::StepEnd => SessionKind::Unknown("step/end".into()),
-        EventType::AssistantChunk => SessionKind::Unknown("assistant/chunk".into()),
-        EventType::Unknown(value) => SessionKind::Unknown(value.clone()),
     }
 }
 
@@ -855,18 +830,8 @@ fn row_to_item(row: &TranscriptRow, data_root: &Path) -> Result<Item> {
             let body: crate::session::model::CompactedBody = serde_json::from_str(raw)?;
             Ok(body.agent_item())
         }
-        "reminder/job_exit" => {
-            let raw = row.body.as_deref().ok_or_else(|| {
-                LitecodeError::ToolExecution(format!(
-                    "reminder/job_exit row seq {} has no body",
-                    row.seq
-                ))
-            })?;
-            let body: ReminderJobExitBody = serde_json::from_str(raw)?;
-            Ok(body.agent_item())
-        }
         "compact_checkpoint" | "detail" | "item/user" | "item/assistant" | "item/tool_call"
-        | "item/tool_result" => {
+        | "item/tool_result" | "reminder/job_exit" => {
             if let Some(body) = &row.body {
                 return serde_json::from_str(body).map_err(Into::into);
             }
@@ -1750,14 +1715,7 @@ impl Session {
         })?;
         Ok(pairs
             .into_iter()
-            .map(|(seq, item)| {
-                let kind = projection
-                    .kinds_by_seq
-                    .get(&seq)
-                    .cloned()
-                    .unwrap_or_else(|| session_kind_of(&surface_event_type_of(&item)));
-                WorkingRow::persisted_with_kind(seq, kind, item)
-            })
+            .map(|(seq, item)| WorkingRow::persisted(seq, item))
             .collect())
     }
 
@@ -1776,7 +1734,6 @@ impl Session {
         let node_set: HashSet<Seq> = surface.nodes.iter().copied().collect();
         let mut id_to_seq = HashMap::new();
         let mut items_by_seq = HashMap::new();
-        let mut kinds_by_seq = HashMap::new();
         for event in &events {
             let item = spine_agent_item(event).ok();
             if let Some(item) = item {
@@ -1785,7 +1742,6 @@ impl Session {
                 }
                 if node_set.contains(&event.seq) {
                     items_by_seq.insert(event.seq, item);
-                    kinds_by_seq.insert(event.seq, session_kind_of(&event.event_type));
                 }
             }
         }
@@ -1795,7 +1751,6 @@ impl Session {
             next_seq,
             id_to_seq,
             items_by_seq,
-            kinds_by_seq,
         };
         self.persisted_max_seq.set(projection.max_seq());
         *self.projection.borrow_mut() = projection;
@@ -1824,7 +1779,9 @@ impl Session {
         if draft.time == 0 {
             draft.time = chrono::Utc::now().timestamp_millis();
         }
-        let item = if draft.event_type.is_item() {
+        let item = if draft.event_type.is_item()
+            || matches!(draft.event_type, EventType::ReminderJobExit)
+        {
             Some(serde_json::from_value::<Item>(draft.data.clone())?)
         } else {
             None
@@ -2182,19 +2139,11 @@ impl Session {
         self.append_unlocked(draft, "", 0, &kind)
     }
 
-    /// Append a durable background-job exit reminder. Its body is not an
-    /// `Item`: AgentView adapts it to a tagged provider input while HumanView
-    /// projects it as a system event.
-    pub fn append_job_exit(&self, body: ReminderJobExitBody) -> Result<Seq> {
-        let draft = EventDraft {
-            time: chrono::Utc::now().timestamp_millis(),
-            event_type: EventType::ReminderJobExit,
-            data: serde_json::to_value(body)?,
-            surface_op: None,
-            source_seqs: None,
-            ignorable: false,
-            state: LogState::Final,
-        };
+    /// Append a job-exit reminder as a normal spine Item with kind `reminder/job_exit`.
+    pub fn append_job_exit(&self, item: &Item) -> Result<Seq> {
+        let mut draft =
+            EventDraft::surface_item(EventType::ReminderJobExit, item, SurfaceOp::Append)?;
+        draft.time = message_timestamp(item);
         match self.apply(SessionApply::Append(draft))? {
             ApplyOutcome::Appended(seq) => Ok(seq),
             _ => unreachable!("append operation must append"),
@@ -4374,26 +4323,20 @@ mod tests {
 
     #[test]
     fn job_exit_roundtrips_into_agent_working_set() {
-        use crate::session::model::{ReminderJobExitBody, ReminderJobExitReason};
         use crate::types::item_text_preview;
 
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         session.insert_detail_rows(&[user_text("hi")]).unwrap();
         session
-            .append_job_exit(ReminderJobExitBody {
-                job_id: Some("bg-1".into()),
-                reason: ReminderJobExitReason::Exit,
-                text: "background task finished".into(),
-            })
+            .append_job_exit(&user_text("<system-reminder>\nBackground bash bg-1 exited with code 0.\n</system-reminder>"))
             .unwrap();
         let events = session.load_events().unwrap();
         assert_eq!(events.len(), 2);
-        assert!(events[1].event_type.enters_spine());
+        assert_eq!(events[1].event_type, EventType::ReminderJobExit);
         let working = session.load_working_set().unwrap();
         assert_eq!(working.len(), 2);
         assert_eq!(item_text_preview(&working[0].item), "hi");
-        assert_eq!(working[1].kind, SessionKind::ReminderJobExit);
-        assert!(item_text_preview(&working[1].item).contains("[reminder/job_exit exit bg-1]"));
+        assert!(item_text_preview(&working[1].item).contains("Background bash bg-1"));
         let human = crate::session::derive_transcript_items(&events).unwrap();
         assert_eq!(human.len(), 1);
     }

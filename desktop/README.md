@@ -86,7 +86,7 @@ machine.
 Open remote is SSH orchestration owned by `DesktopHost`:
 
 1. Authenticate to the host (password primary; key/agent optional).
-2. Upload/verify/extract the bundled Linux server tar under the remote home (progress events).
+2. Upload/verify the embed weights (skip if the remote stamp matches), then the slim Linux server tar (kernel + web, no models).
 3. Start a loopback-only serve for the chosen workspace and forward a local port.
 4. Persist host credentials in Electron `safeStorage` and the workspace path in remote history
    only after a successful attach.
@@ -96,20 +96,16 @@ Closing the client stops that temporary remote serve and tunnel. A separate
 `LITECODE_REMOTE_URL` + `LITECODE_TOKEN` for automation.
 
 Windows packaging requires `dist/linux/litecode-server-linux-x64.tar.gz` and its
-`.sha256` (built on Linux via `scripts/package_linux.sh`); these are embedded in the
-Windows app for managed SSH upload.
+`.sha256` (built on Linux via `scripts/package_linux.sh`, embed weights omitted);
+these are embedded in the Windows app for managed SSH upload. Embed weights live
+once under the Windows sidecar (`sidecar/models/`).
 
-Local nightly slim SKU (no models, no embedded tar):
+Local nightly (embed in the installer, slim Linux tar, `LITECODE_CHANNEL=nightly`):
 
 ```powershell
 ./scripts/package_local.ps1
 ./scripts/package_local.ps1 -WslRoot /home/<you>/litecode
 ```
-
-Artifacts land under `dist/` (Linux tar) and `desktop/out/` (Portable / NSIS).
-Open Remote then reads the tar from `LITECODE_BUNDLE_ROOT/linux/` or
-`%LOCALAPPDATA%\litecode\bundles\linux\`; embed weights from `LITECODE_MODEL_DIR`
-or the same bundle root’s `models/` tree.
 
 ## Production packaging (Windows x64)
 
