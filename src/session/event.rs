@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::types::{Item, LitecodeError, Result, item_text_preview};
 
 use super::model::{
-    CompactedBody, HookPromptBody, LogState, ReminderJobExitBody, ReminderTurnAbortedBody,
+    CompactedBody, LogState, ReminderJobExitBody,
 };
 use super::surface::{Surface, SurfaceOp, apply_plan, plan_surface};
 use crate::authority::responses::{MessageItem, OutputStatus};
@@ -22,9 +22,7 @@ pub enum EventType {
     ItemToolCall,
     ItemToolResult,
     Compacted,
-    HookPrompt,
     ReminderJobExit,
-    ReminderTurnAborted,
     TurnStart,
     TurnEnd,
     StepStart,
@@ -56,9 +54,7 @@ impl EventType {
             "item/tool_call" => Self::ItemToolCall,
             "item/tool_result" => Self::ItemToolResult,
             "compacted" => Self::Compacted,
-            "hook/prompt" => Self::HookPrompt,
             "reminder/job_exit" => Self::ReminderJobExit,
-            "reminder/turn_aborted" => Self::ReminderTurnAborted,
             "turn/start" => Self::TurnStart,
             "turn/end" => Self::TurnEnd,
             "step/start" => Self::StepStart,
@@ -77,9 +73,7 @@ impl EventType {
             Self::ItemToolCall => "item/tool_call",
             Self::ItemToolResult => "item/tool_result",
             Self::Compacted => "compacted",
-            Self::HookPrompt => "hook/prompt",
             Self::ReminderJobExit => "reminder/job_exit",
-            Self::ReminderTurnAborted => "reminder/turn_aborted",
             Self::TurnStart => "turn/start",
             Self::TurnEnd => "turn/end",
             Self::StepStart => "step/start",
@@ -109,12 +103,9 @@ impl EventType {
         )
     }
 
-    /// Injection kinds enter the spine; HumanView hides them; AgentView tags them.
+    /// System reminder kinds enter the spine; AgentView tags them.
     pub fn is_injection(&self) -> bool {
-        matches!(
-            self,
-            Self::HookPrompt | Self::ReminderJobExit | Self::ReminderTurnAborted
-        )
+        matches!(self, Self::ReminderJobExit)
     }
 
     pub fn enters_spine(&self) -> bool {
@@ -289,12 +280,8 @@ pub fn item_from_event(event: &SessionEvent) -> Result<Item> {
 
 fn parse_injection_body(event_type: &EventType, data: &Value) -> Result<()> {
     match event_type {
-        EventType::HookPrompt => serde_json::from_value::<HookPromptBody>(data.clone()).map(|_| ()),
         EventType::ReminderJobExit => {
             serde_json::from_value::<ReminderJobExitBody>(data.clone()).map(|_| ())
-        }
-        EventType::ReminderTurnAborted => {
-            serde_json::from_value::<ReminderTurnAbortedBody>(data.clone()).map(|_| ())
         }
         _ => Ok(()),
     }
@@ -308,16 +295,8 @@ pub fn spine_agent_item(event: &SessionEvent) -> Result<Item> {
             let body: CompactedBody = serde_json::from_value(event.data.clone())?;
             Ok(body.agent_item())
         }
-        EventType::HookPrompt => {
-            let body: HookPromptBody = serde_json::from_value(event.data.clone())?;
-            Ok(body.agent_item())
-        }
         EventType::ReminderJobExit => {
             let body: ReminderJobExitBody = serde_json::from_value(event.data.clone())?;
-            Ok(body.agent_item())
-        }
-        EventType::ReminderTurnAborted => {
-            let body: ReminderTurnAbortedBody = serde_json::from_value(event.data.clone())?;
             Ok(body.agent_item())
         }
         _ => item_from_event(event),

@@ -17,7 +17,6 @@ use litecode::context_pipeline::Context;
 use litecode::context_pipeline::{
     BudgetPolicy, CompactPolicy, ContextPipeline, ProviderPromptBaseline,
 };
-use litecode::hook::{HookDispatcher, HookRegistry};
 use litecode::session::manager::SessionManager;
 use litecode::session::store::Session;
 use litecode::session::task_state::TaskReminders;
@@ -105,10 +104,8 @@ async fn prepare(
     prompt_baseline.record(last_prompt_tokens, items.len());
     pipeline
         .prepare_step(
-            &HookDispatcher::from_registry(HookRegistry::default()),
             sessions,
             sid,
-            ctx,
             &provider,
             "key",
             "m",
@@ -410,10 +407,8 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
     prompt_baseline.record(8_500, items.len());
     let compacted = pipeline
         .prepare_step(
-            &HookDispatcher::from_registry(HookRegistry::default()),
             &sessions,
             &sid,
-            &ctx,
             &provider,
             "key",
             "m",
@@ -556,10 +551,8 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         .unwrap();
     pipeline
         .prepare_step(
-            &HookDispatcher::from_registry(HookRegistry::default()),
             &sessions,
             &sid,
-            &ctx,
             &provider,
             "key",
             "m",
@@ -1486,6 +1479,8 @@ impl AgentDeps for PipelinePersistDeps {
     }
 
     fn emit_todo_progress(&mut self) {}
+
+    fn emit_plan_changed(&mut self) {}
 
     fn is_cancelled(&self) -> bool {
         self.cancelled.get()

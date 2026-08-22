@@ -8,9 +8,8 @@ use common::bindings::{binding_all_for, binding_safe_for};
 use common::permission::recording_sink;
 use litecode::config::resolved::{WorkspaceState, resolve};
 use litecode::config::schema::{AgentProfile, AgentRole, GlobalSettings};
-use litecode::config::{HookCommand, HookConfig, WorkspacePaths};
+use litecode::config::WorkspacePaths;
 use litecode::context_pipeline::Context;
-use litecode::hook::{HookDispatcher, HookRegistryBuilder};
 use litecode::permission::{
     BindingPathMode, DEFAULT_RULE_ID, PermissionAction, PermissionEngine, clear_runtime_grants,
     clear_runtime_grants_for, grant_runtime,
@@ -19,10 +18,6 @@ use litecode::tool::authorize::{AuthResult, authorize};
 use litecode::tools::write::WriteTool;
 use litecode::types::FunctionToolCall;
 use tempfile::TempDir;
-
-fn empty_hooks() -> HookDispatcher {
-    HookDispatcher::from_registry(HookRegistryBuilder::new().build())
-}
 
 fn tool_call(name: &str, args: serde_json::Value) -> FunctionToolCall {
     FunctionToolCall {
@@ -231,9 +226,7 @@ async fn authorize_ask_denied_by_sink() {
         &inv,
         &WriteTool::new(),
         &engine,
-        &empty_hooks(),
         &ctx,
-        "sess",
         "ask_deny",
         &sink,
         &tokio_util::sync::CancellationToken::new(),
@@ -258,9 +251,7 @@ async fn authorize_ask_always_grants_same_rule_only() {
         &inv,
         &WriteTool::new(),
         &engine,
-        &empty_hooks(),
         &ctx,
-        "sess",
         "ask_always",
         &sink,
         &tokio_util::sync::CancellationToken::new(),
@@ -276,9 +267,7 @@ async fn authorize_ask_always_grants_same_rule_only() {
         &inv,
         &WriteTool::new(),
         &engine,
-        &empty_hooks(),
         &ctx,
-        "sess",
         "ask_always",
         &sink2,
         &tokio_util::sync::CancellationToken::new(),
@@ -310,9 +299,7 @@ async fn authorize_floor_deny_ignores_always_grant() {
         &inv,
         &WriteTool::new(),
         &engine,
-        &empty_hooks(),
         &ctx,
-        "sess",
         "floor_agent",
         &sink,
         &tokio_util::sync::CancellationToken::new(),
@@ -338,9 +325,7 @@ async fn authorize_subagent_ask_denied_without_sink() {
         &inv,
         &WriteTool::new(),
         &engine,
-        &empty_hooks(),
         &ctx,
-        "sess",
         "reviewer",
         &sink,
         &tokio_util::sync::CancellationToken::new(),
@@ -348,72 +333,6 @@ async fn authorize_subagent_ask_denied_without_sink() {
     .await;
     assert!(matches!(result, AuthResult::Denied(_)));
     assert!(sink.calls.lock().unwrap().is_empty());
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn authorize_pretool_allow_does_not_skip_ask() {
-    clear_runtime_grants_for("hook_agent");
-    let dir = TempDir::new().unwrap();
-    let ctx = ctx_for(&dir);
-    let engine = engine_for("hook_agent", AgentRole::Primary, 0, safe_tools(&["write"]));
-
-    #[cfg(windows)]
-    let script = {
-        let path = dir.path().join("allow_hook.cmd");
-        std::fs::write(
-            &path,
-            "@echo off\r\necho {\"hookSpecificOutput\":{\"permissionDecision\":\"allow\"}}\r\n",
-        )
-        .unwrap();
-        path
-    };
-    #[cfg(not(windows))]
-    let script = {
-        let path = dir.path().join("allow_hook.sh");
-        std::fs::write(
-            &path,
-            "#!/bin/sh\necho '{\"hookSpecificOutput\":{\"permissionDecision\":\"allow\"}}'\n",
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path
-    };
-
-    let mut hooks_cfg = HookConfig::default();
-    hooks_cfg.pre_tool_use = vec![HookCommand {
-        hook_type: "command".into(),
-        command: script.to_string_lossy().into_owned(),
-        timeout: 10,
-    }];
-    let mut builder = HookRegistryBuilder::new();
-    builder.register_external(&hooks_cfg, &HookConfig::default());
-    let hooks = HookDispatcher::from_registry(builder.build());
-
-    let sink = recording_sink((false, false));
-    let inv = tool_call(
-        "write",
-        serde_json::json!({"file_path": "out.txt", "content": "x"}),
-    );
-    let result = authorize(
-        &inv,
-        &WriteTool::new(),
-        &engine,
-        &hooks,
-        &ctx,
-        "sess",
-        "hook_agent",
-        &sink,
-        &tokio_util::sync::CancellationToken::new(),
-    )
-    .await;
-    assert!(matches!(result, AuthResult::Denied(_)));
-    assert_eq!(
-        sink.calls.lock().unwrap().len(),
-        1,
-        "PreToolUse Allow must not skip Ask"
-    );
-    clear_runtime_grants_for("hook_agent");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -433,9 +352,7 @@ async fn authorize_ask_aborted_is_not_deny() {
         &inv,
         &WriteTool::new(),
         &engine,
-        &empty_hooks(),
         &ctx,
-        "sess",
         "ask_abort",
         &sink,
         &tokio_util::sync::CancellationToken::new(),

@@ -79,18 +79,16 @@ pub enum TurnEndReason {
     Cancelled,
     MaxSteps,
     Error,
-    HookBlocked,
 }
 
 impl TurnEndReason {
-    /// Durable `turn/end.reason` schema: `completed | cancelled | error | max_steps | hook_blocked`.
+    /// Durable `turn/end.reason` schema: `completed | cancelled | error | max_steps`.
     pub fn as_log_reason(self) -> &'static str {
         match self {
             Self::Completed => "completed",
             Self::Cancelled => "cancelled",
             Self::Error => "error",
             Self::MaxSteps => "max_steps",
-            Self::HookBlocked => "hook_blocked",
         }
     }
 }
@@ -180,10 +178,6 @@ pub enum InternalEvent {
         operation_id: Option<String>,
         fail_kind: Option<CompactionFailKind>,
         error: Option<String>,
-    },
-    HookFired {
-        phase: String,
-        action: String,
     },
     PermissionAsk {
         session_id: String,
@@ -316,7 +310,6 @@ mod tests {
             (TurnEndReason::Cancelled, "cancelled"),
             (TurnEndReason::Error, "error"),
             (TurnEndReason::MaxSteps, "max_steps"),
-            (TurnEndReason::HookBlocked, "hook_blocked"),
         ];
         for (reason, expected) in cases {
             assert_eq!(reason.as_log_reason(), expected);

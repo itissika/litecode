@@ -83,55 +83,6 @@ fn default_temperature() -> f64 {
     0.7
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct HookCommand {
-    #[serde(rename = "type")]
-    pub hook_type: String,
-    pub command: String,
-    #[serde(default = "default_hook_timeout")]
-    pub timeout: u64,
-}
-
-fn default_hook_timeout() -> u64 {
-    30
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct HookConfig {
-    #[serde(default)]
-    pub pre_tool_use: Vec<HookCommand>,
-    #[serde(default)]
-    pub post_tool_use: Vec<HookCommand>,
-    #[serde(default)]
-    pub session_start: Vec<HookCommand>,
-    #[serde(default)]
-    pub session_end: Vec<HookCommand>,
-    #[serde(default)]
-    pub user_prompt_submit: Vec<HookCommand>,
-    #[serde(default)]
-    pub pre_compact: Vec<HookCommand>,
-    #[serde(default)]
-    pub stop: Vec<HookCommand>,
-    #[serde(default)]
-    pub permission_request: Vec<HookCommand>,
-}
-
-impl HookConfig {
-    pub fn get(&self, point: &str) -> &[HookCommand] {
-        match point {
-            "PreToolUse" => &self.pre_tool_use,
-            "PostToolUse" => &self.post_tool_use,
-            "SessionStart" => &self.session_start,
-            "SessionEnd" => &self.session_end,
-            "UserPromptSubmit" => &self.user_prompt_submit,
-            "PreCompact" => &self.pre_compact,
-            "Stop" => &self.stop,
-            "PermissionRequest" => &self.permission_request,
-            _ => &[],
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,18 +95,4 @@ mod tests {
         assert_eq!(config.temperature, default_temperature());
     }
 
-    #[test]
-    fn hook_config_get() {
-        let mut config = HookConfig::default();
-        let cmd = HookCommand {
-            hook_type: "command".into(),
-            command: "echo hi".into(),
-            timeout: 30,
-        };
-        config.pre_tool_use.push(cmd);
-        assert_eq!(config.get("PreToolUse").len(), 1);
-        assert!(config.get("PreToolUse")[0].command.contains("echo hi"));
-        assert!(config.get("PostToolUse").is_empty());
-        assert!(config.get("Unknown").is_empty());
-    }
 }

@@ -5,8 +5,12 @@ import { useBashStore } from "../stores/bashStore";
 import { composerCardClass } from "./composerCard";
 import { useChipEntrance } from "./useChipEntrance";
 
+/** Only surface the chip once a job has been running continuously this long —
+ *  quick bash calls (most of them) never flash the dock. */
+const SHOW_DELAY_MS = 1000;
+
 /** Once shown, the chip stays up at least this long after the last job ends —
- *  a bash call that finishes almost instantly would otherwise flash it. */
+ *  a bash call that finishes right after surfacing would otherwise flash it. */
 const MIN_VISIBLE_MS = 1000;
 
 /** Session-scoped count of alive agent bash jobs. Click cycles to each live view. */
@@ -20,21 +24,26 @@ export function TerminalStatusBar({
   const jobs = useBashStore((s) => s.bySession.get(sessionId)?.jobs ?? EMPTY_JOBS);
   const cursor = useRef(0);
   const aliveRef = useRef(false);
-  // `visible` = should be shown (hold-over aware); `mounted` / `open` drive the
-  // entrance/exit animation via useChipEntrance.
+  // `visible` = should be shown (debounced entry, hold-over exit); `mounted` /
+  // `open` drive the entrance/exit animation via useChipEntrance.
   const [visible, setVisible] = useState(false);
 
   const alive = jobs.length > 0;
   aliveRef.current = alive;
 
-  // Hold-over: whenever the count empties, keep the chip visible another
-  // MIN_VISIBLE_MS before dismissing it — regardless of how long the jobs ran.
-  // Repeats of the empty snapshot do NOT extend the hold (effect only re-runs
-  // on transitions), and a new job during the hold cancels the timer.
+  // Entry is debounced: a job must run continuously for SHOW_DELAY_MS before
+  // the chip appears, so instant calls never surface it. If the chip is
+  // already up (a previous long job surfaced it, or we're inside the hold
+  // grace), a new job keeps it up without re-debouncing. Exit holds the chip
+  // MIN_VISIBLE_MS after the count empties; repeats of the empty snapshot do
+  // NOT extend the hold, and a new job during the hold cancels the timer.
   useEffect(() => {
     if (alive) {
-      setVisible(true);
-      return;
+      if (visible) return;
+      const timer = window.setTimeout(() => {
+        if (aliveRef.current) setVisible(true);
+      }, SHOW_DELAY_MS);
+      return () => window.clearTimeout(timer);
     }
     if (!visible) return;
     const timer = window.setTimeout(() => {

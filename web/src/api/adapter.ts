@@ -4,6 +4,7 @@ import type {
   HumanRow,
   InputMessageItem,
   Item,
+  JobExitReminderLogRow,
   MessageItem,
   OutputMessageItem,
   ReasoningItem,
@@ -31,6 +32,13 @@ export function isCompactCutRow(row: HumanRow): boolean {
   return row.kind === "compacted";
 }
 
+/** A durable background job event: visible as a system mark, never a chat bubble. */
+export function isJobExitReminderRow(
+  row: HumanRow,
+): row is JobExitReminderLogRow & { streaming?: boolean } {
+  return row.kind === "reminder/job_exit";
+}
+
 /** Only explicit user log rows are composer bubbles and revert anchors. */
 export function isHumanUserRow(row: HumanRow): boolean {
   return row.kind === "item/user";
@@ -38,7 +46,7 @@ export function isHumanUserRow(row: HumanRow): boolean {
 
 /** Injected and control-plane rows remain in the log but are hidden in HumanView. */
 export function isHiddenHumanRow(row: HumanRow): boolean {
-  return row.kind.startsWith("hook/") || row.kind.startsWith("reminder/") || row.kind.startsWith("turn/") || row.kind.startsWith("request/");
+  return row.kind.startsWith("turn/") || row.kind.startsWith("request/");
 }
 
 const HUMAN_VIEW_KINDS = new Set([
@@ -47,6 +55,7 @@ const HUMAN_VIEW_KINDS = new Set([
   "item/tool_call",
   "item/tool_result",
   "compacted",
+  "reminder/job_exit",
 ]);
 
 /** Kinds HumanView may group or render. Unknown/future kinds stay in the log. */
@@ -696,10 +705,6 @@ export function applyTurnEventMeta(event: WireEvent): Partial<TurnMeta> {
     case "compaction":
       return {
         lastCompaction: { kind: event.kind, detail: event.detail },
-      };
-    case "hook_fired":
-      return {
-        lastHookFired: { phase: event.phase, action: event.action },
       };
     case "permission_resolved":
       return {

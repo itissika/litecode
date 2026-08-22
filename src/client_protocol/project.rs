@@ -291,13 +291,6 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
                 }),
             ))
         }
-        InternalEvent::HookFired { phase, action } => turn_event(
-            snapshot,
-            WireEvent::HookFired {
-                phase: phase.clone(),
-                action: action.clone(),
-            },
-        ),
         InternalEvent::PermissionResolved {
             tool,
             approved,
@@ -425,10 +418,6 @@ fn turn_error(reason: &TurnEndReason, final_text: &Option<String>) -> Option<Str
         TurnEndReason::MaxSteps => Some(StructuredError {
             code: ErrorCode::MaxSteps,
             message: "max steps reached".into(),
-        }),
-        TurnEndReason::HookBlocked => Some(StructuredError {
-            code: ErrorCode::HookBlocked,
-            message: "blocked by hook".into(),
         }),
         TurnEndReason::Completed => None,
     }

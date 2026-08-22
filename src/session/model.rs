@@ -28,12 +28,8 @@ pub enum SessionKind {
     ItemToolResult,
     #[serde(rename = "compacted")]
     Compacted,
-    #[serde(rename = "hook/prompt")]
-    HookPrompt,
     #[serde(rename = "reminder/job_exit")]
     ReminderJobExit,
-    #[serde(rename = "reminder/turn_aborted")]
-    ReminderTurnAborted,
     #[serde(rename = "turn/start")]
     TurnStart,
     #[serde(rename = "turn/end")]
@@ -54,9 +50,7 @@ impl SessionKind {
             Self::ItemToolCall => "item/tool_call",
             Self::ItemToolResult => "item/tool_result",
             Self::Compacted => "compacted",
-            Self::HookPrompt => "hook/prompt",
             Self::ReminderJobExit => "reminder/job_exit",
-            Self::ReminderTurnAborted => "reminder/turn_aborted",
             Self::TurnStart => "turn/start",
             Self::TurnEnd => "turn/end",
             Self::RequestHeader => "request/header",
@@ -73,9 +67,7 @@ impl SessionKind {
                 | Self::ItemToolCall
                 | Self::ItemToolResult
                 | Self::Compacted
-                | Self::HookPrompt
                 | Self::ReminderJobExit
-                | Self::ReminderTurnAborted
         )
     }
 
@@ -151,21 +143,6 @@ fn tagged_user_item(kind: &str, text: &str) -> crate::types::Item {
     crate::types::user_text(format!("[{kind}]\n{text}"))
 }
 
-/// Body for `hook/prompt`. Not an `Item`; AgentView synthesizes a tagged user message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HookPromptBody {
-    pub text: String,
-    pub hook_run_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub placement: Option<String>,
-}
-
-impl HookPromptBody {
-    pub fn agent_item(&self) -> crate::types::Item {
-        tagged_user_item(&format!("hook/prompt {}", self.hook_run_id), &self.text)
-    }
-}
-
 /// Body for `reminder/job_exit`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReminderJobExitBody {
@@ -200,18 +177,6 @@ impl ReminderJobExitReason {
             Self::Kill => "kill",
             Self::Timeout => "timeout",
         }
-    }
-}
-
-/// Body for `reminder/turn_aborted`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReminderTurnAbortedBody {
-    pub text: String,
-}
-
-impl ReminderTurnAbortedBody {
-    pub fn agent_item(&self) -> crate::types::Item {
-        tagged_user_item("reminder/turn_aborted", &self.text)
     }
 }
 

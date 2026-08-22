@@ -51,7 +51,6 @@ pub enum ErrorCode {
     CompactionFailed,
     CompactionCircuitOpen,
     PermissionDenied,
-    HookBlocked,
     ToolPanic,
     ToolValidation,
     Cancelled,
@@ -473,10 +472,6 @@ pub enum WireEvent {
     Compaction {
         kind: CompactionKind,
         detail: Option<String>,
-    },
-    HookFired {
-        phase: String,
-        action: String,
     },
     PermissionResolved {
         tool: String,

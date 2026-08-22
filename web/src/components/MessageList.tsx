@@ -10,6 +10,7 @@ import {
   isHumanUserRow,
   isHumanViewKind,
   isInProgressItem,
+  isJobExitReminderRow,
   isMessageItem,
   isReasoningItem,
   itemFromRow,
@@ -40,6 +41,7 @@ type RenderNode =
   | { kind: "text"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
   | { kind: "reasoning"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
   | { kind: "compact_cut"; key: string; streaming: boolean }
+  | { kind: "job_exit"; reason: "exit" | "kill" | "timeout"; key: string; streaming: boolean; live: false }
   | {
       kind: "tool";
       call: FunctionCallItem;
@@ -66,6 +68,24 @@ export function CompactCutMark() {
     >
       <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
       <span className="text-dk-2xs text-(--_dk-text-disabled)">compaction point</span>
+    </div>
+  );
+}
+
+export function JobExitMark({ reason }: { reason: "exit" | "kill" | "timeout" }) {
+  const label = reason === "kill"
+    ? "Background terminal stopped"
+    : reason === "timeout"
+      ? "Background terminal timed out"
+      : "Background terminal exited";
+  return (
+    <div
+      role="status"
+      aria-label={label}
+      className="flex items-center gap-1.5 py-1"
+    >
+      <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
+      <span className="text-dk-2xs text-(--_dk-text-disabled)">{label}</span>
     </div>
   );
 }
@@ -135,6 +155,10 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
       nodes.push({ kind: "compact_cut", key, streaming: false });
       continue;
     }
+    if (isJobExitReminderRow(row)) {
+      nodes.push({ kind: "job_exit", reason: row.body.reason, key, streaming: false, live: false });
+      continue;
+    }
     if (!isHumanViewKind(row.kind) || row.kind === "item/tool_result") continue;
     const item = itemFromRow(row);
     if (!item) continue;
@@ -197,7 +221,7 @@ export function groupNodes(nodes: RenderNode[]): NodeGroup[] {
   let current: NodeGroup | null = null;
 
   for (const node of nodes) {
-    if (node.kind === "compact_cut") {
+    if (node.kind === "compact_cut" || node.kind === "job_exit") {
       groups.push({ type: "cut", nodes: [node] });
       current = null;
       continue;
@@ -288,6 +312,8 @@ export function NodeView({
       );
     case "compact_cut":
       return <CompactCutMark />;
+    case "job_exit":
+      return <JobExitMark reason={node.reason} />;
   }
 }
 
@@ -610,7 +636,7 @@ export function groupRowsForBubbles(rows: HumanRow[]): HumanRow[][] {
 
   for (const row of rows) {
     if (!isHumanViewKind(row.kind)) continue;
-    if (isCompactCutRow(row)) {
+    if (isCompactCutRow(row) || isJobExitReminderRow(row)) {
       flush();
       groups.push([row]);
       continue;

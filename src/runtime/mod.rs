@@ -29,7 +29,6 @@ use crate::config::{AgentConfig, ConfigManager, ResolvedConfig, WorkspaceState, 
 use crate::context_pipeline::{Context, build_context};
 use crate::context_pipeline::{ContextPipeline, ProviderPromptBaseline};
 use crate::engines::WorkspaceEngines;
-use crate::hook::{HookDispatcher, HookRegistry, apply_hook_output};
 use crate::ide_base::IdeBaseHandle;
 use crate::llm::LlmProvider;
 use crate::mcp::McpConnectionPool;
@@ -42,7 +41,7 @@ use crate::runtime::observer::{
 use crate::session::manager::SessionManager;
 use crate::session::snapshot;
 use crate::session::store::SessionApply;
-use crate::session::working::{WorkingRow, align_working, project_items};
+use crate::session::working::{WorkingRow, project_items};
 use crate::session::{EventDraft, EventType};
 use crate::tool::ToolPipeline;
 use crate::tool::output;
@@ -375,6 +374,51 @@ pub fn spawn_turn(
     })
 }
 
+/// Spawn a turn whose triggering information already exists in SessionLog.
+/// The agent starts from AgentView and never appends a synthetic `item/user`.
+pub fn spawn_system_turn(
+    runtime: &RuntimeHandle,
+    session_id: String,
+    sessions: Arc<SessionManager>,
+    permission_sink: Arc<dyn PermissionSink>,
+    turn_id: String,
+) -> anyhow::Result<TurnHandle> {
+    let default_primary = runtime.desired_primary_agent();
+    let primary_agent = sessions
+        .resolve_primary_agent(&session_id, default_primary, &runtime.resolved)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let (tx, rx) = mpsc::unbounded_channel::<InternalEnvelope>();
+    let observer = ChannelObserver::new(tx);
+    let mut agent_loop = runtime.build_runtime(
+        session_id,
+        sessions,
+        &primary_agent,
+        0,
+        permission_sink,
+        observer,
+    )?;
+
+    let cancel = agent_loop.cancel_token();
+    let step_max = agent_loop.agent_config.max_steps;
+    let workspace_paths = runtime.workspace.paths.clone();
+    let turn_id_for_thread = turn_id.clone();
+    let handle = std::thread::spawn(move || {
+        set_runtime_paths(workspace_paths);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(agent_loop.run_existing_context_with_turn(&turn_id_for_thread, step_max))
+    });
+
+    Ok(TurnHandle {
+        handle: Some(handle),
+        rx,
+        cancel,
+        turn_id,
+        step_max,
+    })
+}
+
 pub struct AgentRuntime {
     pub resolved: ResolvedConfig,
     pub session_id: String,
@@ -597,20 +641,6 @@ impl AgentRuntime {
         self.context_pipeline.sync_context(&self.base_ctx);
     }
 
-    /// Test helper: replace hooks on the shared runtime context.
-    pub fn set_hook_registry(&mut self, hooks: HookDispatcher) {
-        if let Some(ref mut pipeline) = self.tool_pipeline
-            && let Some(ref mut rctx) = self.runtime_ctx
-        {
-            let new_ctx = Arc::new(RuntimeContext {
-                hook_dispatcher: hooks,
-                ..(**rctx).clone()
-            });
-            *rctx = Arc::clone(&new_ctx);
-            pipeline.set_runtime(new_ctx);
-        }
-    }
-
     /// Test helper: simulate provider-reported prompt token usage from the prior LLM call.
     pub fn set_last_prompt_tokens(&self, tokens: u64) {
         self.prompt_usage_baseline.record(tokens, 0);
@@ -788,6 +818,25 @@ impl AgentRuntime {
         turn_id: &str,
         step_max: u32,
     ) -> Result<String> {
+        self.run_turn(Some(user_prompt), turn_id, step_max).await
+    }
+
+    /// Run a turn from durable AgentView context without appending a new
+    /// human `item/user` row. Used by system events such as job exits.
+    pub async fn run_existing_context_with_turn(
+        &mut self,
+        turn_id: &str,
+        step_max: u32,
+    ) -> Result<String> {
+        self.run_turn(None, turn_id, step_max).await
+    }
+
+    async fn run_turn(
+        &mut self,
+        user_prompt: Option<&str>,
+        turn_id: &str,
+        step_max: u32,
+    ) -> Result<String> {
         // Lazy-init: build tool list (async MCP schema fetch) on first turn.
         if self.tool_pipeline.is_none() {
             let params = self.build_tool_params.take().unwrap();
@@ -821,7 +870,6 @@ impl AgentRuntime {
                 &params.agent_name,
                 params.depth,
             );
-            let hook_dispatcher = HookDispatcher::from_registry(HookRegistry::default());
             let permission_sink = Arc::new(CancellingPermissionSink::new(
                 Arc::clone(&params.permission_sink),
                 params.cancel.clone(),
@@ -839,7 +887,6 @@ impl AgentRuntime {
             let runtime_ctx = Arc::new(RuntimeContext::new(
                 tools,
                 permission,
-                hook_dispatcher,
                 self.base_ctx.clone(),
                 params.agent_name.to_string(),
                 permission_sink,
@@ -854,7 +901,7 @@ impl AgentRuntime {
             self.tool_pipeline = Some(tool_pipeline);
         }
 
-        tracing::info!(input = %user_prompt, "agent loop start");
+        tracing::info!(input = ?user_prompt, "agent loop start");
 
         // Fresh per-turn meters (defensive if a prior turn exited without finalize).
         self.turn_token_stats = TurnTokenStats::default();
@@ -862,7 +909,7 @@ impl AgentRuntime {
 
         self.emit_internal(InternalEvent::TurnStarted {
             turn_id: turn_id.to_string(),
-            input: user_prompt.to_string(),
+            input: user_prompt.unwrap_or_default().to_string(),
             step_max,
         });
         self.emit_internal(InternalEvent::PhaseChanged {
@@ -888,78 +935,18 @@ impl AgentRuntime {
                 .begin_turn_with_id(s, Some(turn_id.to_string()))?)
         })?;
         let mut items = project_items(&working);
-        let resumed = !items.is_empty();
-        let ts = chrono::Utc::now().timestamp_millis();
 
-        let start_payload = crate::hook::HookPayload::new(
-            "SessionStart",
-            &self.session_id,
-            &self.rctx().ctx.cwd.display().to_string(),
-            serde_json::json!({
-                "item_count": items.len(),
-                "resumed": resumed,
-            }),
-        );
-        let start_output = self
-            .rctx()
-            .hook_dispatcher
-            .fire("SessionStart", &start_payload, &self.rctx().ctx)
-            .await;
-        self.emit_hook_fired("SessionStart", &format!("{:?}", start_output.action));
-        if start_output.action == crate::hook::HookAction::Block {
-            return self.finalize_turn(
-                turn_id,
-                TurnEndReason::HookBlocked,
-                Some("Session blocked by SessionStart hook".into()),
-            );
-        }
-        if self
-            .rctx()
-            .hook_dispatcher
-            .phase_applies_inject("SessionStart")
-        {
-            apply_hook_output(&mut items, start_output, ts);
-            align_working(&mut working, &items);
+        if let Some(user_prompt) = user_prompt {
+            let already_last_user = items
+                .last()
+                .is_some_and(|m| item_text_preview(m) == user_prompt);
+            if !already_last_user {
+                items.push(user_text(user_prompt.to_string()));
+                working.push(WorkingRow::pending(user_text(user_prompt.to_string())));
+            }
         }
 
-        let prompt_payload = crate::hook::HookPayload::new(
-            "UserPromptSubmit",
-            &self.session_id,
-            &self.rctx().ctx.cwd.display().to_string(),
-            serde_json::json!({"prompt": user_prompt}),
-        );
-        let prompt_output = self
-            .rctx()
-            .hook_dispatcher
-            .fire("UserPromptSubmit", &prompt_payload, &self.rctx().ctx)
-            .await;
-        self.emit_hook_fired("UserPromptSubmit", &format!("{:?}", prompt_output.action));
-        if prompt_output.action == crate::hook::HookAction::Block {
-            return self.finalize_turn(
-                turn_id,
-                TurnEndReason::HookBlocked,
-                Some("Prompt blocked by UserPromptSubmit hook".into()),
-            );
-        }
-
-        let already_last_user = items
-            .last()
-            .is_some_and(|m| item_text_preview(m) == user_prompt);
-        if !already_last_user {
-            items.push(user_text(user_prompt.to_string()));
-            working.push(WorkingRow::pending(user_text(user_prompt.to_string())));
-        }
-
-        if self
-            .rctx()
-            .hook_dispatcher
-            .phase_applies_inject("UserPromptSubmit")
-        {
-            apply_hook_output(&mut items, prompt_output, ts);
-            align_working(&mut working, &items);
-        }
-
-        // User (and inject) Items are complete before any model stream. Persist
+        // User Items are complete before any model stream. Persist
         // so the working set and disk agree before InFlight begins.
         {
             let commit_outcome = self.sessions.with_entry_store(&self.session_id, |s| {
@@ -1046,43 +1033,10 @@ impl AgentRuntime {
             outcome,
             TurnOutcome::Completed { .. } | TurnOutcome::MaxSteps { .. }
         );
-        let success = !matches!(outcome, TurnOutcome::Error(_));
-
-        // Persist SessionEnd injects + final turn delta BEFORE TurnCompleted so the
-        // DB already contains the whole turn when the event lands (2.3).
-        let end_payload = crate::hook::HookPayload::new(
-            "SessionEnd",
-            &self.session_id,
-            &self.rctx().ctx.cwd.display().to_string(),
-            serde_json::json!({
-                "item_count": items.len(),
-                "success": success,
-            }),
-        );
-        let end_ts = chrono::Utc::now().timestamp_millis();
-        let end_output = self
-            .rctx()
-            .hook_dispatcher
-            .fire_and_apply(
-                "SessionEnd",
-                &end_payload,
-                &self.rctx().ctx,
-                &mut items,
-                end_ts,
-            )
-            .await;
-        self.emit_hook_fired("SessionEnd", &format!("{:?}", end_output.action));
-        if end_output.action == crate::hook::HookAction::Block {
-            tracing::warn!("SessionEnd hook returned Block (logged only)");
-        }
-
-        // Persist SessionEnd injects only when the turn is kept (not cancel/error).
+        // Persist the final turn delta before TurnCompleted so the DB already
+        // contains the whole turn when the event lands.
         if should_commit {
             let commit_outcome = self.sessions.with_entry_store(&self.session_id, |s| {
-                // The pipeline owns the committed GateRow set. Reconcile hook
-                // injection against that set, never against the stale turn-start
-                // copy in `working`; otherwise id-less tool outputs are appended
-                // a second time at SessionEnd.
                 Ok(self
                     .context_pipeline
                     .commit_step_from_items(s, &mut items)?)

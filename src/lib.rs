@@ -5,7 +5,6 @@ pub mod client_protocol;
 pub mod config;
 pub mod context_pipeline;
 pub mod engines;
-pub mod hook;
 pub mod ide_base;
 pub mod llm;
 pub mod lsp;

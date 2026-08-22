@@ -3,12 +3,11 @@ use std::sync::Arc;
 
 use crate::config::bridge::agent_config_from_profile;
 use crate::context_pipeline::build_system_prompt;
-use crate::hook::HookPayload;
 use crate::llm::ModelRequest;
 use crate::runtime::llm_resolve::binding_for_agent;
 use crate::runtime::observer::{FailReason, InternalEvent, TurnError, TurnPhase, TurnTokenStats};
 use crate::runtime::provider_registry::ProviderRegistry;
-use crate::types::{FunctionToolCall, Item, LitecodeError, Result, Transcript, item_text_preview};
+use crate::types::{FunctionToolCall, Item, LitecodeError, Result, Transcript};
 
 use crate::agent::AgentDeps;
 use crate::tool::executor::{outputs_from_tool_results, run_tool};
@@ -119,32 +118,6 @@ impl AgentDeps for AgentRuntime {
     }
 
     async fn should_stop(&self, output: &[Item]) -> Result<bool> {
-        let has_tools = output.iter().any(|i| matches!(i, Item::FunctionCall(_)));
-        let has_text = output
-            .iter()
-            .any(|i| matches!(i, Item::Message(_)) && !item_text_preview(i).is_empty());
-        let stop_reason = if has_tools {
-            "tool_use"
-        } else if has_text {
-            "end_turn"
-        } else {
-            "stop"
-        };
-
-        let stop_payload = HookPayload::new(
-            "Stop",
-            &self.session_id,
-            &self.rctx().ctx.cwd.display().to_string(),
-            serde_json::json!({"stop_reason": stop_reason}),
-        );
-        let hook_output = self
-            .rctx()
-            .hook_dispatcher
-            .fire("Stop", &stop_payload, &self.rctx().ctx)
-            .await;
-        self.emit_hook_fired("Stop", &format!("{:?}", hook_output.action));
-        // Notify only: Stop+Block must not continue the loop after persist.
-
         Ok(should_stop_after_output(output))
     }
 
@@ -171,13 +144,11 @@ impl AgentDeps for AgentRuntime {
         // Single computation: `prepare_step` reports whether a full compaction
         // actually ran; phase/compaction events are driven from that truth so
         // the wire always matches what happened (no duplicate budget math).
-        let compacted = self
+        self
             .context_pipeline
             .prepare_step(
-                &self.rctx().hook_dispatcher,
                 &self.sessions,
                 &self.session_id,
-                &self.rctx().ctx,
                 compaction_binding.provider.as_ref(),
                 &compaction_binding.api_key,
                 &compaction_binding.api_model_id,
@@ -191,10 +162,6 @@ impl AgentDeps for AgentRuntime {
                 &self.turn_llm.model_def,
             )
             .await?;
-
-        if compacted {
-            self.emit_hook_fired("PreCompact", "allow");
-        }
 
         Ok(())
     }
@@ -304,11 +271,10 @@ impl AgentRuntime {
             }
         };
 
-        let (result, _post) = run_tool(
+        let result = run_tool(
             tu,
             &rctx.tools,
             &rctx.permission,
-            rctx.hook_dispatcher.clone(),
             &rctx.ctx,
             &self.session_id,
             &rctx.agent_name,

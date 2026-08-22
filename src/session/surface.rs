@@ -564,29 +564,12 @@ mod tests {
     }
 
     #[test]
-    fn injection_kinds_append_to_spine_and_assemble_tagged_agent_items() {
+    fn job_exit_appends_to_spine_and_assembles_tagged_agent_item() {
         use crate::authority::responses::{InputRole, MessageItem};
-        use crate::session::model::{
-            HookPromptBody, ReminderJobExitBody, ReminderJobExitReason, ReminderTurnAbortedBody,
-        };
+        use crate::session::model::{ReminderJobExitBody, ReminderJobExitReason};
 
         let mut log = EventLog::new();
         append_user(&mut log, "hi");
-        log.append(EventDraft {
-            time: 0,
-            event_type: EventType::HookPrompt,
-            data: serde_json::to_value(HookPromptBody {
-                text: "from hook".into(),
-                hook_run_id: "run-1".into(),
-                placement: Some("pre_turn".into()),
-            })
-            .unwrap(),
-            surface_op: None,
-            source_seqs: None,
-            ignorable: false,
-            state: crate::session::model::LogState::Final,
-        })
-        .expect("hook/prompt");
         log.append(EventDraft {
             time: 0,
             event_type: EventType::ReminderJobExit,
@@ -602,39 +585,20 @@ mod tests {
             state: crate::session::model::LogState::Final,
         })
         .expect("job_exit");
-        log.append(EventDraft {
-            time: 0,
-            event_type: EventType::ReminderTurnAborted,
-            data: serde_json::to_value(ReminderTurnAbortedBody {
-                text: "turn was cancelled".into(),
-            })
-            .unwrap(),
-            surface_op: None,
-            source_seqs: None,
-            ignorable: false,
-            state: crate::session::model::LogState::Final,
-        })
-        .expect("turn_aborted");
-        assert!(EventType::HookPrompt.enters_spine());
         assert_eq!(
             fold_surface(log.events()).expect("fold").nodes,
-            vec![0, 1, 2, 3]
+            vec![0, 1]
         );
         let agent = derive_messages(log.events()).expect("agent");
-        assert_eq!(agent.len(), 4);
+        assert_eq!(agent.len(), 2);
         assert_eq!(item_text_preview(&agent[0]), "hi");
-        for item in &agent[1..] {
-            match item {
-                crate::types::Item::Message(MessageItem::Input(input)) => {
-                    assert_eq!(input.role, InputRole::User);
-                }
-                other => panic!("injection AgentView must be tagged user Item, got {other:?}"),
+        match &agent[1] {
+            crate::types::Item::Message(MessageItem::Input(input)) => {
+                assert_eq!(input.role, InputRole::User);
             }
+            other => panic!("job exit AgentView must be tagged user Item, got {other:?}"),
         }
-        assert!(item_text_preview(&agent[1]).contains("[hook/prompt run-1]"));
-        assert!(item_text_preview(&agent[1]).contains("from hook"));
-        assert!(item_text_preview(&agent[2]).contains("[reminder/job_exit timeout job-9]"));
-        assert!(item_text_preview(&agent[3]).contains("[reminder/turn_aborted]"));
+        assert!(item_text_preview(&agent[1]).contains("[reminder/job_exit timeout job-9]"));
         let human = derive_transcript_items(log.events()).expect("human");
         assert_eq!(human.len(), 1);
         assert_eq!(item_text_preview(&human[0]), "hi");

@@ -11,7 +11,6 @@ use crate::authority::responses::{
     InputImageContent, InputTextContent,
 };
 use crate::context_pipeline::Context;
-use crate::hook::{HookAction, HookDispatcher, HookOutput, HookPayload};
 use crate::permission::{PermissionEngine, PermissionSink};
 use crate::session::media::resolve_media_artifact_url;
 use crate::session::store::Session;
@@ -274,7 +273,6 @@ pub async fn run_tool(
     tool_use: &FunctionToolCall,
     tools: &[Arc<dyn Tool>],
     permission: &PermissionEngine,
-    hooks: HookDispatcher,
     ctx: &Context,
     session_id: &str,
     agent_name: &str,
@@ -284,48 +282,37 @@ pub async fn run_tool(
     spill_threshold: usize,
     _turn_anchor_k: Option<i64>,
     write_lock: Arc<WorkspaceWriteLock>,
-) -> (ToolCallResult, HookOutput) {
+) -> ToolCallResult {
     let tu_name = tool_use.name.clone();
     let tu_id = call_id(tool_use);
 
     if cancel.is_cancelled() {
-        return (cancelled_tool_result(&tu_name), HookOutput::ok());
+        return cancelled_tool_result(&tu_name);
     }
 
     let tool = match tools.iter().find(|t| t.name() == tu_name) {
         Some(t) => t.clone(),
         None => {
-            return (
-                wire_result(ToolCallResult::error(format!("tool '{tu_name}' not found"))),
-                HookOutput::ok(),
-            );
+            return wire_result(ToolCallResult::error(format!("tool '{tu_name}' not found")));
         }
     };
 
     let tool_use_input = match parse_tool_arguments(&tool_use.arguments) {
         Ok(value) => value,
         Err(detail) => {
-            return (
-                wire_result(ToolCallResult::error(invalid_input_for(&tu_name, detail))),
-                HookOutput::ok(),
-            );
+            return wire_result(ToolCallResult::error(invalid_input_for(&tu_name, detail)));
         }
     };
 
     if let Err(msg) = check_tool_input(tool.as_ref(), &tool_use_input) {
-        return (
-            wire_result(ToolCallResult::error(invalid_input_for(&tu_name, msg))),
-            HookOutput::ok(),
-        );
+        return wire_result(ToolCallResult::error(invalid_input_for(&tu_name, msg)));
     }
 
     let auth = authorize(
         tool_use,
         tool.as_ref(),
         permission,
-        &hooks,
         ctx,
-        session_id,
         agent_name,
         sink,
         &cancel,
@@ -334,18 +321,18 @@ pub async fn run_tool(
 
     if matches!(auth, AuthResult::Aborted) {
         cancel.cancel();
-        return (cancelled_tool_result(&tu_name), HookOutput::ok());
+        return cancelled_tool_result(&tu_name);
     }
 
     if cancel.is_cancelled() {
-        return (cancelled_tool_result(&tu_name), HookOutput::ok());
+        return cancelled_tool_result(&tu_name);
     }
 
     let effective_input = match auth {
         AuthResult::Denied(msg) => {
-            return (wire_result(ToolCallResult::error(msg)), HookOutput::ok());
+            return wire_result(ToolCallResult::error(msg));
         }
-        AuthResult::Aborted => return (cancelled_tool_result(&tu_name), HookOutput::ok()),
+        AuthResult::Aborted => return cancelled_tool_result(&tu_name),
         AuthResult::Proceed { effective_input } => effective_input,
     };
 
@@ -358,12 +345,9 @@ pub async fn run_tool(
                 session_id: session_id.to_string(),
             }),
             Err(holder) => {
-                return (
-                    wire_result(ToolCallResult::error(format!(
-                        "resource busy: held by session {holder}. Retry after the other session finishes writing"
-                    ))),
-                    HookOutput::ok(),
-                );
+                return wire_result(ToolCallResult::error(format!(
+                    "resource busy: held by session {holder}. Retry after the other session finishes writing"
+                )));
             }
         }
     } else {
@@ -371,7 +355,7 @@ pub async fn run_tool(
     };
 
     if cancel.is_cancelled() {
-        return (cancelled_tool_result(&tu_name), HookOutput::ok());
+        return cancelled_tool_result(&tu_name);
     }
 
     let tool_clone = tool.clone();
@@ -401,7 +385,7 @@ pub async fn run_tool(
     };
 
     if cancel.is_cancelled() {
-        return (cancelled_tool_result(&tu_name), HookOutput::ok());
+        return cancelled_tool_result(&tu_name);
     }
 
     let mut output = match raw_result {
@@ -446,26 +430,6 @@ pub async fn run_tool(
         }
     }
 
-    let post_payload = HookPayload::new(
-        "PostToolUse",
-        session_id,
-        &ctx.cwd.display().to_string(),
-        serde_json::json!({
-            "tool_name": tu_name,
-            "tool_input": effective_input,
-            "tool_output": &output.content,
-            "tool_metadata": &output.metadata,
-        }),
-    );
-    let post_output = hooks.fire("PostToolUse", &post_payload, ctx).await;
-
-    if post_output.action == HookAction::Block {
-        tracing::warn!(
-            tool = %tu_name,
-            "PostToolUse hook returned Block action (notification only)"
-        );
-    }
-
     tracing::info!(
         tool = %tu_name,
         id = %tu_id,
@@ -473,7 +437,7 @@ pub async fn run_tool(
         "tool executed"
     );
 
-    (output, post_output)
+    output
 }
 
 fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
@@ -725,9 +689,6 @@ mod tests {
             crate::config::resolved::WorkspaceState::new("/tmp/test"),
         );
         let permission = crate::permission::PermissionEngine::resolver(resolved, "default", 0);
-        let hooks = crate::hook::HookDispatcher::from_registry(
-            crate::hook::HookRegistryBuilder::new().build(),
-        );
         let ctx = Context {
             cwd: dir.path().to_path_buf(),
             workspace_paths: crate::config::WorkspacePaths::for_legacy_root(dir.path()),
@@ -745,11 +706,10 @@ mod tests {
             status: None,
         };
         let start = std::time::Instant::now();
-        let (result, _post) = run_tool(
+        let result = run_tool(
             &tu,
             &tools,
             &permission,
-            hooks,
             &ctx,
             "sess",
             "default",
@@ -896,9 +856,6 @@ mod tests {
             crate::config::resolved::WorkspaceState::new("/tmp/test"),
         );
         let permission = crate::permission::PermissionEngine::resolver(resolved, "default", 0);
-        let hooks = crate::hook::HookDispatcher::from_registry(
-            crate::hook::HookRegistryBuilder::new().build(),
-        );
         let ctx = Context {
             cwd: dir.path().to_path_buf(),
             workspace_paths: crate::config::WorkspacePaths::for_legacy_root(dir.path()),
@@ -914,11 +871,10 @@ mod tests {
             id: Some("fc_1".into()),
             status: None,
         };
-        let (result, _) = run_tool(
+        let result = run_tool(
             &tu,
             &[tool],
             &permission,
-            hooks,
             &ctx,
             "sess",
             "default",
@@ -1061,9 +1017,6 @@ mod tests {
             crate::config::resolved::WorkspaceState::new(cwd),
         );
         let permission = crate::permission::PermissionEngine::resolver(resolved, "default", 0);
-        let hooks = crate::hook::HookDispatcher::from_registry(
-            crate::hook::HookRegistryBuilder::new().build(),
-        );
         let ctx = Context {
             cwd: cwd.to_path_buf(),
             workspace_paths: crate::config::WorkspacePaths::for_legacy_root(cwd),
@@ -1079,11 +1032,10 @@ mod tests {
             id: Some("fc_1".into()),
             status: None,
         };
-        let (result, _) = run_tool(
+        let result = run_tool(
             &tu,
             &tools,
             &permission,
-            hooks,
             &ctx,
             session_id,
             "default",

@@ -156,6 +156,8 @@ impl AgentDeps for FakeAgentDeps {
 
     fn emit_todo_progress(&mut self) {}
 
+    fn emit_plan_changed(&mut self) {}
+
     fn is_cancelled(&self) -> bool {
         self.cancelled.get()
     }

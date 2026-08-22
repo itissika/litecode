@@ -197,12 +197,6 @@ function turnEndNoticeFrom(tf: TurnFinished): TurnEndNotice | null {
   if (tf.reason === "max_steps") {
     return { kind: "error", message: "Max steps reached" };
   }
-  if (tf.reason === "hook_blocked") {
-    return {
-      kind: "error",
-      message: tf.error?.message ?? "Blocked by hook",
-    };
-  }
   return null;
 }
 
@@ -619,9 +613,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       switch (te.event.type) {
         case "compaction":
           notify.add(sessionId, "Context compacted");
-          break;
-        case "hook_fired":
-          notify.add(sessionId, `Hook: ${te.event.action}`);
           break;
         case "error":
           if (

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::hook::{HookAction, HookOutput, apply_hook_output};
 use crate::runtime::context::RuntimeContext;
 use crate::types::{FunctionToolCall, ToolCallResult, Transcript};
 
@@ -70,8 +69,6 @@ impl ToolPipeline {
             &self.runtime.ctx.cwd,
             |name| self.runtime.permission.path_mode(name).to_tool_path_mode(),
         );
-        let mut post_outputs_by_id: HashMap<String, HookOutput> = HashMap::new();
-
         for batch in batches {
             if is_cancelled() || cancel.is_cancelled() {
                 self.append_cancelled_outputs(invocations, results_by_id, transcript);
@@ -89,11 +86,10 @@ impl ToolPipeline {
                         let cancel = cancel.clone();
                         let write_lock = Arc::clone(&runtime.write_lock);
                         let handle = tokio::spawn(async move {
-                            let (result, post_output) = run_tool(
+                            let result = run_tool(
                                 &tu,
                                 &runtime.tools,
                                 &runtime.permission,
-                                runtime.hook_dispatcher.clone(),
                                 &runtime.ctx,
                                 &session_id,
                                 &runtime.agent_name,
@@ -105,7 +101,7 @@ impl ToolPipeline {
                                 write_lock,
                             )
                             .await;
-                            (tu.call_id.clone(), result, post_output)
+                            (tu.call_id.clone(), result)
                         });
                         (captured_id, handle)
                     })
@@ -120,7 +116,6 @@ impl ToolPipeline {
                             handle,
                             &captured_id,
                             &mut results_by_id,
-                            &mut post_outputs_by_id,
                         )
                         .await;
                         for (id, remaining) in iter {
@@ -128,7 +123,6 @@ impl ToolPipeline {
                                 remaining,
                                 &id,
                                 &mut results_by_id,
-                                &mut post_outputs_by_id,
                             )
                             .await;
                         }
@@ -136,16 +130,14 @@ impl ToolPipeline {
                         return Err(crate::types::LitecodeError::Canceled);
                     }
                     match handle.await {
-                        Ok((tool_use_id, result, post_output)) => {
+                        Ok((tool_use_id, result)) => {
                             results_by_id.insert(tool_use_id, result);
-                            post_outputs_by_id.insert(captured_id, post_output);
                             if is_cancelled() || cancel.is_cancelled() {
                                 for (id, remaining) in iter {
                                     Self::join_tool_handle(
                                         remaining,
                                         &id,
                                         &mut results_by_id,
-                                        &mut post_outputs_by_id,
                                     )
                                     .await;
                                 }
@@ -169,7 +161,6 @@ impl ToolPipeline {
                                     join_err
                                 )),
                             );
-                            post_outputs_by_id.insert(captured_id, HookOutput::ok());
                         }
                     }
                 }
@@ -180,11 +171,10 @@ impl ToolPipeline {
                         return Err(crate::types::LitecodeError::Canceled);
                     }
                     let tool_use_id = tu.call_id.clone();
-                    let (result, post_output) = run_tool(
+                    let result = run_tool(
                         tu,
                         &self.runtime.tools,
                         &self.runtime.permission,
-                        self.runtime.hook_dispatcher.clone(),
                         &self.runtime.ctx,
                         &self.session_id,
                         &self.runtime.agent_name,
@@ -197,7 +187,6 @@ impl ToolPipeline {
                     )
                     .await;
                     results_by_id.insert(tool_use_id.clone(), result);
-                    post_outputs_by_id.insert(tool_use_id, post_output);
                     if is_cancelled() || cancel.is_cancelled() {
                         self.append_cancelled_outputs(invocations, results_by_id, transcript);
                         return Err(crate::types::LitecodeError::Canceled);
@@ -213,42 +202,19 @@ impl ToolPipeline {
             &self.runtime.data_root,
         ));
 
-        let ts = chrono::Utc::now().timestamp_millis();
-        let mut merged = HookOutput::ok();
-        for tu in invocations {
-            if let Some(out) = post_outputs_by_id.remove(&tu.call_id) {
-                if out.action == HookAction::Block {
-                    tracing::warn!(
-                        tool = %tu.name,
-                        "PostToolUse hook returned Block action (notification only)"
-                    );
-                }
-                merged.merge(out);
-            }
-        }
-        if self
-            .runtime
-            .hook_dispatcher
-            .phase_applies_inject("PostToolUse")
-        {
-            apply_hook_output(transcript, merged, ts);
-        }
-
         Ok(())
     }
 
     /// Join a spawned tool task. Cancellation must kill-and-wait inside the
     /// tool; dropping the wrapper with `abort()` is not process recovery.
     async fn join_tool_handle(
-        handle: tokio::task::JoinHandle<(String, ToolCallResult, HookOutput)>,
+        handle: tokio::task::JoinHandle<(String, ToolCallResult)>,
         captured_id: &str,
         results_by_id: &mut HashMap<String, ToolCallResult>,
-        post_outputs_by_id: &mut HashMap<String, HookOutput>,
     ) {
         match handle.await {
-            Ok((tool_use_id, result, post_output)) => {
+            Ok((tool_use_id, result)) => {
                 results_by_id.insert(tool_use_id, result);
-                post_outputs_by_id.insert(captured_id.to_string(), post_output);
             }
             Err(join_err) => {
                 tracing::error!(
@@ -259,7 +225,6 @@ impl ToolPipeline {
                     captured_id.to_string(),
                     ToolCallResult::error(format!("tool execution task panicked: {join_err}")),
                 );
-                post_outputs_by_id.insert(captured_id.to_string(), HookOutput::ok());
             }
         }
     }

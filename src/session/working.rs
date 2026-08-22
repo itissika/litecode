@@ -29,9 +29,13 @@ impl WorkingRow {
     }
 
     pub fn persisted(seq: Seq, item: Item) -> Self {
+        Self::persisted_with_kind(seq, kind_for_item(&item), item)
+    }
+
+    pub fn persisted_with_kind(seq: Seq, kind: SessionKind, item: Item) -> Self {
         Self {
             log_seq: Some(seq),
-            kind: kind_for_item(&item),
+            kind,
             item,
         }
     }
@@ -63,7 +67,9 @@ pub fn align_working(rows: &mut Vec<WorkingRow>, items: &[Item]) {
     for (i, item) in items.iter().enumerate() {
         if i < rows.len() {
             rows[i].item = item.clone();
-            rows[i].kind = kind_for_item(item);
+            if rows[i].log_seq.is_none() {
+                rows[i].kind = kind_for_item(item);
+            }
         } else {
             rows.push(WorkingRow::pending(item.clone()));
         }

@@ -7,7 +7,6 @@ export type ErrorCode =
   | "compaction_failed"
   | "compaction_circuit_open"
   | "permission_denied"
-  | "hook_blocked"
   | "tool_panic"
   | "tool_validation"
   | "cancelled"
@@ -239,22 +238,10 @@ export interface CompactedLogRow {
   body: { summary: string; from: number; to: number };
 }
 
-export interface HookPromptLogRow {
-  seq: number;
-  kind: "hook/prompt";
-  body: { text: string; hook_run_id: string; placement?: string };
-}
-
 export interface JobExitReminderLogRow {
   seq: number;
   kind: "reminder/job_exit";
   body: { job_id?: string; reason: "exit" | "kill" | "timeout"; text: string };
-}
-
-export interface TurnAbortedReminderLogRow {
-  seq: number;
-  kind: "reminder/turn_aborted";
-  body: { text: string };
 }
 
 export interface ControlLogRow {
@@ -267,9 +254,7 @@ export interface ControlLogRow {
 export type WireBufferEvent =
   | ItemLogRow
   | CompactedLogRow
-  | HookPromptLogRow
   | JobExitReminderLogRow
-  | TurnAbortedReminderLogRow
   | ControlLogRow;
 
 /** HumanView row: a committed log row with transient UI-only state. */
@@ -475,8 +460,7 @@ export type TurnEndReason =
   | "completed"
   | "cancelled"
   | "max_steps"
-  | "error"
-  | "hook_blocked";
+  | "error";
 
 export interface TurnStarted {
   session_id: string;
@@ -599,7 +583,6 @@ export type WireEvent =
       stop_reason: string;
     }
   | { type: "compaction"; kind: CompactionKind; detail: string | null }
-  | { type: "hook_fired"; phase: string; action: string }
   | { type: "permission_resolved"; tool: string; approved: boolean; always: boolean }
   | { type: "error"; code: ErrorCode; message: string }
   | { type: "snapshot_notice"; level: string; message: string };
@@ -665,6 +648,5 @@ export interface TurnMeta {
   cacheMissTokens: number;
   stopReason: string | null;
   lastCompaction: { kind: CompactionKind; detail: string | null } | null;
-  lastHookFired: { phase: string; action: string } | null;
   lastPermissionResolved: { tool: string; approved: boolean; always: boolean } | null;
 }

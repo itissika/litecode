@@ -12,6 +12,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import App from "./App";
+import "./lib/monaco";
 import { applyTheme, getTheme } from "./lib/theme";
 
 // Apply persisted theme before first render to avoid flash

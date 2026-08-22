@@ -1,8 +1,6 @@
 use tokio_util::sync::CancellationToken;
 
-use crate::context_pipeline::Context;
 use crate::context_pipeline::keep_recent::{build_compaction_prompt, find_keep_recent_cut};
-use crate::hook::{HookAction, HookDispatcher, HookPayload};
 use crate::llm::{LlmProvider, ModelRequest};
 use crate::runtime::observer::{
     CompactionFailKind, CompactionStage, CompactionTrigger, InternalEvent,
@@ -25,7 +23,7 @@ impl CompactPolicy {
     /// One-shot user-triggered compaction.
     ///
     /// Product eligibility is enforced by the caller. This deliberately skips
-    /// the automatic 80% policy, hooks, and post-compact loop reminders.
+    /// the automatic 80% policy and post-compact loop reminders.
     pub async fn compact_now(
         budget: &BudgetPolicy,
         sessions: &SessionManager,
@@ -103,10 +101,8 @@ impl CompactPolicy {
     pub async fn compact_if_needed(
         &self,
         budget: &BudgetPolicy,
-        hooks: &HookDispatcher,
         sessions: &SessionManager,
         session_id: &str,
-        ctx: &Context,
         provider: &dyn LlmProvider,
         api_key: &str,
         model: &str,
@@ -138,8 +134,7 @@ impl CompactPolicy {
             }
 
             // Know whether keep-recent has anything to discard in the persisted
-            // prefix before PreCompact, so we do not fire a false-positive
-            // PreCompact when cut is None. Length mismatch is Error, never skip.
+            // prefix. Length mismatch is Error, never skip.
             let prefix_len = require_persisted_prefix(transcript.len(), persisted_prefix_len)?;
             if find_keep_recent_cut(&transcript[..prefix_len], budget.keep_recent_tokens).is_none()
             {
@@ -149,24 +144,6 @@ impl CompactPolicy {
                     persisted_prefix_len = prefix_len,
                     "keep-recent: entire persisted prefix within keep window, skipping compact"
                 );
-                budget.enforce_hard_limit_with_baseline(transcript, prompt_baseline)?;
-                return Ok(false);
-            }
-
-            let pre_payload = HookPayload::new(
-                "PreCompact",
-                session_id,
-                &ctx.cwd.display().to_string(),
-                serde_json::json!({
-                    "message_count": transcript.len(),
-                    "token_estimate": token_count,
-                    "step": step,
-                }),
-            );
-            let pre_output = hooks.fire("PreCompact", &pre_payload, ctx).await;
-
-            if pre_output.action == HookAction::Block {
-                tracing::warn!("compaction blocked by PreCompact hook");
                 budget.enforce_hard_limit_with_baseline(transcript, prompt_baseline)?;
                 return Ok(false);
             }
@@ -195,7 +172,7 @@ impl CompactPolicy {
             if cancel.is_cancelled() {
                 return Ok(false);
             }
-            // Defensive: if compact was skipped after PreCompact (e.g. cut race),
+            // Defensive: if compact was skipped (e.g. cut race),
             // still enforce the hard limit so over-budget tokens cannot slip through.
             if !did_compact {
                 budget.enforce_hard_limit_with_baseline(transcript, prompt_baseline)?;

@@ -6,7 +6,8 @@ use crate::session::task_state::TodoStatus;
 /// Called only right after a full context compaction (Plan C: no per-step
 /// injection), so the model regains todo/plan awareness after the window reset.
 /// Includes the **full todo list** — counts alone are useless to a model that
-/// just lost its working memory — plus the active plan path. Returns `None`
+/// just lost its working memory — plus the active plan path and a read/rebuild
+/// hint. Returns `None`
 /// when there is nothing to remind (no active todos and no active plan).
 pub fn build_compaction_content(state: &TaskReminders) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
@@ -25,7 +26,10 @@ pub fn build_compaction_content(state: &TaskReminders) -> Option<String> {
     }
 
     if let Some(plan) = &state.active_plan {
-        parts.push(format!("[Active plan] {}", plan.relative_path));
+        parts.push(format!(
+            "[Active plan] {}\nRead this file before continuing. If it does not exist, call plan finish, then plan create to reconstruct the plan from remaining task context. Do not delete plan files with write, edit, or bash.",
+            plan.relative_path
+        ));
     }
 
     if parts.is_empty() {
@@ -88,7 +92,10 @@ mod tests {
             active_plan: Some(PlanRef::new("calm-river")),
         };
         let tail = build_compaction_content(&state).expect("tail");
-        assert_eq!(tail, "[Active plan] .litecode/plan/calm-river.md");
+        assert!(tail.starts_with("[Active plan] .litecode/plan/calm-river.md"));
+        assert!(tail.contains("Read this file before continuing"));
+        assert!(tail.contains("plan finish"));
+        assert!(tail.contains("plan create"));
     }
 
     #[test]

@@ -75,10 +75,4 @@ impl AgentRuntime {
         });
     }
 
-    pub(crate) fn emit_hook_fired(&self, phase: &str, action: &str) {
-        self.emit_internal(InternalEvent::HookFired {
-            phase: phase.to_string(),
-            action: action.to_string(),
-        });
-    }
 }

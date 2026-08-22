@@ -138,16 +138,13 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 |---|---|---|---|---|
 | `compacted` | 本行替换 `[from, to)`。被换行仍在 SessionLog | 切痕，不展示摘要 | 脊骨**最前**一条由 `summary` 装配的 assistant `Item`（不回写） | `{ summary, from, to }` |
 
-#### 注入 — 不是人键入；`body` 不是 `Item`
+#### 后台任务事件 — 不是人键入；`body` 不是 `Item`
 
 | kind | 脊骨 | HumanView | AgentView | body |
 |---|---|---|---|---|
-| `hook/prompt` | 追加 | 默认隐藏 | 带标记的 user/developer `Item` | `{ text, hook_run_id, placement? }` |
-| `reminder/job_exit` | 追加 | 默认隐藏 | 带标记的 user `Item` | `{ job_id?, reason: exit \| kill \| timeout, text }` |
-| `reminder/turn_aborted` | 追加 | 默认隐藏 | 带标记的 user `Item` | `{ text }` |
+| `reminder/job_exit` | 追加 | 终端退出系统标记 | 带标记的 user `Item` | `{ job_id?, reason: exit \| kill \| timeout, text }` |
 
-`reminder/job_exit` 只记账；要不要因此开一轮问 Live。后台 job 结束用它，不用 `seal`。  
-`reminder/turn_aborted` 在 `seal` 取消本轮之后、下一轮 AgentView 需要知情时再 `append`。
+后台 job 结束先记为 `reminder/job_exit`，再由 Live 决定是否开一轮；不用 `seal`，也不写成 `item/user`。
 
 #### 控制面 — 不进脊骨，两 View 都不读
 
@@ -239,9 +236,8 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 
 ```text
 SessionLog → 脊骨 → GateRow（已入账行 log_seq 皆 Some）
-append  item/user | hook/prompt | reminder/* | item/* | compacted | 控制面
+append  item/user | reminder/job_exit | item/* | compacted | 控制面
 seal    未闭合的 item/assistant 或 item/tool_call     → 取消本轮
-append  reminder/turn_aborted                         → 仅当下一轮模型需要知情
 AgentView = 装配(脊骨)
 结束    已入账 LogSeq 不再当新行提交
 ```

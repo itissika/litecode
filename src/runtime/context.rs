@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use tokio_util::sync::CancellationToken;
 
 use crate::context_pipeline::Context;
-use crate::hook::HookDispatcher;
 use crate::llm::ToolDef;
 use crate::permission::{PermissionEngine, PermissionSink};
 use crate::tool::trait_::Tool;
@@ -16,7 +15,6 @@ use crate::tool::write_lock::WorkspaceWriteLock;
 pub struct RuntimeContext {
     pub tools: Vec<Arc<dyn Tool>>,
     pub permission: PermissionEngine,
-    pub hook_dispatcher: HookDispatcher,
     pub ctx: Context,
     pub agent_name: String,
     pub permission_sink: Arc<dyn PermissionSink>,
@@ -33,7 +31,6 @@ impl RuntimeContext {
     pub fn new(
         tools: Vec<Arc<dyn Tool>>,
         permission: PermissionEngine,
-        hook_dispatcher: HookDispatcher,
         ctx: Context,
         agent_name: impl Into<String>,
         permission_sink: Arc<dyn PermissionSink>,
@@ -45,7 +42,6 @@ impl RuntimeContext {
         Self {
             tools,
             permission,
-            hook_dispatcher,
             ctx,
             agent_name: agent_name.into(),
             permission_sink,
@@ -69,7 +65,6 @@ impl RuntimeContext {
     pub fn without_spill(
         tools: Vec<Arc<dyn Tool>>,
         permission: PermissionEngine,
-        hook_dispatcher: HookDispatcher,
         ctx: Context,
         agent_name: impl Into<String>,
         permission_sink: Arc<dyn PermissionSink>,
@@ -79,7 +74,6 @@ impl RuntimeContext {
         Self::new(
             tools,
             permission,
-            hook_dispatcher,
             ctx,
             agent_name,
             permission_sink,

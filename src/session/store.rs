@@ -14,8 +14,7 @@ use crate::session::event::{
     spine_agent_item,
 };
 use crate::session::model::{
-    CompactedBody, HookPromptBody, LogState, ReminderJobExitBody, ReminderTurnAbortedBody,
-    SESSION_LOG_SCHEMA_VERSION,
+    CompactedBody, LogState, ReminderJobExitBody, SessionKind, SESSION_LOG_SCHEMA_VERSION,
 };
 use crate::session::snapshot;
 use crate::session::surface::{
@@ -422,6 +421,7 @@ struct LogProjection {
     next_seq: Seq,
     id_to_seq: HashMap<String, Seq>,
     items_by_seq: HashMap<Seq, Item>,
+    kinds_by_seq: HashMap<Seq, SessionKind>,
 }
 
 impl LogProjection {
@@ -439,6 +439,7 @@ impl LogProjection {
                 let shadowed: Vec<Seq> = self.surface.nodes[*start_idx..*start_idx + *len].to_vec();
                 for seq in shadowed {
                     self.items_by_seq.remove(&seq);
+                    self.kinds_by_seq.remove(&seq);
                 }
             }
             apply_plan(&mut self.surface, plan);
@@ -450,12 +451,16 @@ impl LogProjection {
             }
             if self.surface.nodes.contains(&event.seq) {
                 self.items_by_seq.insert(event.seq, item.clone());
+                self.kinds_by_seq
+                    .insert(event.seq, session_kind_of(&event.event_type));
             }
         } else if event.event_type.enters_spine()
             && self.surface.nodes.contains(&event.seq)
             && let Ok(assembled) = spine_agent_item(event)
         {
             self.items_by_seq.insert(event.seq, assembled);
+            self.kinds_by_seq
+                .insert(event.seq, session_kind_of(&event.event_type));
         }
         Ok(())
     }
@@ -467,6 +472,25 @@ impl LogProjection {
         if self.surface.nodes.contains(&seq) {
             self.items_by_seq.insert(seq, item.clone());
         }
+    }
+}
+
+fn session_kind_of(event_type: &EventType) -> SessionKind {
+    match event_type {
+        EventType::ItemUser => SessionKind::ItemUser,
+        EventType::ItemAssistant => SessionKind::ItemAssistant,
+        EventType::ItemToolCall => SessionKind::ItemToolCall,
+        EventType::ItemToolResult => SessionKind::ItemToolResult,
+        EventType::Compacted => SessionKind::Compacted,
+        EventType::ReminderJobExit => SessionKind::ReminderJobExit,
+        EventType::TurnStart => SessionKind::TurnStart,
+        EventType::TurnEnd => SessionKind::TurnEnd,
+        EventType::RequestHeader => SessionKind::RequestHeader,
+        EventType::RequestContext => SessionKind::RequestContext,
+        EventType::StepStart => SessionKind::Unknown("step/start".into()),
+        EventType::StepEnd => SessionKind::Unknown("step/end".into()),
+        EventType::AssistantChunk => SessionKind::Unknown("assistant/chunk".into()),
+        EventType::Unknown(value) => SessionKind::Unknown(value.clone()),
     }
 }
 
@@ -785,7 +809,7 @@ fn refresh_compact_pointers_from_log(tx: &Transaction<'_>, session_id: &str) -> 
          WHERE session_id = ?1 AND seq >= ?2 AND seq < ?3
            AND kind IN (
              'item/user', 'item/assistant', 'item/tool_call', 'item/tool_result',
-             'hook/prompt', 'reminder/job_exit', 'reminder/turn_aborted'
+             'reminder/job_exit'
            )",
         rusqlite::params![session_id, compacted.to as i64, seq],
         |row| row.get(0),
@@ -831,13 +855,6 @@ fn row_to_item(row: &TranscriptRow, data_root: &Path) -> Result<Item> {
             let body: crate::session::model::CompactedBody = serde_json::from_str(raw)?;
             Ok(body.agent_item())
         }
-        "hook/prompt" => {
-            let raw = row.body.as_deref().ok_or_else(|| {
-                LitecodeError::ToolExecution(format!("hook/prompt row seq {} has no body", row.seq))
-            })?;
-            let body: HookPromptBody = serde_json::from_str(raw)?;
-            Ok(body.agent_item())
-        }
         "reminder/job_exit" => {
             let raw = row.body.as_deref().ok_or_else(|| {
                 LitecodeError::ToolExecution(format!(
@@ -846,16 +863,6 @@ fn row_to_item(row: &TranscriptRow, data_root: &Path) -> Result<Item> {
                 ))
             })?;
             let body: ReminderJobExitBody = serde_json::from_str(raw)?;
-            Ok(body.agent_item())
-        }
-        "reminder/turn_aborted" => {
-            let raw = row.body.as_deref().ok_or_else(|| {
-                LitecodeError::ToolExecution(format!(
-                    "reminder/turn_aborted row seq {} has no body",
-                    row.seq
-                ))
-            })?;
-            let body: ReminderTurnAbortedBody = serde_json::from_str(raw)?;
             Ok(body.agent_item())
         }
         "compact_checkpoint" | "detail" | "item/user" | "item/assistant" | "item/tool_call"
@@ -1743,7 +1750,14 @@ impl Session {
         })?;
         Ok(pairs
             .into_iter()
-            .map(|(seq, item)| WorkingRow::persisted(seq, item))
+            .map(|(seq, item)| {
+                let kind = projection
+                    .kinds_by_seq
+                    .get(&seq)
+                    .cloned()
+                    .unwrap_or_else(|| session_kind_of(&surface_event_type_of(&item)));
+                WorkingRow::persisted_with_kind(seq, kind, item)
+            })
             .collect())
     }
 
@@ -1762,6 +1776,7 @@ impl Session {
         let node_set: HashSet<Seq> = surface.nodes.iter().copied().collect();
         let mut id_to_seq = HashMap::new();
         let mut items_by_seq = HashMap::new();
+        let mut kinds_by_seq = HashMap::new();
         for event in &events {
             let item = spine_agent_item(event).ok();
             if let Some(item) = item {
@@ -1770,6 +1785,7 @@ impl Session {
                 }
                 if node_set.contains(&event.seq) {
                     items_by_seq.insert(event.seq, item);
+                    kinds_by_seq.insert(event.seq, session_kind_of(&event.event_type));
                 }
             }
         }
@@ -1779,6 +1795,7 @@ impl Session {
             next_seq,
             id_to_seq,
             items_by_seq,
+            kinds_by_seq,
         };
         self.persisted_max_seq.set(projection.max_seq());
         *self.projection.borrow_mut() = projection;
@@ -2163,6 +2180,25 @@ impl Session {
         draft.time = message_timestamp(item);
         let kind = draft.event_type.as_str().to_owned();
         self.append_unlocked(draft, "", 0, &kind)
+    }
+
+    /// Append a durable background-job exit reminder. Its body is not an
+    /// `Item`: AgentView adapts it to a tagged provider input while HumanView
+    /// projects it as a system event.
+    pub fn append_job_exit(&self, body: ReminderJobExitBody) -> Result<Seq> {
+        let draft = EventDraft {
+            time: chrono::Utc::now().timestamp_millis(),
+            event_type: EventType::ReminderJobExit,
+            data: serde_json::to_value(body)?,
+            surface_op: None,
+            source_seqs: None,
+            ignorable: false,
+            state: LogState::Final,
+        };
+        match self.apply(SessionApply::Append(draft))? {
+            ApplyOutcome::Appended(seq) => Ok(seq),
+            _ => unreachable!("append operation must append"),
+        }
     }
 
     /// 封口: rewrite payload on an existing `seq`. Does not allocate a new row.
@@ -4337,50 +4373,27 @@ mod tests {
     }
 
     #[test]
-    fn injection_append_roundtrips_into_agent_working_set() {
-        use crate::session::model::{HookPromptBody, ReminderTurnAbortedBody};
+    fn job_exit_roundtrips_into_agent_working_set() {
+        use crate::session::model::{ReminderJobExitBody, ReminderJobExitReason};
         use crate::types::item_text_preview;
 
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         session.insert_detail_rows(&[user_text("hi")]).unwrap();
         session
-            .apply(SessionApply::Append(EventDraft {
-                time: 1,
-                event_type: EventType::HookPrompt,
-                data: serde_json::to_value(HookPromptBody {
-                    text: "hook text".into(),
-                    hook_run_id: "hr1".into(),
-                    placement: None,
-                })
-                .unwrap(),
-                surface_op: None,
-                source_seqs: None,
-                ignorable: false,
-                state: crate::session::model::LogState::Final,
-            }))
-            .unwrap();
-        session
-            .apply(SessionApply::Append(EventDraft {
-                time: 2,
-                event_type: EventType::ReminderTurnAborted,
-                data: serde_json::to_value(ReminderTurnAbortedBody {
-                    text: "aborted".into(),
-                })
-                .unwrap(),
-                surface_op: None,
-                source_seqs: None,
-                ignorable: false,
-                state: crate::session::model::LogState::Final,
-            }))
+            .append_job_exit(ReminderJobExitBody {
+                job_id: Some("bg-1".into()),
+                reason: ReminderJobExitReason::Exit,
+                text: "background task finished".into(),
+            })
             .unwrap();
         let events = session.load_events().unwrap();
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 2);
         assert!(events[1].event_type.enters_spine());
         let working = session.load_working_set().unwrap();
-        assert_eq!(working.len(), 3);
+        assert_eq!(working.len(), 2);
         assert_eq!(item_text_preview(&working[0].item), "hi");
-        assert!(item_text_preview(&working[1].item).contains("[hook/prompt hr1]"));
-        assert!(item_text_preview(&working[2].item).contains("[reminder/turn_aborted]"));
+        assert_eq!(working[1].kind, SessionKind::ReminderJobExit);
+        assert!(item_text_preview(&working[1].item).contains("[reminder/job_exit exit bg-1]"));
         let human = crate::session::derive_transcript_items(&events).unwrap();
         assert_eq!(human.len(), 1);
     }
@@ -4699,7 +4712,6 @@ mod tests {
             (TurnEndReason::Cancelled, "cancelled"),
             (TurnEndReason::Error, "error"),
             (TurnEndReason::MaxSteps, "max_steps"),
-            (TurnEndReason::HookBlocked, "hook_blocked"),
         ];
         for (reason, expected) in cases {
             assert_eq!(reason.as_log_reason(), expected);

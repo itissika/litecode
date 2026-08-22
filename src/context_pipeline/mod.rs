@@ -14,7 +14,6 @@ use std::path::PathBuf;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::hook::HookDispatcher;
 use crate::llm::LlmProvider;
 use crate::session::manager::SessionManager;
 use crate::session::store::Session;
@@ -152,10 +151,8 @@ impl ContextPipeline {
     /// text placeholders on the ephemeral LLM view only (persisted transcript untouched).
     pub async fn prepare_step(
         &self,
-        hooks: &HookDispatcher,
         sessions: &SessionManager,
         session_id: &str,
-        ctx: &Context,
         provider: &dyn LlmProvider,
         api_key: &str,
         compact_model: &str,
@@ -211,10 +208,8 @@ impl ContextPipeline {
             .compact
             .compact_if_needed(
                 &self.budget,
-                hooks,
                 sessions,
                 session_id,
-                ctx,
                 provider,
                 api_key,
                 compact_model,
