@@ -1,4 +1,4 @@
-import { type FormEvent, type KeyboardEvent, useEffect, useRef } from "react";
+import { type FormEvent, type KeyboardEvent, useEffect, useLayoutEffect, useRef } from "react";
 
 import type { ContextMode, ThinkingTier } from "../api/types";
 import { useSessionStore } from "../stores/sessionStore";
@@ -37,9 +37,19 @@ export function MiniChatInput({
   const primaryAgents = useSessionStore((s) => s.primaryAgents);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const resizeTextarea = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 256)}px`;
+  };
+
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
+  useLayoutEffect(() => {
+    resizeTextarea();
+  }, [draft]);
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
@@ -104,11 +114,14 @@ export function MiniChatInput({
         <textarea
           ref={textareaRef}
           value={draft}
-          onChange={(event) => onChange(event.target.value, settings)}
+          onChange={(event) => {
+            onChange(event.target.value, settings);
+            resizeTextarea();
+          }}
           onKeyDown={onKeyDown}
           rows={2}
           placeholder="Edit and resend..."
-          className="w-full resize-none border-0 bg-transparent px-3 py-2 pr-12 text-sm text-(--_dk-text-primary) outline-none placeholder:text-(--_dk-text-disabled) focus-visible:shadow-none"
+          className="w-full max-h-64 resize-none overflow-y-auto border-0 bg-transparent px-3 py-2 pr-12 text-sm text-(--_dk-text-primary) outline-none placeholder:text-(--_dk-text-disabled) focus-visible:shadow-none"
         />
         <button
           type="submit"

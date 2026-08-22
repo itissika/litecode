@@ -125,6 +125,7 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
                 return outcome;
             }
             deps.emit_todo_progress();
+            deps.emit_plan_changed();
             continue;
         }
 

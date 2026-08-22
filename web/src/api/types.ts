@@ -433,6 +433,8 @@ export interface SessionSnapshot {
     status: "pending" | "in_progress" | "completed";
     priority?: string | null;
   }[];
+  /** Workspace-relative Markdown file for the session's active plan. */
+  active_plan_path?: string | null;
 }
 
 export interface BashJob {
@@ -577,6 +579,7 @@ export type WireEvent =
         priority?: string | null;
       }[];
     }
+  | { type: "plan_changed"; active_plan_path: string | null }
   | { type: "phase_changed"; phase: TurnPhase; step: number }
   | { type: "step_started"; step: number; step_max: number }
   | {

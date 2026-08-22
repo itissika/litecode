@@ -516,6 +516,33 @@
   animation: terminal-status-bounce 0.9s ease-in-out infinite;
 }
 
+/* Dock overlay chips (terminal status, active plan): fade + rightward expand
+   on entry; retract + fade on exit. Width is driven by max-width (content-sized
+   once open), so chips stay shrink-0 in the composer row while animating.
+   box-shadow keeps its own 150ms ease from composerCardClass; transform (hover
+   scale / active press) transitions at 100ms. */
+.dock-chip {
+  max-width: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    max-width 180ms ease-out,
+    opacity 180ms ease-out,
+    box-shadow 150ms ease,
+    transform 100ms ease;
+}
+
+.dock-chip.is-open {
+  max-width: 7rem;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* ×0 hold-over (terminal) — dimmed but still expanded. */
+.dock-chip.is-open.is-empty {
+  opacity: 0.6;
+}
+
 @keyframes terminal-status-bounce {
   0%,
   100% {
@@ -574,13 +601,11 @@
   0% {
     opacity: 0;
     width: 200px;
-    max-height: 40px;
     transform: translateY(12px);
   }
   100% {
     opacity: 1;
     width: 100%;
-    max-height: 500px;
     transform: translateY(0);
   }
 }

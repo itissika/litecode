@@ -172,6 +172,26 @@ describe("ToolCallCard open state", () => {
     expect(header.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("shows edit header as file + line-level +N/−M diff", () => {
+    const editCall: FunctionCallItem = {
+      type: "function_call",
+      id: "fc_edit",
+      call_id: "call_edit",
+      name: "edit",
+      arguments: JSON.stringify({
+        file_path: "src/a.ts",
+        old_string: "foo\nbar\nbaz",
+        new_string: "foo\nqux\nbaz\nquux",
+      }),
+      status: "completed",
+    };
+    renderCard({ call: editCall, output });
+    const header = screen.getByRole("button", { name: /edit/i });
+    expect(header.textContent).toContain("src/a.ts");
+    expect(header.textContent).toContain("+2");
+    expect(header.textContent).toContain("−1");
+  });
+
   it("mounts a live tool card collapsed by default", () => {
     renderCard({ streaming: true });
     const header = screen.getByRole("button", { name: /write/i });

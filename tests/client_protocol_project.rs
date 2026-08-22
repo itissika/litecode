@@ -342,6 +342,36 @@ fn session_snapshot_includes_todos_when_set() {
 }
 
 #[test]
+fn session_snapshot_includes_active_plan_path_when_set() {
+    let mut snap = sample_snapshot();
+    snap.active_plan_path = Some(".litecode/plan/calm-river.md".into());
+    let msg = project::session_snapshot(snap);
+    assert!(method_is(&msg, methods::SESSION_SNAPSHOT));
+    assert_eq!(
+        msg["params"]["active_plan_path"],
+        ".litecode/plan/calm-river.md"
+    );
+}
+
+#[test]
+fn plan_changed_projects_to_turn_event() {
+    let snap = sample_snapshot();
+    let msg = project::project(
+        &InternalEvent::PlanChanged {
+            active_plan_path: Some(".litecode/plan/calm-river.md".into()),
+        },
+        &snap,
+    )
+    .unwrap();
+    assert!(method_is(&msg, "agent/turn_event"));
+    assert_eq!(msg["params"]["event"]["type"], "plan_changed");
+    assert_eq!(
+        msg["params"]["event"]["active_plan_path"],
+        ".litecode/plan/calm-river.md"
+    );
+}
+
+#[test]
 fn turn_started_projects_to_turn_started_notification() {
     let snap = sample_snapshot();
     let msg = project::project(

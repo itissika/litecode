@@ -95,4 +95,45 @@ describe("MiniChatInput", () => {
     });
     expect(onDismiss).toHaveBeenCalledOnce();
   });
+
+  it("grows to its content height and caps long drafts", () => {
+    const { rerender } = render(
+      <MiniChatInput
+        sessionId="session-1"
+        draft="a long draft"
+        settings={{
+          primaryId: "default",
+          modelId: "model-1",
+          thinkingTier: "medium",
+          contextMode: "standard",
+        }}
+        onDismiss={vi.fn()}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+    const textarea = screen.getByDisplayValue("a long draft") as HTMLTextAreaElement;
+    Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 180 });
+
+    rerender(
+      <MiniChatInput
+        sessionId="session-1"
+        draft="a longer draft"
+        settings={{
+          primaryId: "default",
+          modelId: "model-1",
+          thinkingTier: "medium",
+          contextMode: "standard",
+        }}
+        onDismiss={vi.fn()}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(textarea.style.height).toBe("180px");
+
+    Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 400 });
+    fireEvent.change(textarea, { target: { value: "very long draft" } });
+    expect(textarea.style.height).toBe("256px");
+  });
 });

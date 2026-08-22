@@ -17,6 +17,8 @@ import { FoldCard, FOLDCARD_HEADER_TONE } from "./FoldCard";
 import { ToolContentView } from "./ToolContentView";
 import { ToolIcon } from "./ToolIcon";
 import { deriveToolStatus } from "./toolCallStatus";
+import { computeLineDiff } from "./toolviews/DiffView";
+import { toolTitle } from "./toolviews/toolTitle";
 
 interface ToolCallCardProps {
   call: FunctionCallItem;
@@ -31,41 +33,6 @@ interface ToolCallCardProps {
 }
 
 const FILE_TOOLS = new Set(["read", "write", "edit"]);
-const CMD_TOOLS = new Set(["bash", "shell", "command"]);
-
-/** One-line collapsed summary of the tool input. */
-function summarizeInput(toolName: string, input: unknown): string {
-  if (input === undefined) return "";
-  if (typeof input === "string") {
-    return input.length > 90 ? input.slice(0, 90) + "…" : input;
-  }
-  if (input && typeof input === "object" && !Array.isArray(input)) {
-    const obj = input as Record<string, unknown>;
-    if (FILE_TOOLS.has(toolName) && typeof obj.file_path === "string") {
-      return obj.file_path;
-    }
-    if (CMD_TOOLS.has(toolName) && typeof obj.command === "string") {
-      if (toolName === "bash") {
-        const desc = typeof obj.description === "string" ? obj.description : "";
-        return desc.length > 90 ? desc.slice(0, 90) + "…" : desc;
-      }
-      // Prefer the human-readable `description` in the fold-card row; fall back
-      // to the bare command when the tool didn't supply a description.
-      const c =
-        typeof obj.description === "string" ? obj.description : obj.command;
-      return c.length > 90 ? c.slice(0, 90) + "…" : c;
-    }
-    const firstKey = Object.keys(obj)[0];
-    if (firstKey) {
-      const v = JSON.stringify(obj[firstKey]);
-      const oneLine = `${firstKey}=${v}`;
-      return oneLine.length > 90 ? oneLine.slice(0, 90) + "…" : oneLine;
-    }
-  }
-  const asJson = JSON.stringify(input);
-  return asJson.length > 90 ? asJson.slice(0, 90) + "…" : asJson;
-}
-
 function actionPayloadPath(payload: unknown): string | null {
   if (typeof payload === "string") return payload;
   return null;
@@ -83,14 +50,35 @@ export function ToolCallCard({
   const toolName = call.name;
   const input = parseFunctionArguments(call.arguments);
   const status = deriveToolStatus(output, streaming, call.status);
-  const inputSummary = summarizeInput(toolName, input);
+  const rawOutput = output ? functionCallOutputText(output) : "";
+  const activePlanPath = useTurnStore(
+    (s) => (sessionId ? s.byId.get(sessionId)?.activePlanPath : null),
+  );
+  const inputSummary = toolTitle(toolName, input, rawOutput, { activePlanPath }).summary;
+
+  // edit header: file + line-level +N/−M, computed locally from old_string /
+  // new_string (same LCS as the body diff) — no backend data needed.
+  const isEdit = toolName === "edit";
+  const editDiff = useMemo(() => {
+    if (!isEdit || !input || typeof input !== "object" || Array.isArray(input)) {
+      return null;
+    }
+    const rec = input as Record<string, unknown>;
+    const oldS = typeof rec.old_string === "string" ? rec.old_string : "";
+    const newS = typeof rec.new_string === "string" ? rec.new_string : "";
+    const diff = computeLineDiff(oldS, newS);
+    return {
+      filePath: typeof rec.file_path === "string" ? rec.file_path : undefined,
+      added: diff.filter((d) => d.type === "add").length,
+      removed: diff.filter((d) => d.type === "remove").length,
+    };
+  }, [isEdit, input]);
 
   // subagent_launch gets a flatter header: `subagent_launch {agent}` plus a
   // run-state dot, instead of the generic `name + inputSummary`. Its body
   // (Task brief + process list) is rendered by SubagentToolView.
   const isSubagent = toolName === "subagent_launch";
   const isBash = toolName === "bash";
-  const rawOutput = output ? functionCallOutputText(output) : "";
   const bashJob = useBashStore((s) => {
     if (!isBash || !sessionId) return undefined;
     const jobs = s.bySession.get(sessionId)?.jobs ?? [];
@@ -191,10 +179,22 @@ export function ToolCallCard({
             <span className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-xs font-medium text-(--_dk-text-primary)`}>
               {toolName}
             </span>
-            {inputSummary && (
-              <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}>
-                {inputSummary}
-              </span>
+            {isEdit && editDiff ? (
+              <>
+                <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}>
+                  {editDiff.filePath ?? "(unknown file)"}
+                </span>
+                <span className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-2xs`}>
+                  <span className="text-(--_dk-emerald-500)">+{editDiff.added}</span>
+                  <span className="text-(--_dk-red-500)">−{editDiff.removed}</span>
+                </span>
+              </>
+            ) : (
+              inputSummary && (
+                <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}>
+                  {inputSummary}
+                </span>
+              )
             )}
             {actions.length > 0 && (
               <span className="ml-auto flex shrink-0 items-center gap-1">

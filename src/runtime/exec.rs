@@ -265,6 +265,19 @@ impl AgentDeps for AgentRuntime {
             items,
         });
     }
+
+    fn emit_plan_changed(&mut self) {
+        let active_plan_path = self
+            .sessions
+            .with_entry_task_state(&self.session_id, |state| {
+                Ok(state
+                    .active_plan
+                    .as_ref()
+                    .map(|plan| plan.relative_path.clone()))
+            })
+            .unwrap_or(None);
+        self.emit_internal(InternalEvent::PlanChanged { active_plan_path });
+    }
 }
 
 impl AgentRuntime {

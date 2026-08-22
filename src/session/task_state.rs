@@ -111,7 +111,8 @@ pub fn prune_stale_active_plan(state: &mut TaskReminders) -> bool {
     let paths = crate::config::workspace::active_paths();
     let plan_dir = plan_dir(&paths);
     if !plan_dir.is_dir() {
-        return false;
+        state.clear_plan();
+        return true;
     }
     let plan_file = plan_dir.join(format!("{}.md", plan.slug));
     if plan_file.is_file() {
@@ -204,6 +205,20 @@ mod tests {
         std::fs::write(plan_root.join("gone.md"), "# old").unwrap();
         std::fs::remove_file(plan_root.join("gone.md")).unwrap();
 
+        let mut state = TaskReminders {
+            todos: vec![],
+            active_plan: Some(PlanRef::new("gone")),
+        };
+        assert!(prune_stale_active_plan(&mut state));
+        assert!(state.active_plan.is_none());
+    }
+
+    #[test]
+    fn prune_stale_active_plan_clears_when_plan_dir_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        crate::config::workspace::set_runtime_paths(
+            crate::config::WorkspacePaths::for_legacy_root(dir.path()),
+        );
         let mut state = TaskReminders {
             todos: vec![],
             active_plan: Some(PlanRef::new("gone")),

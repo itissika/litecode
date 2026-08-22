@@ -150,6 +150,10 @@ pub enum InternalEvent {
         completed: usize,
         items: Vec<TodoItem>,
     },
+    /// Session-scoped active-plan pointer changed during tool execution.
+    PlanChanged {
+        active_plan_path: Option<String>,
+    },
     LlmRequestBuilt {
         model: String,
         endpoint: String,

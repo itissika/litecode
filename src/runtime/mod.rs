@@ -1038,6 +1038,7 @@ impl AgentRuntime {
         );
 
         self.emit_todo_progress();
+        self.emit_plan_changed();
 
         let outcome = crate::agent::run(self, &mut items).await;
 

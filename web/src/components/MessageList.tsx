@@ -509,7 +509,11 @@ function ItemBubbleImpl({
       {isUser ? (
         editing ? (
           <div
-            className={`relative z-10 w-full overflow-hidden origin-bottom ${
+            className={`relative z-10 w-full origin-bottom ${
+              miniPhase === "entering" || miniPhase === "exiting"
+                ? "overflow-hidden"
+                : "overflow-visible"
+            } ${
               miniPhase === "entering" ? "animate-mini-chat-enter" : ""
             } ${miniPhase === "exiting" ? "animate-mini-chat-exit" : ""}`}
             onAnimationEnd={onMiniAnimationEnd}
@@ -773,10 +777,12 @@ export const MessageList = memo(function MessageList({
       if (i >= bubbles.length) return COMPACTING_LINE_HEIGHT;
       const first = firstContentRow(bubbles[i] ?? []);
       if (!first) return 28;
-      if (isHumanUserRow(first)) return 88;
+      if (isHumanUserRow(first)) {
+        return editingAnchor?.bubbleKey === bubbleIdentity(bubbles, i) ? 240 : 88;
+      }
       return 240;
     },
-    [bubbles, loader],
+    [bubbles, editingAnchor?.bubbleKey, loader],
   );
 
   const virtualizer = useVirtualizer({

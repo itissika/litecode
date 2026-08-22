@@ -342,6 +342,9 @@ pub struct SessionSnapshot {
     /// not rewrite this column; the panel must not wait for the next turn event.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub todos: Vec<TodoItem>,
+    /// Active workspace-relative plan file for the session, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_plan_path: Option<String>,
 }
 
 fn default_thinking_tier() -> String {
@@ -441,6 +444,9 @@ pub enum WireEvent {
         in_progress: usize,
         completed: usize,
         items: Vec<TodoItem>,
+    },
+    PlanChanged {
+        active_plan_path: Option<String>,
     },
     PhaseChanged {
         phase: WireTurnPhase,

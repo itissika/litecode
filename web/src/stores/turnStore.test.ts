@@ -371,6 +371,23 @@ describe("turnStore convergence", () => {
     expect(slice.todoItems.map((t) => t.content)).toEqual(["ship", "later"]);
   });
 
+  it("hydrates and clears the active plan path from snapshots", () => {
+    const sessionId = "s-plan";
+    useTurnStore.getState().applySnapshotMeter(sessionId, {
+      ...snapshot(sessionId),
+      active_plan_path: ".litecode/plan/calm-river.md",
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.activePlanPath).toBe(
+      ".litecode/plan/calm-river.md",
+    );
+
+    useTurnStore.getState().applySnapshotMeter(sessionId, {
+      ...snapshot(sessionId),
+      active_plan_path: null,
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.activePlanPath).toBeNull();
+  });
+
   it("applySnapshotMeter without todos leaves existing overlay", () => {
     const sessionId = "s-todo-keep";
     useTurnStore.setState({
@@ -480,6 +497,26 @@ describe("turnStore convergence", () => {
     const slice = useTurnStore.getState().byId.get(sessionId)!;
     expect(slice.todoItems).toEqual([]);
     expect(slice.todoCompleted).toBe(0);
+  });
+
+  it("applies active plan changes before the turn finishes", () => {
+    const sessionId = "s-plan-live";
+    useTurnStore.setState({
+      byId: new Map([
+        [sessionId, { ...EMPTY_SLICE, currentTurnId: "t1", runState: "running" }],
+      ]),
+    });
+    useTurnStore.getState().onTurnEvent({
+      session_id: sessionId,
+      turn_id: "t1",
+      event: {
+        type: "plan_changed",
+        active_plan_path: ".litecode/plan/calm-river.md",
+      },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.activePlanPath).toBe(
+      ".litecode/plan/calm-river.md",
+    );
   });
 
   it("agent/run reject returns to idle and discards the optimistic user row", async () => {

@@ -23,6 +23,7 @@ pub trait AgentDeps {
     async fn compact_if_needed(&self, transcript: &mut Transcript, step: u64) -> Result<()>;
 
     fn emit_todo_progress(&mut self);
+    fn emit_plan_changed(&mut self);
 
     fn is_cancelled(&self) -> bool;
 

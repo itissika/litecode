@@ -216,6 +216,12 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
                 items: items.clone(),
             },
         ),
+        InternalEvent::PlanChanged { active_plan_path } => turn_event(
+            snapshot,
+            WireEvent::PlanChanged {
+                active_plan_path: active_plan_path.clone(),
+            },
+        ),
         InternalEvent::LlmRequestBuilt {
             model,
             endpoint,
@@ -885,5 +891,6 @@ pub fn buffer_snapshot(
         max_file_revert_k: None,
         bash: None,
         todos: Vec::new(),
+        active_plan_path: None,
     }
 }

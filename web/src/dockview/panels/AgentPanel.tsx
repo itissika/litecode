@@ -15,6 +15,7 @@ import { clearFoldCardOpen } from "../../components/foldCardState";
 import { ProgressiveBlur } from "../../components/ProgressiveBlur";
 import { TodoPanel } from "../../components/TodoPanel";
 import { TerminalStatusBar } from "../../components/TerminalStatusBar";
+import { ActivePlanChip } from "../../components/ActivePlanChip";
 import { composerCardClass } from "../../components/composerCard";
 
 class AgentErrorBoundary extends Component<
@@ -416,6 +417,7 @@ export function ComposerDock({
         )}
         <div className="flex items-end gap-2">
           <TerminalStatusBar sessionId={sessionId} onRevealBash={onRevealBash} />
+          <ActivePlanChip sessionId={sessionId} />
           <div className="min-w-0 flex-1">
             <TodoPanel sessionId={sessionId} />
           </div>

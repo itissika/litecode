@@ -296,7 +296,11 @@
    Horizontal indent is intentionally NOT overridden here — settings now uses
    the same --_dk-indent-card-* tokens as chat (the old 0.75rem override existed
    only to paper over chat's header≠body mismatch, which is now fixed at the
-   token level). Only vertical rhythm + dropdown-escape behaviour are tuned. */
+   token level). Only vertical rhythm is tuned.
+   chat's overflow rules (`.foldcard-scroll-frame` clip, `.foldcard-body-inner`
+   hidden) are left untouched: settings has no blur bands, and Dropdown/Select
+   panels are portaled to <body> with `position: fixed`, so no overlay passes
+   through — or gets clipped by — the card's boxes. */
 .settings-foldcard .foldcard-header {
   padding-top: 0.125rem;
   padding-bottom: 0.125rem;
@@ -305,23 +309,10 @@
 .settings-foldcard .foldcard-scroll-frame {
   background: transparent;
   padding-bottom: 0;
-  /* override chat's `overflow: clip` — the Select dropdown is an absolutely
-     positioned panel that opens downward and must escape the frame, otherwise
-     it gets clipped mid-list. No blur bands exist in settings, so safe. */
-  overflow: visible;
-}
-
-/* The Select dropdown must also escape `.foldcard-body-inner`'s `overflow:
-   hidden` (used by the 0fr→1fr collapse). Only release it while the card is
-   open — when collapsed the hidden clip is what hides the content, so we must
-   NOT touch it then. */
-.settings-foldcard .foldcard-body.is-open .foldcard-body-inner {
-  overflow: visible;
 }
 
 .settings-foldcard .foldcard-scroll {
   max-height: none;
-  overflow: visible;
   /* Compact vertical rhythm only; left inset inherits the default
      --_dk-indent-card-body token so settings matches chat exactly. */
   padding-top: 0.375rem;

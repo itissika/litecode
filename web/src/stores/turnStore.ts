@@ -60,6 +60,7 @@ export interface TurnSlice {
   todoInProgress: number;
   todoCompleted: number;
   todoItems: { id: string; content: string; status: "pending" | "in_progress" | "completed" }[];
+  activePlanPath: string | null;
 }
 
 export function emptySlice(): TurnSlice {
@@ -92,6 +93,7 @@ export const EMPTY_SLICE: TurnSlice = {
   todoInProgress: 0,
   todoCompleted: 0,
   todoItems: [],
+  activePlanPath: null,
 };
 
 function todoPatchFromItems(
@@ -651,6 +653,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         case "todo_progress":
           patch(sessionId, todoPatchRetaining(current, te.event.items ?? []));
           return;
+        case "plan_changed":
+          patch(sessionId, { activePlanPath: te.event.active_plan_path });
+          return;
       }
 
       // Stream tokens go to messageStore via rAF; do not set turnStore (no
@@ -806,6 +811,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         contextTokensEstimate: snap.context_tokens_estimate ?? 0,
         compactEligible: snap.compact_eligible ?? false,
         compacting: snap.compacting ?? false,
+        activePlanPath: snap.active_plan_path ?? null,
         ...(tts
           ? {
               lastTurnPromptTokens: tts.prompt_tokens ?? 0,
@@ -876,6 +882,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           : {}),
         ...(snap.todos !== undefined
           ? todoPatchRetaining(getSlice(get().byId, sessionId), snap.todos)
+          : {}),
+        ...(snap.active_plan_path !== undefined
+          ? { activePlanPath: snap.active_plan_path }
           : {}),
       });
     },
