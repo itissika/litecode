@@ -6,7 +6,7 @@ use crate::types::{LitecodeError, Result};
 
 use super::global_db;
 use super::resolved::{ResolvedConfig, WorkspaceState, resolve};
-use super::schema::{AgentRole, GlobalSettings, InitScope, SUBAGENT_SERIES_TOOL_IDS, ToolTier};
+use super::schema::{AgentRole, GlobalSettings, SUBAGENT_SERIES_TOOL_IDS};
 use super::workspace::{self, init_workspace, load_workspace_state};
 
 /// Single configuration entry point (L1).
@@ -46,9 +46,9 @@ impl ConfigManager {
                 )));
             }
             for tool_id in profile.tools.keys() {
-                if !global.tool_catalog.contains_key(tool_id) {
+                if tool_id.is_empty() {
                     return Err(LitecodeError::Config(format!(
-                        "agent '{agent_id}' tool binding '{tool_id}' does not exist in tool catalog"
+                        "agent '{agent_id}' has an empty tool binding id"
                     )));
                 }
             }
@@ -122,24 +122,6 @@ impl ConfigManager {
     /// Load workspace layer (resolve root, init, read contract).
     pub fn load_workspace(override_path: Option<&Path>) -> Result<WorkspaceState> {
         load_workspace_state(override_path)
-    }
-
-    /// Initialize catalog readiness for tools with the given init scope.
-    pub fn init_tool_catalog(
-        resolved: &mut ResolvedConfig,
-        scope: InitScope,
-    ) -> crate::tool::catalog::CatalogInitOutcome {
-        crate::tool::catalog::init(resolved, scope)
-    }
-
-    /// Init global-scope tools and record readiness in process-memory runtime catalog state only.
-    /// No longer persists readiness to the global DB (R3: runtime readiness is never persisted).
-    pub fn init_global_catalog_at_startup(
-        _db_path: &Path,
-        resolved: &mut ResolvedConfig,
-    ) -> Result<Vec<String>> {
-        let outcome = Self::init_tool_catalog(resolved, InitScope::Global);
-        Ok(outcome.initialized)
     }
 }
 
@@ -221,88 +203,40 @@ fn validate_log_level(log: &super::schema::LogSettings) -> Result<()> {
 }
 
 fn validate_custom_tools(global: &GlobalSettings) -> Result<()> {
-    let custom_names: std::collections::HashSet<&str> = global
-        .custom_tools
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect();
-
-    for entry in global.tool_catalog.values() {
-        if entry.tier != ToolTier::Custom {
-            continue;
-        }
-        if !custom_names.contains(entry.id.as_str()) {
-            return Err(LitecodeError::Config(format!(
-                "tool catalog entry '{}' has tier custom but no matching custom_tools definition",
-                entry.id
-            )));
-        }
-        if entry.init_scope != InitScope::Global {
-            return Err(LitecodeError::Config(format!(
-                "custom tool '{}' must have init_scope global",
-                entry.id
-            )));
-        }
-    }
-
+    use super::global_db::tools;
+    let mut names = std::collections::HashSet::new();
     for tool in &global.custom_tools {
-        let Some(entry) = global.tool_catalog.get(&tool.name) else {
+        if !names.insert(tool.name.as_str()) {
             return Err(LitecodeError::Config(format!(
-                "custom tool '{}' has no matching tool catalog entry",
+                "duplicate custom tool name '{}'",
                 tool.name
             )));
-        };
-        if entry.tier != ToolTier::Custom {
+        }
+        if tools::is_core_tool(&tool.name) || tools::is_optional_builtin(&tool.name) {
             return Err(LitecodeError::Config(format!(
-                "custom tool '{}' catalog entry must have tier custom",
+                "custom tool '{}' conflicts with a builtin tool",
+                tool.name
+            )));
+        }
+        if tool.command.trim().is_empty() {
+            return Err(LitecodeError::Config(format!(
+                "custom tool '{}' command must not be empty",
                 tool.name
             )));
         }
     }
-
     Ok(())
 }
 
 fn validate_mcp_servers(global: &GlobalSettings) -> Result<()> {
     use super::global_db::tools;
-
     for id in global.mcp_servers.keys() {
-        let catalog_id = tools::mcp_catalog_id(id);
-        let Some(entry) = global.tool_catalog.get(&catalog_id) else {
+        if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
             return Err(LitecodeError::Config(format!(
-                "MCP server '{id}' has no matching tool catalog entry '{catalog_id}'"
-            )));
-        };
-        if entry.tier != ToolTier::Mcp {
-            return Err(LitecodeError::Config(format!(
-                "MCP server '{id}' catalog entry must have tier mcp"
-            )));
-        }
-        if entry.init_scope != InitScope::Global {
-            return Err(LitecodeError::Config(format!(
-                "MCP server '{id}' must have init_scope global"
+                "MCP server id '{id}' conflicts with a builtin tool"
             )));
         }
     }
-
-    for entry in global.tool_catalog.values() {
-        if entry.tier != ToolTier::Mcp {
-            continue;
-        }
-        let Some(server_id) = entry.id.strip_prefix("mcp_") else {
-            return Err(LitecodeError::Config(format!(
-                "tool catalog entry '{}' has tier mcp but id is not mcp_<server>",
-                entry.id
-            )));
-        };
-        if !global.mcp_servers.contains_key(server_id) {
-            return Err(LitecodeError::Config(format!(
-                "tool catalog entry '{}' has tier mcp but no matching mcp_servers definition",
-                entry.id
-            )));
-        }
-    }
-
     Ok(())
 }
 
@@ -554,48 +488,5 @@ mod tests {
             },
         );
         ConfigManager::validate(&global).unwrap();
-    }
-
-    #[test]
-    fn init_global_catalog_at_startup_marks_global_tools_ready_in_runtime_state() {
-        use crate::config::schema::{InitScope, ToolCatalogEntry, ToolReadiness, ToolTier};
-        use tempfile::TempDir;
-
-        let dir = TempDir::new().expect("dir");
-        let db_path = dir.path().join("litecode.db");
-        let mut settings = ConfigManager::load_global_from(&db_path).expect("seed");
-        settings.tool_catalog.insert(
-            "webfetch".into(),
-            ToolCatalogEntry {
-                id: "webfetch".into(),
-                tier: ToolTier::Custom,
-                init_scope: InitScope::Global,
-                catalog_enabled: true,
-            },
-        );
-        global_db::import_into(&db_path, &settings).expect("import");
-
-        let workspace = WorkspaceState::new("/tmp/serve-startup");
-        let mut resolved = ConfigManager::resolve(
-            ConfigManager::load_global_from(&db_path).expect("load"),
-            workspace,
-        );
-
-        let initialized =
-            ConfigManager::init_global_catalog_at_startup(&db_path, &mut resolved).expect("init");
-        assert!(
-            initialized.iter().any(|id| id == "webfetch"),
-            "expected webfetch init, got {initialized:?}"
-        );
-        assert_eq!(
-            resolved.runtime_catalog_state().readiness.get("webfetch"),
-            Some(&ToolReadiness::Ready)
-        );
-
-        let reloaded = ConfigManager::load_global_from(&db_path).expect("reload");
-        assert!(
-            reloaded.tool_catalog.contains_key("webfetch"),
-            "webfetch should still exist in catalog"
-        );
     }
 }

@@ -14,7 +14,9 @@ pub struct McpServerConnection {
     pub command: String,
     pub args: Vec<String>,
     pub env: std::collections::HashMap<String, String>,
+    pub cwd: Option<std::path::PathBuf>,
     pub pool: Arc<McpConnectionPool>,
+    pub timeout_secs: u64,
 }
 
 pub struct McpTool {
@@ -57,18 +59,25 @@ impl Tool for McpTool {
         let server_command = conn.command.clone();
         let server_args = conn.args.clone();
         let server_env = conn.env.clone();
+        let server_cwd = conn.cwd.clone();
         let server_key = conn.server_name.clone();
+        let timeout_secs = if conn.timeout_secs == 0 {
+            crate::config::schema::DEFAULT_MCP_TOOL_TIMEOUT_SECS
+        } else {
+            conn.timeout_secs
+        };
         let input = input.clone();
 
         match pool.block_on_hub(async move {
             let timeout_key = server_key.clone();
             match tokio::time::timeout(
-                std::time::Duration::from_secs(60),
+                std::time::Duration::from_secs(timeout_secs),
                 pool_for_hub.call_on_hub(
                     &server_key,
                     &server_command,
                     &server_args,
                     &server_env,
+                    server_cwd,
                     &mcp_tool_name,
                     input,
                 ),
@@ -79,7 +88,9 @@ impl Tool for McpTool {
                 Ok(Err(e)) => ToolCallResult::error(e.to_string()),
                 Err(_) => {
                     pool_for_hub.stop_on_hub(&timeout_key).await;
-                    ToolCallResult::error("MCP tool call timed out after 60 seconds")
+                    ToolCallResult::error(format!(
+                        "MCP tool call timed out after {timeout_secs} seconds"
+                    ))
                 }
             }
         }) {
@@ -89,7 +100,7 @@ impl Tool for McpTool {
     }
 
     fn timeout(&self) -> Option<u64> {
-        Some(75)
+        Some(self.server_connection.timeout_secs + 15)
     }
 
     fn description(&self, _ctx: &Context) -> String {

@@ -388,7 +388,7 @@ pub fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let mut resolved = load_runtime_bundle_from_cli(&cli)?;
+    let resolved = load_runtime_bundle_from_cli(&cli)?;
     let workspace = resolved.workspace().clone();
     let db_path = workspace.paths.sessions_db.clone();
 
@@ -447,8 +447,6 @@ pub fn run() -> anyhow::Result<()> {
     let settings_revision = Arc::new(AtomicU64::new(0));
     let engine_manager = Arc::new(crate::optional::EngineManager::new());
     let workspace_engines = Arc::new(crate::engines::WorkspaceEngines::new());
-    // Mirror serve startup: mark global optional tools ready before reconcile.
-    ConfigManager::init_global_catalog_at_startup(Path::new(""), &mut resolved)?;
     engine_manager.reconcile(&resolved);
     workspace_engines.reconcile(&resolved);
     let ide = crate::ide_base::IdeBaseHandle::open(

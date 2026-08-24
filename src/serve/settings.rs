@@ -4,18 +4,16 @@ use std::collections::HashMap;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 
 use crate::config::schema::{
-    AgentProfile, CustomToolDefinition, InitScope, LogSettings, McpServerDefinition,
-    ModelDefinition, ProviderAuth, ProviderDefinition, ToolCatalogEntry, ToolPreset, ToolReadiness,
-    ToolTier,
+    AgentProfile, AvailableTool, CustomToolDefinition, LogSettings, McpServerDefinition,
+    ModelDefinition, ProviderAuth, ProviderDefinition, ToolOrigin, ToolPreset,
 };
-use crate::config::workspace;
 use crate::workspace::filter::{
     WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView, ensure_workspace_excludes,
     write_workspace_excludes,
@@ -25,7 +23,7 @@ use crate::llm::{
 };
 use crate::mcp::{McpConnectionPool, McpRunState, McpServerSnapshot, McpToolSchema};
 use crate::serve::state::ServeState;
-use crate::tool::catalog::{effective_readiness, prune_non_catalog_agent_bindings};
+use crate::tool::availability::available_tools;
 use crate::types::LitecodeError;
 
 #[derive(Serialize)]
@@ -73,9 +71,14 @@ struct AgentBody {
     profile: AgentProfile,
 }
 
-#[derive(Deserialize)]
-struct CatalogBody {
-    tool_catalog: HashMap<String, ToolCatalogEntry>,
+#[derive(Deserialize, Default)]
+struct ScopeQuery {
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+fn workspace_scope(query: &ScopeQuery) -> bool {
+    matches!(query.scope.as_deref(), Some("workspace"))
 }
 
 #[derive(Deserialize)]
@@ -113,7 +116,7 @@ pub fn router() -> Router<ServeState> {
             "/agents/{id}/tools/apply-preset",
             post(apply_agent_tool_preset),
         )
-        .route("/tool-catalog", get(get_catalog).put(put_catalog))
+        .route("/available-tools", get(get_available_tools))
         .route("/custom-tools", get(list_custom_tools))
         .route(
             "/custom-tools/{id}",
@@ -311,20 +314,7 @@ async fn list_agents(State(state): State<ServeState>) -> Response {
 async fn get_agent(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
     match state.settings_writer.load_settings() {
         Ok(settings) => match settings.agents.get(&id) {
-            Some(profile) => {
-                let mut profile = profile.clone();
-                let runtime = state.runtime.read().expect("runtime lock");
-                let workspace_readiness =
-                    workspace::workspace_readiness_from_engines(runtime.workspace_root());
-                let runtime_catalog_state = runtime.resolved.runtime_catalog_state().clone();
-                prune_non_catalog_agent_bindings(
-                    &settings.tool_catalog,
-                    &workspace_readiness,
-                    &runtime_catalog_state,
-                    &mut profile.tools,
-                );
-                ok_json(profile)
-            }
+            Some(profile) => ok_json(profile),
             None => (
                 StatusCode::NOT_FOUND,
                 Json(ApiErr {
@@ -405,81 +395,51 @@ async fn delete_agent(State(state): State<ServeState>, Path(id): Path<String>) -
     }
 }
 
-/// Catalog entry view: persisted catalog fields plus the *effective* readiness,
-/// which is computed at request time from process-memory (global) and workspace
-/// readiness state. Readiness is not persisted (see CONFIG §2.4), so it is injected here.
-#[derive(Serialize)]
-struct CatalogEntryView {
-    id: String,
-    tier: ToolTier,
-    init_scope: InitScope,
-    catalog_enabled: bool,
-    readiness: ToolReadiness,
+async fn get_available_tools(State(state): State<ServeState>) -> Response {
+    let runtime = state.runtime.read().expect("runtime lock");
+    let tools: Vec<AvailableTool> = available_tools(&runtime.resolved);
+    ok_json(serde_json::json!({ "tools": tools }))
 }
 
-async fn get_catalog(State(state): State<ServeState>) -> Response {
-    match state.settings_writer.load_settings() {
-        Ok(settings) => {
+async fn list_custom_tools(State(state): State<ServeState>) -> Response {
+    match state.settings_writer.list_custom_tools() {
+        Ok(global) => {
             let runtime = state.runtime.read().expect("runtime lock");
-            let workspace_readiness =
-                workspace::workspace_readiness_from_engines(runtime.workspace_root());
-            let runtime_catalog_state = runtime.resolved.runtime_catalog_state().clone();
-            let tool_catalog: HashMap<String, CatalogEntryView> = settings
-                .tool_catalog
-                .into_iter()
-                .map(|(id, entry)| {
-                    let readiness =
-                        effective_readiness(&entry, &workspace_readiness, &runtime_catalog_state);
-                    let view = CatalogEntryView {
-                        id: entry.id,
-                        tier: entry.tier,
-                        init_scope: entry.init_scope,
-                        catalog_enabled: entry.catalog_enabled,
-                        readiness,
-                    };
-                    (id, view)
-                })
+            let mut workspace: Vec<CustomToolDefinition> = runtime
+                .resolved
+                .workspace_custom_tools()
+                .values()
+                .cloned()
                 .collect();
+            workspace.sort_by(|a, b| a.name.cmp(&b.name));
             ok_json(serde_json::json!({
-                "tool_catalog": tool_catalog,
-                "workspace_readiness": workspace_readiness,
-                "engines": state
-                    .workspace_engines
-                    .workspace_engine_statuses(runtime.workspace_root()),
+                "global": global,
+                "workspace": workspace,
             }))
         }
         Err(e) => settings_error(e),
     }
 }
 
-async fn put_catalog(State(state): State<ServeState>, Json(body): Json<CatalogBody>) -> Response {
-    let workspace = state
-        .runtime
-        .read()
-        .expect("runtime lock")
-        .workspace
-        .clone();
-    match state
-        .settings_writer
-        .write_tool_catalog(body.tool_catalog, &workspace)
-    {
-        Ok(revision) => {
-            // 2.12: reload so the runtime config takes effect immediately.
-            reload_runtime_after_settings_write(&state, "catalog write");
-            ok_json(RevisionBody { revision })
-        }
-        Err(e) => settings_write_error(e),
+async fn get_custom_tool(
+    State(state): State<ServeState>,
+    Path(id): Path<String>,
+    Query(query): Query<ScopeQuery>,
+) -> Response {
+    if workspace_scope(&query) {
+        let runtime = state.runtime.read().expect("runtime lock");
+        return match runtime.resolved.workspace_custom_tools().get(&id) {
+            Some(tool) => ok_json(tool.clone()),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(ApiErr {
+                    ok: false,
+                    error: format!("custom tool not found: {id}"),
+                }),
+            )
+                .into_response(),
+        };
     }
-}
-
-async fn list_custom_tools(State(state): State<ServeState>) -> Response {
-    match state.settings_writer.list_custom_tools() {
-        Ok(custom_tools) => ok_json(serde_json::json!({ "custom_tools": custom_tools })),
-        Err(e) => settings_error(e),
-    }
-}
-
-async fn get_custom_tool(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
     match state.settings_writer.get_custom_tool(&id) {
         Ok(Some(tool)) => ok_json(tool),
         Ok(None) => (
@@ -497,9 +457,23 @@ async fn get_custom_tool(State(state): State<ServeState>, Path(id): Path<String>
 async fn put_custom_tool(
     State(state): State<ServeState>,
     Path(id): Path<String>,
+    Query(query): Query<ScopeQuery>,
     Json(body): Json<CustomToolDefinition>,
 ) -> Response {
-    match state.settings_writer.write_custom_tool(&id, body) {
+    let workspace = state
+        .runtime
+        .read()
+        .expect("runtime lock")
+        .workspace
+        .clone();
+    let result = if workspace_scope(&query) {
+        state
+            .settings_writer
+            .write_workspace_custom_tool(&workspace.workspace_root, &id, body)
+    } else {
+        state.settings_writer.write_custom_tool(&id, body)
+    };
+    match result {
         Ok(revision) => {
             reload_runtime_after_settings_write(&state, "custom tool write");
             ok_json(RevisionBody { revision })
@@ -508,8 +482,25 @@ async fn put_custom_tool(
     }
 }
 
-async fn delete_custom_tool(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
-    match state.settings_writer.delete_custom_tool(&id) {
+async fn delete_custom_tool(
+    State(state): State<ServeState>,
+    Path(id): Path<String>,
+    Query(query): Query<ScopeQuery>,
+) -> Response {
+    let workspace = state
+        .runtime
+        .read()
+        .expect("runtime lock")
+        .workspace
+        .clone();
+    let result = if workspace_scope(&query) {
+        state
+            .settings_writer
+            .delete_workspace_custom_tool(&workspace.workspace_root, &id)
+    } else {
+        state.settings_writer.delete_custom_tool(&id, &workspace)
+    };
+    match result {
         Ok(revision) => {
             reload_runtime_after_settings_write(&state, "custom tool delete");
             ok_json(RevisionBody { revision })
@@ -521,6 +512,7 @@ async fn delete_custom_tool(State(state): State<ServeState>, Path(id): Path<Stri
 #[derive(Serialize)]
 struct McpServerItem {
     id: String,
+    origin: ToolOrigin,
     #[serde(flatten)]
     def: McpServerDefinition,
     status: McpRunState,
@@ -533,9 +525,23 @@ fn mcp_pool(state: &ServeState) -> std::sync::Arc<McpConnectionPool> {
     state.runtime.read().expect("runtime lock").mcp_pool.clone()
 }
 
-fn mcp_item(id: String, def: McpServerDefinition, snap: McpServerSnapshot) -> McpServerItem {
+fn mcp_pool_key(workspace: bool, id: &str) -> String {
+    if workspace {
+        format!("workspace:{id}")
+    } else {
+        format!("global:{id}")
+    }
+}
+
+fn mcp_item(
+    id: String,
+    origin: ToolOrigin,
+    def: McpServerDefinition,
+    snap: McpServerSnapshot,
+) -> McpServerItem {
     McpServerItem {
         id,
+        origin,
         def,
         status: snap.status,
         tools: snap.tools,
@@ -552,30 +558,90 @@ struct McpProbeResult {
     error: Option<String>,
 }
 
+fn mcp_cwd(state: &ServeState) -> std::path::PathBuf {
+    state
+        .runtime
+        .read()
+        .expect("runtime lock")
+        .workspace_root()
+        .to_path_buf()
+}
+
 async fn list_mcp_servers(State(state): State<ServeState>) -> Response {
     match state.settings_writer.list_mcp_servers() {
-        Ok(servers) => {
-            let pool = mcp_pool(&state);
+        Ok(global) => {
+            let (pool, workspace_defs) = {
+                let runtime = state.runtime.read().expect("runtime lock");
+                (
+                    runtime.mcp_pool.clone(),
+                    runtime.resolved.workspace_mcp_servers().clone(),
+                )
+            };
             let snaps = pool.snapshots().await;
+            let global_items: Vec<_> = global
+                .into_iter()
+                .map(|(id, def)| {
+                    let snap = snaps
+                        .get(&mcp_pool_key(false, &id))
+                        .cloned()
+                        .unwrap_or_default();
+                    mcp_item(id, ToolOrigin::Global, def, snap)
+                })
+                .collect();
+            let mut workspace: Vec<_> = workspace_defs
+                .into_iter()
+                .map(|(id, def)| {
+                    let snap = snaps
+                        .get(&mcp_pool_key(true, &id))
+                        .cloned()
+                        .unwrap_or_default();
+                    mcp_item(id, ToolOrigin::Workspace, def, snap)
+                })
+                .collect();
+            workspace.sort_by(|a, b| a.id.cmp(&b.id));
             ok_json(serde_json::json!({
-                "mcp_servers": servers
-                    .into_iter()
-                    .map(|(id, def)| {
-                        let snap = snaps.get(&id).cloned().unwrap_or_default();
-                        mcp_item(id, def, snap)
-                    })
-                    .collect::<Vec<_>>(),
+                "global": global_items,
+                "workspace": workspace,
             }))
         }
         Err(e) => settings_error(e),
     }
 }
 
-async fn get_mcp_server(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
+async fn get_mcp_server(
+    State(state): State<ServeState>,
+    Path(id): Path<String>,
+    Query(query): Query<ScopeQuery>,
+) -> Response {
+    let workspace = workspace_scope(&query);
+    let key = mcp_pool_key(workspace, &id);
+    if workspace {
+        let (def, pool) = {
+            let runtime = state.runtime.read().expect("runtime lock");
+            (
+                runtime.resolved.workspace_mcp_servers().get(&id).cloned(),
+                runtime.mcp_pool.clone(),
+            )
+        };
+        return match def {
+            Some(def) => {
+                let snap = pool.snapshot(&key).await;
+                ok_json(mcp_item(id, ToolOrigin::Workspace, def, snap))
+            }
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(ApiErr {
+                    ok: false,
+                    error: format!("MCP server not found: {id}"),
+                }),
+            )
+                .into_response(),
+        };
+    }
     match state.settings_writer.get_mcp_server(&id) {
         Ok(Some(def)) => {
-            let snap = mcp_pool(&state).snapshot(&id).await;
-            ok_json(mcp_item(id, def, snap))
+            let snap = mcp_pool(&state).snapshot(&key).await;
+            ok_json(mcp_item(id, ToolOrigin::Global, def, snap))
         }
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -592,9 +658,25 @@ async fn get_mcp_server(State(state): State<ServeState>, Path(id): Path<String>)
 async fn put_mcp_server(
     State(state): State<ServeState>,
     Path(id): Path<String>,
+    Query(query): Query<ScopeQuery>,
     Json(body): Json<McpServerDefinition>,
 ) -> Response {
-    match state.settings_writer.write_mcp_server(&id, body) {
+    let workspace = state
+        .runtime
+        .read()
+        .expect("runtime lock")
+        .workspace
+        .clone();
+    let result = if workspace_scope(&query) {
+        state.settings_writer.write_workspace_mcp_server(
+            &workspace.workspace_root,
+            &id,
+            body,
+        )
+    } else {
+        state.settings_writer.write_mcp_server(&id, body)
+    };
+    match result {
         Ok(revision) => {
             reload_runtime_after_settings_write(&state, "MCP server write");
             ok_json(RevisionBody { revision })
@@ -603,9 +685,27 @@ async fn put_mcp_server(
     }
 }
 
-async fn delete_mcp_server(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
-    mcp_pool(&state).stop(&id).await;
-    match state.settings_writer.delete_mcp_server(&id) {
+async fn delete_mcp_server(
+    State(state): State<ServeState>,
+    Path(id): Path<String>,
+    Query(query): Query<ScopeQuery>,
+) -> Response {
+    let workspace = state
+        .runtime
+        .read()
+        .expect("runtime lock")
+        .workspace
+        .clone();
+    let ws_scope = workspace_scope(&query);
+    mcp_pool(&state).stop(&mcp_pool_key(ws_scope, &id)).await;
+    let result = if ws_scope {
+        state
+            .settings_writer
+            .delete_workspace_mcp_server(&workspace.workspace_root, &id)
+    } else {
+        state.settings_writer.delete_mcp_server(&id, &workspace)
+    };
+    match result {
         Ok(revision) => {
             reload_runtime_after_settings_write(&state, "MCP server delete");
             ok_json(RevisionBody { revision })
@@ -617,22 +717,38 @@ async fn delete_mcp_server(State(state): State<ServeState>, Path(id): Path<Strin
 async fn start_mcp_server(
     State(state): State<ServeState>,
     Path(id): Path<String>,
+    Query(query): Query<ScopeQuery>,
     Json(def): Json<McpServerDefinition>,
 ) -> Response {
-    mcp_lifecycle_result(mcp_pool(&state).start(&id, &def).await, id, &state).await
+    let key = mcp_pool_key(workspace_scope(&query), &id);
+    let cwd = Some(mcp_cwd(&state));
+    mcp_lifecycle_result(mcp_pool(&state).start(&key, &def, cwd).await, key, &state).await
 }
 
 async fn restart_mcp_server(
     State(state): State<ServeState>,
     Path(id): Path<String>,
+    Query(query): Query<ScopeQuery>,
     Json(def): Json<McpServerDefinition>,
 ) -> Response {
-    mcp_lifecycle_result(mcp_pool(&state).restart(&id, &def).await, id, &state).await
+    let key = mcp_pool_key(workspace_scope(&query), &id);
+    let cwd = Some(mcp_cwd(&state));
+    mcp_lifecycle_result(
+        mcp_pool(&state).restart(&key, &def, cwd).await,
+        key,
+        &state,
+    )
+    .await
 }
 
-async fn stop_mcp_server(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
-    mcp_pool(&state).stop(&id).await;
-    let snap = mcp_pool(&state).snapshot(&id).await;
+async fn stop_mcp_server(
+    State(state): State<ServeState>,
+    Path(id): Path<String>,
+    Query(query): Query<ScopeQuery>,
+) -> Response {
+    let key = mcp_pool_key(workspace_scope(&query), &id);
+    mcp_pool(&state).stop(&key).await;
+    let snap = mcp_pool(&state).snapshot(&key).await;
     ok_json(McpProbeResult {
         ready: false,
         status: snap.status,
@@ -663,15 +779,14 @@ async fn mcp_lifecycle_result(
     }
 }
 
-/// Custom-tool definition changes must land in live `resolved` immediately so
-/// catalog views / next turn use the same snapshot as SQLite (no stale defs).
-/// `reload_if_needed` already runs global catalog init — do not double-init.
 fn reload_runtime_after_settings_write(state: &ServeState, what: &str) {
     let mut runtime = state.runtime.write().expect("runtime lock");
     if let Err(e) = runtime.reload_if_needed() {
         tracing::warn!(error = %e, "{what}: runtime reload failed");
     }
+    runtime.sync_workspace_tool_readiness();
 }
+
 
 async fn get_excludes(State(state): State<ServeState>) -> Response {
     let root = state.workspace.sandbox().root();

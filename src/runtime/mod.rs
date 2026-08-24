@@ -153,8 +153,7 @@ impl RuntimeHandle {
         let global = ConfigManager::load_global_from(&self.global_db_path)?;
         ConfigManager::validate(&global)?;
         let workspace = crate::config::workspace::workspace_with_disk_readiness(&self.workspace);
-        self.resolved = ConfigManager::resolve(global.clone(), workspace.clone());
-        crate::tool::catalog::init(&mut self.resolved, crate::config::schema::InitScope::Global);
+        self.resolved = ConfigManager::resolve(global, workspace.clone());
         self.workspace = workspace;
         log_filter::reload_from_path(&self.global_db_path);
         self.engine_manager.reconcile(&self.resolved);
@@ -207,12 +206,11 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    /// Refresh workspace-scoped optional tool readiness from `.litecode/engines.json`.
+    /// Refresh workspace-scoped engines + MCP/custom defs from `.litecode`.
     pub fn sync_workspace_tool_readiness(&mut self) {
         let workspace = crate::config::workspace::workspace_with_disk_readiness(&self.workspace);
         self.workspace = workspace.clone();
-        self.resolved.workspace_mut().workspace_tool_readiness =
-            workspace.workspace_tool_readiness.clone();
+        *self.resolved.workspace_mut() = workspace;
     }
 
     pub fn db_path(&self) -> String {

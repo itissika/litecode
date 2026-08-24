@@ -13,14 +13,16 @@ use super::global_db::{self, store, tools};
 use super::log_filter;
 use super::manager::ConfigManager;
 use super::schema::{
-    AgentProfile, AgentToolBinding, CustomToolDefinition, GlobalSettings, InitScope, LogSettings,
+    AgentProfile, AgentToolBinding, CustomToolDefinition, GlobalSettings, LogSettings,
     McpServerDefinition, McpTransport, ModelDefinition, PROTECTED_AGENT_IDS, ProviderDefinition,
-    ToolCatalogEntry, ToolPreset, ToolTier, WebSearchSettings,
+    ToolPreset, WebSearchSettings,
 };
 use super::turn_guard::TurnGuard;
 use super::workspace;
 use crate::optional::EngineManager;
-use crate::tool::catalog::{normalize_agent_profile, normalize_agent_tool_bindings};
+use crate::tool::agent_bindings::{
+    available_id_set, merge_agent_tool_bindings, normalize_agent_profile,
+};
 use crate::types::{LitecodeError, Result};
 
 /// One toast-ready string covering provider → model → required agent bindings.
@@ -134,17 +136,6 @@ impl std::fmt::Display for SettingsWriteError {
 
 impl std::error::Error for SettingsWriteError {}
 
-fn ensure_core_catalog(catalog: &HashMap<String, ToolCatalogEntry>) -> Result<()> {
-    for id in tools::core_tool_ids() {
-        if !catalog.contains_key(&id) {
-            return Err(LitecodeError::Config(format!(
-                "tool catalog is missing required core entry '{id}'"
-            )));
-        }
-    }
-    Ok(())
-}
-
 pub struct SettingsWriter {
     db_path: PathBuf,
     turn_guard: Arc<TurnGuard>,
@@ -183,44 +174,13 @@ impl SettingsWriter {
         let _ = self.runtime.set(runtime);
     }
 
-    /// Readiness source for write-path judgements.
-    ///
-    /// # Lock constraint
-    /// Callers MUST NOT hold `state.runtime` write lock across this call; this
-    /// reads the live runtime under a short read lock and returns clones.
-    fn live_readiness(
-        &self,
-    ) -> (
-        crate::config::runtime_catalog_state::RuntimeCatalogState,
-        Option<std::collections::HashMap<String, crate::config::schema::ToolReadiness>>,
-    ) {
-        match self.runtime.get() {
-            Some(rt) => {
-                let rt = rt.read().expect("runtime lock");
-                (
-                    rt.resolved.runtime_catalog_state().clone(),
-                    Some(rt.resolved.workspace_tool_readiness().clone()),
-                )
-            }
-            None => (
-                crate::config::runtime_catalog_state::RuntimeCatalogState::default(),
-                None,
-            ),
-        }
-    }
-
     pub fn reconcile_engines(&self, workspace: &super::resolved::WorkspaceState) -> Result<()> {
         let Some(engine_manager) = &self.engine_manager else {
             return Ok(());
         };
-        let (runtime_catalog_state, workspace_readiness_opt) = self.live_readiness();
         let settings = self.load()?;
         let workspace = workspace::workspace_with_disk_readiness(workspace);
-        let mut resolved = ConfigManager::resolve(settings, workspace);
-        *resolved.runtime_catalog_state_mut() = runtime_catalog_state;
-        if let Some(wr) = workspace_readiness_opt {
-            resolved.workspace_mut().workspace_tool_readiness = wr;
-        }
+        let resolved = ConfigManager::resolve(settings, workspace);
         engine_manager.reconcile(&resolved);
         Ok(())
     }
@@ -317,7 +277,7 @@ impl SettingsWriter {
             websearch_endpoint: settings.websearch.search_endpoint.clone(),
             model_count: settings.models.len(),
             agent_count: settings.agents.len(),
-            catalog_count: settings.tool_catalog.len(),
+            catalog_count: 0,
             log_level: settings.log.level.clone(),
             effective_next_turn: !restart_required,
             restart_required,
@@ -495,20 +455,16 @@ impl SettingsWriter {
     ) -> Result<u64> {
         validate_agent_id(id)?;
         let workspace = workspace::workspace_with_disk_readiness(workspace);
-        let (runtime_catalog_state, workspace_readiness_opt) = self.live_readiness();
         let settings = self.load()?;
-        let mut resolved = ConfigManager::resolve(settings, workspace);
-        *resolved.runtime_catalog_state_mut() = runtime_catalog_state;
-        if let Some(wr) = workspace_readiness_opt {
-            resolved.workspace_mut().workspace_tool_readiness = wr;
-        }
+        let resolved = ConfigManager::resolve(settings.clone(), workspace);
+        let existing = settings
+            .agents
+            .get(id)
+            .map(|p| p.tools.clone())
+            .unwrap_or_default();
         expand_binding_presets(&mut profile.tools);
-        normalize_agent_tool_bindings(
-            resolved.tool_catalog(),
-            resolved.workspace_tool_readiness(),
-            resolved.runtime_catalog_state(),
-            &mut profile.tools,
-        )?;
+        let available = available_id_set(&resolved);
+        profile.tools = merge_agent_tool_bindings(&existing, profile.tools, &available);
         normalize_agent_profile(id, &mut profile);
         let id = id.to_string();
         self.commit_partial(|settings| {
@@ -540,13 +496,9 @@ impl SettingsWriter {
         &self,
         agent_id: &str,
         preset: ToolPreset,
-        workspace: &super::resolved::WorkspaceState,
+        _workspace: &super::resolved::WorkspaceState,
     ) -> Result<u64> {
         validate_agent_id(agent_id)?;
-        let workspace = workspace::workspace_with_disk_readiness(workspace);
-        let (runtime_catalog_state, workspace_readiness_opt) = self.live_readiness();
-        let workspace_readiness =
-            workspace_readiness_opt.unwrap_or_else(|| workspace.workspace_tool_readiness.clone());
         if !self.load()?.agents.contains_key(agent_id) {
             return Err(LitecodeError::Config(format!(
                 "agent not found: {agent_id}"
@@ -567,38 +519,9 @@ impl SettingsWriter {
                 }
                 apply_preset_to_binding(tool_id, binding, preset);
             }
-            normalize_agent_tool_bindings(
-                &settings.tool_catalog,
-                &workspace_readiness,
-                &runtime_catalog_state,
-                &mut profile.tools,
-            )?;
             Ok(false)
         })
         .map(|(rev, _)| rev)
-    }
-
-    pub fn write_tool_catalog(
-        &self,
-        catalog: HashMap<String, ToolCatalogEntry>,
-        workspace: &super::resolved::WorkspaceState,
-    ) -> Result<u64> {
-        let revision = self
-            .commit_partial(|settings| {
-                if catalog.is_empty() && !settings.tool_catalog.is_empty() {
-                    return Err(LitecodeError::Config(
-                        "refusing to wipe tool catalog; reload settings and try again".into(),
-                    ));
-                }
-                for (id, entry) in catalog {
-                    settings.tool_catalog.insert(id, entry);
-                }
-                ensure_core_catalog(&settings.tool_catalog)?;
-                Ok(false)
-            })
-            .map(|(rev, _)| rev)?;
-        self.reconcile_engines(workspace)?;
-        Ok(revision)
     }
 
     pub fn list_custom_tools(&self) -> Result<Vec<CustomToolDefinition>> {
@@ -648,25 +571,17 @@ impl SettingsWriter {
             } else {
                 settings.custom_tools.push(def.clone());
             }
-            settings
-                .tool_catalog
-                .entry(id.to_string())
-                .or_insert_with(|| ToolCatalogEntry {
-                    id: id.to_string(),
-                    tier: ToolTier::Custom,
-                    init_scope: InitScope::Global,
-                    catalog_enabled: false,
-                });
-            if let Some(entry) = settings.tool_catalog.get_mut(id) {
-                entry.tier = ToolTier::Custom;
-                entry.init_scope = InitScope::Global;
-            }
             Ok(false)
         })
         .map(|(rev, _)| rev)
     }
 
-    pub fn delete_custom_tool(&self, id: &str) -> Result<u64> {
+    pub fn delete_custom_tool(
+        &self,
+        id: &str,
+        workspace: &super::resolved::WorkspaceState,
+    ) -> Result<u64> {
+        let keep_binding = workspace.workspace_custom_tools.contains_key(id);
         self.commit_partial(|settings| {
             let before = settings.custom_tools.len();
             settings.custom_tools.retain(|t| t.name != id);
@@ -675,9 +590,10 @@ impl SettingsWriter {
                     "custom tool not found: {id}"
                 )));
             }
-            settings.tool_catalog.remove(id);
-            for profile in settings.agents.values_mut() {
-                profile.tools.remove(id);
+            if !keep_binding {
+                for profile in settings.agents.values_mut() {
+                    profile.tools.remove(id);
+                }
             }
             Ok(false)
         })
@@ -704,6 +620,7 @@ impl SettingsWriter {
             )));
         }
         def.command = def.command.trim().to_string();
+        def.timeout = def.call_timeout_secs();
         match &def.transport {
             McpTransport::Stdio => {
                 if def.command.is_empty() {
@@ -726,34 +643,144 @@ impl SettingsWriter {
             }
         }
 
-        let catalog_id = tools::mcp_catalog_id(id);
         self.commit_partial(move |settings| {
             settings.mcp_servers.insert(id.to_string(), def.clone());
-            settings
-                .tool_catalog
-                .entry(catalog_id.clone())
-                .or_insert_with(|| ToolCatalogEntry {
-                    id: catalog_id.clone(),
-                    tier: ToolTier::Mcp,
-                    init_scope: InitScope::Global,
-                    catalog_enabled: false,
-                });
-            if let Some(entry) = settings.tool_catalog.get_mut(&catalog_id) {
-                entry.tier = ToolTier::Mcp;
-                entry.init_scope = InitScope::Global;
+            Ok(false)
+        })
+        .map(|(rev, _)| rev)
+    }
+
+    pub fn delete_mcp_server(
+        &self,
+        id: &str,
+        workspace: &super::resolved::WorkspaceState,
+    ) -> Result<u64> {
+        let catalog_id = tools::mcp_catalog_id(id);
+        let keep_binding = workspace.workspace_mcp_servers.contains_key(id);
+        self.commit_partial(|settings| {
+            if settings.mcp_servers.remove(id).is_none() {
+                return Err(LitecodeError::Config(format!("MCP server not found: {id}")));
+            }
+            if !keep_binding {
+                for profile in settings.agents.values_mut() {
+                    profile.tools.remove(&catalog_id);
+                }
             }
             Ok(false)
         })
         .map(|(rev, _)| rev)
     }
 
-    pub fn delete_mcp_server(&self, id: &str) -> Result<u64> {
-        let catalog_id = tools::mcp_catalog_id(id);
-        self.commit_partial(|settings| {
-            if settings.mcp_servers.remove(id).is_none() {
-                return Err(LitecodeError::Config(format!("MCP server not found: {id}")));
+    pub fn write_workspace_custom_tool(
+        &self,
+        workspace_root: &Path,
+        id: &str,
+        mut def: CustomToolDefinition,
+    ) -> Result<u64> {
+        validate_tool_id(id)?;
+        if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
+            return Err(LitecodeError::Config(format!(
+                "custom tool id '{id}' conflicts with a builtin tool"
+            )));
+        }
+        if def.name != id {
+            if def.name.is_empty() {
+                def.name = id.to_string();
+            } else {
+                return Err(LitecodeError::Config(format!(
+                    "custom tool body name '{}' must match path id '{id}'",
+                    def.name
+                )));
             }
-            settings.tool_catalog.remove(&catalog_id);
+        }
+        if def.command.trim().is_empty() {
+            return Err(LitecodeError::Config(
+                "custom tool command must not be empty".into(),
+            ));
+        }
+        if def.schema.schema_type.trim().is_empty() {
+            def.schema.schema_type = "object".into();
+        }
+        if def.timeout == 0 {
+            def.timeout = 120;
+        }
+        workspace::upsert_workspace_custom_tool(workspace_root, def)?;
+        self.bump_revision()
+    }
+
+    pub fn delete_workspace_custom_tool(&self, workspace_root: &Path, id: &str) -> Result<u64> {
+        if !workspace::delete_workspace_custom_tool(workspace_root, id)? {
+            return Err(LitecodeError::Config(format!(
+                "custom tool not found: {id}"
+            )));
+        }
+        let keep_binding = self
+            .load()?
+            .custom_tools
+            .iter()
+            .any(|t| t.name == id);
+        if keep_binding {
+            return self.bump_revision();
+        }
+        let id = id.to_string();
+        self.commit_partial(move |settings| {
+            for profile in settings.agents.values_mut() {
+                profile.tools.remove(&id);
+            }
+            Ok(false)
+        })
+        .map(|(rev, _)| rev)
+    }
+
+    pub fn write_workspace_mcp_server(
+        &self,
+        workspace_root: &Path,
+        id: &str,
+        mut def: McpServerDefinition,
+    ) -> Result<u64> {
+        validate_tool_id(id)?;
+        if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
+            return Err(LitecodeError::Config(format!(
+                "MCP server id '{id}' conflicts with a builtin tool"
+            )));
+        }
+        def.command = def.command.trim().to_string();
+        def.timeout = def.call_timeout_secs();
+        match &def.transport {
+            McpTransport::Stdio => {
+                if def.command.is_empty() {
+                    return Err(LitecodeError::Config(
+                        "MCP stdio server command must not be empty".into(),
+                    ));
+                }
+            }
+            McpTransport::Remote { url, .. } => {
+                if cfg!(not(feature = "remote-mcp")) {
+                    return Err(LitecodeError::Config(
+                        "remote MCP transport requires a build with the remote-mcp feature".into(),
+                    ));
+                }
+                if url.trim().is_empty() {
+                    return Err(LitecodeError::Config(
+                        "MCP remote server url must not be empty".into(),
+                    ));
+                }
+            }
+        }
+        workspace::upsert_workspace_mcp(workspace_root, id, def)?;
+        self.bump_revision()
+    }
+
+    pub fn delete_workspace_mcp_server(&self, workspace_root: &Path, id: &str) -> Result<u64> {
+        if !workspace::delete_workspace_mcp(workspace_root, id)? {
+            return Err(LitecodeError::Config(format!("MCP server not found: {id}")));
+        }
+        let keep_binding = self.load()?.mcp_servers.contains_key(id);
+        if keep_binding {
+            return self.bump_revision();
+        }
+        let catalog_id = tools::mcp_catalog_id(id);
+        self.commit_partial(move |settings| {
             for profile in settings.agents.values_mut() {
                 profile.tools.remove(&catalog_id);
             }
@@ -762,9 +789,10 @@ impl SettingsWriter {
         .map(|(rev, _)| rev)
     }
 
-    /// Initialize catalog readiness for global optional tools.
-    /// Workspace infrastructure engines are not initialized here — use
-    /// `enable_code_search_engine` / `write_lsp_init`.
+    fn bump_revision(&self) -> Result<u64> {
+        self.commit_partial(|_| Ok(false)).map(|(rev, _)| rev)
+    }
+
     pub fn write_log(&self, log: LogSettings) -> Result<u64> {
         let revision = self
             .commit_partial(|settings| {

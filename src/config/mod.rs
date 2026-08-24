@@ -5,7 +5,6 @@ pub mod log_filter;
 pub mod manager;
 pub mod path;
 pub mod resolved;
-pub mod runtime_catalog_state;
 pub mod schema;
 pub mod settings_writer;
 pub mod turn_guard;

@@ -1,3 +1,5 @@
+pub mod agent_bindings;
+pub mod availability;
 pub mod authorize;
 pub mod catalog;
 pub mod executor;

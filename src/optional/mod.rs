@@ -15,8 +15,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::global_db::tools::optional_builtin_ids;
 use crate::config::resolved::ResolvedConfig;
-use crate::config::schema::ToolTier;
-use crate::tool::catalog::is_catalog_candidate;
 use crate::types::Result;
 
 pub use stub_engine::StubEngine;
@@ -110,11 +108,8 @@ impl EngineManager {
         }
     }
 
-    pub fn is_warmed(&self, tool_id: &str, resolved: &ResolvedConfig) -> bool {
-        let Some(entry) = resolved.tool_catalog().get(tool_id) else {
-            return true;
-        };
-        if entry.tier != ToolTier::Optional {
+    pub fn is_warmed(&self, tool_id: &str, _resolved: &ResolvedConfig) -> bool {
+        if tool_id != "webfetch" && tool_id != "websearch" {
             return true;
         }
         self.states
@@ -266,71 +261,20 @@ impl Default for EngineManager {
     }
 }
 
-fn should_run_engine(resolved: &ResolvedConfig, tool_id: &str) -> bool {
-    let Some(entry) = resolved.tool_catalog().get(tool_id) else {
-        return false;
-    };
-    if entry.tier != ToolTier::Optional {
-        return false;
-    }
-    is_catalog_candidate(
-        entry,
-        resolved.workspace_tool_readiness(),
-        resolved.runtime_catalog_state(),
-    )
+fn should_run_engine(_resolved: &ResolvedConfig, tool_id: &str) -> bool {
+    matches!(tool_id, "webfetch" | "websearch")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::resolved::{WorkspaceState, resolve};
-    use crate::config::schema::{
-        AgentProfile, AgentToolBinding, GlobalSettings, InitScope, ToolCatalogEntry, ToolPreset,
-    };
-    use std::collections::HashMap;
-
-    fn optional_entry(id: &str, scope: InitScope) -> ToolCatalogEntry {
-        ToolCatalogEntry {
-            id: id.into(),
-            tier: ToolTier::Optional,
-            init_scope: scope,
-            catalog_enabled: true,
-        }
-    }
+    use crate::config::schema::GlobalSettings;
 
     #[test]
-    fn reconcile_starts_warmup_for_enabled_optional() {
-        let mut global = GlobalSettings::default();
-        global.tool_catalog.insert(
-            "webfetch".into(),
-            optional_entry("webfetch", InitScope::Global),
-        );
-        global.agents.insert(
-            "default".into(),
-            AgentProfile {
-                tools: HashMap::from([(
-                    "webfetch".into(),
-                    AgentToolBinding {
-                        enabled: true,
-                        policy: crate::permission::presets::binding_for_tool(
-                            "webfetch",
-                            ToolPreset::All,
-                        )
-                        .0,
-                        path_mode: crate::permission::presets::binding_for_tool(
-                            "webfetch",
-                            ToolPreset::All,
-                        )
-                        .1,
-                        last_applied_preset: Some(ToolPreset::All),
-                        allowed_tools: None,
-                    },
-                )]),
-                ..Default::default()
-            },
-        );
-        let mut resolved = resolve(global, WorkspaceState::new("/tmp"));
-        crate::tool::catalog::init(&mut resolved, InitScope::Global);
+    fn reconcile_starts_warmup_for_network_core() {
+        let global = GlobalSettings::default();
+        let resolved = resolve(global, WorkspaceState::new("/tmp"));
         let mgr = EngineManager::new();
         mgr.reconcile(&resolved);
         assert!(mgr.is_warmed("webfetch", &resolved));
@@ -338,17 +282,11 @@ mod tests {
 
     #[test]
     fn stop_clears_warm_state() {
-        let mut global = GlobalSettings::default();
-        global.tool_catalog.insert(
-            "webfetch".into(),
-            ToolCatalogEntry {
-                catalog_enabled: false,
-                ..optional_entry("webfetch", InitScope::Global)
-            },
-        );
+        let global = GlobalSettings::default();
         let resolved = resolve(global, WorkspaceState::new("/tmp"));
         let mgr = EngineManager::new();
         mgr.reconcile(&resolved);
+        mgr.stop_all();
         assert!(!mgr.is_warmed("webfetch", &resolved));
     }
 }

@@ -81,7 +81,7 @@ impl CodeSearchEngine {
         if !self.worker_alive() {
             self.notify_worker_failed();
             return Err(LitecodeError::ToolExecution(
-                "code_search worker is not running; re-enable the tool catalog or restart litecode with this workspace"
+                "code_search worker is not running; enable the retrieval engine or restart litecode with this workspace"
                     .into(),
             ));
         }
@@ -114,7 +114,7 @@ impl CodeSearchEngine {
         if !self.worker_alive() {
             self.notify_worker_failed();
             return Err(LitecodeError::ToolExecution(
-                "code_search worker is not running; re-enable the tool catalog or restart litecode with this workspace"
+                "code_search worker is not running; enable the retrieval engine or restart litecode with this workspace"
                     .into(),
             ));
         }

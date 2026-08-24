@@ -32,9 +32,22 @@ fn config_global_db_migration_and_seed() {
             .is_empty()
     );
 
-    assert!(settings.tool_catalog.contains_key("read"));
-    assert!(settings.tool_catalog.contains_key("wait_shell"));
-    assert!(settings.tool_catalog.get("read").unwrap().catalog_enabled);
+    assert!(
+        settings
+            .agents
+            .get("default")
+            .unwrap()
+            .tools
+            .contains_key("read")
+    );
+    assert!(
+        settings
+            .agents
+            .get("default")
+            .unwrap()
+            .tools
+            .contains_key("wait_shell")
+    );
 
     let conn = Connection::open(&db).unwrap();
     assert_eq!(

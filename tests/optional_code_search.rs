@@ -6,8 +6,7 @@ use std::time::Duration;
 
 use litecode::config::TurnGuard;
 use litecode::config::schema::{
-    AgentProfile, AgentToolBinding, InitScope, ToolCatalogEntry, ToolPreset, ToolReadiness,
-    ToolTier,
+    AgentProfile, AgentToolBinding, ToolPreset, ToolReadiness,
 };
 use litecode::config::workspace::enable_code_search_engine;
 use litecode::config::{ConfigManager, WorkspaceState, init_workspace};
@@ -20,7 +19,7 @@ use litecode::engines::{EngineState, WorkspaceEngines};
 use litecode::llm::provider_from_definition;
 use litecode::optional::EngineManager;
 use litecode::session::manager::SessionManager;
-use litecode::tool::catalog::{refresh_workspace_engine_readiness, should_include_in_llm_list};
+use litecode::tool::catalog::should_include_in_llm_list;
 use litecode::tool::registry::build_tool_list;
 use tempfile::TempDir;
 
@@ -37,25 +36,12 @@ fn ensure_hash_embedder_for_worker() {
     });
 }
 
-fn optional_ready_entry(id: &str, scope: InitScope) -> ToolCatalogEntry {
-    ToolCatalogEntry {
-        id: id.into(),
-        tier: ToolTier::Optional,
-        init_scope: scope,
-        catalog_enabled: true,
-    }
-}
-
 fn workspace_with_code_search(
     root: &std::path::Path,
 ) -> litecode::config::resolved::ResolvedConfig {
     ensure_hash_embedder_for_worker();
     enable_code_search_engine(root).unwrap();
     let mut global = litecode::config::schema::GlobalSettings::default();
-    global.tool_catalog.insert(
-        "code_search".into(),
-        optional_ready_entry("code_search", InitScope::Workspace),
-    );
     global.agents.insert(
         "default".into(),
         AgentProfile {
@@ -66,9 +52,10 @@ fn workspace_with_code_search(
             ..Default::default()
         },
     );
-    let mut resolved = ConfigManager::resolve(global, WorkspaceState::new(root));
-    refresh_workspace_engine_readiness(&mut resolved);
-    resolved
+    ConfigManager::resolve(
+        global,
+        litecode::config::workspace::workspace_with_disk_readiness(&WorkspaceState::new(root)),
+    )
 }
 
 #[test]
@@ -143,7 +130,8 @@ async fn catalog_on_warmup_enables_tool_in_list() {
     let resolved = workspace_with_code_search(root);
     let global_engines = EngineManager::new();
     let engines = WorkspaceEngines::new();
-    assert!(!should_include_in_llm_list(
+    // Bind ∧ engines.json desired: on the list even while first Warming.
+    assert!(should_include_in_llm_list(
         &resolved,
         "default",
         "code_search",
@@ -186,14 +174,15 @@ async fn engine_desired_off_stops_engine() {
 
     litecode::config::workspace::set_workspace_engine_desired(root, "code_search", false).unwrap();
     let mut resolved = resolved;
-    refresh_workspace_engine_readiness(&mut resolved);
+    *resolved.workspace_mut() =
+        litecode::config::workspace::workspace_with_disk_readiness(resolved.workspace());
     engines.reconcile(&resolved);
     assert_eq!(engines.state("code_search"), Some(EngineState::Stopped));
     assert!(!engines.is_warmed("code_search"));
 }
 
 #[tokio::test]
-async fn catalog_off_does_not_stop_engine() {
+async fn unbind_does_not_stop_engine() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     init_workspace_index(root).unwrap();
@@ -209,13 +198,6 @@ async fn catalog_off_does_not_stop_engine() {
     );
     assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
 
-    let mut global = resolved.global().clone();
-    global
-        .tool_catalog
-        .get_mut("code_search")
-        .unwrap()
-        .catalog_enabled = false;
-    let resolved = litecode::config::resolve(global, resolved.workspace().clone());
     engines.reconcile(&resolved);
     assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
     assert!(engines.is_warmed("code_search"));
@@ -316,12 +298,7 @@ async fn stop_during_warmup_leaves_no_zombie_worker() {
         .unwrap();
     }
 
-    let mut global = litecode::config::schema::GlobalSettings::default();
-    global.tool_catalog.insert(
-        "code_search".into(),
-        optional_ready_entry("code_search", InitScope::Workspace),
-    );
-    let resolved = ConfigManager::resolve(global, WorkspaceState::new(root));
+    let resolved = workspace_with_code_search(root);
 
     let engines = WorkspaceEngines::new();
     engines.reconcile(&resolved);
@@ -395,8 +372,7 @@ async fn engines_json_enables_code_search_for_workspace() {
     std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
 
     enable_code_search_engine(root).unwrap();
-    let mut resolved = workspace_with_code_search(root);
-    refresh_workspace_engine_readiness(&mut resolved);
+    let resolved = workspace_with_code_search(root);
     assert!(read_meta(root).unwrap().is_some());
     assert_eq!(
         resolved.workspace_tool_readiness().get("code_search"),

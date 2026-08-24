@@ -276,41 +276,41 @@ fn default_max_steps() -> u32 {
     50
 }
 
-/// Tool catalog tier.
+/// Bind-card kind shown on Agents (not a persist gate).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ToolTier {
+pub enum AvailableKind {
     Core,
-    Optional,
+    Engine,
     Custom,
     Mcp,
 }
 
-/// Init scope for catalog tools.
+/// Where a bind-card definition comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum InitScope {
-    None,
+pub enum ToolOrigin {
+    Builtin,
     Global,
     Workspace,
 }
 
-/// Catalog readiness (global layer; workspace-scoped readiness lives in workspace state).
+/// One currently bindable tool card for this workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AvailableTool {
+    pub id: String,
+    pub kind: AvailableKind,
+    pub origin: ToolOrigin,
+    #[serde(default)]
+    pub overridden: bool,
+}
+
+/// Workspace-engine configured intent (from engines.json).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolReadiness {
     NotReady,
     Ready,
-}
-
-/// Tool catalog entry (global layer). Readiness lives in [`super::RuntimeCatalogState`] (global)
-/// or [`super::resolved::WorkspaceState::workspace_tool_readiness`] (workspace).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolCatalogEntry {
-    pub id: String,
-    pub tier: ToolTier,
-    pub init_scope: InitScope,
-    pub catalog_enabled: bool,
 }
 
 /// JSON schema fragment for a custom tool.
@@ -393,6 +393,17 @@ pub enum McpTransport {
     },
 }
 
+/// Default MCP tool-call timeout when the definition omits `timeout`.
+pub const DEFAULT_MCP_TOOL_TIMEOUT_SECS: u64 = 60;
+
+fn default_mcp_tool_timeout() -> u64 {
+    DEFAULT_MCP_TOOL_TIMEOUT_SECS
+}
+
+fn is_default_mcp_tool_timeout(value: &u64) -> bool {
+    *value == DEFAULT_MCP_TOOL_TIMEOUT_SECS
+}
+
 /// MCP server definition (global layer).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerDefinition {
@@ -403,6 +414,68 @@ pub struct McpServerDefinition {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub transport: McpTransport,
+    /// Tool-call timeout in seconds. Omitted or `0` means [`DEFAULT_MCP_TOOL_TIMEOUT_SECS`].
+    #[serde(default = "default_mcp_tool_timeout")]
+    #[serde(skip_serializing_if = "is_default_mcp_tool_timeout")]
+    pub timeout: u64,
+}
+
+impl Default for McpServerDefinition {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            transport: McpTransport::Stdio,
+            timeout: DEFAULT_MCP_TOOL_TIMEOUT_SECS,
+        }
+    }
+}
+
+impl McpServerDefinition {
+    pub fn call_timeout_secs(&self) -> u64 {
+        if self.timeout == 0 {
+            DEFAULT_MCP_TOOL_TIMEOUT_SECS
+        } else {
+            self.timeout
+        }
+    }
+}
+
+#[cfg(test)]
+mod mcp_server_definition_tests {
+    use super::*;
+
+    #[test]
+    fn omitted_timeout_defaults_to_sixty() {
+        let def: McpServerDefinition = serde_json::from_value(serde_json::json!({
+            "command": "npx"
+        }))
+        .unwrap();
+        assert_eq!(def.call_timeout_secs(), 60);
+        assert!(!serde_json::to_value(&def).unwrap().as_object().unwrap().contains_key("timeout"));
+    }
+
+    #[test]
+    fn declared_timeout_is_kept() {
+        let def: McpServerDefinition = serde_json::from_value(serde_json::json!({
+            "command": "npx",
+            "timeout": 300
+        }))
+        .unwrap();
+        assert_eq!(def.call_timeout_secs(), 300);
+        assert_eq!(serde_json::to_value(&def).unwrap()["timeout"], 300);
+    }
+
+    #[test]
+    fn zero_timeout_means_default() {
+        let def = McpServerDefinition {
+            command: "npx".into(),
+            timeout: 0,
+            ..Default::default()
+        };
+        assert_eq!(def.call_timeout_secs(), 60);
+    }
 }
 
 /// Deprecated placeholder kept on [`GlobalSettings`] for DB schema stability.
@@ -444,15 +517,13 @@ impl WebSearchSettings {
     }
 }
 
-/// Global settings — providers, models, catalog, agents, extensions, auth, log.
+/// Global settings — providers, models, agents, extensions, auth, log.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GlobalSettings {
     #[serde(default)]
     pub providers: HashMap<String, ProviderDefinition>,
     #[serde(default)]
     pub models: HashMap<String, ModelDefinition>,
-    #[serde(default)]
-    pub tool_catalog: HashMap<String, ToolCatalogEntry>,
     #[serde(default)]
     pub agents: HashMap<String, AgentProfile>,
     #[serde(default)]
@@ -472,7 +543,6 @@ impl GlobalSettings {
     pub const FIELD_NAMES: &'static [&'static str] = &[
         "providers",
         "models",
-        "tool_catalog",
         "agents",
         "custom_tools",
         "mcp_servers",

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::config::{ConfigManager, ResolvedConfig, SettingsWriter, TurnGuard, WorkspaceState};
+use crate::config::{ResolvedConfig, SettingsWriter, TurnGuard, WorkspaceState};
 use crate::engines::WorkspaceEngines;
 use crate::optional::EngineManager;
 use crate::serve::router;
@@ -76,10 +76,6 @@ pub fn run(
     let workspace_engines = Arc::new(WorkspaceEngines::new());
     settings_writer.set_engine_manager(Arc::clone(&engine_manager));
     let settings_writer = Arc::new(settings_writer);
-
-    let db_path = settings_writer.db_path().to_path_buf();
-    let mut resolved = resolved;
-    ConfigManager::init_global_catalog_at_startup(&db_path, &mut resolved)?;
 
     engine_manager.reconcile(&resolved);
     workspace_engines.reconcile(&resolved);

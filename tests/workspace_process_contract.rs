@@ -46,6 +46,8 @@ fn test_state(project: PathBuf) -> (ServeState, common::TestServeFixture, PathBu
         contract: String::new(),
         paths: WorkspacePaths::for_workspace(&project, &workspace_id),
         workspace_tool_readiness: Default::default(),
+        workspace_mcp_servers: Default::default(),
+        workspace_custom_tools: Default::default(),
     };
     let agent = test_agent(vec![], "default", 50);
     let resolved = test_resolved("default", &agent.tools);

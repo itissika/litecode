@@ -9,7 +9,7 @@ use crate::llm::LlmProvider;
 use crate::mcp::{McpConnectionPool, McpToolSchema};
 use crate::optional::EngineManager;
 use crate::session::manager::SessionManager;
-use crate::tool::catalog::should_include_in_llm_list;
+use crate::tool::availability::{available_tools, should_include_in_llm_list};
 use crate::tool::trait_::Tool;
 use crate::tools::{
     bash::BashTool, code_search::CodeSearchTool, custom::CustomTool, edit::EditTool,
@@ -86,11 +86,13 @@ fn instantiate_tool(
                     tool.input_schema.clone(),
                     crate::tools::mcp_tool::McpServerConnection {
                         tool_name: tool.name.clone(),
-                        server_name: server_id.to_string(),
+                        server_name: resolved.mcp_pool_key(server_id),
                         command: mcp.command.clone(),
                         args: mcp.args.clone(),
                         env: mcp.env.clone(),
+                        cwd: Some(resolved.workspace_root().to_path_buf()),
                         pool: Arc::clone(&mcp_pool),
+                        timeout_secs: mcp.call_timeout_secs(),
                     },
                 )) as Arc<dyn Tool>
             })
@@ -126,7 +128,7 @@ fn instantiate_tool(
     vec![]
 }
 
-/// Assemble LLM tool list from catalog gate + per-agent DB bindings (CONFIG §2.5, §3.6).
+/// Assemble LLM tool list from available cards + per-agent DB bindings.
 ///
 /// Tools consume the process-owned editor-service graph; callers must pass the
 /// shared `IdeBaseHandle` instead of minting a parallel workspace service.
@@ -147,7 +149,8 @@ pub async fn build_tool_list(
     mcp_pool: Arc<McpConnectionPool>,
 ) -> Vec<Arc<dyn Tool>> {
     let mut mcp_schemas: HashMap<String, Vec<McpToolSchema>> = HashMap::new();
-    for (server_id, mcp_def) in resolved.mcp_servers() {
+    let servers = resolved.mcp_servers();
+    for (server_id, mcp_def) in &servers {
         let catalog_id = mcp_catalog_id(server_id);
         if !should_include_in_llm_list(
             resolved,
@@ -158,7 +161,15 @@ pub async fn build_tool_list(
         ) {
             continue;
         }
-        match mcp_pool.start(server_id, mcp_def).await {
+        let pool_key = resolved.mcp_pool_key(server_id);
+        match mcp_pool
+            .start(
+                &pool_key,
+                mcp_def,
+                Some(resolved.workspace_root().to_path_buf()),
+            )
+            .await
+        {
             Ok(schemas) => {
                 mcp_schemas.insert(server_id.clone(), schemas);
             }
@@ -168,7 +179,7 @@ pub async fn build_tool_list(
         }
     }
 
-    let mut catalog_ids: Vec<String> = resolved.tool_catalog().keys().cloned().collect();
+    let mut catalog_ids: Vec<String> = available_tools(resolved).into_iter().map(|t| t.id).collect();
     catalog_ids.sort();
 
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
@@ -225,14 +236,12 @@ mod tests {
     use crate::config::global_db::tools::{core_configurable_tools, core_none_tools};
     use crate::config::resolved::{WorkspaceState, resolve};
     use crate::config::schema::{
-        AgentProfile, AgentToolBinding, CustomToolDefinition, GlobalSettings, InitScope,
-        McpServerDefinition, ProviderAuth, ProviderDefinition, ToolCatalogEntry, ToolPreset,
-        ToolSchema, ToolTier,
+        ADAPTER_OPENAI_RESPONSES, AgentProfile, AgentToolBinding, GlobalSettings,
+        McpServerDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition, ToolPreset,
     };
     use crate::context_pipeline::Context;
     use crate::llm::{LlmProvider, provider_from_definition};
     use crate::optional::EngineManager;
-    use crate::tool::catalog::init;
     use std::collections::HashMap;
 
     fn dummy_ctx() -> Context {
@@ -245,7 +254,6 @@ mod tests {
     }
 
     fn dummy_provider() -> Box<dyn LlmProvider> {
-        use crate::config::schema::{ADAPTER_OPENAI_RESPONSES, ProviderConnectionConfig};
         let def = ProviderDefinition {
             id: "test".into(),
             adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
@@ -257,31 +265,6 @@ mod tests {
             },
         };
         provider_from_definition(&def).unwrap()
-    }
-
-    fn seed_core_catalog(global: &mut GlobalSettings) {
-        for id in core_configurable_tools() {
-            global.tool_catalog.insert(
-                (*id).to_string(),
-                ToolCatalogEntry {
-                    id: (*id).to_string(),
-                    tier: ToolTier::Core,
-                    init_scope: InitScope::None,
-                    catalog_enabled: true,
-                },
-            );
-        }
-        for id in core_none_tools() {
-            global.tool_catalog.insert(
-                (*id).to_string(),
-                ToolCatalogEntry {
-                    id: (*id).to_string(),
-                    tier: ToolTier::Core,
-                    init_scope: InitScope::None,
-                    catalog_enabled: true,
-                },
-            );
-        }
     }
 
     fn default_bindings() -> HashMap<String, AgentToolBinding> {
@@ -317,7 +300,6 @@ mod tests {
 
     fn test_resolved(agent_tools: HashMap<String, AgentToolBinding>) -> ResolvedConfig {
         let mut global = GlobalSettings::default();
-        seed_core_catalog(&mut global);
         global.agents.insert(
             "default".into(),
             AgentProfile {
@@ -391,9 +373,15 @@ mod tests {
     }
 
     #[test]
-    fn catalog_gate_excludes_not_ready_custom() {
-        let mut bindings = default_bindings();
-        bindings.insert(
+    fn unbound_webfetch_is_not_in_llm_list() {
+        let bindings = default_bindings();
+        let resolved = test_resolved(bindings);
+        let tools = list_tools(&resolved, 0);
+        let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+        assert!(!names.iter().any(|n| n == "webfetch"));
+
+        let mut bound = default_bindings();
+        bound.insert(
             "webfetch".into(),
             AgentToolBinding {
                 enabled: true,
@@ -408,51 +396,8 @@ mod tests {
                 allowed_tools: None,
             },
         );
-        let mut global = GlobalSettings::default();
-        seed_core_catalog(&mut global);
-        global.tool_catalog.insert(
-            "webfetch".into(),
-            ToolCatalogEntry {
-                id: "webfetch".into(),
-                tier: ToolTier::Custom,
-                init_scope: InitScope::Global,
-                catalog_enabled: false,
-            },
-        );
-        global.custom_tools.push(CustomToolDefinition {
-            name: "webfetch".into(),
-            description: String::new(),
-            schema: ToolSchema {
-                schema_type: "object".into(),
-                properties: serde_json::json!({}),
-                required: vec![],
-            },
-            command: "echo".into(),
-            args: vec![],
-            timeout: 120,
-        });
-        global.agents.insert(
-            "default".into(),
-            AgentProfile {
-                tools: bindings,
-                ..Default::default()
-            },
-        );
-        let resolved = resolve(global, WorkspaceState::new("/tmp"));
+        let resolved = test_resolved(bound);
         let tools = list_tools(&resolved, 0);
-        let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
-        assert!(!names.iter().any(|n| n == "webfetch"));
-
-        // Construct new ResolvedConfig with webfetch catalog_enabled=true and init global.
-        let mut ready_global = resolved.global().clone();
-        ready_global
-            .tool_catalog
-            .get_mut("webfetch")
-            .unwrap()
-            .catalog_enabled = true;
-        let mut ready = resolve(ready_global, WorkspaceState::new("/tmp"));
-        init(&mut ready, InitScope::Global);
-        let tools = list_tools(&ready, 0);
         let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
         assert!(names.iter().any(|n| n == "webfetch"));
     }
@@ -509,7 +454,6 @@ mod tests {
             },
         );
         let mut global = GlobalSettings::default();
-        seed_core_catalog(&mut global);
         global.mcp_servers.insert(
             "dead".into(),
             McpServerDefinition {
@@ -517,15 +461,7 @@ mod tests {
                 args: vec![],
                 env: HashMap::new(),
                 transport: crate::config::schema::McpTransport::Stdio,
-            },
-        );
-        global.tool_catalog.insert(
-            "mcp_dead".into(),
-            ToolCatalogEntry {
-                id: "mcp_dead".into(),
-                tier: ToolTier::Mcp,
-                init_scope: InitScope::Global,
-                catalog_enabled: true,
+                ..Default::default()
             },
         );
         global.agents.insert(
@@ -535,8 +471,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let mut resolved = resolve(global, WorkspaceState::new("/tmp"));
-        init(&mut resolved, InitScope::Global);
+        let resolved = resolve(global, WorkspaceState::new("/tmp"));
         let tools = list_tools(&resolved, 0);
         let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
         assert!(

@@ -7,10 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::snapshot_paths::{snapshots_dir_for_id, workspace_snapshot_id};
 
-use super::runtime_catalog_state::RuntimeCatalogState;
 use super::schema::{
     AgentProfile, CustomToolDefinition, GlobalSettings, LogSettings, McpServerDefinition,
-    ModelDefinition, ProviderDefinition, ToolCatalogEntry, ToolReadiness, WebSearchSettings,
+    ModelDefinition, ProviderDefinition, ToolOrigin, ToolReadiness, WebSearchSettings,
 };
 
 /// Workspace runtime paths: session/plan/logs under `<workspace>/.litecode/`;
@@ -44,7 +43,7 @@ impl WorkspacePaths {
 }
 
 /// Workspace-layer state — paths, contract, workspace-scoped tool readiness.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceState {
     pub workspace_root: PathBuf,
     /// Stable id persisted in `.litecode/workspace.json` (host-global association).
@@ -56,6 +55,10 @@ pub struct WorkspaceState {
     /// Workspace-tool readiness, synced from engines.json.
     #[serde(default)]
     pub workspace_tool_readiness: HashMap<String, ToolReadiness>,
+    #[serde(default)]
+    pub workspace_mcp_servers: HashMap<String, McpServerDefinition>,
+    #[serde(default)]
+    pub workspace_custom_tools: HashMap<String, CustomToolDefinition>,
 }
 
 impl WorkspaceState {
@@ -66,6 +69,8 @@ impl WorkspaceState {
         "contract",
         "paths",
         "workspace_tool_readiness",
+        "workspace_mcp_servers",
+        "workspace_custom_tools",
     ];
 
     /// Ephemeral / test constructor: path-derived id, no disk identity write.
@@ -78,6 +83,8 @@ impl WorkspaceState {
             workspace_id,
             contract: String::new(),
             workspace_tool_readiness: HashMap::new(),
+            workspace_mcp_servers: HashMap::new(),
+            workspace_custom_tools: HashMap::new(),
         }
     }
 
@@ -90,24 +97,24 @@ impl WorkspaceState {
             contract: String::new(),
             paths,
             workspace_tool_readiness: HashMap::new(),
+            workspace_mcp_servers: HashMap::new(),
+            workspace_custom_tools: HashMap::new(),
         }
     }
 }
 
 /// Read-only resolved view. Global settings are immutable after construction;
-/// runtime catalog state and workspace-scoped readiness are the only mutable layers.
+/// workspace-scoped readiness is the only mutable layer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedConfig {
     global: GlobalSettings,
     workspace: WorkspaceState,
-    pub runtime_catalog_state: RuntimeCatalogState,
 }
 
 impl ResolvedConfig {
     pub const FIELD_NAMES: &'static [&'static str] = &[
         "providers",
         "models",
-        "tool_catalog",
         "agents",
         "custom_tools",
         "mcp_servers",
@@ -119,14 +126,12 @@ impl ResolvedConfig {
         "contract",
         "paths",
         "workspace_tool_readiness",
+        "workspace_mcp_servers",
+        "workspace_custom_tools",
     ];
 
     pub fn new(global: GlobalSettings, workspace: WorkspaceState) -> Self {
-        Self {
-            global,
-            workspace,
-            runtime_catalog_state: RuntimeCatalogState::default(),
-        }
+        Self { global, workspace }
     }
 
     pub fn global(&self) -> &GlobalSettings {
@@ -137,16 +142,6 @@ impl ResolvedConfig {
         &self.workspace
     }
 
-    pub fn runtime_catalog_state(&self) -> &RuntimeCatalogState {
-        &self.runtime_catalog_state
-    }
-
-    pub fn runtime_catalog_state_mut(&mut self) -> &mut RuntimeCatalogState {
-        &mut self.runtime_catalog_state
-    }
-
-    // --- Global-layer read-only accessors ---
-
     pub fn providers(&self) -> &HashMap<String, ProviderDefinition> {
         &self.global.providers
     }
@@ -155,20 +150,74 @@ impl ResolvedConfig {
         &self.global.models
     }
 
-    pub fn tool_catalog(&self) -> &HashMap<String, ToolCatalogEntry> {
-        &self.global.tool_catalog
-    }
-
     pub fn agents(&self) -> &HashMap<String, AgentProfile> {
         &self.global.agents
     }
 
-    pub fn custom_tools(&self) -> &[CustomToolDefinition] {
+    pub fn global_custom_tools(&self) -> &[CustomToolDefinition] {
         &self.global.custom_tools
     }
 
-    pub fn mcp_servers(&self) -> &HashMap<String, McpServerDefinition> {
+    pub fn workspace_custom_tools(&self) -> &HashMap<String, CustomToolDefinition> {
+        &self.workspace.workspace_custom_tools
+    }
+
+    /// Merged custom tools (workspace wins on name).
+    pub fn custom_tools(&self) -> Vec<CustomToolDefinition> {
+        let mut map: HashMap<String, CustomToolDefinition> = HashMap::new();
+        for tool in &self.global.custom_tools {
+            map.insert(tool.name.clone(), tool.clone());
+        }
+        for (name, tool) in &self.workspace.workspace_custom_tools {
+            map.insert(name.clone(), tool.clone());
+        }
+        let mut out: Vec<_> = map.into_values().collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    pub fn global_mcp_servers(&self) -> &HashMap<String, McpServerDefinition> {
         &self.global.mcp_servers
+    }
+
+    pub fn workspace_mcp_servers(&self) -> &HashMap<String, McpServerDefinition> {
+        &self.workspace.workspace_mcp_servers
+    }
+
+    /// Merged MCP servers (workspace wins on id).
+    pub fn mcp_servers(&self) -> HashMap<String, McpServerDefinition> {
+        let mut map = self.global.mcp_servers.clone();
+        for (id, def) in &self.workspace.workspace_mcp_servers {
+            map.insert(id.clone(), def.clone());
+        }
+        map
+    }
+
+    pub fn mcp_origin(&self, server_id: &str) -> Option<ToolOrigin> {
+        if self.workspace.workspace_mcp_servers.contains_key(server_id) {
+            Some(ToolOrigin::Workspace)
+        } else if self.global.mcp_servers.contains_key(server_id) {
+            Some(ToolOrigin::Global)
+        } else {
+            None
+        }
+    }
+
+    pub fn custom_origin(&self, name: &str) -> Option<ToolOrigin> {
+        if self.workspace.workspace_custom_tools.contains_key(name) {
+            Some(ToolOrigin::Workspace)
+        } else if self.global.custom_tools.iter().any(|t| t.name == name) {
+            Some(ToolOrigin::Global)
+        } else {
+            None
+        }
+    }
+
+    pub fn mcp_pool_key(&self, server_id: &str) -> String {
+        match self.mcp_origin(server_id) {
+            Some(ToolOrigin::Workspace) => format!("workspace:{server_id}"),
+            _ => format!("global:{server_id}"),
+        }
     }
 
     pub fn log(&self) -> &LogSettings {
@@ -279,6 +328,5 @@ mod tests {
         );
         assert_eq!(resolved.contract(), "# contract");
         assert_eq!(resolved.paths().sessions_db, workspace.paths.sessions_db);
-        assert!(resolved.runtime_catalog_state.readiness.is_empty());
     }
 }

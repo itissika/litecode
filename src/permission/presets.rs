@@ -1,4 +1,6 @@
-use crate::config::global_db::tools::{core_configurable_tools, optional_builtin_ids};
+use crate::config::global_db::tools::{
+    core_configurable_tools, network_core_tools, optional_builtin_ids,
+};
 use crate::config::schema::ToolPreset;
 
 use super::action::PermissionAction;
@@ -14,7 +16,10 @@ pub fn binding_for_tool(tool_id: &str, preset: ToolPreset) -> (ToolPolicy, Bindi
 
 pub fn apply_preset_to_tools(preset: ToolPreset) -> Vec<(String, ToolPolicy, BindingPathMode)> {
     let mut out = Vec::new();
-    for tool in core_configurable_tools() {
+    for tool in core_configurable_tools()
+        .iter()
+        .chain(network_core_tools().iter())
+    {
         let (policy, path_mode) = binding_for_tool(tool, preset);
         out.push(((*tool).to_string(), policy, path_mode));
     }

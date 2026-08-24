@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use common::bindings::binding_all_for;
 use litecode::config::global_db::{self, tools};
-use litecode::config::schema::{
-    AgentProfile, AgentToolBinding, InitScope, ToolCatalogEntry, ToolPreset, ToolReadiness,
-    ToolTier,
-};
+use litecode::config::schema::{AgentProfile, ToolPreset, ToolReadiness};
 use litecode::config::{
     ConfigManager, SettingsWriter, TurnGuard, WorkspaceState, init_workspace,
     workspace::{read_workspace_engines, workspace_engines_path, workspace_readiness_from_engines},
@@ -33,38 +30,31 @@ fn test_global_with_provider(dir: &TempDir) -> litecode::config::schema::GlobalS
     global
 }
 
-fn optional_ready_entry(id: &str, scope: InitScope) -> ToolCatalogEntry {
-    ToolCatalogEntry {
-        id: id.into(),
-        tier: ToolTier::Optional,
-        init_scope: scope,
-        catalog_enabled: true,
-    }
+#[test]
+fn seed_optional_builtins_are_engines_only() {
+    assert_eq!(
+        tools::optional_builtin_ids(),
+        &["code_search", "lsp"]
+    );
+    assert!(tools::is_core_tool("webfetch"));
+    assert!(tools::is_core_tool("websearch"));
 }
 
 #[test]
-fn seed_contains_four_optional_builtin_entries() {
-    let dir = TempDir::new().expect("dir");
-    let db = dir.path().join("litecode.db");
-    let settings = ConfigManager::load_global_from(&db).expect("seed");
-    for id in tools::optional_builtin_ids() {
-        let entry = settings
-            .tool_catalog
-            .get(*id)
-            .unwrap_or_else(|| panic!("missing optional catalog entry {id}"));
-        assert_eq!(entry.tier, ToolTier::Optional);
-        assert!(!entry.catalog_enabled);
-    }
-}
-
-#[test]
-fn gate_requires_engine_warmup_for_optional_builtin() {
+fn webfetch_list_requires_bind_not_warmup() {
     let dir = TempDir::new().expect("dir");
     let mut global = test_global_with_provider(&dir);
-    global.tool_catalog.insert(
-        "webfetch".into(),
-        optional_ready_entry("webfetch", InitScope::Global),
-    );
+    let resolved = ConfigManager::resolve(global.clone(), WorkspaceState::new("/tmp/gate"));
+    let engines = EngineManager::new();
+    let workspace_engines = WorkspaceEngines::new();
+    assert!(!should_include_in_llm_list(
+        &resolved,
+        "default",
+        "webfetch",
+        &engines,
+        &workspace_engines
+    ));
+
     global.agents.insert(
         "default".into(),
         AgentProfile {
@@ -75,18 +65,7 @@ fn gate_requires_engine_warmup_for_optional_builtin() {
             ..Default::default()
         },
     );
-    let mut resolved = ConfigManager::resolve(global, WorkspaceState::new("/tmp/gate"));
-    // Init global scope to mark webfetch ready in runtime_catalog_state
-    litecode::tool::catalog::init(&mut resolved, InitScope::Global);
-    let engines = EngineManager::new();
-    let workspace_engines = WorkspaceEngines::new();
-    assert!(!should_include_in_llm_list(
-        &resolved,
-        "default",
-        "webfetch",
-        &engines,
-        &workspace_engines
-    ));
+    let resolved = ConfigManager::resolve(global, WorkspaceState::new("/tmp/gate"));
     engines.reconcile(&resolved);
     assert!(should_include_in_llm_list(
         &resolved,
@@ -98,30 +77,16 @@ fn gate_requires_engine_warmup_for_optional_builtin() {
 }
 
 #[test]
-fn catalog_disable_stops_optional_engine() {
+fn network_core_engines_always_warmup() {
     let dir = TempDir::new().expect("dir");
-    let mut global = test_global_with_provider(&dir);
-    global.tool_catalog.insert(
-        "webfetch".into(),
-        optional_ready_entry("webfetch", InitScope::Global),
-    );
+    let global = test_global_with_provider(&dir);
     let workspace = WorkspaceState::new("/tmp/catalog-off");
-    let mut resolved = ConfigManager::resolve(global, workspace);
-    // Init global scope to mark webfetch ready in runtime_catalog_state
-    litecode::tool::catalog::init(&mut resolved, InitScope::Global);
+    let resolved = ConfigManager::resolve(global, workspace);
     let engines = EngineManager::new();
     engines.reconcile(&resolved);
     assert!(engines.is_warmed("webfetch", &resolved));
-
-    let mut global = resolved.global().clone();
-    global
-        .tool_catalog
-        .get_mut("webfetch")
-        .unwrap()
-        .catalog_enabled = false;
-    let disabled = litecode::config::resolve(global, resolved.workspace().clone());
-    engines.reconcile(&disabled);
-    assert!(!engines.is_warmed("webfetch", &disabled));
+    engines.stop_all();
+    assert!(!engines.is_warmed("webfetch", &resolved));
     assert_eq!(engines.state("webfetch"), Some(EngineWarmupState::Stopped));
 }
 
@@ -156,6 +121,8 @@ fn enable_code_search_engine_writes_engines_json_and_reload_restores_readiness()
             litecode::config::WorkspacePaths::for_workspace(&root, &id)
         },
         workspace_tool_readiness: workspace_readiness_from_engines(&root),
+        workspace_mcp_servers: Default::default(),
+        workspace_custom_tools: Default::default(),
     };
     let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
     let resolved = ConfigManager::resolve(writer.load_settings().expect("load"), workspace);
@@ -189,13 +156,6 @@ fn settings_reload_reconciles_engine_manager() {
     let dir = TempDir::new().expect("dir");
     let db = dir.path().join("litecode.db");
     let mut global = test_global_with_provider(&dir);
-    global.tool_catalog.insert(
-        "webfetch".into(),
-        ToolCatalogEntry {
-            catalog_enabled: false,
-            ..optional_ready_entry("webfetch", InitScope::Global)
-        },
-    );
     global
         .agents
         .get_mut("default")
@@ -230,14 +190,7 @@ fn settings_reload_reconciles_engine_manager() {
         &db,
     );
 
-    let mut catalog = writer.load_settings().expect("load").tool_catalog;
-    let mut webfetch = catalog.get("webfetch").cloned().expect("webfetch");
-    webfetch.catalog_enabled = true;
-    catalog.insert("webfetch".into(), webfetch);
-    writer
-        .write_tool_catalog(catalog, &workspace)
-        .expect("enable catalog");
-    // Global readiness is applied on settings reload (same path serve uses after PUT).
+    writer.write_log(litecode::config::schema::LogSettings { level: None }).expect("bump");
     runtime.reload_if_needed().expect("reload");
     assert!(
         runtime

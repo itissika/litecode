@@ -21,7 +21,7 @@ fn mock_command() -> (String, Vec<String>) {
 
 fn stdio_client() -> McpStdioClient {
     let (cmd, args) = mock_command();
-    McpStdioClient::new(&cmd, &args, &HashMap::new()).expect("spawn mock mcp server")
+    McpStdioClient::new(&cmd, &args, &HashMap::new(), None).expect("spawn mock mcp server")
 }
 
 fn mcp_client() -> McpClient {
@@ -35,6 +35,7 @@ fn mock_def() -> litecode::config::schema::McpServerDefinition {
         args,
         env: HashMap::new(),
         transport: litecode::config::schema::McpTransport::Stdio,
+        ..Default::default()
     }
 }
 
@@ -48,7 +49,9 @@ fn echo_tool(pool: Arc<McpConnectionPool>, cmd: &str, args: &[String]) -> McpToo
             command: cmd.to_string(),
             args: args.to_vec(),
             env: HashMap::new(),
+            cwd: None,
             pool,
+            timeout_secs: 60,
         },
     )
 }
@@ -167,13 +170,14 @@ async fn pool_restart_replaces_live_client() {
         args: args.clone(),
         env: HashMap::new(),
         transport: litecode::config::schema::McpTransport::Stdio,
+        ..Default::default()
     };
-    pool.start("mock", &def).await.expect("start");
+    pool.start("mock", &def, None).await.expect("start");
     let first = pool
         .get_or_create("mock", &cmd, &args, &HashMap::new())
         .await
         .expect("first");
-    pool.restart("mock", &def).await.expect("restart");
+    pool.restart("mock", &def, None).await.expect("restart");
     let second = pool
         .get_or_create("mock", &cmd, &args, &HashMap::new())
         .await
@@ -191,7 +195,7 @@ async fn pool_restart_replaces_live_client() {
 async fn turn_runtime_start_list_and_tool_call() {
     let pool = Arc::new(McpConnectionPool::new());
     let def = mock_def();
-    let tools = pool.start("mock", &def).await.expect("start");
+    let tools = pool.start("mock", &def, None).await.expect("start");
     assert!(
         tools.iter().any(|tool| tool.name == "echo"),
         "start must return tools/list schemas, got {tools:?}"
@@ -249,16 +253,14 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
     use litecode::config::TurnGuard;
     use litecode::config::resolved::{WorkspaceState, resolve};
     use litecode::config::schema::{
-        ADAPTER_OPENAI_RESPONSES, AgentProfile, AgentToolBinding, GlobalSettings, InitScope,
+        ADAPTER_OPENAI_RESPONSES, AgentProfile, AgentToolBinding, GlobalSettings,
         McpServerDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition,
-        ToolCatalogEntry, ToolTier,
     };
     use litecode::engines::WorkspaceEngines;
     use litecode::ide_base::IdeBaseHandle;
     use litecode::llm::provider_from_definition;
     use litecode::optional::EngineManager;
     use litecode::session::manager::SessionManager;
-    use litecode::tool::catalog::init;
     use litecode::tool::registry::build_tool_list;
 
     let (command, args) = mock_command();
@@ -270,15 +272,7 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
             args,
             env: HashMap::new(),
             transport: litecode::config::schema::McpTransport::Stdio,
-        },
-    );
-    global.tool_catalog.insert(
-        "mcp_mock".into(),
-        ToolCatalogEntry {
-            id: "mcp_mock".into(),
-            tier: ToolTier::Mcp,
-            init_scope: InitScope::Global,
-            catalog_enabled: true,
+            ..Default::default()
         },
     );
     let mut bindings = HashMap::new();
@@ -301,8 +295,7 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
     );
 
     let ws = tempfile::TempDir::new().expect("ws");
-    let mut resolved = resolve(global, WorkspaceState::new(ws.path()));
-    init(&mut resolved, InitScope::Global);
+    let resolved = resolve(global, WorkspaceState::new(ws.path()));
 
     let pool = Arc::new(McpConnectionPool::new());
     let workspace_engines = WorkspaceEngines::new();

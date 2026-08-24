@@ -14,6 +14,10 @@ pub fn core_configurable_tools() -> &'static [&'static str] {
     ]
 }
 
+pub fn network_core_tools() -> &'static [&'static str] {
+    &["webfetch", "websearch"]
+}
+
 pub fn core_none_tools() -> &'static [&'static str] {
     &["plan", "todo", "subagent_launch"]
 }
@@ -22,16 +26,19 @@ pub fn core_tool_ids() -> Vec<String> {
     core_configurable_tools()
         .iter()
         .chain(core_none_tools().iter())
+        .chain(network_core_tools().iter())
         .map(|s| (*s).to_string())
         .collect()
 }
 
 pub fn is_core_tool(id: &str) -> bool {
-    core_configurable_tools().contains(&id) || core_none_tools().contains(&id)
+    core_configurable_tools().contains(&id)
+        || core_none_tools().contains(&id)
+        || network_core_tools().contains(&id)
 }
 
 pub fn optional_builtin_ids() -> &'static [&'static str] {
-    &["webfetch", "websearch", "code_search", "lsp"]
+    &["code_search", "lsp"]
 }
 
 pub fn is_optional_builtin(id: &str) -> bool {
@@ -43,7 +50,7 @@ pub fn is_workspace_optional(id: &str) -> bool {
 }
 
 pub fn is_configurable_tool(id: &str) -> bool {
-    core_configurable_tools().contains(&id)
+    core_configurable_tools().contains(&id) || network_core_tools().contains(&id)
 }
 
 pub fn mcp_catalog_id(server_id: &str) -> String {

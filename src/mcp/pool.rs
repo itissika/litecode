@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,6 +54,8 @@ struct Entry {
     error: Option<String>,
     client: Option<Arc<Mutex<McpClient>>>,
     schemas: Vec<McpToolSchema>,
+    def: Option<McpServerDefinition>,
+    cwd: Option<PathBuf>,
 }
 
 impl Entry {
@@ -62,6 +65,8 @@ impl Entry {
             error: None,
             client: None,
             schemas: Vec::new(),
+            def: None,
+            cwd: None,
         }
     }
 
@@ -186,13 +191,18 @@ impl McpConnectionPool {
         .unwrap_or_default()
     }
 
-    /// Spawn (or reuse a live process) and handshake. Idempotent while Running.
-    /// Returns `tools/list` schemas used to instantiate LLM tools.
-    pub async fn start(&self, id: &str, def: &McpServerDefinition) -> Result<Vec<McpToolSchema>> {
+    /// Spawn (or reuse a live process) and handshake. Idempotent while Running
+    /// with the same definition and cwd; definition changes restart.
+    pub async fn start(
+        &self,
+        id: &str,
+        def: &McpServerDefinition,
+        cwd: Option<PathBuf>,
+    ) -> Result<Vec<McpToolSchema>> {
         let inner = Arc::clone(&self.inner);
         let id = id.to_string();
         let def = def.clone();
-        self.on_hub(async move { start_inner(&inner, &id, &def).await })
+        self.on_hub(async move { start_inner(&inner, &id, &def, cwd).await })
             .await?
     }
 
@@ -206,13 +216,18 @@ impl McpConnectionPool {
             .await;
     }
 
-    pub async fn restart(&self, id: &str, def: &McpServerDefinition) -> Result<Vec<McpToolSchema>> {
+    pub async fn restart(
+        &self,
+        id: &str,
+        def: &McpServerDefinition,
+        cwd: Option<PathBuf>,
+    ) -> Result<Vec<McpToolSchema>> {
         let inner = Arc::clone(&self.inner);
         let id = id.to_string();
         let def = def.clone();
         self.on_hub(async move {
             stop_inner(&inner, &id).await;
-            start_inner(&inner, &id, &def).await
+            start_inner(&inner, &id, &def, cwd).await
         })
         .await?
     }
@@ -241,8 +256,9 @@ impl McpConnectionPool {
             args: args.to_vec(),
             env: env.clone(),
             transport: crate::config::schema::McpTransport::Stdio,
+            ..Default::default()
         };
-        self.on_hub(async move { get_or_create_inner(&inner, &server_key, &def).await })
+        self.on_hub(async move { get_or_create_inner(&inner, &server_key, &def, None).await })
             .await?
     }
 
@@ -253,6 +269,7 @@ impl McpConnectionPool {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
+        cwd: Option<PathBuf>,
         tool_name: &str,
         input: serde_json::Value,
     ) -> Result<String> {
@@ -261,8 +278,9 @@ impl McpConnectionPool {
             args: args.to_vec(),
             env: env.clone(),
             transport: crate::config::schema::McpTransport::Stdio,
+            ..Default::default()
         };
-        let client = get_or_create_inner(&self.inner, server_key, &def).await?;
+        let client = get_or_create_inner(&self.inner, server_key, &def, cwd).await?;
         let mut guard = client.lock().await;
         if guard.needs_initialize() {
             guard.initialize().await?;
@@ -328,6 +346,7 @@ async fn start_inner(
     inner: &Inner,
     id: &str,
     def: &McpServerDefinition,
+    cwd: Option<PathBuf>,
 ) -> Result<Vec<McpToolSchema>> {
     if matches!(
         def.transport,
@@ -348,13 +367,16 @@ async fn start_inner(
             let entry = map.entry(id.to_string()).or_insert_with(Entry::stopped);
             match entry.status {
                 McpRunState::Running => {
-                    if let Some(client) = &entry.client {
+                    let same_def = entry.def.as_ref() == Some(def) && entry.cwd == cwd;
+                    if same_def && let Some(client) = &entry.client {
                         let alive = client.lock().await.is_alive().await;
                         if alive {
                             return Ok(entry.schemas.clone());
                         }
                     }
-                    *entry = Entry::stopped();
+                    drop(map);
+                    stop_inner(inner, id).await;
+                    continue;
                 }
                 McpRunState::Starting => {
                     drop(map);
@@ -367,6 +389,8 @@ async fn start_inner(
                         error: None,
                         client: None,
                         schemas: Vec::new(),
+                        def: Some(def.clone()),
+                        cwd: cwd.clone(),
                     };
                 }
             }
@@ -376,7 +400,7 @@ async fn start_inner(
 
     let handshake = tokio::time::timeout(
         START_TIMEOUT,
-        spawn_and_list(&def.command, &def.args, &def.env),
+        spawn_and_list(&def.command, &def.args, &def.env, cwd.as_deref()),
     )
     .await;
 
@@ -389,6 +413,8 @@ async fn start_inner(
                 error: None,
                 client: Some(Arc::new(Mutex::new(client))),
                 schemas: schemas.clone(),
+                def: Some(def.clone()),
+                cwd,
             };
             Ok(schemas)
         }
@@ -399,6 +425,8 @@ async fn start_inner(
                 error: Some(msg.clone()),
                 client: None,
                 schemas: Vec::new(),
+                def: Some(def.clone()),
+                cwd,
             };
             Err(LitecodeError::ToolExecution(msg))
         }
@@ -413,6 +441,8 @@ async fn start_inner(
                 error: Some(msg.clone()),
                 client: None,
                 schemas: Vec::new(),
+                def: Some(def.clone()),
+                cwd,
             };
             Err(LitecodeError::ToolExecution(msg))
         }
@@ -445,8 +475,9 @@ async fn get_or_create_inner(
     inner: &Inner,
     server_key: &str,
     def: &McpServerDefinition,
+    cwd: Option<PathBuf>,
 ) -> Result<Arc<Mutex<McpClient>>> {
-    start_inner(inner, server_key, def).await?;
+    start_inner(inner, server_key, def, cwd).await?;
     let map = inner.lock().await;
     let entry = map.get(server_key).ok_or_else(|| {
         LitecodeError::ToolExecution(format!("MCP server '{server_key}' is not available"))
@@ -460,8 +491,9 @@ async fn spawn_and_list(
     command: &str,
     args: &[String],
     env: &HashMap<String, String>,
+    cwd: Option<&std::path::Path>,
 ) -> Result<(McpClient, Vec<McpToolSchema>)> {
-    let mut client = McpClient::Stdio(McpStdioClient::new(command, args, env)?);
+    let mut client = McpClient::Stdio(McpStdioClient::new(command, args, env, cwd)?);
     let schemas = client.tool_schemas().await?;
     Ok((client, schemas))
 }

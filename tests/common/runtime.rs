@@ -6,11 +6,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use litecode::client_protocol::observer::NoopObserver;
-use litecode::config::global_db::tools::{core_configurable_tools, core_none_tools, core_tool_ids};
+use litecode::config::global_db::tools::{core_configurable_tools, core_none_tools};
 use litecode::config::resolved::{WorkspaceState, resolve};
-use litecode::config::schema::{
-    AgentProfile, AgentRole, GlobalSettings, InitScope, ToolCatalogEntry, ToolTier,
-};
+use litecode::config::schema::{AgentProfile, AgentRole, GlobalSettings};
 use litecode::config::workspace::set_runtime_paths;
 use litecode::config::{AgentConfig, ResolvedConfig, TurnGuard};
 use litecode::engines::WorkspaceEngines;
@@ -49,20 +47,6 @@ fn test_context_window() -> usize {
     TEST_CONTEXT_WINDOW.with(|c| c.get())
 }
 
-fn seed_core_catalog(global: &mut GlobalSettings) {
-    for id in core_tool_ids() {
-        global.tool_catalog.insert(
-            id.clone(),
-            ToolCatalogEntry {
-                id: id.clone(),
-                tier: ToolTier::Core,
-                init_scope: InitScope::None,
-                catalog_enabled: true,
-            },
-        );
-    }
-}
-
 fn seed_models(global: &mut GlobalSettings, context_window: usize) {
     insert_test_llm_registry(global, "http://127.0.0.1:9", "test-key", context_window);
 }
@@ -78,7 +62,6 @@ pub fn test_resolved_with_budget(
     context_window: usize,
 ) -> ResolvedConfig {
     let mut global = GlobalSettings::default();
-    seed_core_catalog(&mut global);
     seed_models(&mut global, context_window);
 
     let all_core = tool_names.is_empty() || tool_names.iter().any(|t| t == "*");

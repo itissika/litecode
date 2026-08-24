@@ -7,10 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use litecode::config::schema::{
-    AgentProfile, AgentToolBinding, InitScope, ToolCatalogEntry, ToolPreset, ToolReadiness,
-    ToolTier,
-};
+use litecode::config::schema::{AgentProfile, AgentToolBinding, ToolPreset};
 use litecode::config::workspace::write_lsp_init;
 use litecode::config::{ConfigManager, WorkspaceState, init_workspace};
 use litecode::engines::{EngineState, WorkspaceEngines};
@@ -58,15 +55,6 @@ fn clear_mock_ls_env() {
     }
 }
 
-fn optional_ready_entry(id: &str, scope: InitScope) -> ToolCatalogEntry {
-    ToolCatalogEntry {
-        id: id.into(),
-        tier: ToolTier::Optional,
-        init_scope: scope,
-        catalog_enabled: true,
-    }
-}
-
 fn seed_lsp_engines(root: &std::path::Path) {
     let ids: Vec<String> = detect_needed_server_commands(root)
         .iter()
@@ -81,10 +69,6 @@ fn workspace_with_lsp(root: &std::path::Path) -> litecode::config::resolved::Res
     std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap_or(());
     seed_lsp_engines(root);
     let mut global = litecode::config::schema::GlobalSettings::default();
-    global.tool_catalog.insert(
-        "lsp".into(),
-        optional_ready_entry("lsp", InitScope::Workspace),
-    );
     global.agents.insert(
         "default".into(),
         AgentProfile {
@@ -114,7 +98,7 @@ fn wait_lsp_warm_blocking(engines: &WorkspaceEngines) {
 }
 
 #[test]
-fn catalog_off_no_lsp_tool() {
+fn engines_json_off_no_lsp_tool() {
     let _guard = LSP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     clear_mock_ls_env();
     let dir = TempDir::new().unwrap();
@@ -123,13 +107,6 @@ fn catalog_off_no_lsp_tool() {
     std::fs::write(root.join("lib.rs"), "fn main() {}\n").unwrap();
 
     let mut global = litecode::config::schema::GlobalSettings::default();
-    global.tool_catalog.insert(
-        "lsp".into(),
-        ToolCatalogEntry {
-            catalog_enabled: false,
-            ..optional_ready_entry("lsp", InitScope::Workspace)
-        },
-    );
     global.agents.insert(
         "default".into(),
         AgentProfile {
@@ -1092,10 +1069,6 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
     // Real RA — do not set LITECODE_LSP_SERVERS mock override.
     seed_lsp_engines(root);
     let mut global = litecode::config::schema::GlobalSettings::default();
-    global.tool_catalog.insert(
-        "lsp".into(),
-        optional_ready_entry("lsp", InitScope::Workspace),
-    );
     global.agents.insert(
         "default".into(),
         AgentProfile {

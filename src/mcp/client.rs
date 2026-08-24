@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
@@ -16,13 +17,21 @@ pub struct McpStdioClient {
 }
 
 impl McpStdioClient {
-    pub fn new(command: &str, args: &[String], env: &HashMap<String, String>) -> Result<Self> {
+    pub fn new(
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+        cwd: Option<&Path>,
+    ) -> Result<Self> {
         let mut cmd = Command::new(command);
         cmd.args(args)
             .envs(env)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
 
         let mut child = cmd.spawn().map_err(|e| {
             LitecodeError::ToolExecution(format!("failed to spawn MCP server '{}': {}", command, e))

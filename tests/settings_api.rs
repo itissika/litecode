@@ -50,6 +50,8 @@ fn test_state(
         contract: String::new(),
         paths: WorkspacePaths::for_workspace(&project, &workspace_id),
         workspace_tool_readiness: Default::default(),
+        workspace_mcp_servers: Default::default(),
+        workspace_custom_tools: Default::default(),
     };
     let settings = ConfigManager::load_global_from(&global_db_path).expect("load seeded global");
     let resolved = ConfigManager::resolve(settings, workspace.clone());
@@ -471,7 +473,7 @@ fn disabled_binding_changes_tools_count_after_reload() {
 }
 
 #[tokio::test]
-async fn settings_catalog_write_blocked_during_turn() {
+async fn settings_custom_tool_write_blocked_during_turn() {
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");
     let db_path = db_dir.path().join("litecode.db");
@@ -483,10 +485,14 @@ async fn settings_catalog_write_blocked_during_turn() {
     turn_guard.begin_turn();
 
     let client = test_http_client();
-    let settings = ConfigManager::load_global_from(&db_path).unwrap();
     let resp = client
-        .put(format!("http://{addr}/api/settings/tool-catalog"))
-        .json(&serde_json::json!({ "tool_catalog": settings.tool_catalog }))
+        .put(format!("http://{addr}/api/settings/custom-tools/blocked"))
+        .json(&serde_json::json!({
+            "name": "blocked",
+            "command": "echo",
+            "args": [],
+            "schema": { "type": "object", "properties": {} }
+        }))
         .send()
         .await
         .expect("put");
@@ -623,7 +629,7 @@ async fn settings_put_models_replaces_registry_and_drops_removed() {
 }
 
 #[tokio::test]
-async fn settings_put_empty_catalog_wipe_returns_400() {
+async fn settings_put_empty_catalog_gone() {
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");
     let db_path = db_dir.path().join("litecode.db");
@@ -639,14 +645,7 @@ async fn settings_put_empty_catalog_wipe_returns_400() {
         .send()
         .await
         .expect("put");
-    assert_eq!(resp.status(), 400);
-    let body: Value = resp.json().await.expect("json");
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("refusing to wipe tool catalog")
-    );
+    assert_eq!(resp.status(), 404);
 }
 
 #[tokio::test]
@@ -926,6 +925,8 @@ async fn set_session_model_reloads_stale_catalog_after_model_write() {
         contract: String::new(),
         paths: paths.clone(),
         workspace_tool_readiness: Default::default(),
+        workspace_mcp_servers: Default::default(),
+        workspace_custom_tools: Default::default(),
     };
     let resolved = ConfigManager::resolve(settings, workspace.clone());
     let workspace_engines = Arc::new(WorkspaceEngines::new());
@@ -977,38 +978,30 @@ async fn set_session_model_reloads_stale_catalog_after_model_write() {
 }
 
 #[tokio::test]
-async fn settings_put_catalog_restores_missing_core_ok() {
+async fn settings_available_tools_includes_core() {
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");
     let db_path = db_dir.path().join("litecode.db");
     seed_global_db(&db_path);
-
-    let mut settings = ConfigManager::load_global_from(&db_path).unwrap();
-    settings.tool_catalog.remove("read");
-    global_db::import_into(&db_path, &settings).expect("corrupt catalog");
 
     let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
     let addr = spawn_server(state, web_dist).await;
     let client = test_http_client();
 
     let resp = client
-        .put(format!("http://{addr}/api/settings/tool-catalog"))
-        .json(&serde_json::json!({
-            "tool_catalog": {
-                "write": {
-                    "id": "write",
-                    "tier": "core",
-                    "init_scope": "none",
-                    "catalog_enabled": true
-                }
-            }
-        }))
+        .get(format!("http://{addr}/api/settings/available-tools"))
         .send()
         .await
-        .expect("put");
+        .expect("get");
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.expect("json");
-    assert!(body.get("error").is_none());
+    assert!(
+        body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == "read")
+    );
 }
 
 #[tokio::test]
@@ -1169,9 +1162,7 @@ async fn settings_put_agent_rejects_legacy_preset_field() {
 }
 
 #[tokio::test]
-async fn settings_put_agent_orphan_tool_binding_returns_400() {
-    use litecode::config::schema::AgentToolBinding;
-
+async fn settings_put_agent_unknown_tool_is_dropped() {
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");
     let db_path = db_dir.path().join("litecode.db");
@@ -1193,31 +1184,41 @@ async fn settings_put_agent_orphan_tool_binding_returns_400() {
         .send()
         .await
         .expect("put");
-    assert_eq!(resp.status(), 400);
-    let body: Value = resp.json().await.expect("json");
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("phantom-tool")
-    );
+    assert_eq!(resp.status(), 200);
+    let loaded = ConfigManager::load_global_from(&db_path).unwrap();
+    assert!(!loaded
+        .agents
+        .get("default")
+        .unwrap()
+        .tools
+        .contains_key("phantom-tool"));
 }
 
 #[tokio::test]
-async fn settings_put_agent_enabled_non_catalog_optional_returns_400() {
-    use litecode::config::schema::AgentToolBinding;
-
+async fn settings_put_agent_keeps_dormant_mcp_bind() {
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");
     let db_path = db_dir.path().join("litecode.db");
-    seed_global_db(&db_path);
+    let mut settings = default_test_global();
+    settings
+        .agents
+        .get_mut("default")
+        .unwrap()
+        .tools
+        .insert("mcp_dormant".into(), binding_all_for("mcp_dormant"));
+    write_global_db(&db_path, &settings);
 
     let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path.clone());
     let addr = spawn_server(state, web_dist).await;
     let client = test_http_client();
 
-    let settings = ConfigManager::load_global_from(&db_path).unwrap();
-    let mut profile = settings.agents.get("default").cloned().unwrap();
+    let mut profile = ConfigManager::load_global_from(&db_path)
+        .unwrap()
+        .agents
+        .get("default")
+        .cloned()
+        .unwrap();
+    profile.tools.remove("mcp_dormant");
     profile
         .tools
         .insert("webfetch".into(), binding_all_for("webfetch"));
@@ -1228,14 +1229,11 @@ async fn settings_put_agent_enabled_non_catalog_optional_returns_400() {
         .send()
         .await
         .expect("put");
-    assert_eq!(resp.status(), 400);
-    let body: Value = resp.json().await.expect("json");
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("catalog-ready")
-    );
+    assert_eq!(resp.status(), 200);
+    let loaded = ConfigManager::load_global_from(&db_path).unwrap();
+    let tools = &loaded.agents.get("default").unwrap().tools;
+    assert!(tools.get("mcp_dormant").is_some_and(|b| b.enabled));
+    assert!(tools.get("webfetch").is_some_and(|b| b.enabled));
 }
 
 #[tokio::test]
@@ -1318,7 +1316,7 @@ async fn settings_custom_tool_crud_enable_bind_execute_and_delete() {
     let addr = spawn_server(state, web_dist).await;
     let client = test_http_client();
     let custom_url = format!("http://{addr}/api/settings/custom-tools");
-    let catalog_url = format!("http://{addr}/api/settings/tool-catalog");
+    let available_url = format!("http://{addr}/api/settings/available-tools");
     let agent_url = format!("http://{addr}/api/settings/agents/default");
 
     let echo_schema = serde_json::json!({
@@ -1356,75 +1354,21 @@ async fn settings_custom_tool_crud_enable_bind_execute_and_delete() {
             .expect("put custom");
         assert!(put.status().is_success(), "put {id}: {}", put.status());
 
-        let catalog: Value = client
+        let available: Value = client
             .get(catalog_url)
             .send()
             .await
-            .expect("catalog")
+            .expect("available")
             .json()
             .await
-            .expect("catalog json");
-        assert_eq!(catalog["tool_catalog"][id]["tier"].as_str(), Some("custom"));
-        assert_eq!(
-            catalog["tool_catalog"][id]["catalog_enabled"].as_bool(),
-            Some(false)
-        );
-        assert_eq!(
-            catalog["tool_catalog"][id]["readiness"].as_str(),
-            Some("ready"),
-            "PUT custom-tools must auto-init global readiness"
-        );
-
-        // Reject agent bind before catalog enable.
-        let mut agent_early: Value = client
-            .get(agent_url)
-            .send()
-            .await
-            .expect("agent")
-            .json()
-            .await
-            .expect("agent json");
-        let mut early_tools = agent_early
-            .get("tools")
-            .and_then(|v| v.as_object())
-            .cloned()
-            .unwrap_or_default();
-        early_tools.insert(
-            id.into(),
-            serde_json::json!({
-                "enabled": true,
-                "policy": { "default": "allow", "default_id": "__default", "rules": [] },
-                "path_mode": "unrestricted",
-                "last_applied_preset": "ALL"
-            }),
-        );
-        agent_early["tools"] = Value::Object(early_tools);
-        agent_early.as_object_mut().unwrap().remove("ok");
-        let early = client
-            .put(agent_url)
-            .json(&agent_early)
-            .send()
-            .await
-            .expect("put agent early");
-        assert_eq!(
-            early.status(),
-            reqwest::StatusCode::BAD_REQUEST,
-            "enabled bind must fail while catalog_enabled=false"
-        );
-
-        let mut catalog_map = catalog["tool_catalog"].as_object().unwrap().clone();
-        let mut entry = catalog_map.get(id).unwrap().clone();
-        entry["catalog_enabled"] = serde_json::json!(true);
-        catalog_map.insert(id.into(), entry);
+            .expect("available json");
         assert!(
-            client
-                .put(catalog_url)
-                .json(&serde_json::json!({ "tool_catalog": catalog_map }))
-                .send()
-                .await
-                .expect("put catalog")
-                .status()
-                .is_success()
+            available["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["id"] == id && t["kind"] == "custom"),
+            "custom tool must appear in available-tools: {available}"
         );
 
         let mut agent: Value = client
@@ -1464,8 +1408,12 @@ async fn settings_custom_tool_crud_enable_bind_execute_and_delete() {
         );
 
         let settings = ConfigManager::load_global_from(db_path).unwrap();
-        let mut resolved = ConfigManager::resolve(settings, WorkspaceState::new(workspace));
-        litecode::tool::catalog::init(&mut resolved, litecode::config::schema::InitScope::Global);
+        let resolved = ConfigManager::resolve(
+            settings,
+            litecode::config::workspace::workspace_with_disk_readiness(&WorkspaceState::new(
+                workspace,
+            )),
+        );
         let provider = litecode::llm::provider_from_definition(&common::stub_test_provider_def(
             "http://127.0.0.1:9",
             "test-key",
@@ -1521,7 +1469,7 @@ async fn settings_custom_tool_crud_enable_bind_execute_and_delete() {
         register_enable_bind_execute(
             &client,
             &custom_url,
-            &catalog_url,
+            &available_url,
             &agent_url,
             &db_path,
             ws.path(),
@@ -1539,7 +1487,7 @@ async fn settings_custom_tool_crud_enable_bind_execute_and_delete() {
         register_enable_bind_execute(
             &client,
             &custom_url,
-            &catalog_url,
+            &available_url,
             &agent_url,
             &db_path,
             ws.path(),
@@ -1576,7 +1524,6 @@ async fn settings_custom_tool_crud_enable_bind_execute_and_delete() {
 
     let after = ConfigManager::load_global_from(&db_path).unwrap();
     assert!(!after.custom_tools.iter().any(|t| t.name == delete_id));
-    assert!(!after.tool_catalog.contains_key(delete_id));
     assert!(
         !after
             .agents
@@ -1701,8 +1648,6 @@ async fn settings_mcp_server_crud_catalog_and_stdio_probe() {
 
     let loaded = ConfigManager::load_global_from(&db_path).unwrap();
     assert!(loaded.mcp_servers.contains_key("mockecho"));
-    assert!(loaded.tool_catalog.contains_key("mcp_mockecho"));
-    assert_eq!(loaded.tool_catalog["mcp_mockecho"].catalog_enabled, false);
 
     let list: Value = client
         .get(format!("http://{addr}/api/settings/mcp-servers"))
@@ -1713,7 +1658,7 @@ async fn settings_mcp_server_crud_catalog_and_stdio_probe() {
         .await
         .expect("json");
     assert!(
-        list["mcp_servers"]
+        list["global"]
             .as_array()
             .unwrap()
             .iter()
@@ -1786,7 +1731,6 @@ async fn settings_mcp_server_crud_catalog_and_stdio_probe() {
     assert!(del.status().is_success());
     let after = ConfigManager::load_global_from(&db_path).unwrap();
     assert!(!after.mcp_servers.contains_key("mockecho"));
-    assert!(!after.tool_catalog.contains_key("mcp_mockecho"));
 }
 
 #[tokio::test]
@@ -1811,45 +1755,6 @@ async fn settings_mcp_server_rejects_builtin_id() {
 }
 
 #[tokio::test]
-async fn settings_put_catalog_orphan_custom_tier_returns_400() {
-    let ws = TempDir::new().expect("ws");
-    let db_dir = TempDir::new().expect("db");
-    let db_path = db_dir.path().join("litecode.db");
-    seed_global_db(&db_path);
-
-    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path.clone());
-    let addr = spawn_server(state, web_dist).await;
-    let client = test_http_client();
-
-    let catalog: Value = client
-        .get(format!("http://{addr}/api/settings/tool-catalog"))
-        .send()
-        .await
-        .expect("get")
-        .json()
-        .await
-        .expect("json");
-    let mut catalog_map = catalog["tool_catalog"].as_object().unwrap().clone();
-    catalog_map.insert(
-        "orphan_custom".into(),
-        serde_json::json!({
-            "id": "orphan_custom",
-            "tier": "custom",
-            "init_scope": "global",
-            "catalog_enabled": false
-        }),
-    );
-
-    let resp = client
-        .put(format!("http://{addr}/api/settings/tool-catalog"))
-        .json(&serde_json::json!({ "tool_catalog": catalog_map }))
-        .send()
-        .await
-        .expect("put");
-    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
 async fn settings_engine_enable_reflects_readiness_in_catalog_get() {
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");
@@ -1861,19 +1766,22 @@ async fn settings_engine_enable_reflects_readiness_in_catalog_get() {
     let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
     let addr = spawn_server(state, web_dist).await;
     let client = test_http_client();
-    let catalog_url = format!("http://{addr}/api/settings/tool-catalog");
+    let available_url = format!("http://{addr}/api/settings/available-tools");
 
     let get: Value = client
-        .get(&catalog_url)
+        .get(&available_url)
         .send()
         .await
         .expect("get")
         .json()
         .await
         .expect("json");
-    assert_eq!(
-        get["tool_catalog"]["code_search"]["readiness"].as_str(),
-        Some("ready")
+    assert!(
+        get["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == "code_search" && t["kind"] == "engine")
     );
 }
 
@@ -1890,7 +1798,7 @@ async fn settings_retrieval_engine_init_and_stop_use_engine_api() {
     let init_url = format!("http://{addr}/api/workspace/retrieval/init");
     let stop_url = format!("http://{addr}/api/workspace/retrieval/stop");
     let engines_url = format!("http://{addr}/api/workspace/engines");
-    let catalog_url = format!("http://{addr}/api/settings/tool-catalog");
+    let available_url = format!("http://{addr}/api/settings/available-tools");
 
     let init: Value = client
         .post(&init_url)
@@ -1903,23 +1811,21 @@ async fn settings_retrieval_engine_init_and_stop_use_engine_api() {
     assert!(init["ok"].as_bool().unwrap_or(false));
     assert_eq!(init["data"]["desired"], true);
 
-    let catalog_after_init: Value = client
-        .get(&catalog_url)
+    let available_after_init: Value = client
+        .get(&available_url)
         .send()
         .await
-        .expect("catalog get")
+        .expect("available get")
         .json()
         .await
-        .expect("catalog json");
-    assert_eq!(
-        catalog_after_init["tool_catalog"]["code_search"]["readiness"].as_str(),
-        Some("ready")
+        .expect("available json");
+    assert!(
+        available_after_init["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == "code_search")
     );
-    assert_eq!(
-        catalog_after_init["engines"]["code_search"]["desired"],
-        true
-    );
-    // readiness is configured intent from engines.json; Warm is independent.
 
     let stop: Value = client
         .post(&stop_url)
@@ -1942,17 +1848,20 @@ async fn settings_retrieval_engine_init_and_stop_use_engine_api() {
         .expect("engines json");
     assert_eq!(engines["data"]["engines"]["code_search"]["desired"], false);
 
-    let catalog_after_stop: Value = client
-        .get(&catalog_url)
+    let available_after_stop: Value = client
+        .get(&available_url)
         .send()
         .await
-        .expect("catalog get after stop")
+        .expect("available get after stop")
         .json()
         .await
-        .expect("catalog json");
-    assert_eq!(
-        catalog_after_stop["engines"]["code_search"]["desired"],
-        false
+        .expect("available json");
+    assert!(
+        !available_after_stop["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == "code_search")
     );
 }
 
@@ -2048,7 +1957,7 @@ async fn settings_lsp_stop_preserves_servers_and_clears_desired() {
     let addr = spawn_server(state, web_dist).await;
     let client = test_http_client();
     let stop_url = format!("http://{addr}/api/workspace/lsp/stop");
-    let catalog_url = format!("http://{addr}/api/settings/tool-catalog");
+    let available_url = format!("http://{addr}/api/settings/available-tools");
 
     let stop: Value = client
         .post(&stop_url)
@@ -2070,15 +1979,21 @@ async fn settings_lsp_stop_preserves_servers_and_clears_desired() {
         "lsp"
     ));
 
-    let catalog: Value = client
-        .get(&catalog_url)
+    let available: Value = client
+        .get(&available_url)
         .send()
         .await
-        .expect("catalog")
+        .expect("available")
         .json()
         .await
-        .expect("catalog json");
-    assert_eq!(catalog["engines"]["lsp"]["desired"], false);
+        .expect("available json");
+    assert!(
+        !available["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == "lsp")
+    );
 }
 
 #[tokio::test]

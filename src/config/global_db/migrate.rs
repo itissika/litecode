@@ -4,9 +4,15 @@ use crate::types::{LitecodeError, Result};
 
 const SCHEMA: &str = include_str!("schema.sql");
 
-/// Current schema epoch only. The old stepwise 001→005 chain is deleted;
-/// `user_version` is not a migration ladder — incompatible DBs must be deleted.
-pub const CURRENT_USER_VERSION: i32 = 5;
+/// Current schema epoch. v5→v6 drops `tool_catalog` in place.
+pub const CURRENT_USER_VERSION: i32 = 6;
+
+/// Epochs that `migrate()` can lift to current without archive-rebuild.
+pub const MIGRATABLE_FROM: &[i32] = &[5];
+
+pub fn can_migrate_in_place(version: i32) -> bool {
+    version == 0 || version == CURRENT_USER_VERSION || MIGRATABLE_FROM.contains(&version)
+}
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -17,22 +23,45 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         return Ok(());
     }
 
+    if version == 5 {
+        migrate_v5_to_v6(conn)?;
+        return Ok(());
+    }
+
     if version == CURRENT_USER_VERSION {
         ensure_agent_tools_allowed_tools_column(conn)?;
+        ensure_mcp_timeout_column(conn)?;
         return Ok(());
     }
 
     Err(LitecodeError::Config(format!(
-        "incompatible global DB user_version {version} (expected {CURRENT_USER_VERSION} or empty). \
+        "incompatible global DB user_version {version} (expected {CURRENT_USER_VERSION}, 5, or empty). \
          Schema is delete-and-rebuild only; `global_db::open` archives the old file and recreates."
     )))
 }
 
+fn migrate_v5_to_v6(conn: &Connection) -> Result<()> {
+    conn.execute_batch("DROP TABLE IF EXISTS tool_catalog;")?;
+    ensure_agent_tools_allowed_tools_column(conn)?;
+    ensure_mcp_timeout_column(conn)?;
+    conn.execute_batch(&format!("PRAGMA user_version = {CURRENT_USER_VERSION};"))?;
+    Ok(())
+}
+
+fn ensure_mcp_timeout_column(conn: &Connection) -> Result<()> {
+    let exists = conn
+        .prepare("SELECT 1 FROM pragma_table_info('mcp_servers') WHERE name = 'timeout'")?
+        .exists([])?;
+    if !exists {
+        conn.execute(
+            "ALTER TABLE mcp_servers ADD COLUMN timeout INTEGER NOT NULL DEFAULT 60",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 /// Extend the current schema in-place for additive agent binding metadata.
-///
-/// The global DB intentionally has no historical migration ladder: incompatible
-/// epochs are rebuilt. This column is additive and must instead be available to
-/// existing current-epoch databases without losing settings.
 fn ensure_agent_tools_allowed_tools_column(conn: &Connection) -> Result<()> {
     let exists = conn
         .prepare(
@@ -56,12 +85,6 @@ mod tests {
     #[test]
     fn config_global_db_migration_v0_to_current() {
         let conn = Connection::open_in_memory().unwrap();
-        assert_eq!(
-            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i32>(0))
-                .unwrap(),
-            0
-        );
-
         migrate(&conn).unwrap();
 
         assert_eq!(
@@ -70,14 +93,14 @@ mod tests {
             CURRENT_USER_VERSION
         );
 
-        let col: i64 = conn
+        let catalog: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name='allowed_subagents_json'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tool_catalog'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(col, 1);
+        assert_eq!(catalog, 0);
 
         let col: i64 = conn
             .query_row(
@@ -87,42 +110,66 @@ mod tests {
             )
             .unwrap();
         assert_eq!(col, 1);
+    }
 
-        let col: i64 = conn
+    #[test]
+    fn v5_drops_tool_catalog_in_place() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE tool_catalog (
+                id TEXT PRIMARY KEY,
+                tier TEXT NOT NULL,
+                init_scope TEXT NOT NULL,
+                catalog_enabled INTEGER NOT NULL
+            );
+            CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                role TEXT NOT NULL,
+                model_ref TEXT NOT NULL,
+                system_prompt TEXT NOT NULL DEFAULT '',
+                temperature REAL NOT NULL DEFAULT 0.7,
+                max_steps INTEGER NOT NULL DEFAULT 50,
+                description TEXT NOT NULL DEFAULT '',
+                allowed_subagents_json TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE agent_tools (
+                agent_id TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                policy_json TEXT NOT NULL DEFAULT '{}',
+                path_mode TEXT NOT NULL DEFAULT 'unrestricted',
+                last_applied_preset TEXT,
+                allowed_tools_json TEXT,
+                PRIMARY KEY (agent_id, tool_id)
+            );
+            INSERT INTO tool_catalog (id, tier, init_scope, catalog_enabled)
+                VALUES ('read', 'core', 'none', 1);
+            INSERT INTO agents (id, role, model_ref) VALUES ('default', 'primary', '');
+            PRAGMA user_version = 5;
+            ",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i32>(0))
+                .unwrap(),
+            6
+        );
+        let catalog: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='config_json'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tool_catalog'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(col, 1);
-
-        let col: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('providers') WHERE name='adapter_id'",
-                [],
-                |row| row.get(0),
-            )
+        assert_eq!(catalog, 0);
+        let agents: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(col, 1);
-
-        let readiness: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('tool_catalog') WHERE name='readiness'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(readiness, 0);
-
-        let description: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('custom_tools') WHERE name='description'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(description, 1);
+        assert_eq!(agents, 1);
     }
 
     #[test]
@@ -157,7 +204,7 @@ mod tests {
     #[test]
     fn config_global_db_wrong_user_version_fails_closed() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA user_version = 6;").unwrap();
+        conn.execute_batch("PRAGMA user_version = 4;").unwrap();
 
         let err = migrate(&conn).expect_err("wrong version must fail");
         let msg = err.to_string();

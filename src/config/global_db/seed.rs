@@ -1,35 +1,15 @@
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::config::schema::{AgentRole, InitScope, ToolPreset, ToolTier};
+use crate::config::schema::{AgentRole, ToolPreset};
 use crate::types::Result;
 
 use super::store;
-use super::tools::{core_configurable_tools, core_none_tools, optional_builtin_ids};
+use super::tools::{core_configurable_tools, core_none_tools};
 
-pub const SEED_REVISION: &str = "9";
-
-/// Core built-in tools: always ready + catalog_enabled (CONFIG §2.4).
-const CORE_CATALOG: &[(&str, ToolTier)] = &[
-    ("read", ToolTier::Core),
-    ("write", ToolTier::Core),
-    ("edit", ToolTier::Core),
-    ("grep", ToolTier::Core),
-    ("glob", ToolTier::Core),
-    ("bash", ToolTier::Core),
-    ("kill_shell", ToolTier::Core),
-    ("wait_shell", ToolTier::Core),
-    ("plan", ToolTier::Core),
-    ("todo", ToolTier::Core),
-    ("subagent_launch", ToolTier::Core),
-    ("session_search", ToolTier::Core),
-];
+pub const SEED_REVISION: &str = "10";
 
 pub fn seed(conn: &Connection) -> Result<()> {
-    // No fake providers/models — LLM rows are user-configured via Settings.
-    seed_tool_catalog(conn)?;
-    // Removed in seed_revision 8: background bash output is file-backed via `read`.
     let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);
-    let _ = conn.execute("DELETE FROM tool_catalog WHERE id = 'bash_output'", []);
     seed_agents(conn)?;
     seed_default_agent_bindings(conn)?;
 
@@ -42,25 +22,7 @@ pub fn seed(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-const OPTIONAL_CATALOG: &[(&str, InitScope)] = &[
-    ("webfetch", InitScope::Global),
-    ("websearch", InitScope::Global),
-    ("code_search", InitScope::Workspace),
-    ("lsp", InitScope::Workspace),
-];
-
-fn seed_tool_catalog(conn: &Connection) -> Result<()> {
-    for (id, tier) in CORE_CATALOG {
-        store::upsert_catalog_entry(conn, id, *tier, InitScope::None, true)?;
-    }
-    for (id, init_scope) in OPTIONAL_CATALOG {
-        store::upsert_catalog_entry(conn, id, ToolTier::Optional, *init_scope, false)?;
-    }
-    Ok(())
-}
-
 fn seed_agents(conn: &Connection) -> Result<()> {
-    // model_ref empty until a structurally-ready model exists.
     store::upsert_agent(
         conn,
         "default",
@@ -114,45 +76,17 @@ fn seed_default_agent_bindings(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn ensure_core_catalog_entries(conn: &Connection) -> Result<()> {
-    for (id, tier) in CORE_CATALOG {
-        let exists = conn
-            .query_row(
-                "SELECT 1 FROM tool_catalog WHERE id = ?1",
-                [*id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if !exists {
-            store::upsert_catalog_entry(conn, id, *tier, InitScope::None, true)?;
-        }
-    }
-    Ok(())
-}
-
 pub fn needs_seed(conn: &Connection) -> Result<bool> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
     Ok(count == 0)
 }
 
-/// Repair partial DB state: agents exist but catalog was wiped (e.g. empty PUT).
-pub fn ensure_core_catalog(conn: &Connection) -> Result<()> {
-    // seed_revision 8: drop obsolete bash_output (file-backed bg output via read).
+/// Repair partial DB: keep default-agent core bindings; do not overwrite user disables.
+pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
     let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);
-    let _ = conn.execute("DELETE FROM tool_catalog WHERE id = 'bash_output'", []);
-
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM tool_catalog", [], |row| row.get(0))?;
-    if count == 0 {
-        seed_tool_catalog(conn)?;
-    } else {
-        ensure_core_catalog_entries(conn)?;
-    }
-    ensure_default_core_bindings(conn)?;
-    Ok(())
+    ensure_default_core_bindings(conn)
 }
 
-/// Insert missing default-agent bindings for core tools (does not overwrite user disables).
 fn ensure_default_core_bindings(conn: &Connection) -> Result<()> {
     let default_exists = conn
         .query_row("SELECT 1 FROM agents WHERE id = 'default'", [], |_| Ok(()))
@@ -202,30 +136,6 @@ fn ensure_default_core_bindings(conn: &Connection) -> Result<()> {
             };
             store::upsert_agent_tool(conn, "default", tool, &binding)?;
         }
-    }
-    Ok(())
-}
-
-/// Add missing optional builtin catalog rows on a current-schema DB (not schema migration).
-pub fn ensure_optional_catalog(conn: &Connection) -> Result<()> {
-    for id in optional_builtin_ids() {
-        let exists = conn
-            .query_row(
-                "SELECT 1 FROM tool_catalog WHERE id = ?1",
-                [*id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if exists {
-            continue;
-        }
-        let init_scope = match *id {
-            "webfetch" | "websearch" => InitScope::Global,
-            "code_search" | "lsp" => InitScope::Workspace,
-            _ => InitScope::None,
-        };
-        store::upsert_catalog_entry(conn, id, ToolTier::Optional, init_scope, false)?;
     }
     Ok(())
 }

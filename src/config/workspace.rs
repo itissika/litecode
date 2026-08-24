@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::global_db::tools::is_workspace_optional;
 use super::resolved::{WorkspacePaths, WorkspaceState};
-use super::schema::ToolReadiness;
+use super::schema::{CustomToolDefinition, McpServerDefinition, ToolReadiness};
 
 const CLAUDE_MD_SHELL: &str =
     "# Litecode workspace contract\n\n<!-- Add project instructions here -->\n";
@@ -78,7 +78,144 @@ pub fn write_workspace_engines(workspace_root: &Path, file: &WorkspaceEnginesFil
     file.version = WORKSPACE_ENGINES_VERSION;
     let body =
         serde_json::to_string_pretty(&file).map_err(|e| LitecodeError::Config(e.to_string()))?;
-    std::fs::write(&path, body).map_err(|e| LitecodeError::Config(e.to_string()))
+    std::fs::write(&path, body).map_err(|e| LitecodeError::Config(e.to_string()))?;
+    Ok(())
+}
+
+const WORKSPACE_DEFS_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceMcpFile {
+    pub version: u32,
+    #[serde(default)]
+    pub servers: std::collections::HashMap<String, McpServerDefinition>,
+}
+
+impl Default for WorkspaceMcpFile {
+    fn default() -> Self {
+        Self {
+            version: WORKSPACE_DEFS_VERSION,
+            servers: std::collections::HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceCustomToolsFile {
+    pub version: u32,
+    #[serde(default)]
+    pub tools: std::collections::HashMap<String, CustomToolDefinition>,
+}
+
+impl Default for WorkspaceCustomToolsFile {
+    fn default() -> Self {
+        Self {
+            version: WORKSPACE_DEFS_VERSION,
+            tools: std::collections::HashMap::new(),
+        }
+    }
+}
+
+pub fn workspace_mcp_path(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(".litecode").join("mcp.json")
+}
+
+pub fn workspace_custom_tools_path(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(".litecode").join("custom_tools.json")
+}
+
+fn read_json_file<T: Default + serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+    if !path.exists() {
+        return Ok(T::default());
+    }
+    let content =
+        std::fs::read_to_string(path).map_err(|e| LitecodeError::Config(e.to_string()))?;
+    serde_json::from_str(&content)
+        .map_err(|e| LitecodeError::Config(format!("parse {}: {e}", path.display())))
+}
+
+fn write_json_file<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| LitecodeError::Config(e.to_string()))?;
+    }
+    let body =
+        serde_json::to_string_pretty(value).map_err(|e| LitecodeError::Config(e.to_string()))?;
+    std::fs::write(path, body).map_err(|e| LitecodeError::Config(e.to_string()))
+}
+
+pub fn read_workspace_mcp(workspace_root: &Path) -> Result<WorkspaceMcpFile> {
+    let mut file: WorkspaceMcpFile = read_json_file(&workspace_mcp_path(workspace_root))?;
+    file.version = WORKSPACE_DEFS_VERSION;
+    Ok(file)
+}
+
+pub fn write_workspace_mcp(workspace_root: &Path, file: &WorkspaceMcpFile) -> Result<()> {
+    let mut file = file.clone();
+    file.version = WORKSPACE_DEFS_VERSION;
+    write_json_file(&workspace_mcp_path(workspace_root), &file)
+}
+
+pub fn read_workspace_custom_tools(workspace_root: &Path) -> Result<WorkspaceCustomToolsFile> {
+    let mut file: WorkspaceCustomToolsFile =
+        read_json_file(&workspace_custom_tools_path(workspace_root))?;
+    file.version = WORKSPACE_DEFS_VERSION;
+    Ok(file)
+}
+
+pub fn write_workspace_custom_tools(
+    workspace_root: &Path,
+    file: &WorkspaceCustomToolsFile,
+) -> Result<()> {
+    let mut file = file.clone();
+    file.version = WORKSPACE_DEFS_VERSION;
+    write_json_file(&workspace_custom_tools_path(workspace_root), &file)
+}
+
+pub fn upsert_workspace_mcp(
+    workspace_root: &Path,
+    id: &str,
+    def: McpServerDefinition,
+) -> Result<()> {
+    let mut file = read_workspace_mcp(workspace_root)?;
+    file.servers.insert(id.to_string(), def);
+    write_workspace_mcp(workspace_root, &file)
+}
+
+pub fn delete_workspace_mcp(workspace_root: &Path, id: &str) -> Result<bool> {
+    let mut file = read_workspace_mcp(workspace_root)?;
+    let removed = file.servers.remove(id).is_some();
+    if removed {
+        write_workspace_mcp(workspace_root, &file)?;
+    }
+    Ok(removed)
+}
+
+pub fn upsert_workspace_custom_tool(
+    workspace_root: &Path,
+    def: CustomToolDefinition,
+) -> Result<()> {
+    let mut file = read_workspace_custom_tools(workspace_root)?;
+    file.tools.insert(def.name.clone(), def);
+    write_workspace_custom_tools(workspace_root, &file)
+}
+
+pub fn delete_workspace_custom_tool(workspace_root: &Path, id: &str) -> Result<bool> {
+    let mut file = read_workspace_custom_tools(workspace_root)?;
+    let removed = file.tools.remove(id).is_some();
+    if removed {
+        write_workspace_custom_tools(workspace_root, &file)?;
+    }
+    Ok(removed)
+}
+
+pub fn load_workspace_defs(workspace_root: &Path) -> Result<(
+    std::collections::HashMap<String, McpServerDefinition>,
+    std::collections::HashMap<String, CustomToolDefinition>,
+)> {
+    Ok((
+        read_workspace_mcp(workspace_root)?.servers,
+        read_workspace_custom_tools(workspace_root)?.tools,
+    ))
 }
 
 pub fn workspace_engine_desired(workspace_root: &Path, id: &str) -> bool {
@@ -173,6 +310,10 @@ pub fn workspace_with_disk_readiness(workspace: &WorkspaceState) -> WorkspaceSta
     let mut workspace = workspace.clone();
     workspace.workspace_tool_readiness =
         workspace_readiness_from_engines(&workspace.workspace_root);
+    if let Ok((mcp, custom)) = load_workspace_defs(&workspace.workspace_root) {
+        workspace.workspace_mcp_servers = mcp;
+        workspace.workspace_custom_tools = custom;
+    }
     workspace
 }
 
@@ -282,12 +423,16 @@ pub fn load_workspace_state(override_path: Option<&Path>) -> Result<WorkspaceSta
     std::fs::create_dir_all(&paths.snapshots_dir)
         .map_err(|e| LitecodeError::Config(format!("create snapshots dir: {e}")))?;
     let workspace_tool_readiness = workspace_readiness_from_engines(&workspace_root);
+    let (workspace_mcp_servers, workspace_custom_tools) =
+        load_workspace_defs(&workspace_root).unwrap_or_default();
     let state = WorkspaceState {
         workspace_root: workspace_root.clone(),
         workspace_id,
         contract: read_contract(&workspace_root),
         paths: paths.clone(),
         workspace_tool_readiness,
+        workspace_mcp_servers,
+        workspace_custom_tools,
     };
     match snapshot::maintain_snapshots(&paths.snapshots_dir, &paths.sessions_db) {
         Ok(report) if report.orphans_removed > 0 || report.stale_removed > 0 => {

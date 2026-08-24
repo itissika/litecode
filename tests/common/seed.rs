@@ -7,11 +7,11 @@ use litecode::optional::EngineManager;
 use tempfile::TempDir;
 
 use litecode::config::ConfigManager;
-use litecode::config::global_db::{self, tools};
+use litecode::config::global_db;
 use litecode::config::schema::{
-    ADAPTER_OPENAI_RESPONSES, CustomToolDefinition, GlobalSettings, InitScope, McpServerDefinition,
+    ADAPTER_OPENAI_RESPONSES, CustomToolDefinition, GlobalSettings, McpServerDefinition,
     ModelAdapterConfig, ModelCapability, ModelDefinition, ProviderAuth, ProviderConnectionConfig,
-    ProviderDefinition, ToolCatalogEntry, ToolSchema, ToolTier,
+    ProviderDefinition, ToolSchema,
 };
 
 /// Default provider id for integration test fixtures.
@@ -154,7 +154,7 @@ pub fn default_test_global() -> GlobalSettings {
     settings
 }
 
-/// Build global settings with a custom tool catalog entry and default-agent binding.
+/// Build global settings with a custom tool and default-agent binding.
 #[allow(dead_code)] // kept for removed-suite / future fixtures
 pub fn build_global_with_custom_tool(
     name: &str,
@@ -172,15 +172,6 @@ pub fn build_global_with_custom_tool(
         timeout: 120,
     };
     settings.custom_tools.push(def);
-    settings.tool_catalog.insert(
-        name.into(),
-        ToolCatalogEntry {
-            id: name.into(),
-            tier: ToolTier::Custom,
-            init_scope: InitScope::Global,
-            catalog_enabled: false,
-        },
-    );
     if let Some(agent) = settings.agents.get_mut("default") {
         agent
             .tools
@@ -189,7 +180,7 @@ pub fn build_global_with_custom_tool(
     settings
 }
 
-/// Build global settings with an MCP server and matching catalog entry.
+/// Build global settings with an MCP server.
 #[allow(dead_code)] // MCP productization pending; seed helper retained
 pub fn build_global_with_mcp_server(id: &str, command: &str, args: Vec<String>) -> GlobalSettings {
     let mut settings = default_test_global();
@@ -200,16 +191,7 @@ pub fn build_global_with_mcp_server(id: &str, command: &str, args: Vec<String>) 
             args,
             env: Default::default(),
             transport: Default::default(),
-        },
-    );
-    let catalog_id = tools::mcp_catalog_id(id);
-    settings.tool_catalog.insert(
-        catalog_id.clone(),
-        ToolCatalogEntry {
-            id: catalog_id,
-            tier: ToolTier::Mcp,
-            init_scope: InitScope::Global,
-            catalog_enabled: false,
+            ..Default::default()
         },
     );
     settings

@@ -6,9 +6,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::config::schema::{
     AgentProfile, AgentRole, AgentToolBinding, AuthSettings, CustomToolDefinition, GlobalSettings,
-    InitScope, LogSettings, McpServerDefinition, McpTransport, ModelAdapterConfig, ModelDefinition,
-    ProviderConnectionConfig, ProviderDefinition, ToolCatalogEntry, ToolPreset, ToolTier,
-    WebSearchSettings,
+    LogSettings, McpServerDefinition, McpTransport, ModelAdapterConfig, ModelDefinition,
+    ProviderConnectionConfig, ProviderDefinition, ToolPreset, WebSearchSettings,
 };
 use crate::types::{LitecodeError, Result};
 
@@ -75,7 +74,7 @@ pub fn open(path: &Path) -> Result<Connection> {
 
     if path.is_file() {
         let old = peek_user_version(path)?;
-        if old != 0 && old != migrate::CURRENT_USER_VERSION {
+        if old != 0 && !migrate::can_migrate_in_place(old) {
             rebuild_incompatible_db(path, old)?;
         }
     }
@@ -184,9 +183,7 @@ pub fn load_global_from_path(path: &Path) -> Result<GlobalSettings> {
         if seed::needs_seed(conn)? {
             seed::seed(conn)?;
         } else {
-            // Idempotent catalog row repair on a *current* schema DB — not schema migration.
-            seed::ensure_core_catalog(conn)?;
-            seed::ensure_optional_catalog(conn)?;
+            seed::ensure_core_bindings(conn)?;
         }
         store::load(conn)
     })
@@ -218,7 +215,6 @@ pub mod store {
         Ok(GlobalSettings {
             providers: load_providers(conn)?,
             models: load_models(conn)?,
-            tool_catalog: load_tool_catalog(conn)?,
             agents: load_agents(conn)?,
             custom_tools: load_custom_tools(conn)?,
             mcp_servers: load_mcp_servers(conn)?,
@@ -234,7 +230,6 @@ pub mod store {
         tx.execute("DELETE FROM agents", [])?;
         tx.execute("DELETE FROM custom_tools", [])?;
         tx.execute("DELETE FROM mcp_servers", [])?;
-        tx.execute("DELETE FROM tool_catalog", [])?;
         tx.execute("DELETE FROM models", [])?;
         tx.execute("DELETE FROM providers", [])?;
 
@@ -243,15 +238,6 @@ pub mod store {
         }
         for model in settings.models.values() {
             upsert_model(&tx, model)?;
-        }
-        for entry in settings.tool_catalog.values() {
-            upsert_catalog_entry(
-                &tx,
-                &entry.id,
-                entry.tier,
-                entry.init_scope,
-                entry.catalog_enabled,
-            )?;
         }
         for (id, profile) in &settings.agents {
             upsert_agent(
@@ -379,48 +365,6 @@ pub mod store {
                 model.provider_ref,
                 model.label,
                 config_json
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn load_tool_catalog(conn: &Connection) -> Result<HashMap<String, ToolCatalogEntry>> {
-        let mut stmt =
-            conn.prepare("SELECT id, tier, init_scope, catalog_enabled FROM tool_catalog")?;
-        let mut rows = stmt.query([])?;
-        let mut map = HashMap::new();
-        while let Some(row) = rows.next()? {
-            let id: String = row.get(0)?;
-            let entry = ToolCatalogEntry {
-                id: id.clone(),
-                tier: parse_tier(row.get(1)?)?,
-                init_scope: parse_init_scope(row.get(2)?)?,
-                catalog_enabled: row.get::<_, i64>(3)? != 0,
-            };
-            map.insert(id, entry);
-        }
-        Ok(map)
-    }
-
-    pub fn upsert_catalog_entry(
-        conn: &Connection,
-        id: &str,
-        tier: ToolTier,
-        init_scope: InitScope,
-        catalog_enabled: bool,
-    ) -> Result<()> {
-        conn.execute(
-            "INSERT INTO tool_catalog (id, tier, init_scope, catalog_enabled)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(id) DO UPDATE SET
-               tier = excluded.tier,
-               init_scope = excluded.init_scope,
-               catalog_enabled = excluded.catalog_enabled",
-            params![
-                id,
-                tier_to_str(tier),
-                init_scope_to_str(init_scope),
-                catalog_enabled as i64
             ],
         )?;
         Ok(())
@@ -633,13 +577,14 @@ pub mod store {
 
     fn load_mcp_servers(conn: &Connection) -> Result<HashMap<String, McpServerDefinition>> {
         let mut stmt = conn
-            .prepare("SELECT id, command, args_json, env_json, transport_json FROM mcp_servers")?;
+            .prepare("SELECT id, command, args_json, env_json, transport_json, timeout FROM mcp_servers")?;
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
             let args_json: String = row.get(2)?;
             let env_json: String = row.get(3)?;
             let transport_json: String = row.get(4)?;
             let transport: McpTransport = serde_json::from_str(&transport_json).unwrap_or_default();
+            let timeout: i64 = row.get(5)?;
             Ok((
                 id.clone(),
                 McpServerDefinition {
@@ -659,6 +604,11 @@ pub mod store {
                         )
                     })?,
                     transport,
+                    timeout: if timeout <= 0 {
+                        crate::config::schema::DEFAULT_MCP_TOOL_TIMEOUT_SECS
+                    } else {
+                        timeout as u64
+                    },
                 },
             ))
         })?;
@@ -675,14 +625,22 @@ pub mod store {
         let env_json = serde_json::to_string(&mcp.env)?;
         let transport_json = serde_json::to_string(&mcp.transport)?;
         conn.execute(
-            "INSERT INTO mcp_servers (id, command, args_json, env_json, transport_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO mcp_servers (id, command, args_json, env_json, transport_json, timeout)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(id) DO UPDATE SET
                command = excluded.command,
                args_json = excluded.args_json,
                env_json = excluded.env_json,
-               transport_json = excluded.transport_json",
-            params![id, mcp.command, args_json, env_json, transport_json],
+               transport_json = excluded.transport_json,
+               timeout = excluded.timeout",
+            params![
+                id,
+                mcp.command,
+                args_json,
+                env_json,
+                transport_json,
+                mcp.call_timeout_secs() as i64
+            ],
         )?;
         Ok(())
     }
@@ -751,42 +709,6 @@ pub mod store {
             )?;
         }
         Ok(())
-    }
-
-    fn tier_to_str(tier: ToolTier) -> &'static str {
-        match tier {
-            ToolTier::Core => "core",
-            ToolTier::Optional => "optional",
-            ToolTier::Custom => "custom",
-            ToolTier::Mcp => "mcp",
-        }
-    }
-
-    fn parse_tier(s: String) -> Result<ToolTier> {
-        match s.as_str() {
-            "core" => Ok(ToolTier::Core),
-            "optional" => Ok(ToolTier::Optional),
-            "custom" => Ok(ToolTier::Custom),
-            "mcp" => Ok(ToolTier::Mcp),
-            _ => Err(LitecodeError::Config(format!("unknown tool tier: {s}"))),
-        }
-    }
-
-    fn init_scope_to_str(scope: InitScope) -> &'static str {
-        match scope {
-            InitScope::None => "none",
-            InitScope::Global => "global",
-            InitScope::Workspace => "workspace",
-        }
-    }
-
-    fn parse_init_scope(s: String) -> Result<InitScope> {
-        match s.as_str() {
-            "none" => Ok(InitScope::None),
-            "global" => Ok(InitScope::Global),
-            "workspace" => Ok(InitScope::Workspace),
-            _ => Err(LitecodeError::Config(format!("unknown init_scope: {s}"))),
-        }
     }
 
     fn role_to_str(role: AgentRole) -> &'static str {
@@ -869,5 +791,54 @@ mod open_tests {
             1,
             "expected one archived backup, got {backups:?}"
         );
+    }
+
+    #[test]
+    fn open_migrates_v5_without_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("litecode.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE tool_catalog (
+                    id TEXT PRIMARY KEY,
+                    tier TEXT NOT NULL,
+                    init_scope TEXT NOT NULL,
+                    catalog_enabled INTEGER NOT NULL
+                );
+                CREATE TABLE agents (
+                    id TEXT PRIMARY KEY,
+                    role TEXT NOT NULL,
+                    model_ref TEXT NOT NULL,
+                    system_prompt TEXT NOT NULL DEFAULT '',
+                    temperature REAL NOT NULL DEFAULT 0.7,
+                    max_steps INTEGER NOT NULL DEFAULT 50,
+                    description TEXT NOT NULL DEFAULT '',
+                    allowed_subagents_json TEXT NOT NULL DEFAULT '[]'
+                );
+                INSERT INTO agents (id, role, model_ref) VALUES ('default', 'primary', '');
+                PRAGMA user_version = 5;
+                ",
+            )
+            .unwrap();
+        }
+
+        let conn = open(&db).expect("v5 must migrate in place");
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, migrate::CURRENT_USER_VERSION);
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".bak-"))
+            .collect();
+        assert!(backups.is_empty(), "v5 must not be archived: {backups:?}");
+        let agents: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(agents, 1);
     }
 }
