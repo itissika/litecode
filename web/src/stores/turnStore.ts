@@ -4,6 +4,7 @@ import { applyTurnEventMeta, newPendingUserId, userTextItem } from "../api/adapt
 import type {
   AgentRunState,
   ContextMode,
+  ItemTokenBreakdown,
   ThinkingTier,
   TurnPhase,
   TurnSnapshot,
@@ -15,6 +16,7 @@ import type {
   SessionSnapshot,
   CompactLifecycle,
 } from "../api/types";
+import { EMPTY_TOKEN_BREAKDOWN } from "../api/types";
 import { debugTrace } from "../lib/debugTrace";
 import { useConnectionStore, attachSiblingStores } from "./connectionStore";
 import { useMessageStore, type TurnEndNotice } from "./messageStore";
@@ -43,6 +45,8 @@ export interface TurnSlice {
   turnStepMax: number | null;
   contextWindow: number;
   contextTokensEstimate: number;
+  /** Local item-text mix; residual against `used` is computed in the ring. */
+  contextTokenBreakdown: ItemTokenBreakdown;
   compactEligible: boolean;
   compacting: boolean;
   /** Provider last-request prompt_tokens (truth). 0 = absent. */
@@ -78,6 +82,7 @@ export const EMPTY_SLICE: TurnSlice = {
   turnStepMax: null,
   contextWindow: 0,
   contextTokensEstimate: 0,
+  contextTokenBreakdown: EMPTY_TOKEN_BREAKDOWN,
   compactEligible: false,
   compacting: false,
   lastTurnPromptTokens: 0,
@@ -650,6 +655,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (metaUpdate.step !== undefined) mapped.turnStep = metaUpdate.step;
       if (metaUpdate.stepMax !== undefined) mapped.turnStepMax = metaUpdate.stepMax;
       if (metaUpdate.contextWindow !== undefined) mapped.contextWindow = metaUpdate.contextWindow;
+      if (metaUpdate.tokenBreakdown !== undefined) {
+        mapped.contextTokenBreakdown = metaUpdate.tokenBreakdown;
+      }
       if (metaUpdate.promptTokens !== undefined) mapped.lastTurnPromptTokens = metaUpdate.promptTokens;
       if (metaUpdate.completionTokens !== undefined) mapped.lastTurnCompletionTokens = metaUpdate.completionTokens;
       if (metaUpdate.cacheHitTokens !== undefined) mapped.lastTurnCacheHitTokens = metaUpdate.cacheHitTokens;
@@ -781,6 +789,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         pendingPermission: null,
         contextWindow: snap.context_window ?? 0,
         contextTokensEstimate: snap.context_tokens_estimate ?? 0,
+        contextTokenBreakdown: snap.context_token_breakdown ?? EMPTY_TOKEN_BREAKDOWN,
         compactEligible: snap.compact_eligible ?? false,
         compacting: snap.compacting ?? false,
         activePlanPath: snap.active_plan_path ?? null,
@@ -838,6 +847,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       patch(sessionId, {
         contextWindow: snap.context_window ?? 0,
         contextTokensEstimate: snap.context_tokens_estimate ?? 0,
+        contextTokenBreakdown: snap.context_token_breakdown ?? EMPTY_TOKEN_BREAKDOWN,
         compactEligible: snap.compact_eligible ?? false,
         compacting: snap.compacting ?? false,
         lastTurnPromptTokens: tts?.prompt_tokens ?? 0,

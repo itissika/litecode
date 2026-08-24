@@ -313,6 +313,9 @@ pub struct SessionSnapshot {
     /// for occupancy UI and the manual-compaction product gate.
     #[serde(default)]
     pub context_tokens_estimate: usize,
+    /// Item-text buckets aligned with the last prepared request when present.
+    #[serde(default)]
+    pub context_token_breakdown: crate::session::estimate::ItemTokenBreakdown,
     #[serde(default)]
     pub compact_eligible: bool,
     /// Standalone manual compaction owns the session (not part of `turn`).
@@ -461,6 +464,9 @@ pub enum WireEvent {
         token_estimate: usize,
         tools_count: usize,
         context_window: usize,
+        /// Local item-text mix for the occupancy bar. Not meter/ring truth.
+        #[serde(default)]
+        token_breakdown: crate::session::estimate::ItemTokenBreakdown,
     },
     LlmCompleted {
         prompt_tokens: u64,

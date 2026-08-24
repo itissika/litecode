@@ -7,6 +7,7 @@ use crate::client_protocol::protocol::{
 use crate::context_pipeline::{BudgetPolicy, CompactPolicy, manual_compact_eligible};
 use crate::permission::PermissionSink;
 use crate::runtime::spawn_turn;
+use crate::session::estimate::compute_token_breakdown;
 use crate::session::store::Session;
 use crate::types::LitecodeError;
 use tokio_util::sync::CancellationToken;
@@ -183,6 +184,7 @@ impl SessionController {
         if let Some(proj) = self.projection_mut(session_id) {
             proj.context_window = session_binding.context_window;
             proj.context_tokens_estimate = token_count;
+            proj.context_token_breakdown = compute_token_breakdown(&transcript);
         }
 
         let sessions = Arc::clone(&self.sessions);

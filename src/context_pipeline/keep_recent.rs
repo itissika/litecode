@@ -14,6 +14,8 @@ use crate::session::estimate::{autocompact_threshold, item_token_estimate};
 pub const SUMMARIZE_TOOL_RESULT_CHARS: usize = 2000;
 /// Verbatim recent-window cap (Pi / Zed-style ~20k).
 pub const KEEP_RECENT_CAP: usize = 20_000;
+/// Hard ceiling for compaction LLM `max_output_tokens` (independent of model config).
+pub const COMPACT_MAX_OUTPUT_TOKENS: u32 = 20_480;
 const OUTPUT_RESERVE_MIN: usize = 2_048;
 const OUTPUT_RESERVE_MAX: usize = 16_384;
 const MIN_SUMMARY_TOKENS: usize = 512;
@@ -55,13 +57,15 @@ pub fn default_keep_recent_tokens(context_window: usize) -> usize {
         .max(1)
 }
 
-/// Compact-model output cap: configured max, clipped to leftover history budget.
+/// Compact-model output cap: model `max_tokens`, capped at [`COMPACT_MAX_OUTPUT_TOKENS`],
+/// then clipped to leftover history budget.
 pub fn compact_output_tokens(context_window: usize, keep_recent: usize, configured: u32) -> u32 {
+    let configured = configured.min(COMPACT_MAX_OUTPUT_TOKENS) as usize;
     let hist = history_budget_tokens(context_window);
     let room = hist.saturating_sub(keep_recent).max(1);
     let lo = MIN_SUMMARY_TOKENS.min(room);
     let hi = room.max(lo);
-    (configured as usize).clamp(lo, hi) as u32
+    configured.clamp(lo, hi) as u32
 }
 
 /// Find the cut index so `items[cut..]` is the keep-recent window.
@@ -370,6 +374,14 @@ mod tests {
     fn default_keep_recent_caps_at_20k() {
         assert_eq!(default_keep_recent_tokens(200_000), 20_000);
         assert_eq!(default_keep_recent_tokens(10_000), 2_500);
+    }
+
+    #[test]
+    fn compact_output_tokens_caps_above_product_limit() {
+        assert_eq!(
+            compact_output_tokens(200_000, default_keep_recent_tokens(200_000), 65_536),
+            COMPACT_MAX_OUTPUT_TOKENS
+        );
     }
 
     #[test]

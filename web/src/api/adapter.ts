@@ -706,6 +706,7 @@ export function applyTurnEventMeta(event: WireEvent): Partial<TurnMeta> {
       return {
         // token_estimate is local budget telemetry — not ring truth.
         contextWindow: event.context_window ?? 0,
+        tokenBreakdown: event.token_breakdown,
       };
     case "llm_completed":
       return {

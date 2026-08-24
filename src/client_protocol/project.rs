@@ -228,6 +228,7 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
             token_estimate,
             tools_count,
             context_window,
+            token_breakdown,
         } => turn_event(
             snapshot,
             WireEvent::LlmRequestBuilt {
@@ -236,6 +237,7 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
                 token_estimate: *token_estimate,
                 tools_count: *tools_count,
                 context_window: *context_window,
+                token_breakdown: token_breakdown.clone(),
             },
         ),
         InternalEvent::LlmCompleted {
@@ -868,6 +870,7 @@ pub fn buffer_snapshot(
         turn,
         context_window: binding.context_window,
         context_tokens_estimate,
+        context_token_breakdown: crate::session::estimate::ItemTokenBreakdown::default(),
         compact_eligible: crate::context_pipeline::manual_compact_eligible(
             binding.context_window,
             context_tokens_estimate,

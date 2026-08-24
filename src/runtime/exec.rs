@@ -7,6 +7,10 @@ use crate::llm::ModelRequest;
 use crate::runtime::llm_resolve::binding_for_agent;
 use crate::runtime::observer::{FailReason, InternalEvent, TurnError, TurnPhase, TurnTokenStats};
 use crate::runtime::provider_registry::ProviderRegistry;
+use crate::llm::ToolDef;
+use crate::session::estimate::{
+    apply_prompt_overhead, compute_token_breakdown, count_text_tokens,
+};
 use crate::types::{FunctionToolCall, Item, LitecodeError, Result, Transcript};
 
 use crate::agent::AgentDeps;
@@ -310,6 +314,7 @@ impl AgentRuntime {
             token_estimate: token_count,
             tools_count: request.tools.len(),
             context_window: self.turn_llm.context_window,
+            token_breakdown: request_token_breakdown(request),
         });
     }
 
@@ -455,6 +460,27 @@ impl AgentRuntime {
             }
         }
     }
+}
+
+fn request_token_breakdown(request: &ModelRequest) -> crate::session::estimate::ItemTokenBreakdown {
+    let mut bd = compute_token_breakdown(&request.input);
+    let schemas: Vec<(String, usize)> = request
+        .tools
+        .iter()
+        .map(|t| (t.name.clone(), tool_schema_tokens(t)))
+        .collect();
+    apply_prompt_overhead(&mut bd, &request.instructions, &schemas);
+    bd
+}
+
+fn tool_schema_tokens(tool: &ToolDef) -> usize {
+    let payload = serde_json::json!({
+        "type": "function",
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.input_schema,
+    });
+    count_text_tokens(&payload.to_string())
 }
 
 /// No FunctionCall → stop. Stop hooks cannot override this after persist.

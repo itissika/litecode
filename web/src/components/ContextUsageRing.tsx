@@ -2,6 +2,8 @@ import type { CSSProperties } from "react";
 import { ArrowsInSimple, CircleNotch } from "@phosphor-icons/react";
 import { useTurnStore } from "../stores/turnStore";
 import { useConnectionStore } from "../stores/connectionStore";
+import type { ItemTokenBreakdown, ToolTokenRow } from "../api/types";
+import { FoldCard } from "./FoldCard";
 import { Popover } from "./ui/Popover";
 
 function formatToken(n: number): string {
@@ -72,6 +74,47 @@ export function ringColorForHitRate(rate: number): string {
   return `rgb(${r}, ${g}, ${bl})`;
 }
 
+type OccupancySegment = {
+  key: string;
+  label: string;
+  tokens: number;
+  color: string;
+};
+
+function occupancySegments(
+  used: number,
+  bd: ItemTokenBreakdown,
+): OccupancySegment[] {
+  const parts: OccupancySegment[] = [
+    { key: "system", label: "System", tokens: Math.max(0, bd.system ?? 0), color: "var(--_dk-cat-cyan)" },
+    { key: "schema", label: "Tool schemas", tokens: Math.max(0, bd.tool_schema ?? 0), color: "var(--_dk-cat-orange)" },
+    { key: "call", label: "Tool calls", tokens: Math.max(0, bd.tool_call ?? 0), color: "var(--_dk-cat-purple)" },
+    { key: "output", label: "Tool outputs", tokens: Math.max(0, bd.tool_output ?? 0), color: "var(--_dk-cat-blue)" },
+    { key: "conv", label: "Conversation", tokens: Math.max(0, bd.conversation ?? 0), color: "var(--_dk-cat-pink)" },
+  ];
+  let classified = parts.reduce((s, p) => s + p.tokens, 0);
+  let other = Math.max(0, used - classified);
+  if (classified > used && classified > 0) {
+    const scale = used / classified;
+    for (const p of parts) p.tokens = Math.round(p.tokens * scale);
+    classified = parts.reduce((s, p) => s + p.tokens, 0);
+    other = Math.max(0, used - classified);
+  }
+  parts.push({
+    key: "other",
+    label: "Other",
+    tokens: other,
+    color: "var(--_dk-text-disabled)",
+  });
+  return parts.filter((p) => p.tokens > 0);
+}
+
+function usedToolRows(bd: ItemTokenBreakdown | undefined): ToolTokenRow[] {
+  return (bd?.per_tool ?? []).filter(
+    (row) => (row.schema ?? 0) + (row.call ?? 0) + (row.output ?? 0) > 0,
+  );
+}
+
 export function ContextUsageRing({ sessionId }: { sessionId: string }) {
   // Live occupancy prefers provider prompt_tokens (updates each llm_completed
   // step). After compact the backend clears last-turn stats, so we fall back to
@@ -114,6 +157,9 @@ export function ContextUsageRing({ sessionId }: { sessionId: string }) {
   );
   const compact = useTurnStore((s) => s.compact);
   const connected = useConnectionStore((s) => s.state === "connected");
+  const breakdown = useTurnStore(
+    (s) => s.byId.get(sessionId)?.contextTokenBreakdown,
+  );
 
   const hasOccupancy = used > 0;
   const hasProviderTruth = providerPrompt > 0;
@@ -144,6 +190,12 @@ export function ContextUsageRing({ sessionId }: { sessionId: string }) {
   // Occupancy bar uses a neutral light/dark accent pair — deliberately distinct
   // from the cache-hit green→red hue so the two metrics are never confused.
   const occupancyBarWidth = hasOccupancy && total > 0 ? `${pct * 100}%` : "0%";
+  const segments =
+    hasOccupancy && breakdown
+      ? occupancySegments(used, breakdown)
+      : [];
+  const hasMix = segments.some((s) => s.key !== "other");
+  const toolRows = usedToolRows(breakdown);
   const compactDisabled =
     !connected || runState !== "idle" || compacting || !compactEligible;
 
@@ -229,11 +281,79 @@ export function ContextUsageRing({ sessionId }: { sessionId: string }) {
                 </span>
               </div>
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-(--_dk-line)">
-                <div
-                  className="h-full rounded-full bg-(--_dk-text-muted)"
-                  style={{ width: occupancyBarWidth }}
-                />
+                {hasMix ? (
+                  <div className="flex h-full" style={{ width: occupancyBarWidth }}>
+                    {segments.map((seg) => (
+                      <div
+                        key={seg.key}
+                        className="h-full min-w-px"
+                        style={{
+                          width: `${(seg.tokens / used) * 100}%`,
+                          backgroundColor: seg.color,
+                        }}
+                        title={`${seg.label} ${formatToken(seg.tokens)} (est.)`}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div
+                    className="h-full rounded-full bg-(--_dk-text-muted)"
+                    style={{ width: occupancyBarWidth }}
+                  />
+                )}
               </div>
+              {hasMix && (
+                <FoldCard
+                  defaultOpen={false}
+                  label="Estimate"
+                  className="mt-0.5"
+                  headerClassName="text-[11px] text-(--_dk-text-muted)"
+                  contentClassName="px-0 pb-0.5"
+                  frameColor="var(--_dk-overlay)"
+                  edgeBlur={false}
+                >
+                  <div className="flex flex-col gap-0.5">
+                    {segments.map((seg) => (
+                      <div key={seg.key} className="flex items-center justify-between gap-2">
+                        <span className="flex min-w-0 items-center gap-1.5 text-(--_dk-text-secondary)">
+                          <span
+                            className="h-1 w-1 shrink-0 rounded-full"
+                            style={{ backgroundColor: seg.color }}
+                          />
+                          <span className="truncate">{seg.label}</span>
+                        </span>
+                        <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
+                          {formatToken(seg.tokens)}
+                        </span>
+                      </div>
+                    ))}
+                    {toolRows.length > 0 && (
+                      <>
+                        <span className="mt-1 text-(--_dk-text-disabled)">Per tool</span>
+                        {toolRows.map((row) => {
+                          const usedByTool =
+                            (row.schema ?? 0) + (row.call ?? 0) + (row.output ?? 0);
+                          return (
+                            <div
+                              key={row.name}
+                              className="flex items-center justify-between gap-2"
+                              title={`schema ${formatToken(row.schema ?? 0)} · call ${formatToken(row.call ?? 0)} · output ${formatToken(row.output ?? 0)}`}
+                            >
+                              <span className="min-w-0 truncate font-mono text-(--_dk-text-secondary)">
+                                {row.name}
+                              </span>
+                              <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
+                                {formatToken(usedByTool)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </>
+                    )}
+                    <span className="text-(--_dk-text-disabled)">Estimated, not billed</span>
+                  </div>
+                </FoldCard>
+              )}
               {!hasOccupancy && (
                 <span className="text-(--_dk-text-disabled)">No context usage yet</span>
               )}

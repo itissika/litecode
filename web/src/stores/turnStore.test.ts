@@ -356,6 +356,21 @@ describe("turnStore convergence", () => {
     expect(slice.contextTokensEstimate).toBe(12000);
   });
 
+  it("applySnapshotMeter hydrates occupancy mix from item-token breakdown", () => {
+    const sessionId = "s2-mix";
+    useTurnStore.getState().applySnapshotMeter(sessionId, {
+      ...snapshot(sessionId),
+      context_window: 128000,
+      context_tokens_estimate: 12000,
+      context_token_breakdown: { tool_output: 9000, conversation: 2000 },
+    });
+    const slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.contextTokenBreakdown).toEqual({
+      tool_output: 9000,
+      conversation: 2000,
+    });
+  });
+
   it("applySnapshotMeter hydrates todos from snapshot", () => {
     const sessionId = "s-todo-hydrate";
     useTurnStore.getState().applySnapshotMeter(sessionId, {

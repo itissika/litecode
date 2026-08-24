@@ -32,6 +32,12 @@ interface FoldCardProps {
   /** Extra classes merged onto the header row (e.g. bump summary text size). */
   headerClassName?: string;
   contentClassName?: string;
+  /** Overrides the scroll-frame background (default `var(--_dk-editor)`), e.g. to
+   *  blend with a popover surface. The nesting hairline (`::before`) is kept. */
+  frameColor?: string;
+  /** Disable the top/bottom edge-blur bands (default: on). Compact surfaces like
+   *  popovers usually want them off. */
+  edgeBlur?: boolean;
   children: ReactNode;
 }
 
@@ -60,6 +66,8 @@ export function FoldCard({
   className = "",
   headerClassName = "",
   contentClassName = "",
+  frameColor,
+  edgeBlur = true,
   children,
 }: FoldCardProps) {
   // The persisted state is the user's explicit preference only. If there is no
@@ -296,14 +304,14 @@ export function FoldCard({
       >
         <div className="foldcard-body-inner">
           {bodyMounted && (
-            <div className="foldcard-scroll-frame">
+            <div className="foldcard-scroll-frame" style={frameColor ? { background: frameColor } : undefined}>
               <div
                 ref={contentRef}
                 className={`foldcard-scroll ${contentClassName}`}
               >
                 {children}
               </div>
-              {topStrength > 0.5 && (
+              {edgeBlur && topStrength > 0.5 && (
                 <ProgressiveBlur
                   side="top"
                   height={BLUR_BAND}
@@ -313,7 +321,7 @@ export function FoldCard({
                   tintColor="var(--_dk-editor)"
                 />
               )}
-              {bottomStrength > 0.5 && (
+              {edgeBlur && bottomStrength > 0.5 && (
                 <ProgressiveBlur
                   side="bottom"
                   height={BLUR_BAND}

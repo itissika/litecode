@@ -158,6 +158,9 @@ pub enum InternalEvent {
         token_estimate: usize,
         tools_count: usize,
         context_window: usize,
+        /// Local item-text mix for the occupancy bar. Not meter/ring truth.
+        #[serde(default)]
+        token_breakdown: crate::session::estimate::ItemTokenBreakdown,
     },
     LlmCompleted {
         prompt_tokens: u64,

@@ -47,6 +47,8 @@ fn light_workspace(dir: &std::path::Path) -> WorkspaceState {
         contract: String::new(),
         paths: litecode::config::WorkspacePaths::for_workspace(dir, &workspace_id),
         workspace_tool_readiness: Default::default(),
+        workspace_mcp_servers: Default::default(),
+        workspace_custom_tools: Default::default(),
     }
 }
 

@@ -23,7 +23,10 @@ pub mod transcript_fts;
 pub mod working;
 pub mod workspace_lock;
 
-pub use estimate::{autocompact_threshold, compact_prompt, compute_token_estimate};
+pub use estimate::{
+    autocompact_threshold, compact_prompt,     compute_token_breakdown, compute_token_estimate, apply_prompt_overhead,
+    ItemTokenBreakdown,
+};
 pub use event::{EventDraft, EventLog, EventType, Seq, SessionEvent};
 pub use gate::SessionGate;
 pub use live::{LifecycleEvent, LiveTurn, TurnProgress};

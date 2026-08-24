@@ -20,6 +20,7 @@ use crate::runtime::observer::InternalEnvelope;
 use crate::runtime::observer::TurnPhase;
 use crate::session::manager::SessionManager;
 use crate::session::snapshot;
+use crate::session::estimate::{compute_token_breakdown, ItemTokenBreakdown};
 use crate::types::LitecodeError;
 
 #[derive(Debug)]
@@ -83,6 +84,8 @@ pub struct Projection {
     /// Cached local estimate of the model working set. Recomputed only when the
     /// durable transcript or effective context binding changes.
     pub context_tokens_estimate: usize,
+    /// Item-text mix for the occupancy bar. Request-aligned after `LlmRequestBuilt`.
+    pub context_token_breakdown: crate::session::estimate::ItemTokenBreakdown,
     /// Last-known provider usage (persisted session meter); feeds snapshot ring hydrate.
     pub last_turn_token_stats: Option<crate::client_protocol::protocol::TurnTokenStats>,
     /// Session-total provider usage (Σ per-request); feeds whole-session hit rate.
@@ -176,26 +179,36 @@ impl Projection {
         sessions: &SessionManager,
         session_id: &str,
         window: usize,
-    ) -> usize {
+    ) -> (usize, ItemTokenBreakdown) {
         sessions
             .with_entry_store(session_id, |s| {
                 let mut items = s.load_transcript()?;
                 crate::session::store::Session::snip_stale_results(&mut items);
-                Ok(crate::context_pipeline::BudgetPolicy::new(window).token_count(&items, 0))
+                let n = crate::context_pipeline::BudgetPolicy::new(window).token_count(&items, 0);
+                Ok((n, compute_token_breakdown(&items)))
             })
-            .unwrap_or(0)
+            .unwrap_or((0, ItemTokenBreakdown::default()))
     }
 
     fn refresh_context_estimate(&mut self) {
-        self.context_tokens_estimate =
-            Self::estimate_context_tokens(&self.sessions, &self.session_id, self.context_window);
+        let (n, bd) = Self::estimate_context_tokens(
+            &self.sessions,
+            &self.session_id,
+            self.context_window,
+        );
+        self.context_tokens_estimate = n;
+        // Keep last-request mix while provider occupancy is showing that request.
+        // After compact (meter cleared) fall back to the remaining working set.
+        if self.last_turn_token_stats.is_none() {
+            self.context_token_breakdown = bd;
+        }
     }
 }
 
 impl Projection {
     fn new(session_id: String, sessions: Arc<SessionManager>, context_window: usize) -> Self {
         let (_, next_seq) = sessions.entry_wire_seq_cursor(&session_id);
-        let context_tokens_estimate =
+        let (context_tokens_estimate, context_token_breakdown) =
             Self::estimate_context_tokens(&sessions, &session_id, context_window);
         let meter = sessions
             .with_entry_store(&session_id, |s| Ok(s.load_context_meter()?))
@@ -233,6 +246,7 @@ impl Projection {
             turn_completed_emitted: false,
             context_window,
             context_tokens_estimate,
+            context_token_breakdown,
             last_turn_token_stats,
             cumulative_token_stats,
             max_file_revert_k: None,
@@ -272,6 +286,7 @@ impl Projection {
             self.context_tokens_estimate,
             self.sessions.is_compacting_blocking(&self.session_id),
         );
+        snap.context_token_breakdown = self.context_token_breakdown.clone();
         snap.max_file_revert_k = self.max_file_revert_k;
         let task_state = self
             .sessions
@@ -773,9 +788,14 @@ impl Projection {
                 );
                 self.bump_buffer_revision(project, binding);
             }
-            crate::runtime::observer::InternalEvent::LlmRequestBuilt { context_window, .. } => {
+            crate::runtime::observer::InternalEvent::LlmRequestBuilt {
+                context_window,
+                token_breakdown,
+                ..
+            } => {
                 // Local `token_estimate` is budget-only — never occupancy/ring truth.
                 self.context_window = *context_window;
+                self.context_token_breakdown = token_breakdown.clone();
             }
             crate::runtime::observer::InternalEvent::LlmCompleted {
                 prompt_tokens,
