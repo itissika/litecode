@@ -4,12 +4,8 @@ import { useSettingsStore } from "../../../stores/settingsStore";
 import { useTreeStore } from "../../../stores/treeStore";
 import type { WorkspaceExcludesLists } from "../../../api/settings";
 import { globsFromText, textFromGlobs } from "../../../utils/excludeGlobs";
-import {
-  FieldLabel,
-  TextArea,
-  SectionHeader,
-  SettingsPageShell,
-} from "./shared";
+import { FoldCard } from "../../../components/FoldCard";
+import { FieldLabel, TextArea, SectionHeader, SettingsPageShell } from "./shared";
 import { isPersistBusy, useSettingsPersist } from "./persist";
 
 type FilesDraft = {
@@ -102,38 +98,12 @@ export function FilesSection() {
         </button>
       }
     >
-      <div className="space-y-6">
+      <div className="space-y-3">
         <p className="text-dk-sm text-(--_dk-text-secondary)">
           These lists live in this workspace (<code>.litecode/excludes.json</code>).
-          New workspaces start with the built-in VS Code defaults; edits apply to the
-          tree and search immediately.
+          New workspaces start with the built-in VS Code defaults; Settings edits
+          and direct changes to that file apply to the tree and search immediately.
         </p>
-
-        <div className="settings-card space-y-3 p-4">
-          <SectionHeader title="Files exclude" />
-          <FieldLabel>Hidden from the explorer and from search</FieldLabel>
-          <TextArea
-            rows={6}
-            value={draft.filesText}
-            onChange={(e) => setDraft((d) => ({ ...d, filesText: e.target.value }))}
-            placeholder={"**/.git\n**/.DS_Store"}
-            disabled={saveBlocked}
-            spellCheck={false}
-          />
-        </div>
-
-        <div className="settings-card space-y-3 p-4">
-          <SectionHeader title="Search exclude" />
-          <FieldLabel>Additional hides for search, glob, and index (on top of files exclude)</FieldLabel>
-          <TextArea
-            rows={6}
-            value={draft.searchText}
-            onChange={(e) => setDraft((d) => ({ ...d, searchText: e.target.value }))}
-            placeholder={"**/node_modules\n**/bower_components"}
-            disabled={saveBlocked}
-            spellCheck={false}
-          />
-        </div>
 
         <div className="settings-card space-y-3 p-4">
           <SectionHeader title=".gitignore" />
@@ -149,8 +119,40 @@ export function FilesSection() {
           </label>
         </div>
 
-        <div className="settings-card space-y-3 p-4">
-          <SectionHeader title="Watcher exclude" />
+        <FoldCard
+          label={<span className="settings-section-title">Files exclude</span>}
+          className="settings-foldcard"
+        >
+          <FieldLabel>Hidden from the explorer and from search</FieldLabel>
+          <TextArea
+            rows={6}
+            value={draft.filesText}
+            onChange={(e) => setDraft((d) => ({ ...d, filesText: e.target.value }))}
+            placeholder={"**/.git\n**/.DS_Store"}
+            disabled={saveBlocked}
+            spellCheck={false}
+          />
+        </FoldCard>
+
+        <FoldCard
+          label={<span className="settings-section-title">Search exclude</span>}
+          className="settings-foldcard"
+        >
+          <FieldLabel>Additional hides for search, glob, and index (on top of files exclude)</FieldLabel>
+          <TextArea
+            rows={6}
+            value={draft.searchText}
+            onChange={(e) => setDraft((d) => ({ ...d, searchText: e.target.value }))}
+            placeholder={"**/node_modules\n**/bower_components"}
+            disabled={saveBlocked}
+            spellCheck={false}
+          />
+        </FoldCard>
+
+        <FoldCard
+          label={<span className="settings-section-title">Watcher exclude</span>}
+          className="settings-foldcard"
+        >
           <FieldLabel>Paths skipped by the file watcher</FieldLabel>
           <TextArea
             rows={5}
@@ -159,7 +161,7 @@ export function FilesSection() {
             disabled={saveBlocked}
             spellCheck={false}
           />
-        </div>
+        </FoldCard>
       </div>
     </SettingsPageShell>
   );

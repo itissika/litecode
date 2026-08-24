@@ -4,6 +4,7 @@ import { attachSiblingStores } from "./connectionStore";
 
 import {
   getAgent,
+  getAvailableTools,
   getAdapters,
   getLog,
   getExcludes,
@@ -11,7 +12,6 @@ import {
   getProviders,
   getWebSearch,
   getSettingsSummary,
-  getToolCatalog,
   loadSettingsAgentIds,
   deleteAgent,
   putAgent,
@@ -21,7 +21,6 @@ import {
   putModels,
   putProviders,
   putWebSearch,
-  putToolCatalog,
   getCustomTools,
   putCustomTool,
   deleteCustomTool,
@@ -35,7 +34,9 @@ import {
   withSyncedToolSeries,
   type AdapterDescriptor,
   type AgentProfile,
+  type AvailableTool,
   type CustomToolDefinition,
+  type LayeredList,
   type McpProbeResult,
   type McpServerDefinition,
   type McpServerItem,
@@ -47,10 +48,11 @@ import {
   type ProviderView,
   type WebSearchView,
   type SettingsSummary,
-  type ToolCatalogEntry,
   type ToolPreset,
+  type ToolScope,
   type EngineStatus,
 } from "../api/settings";
+import { getEnginesDetail, type EnginesDetail } from "../api/workspace";
 import type { SettingsChanged } from "../api/types";
 import { useSessionStore } from "./sessionStore";
 import { useTurnStore } from "./turnStore";
@@ -67,7 +69,6 @@ export type SettingsSection =
   | "connection"
   | "models"
   | "engines"
-  | "tool-catalog"
   | "custom-tools"
   | "mcp"
   | "agents"
@@ -141,9 +142,9 @@ interface SettingsStoreState {
   provider: ProviderView | null;
   websearch: WebSearchView | null;
   models: Record<string, ModelDefinition> | null;
-  toolCatalog: Record<string, ToolCatalogEntry> | null;
-  customTools: CustomToolDefinition[] | null;
-  mcpServers: McpServerItem[] | null;
+  availableTools: AvailableTool[] | null;
+  customTools: LayeredList<CustomToolDefinition> | null;
+  mcpServers: LayeredList<McpServerItem> | null;
   engineStatuses: Record<string, EngineStatus>;
   agentIds: string[];
   selectedAgentId: string;
@@ -164,7 +165,7 @@ interface SettingsStore extends SettingsStoreState {
   setPersistStatus: (status: PersistStatus) => void;
   setRevision: (revision: number) => void;
   onRemoteSettingsChanged: (event: SettingsChanged) => void;
-  /** Load tool catalog + engine statuses (needed for Editor LSP gate). */
+  /** Load engine statuses (needed for Editor LSP gate). */
   ensureCatalogLoaded: () => Promise<void>;
   /** Refresh only engineStatuses after Engine panel start/stop/clear. */
   refreshEngineStatuses: () => Promise<void>;
@@ -176,14 +177,13 @@ interface SettingsStore extends SettingsStoreState {
   saveProviders: (providers: Record<string, ProviderDefinition>) => Promise<void>;
   saveWebSearch: (body: { search_endpoint?: string }) => Promise<void>;
   saveModels: (models: Record<string, ModelDefinition>) => Promise<void>;
-  saveToolCatalog: (catalog: Record<string, ToolCatalogEntry>) => Promise<void>;
-  saveCustomTool: (id: string, def: CustomToolDefinition) => Promise<void>;
-  removeCustomTool: (id: string) => Promise<void>;
-  saveMcpServer: (id: string, def: McpServerDefinition) => Promise<void>;
-  removeMcpServer: (id: string) => Promise<void>;
-  startMcpServer: (id: string, def: McpServerDefinition) => Promise<McpProbeResult>;
-  restartMcpServer: (id: string, def: McpServerDefinition) => Promise<McpProbeResult>;
-  stopMcpServer: (id: string) => Promise<McpProbeResult>;
+  saveCustomTool: (id: string, def: CustomToolDefinition, scope?: ToolScope) => Promise<void>;
+  removeCustomTool: (id: string, scope?: ToolScope) => Promise<void>;
+  saveMcpServer: (id: string, def: McpServerDefinition, scope?: ToolScope) => Promise<void>;
+  removeMcpServer: (id: string, scope?: ToolScope) => Promise<void>;
+  startMcpServer: (id: string, def: McpServerDefinition, scope?: ToolScope) => Promise<McpProbeResult>;
+  restartMcpServer: (id: string, def: McpServerDefinition, scope?: ToolScope) => Promise<McpProbeResult>;
+  stopMcpServer: (id: string, scope?: ToolScope) => Promise<McpProbeResult>;
   saveAgent: (id: string, profile: AgentProfile) => Promise<void>;
   applyAgentToolPreset: (id: string, preset: ToolPreset) => Promise<void>;
   createAgent: (id: string, profile: AgentProfile) => Promise<void>;
@@ -253,35 +253,19 @@ export function toastLlmConfigFailure(fallback?: string): void {
 }
 
 
-/**
- * Value-equality for two tool catalogs. The warming poll in `ensureCatalogLoaded`
- * re-fetches the catalog on every tick but its contents rarely change; comparing
- * by reference would clobber the edit drafts of the Tool Catalog / Agents sections
- * (which key their local drafts on `toolCatalog`) every 500ms while an engine warms.
- */
-function toolCatalogEqual(
-  a: Record<string, ToolCatalogEntry> | null,
-  b: Record<string, ToolCatalogEntry> | null,
-): boolean {
-  if (a === b) return true;
-  if (!a || !b) return false;
-  const ak = Object.keys(a);
-  if (ak.length !== Object.keys(b).length) return false;
-  for (const k of ak) {
-    const x = a[k];
-    const y = b[k];
-    if (
-      !y ||
-      x.id !== y.id ||
-      x.tier !== y.tier ||
-      x.init_scope !== y.init_scope ||
-      x.catalog_enabled !== y.catalog_enabled ||
-      x.readiness !== y.readiness
-    ) {
-      return false;
-    }
-  }
-  return true;
+function enginesFromDetail(detail: EnginesDetail): Record<string, EngineStatus> {
+  return {
+    lsp: {
+      desired: detail.lsp.desired,
+      state: detail.lsp.state,
+      error: detail.lsp.error,
+    },
+    code_search: {
+      desired: detail.retrieval.desired,
+      state: detail.retrieval.state,
+      error: detail.retrieval.error,
+    },
+  };
 }
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
@@ -294,7 +278,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   provider: null,
   websearch: null,
   models: null,
-  toolCatalog: null,
+  availableTools: null,
   customTools: null,
   mcpServers: null,
   engineStatuses: {},
@@ -370,21 +354,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   ensureCatalogLoaded: async () => {
     try {
-      const catalogPayload = await getToolCatalog();
-      const prevCatalog = get().toolCatalog;
-      // The warming poll re-fetches the catalog on every tick, but the catalog
-      // is user-editable config. Only push it to the store when it actually
-      // changed, so sections keyed on `toolCatalog` (Tool Catalog, Agents)
-      // don't reset their edit drafts every poll while an engine warms.
-      if (toolCatalogEqual(prevCatalog, catalogPayload.tool_catalog)) {
-        set({ engineStatuses: catalogPayload.engines });
-      } else {
-        set({
-          toolCatalog: catalogPayload.tool_catalog,
-          engineStatuses: catalogPayload.engines,
-        });
-      }
-      const warming = Object.values(catalogPayload.engines).some(
+      const detail = await getEnginesDetail();
+      const engineStatuses = enginesFromDetail(detail);
+      set({ engineStatuses });
+      const warming = Object.values(engineStatuses).some(
         (engine) => engine?.state === "warming",
       );
       if (warming) {
@@ -393,17 +366,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         markCatalogSettled();
       }
     } catch (err) {
-      // Transient fetch failures retry with backoff; a sustained failure
-      // toasts once, then keeps retrying quietly at the max delay.
       scheduleCatalogPoll(err);
     }
   },
 
   refreshEngineStatuses: async () => {
     try {
-      const catalogPayload = await getToolCatalog();
-      set({ engineStatuses: catalogPayload.engines });
-      const warming = Object.values(catalogPayload.engines).some(
+      const detail = await getEnginesDetail();
+      const engineStatuses = enginesFromDetail(detail);
+      set({ engineStatuses });
+      const warming = Object.values(engineStatuses).some(
         (engine) => engine?.state === "warming",
       );
       if (warming) {
@@ -433,17 +405,18 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
     try {
       const summary = await getSettingsSummary();
-      const [adapters, providers, websearch, models, catalogPayload, customTools, mcpServers, log, excludes] =
+      const [adapters, providers, websearch, models, availableTools, customTools, mcpServers, log, excludes, enginesDetail] =
         await Promise.all([
           getAdapters(),
           getProviders(),
           getWebSearch(),
           getModels(),
-          getToolCatalog(),
+          getAvailableTools(),
           getCustomTools(),
           getMcpServers(),
           getLog(),
           getExcludes(),
+          getEnginesDetail(),
         ]);
       const agentIds = await loadSettingsAgentIds();
       const agents: Record<string, AgentProfile> = {};
@@ -461,10 +434,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         provider: firstProvider,
         websearch,
         models,
-        toolCatalog: catalogPayload.tool_catalog,
-        engineStatuses: catalogPayload.engines,
+        availableTools,
         customTools,
         mcpServers,
+        engineStatuses: enginesFromDetail(enginesDetail),
         agentIds,
         agents,
         selectedAgentId: agentIds.includes(get().selectedAgentId)
@@ -559,7 +532,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
   },
 
-  saveToolCatalog: async (catalog) => {
+  saveCustomTool: async (id, def, scope = "global") => {
     if (turnInProgress()) {
       const err = new SettingsApiError(409, "turn_in_progress");
       handleSaveError(err);
@@ -567,39 +540,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
     set({ saving: true });
     try {
-      const { revision } = await putToolCatalog(catalog);
-      const catalogPayload = await getToolCatalog();
-      set({
-        revision,
-        toolCatalog: catalogPayload.tool_catalog,
-        engineStatuses: catalogPayload.engines,
-        saving: false,
-      });
-    } catch (err) {
-      set({ saving: false });
-      handleSaveError(err);
-      throw err;
-    }
-  },
-
-  saveCustomTool: async (id, def) => {
-    if (turnInProgress()) {
-      const err = new SettingsApiError(409, "turn_in_progress");
-      handleSaveError(err);
-      throw err;
-    }
-    set({ saving: true });
-    try {
-      const { revision } = await putCustomTool(id, def);
-      const [customTools, catalogPayload] = await Promise.all([
+      const { revision } = await putCustomTool(id, def, scope);
+      const [customTools, availableTools] = await Promise.all([
         getCustomTools(),
-        getToolCatalog(),
+        getAvailableTools(),
       ]);
       set({
         revision,
         customTools,
-        toolCatalog: catalogPayload.tool_catalog,
-        engineStatuses: catalogPayload.engines,
+        availableTools,
         saving: false,
       });
     } catch (err) {
@@ -609,7 +558,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
   },
 
-  removeCustomTool: async (id) => {
+  removeCustomTool: async (id, scope = "global") => {
     if (turnInProgress()) {
       const err = new SettingsApiError(409, "turn_in_progress");
       handleSaveError(err);
@@ -617,17 +566,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
     set({ saving: true });
     try {
-      const { revision } = await deleteCustomTool(id);
-      const [customTools, catalogPayload] = await Promise.all([
+      const { revision } = await deleteCustomTool(id, scope);
+      const [customTools, availableTools] = await Promise.all([
         getCustomTools(),
-        getToolCatalog(),
+        getAvailableTools(),
       ]);
       await get().refreshAgents();
       set({
         revision,
         customTools,
-        toolCatalog: catalogPayload.tool_catalog,
-        engineStatuses: catalogPayload.engines,
+        availableTools,
         saving: false,
       });
     } catch (err) {
@@ -637,7 +585,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
   },
 
-  saveMcpServer: async (id, def) => {
+  saveMcpServer: async (id, def, scope = "global") => {
     if (turnInProgress()) {
       const err = new SettingsApiError(409, "turn_in_progress");
       handleSaveError(err);
@@ -645,16 +593,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
     set({ saving: true });
     try {
-      const { revision } = await putMcpServer(id, def);
-      const [mcpServers, catalogPayload] = await Promise.all([
+      const { revision } = await putMcpServer(id, def, scope);
+      const [mcpServers, availableTools] = await Promise.all([
         getMcpServers(),
-        getToolCatalog(),
+        getAvailableTools(),
       ]);
       set({
         revision,
         mcpServers,
-        toolCatalog: catalogPayload.tool_catalog,
-        engineStatuses: catalogPayload.engines,
+        availableTools,
         saving: false,
       });
     } catch (err) {
@@ -664,7 +611,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
   },
 
-  removeMcpServer: async (id) => {
+  removeMcpServer: async (id, scope = "global") => {
     if (turnInProgress()) {
       const err = new SettingsApiError(409, "turn_in_progress");
       handleSaveError(err);
@@ -672,17 +619,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
     set({ saving: true });
     try {
-      const { revision } = await deleteMcpServer(id);
-      const [mcpServers, catalogPayload] = await Promise.all([
+      const { revision } = await deleteMcpServer(id, scope);
+      const [mcpServers, availableTools] = await Promise.all([
         getMcpServers(),
-        getToolCatalog(),
+        getAvailableTools(),
       ]);
       await get().refreshAgents();
       set({
         revision,
         mcpServers,
-        toolCatalog: catalogPayload.tool_catalog,
-        engineStatuses: catalogPayload.engines,
+        availableTools,
         saving: false,
       });
     } catch (err) {
@@ -692,22 +638,22 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
   },
 
-  startMcpServer: async (id, def) => {
-    const result = await requestMcpStart(id, def);
+  startMcpServer: async (id, def, scope = "global") => {
+    const result = await requestMcpStart(id, def, scope);
     const mcpServers = await getMcpServers();
     set({ mcpServers });
     return result;
   },
 
-  restartMcpServer: async (id, def) => {
-    const result = await requestMcpRestart(id, def);
+  restartMcpServer: async (id, def, scope = "global") => {
+    const result = await requestMcpRestart(id, def, scope);
     const mcpServers = await getMcpServers();
     set({ mcpServers });
     return result;
   },
 
-  stopMcpServer: async (id) => {
-    const result = await requestMcpStop(id);
+  stopMcpServer: async (id, scope = "global") => {
+    const result = await requestMcpStop(id, scope);
     const mcpServers = await getMcpServers();
     set({ mcpServers });
     return result;

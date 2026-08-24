@@ -3,29 +3,57 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { catalogPollDelayMs, resetCatalogPollState, useSettingsStore } from "./settingsStore";
 import { useToastStore } from "./toastStore";
 import { registerSettingsFlush } from "../dockview/panels/settings/persist";
+import type { EnginesDetail } from "../api/workspace";
+import type { EngineWarmupState } from "../api/settings";
 
-// Mock the settings API module so the catalog poll is deterministic.
-vi.mock("../api/settings", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../api/settings")>();
+vi.mock("../api/workspace", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/workspace")>();
   return {
     ...actual,
-    getToolCatalog: vi.fn(),
+    getEnginesDetail: vi.fn(),
   };
 });
 
-import { getToolCatalog } from "../api/settings";
-import type { EngineStatus, ToolCatalogEntry } from "../api/settings";
+import { getEnginesDetail } from "../api/workspace";
 
-const mockedGetToolCatalog = vi.mocked(getToolCatalog);
+const mockedGetEnginesDetail = vi.mocked(getEnginesDetail);
 
-function warmingEngines(state: EngineStatus["state"]): {
-  tool_catalog: Record<string, ToolCatalogEntry>;
-  engines: Record<string, EngineStatus>;
-} {
+function enginesDetail(state: EngineWarmupState): EnginesDetail {
   return {
-    tool_catalog: {},
-    engines: {
-      lsp: { state },
+    retrieval: {
+      desired: false,
+      state: "stopped",
+      usable: "stopped",
+      error: null,
+      model: {
+        model_found: false,
+        tokenizer_found: false,
+        ready: false,
+      },
+      index: {
+        status: "absent",
+        exists: false,
+        needs_rebuild: false,
+        vectors_ready: false,
+        indexed_files: 0,
+        indexed_chunks: 0,
+      },
+      policy: {
+        product_internal_dirs: [],
+        exclude_globs: [],
+        extensions: [],
+        max_file_bytes: 0,
+        binary_files: false,
+        lockfiles: false,
+        minified_files: false,
+      },
+    },
+    lsp: {
+      desired: true,
+      state,
+      usable: state === "warm" ? "ready" : "warming",
+      configured_servers: [],
+      probes: [],
     },
   };
 }
@@ -33,11 +61,10 @@ function warmingEngines(state: EngineStatus["state"]): {
 beforeEach(() => {
   resetCatalogPollState();
   useSettingsStore.setState({
-    toolCatalog: {},
     engineStatuses: {},
   });
   useToastStore.setState({ toasts: [] });
-  mockedGetToolCatalog.mockReset();
+  mockedGetEnginesDetail.mockReset();
 });
 
 afterEach(() => {
@@ -60,22 +87,22 @@ describe("catalogPollDelayMs (FE-03 backoff sequence)", () => {
 describe("ensureCatalogLoaded warming poll (FE-03)", () => {
   it("keeps polling with backoff while an engine warms, then settles", async () => {
     vi.useFakeTimers();
-    mockedGetToolCatalog
-      .mockResolvedValueOnce(warmingEngines("warming"))
-      .mockResolvedValueOnce(warmingEngines("warming"))
-      .mockResolvedValueOnce(warmingEngines("warm"));
+    mockedGetEnginesDetail
+      .mockResolvedValueOnce(enginesDetail("warming"))
+      .mockResolvedValueOnce(enginesDetail("warming"))
+      .mockResolvedValueOnce(enginesDetail("warm"));
 
     void useSettingsStore.getState().ensureCatalogLoaded();
     await vi.advanceTimersByTimeAsync(500); // poll #2
     await vi.advanceTimersByTimeAsync(1000); // poll #3 → warm
 
-    expect(mockedGetToolCatalog).toHaveBeenCalledTimes(3);
+    expect(mockedGetEnginesDetail).toHaveBeenCalledTimes(3);
     expect(useSettingsStore.getState().engineStatuses.lsp.state).toBe("warm");
   });
 
   it("keeps polling quietly after the cap while an engine stays warming — no error toast", async () => {
     vi.useFakeTimers();
-    mockedGetToolCatalog.mockResolvedValue(warmingEngines("warming"));
+    mockedGetEnginesDetail.mockResolvedValue(enginesDetail("warming"));
 
     void useSettingsStore.getState().ensureCatalogLoaded();
     // Poll delays: 500, 1000, 2000, 4000, then 8000… (cap).
@@ -84,17 +111,17 @@ describe("ensureCatalogLoaded warming poll (FE-03)", () => {
       await vi.advanceTimersByTimeAsync(delay);
     }
 
-    expect(mockedGetToolCatalog).toHaveBeenCalledTimes(9);
+    expect(mockedGetEnginesDetail).toHaveBeenCalledTimes(9);
     expect(useToastStore.getState().toasts).toHaveLength(0);
 
     await vi.advanceTimersByTimeAsync(8000);
-    expect(mockedGetToolCatalog).toHaveBeenCalledTimes(10);
+    expect(mockedGetEnginesDetail).toHaveBeenCalledTimes(10);
     expect(useToastStore.getState().toasts).toHaveLength(0);
   });
 
   it("toasts a sustained catalog fetch error once, then retries without repeating the toast", async () => {
     vi.useFakeTimers();
-    mockedGetToolCatalog.mockRejectedValue(new Error("catalog fetch failed"));
+    mockedGetEnginesDetail.mockRejectedValue(new Error("catalog fetch failed"));
     const shown: string[] = [];
     let toastCount = 0;
     const unsub = useToastStore.subscribe((s) => {
@@ -113,21 +140,21 @@ describe("ensureCatalogLoaded warming poll (FE-03)", () => {
     expect(shown).toEqual(["catalog fetch failed"]);
 
     await vi.advanceTimersByTimeAsync(8000);
-    expect(mockedGetToolCatalog.mock.calls.length).toBeGreaterThan(9);
+    expect(mockedGetEnginesDetail.mock.calls.length).toBeGreaterThan(9);
     expect(shown).toEqual(["catalog fetch failed"]);
     unsub();
   });
 
   it("retries a transient fetch error with backoff and does not swallow it silently", async () => {
     vi.useFakeTimers();
-    mockedGetToolCatalog
+    mockedGetEnginesDetail
       .mockRejectedValueOnce(new Error("catalog fetch failed"))
-      .mockResolvedValueOnce(warmingEngines("warm"));
+      .mockResolvedValueOnce(enginesDetail("warm"));
 
     void useSettingsStore.getState().ensureCatalogLoaded();
     await vi.advanceTimersByTimeAsync(500); // error → retry poll #2
 
-    expect(mockedGetToolCatalog).toHaveBeenCalledTimes(2);
+    expect(mockedGetEnginesDetail).toHaveBeenCalledTimes(2);
     expect(useSettingsStore.getState().engineStatuses.lsp.state).toBe("warm");
   });
 });

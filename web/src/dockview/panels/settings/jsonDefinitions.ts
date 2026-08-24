@@ -107,6 +107,8 @@ export function parseMcpJson(
             ),
           )
         : {};
+    const timeout =
+      typeof raw.timeout === "number" && raw.timeout > 0 ? raw.timeout : 60;
     return {
       ok: {
         id,
@@ -115,6 +117,7 @@ export function parseMcpJson(
           args,
           env,
           transport: transport ?? { type: "stdio" },
+          timeout,
         },
       },
     };

@@ -58,17 +58,8 @@ describe("relPathFromLspUri", () => {
 });
 
 describe("isLspWarm", () => {
-  it("requires warm state and ignores catalog flags", () => {
+  it("requires warm engine state", () => {
     useSettingsStore.setState({
-      toolCatalog: {
-        lsp: {
-          id: "lsp",
-          tier: "optional",
-          init_scope: "workspace",
-          readiness: "not_ready",
-          catalog_enabled: false,
-        },
-      },
       engineStatuses: {
         lsp: { desired: true, state: "warm" },
       },
@@ -76,15 +67,6 @@ describe("isLspWarm", () => {
     expect(isLspWarm()).toBe(true);
 
     useSettingsStore.setState({
-      toolCatalog: {
-        lsp: {
-          id: "lsp",
-          tier: "optional",
-          init_scope: "workspace",
-          readiness: "ready",
-          catalog_enabled: true,
-        },
-      },
       engineStatuses: {
         lsp: { desired: true, state: "warming" },
       },

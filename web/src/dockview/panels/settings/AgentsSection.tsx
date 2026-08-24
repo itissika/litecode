@@ -4,7 +4,6 @@ import { Plus, ArrowClockwise, ListChecks } from "@phosphor-icons/react";
 
 import {
   isConfigurableTool,
-  isAgentBindableTool,
   isHiddenSettingsAgent,
   isProtectedAgent,
   isSubagentBindableTool,
@@ -13,8 +12,8 @@ import {
   withSyncedToolSeries,
   type AgentProfile,
   type AgentToolBinding,
+  type AvailableTool,
   type ModelDefinition,
-  type ToolCatalogEntry,
 } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { Select } from "../../../components/ui/Select";
@@ -116,6 +115,7 @@ function McpToolVisibilityControl({
     <Dropdown
       variant="panel"
       align="right"
+      flip
       closeOnSelect={false}
       panelClassName="w-[360px] max-w-[calc(100vw-16px)] p-2"
       trigger={({ open, toggle }) => (
@@ -320,7 +320,7 @@ function SubagentToolsMultiSelect({
   onChange,
 }: {
   draft: AgentProfile;
-  bindableTools: ToolCatalogEntry[];
+  bindableTools: AvailableTool[];
   saveBlocked: boolean;
   onChange: (profile: AgentProfile) => void;
 }) {
@@ -341,7 +341,7 @@ function SubagentToolsMultiSelect({
   if (bindableTools.length === 0) {
     return (
       <p className="text-sm text-(--_dk-amber-500)">
-        No tools in catalog — enable optional or custom tools in Tool Catalog first.
+        No bindable tools in this workspace. Enable engines or add Custom/MCP definitions.
       </p>
     );
   }
@@ -360,7 +360,7 @@ function SubagentToolsMultiSelect({
               className="accent-(--_dk-accent-hover)"
             />
             <span className="font-mono text-(--_dk-text-secondary)">{entry.id}</span>
-            <span className="text-dk-xs text-(--_dk-text-disabled)">{entry.tier}</span>
+            <span className="text-dk-xs text-(--_dk-text-disabled)">{entry.kind}</span>
           </label>
         ))}
       </div>
@@ -377,7 +377,7 @@ export function AgentToolsGrid({
   gridStyle,
 }: {
   draft: AgentProfile;
-  bindableTools: ToolCatalogEntry[];
+  bindableTools: AvailableTool[];
   mcpServers: { id: string; tools?: { name: string; description: string }[] }[];
   saveBlocked: boolean;
   onBindingChange: (toolId: string, patch: Partial<AgentToolBinding>) => void;
@@ -388,7 +388,7 @@ export function AgentToolsGrid({
     return (
       <div className="space-y-2">
         <h3 className="settings-section-title">Tool bindings</h3>
-        <p className="text-sm text-(--_dk-amber-500)">No tools in catalog.</p>
+        <p className="text-sm text-(--_dk-amber-500)">No bindable tools in this workspace.</p>
       </div>
     );
   }
@@ -408,7 +408,7 @@ export function AgentToolsGrid({
           const enabled = binding.enabled;
           const preset = binding.last_applied_preset ?? "ALL";
           const serverId = entry.id.slice("mcp_".length);
-          const mcpTools = entry.tier === "mcp"
+          const mcpTools = entry.kind === "mcp"
             ? mcpServers.find((server) => server.id === serverId)?.tools ?? []
             : [];
 
@@ -435,7 +435,10 @@ export function AgentToolsGrid({
                 <div className="flex w-full items-start justify-between gap-2 p-3">
                   <div className="min-w-0">
                     <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">{entry.id}</p>
-                    <p className="mt-0.5 text-dk-xs text-(--_dk-text-disabled)">{entry.tier}</p>
+                    <p className="mt-0.5 text-dk-xs text-(--_dk-text-disabled)">
+                      {entry.kind}
+                      {entry.overridden ? " · workspace override" : ""}
+                    </p>
                   </div>
                   <span className={`tag ${enabled ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}>
                     {enabled ? "On" : "Off"}
@@ -475,9 +478,9 @@ export function AgentToolsGrid({
                   ) : (
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-xs text-(--_dk-text-disabled)">
-                        {entry.tier === "mcp" ? "No preset" : "Not configurable"}
+                        {entry.kind === "mcp" ? "No preset" : "Not configurable"}
                       </p>
-                      {entry.tier === "mcp" ? (
+                      {entry.kind === "mcp" ? (
                         <McpToolVisibilityControl
                           serverId={serverId}
                           binding={binding}
@@ -505,8 +508,8 @@ const BUILTIN_TEMPERATURE = 0.7;
 function agentPersistPayload(
   draft: AgentProfile,
   selectedAgentId: string,
-  bindableToolsPrimary: ToolCatalogEntry[],
-  bindableToolsSubagent: ToolCatalogEntry[],
+  bindableToolsPrimary: AvailableTool[],
+  bindableToolsSubagent: AvailableTool[],
 ): AgentProfile {
   const isHidden = isHiddenSettingsAgent(selectedAgentId, draft.role);
   const bindableTools =
@@ -530,9 +533,13 @@ function agentPersistPayload(
 }
 
 export function AgentsSection() {
-  const toolCatalog = useSettingsStore((s) => s.toolCatalog);
+  const availableTools = useSettingsStore((s) => s.availableTools);
   const models = useSettingsStore((s) => s.models);
   const mcpServers = useSettingsStore((s) => s.mcpServers);
+  const mcpList = useMemo(
+    () => [...(mcpServers?.global ?? []), ...(mcpServers?.workspace ?? [])],
+    [mcpServers],
+  );
   const agentIds = useSettingsStore((s) => s.agentIds);
   const selectedAgentId = useSettingsStore((s) => s.selectedAgentId);
   const agents = useSettingsStore((s) => s.agents);
@@ -559,28 +566,26 @@ export function AgentsSection() {
   );
 
   const bindableToolsPrimary = useMemo(() => {
-    if (!toolCatalog) return [];
-    return Object.values(toolCatalog)
-      .filter(isAgentBindableTool)
-      .sort((a, b) => {
-        const tierOrder = (tier: ToolCatalogEntry["tier"]) => {
-          if (tier === "core") return 0;
-          if (tier === "optional") return 1;
-          if (tier === "custom") return 2;
-          if (tier === "mcp") return 3;
-          return 9;
-        };
-        const byTier = tierOrder(a.tier) - tierOrder(b.tier);
-        return byTier !== 0 ? byTier : a.id.localeCompare(b.id);
-      });
-  }, [toolCatalog]);
+    if (!availableTools) return [];
+    return [...availableTools].sort((a, b) => {
+      const kindOrder = (kind: AvailableTool["kind"]) => {
+        if (kind === "core") return 0;
+        if (kind === "engine") return 1;
+        if (kind === "custom") return 2;
+        if (kind === "mcp") return 3;
+        return 9;
+      };
+      const byKind = kindOrder(a.kind) - kindOrder(b.kind);
+      return byKind !== 0 ? byKind : a.id.localeCompare(b.id);
+    });
+  }, [availableTools]);
 
   const bindableToolsSubagent = useMemo(() => {
-    if (!toolCatalog) return [];
-    return Object.values(toolCatalog)
+    if (!availableTools) return [];
+    return availableTools
       .filter(isSubagentBindableTool)
       .sort((a, b) => a.id.localeCompare(b.id));
-  }, [toolCatalog]);
+  }, [availableTools]);
 
   useEffect(() => {
     if (!profile || creating) return;
@@ -851,7 +856,7 @@ export function AgentsSection() {
           <AgentToolsGrid
               draft={draft}
               bindableTools={bindableToolsPrimary}
-              mcpServers={mcpServers ?? []}
+              mcpServers={mcpList}
               saveBlocked={saveBlocked}
               onBindingChange={updateBinding}
             />

@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash } from "@phosphor-icons/react";
 
-import { type CustomToolDefinition } from "../../../api/settings";
+import {
+  type CustomToolDefinition,
+  type ToolScope,
+} from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { FoldCard } from "../../../components/FoldCard";
+import { Dropdown, dropdownItemClass } from "../../../components/ui/Dropdown";
 import { FieldLabel, TextArea, SettingsPageShell } from "./shared";
 import { parseCustomToolJson } from "./jsonDefinitions";
 import {
@@ -55,11 +59,15 @@ export function CustomToolsSection() {
   const saveCustomTool = useSettingsStore((s) => s.saveCustomTool);
   const removeCustomTool = useSettingsStore((s) => s.removeCustomTool);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedScope, setSelectedScope] = useState<ToolScope>("global");
   const [jsonText, setJsonText] = useState(EMPTY_CUSTOM_JSON);
   const [formError, setFormError] = useState<string | null>(null);
   const [isNew, setIsNew] = useState(false);
+  const [createScope, setCreateScope] = useState<ToolScope>("global");
 
-  const tools = customTools ?? [];
+  const globalTools = customTools?.global ?? [];
+  const workspaceTools = customTools?.workspace ?? [];
+  const tools = selectedScope === "workspace" ? workspaceTools : globalTools;
 
   useEffect(() => {
     if (isNew) return;
@@ -83,16 +91,20 @@ export function CustomToolsSection() {
     debounceMs: 400,
     setStatus: setPersistStatus,
     serialize: (text) => parseCustomToolJson(text, selectedId),
-    commit: (p) => saveCustomTool(p.name, p),
+    commit: (p) => saveCustomTool(p.name, p, selectedScope),
     revert: () => {
-      const found = (useSettingsStore.getState().customTools ?? []).find(
-        (t) => t.name === selectedId,
-      );
+      const layered = useSettingsStore.getState().customTools;
+      const found = (selectedScope === "workspace"
+        ? layered?.workspace
+        : layered?.global
+      )?.find((t) => t.name === selectedId);
       if (found) setJsonText(prettyTool(found));
     },
   });
 
-  const startCreate = () => {
+  const startCreate = (scope: ToolScope) => {
+    setCreateScope(scope);
+    setSelectedScope(scope);
     setIsNew(true);
     setSelectedId(null);
     setJsonText(EMPTY_CUSTOM_JSON);
@@ -108,8 +120,9 @@ export function CustomToolsSection() {
     }
     void (async () => {
       try {
-        await saveCustomTool(parsed.ok.name, parsed.ok);
+        await saveCustomTool(parsed.ok.name, parsed.ok, createScope);
         setIsNew(false);
+        setSelectedScope(createScope);
         setSelectedId(parsed.ok.name);
         setPersistStatus("saved");
       } catch {
@@ -118,11 +131,11 @@ export function CustomToolsSection() {
     })();
   };
 
-  const onDelete = (name: string) => {
+  const onDelete = (name: string, scope: ToolScope) => {
     if (!name || isNew || saveBlocked) return;
     void (async () => {
       try {
-        await removeCustomTool(name);
+        await removeCustomTool(name, scope);
         setIsNew(false);
         setSelectedId(null);
       } catch {
@@ -165,88 +178,130 @@ export function CustomToolsSection() {
               Create
             </button>
           ) : null}
-          <button
-            type="button"
-            className="btn btn-icon"
-            disabled={saveBlocked || saving}
-            onClick={startCreate}
-            aria-label="New custom tool"
-            title="New custom tool"
+          <Dropdown
+            variant="menu"
+            align="right"
+            panelClassName="rounded-md"
+            trigger={({ open, toggle }) => (
+              <button
+                type="button"
+                className="btn btn-icon"
+                disabled={saveBlocked || saving}
+                aria-label="New custom tool"
+                aria-haspopup="menu"
+                aria-expanded={open}
+                title="New custom tool"
+                onClick={toggle}
+              >
+                <Plus size={16} />
+              </button>
+            )}
           >
-            <Plus size={16} />
-          </button>
+            <button
+              type="button"
+              className={dropdownItemClass}
+              onClick={() => startCreate("global")}
+            >
+              Global
+            </button>
+            <button
+              type="button"
+              className={dropdownItemClass}
+              onClick={() => startCreate("workspace")}
+            >
+              Workspace
+            </button>
+          </Dropdown>
         </>
       }
     >
       <div className="space-y-4">
         <p className="text-xs text-(--_dk-text-muted)">
-          Paste a full tool definition as JSON. After save: enable in Tool Catalog, then bind on
-          Agents. Protocol: stdin JSON → stdout result; exit 0 success, 2 blocked.
+          Definitions only. Bind on Agents. Same name: workspace overrides global.
         </p>
-        {tools.length === 0 && !isNew ? (
-          <p className="px-2 py-3 text-xs text-(--_dk-text-muted)">No custom tools yet.</p>
-        ) : null}
-        <div className="space-y-2">
-          {tools.map((tool) => (
+        <div className="space-y-3">
+          {(
+            [
+              ["global", globalTools, "Global"],
+              ["workspace", workspaceTools, "Workspace"],
+            ] as const
+          ).map(([scope, list, title]) => (
             <FoldCard
-              key={tool.name}
-              open={!isNew && selectedId === tool.name}
-              onToggle={(o) => {
-                if (o) {
-                  void flushRegisteredSettings().then(() => {
-                    setIsNew(false);
-                    setSelectedId(tool.name);
-                  });
-                } else if (selectedId === tool.name) {
-                  void flushRegisteredSettings().then(() => setSelectedId(null));
-                }
-              }}
-              label={
-                <span className="flex flex-1 items-center justify-between gap-2">
-                  <span className="font-mono text-sm text-(--_dk-text-secondary)">
-                    {tool.name}
-                  </span>
-                  <span className="flex items-center gap-2">
-                    <span className="truncate text-xs text-(--_dk-text-muted)">
-                      {tool.command}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn-danger btn-icon"
-                      disabled={saveBlocked || saving}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDelete(tool.name);
-                      }}
-                      onKeyDown={(e) => e.stopPropagation()}
-                      aria-label={`Delete ${tool.name}`}
-                      title={`Delete ${tool.name}`}
-                    >
-                      <Trash size={16} />
-                    </button>
-                  </span>
-                </span>
-              }
+              key={scope}
+              defaultOpen
+              label={<span className="settings-section-title">{title}</span>}
               className="settings-foldcard"
             >
-              {!isNew && selectedId === tool.name ? editorForm : null}
+              <div className="space-y-2">
+              {list.length === 0 && !(isNew && createScope === scope) ? (
+                <p className="px-2 py-3 text-xs text-(--_dk-text-muted)">None.</p>
+              ) : null}
+              {list.map((tool) => (
+                <FoldCard
+                  key={`${scope}:${tool.name}`}
+                  open={!isNew && selectedScope === scope && selectedId === tool.name}
+                  onToggle={(o) => {
+                    if (o) {
+                      void flushRegisteredSettings().then(() => {
+                        setIsNew(false);
+                        setSelectedScope(scope);
+                        setSelectedId(tool.name);
+                      });
+                    } else if (selectedScope === scope && selectedId === tool.name) {
+                      void flushRegisteredSettings().then(() => setSelectedId(null));
+                    }
+                  }}
+                  label={
+                    <span className="flex flex-1 items-center justify-between gap-2">
+                      <span className="font-mono text-sm text-(--_dk-text-secondary)">
+                        {tool.name}
+                      </span>
+                      <span className="flex items-center gap-2">
+                        <span className="truncate text-xs text-(--_dk-text-muted)">
+                          {tool.command}
+                        </span>
+                        <button
+                          type="button"
+                          className="btn-danger btn-icon"
+                          disabled={saveBlocked || saving}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDelete(tool.name, scope);
+                          }}
+                          onKeyDown={(e) => e.stopPropagation()}
+                          aria-label={`Delete ${tool.name}`}
+                          title={`Delete ${tool.name}`}
+                        >
+                          <Trash size={16} />
+                        </button>
+                      </span>
+                    </span>
+                  }
+                  className="settings-foldcard"
+                >
+                  {!isNew && selectedScope === scope && selectedId === tool.name
+                    ? editorForm
+                    : null}
+                </FoldCard>
+              ))}
+              {isNew && createScope === scope ? (
+                <FoldCard
+                  key="__new"
+                  open
+                  onToggle={(o) => {
+                    if (!o) setIsNew(false);
+                  }}
+                  label={
+                    <span className="font-mono text-sm text-(--_dk-text-secondary)">(new)</span>
+                  }
+                  className="settings-foldcard"
+                >
+                  {editorForm}
+                </FoldCard>
+              ) : null}
+              </div>
             </FoldCard>
           ))}
-          {isNew ? (
-            <FoldCard
-              key="__new"
-              open
-              onToggle={(o) => {
-                if (!o) setIsNew(false);
-              }}
-              label={
-                <span className="font-mono text-sm text-(--_dk-text-secondary)">(new)</span>
-              }
-              className="settings-foldcard"
-            >
-              {editorForm}
-            </FoldCard>
-          ) : null}
         </div>
       </div>
     </SettingsPageShell>

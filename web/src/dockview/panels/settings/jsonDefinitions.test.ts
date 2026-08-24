@@ -31,7 +31,19 @@ describe("parseMcpJson", () => {
       "transport": { "type": "stdio" }
     }`);
     expect(result).toMatchObject({
-      ok: { id: "filesystem", def: { command: "npx" } },
+      ok: { id: "filesystem", def: { command: "npx", timeout: 60 } },
+    });
+  });
+
+  it("keeps a declared timeout", () => {
+    const result = parseMcpJson(`{
+      "id": "filesystem",
+      "command": "npx",
+      "timeout": 300,
+      "transport": { "type": "stdio" }
+    }`);
+    expect(result).toMatchObject({
+      ok: { def: { timeout: 300 } },
     });
   });
 

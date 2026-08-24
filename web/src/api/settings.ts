@@ -2,9 +2,9 @@ import { apiFetch } from "./auth";
 
 export type AgentRole = "primary" | "subagent" | "hidden";
 export type ToolPreset = "ALL" | "SAFE";
-export type ToolTier = "core" | "optional" | "custom" | "mcp";
-export type InitScope = "none" | "global" | "workspace";
-export type ToolReadiness = "not_ready" | "ready";
+export type AvailableKind = "core" | "engine" | "custom" | "mcp";
+export type ToolOrigin = "builtin" | "global" | "workspace";
+export type ToolScope = "global" | "workspace";
 export type ThinkingMode = "enabled" | "disabled";
 export type ReasoningEffort = "high" | "max";
 
@@ -152,12 +152,11 @@ export interface AgentProfile {
   allowed_subagents: string[];
 }
 
-export interface ToolCatalogEntry {
+export interface AvailableTool {
   id: string;
-  tier: ToolTier;
-  init_scope: InitScope;
-  readiness: ToolReadiness;
-  catalog_enabled: boolean;
+  kind: AvailableKind;
+  origin: ToolOrigin;
+  overridden?: boolean;
 }
 
 export interface ToolSchema {
@@ -184,6 +183,7 @@ export interface McpServerDefinition {
   args?: string[];
   env?: Record<string, string>;
   transport?: McpTransport;
+  timeout?: number;
 }
 
 export type McpRunState = "stopped" | "starting" | "running" | "error";
@@ -195,6 +195,7 @@ export interface McpToolInfo {
 
 export interface McpServerItem extends McpServerDefinition {
   id: string;
+  origin?: ToolOrigin;
   status?: McpRunState;
   tools?: McpToolInfo[];
   error?: string | null;
@@ -398,55 +399,41 @@ export async function applyAgentToolPreset(
   );
 }
 
-export async function getToolCatalog(): Promise<{
-  tool_catalog: Record<string, ToolCatalogEntry>;
-  engines: Record<string, EngineStatus>;
-}> {
-  const data = await requestJson<{
-    tool_catalog: Record<string, ToolCatalogEntry>;
-    engines?: Record<string, EngineStatus>;
-  }>("/api/settings/tool-catalog");
-  return {
-    tool_catalog: data.tool_catalog,
-    engines: data.engines ?? {},
-  };
-}
-
-export async function putToolCatalog(
-  tool_catalog: Record<string, ToolCatalogEntry>,
-): Promise<RevisionResponse> {
-  const persisted: Record<
-    string,
-    Pick<ToolCatalogEntry, "id" | "tier" | "init_scope" | "catalog_enabled">
-  > = {};
-  for (const [id, entry] of Object.entries(tool_catalog)) {
-    persisted[id] = {
-      id: entry.id,
-      tier: entry.tier,
-      init_scope: entry.init_scope,
-      catalog_enabled: entry.catalog_enabled,
-    };
-  }
-  return requestJson<RevisionResponse>("/api/settings/tool-catalog", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tool_catalog: persisted }),
-  });
-}
-
-export async function getCustomTools(): Promise<CustomToolDefinition[]> {
-  const data = await requestJson<{ custom_tools: CustomToolDefinition[] }>(
-    "/api/settings/custom-tools",
+export async function getAvailableTools(): Promise<AvailableTool[]> {
+  const data = await requestJson<{ tools: AvailableTool[] }>(
+    "/api/settings/available-tools",
   );
-  return data.custom_tools ?? [];
+  return data.tools ?? [];
+}
+
+function scopeQuery(scope: ToolScope = "global"): string {
+  return scope === "workspace" ? "?scope=workspace" : "?scope=global";
+}
+
+export interface LayeredList<T> {
+  global: T[];
+  workspace: T[];
+}
+
+export async function getCustomTools(): Promise<LayeredList<CustomToolDefinition>> {
+  const data = await requestJson<{
+    global?: CustomToolDefinition[];
+    workspace?: CustomToolDefinition[];
+    custom_tools?: CustomToolDefinition[];
+  }>("/api/settings/custom-tools");
+  if (data.global || data.workspace) {
+    return { global: data.global ?? [], workspace: data.workspace ?? [] };
+  }
+  return { global: data.custom_tools ?? [], workspace: [] };
 }
 
 export async function putCustomTool(
   id: string,
   def: CustomToolDefinition,
+  scope: ToolScope = "global",
 ): Promise<RevisionResponse> {
   return requestJson<RevisionResponse>(
-    `/api/settings/custom-tools/${encodeURIComponent(id)}`,
+    `/api/settings/custom-tools/${encodeURIComponent(id)}${scopeQuery(scope)}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -455,26 +442,35 @@ export async function putCustomTool(
   );
 }
 
-export async function deleteCustomTool(id: string): Promise<RevisionResponse> {
+export async function deleteCustomTool(
+  id: string,
+  scope: ToolScope = "global",
+): Promise<RevisionResponse> {
   return requestJson<RevisionResponse>(
-    `/api/settings/custom-tools/${encodeURIComponent(id)}`,
+    `/api/settings/custom-tools/${encodeURIComponent(id)}${scopeQuery(scope)}`,
     { method: "DELETE" },
   );
 }
 
-export async function getMcpServers(): Promise<McpServerItem[]> {
-  const data = await requestJson<{ mcp_servers: McpServerItem[] }>(
-    "/api/settings/mcp-servers",
-  );
-  return data.mcp_servers ?? [];
+export async function getMcpServers(): Promise<LayeredList<McpServerItem>> {
+  const data = await requestJson<{
+    global?: McpServerItem[];
+    workspace?: McpServerItem[];
+    mcp_servers?: McpServerItem[];
+  }>("/api/settings/mcp-servers");
+  if (data.global || data.workspace) {
+    return { global: data.global ?? [], workspace: data.workspace ?? [] };
+  }
+  return { global: data.mcp_servers ?? [], workspace: [] };
 }
 
 export async function putMcpServer(
   id: string,
   def: McpServerDefinition,
+  scope: ToolScope = "global",
 ): Promise<RevisionResponse> {
   return requestJson<RevisionResponse>(
-    `/api/settings/mcp-servers/${encodeURIComponent(id)}`,
+    `/api/settings/mcp-servers/${encodeURIComponent(id)}${scopeQuery(scope)}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -483,9 +479,12 @@ export async function putMcpServer(
   );
 }
 
-export async function deleteMcpServer(id: string): Promise<RevisionResponse> {
+export async function deleteMcpServer(
+  id: string,
+  scope: ToolScope = "global",
+): Promise<RevisionResponse> {
   return requestJson<RevisionResponse>(
-    `/api/settings/mcp-servers/${encodeURIComponent(id)}`,
+    `/api/settings/mcp-servers/${encodeURIComponent(id)}${scopeQuery(scope)}`,
     { method: "DELETE" },
   );
 }
@@ -493,9 +492,10 @@ export async function deleteMcpServer(id: string): Promise<RevisionResponse> {
 export async function startMcpServer(
   id: string,
   def: McpServerDefinition,
+  scope: ToolScope = "global",
 ): Promise<McpProbeResult> {
   return requestJson<McpProbeResult>(
-    `/api/settings/mcp-servers/${encodeURIComponent(id)}/start`,
+    `/api/settings/mcp-servers/${encodeURIComponent(id)}/start${scopeQuery(scope)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -507,9 +507,10 @@ export async function startMcpServer(
 export async function restartMcpServer(
   id: string,
   def: McpServerDefinition,
+  scope: ToolScope = "global",
 ): Promise<McpProbeResult> {
   return requestJson<McpProbeResult>(
-    `/api/settings/mcp-servers/${encodeURIComponent(id)}/restart`,
+    `/api/settings/mcp-servers/${encodeURIComponent(id)}/restart${scopeQuery(scope)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -518,9 +519,12 @@ export async function restartMcpServer(
   );
 }
 
-export async function stopMcpServer(id: string): Promise<McpProbeResult> {
+export async function stopMcpServer(
+  id: string,
+  scope: ToolScope = "global",
+): Promise<McpProbeResult> {
   return requestJson<McpProbeResult>(
-    `/api/settings/mcp-servers/${encodeURIComponent(id)}/stop`,
+    `/api/settings/mcp-servers/${encodeURIComponent(id)}/stop${scopeQuery(scope)}`,
     { method: "POST" },
   );
 }
@@ -567,25 +571,6 @@ export function isConfigurableTool(toolId: string): boolean {
   return !NONE_TOOL_IDS.has(toolId) && !isMcpCatalogTool(toolId);
 }
 
-export function isCatalogCandidate(entry: ToolCatalogEntry): boolean {
-  return entry.catalog_enabled && entry.readiness === "ready";
-}
-
-/** Catalog-ready tools that may appear on the Agents page (must still be agent-enabled). */
-export function isAgentBindableTool(entry: ToolCatalogEntry): boolean {
-  return (
-    (entry.tier === "core" ||
-      entry.tier === "optional" ||
-      entry.tier === "custom" ||
-      entry.tier === "mcp") &&
-    isCatalogCandidate(entry)
-  );
-}
-
-export function isCoreCatalogEntry(entry: ToolCatalogEntry): boolean {
-  return entry.tier === "core";
-}
-
 export interface AgentListItem {
   id: string;
   role: AgentRole;
@@ -598,6 +583,10 @@ export const PROTECTED_AGENT_IDS = new Set(["default", "compaction"]);
 export const SUBAGENT_SERIES_TOOL_IDS = new Set([
   "subagent_launch",
 ]);
+
+export function isSubagentBindableTool(entry: AvailableTool): boolean {
+  return !SUBAGENT_SERIES_TOOL_IDS.has(entry.id);
+}
 
 /** Tools that form one closed loop: enable/disable together. */
 export const BASH_SERIES_TOOL_IDS = ["bash", "wait_shell", "kill_shell"] as const;
@@ -657,11 +646,6 @@ export function withSyncedToolSeries(profile: AgentProfile): AgentProfile {
 
 export function isProtectedAgent(id: string): boolean {
   return PROTECTED_AGENT_IDS.has(id);
-}
-
-/** Tools bindable on subagent profiles (excludes subagent orchestration). */
-export function isSubagentBindableTool(entry: ToolCatalogEntry): boolean {
-  return isAgentBindableTool(entry) && !SUBAGENT_SERIES_TOOL_IDS.has(entry.id);
 }
 
 export async function deleteAgent(id: string): Promise<RevisionResponse> {

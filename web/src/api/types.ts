@@ -395,6 +395,8 @@ export interface SessionSnapshot {
   turn: TurnSnapshot | null;
   context_window?: number;
   context_tokens_estimate?: number;
+  /** Local item-text mix for the occupancy bar. Not provider ring truth. */
+  context_token_breakdown?: ItemTokenBreakdown;
   compact_eligible?: boolean;
   compacting?: boolean;
   /** Last-known provider usage for context ring hydrate after refresh. */
@@ -486,6 +488,32 @@ export interface TurnTokenStats {
   cache_miss_tokens: number;
 }
 
+/** Local cl100k buckets for the occupancy mix bar. Residual = used − sum. */
+export interface ToolTokenRow {
+  name: string;
+  schema?: number;
+  call?: number;
+  output?: number;
+}
+
+export interface ItemTokenBreakdown {
+  system?: number;
+  tool_schema?: number;
+  tool_call?: number;
+  tool_output: number;
+  conversation: number;
+  per_tool?: ToolTokenRow[];
+}
+
+export const EMPTY_TOKEN_BREAKDOWN: ItemTokenBreakdown = {
+  system: 0,
+  tool_schema: 0,
+  tool_call: 0,
+  tool_output: 0,
+  conversation: 0,
+  per_tool: [],
+};
+
 export interface TurnFinished {
   turn_id: string;
   reason: TurnEndReason;
@@ -573,6 +601,7 @@ export type WireEvent =
       token_estimate: number;
       tools_count: number;
       context_window?: number;
+      token_breakdown?: ItemTokenBreakdown;
     }
   | {
       type: "llm_completed";
@@ -646,6 +675,7 @@ export interface TurnMeta {
   completionTokens: number;
   cacheHitTokens: number;
   cacheMissTokens: number;
+  tokenBreakdown?: ItemTokenBreakdown;
   stopReason: string | null;
   lastCompaction: { kind: CompactionKind; detail: string | null } | null;
   lastPermissionResolved: { tool: string; approved: boolean; always: boolean } | null;

@@ -1,11 +1,10 @@
-import { Link, Cube, WrenchIcon, Robot, GearSix, Cpu, Code, Plugs, Tree } from "@phosphor-icons/react";
+import { Link, Cube, Robot, GearSix, Cpu, Code, Plugs, Tree } from "@phosphor-icons/react";
 
 import { useSettingsStore, type SettingsSection } from "../../stores/settingsStore";
 import { SettingsSkeleton } from "../../components/ui/Skeleton";
 import { FloatingDialog } from "../components/FloatingDialog";
 import { ConnectionSection } from "./settings/ConnectionSection";
 import { ModelsSection } from "./settings/ModelsSection";
-import { ToolCatalogSection } from "./settings/ToolCatalogSection";
 import { CustomToolsSection } from "./settings/CustomToolsSection";
 import { McpServersSection } from "./settings/McpServersSection";
 import { AgentsSection } from "./settings/AgentsSection";
@@ -28,7 +27,6 @@ const NAV_GROUPS: {
     title: "Agent",
     items: [
       { id: "agents", label: "Agents", Icon: Robot },
-      { id: "tool-catalog", label: "Catalog", Icon: WrenchIcon },
       { id: "custom-tools", label: "Custom Tools", Icon: Code },
       { id: "mcp", label: "MCP", Icon: Plugs },
     ],
@@ -63,8 +61,6 @@ function SectionContent({ section }: { section: SettingsSection }) {
       return <EnginesSection />;
     case "files":
       return <FilesSection />;
-    case "tool-catalog":
-      return <ToolCatalogSection />;
     case "custom-tools":
       return <CustomToolsSection />;
     case "mcp":

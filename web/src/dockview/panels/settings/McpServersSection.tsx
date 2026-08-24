@@ -4,9 +4,11 @@ import { Plus, Trash } from "@phosphor-icons/react";
 import {
   type McpProbeResult,
   type McpServerItem,
+  type ToolScope,
 } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { FoldCard } from "../../../components/FoldCard";
+import { Dropdown, dropdownItemClass } from "../../../components/ui/Dropdown";
 import { FieldLabel, TextArea, SettingsPageShell } from "./shared";
 import { parseMcpJson } from "./jsonDefinitions";
 import {
@@ -20,7 +22,8 @@ const EMPTY_MCP_JSON = `{
   "command": "npx",
   "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/folder"],
   "env": {},
-  "transport": { "type": "stdio" }
+  "transport": { "type": "stdio" },
+  "timeout": 60
 }`;
 
 function prettyServer(item: McpServerItem): string {
@@ -31,6 +34,7 @@ function prettyServer(item: McpServerItem): string {
       args: item.args ?? [],
       env: item.env ?? {},
       transport: item.transport ?? { type: "stdio" },
+      timeout: item.timeout && item.timeout > 0 ? item.timeout : 60,
     },
     null,
     2,
@@ -49,13 +53,17 @@ export function McpServersSection() {
   const restartMcp = useSettingsStore((s) => s.restartMcpServer);
   const stopMcp = useSettingsStore((s) => s.stopMcpServer);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedScope, setSelectedScope] = useState<ToolScope>("global");
   const [jsonText, setJsonText] = useState(EMPTY_MCP_JSON);
   const [formError, setFormError] = useState<string | null>(null);
   const [isNew, setIsNew] = useState(false);
+  const [createScope, setCreateScope] = useState<ToolScope>("global");
   const [probe, setProbe] = useState<McpProbeResult | null>(null);
   const [busy, setBusy] = useState<"start" | "restart" | "stop" | null>(null);
 
-  const servers = mcpServers ?? [];
+  const globalServers = mcpServers?.global ?? [];
+  const workspaceServers = mcpServers?.workspace ?? [];
+  const servers = selectedScope === "workspace" ? workspaceServers : globalServers;
 
   useEffect(() => {
     if (isNew) return;
@@ -79,16 +87,20 @@ export function McpServersSection() {
     debounceMs: 400,
     setStatus: setPersistStatus,
     serialize: (text) => parseMcpJson(text, selectedId),
-    commit: (p) => saveMcpServer(p.id, p.def),
+    commit: (p) => saveMcpServer(p.id, p.def, selectedScope),
     revert: () => {
-      const found = (useSettingsStore.getState().mcpServers ?? []).find(
-        (s) => s.id === selectedId,
-      );
+      const layered = useSettingsStore.getState().mcpServers;
+      const found = (selectedScope === "workspace"
+        ? layered?.workspace
+        : layered?.global
+      )?.find((s) => s.id === selectedId);
       if (found) setJsonText(prettyServer(found));
     },
   });
 
-  const startCreate = () => {
+  const startCreate = (scope: ToolScope) => {
+    setCreateScope(scope);
+    setSelectedScope(scope);
     setIsNew(true);
     setSelectedId(null);
     setJsonText(EMPTY_MCP_JSON);
@@ -105,8 +117,9 @@ export function McpServersSection() {
     }
     void (async () => {
       try {
-        await saveMcpServer(parsed.ok.id, parsed.ok.def);
+        await saveMcpServer(parsed.ok.id, parsed.ok.def, createScope);
         setIsNew(false);
+        setSelectedScope(createScope);
         setSelectedId(parsed.ok.id);
         setPersistStatus("saved");
       } catch {
@@ -115,11 +128,11 @@ export function McpServersSection() {
     })();
   };
 
-  const onDelete = (id: string) => {
+  const onDelete = (id: string, scope: ToolScope) => {
     if (!id || isNew || saveBlocked) return;
     void (async () => {
       try {
-        await removeMcpServer(id);
+        await removeMcpServer(id, scope);
         setIsNew(false);
         setSelectedId(null);
         setProbe(null);
@@ -167,7 +180,7 @@ export function McpServersSection() {
       setFormError("Fix JSON before starting");
       return;
     }
-    runLifecycle("start", () => startMcp(parsed.ok.id, parsed.ok.def));
+    runLifecycle("start", () => startMcp(parsed.ok.id, parsed.ok.def, selectedScope));
   };
 
   const onRestart = () => {
@@ -176,12 +189,12 @@ export function McpServersSection() {
       setFormError("Fix JSON before restarting");
       return;
     }
-    runLifecycle("restart", () => restartMcp(parsed.ok.id, parsed.ok.def));
+    runLifecycle("restart", () => restartMcp(parsed.ok.id, parsed.ok.def, selectedScope));
   };
 
   const onStop = () => {
     if (!selectedId) return;
-    runLifecycle("stop", () => stopMcp(selectedId));
+    runLifecycle("stop", () => stopMcp(selectedId, selectedScope));
   };
 
   const editorForm = (
@@ -256,91 +269,133 @@ export function McpServersSection() {
               Create
             </button>
           ) : null}
-          <button
-            type="button"
-            className="btn btn-icon"
-            disabled={saveBlocked || saving}
-            onClick={startCreate}
-            aria-label="New MCP server"
-            title="New MCP server"
+          <Dropdown
+            variant="menu"
+            align="right"
+            panelClassName="rounded-md"
+            trigger={({ open, toggle }) => (
+              <button
+                type="button"
+                className="btn btn-icon"
+                disabled={saveBlocked || saving}
+                aria-label="New MCP server"
+                aria-haspopup="menu"
+                aria-expanded={open}
+                title="New MCP server"
+                onClick={toggle}
+              >
+                <Plus size={16} />
+              </button>
+            )}
           >
-            <Plus size={16} />
-          </button>
+            <button
+              type="button"
+              className={dropdownItemClass}
+              onClick={() => startCreate("global")}
+            >
+              Global
+            </button>
+            <button
+              type="button"
+              className={dropdownItemClass}
+              onClick={() => startCreate("workspace")}
+            >
+              Workspace
+            </button>
+          </Dropdown>
         </>
       }
     >
       <div className="space-y-4">
         <p className="text-xs text-(--_dk-text-muted)">
-          Register stdio MCP servers as JSON. Start keeps the process; Restart
-          applies a new command/env. Then enable{" "}
-          <span className="font-mono">mcp_&lt;id&gt;</span> in Tool Catalog and bind on Agents.
+          Register stdio MCP servers. Same id: workspace overrides global. Bind{" "}
+          <span className="font-mono">mcp_&lt;id&gt;</span> on Agents.
         </p>
-        {servers.length === 0 && !isNew ? (
-          <p className="px-2 py-3 text-xs text-(--_dk-text-muted)">No MCP servers yet.</p>
-        ) : null}
-        <div className="space-y-2">
-          {servers.map((server) => (
+        <div className="space-y-3">
+          {(
+            [
+              ["global", globalServers, "Global"],
+              ["workspace", workspaceServers, "Workspace"],
+            ] as const
+          ).map(([scope, list, title]) => (
             <FoldCard
-              key={server.id}
-              open={!isNew && selectedId === server.id}
-              onToggle={(o) => {
-                if (o) {
-                  void flushRegisteredSettings().then(() => {
-                    setIsNew(false);
-                    setSelectedId(server.id);
-                    setProbe(null);
-                  });
-                } else if (selectedId === server.id) {
-                  void flushRegisteredSettings().then(() => setSelectedId(null));
-                }
-              }}
-              label={
-                <span className="flex flex-1 items-center justify-between gap-2">
-                  <span className="font-mono text-sm text-(--_dk-text-secondary)">
-                    {server.id}
-                  </span>
-                  <span className="flex items-center gap-2">
-                    <span className="truncate text-xs text-(--_dk-text-muted)">
-                      {server.status ?? "stopped"}
-                      {server.command ? ` · ${server.command}` : ""}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn-danger btn-icon"
-                      disabled={saveBlocked || saving}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDelete(server.id);
-                      }}
-                      onKeyDown={(e) => e.stopPropagation()}
-                      aria-label={`Delete ${server.id}`}
-                      title={`Delete ${server.id}`}
-                    >
-                      <Trash size={16} />
-                    </button>
-                  </span>
-                </span>
-              }
+              key={scope}
+              defaultOpen
+              label={<span className="settings-section-title">{title}</span>}
               className="settings-foldcard"
             >
-              {!isNew && selectedId === server.id ? editorForm : null}
+              <div className="space-y-2">
+              {list.length === 0 && !(isNew && createScope === scope) ? (
+                <p className="px-2 py-3 text-xs text-(--_dk-text-muted)">None.</p>
+              ) : null}
+              {list.map((server) => (
+                <FoldCard
+                  key={`${scope}:${server.id}`}
+                  open={!isNew && selectedScope === scope && selectedId === server.id}
+                  onToggle={(o) => {
+                    if (o) {
+                      void flushRegisteredSettings().then(() => {
+                        setIsNew(false);
+                        setSelectedScope(scope);
+                        setSelectedId(server.id);
+                        setProbe(null);
+                      });
+                    } else if (selectedScope === scope && selectedId === server.id) {
+                      void flushRegisteredSettings().then(() => setSelectedId(null));
+                    }
+                  }}
+                  label={
+                    <span className="flex flex-1 items-center justify-between gap-2">
+                      <span className="font-mono text-sm text-(--_dk-text-secondary)">
+                        {server.id}
+                      </span>
+                      <span className="flex items-center gap-2">
+                        <span className="truncate text-xs text-(--_dk-text-muted)">
+                          {server.status ?? "stopped"}
+                          {server.command ? ` · ${server.command}` : ""}
+                        </span>
+                        <button
+                          type="button"
+                          className="btn-danger btn-icon"
+                          disabled={saveBlocked || saving}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDelete(server.id, scope);
+                          }}
+                          onKeyDown={(e) => e.stopPropagation()}
+                          aria-label={`Delete ${server.id}`}
+                          title={`Delete ${server.id}`}
+                        >
+                          <Trash size={16} />
+                        </button>
+                      </span>
+                    </span>
+                  }
+                  className="settings-foldcard"
+                >
+                  {!isNew && selectedScope === scope && selectedId === server.id
+                    ? editorForm
+                    : null}
+                </FoldCard>
+              ))}
+              {isNew && createScope === scope ? (
+                <FoldCard
+                  key="__new"
+                  open
+                  onToggle={(o) => {
+                    if (!o) setIsNew(false);
+                  }}
+                  label={
+                    <span className="font-mono text-sm text-(--_dk-text-secondary)">(new)</span>
+                  }
+                  className="settings-foldcard"
+                >
+                  {editorForm}
+                </FoldCard>
+              ) : null}
+              </div>
             </FoldCard>
           ))}
-          {isNew ? (
-            <FoldCard
-              key="__new"
-              open
-              onToggle={(o) => {
-                if (!o) setIsNew(false);
-              }}
-              label={
-                <span className="font-mono text-sm text-(--_dk-text-secondary)">(new)</span>
-              }
-              className="settings-foldcard"
-            >
-              {editorForm}
-            </FoldCard>
-          ) : null}
         </div>
       </div>
     </SettingsPageShell>

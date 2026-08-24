@@ -2,14 +2,11 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 
 import {
   SettingsApiError,
-  isAgentBindableTool,
   isAgentVisible,
-  isCatalogCandidate,
   isConfigurableTool,
-  isCoreCatalogEntry,
   putLog,
 } from "./settings";
-import type { ToolCatalogEntry } from "./settings";
+import type { AvailableTool } from "./settings";
 
 describe("settings helpers", () => {
   it("identifies NONE tools without preset", () => {
@@ -50,36 +47,19 @@ describe("settings helpers", () => {
     ).toBe("Sonnet");
   });
 
-  it("detects core catalog entries", () => {
-    const core: ToolCatalogEntry = {
-      id: "read",
-      tier: "core",
-      init_scope: "none",
-      readiness: "ready",
-      catalog_enabled: true,
-    };
-    const optional: ToolCatalogEntry = { ...core, id: "lsp", tier: "optional" };
-    expect(isCoreCatalogEntry(core)).toBe(true);
-    expect(isCoreCatalogEntry(optional)).toBe(false);
-  });
-
   it("identifies subagent bindable tools excluding subagent series", async () => {
     const { isSubagentBindableTool, SUBAGENT_SERIES_TOOL_IDS } = await import("./settings");
-    const readyOptional: ToolCatalogEntry = {
+    const webfetch: AvailableTool = {
       id: "webfetch",
-      tier: "optional",
-      init_scope: "global",
-      readiness: "ready",
-      catalog_enabled: true,
+      kind: "core",
+      origin: "builtin",
     };
-    const launch: ToolCatalogEntry = {
+    const launch: AvailableTool = {
       id: "subagent_launch",
-      tier: "core",
-      init_scope: "none",
-      readiness: "ready",
-      catalog_enabled: true,
+      kind: "core",
+      origin: "builtin",
     };
-    expect(isSubagentBindableTool(readyOptional)).toBe(true);
+    expect(isSubagentBindableTool(webfetch)).toBe(true);
     expect(isSubagentBindableTool(launch)).toBe(false);
     expect(SUBAGENT_SERIES_TOOL_IDS.has("subagent_launch")).toBe(true);
   });
@@ -137,50 +117,6 @@ describe("settings helpers", () => {
     expect(isProtectedAgent("reviewer")).toBe(false);
   });
 
-  it("gates agent-bindable tools on catalog readiness", () => {
-    const readyOptional: ToolCatalogEntry = {
-      id: "webfetch",
-      tier: "optional",
-      init_scope: "global",
-      readiness: "ready",
-      catalog_enabled: true,
-    };
-    const pendingOptional: ToolCatalogEntry = {
-      ...readyOptional,
-      readiness: "not_ready",
-      catalog_enabled: false,
-    };
-    const readyCustom: ToolCatalogEntry = {
-      id: "echo_py",
-      tier: "custom",
-      init_scope: "global",
-      readiness: "ready",
-      catalog_enabled: true,
-    };
-    const pendingCustom: ToolCatalogEntry = {
-      ...readyCustom,
-      catalog_enabled: false,
-    };
-    const readyMcp: ToolCatalogEntry = {
-      id: "mcp_serena",
-      tier: "mcp",
-      init_scope: "global",
-      readiness: "ready",
-      catalog_enabled: true,
-    };
-    const pendingMcp: ToolCatalogEntry = {
-      ...readyMcp,
-      catalog_enabled: false,
-    };
-    expect(isCatalogCandidate(readyOptional)).toBe(true);
-    expect(isCatalogCandidate(pendingOptional)).toBe(false);
-    expect(isAgentBindableTool(readyOptional)).toBe(true);
-    expect(isAgentBindableTool(pendingOptional)).toBe(false);
-    expect(isAgentBindableTool(readyCustom)).toBe(true);
-    expect(isAgentBindableTool(pendingCustom)).toBe(false);
-    expect(isAgentBindableTool(readyMcp)).toBe(true);
-    expect(isAgentBindableTool(pendingMcp)).toBe(false);
-  });
 });
 
 describe("settings API response parsing", () => {

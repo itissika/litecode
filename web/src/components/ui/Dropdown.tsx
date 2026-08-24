@@ -77,6 +77,11 @@ interface DropdownProps {
   /** Direction the panel opens relative to the trigger. Auto-flips when the
    *  requested direction would run off the viewport. */
   direction?: "up" | "down";
+  /** Opt-in smart flip: when enabled, the panel opens toward the viewport half
+   *  the trigger occupies (lower half → upward, upper half → downward), sized
+   *  against the measured panel height so it never runs off the viewport.
+   *  Default false — existing callers keep the fixed-height heuristic. */
+  flip?: boolean;
   /**
    * Horizontal alignment of the panel to the wrapper.
    * - "left" / "right": anchor to that edge (default "left")
@@ -118,6 +123,7 @@ interface DropdownProps {
  */
 export function Dropdown({
   direction = "down",
+  flip = false,
   align = "left",
   variant = "select",
   className = "",
@@ -131,6 +137,9 @@ export function Dropdown({
   const [pos, setPos] = useState<PanelPos | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  /** Measured portaled-panel height, used by the opt-in `flip` to decide
+   *  against the real size instead of the fixed PANEL_MAX_H heuristic. */
+  const panelHRef = useRef<number | null>(null);
 
   const autoClose = closeOnSelect ?? variant !== "panel";
 
@@ -149,14 +158,30 @@ export function Dropdown({
     // container, so the viewport edge is the only boundary left.
     const spaceBelow = vh - rect.bottom;
     const spaceAbove = rect.top;
-    const fitsDown = spaceBelow >= PANEL_MAX_H + VIEWPORT_MARGIN;
-    const fitsUp = spaceAbove >= PANEL_MAX_H + VIEWPORT_MARGIN;
-    if (direction === "up") {
-      if (fitsUp) next.bottom = vh - rect.top;
-      else next.top = rect.bottom; // flip down
+    if (flip) {
+      // Opt-in smart flip: open toward the viewport half the trigger sits in
+      // (lower half → upward, upper half → downward), sized against the
+      // measured panel height so the panel never runs off the viewport.
+      const panelH = panelHRef.current ?? PANEL_MAX_H;
+      const fitsDown = spaceBelow >= panelH + VIEWPORT_MARGIN;
+      const fitsUp = spaceAbove >= panelH + VIEWPORT_MARGIN;
+      if (rect.bottom > vh / 2) {
+        next.bottom = vh - rect.top; // open upward
+        if (!fitsUp && fitsDown) next.top = rect.bottom; // not enough room above → fall back down
+      } else {
+        next.top = rect.bottom; // open downward
+        if (!fitsDown && fitsUp) next.bottom = vh - rect.top; // not enough room below → fall back up
+      }
     } else {
-      if (fitsDown) next.top = rect.bottom;
-      else next.bottom = vh - rect.top; // flip up
+      const fitsDown = spaceBelow >= PANEL_MAX_H + VIEWPORT_MARGIN;
+      const fitsUp = spaceAbove >= PANEL_MAX_H + VIEWPORT_MARGIN;
+      if (direction === "up") {
+        if (fitsUp) next.bottom = vh - rect.top;
+        else next.top = rect.bottom; // flip down
+      } else {
+        if (fitsDown) next.top = rect.bottom;
+        else next.bottom = vh - rect.top; // flip up
+      }
     }
 
     // Horizontal anchoring + viewport clamp.
@@ -190,6 +215,20 @@ export function Dropdown({
     }
     update();
   }, [open, direction, align, variant]);
+
+  // Measure the portaled panel once it mounts so the opt-in `flip` can decide
+  // against the real height. Repositions when the measured height first lands;
+  // the `h !== panelHRef.current` guard keeps this from looping on setPos.
+  useLayoutEffect(() => {
+    if (!open || !flip || !pos) return;
+    const el = panelRef.current;
+    if (!el) return;
+    const h = el.offsetHeight;
+    if (h > 0 && h !== panelHRef.current) {
+      panelHRef.current = h;
+      update();
+    }
+  }, [open, flip, pos]);
 
   useEffect(() => {
     if (!open) return;
