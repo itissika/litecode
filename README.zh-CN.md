@@ -17,7 +17,7 @@
 
 一坨 Vibe Coding 出来的、专门针对 Coding 场景的 Agent 框架。专注于：**Tool 和 Context 这些经常对人类不可见但是 agent 主战场的实现**，当然，还有我最喜欢的前端主题和动画，花了我超多时间。
 
-![LiteCode 完整工作台](./assets/screenshots/Full.png)
+![LiteCode 完整工作台](./assets/screenshots/Full.webp)
 
 ## ✨ 功能亮点
 

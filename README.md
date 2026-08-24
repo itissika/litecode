@@ -17,7 +17,7 @@
 
 A vibe-coded agent framework built specifically for coding. It focuses on **Tools and Context — the parts usually invisible to humans, yet where agents do the real work** — plus, of course, my favorite frontend theme and animations, which took an absurd amount of time.
 
-![LiteCode full workbench](./assets/screenshots/Full.png)
+![LiteCode full workbench](./assets/screenshots/Full.webp)
 
 ## ✨ Feature Highlights
 
