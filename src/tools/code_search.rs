@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::time::{Duration, Instant};
 
 use crate::context_pipeline::Context;
 use crate::engines::code_search::{DEFAULT_TOP_K, MAX_TOP_K};
@@ -8,6 +9,9 @@ use crate::engines::{
 };
 use crate::tool::Tool;
 use crate::types::ToolCallResult;
+
+const CODE_SEARCH_WARM_WAIT: Duration = Duration::from_secs(60);
+const CODE_SEARCH_WARM_POLL: Duration = Duration::from_millis(50);
 
 pub struct CodeSearchTool {
     engines: WorkspaceEngines,
@@ -62,6 +66,16 @@ impl Tool for CodeSearchTool {
             .unwrap_or(DEFAULT_TOP_K)
             .clamp(1, MAX_TOP_K);
 
+        if !self.engines.is_warmed("code_search") {
+            let started = Instant::now();
+            while started.elapsed() < CODE_SEARCH_WARM_WAIT {
+                if self.engines.is_warmed("code_search") {
+                    break;
+                }
+                std::thread::sleep(CODE_SEARCH_WARM_POLL);
+            }
+        }
+
         match self.engines.search(RetrievalQuery {
             query: query.to_string(),
             corpus: RetrievalCorpus::Code,
@@ -98,16 +112,7 @@ impl Tool for CodeSearchTool {
                     .collect();
                 ToolCallResult::ok(lines.join("\n"))
             }
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.to_lowercase().contains("warm") || msg.to_lowercase().contains("not ready") {
-                    ToolCallResult::error(format!(
-                        "{msg}. Enable code_search in Settings → Engines and wait until Warm"
-                    ))
-                } else {
-                    ToolCallResult::error(msg)
-                }
-            }
+            Err(e) => ToolCallResult::error(e.to_string()),
         }
     }
 
@@ -117,5 +122,16 @@ impl Tool for CodeSearchTool {
 
     fn timeout(&self) -> Option<u64> {
         Some(60)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waits_up_to_sixty_seconds_then_searches_not_loading() {
+        assert_eq!(CODE_SEARCH_WARM_WAIT, Duration::from_secs(60));
+        assert_eq!(CODE_SEARCH_WARM_POLL, Duration::from_millis(50));
     }
 }

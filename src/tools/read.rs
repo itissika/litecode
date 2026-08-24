@@ -9,14 +9,12 @@ use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::{ToolCallResult, ToolOutputPart};
 
-/// Default / max line window. Omitted `limit` no longer means “read to EOF”.
+/// Default / max line window.
 const DEFAULT_LINE_LIMIT: usize = 1500;
 /// Soft output cap so a page stays under the 32KB spill threshold.
 const DEFAULT_CHAR_BUDGET: usize = 24_000;
 /// Per-line display cap (chars, not bytes).
 const MAX_LINE_CHARS: usize = 1500;
-/// When `limit` is 0 or negative, return this many lines and attach a Warning.
-const INVALID_LIMIT_FALLBACK: usize = 50;
 
 #[derive(Default)]
 pub struct ReadTool {
@@ -42,13 +40,13 @@ impl Tool for ReadTool {
                     "type": "string",
                     "description": crate::tools::file_path::FILE_PATH_SCHEMA_HINT
                 },
-                "offset": {
+                "start_line": {
                     "type": "integer",
-                    "description": "Start line (1-indexed, default 1)"
+                    "description": "First line to read, 1-based, inclusive. Default 1."
                 },
-                "limit": {
+                "end_line": {
                     "type": "integer",
-                    "description": "Max lines after offset (default and max 1500). Use offset to page."
+                    "description": "Last line to read, 1-based, inclusive. Default start_line+1499 (max 1500 lines per call)."
                 },
                 "token_budget": {
                     "type": "integer",
@@ -238,21 +236,23 @@ impl ReadTool {
             }
         };
 
-        let (offset, offset_warning) = resolve_offset(input);
-        let (limit, limit_warning) = resolve_limit(input);
+        let (start_line, start_warning) = resolve_start_line(input);
+        let (end_line, window_warning, capped_window) = match resolve_end_line(input, start_line) {
+            Ok(pair) => pair,
+            Err(msg) => return ToolCallResult::error(msg),
+        };
         let (token_budget, budget_warning) = resolve_token_budget(input);
 
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
-        if offset > total_lines && total_lines > 0 {
+        if start_line > total_lines && total_lines > 0 {
             return ToolCallResult::error(format!(
-                "offset {} exceeds file length ({} lines)",
-                offset, total_lines
+                "start_line {start_line} exceeds file length ({total_lines} lines)"
             ));
         }
 
-        let start = offset - 1;
-        let end = (start + limit).min(total_lines);
+        let start = start_line - 1;
+        let end = end_line.min(total_lines);
 
         let mut result = String::new();
         let mut char_count = 0usize;
@@ -278,20 +278,24 @@ impl ReadTool {
         if result.is_empty() {
             return apply_read_warnings(
                 ToolCallResult::ok("(empty file)"),
-                [&offset_warning, &limit_warning, &budget_warning],
+                [&start_warning, &window_warning, &budget_warning],
             );
         }
 
-        if let Some(footer) =
-            pagination_footer(start + 1, start + lines_included, total_lines, hit_char_cap)
-        {
+        if let Some(footer) = pagination_footer(
+            start + 1,
+            start + lines_included,
+            total_lines,
+            hit_char_cap,
+            capped_window,
+        ) {
             result.push('\n');
             result.push_str(&footer);
         }
 
         apply_read_warnings(
             ToolCallResult::ok(result.trim_end_matches(['\n', '\r']).to_string()),
-            [&offset_warning, &limit_warning, &budget_warning],
+            [&start_warning, &window_warning, &budget_warning],
         )
     }
 
@@ -307,34 +311,74 @@ impl ReadTool {
     }
 }
 
-fn resolve_offset(input: &Value) -> (usize, Option<String>) {
-    if input.get("offset").is_none() {
+fn resolve_start_line(input: &Value) -> (usize, Option<String>) {
+    if input.get("start_line").is_none() {
         return (1, None);
     }
-    if let Some(n) = input["offset"].as_i64() {
+    if let Some(n) = input["start_line"].as_i64() {
         if n < 1 {
             return (
                 1,
                 Some(format!(
-                    "offset {n} is invalid (must be >= 1); starting at line 1"
+                    "start_line {n} is invalid (must be >= 1); starting at line 1"
                 )),
             );
         }
         return (n as usize, None);
     }
-    if let Some(n) = input["offset"].as_u64() {
+    if let Some(n) = input["start_line"].as_u64() {
         if n < 1 {
             return (
                 1,
-                Some("offset 0 is invalid (must be >= 1); starting at line 1".into()),
+                Some("start_line 0 is invalid (must be >= 1); starting at line 1".into()),
             );
         }
         return (n as usize, None);
     }
     (
         1,
-        Some("offset must be a positive integer; starting at line 1".into()),
+        Some("start_line must be a positive integer; starting at line 1".into()),
     )
+}
+
+fn resolve_end_line(
+    input: &Value,
+    start_line: usize,
+) -> std::result::Result<(usize, Option<String>, bool), String> {
+    let default_end = start_line.saturating_add(DEFAULT_LINE_LIMIT - 1);
+    let (requested, parse_warning) = if input.get("end_line").is_none() {
+        (default_end, None)
+    } else if let Some(n) = input["end_line"].as_i64() {
+        if n < 1 {
+            return Err("end_line must be >= start_line".into());
+        }
+        (n as usize, None)
+    } else if let Some(n) = input["end_line"].as_u64() {
+        if n < 1 {
+            return Err("end_line must be >= start_line".into());
+        }
+        (n as usize, None)
+    } else {
+        (
+            default_end,
+            Some("end_line must be a positive integer; using default window".into()),
+        )
+    };
+    if requested < start_line {
+        return Err("end_line must be >= start_line".into());
+    }
+    let max_end = start_line.saturating_add(DEFAULT_LINE_LIMIT - 1);
+    if requested > max_end {
+        Ok((
+            max_end,
+            Some(format!(
+                "end_line window exceeds max {DEFAULT_LINE_LIMIT}; showing {DEFAULT_LINE_LIMIT} lines. Use start_line to continue"
+            )),
+            true,
+        ))
+    } else {
+        Ok((requested, parse_warning, input.get("end_line").is_none()))
+    }
 }
 
 fn resolve_token_budget(input: &Value) -> (usize, Option<String>) {
@@ -363,45 +407,6 @@ fn resolve_token_budget(input: &Value) -> (usize, Option<String>) {
     )
 }
 
-fn resolve_limit(input: &Value) -> (usize, Option<String>) {
-    if input.get("limit").is_none() {
-        return (DEFAULT_LINE_LIMIT, None);
-    }
-    if let Some(n) = input["limit"].as_i64() {
-        if n <= 0 {
-            return (
-                INVALID_LIMIT_FALLBACK,
-                Some(format!(
-                    "limit {n} is invalid (must be >= 1); showing first {INVALID_LIMIT_FALLBACK} lines instead"
-                )),
-            );
-        }
-        return clamp_line_limit(n as usize);
-    }
-    if let Some(n) = input["limit"].as_u64() {
-        return clamp_line_limit(n as usize);
-    }
-    (
-        INVALID_LIMIT_FALLBACK,
-        Some(format!(
-            "limit must be a positive integer; showing first {INVALID_LIMIT_FALLBACK} lines instead"
-        )),
-    )
-}
-
-fn clamp_line_limit(n: usize) -> (usize, Option<String>) {
-    if n > DEFAULT_LINE_LIMIT {
-        (
-            DEFAULT_LINE_LIMIT,
-            Some(format!(
-                "limit {n} exceeds max {DEFAULT_LINE_LIMIT}; showing {DEFAULT_LINE_LIMIT} lines. Use offset to continue"
-            )),
-        )
-    } else {
-        (n, None)
-    }
-}
-
 fn format_read_line(num: usize, line: &str) -> String {
     format!("{:6}: {}\n", num, truncate_chars(line, MAX_LINE_CHARS))
 }
@@ -419,21 +424,22 @@ fn pagination_footer(
     last_shown: usize,
     total: usize,
     hit_char_cap: bool,
+    capped_window: bool,
 ) -> Option<String> {
     if last_shown == 0 {
         return None;
     }
-    if last_shown >= total && !hit_char_cap {
+    if last_shown >= total || (!hit_char_cap && !capped_window) {
         return None;
     }
     let next = last_shown + 1;
     if hit_char_cap {
         Some(format!(
-            "[showing lines {start_1}-{last_shown} of {total} — output cap. Use offset={next} to continue]"
+            "[showing lines {start_1}-{last_shown} of {total} — output cap. Use start_line={next} to continue]"
         ))
     } else {
         Some(format!(
-            "[showing lines {start_1}-{last_shown} of {total}. Use offset={next} to continue]"
+            "[showing lines {start_1}-{last_shown} of {total}. Use start_line={next} to continue]"
         ))
     }
 }
@@ -544,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn test_read_with_offset_limit() {
+    fn test_read_with_start_end_line() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, "line1\nline2\nline3\nline4\nline5\n").expect("write");
@@ -552,15 +558,29 @@ mod tests {
         let tool = ReadTool::default();
         let input = serde_json::json!({
             "file_path": file_path.to_str().expect("path"),
-            "offset": 2,
-            "limit": 2
+            "start_line": 2,
+            "end_line": 3
         });
 
         let result = tool.call(input).content;
-        assert!(result.contains("2: line2"));
-        assert!(result.contains("3: line3"));
-        assert!(!result.contains("line1"));
-        assert!(!result.contains("line4"));
+        assert_eq!(result, "     2: line2\n     3: line3");
+    }
+
+    #[test]
+    fn test_read_start_line_past_end_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "line1\nline2\n").expect("write");
+
+        let result = ReadTool::default().call(serde_json::json!({
+            "file_path": file_path.to_str().expect("path"),
+            "start_line": 3,
+        }));
+
+        assert_eq!(
+            result.content,
+            "Error: start_line 3 exceeds file length (2 lines)"
+        );
     }
 
     #[test]
@@ -666,7 +686,7 @@ mod tests {
 
         let result = tool.call(input).content;
         assert!(
-            result.contains("output cap") && result.contains("Use offset="),
+            result.contains("output cap") && result.contains("Use start_line="),
             "should be truncated, got: {}",
             result
         );
@@ -689,13 +709,32 @@ mod tests {
         assert!(result.contains("  1500: 1500"));
         assert!(!result.contains("  1501: 1501"));
         assert!(
-            result.contains("[showing lines 1-1500 of 1600. Use offset=1501 to continue]"),
+            result.contains("[showing lines 1-1500 of 1600. Use start_line=1501 to continue]"),
             "got: {result}"
         );
     }
 
     #[test]
-    fn test_read_clamps_huge_limit() {
+    fn test_read_token_cap_footer_is_full_string() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("short.txt");
+        std::fs::write(&file_path, "one\ntwo\nthree\n").expect("write");
+
+        let result = ReadTool::default()
+            .call(serde_json::json!({
+                "file_path": file_path.to_str().expect("path"),
+                "token_budget": 12,
+            }))
+            .content;
+
+        assert_eq!(
+            result,
+            "     1: one\n\n[showing lines 1-1 of 3 — output cap. Use start_line=2 to continue]"
+        );
+    }
+
+    #[test]
+    fn test_read_clamps_huge_end_line() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("long.txt");
         let content: String = (1..=1600).map(|i| format!("{i}\n")).collect();
@@ -704,11 +743,11 @@ mod tests {
         let tool = ReadTool::default();
         let result = tool.call(serde_json::json!({
             "file_path": file_path.to_str().expect("path"),
-            "limit": 99999
+            "end_line": 99999
         }));
         assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
         assert!(!result.content.contains("  1501: 1501"));
-        assert!(result.content.contains("Use offset=1501 to continue"));
+        assert!(result.content.contains("Use start_line=1501 to continue"));
     }
 
     #[test]
@@ -764,36 +803,33 @@ mod tests {
                 .is_err()
         );
 
-        // offset = 0 → fallback with warning (same family as limit = 0)
+        // start_line = 0 → fallback with warning
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("lines.txt");
         std::fs::write(&file_path, "line1\nline2\nline3\n").expect("write");
         let result = tool.call(serde_json::json!({
             "file_path": file_path.to_str().expect("path"),
-            "offset": 0
+            "start_line": 0
         }));
         assert!(
-            result.content.contains("offset 0 is invalid"),
+            result.content.contains("start_line 0 is invalid"),
             "got: {}",
             result.content
         );
         assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
         assert!(result.content.contains("line1"), "got: {}", result.content);
 
-        // limit = 0 → fallback with warning (not a hard validation error)
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("lines.txt");
-        std::fs::write(&file_path, "line1\nline2\nline3\n").expect("write");
         let result = tool.call(serde_json::json!({
             "file_path": file_path.to_str().expect("path"),
-            "limit": 0
+            "start_line": 2,
+            "end_line": 1
         }));
+        assert!(result.content.starts_with("Error:"));
         assert!(
-            result.content.contains("invalid"),
+            result.content.contains("end_line must be >= start_line"),
             "got: {}",
             result.content
         );
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
 
         // Valid
         assert!(
@@ -803,24 +839,24 @@ mod tests {
     }
 
     #[test]
-    fn negative_offset_and_token_budget_warn_and_read() {
+    fn negative_start_line_and_token_budget_warn_and_read() {
         let tool = ReadTool::default();
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("lines.txt");
         std::fs::write(&file_path, "line1\nline2\nline3\n").expect("write");
         let path = file_path.to_str().expect("path");
 
-        let offset = tool.call(serde_json::json!({
+        let start = tool.call(serde_json::json!({
             "file_path": path,
-            "offset": -5
+            "start_line": -5
         }));
-        assert_eq!(offset.level, crate::types::ToolSignalLevel::Warning);
+        assert_eq!(start.level, crate::types::ToolSignalLevel::Warning);
         assert!(
-            offset.content.contains("offset -5 is invalid"),
+            start.content.contains("start_line -5 is invalid"),
             "got: {}",
-            offset.content
+            start.content
         );
-        assert!(offset.content.contains("line1"), "got: {}", offset.content);
+        assert!(start.content.contains("line1"), "got: {}", start.content);
 
         let budget = tool.call(serde_json::json!({
             "file_path": path,

@@ -482,12 +482,20 @@ mod tests {
     fn large_success_shows_head_tail_and_file() {
         let cap = sample_capture(true, "HEADCHUNK\n", "TAILCHUNK\n", 50_000, false);
         let body = bash_status::format_completed_view(&cap, Some(1), false, Path::new("/proj"));
-        assert!(body.starts_with("exit_code: 1\n"));
-        assert!(body.contains("output_file: .litecode/bash/bash_x.output"));
-        assert!(body.contains("--- head ---"));
-        assert!(body.contains("HEADCHUNK"));
-        assert!(body.contains("TAILCHUNK"));
-        assert!(body.contains("do not re-run"));
+        assert_eq!(
+            body,
+            concat!(
+                "exit_code: 1\n",
+                "bytes: 50000\n",
+                "output_file: .litecode/bash/bash_x.output\n",
+                "[head 2048B + tail 4096B of 50000 bytes. output_file has the full log — grep/read it only if this window is not enough. Do not re-run.]\n",
+                "\n",
+                "--- head ---\n",
+                "HEADCHUNK\n",
+                "--- tail ---\n",
+                "TAILCHUNK\n",
+            )
+        );
     }
 
     #[test]
@@ -664,7 +672,7 @@ mod tests {
             );
             assert!(result.content.contains("--- head ---"));
             assert!(result.content.contains("--- tail ---"));
-            assert!(result.content.contains("do not re-run"));
+            assert!(result.content.contains("only if this window is not enough"));
             assert!(
                 result.content.contains("LINE_1"),
                 "head should include early lines, got: {}",

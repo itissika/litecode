@@ -9,9 +9,9 @@ use super::ansi::strip_ansi;
 use super::error::{TerminalError, TerminalResult};
 
 /// Bytes kept at the start of the model-facing window.
-pub const INLINE_HEAD: usize = 8 * 1024;
+pub const INLINE_HEAD: usize = 2 * 1024;
 /// Bytes kept at the end of the model-facing window.
-pub const INLINE_TAIL: usize = 8 * 1024;
+pub const INLINE_TAIL: usize = 4 * 1024;
 /// Grow the in-memory buffer until this size, then freeze into head+tail.
 pub const INLINE_FULL: usize = INLINE_HEAD + INLINE_TAIL;
 /// Stop writing the on-disk log after this many bytes.
@@ -161,17 +161,34 @@ fn split_at_bytes(s: &str, max: usize) -> (&str, &str) {
     s.split_at(i)
 }
 
+fn tail_byte_start(s: &str) -> usize {
+    let mut i = s.len().saturating_sub(INLINE_TAIL);
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+/// After the byte window cut, drop a partial first line so tail starts on `\n`.
+fn align_tail_start_to_line(s: &str, byte_start: usize) -> usize {
+    if byte_start == 0 {
+        return 0;
+    }
+    match s[byte_start..].find('\n') {
+        Some(pos) => byte_start + pos + 1,
+        None => byte_start,
+    }
+}
+
 fn trim_to_tail(tail: &mut String) {
     if tail.len() <= INLINE_TAIL {
         return;
     }
-    let start = {
-        let mut i = tail.len() - INLINE_TAIL;
-        while i < tail.len() && !tail.is_char_boundary(i) {
-            i += 1;
-        }
-        i
-    };
+    let byte_start = tail_byte_start(tail);
+    let mut start = align_tail_start_to_line(tail, byte_start);
+    if start >= tail.len() {
+        start = byte_start;
+    }
     tail.replace_range(..start, "");
 }
 
@@ -214,6 +231,17 @@ mod tests {
         assert_eq!(on_disk.len(), chunk.len());
         assert!(on_disk.starts_with(&cap.head));
         assert!(on_disk.ends_with(&cap.tail));
+    }
+
+    #[test]
+    fn trim_to_tail_aligns_to_next_newline() {
+        let mut tail = format!("{}abcng\nLASTLINE\n", "x".repeat(INLINE_TAIL));
+        trim_to_tail(&mut tail);
+        assert_eq!(tail, "LASTLINE\n");
+
+        let mut utf8 = format!("{}前置ng\n末尾行\n", "x".repeat(INLINE_TAIL));
+        trim_to_tail(&mut utf8);
+        assert_eq!(utf8, "末尾行\n");
     }
 
     #[test]

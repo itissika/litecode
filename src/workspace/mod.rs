@@ -3,6 +3,7 @@ mod change;
 pub mod file_ops;
 pub mod filter;
 mod git;
+mod path_sort;
 mod recycle;
 mod routes;
 mod sandbox;
@@ -17,6 +18,7 @@ pub use filter::{
     ExcludeMatcher, FilterLayers, FilterPreset, RelPathCtx, path_excluded, rel_path_under,
     walk_builder,
 };
+pub use path_sort::{glob_hit_key, sort_glob_hits};
 pub use routes::{WorkspaceState, router as workspace_router};
 pub use sandbox::{Sandbox, SandboxError};
 pub use service::{MAX_FILE_SIZE, WorkspaceError, WorkspaceService};

@@ -1,9 +1,8 @@
 //! Agent `grep` tool — Zed-aligned narrow LexicalLane frontend.
 //!
-//! Schema is intentionally tiny (regex / include_pattern / path / offset / case_sensitive / no_ignore).
-//! Output is Markdown match cards: headings use `crumb › L…` when tree-sitter
-//! resolves enclosing scopes; snippets expand to the tightest larger syntax
-//! ancestor (capped at 6 lines, with a remaining-lines note) else ±2 context.
+//! Schema is regex / include_pattern / path / offset / case_sensitive / no_ignore / expand.
+//! Default view is matching lines grouped by file (glob order). `expand: true` uses
+//! Markdown match cards: headings `crumb › L…` when tree-sitter resolves scopes.
 //! Human workspace Search continues to use LexicalLane via the retrieval facade.
 
 use std::collections::{BTreeMap, HashMap};
@@ -62,6 +61,10 @@ impl Tool for GrepTool {
                 "no_ignore": {
                     "type": "boolean",
                     "description": "When true, search without .gitignore / files.exclude / search.exclude (default: false)."
+                },
+                "expand": {
+                    "type": "boolean",
+                    "description": "If true, expand each hit into a code snippet (syntax ancestor up to 6 lines, otherwise ±2 lines) with headings. Default false: matching lines only. Prefer path/include_pattern to narrow before setting expand."
                 }
             },
             "required": ["regex"]
@@ -146,6 +149,7 @@ fn run_grep(input: &Value, workspace_root: &Path, path_mode: ToolPathMode) -> Re
         .as_str()
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
+    let expand = input["expand"].as_bool().unwrap_or(false);
     let offset = input["offset"].as_u64().map(|o| o as usize).unwrap_or(0);
     let case_sensitive = input["case_sensitive"].as_bool().unwrap_or(false);
     let no_ignore = input["no_ignore"].as_bool().unwrap_or(false);
@@ -189,12 +193,9 @@ fn run_grep(input: &Value, workspace_root: &Path, path_mode: ToolPathMode) -> Re
             resolved.display()
         )));
     };
-    // Fetch one extra hit past the page to detect has_more (Zed streams until page+1).
-    let fetch = offset
-        .saturating_add(RESULTS_PER_PAGE)
-        .saturating_add(1)
-        .max(1);
-
+    // Fetch a large set, sort by glob path key + line, then page. Encounter
+    // order from the walker is not the view order.
+    let ctx_lines = if expand { CONTEXT_LINES } else { 0 };
     let outcome = lexical_search_with_preset(
         &LexicalQuery {
             pattern: regex.to_string(),
@@ -206,9 +207,9 @@ fn run_grep(input: &Value, workspace_root: &Path, path_mode: ToolPathMode) -> Re
             include: include_pattern,
             exclude: None,
             multiline: false,
-            max_matches: fetch,
-            before_context: CONTEXT_LINES,
-            after_context: CONTEXT_LINES,
+            max_matches: usize::MAX,
+            before_context: ctx_lines,
+            after_context: ctx_lines,
             search_hidden: false,
         },
         preset,
@@ -237,7 +238,10 @@ fn run_grep(input: &Value, workspace_root: &Path, path_mode: ToolPathMode) -> Re
         return Ok("No matches found".to_string());
     }
 
-    let total = outcome.matches.len();
+    let mut matches = outcome.matches;
+    sort_grep_matches(&mut matches);
+
+    let total = matches.len();
     if offset >= total {
         let last = (total.saturating_sub(1) / RESULTS_PER_PAGE) * RESULTS_PER_PAGE;
         return Ok(format!(
@@ -245,11 +249,61 @@ fn run_grep(input: &Value, workspace_root: &Path, path_mode: ToolPathMode) -> Re
         ));
     }
 
-    Ok(format_zed_page(&root, &outcome.matches, offset))
+    if expand {
+        Ok(format_zed_page(&root, &matches, offset))
+    } else {
+        Ok(format_compact_page(&matches, offset))
+    }
+}
+
+fn sort_grep_matches(matches: &mut [LexicalMatch]) {
+    matches.sort_by(|a, b| {
+        crate::workspace::glob_hit_key(&a.path)
+            .cmp(&crate::workspace::glob_hit_key(&b.path))
+            .then(a.start_line.cmp(&b.start_line))
+    });
+}
+
+fn wrap_grep_page(body: &str, offset: usize, shown: usize, has_more: bool) -> String {
+    if shown == 0 {
+        return String::new();
+    }
+    if has_more {
+        format!(
+            "Showing matches {}-{} (there were more matches found; use offset: {} to see next page):\n{body}",
+            offset + 1,
+            offset + shown,
+            offset + RESULTS_PER_PAGE,
+        )
+    } else {
+        format!("Found {shown} matches:\n{body}")
+    }
+}
+
+fn format_compact_page(matches: &[LexicalMatch], offset: usize) -> String {
+    if matches.is_empty() {
+        return String::new();
+    }
+    let page_end = (offset + RESULTS_PER_PAGE).min(matches.len());
+    let page = &matches[offset..page_end];
+    let has_more = matches.len() > page_end;
+
+    let mut body = String::new();
+    let mut current: Option<&str> = None;
+    for m in page {
+        if current != Some(m.path.as_str()) {
+            body.push_str(&m.path);
+            body.push('\n');
+            current = Some(&m.path);
+        }
+        let text = truncate_snippet_lines(m.line_text.trim_end_matches(['\n', '\r']));
+        body.push_str(&format!("  {:>6}:{text}\n", m.start_line));
+    }
+    wrap_grep_page(&body, offset, page.len(), has_more)
 }
 
 /// Zed grep-panel style: page grouped by file (`## Matches in {path}`) with
-/// AST-breadcrumb headings per hit.
+/// AST-breadcrumb headings per hit. File order is glob_hit_key (same as compact).
 fn format_zed_page(root: &Path, matches: &[LexicalMatch], offset: usize) -> String {
     if matches.is_empty() {
         return String::new();
@@ -259,7 +313,6 @@ fn format_zed_page(root: &Path, matches: &[LexicalMatch], offset: usize) -> Stri
     let page = &matches[offset..page_end];
     let has_more = matches.len() > page_end;
 
-    // Preserve encounter order of files while grouping.
     let mut file_order: Vec<String> = Vec::new();
     let mut by_file: BTreeMap<String, Vec<&LexicalMatch>> = BTreeMap::new();
     for m in page {
@@ -310,20 +363,7 @@ fn format_zed_page(root: &Path, matches: &[LexicalMatch], offset: usize) -> Stri
     }
 
     let shown = page.len();
-    if shown == 0 {
-        return String::new();
-    }
-
-    if has_more {
-        format!(
-            "Showing matches {}-{} (there were more matches found; use offset: {} to see next page):\n{body}",
-            offset + 1,
-            offset + shown,
-            offset + RESULTS_PER_PAGE,
-        )
-    } else {
-        format!("Found {shown} matches:\n{body}")
-    }
+    wrap_grep_page(&body, offset, shown, has_more)
 }
 
 struct SnippetRange {
@@ -541,7 +581,10 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("other.txt"), "nothing interesting\n").unwrap();
 
-        let result = call_in(dir.path(), serde_json::json!({ "regex": "quick brown" }));
+        let result = call_in(
+            dir.path(),
+            serde_json::json!({ "regex": "quick brown", "expand": true }),
+        );
         assert!(result.contains("## Matches in hello.txt"), "got: {result}");
         assert!(result.contains("### L1"), "got: {result}");
         assert!(result.contains("quick brown"), "got: {result}");
@@ -559,6 +602,74 @@ mod tests {
         assert!(
             result.contains("## Matches in hello.txt\n\n### "),
             "expected blank line before ###, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_grep_default_groups_path_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("hello.txt"),
+            "the quick brown fox\njumps over the lazy dog\nquick brown again\n",
+        )
+        .unwrap();
+
+        let result = call_in(dir.path(), serde_json::json!({ "regex": "quick brown" }));
+        assert_eq!(
+            result,
+            "Found 2 matches:\nhello.txt\n       1:the quick brown fox\n       3:quick brown again\n"
+        );
+        assert!(!result.contains("## Matches in"));
+        assert!(!result.contains("###"));
+    }
+
+    #[test]
+    fn test_grep_default_glob_file_order() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/tools")).unwrap();
+        std::fs::write(dir.path().join("src/tools/read.rs"), "needle here\n").unwrap();
+        std::fs::write(dir.path().join("z.md"), "needle here\n").unwrap();
+        std::fs::write(dir.path().join("a.md"), "needle here\nneedle two\n").unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "needle here\n").unwrap();
+
+        let result = call_in(dir.path(), serde_json::json!({ "regex": "needle" }));
+        assert_eq!(
+            result,
+            concat!(
+                "Found 5 matches:\n",
+                "a.md\n",
+                "       1:needle here\n",
+                "       2:needle two\n",
+                "z.md\n",
+                "       1:needle here\n",
+                "src/a.rs\n",
+                "       1:needle here\n",
+                "src/tools/read.rs\n",
+                "       1:needle here\n",
+            )
+        );
+    }
+
+    #[test]
+    fn test_grep_expanded_uses_glob_file_order() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("z.txt"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("src/a.txt"), "needle\n").unwrap();
+
+        let result = call_in(
+            dir.path(),
+            serde_json::json!({ "regex": "needle", "expand": true }),
+        );
+        let a = result.find("## Matches in a.txt").expect("a.txt heading");
+        let z = result.find("## Matches in z.txt").expect("z.txt heading");
+        let nested = result
+            .find("## Matches in src/a.txt")
+            .expect("src/a.txt heading");
+        assert!(
+            a < z && z < nested,
+            "expected glob file order, got: {result}"
         );
     }
 
@@ -684,26 +795,29 @@ mod tests {
         std::fs::write(dir.path().join("many.txt"), &content).unwrap();
 
         let page1 = call_in(dir.path(), serde_json::json!({ "regex": "item\\d+" }));
-        assert!(page1.contains("Showing matches 1-20"), "got: {page1}");
-        assert!(page1.contains("use offset: 20"), "got: {page1}");
-        assert!(page1.contains("item00"), "got: {page1}");
-        assert!(page1.contains("item19"), "got: {page1}");
-        // ±2 merge may include item20/21 as context of item19; pagination is match-count based.
+        let expected_page1_prefix = concat!(
+            "Showing matches 1-20 (there were more matches found; use offset: 20 to see next page):\n",
+            "many.txt\n",
+            "       1:item00\n",
+            "       2:item01\n",
+        );
+        assert!(page1.starts_with(expected_page1_prefix), "got: {page1}");
+        assert!(page1.contains("      20:item19\n"), "got: {page1}");
+        assert!(!page1.contains("item20"), "got: {page1}");
+        assert!(!page1.contains("## Matches in"), "got: {page1}");
 
         let page2 = call_in(
             dir.path(),
             serde_json::json!({ "regex": "item\\d+", "offset": 20 }),
         );
-        assert!(page2.contains("item20"), "got: {page2}");
-        assert!(page2.contains("item39"), "got: {page2}");
         assert!(
-            page2.contains("use offset: 40") || page2.starts_with("Found "),
+            page2.starts_with(
+                "Showing matches 21-40 (there were more matches found; use offset: 40 to see next page):\nmany.txt\n      21:item20\n"
+            ),
             "got: {page2}"
         );
-        assert!(
-            !page2.contains("item00"),
-            "page 2 should not re-list early matches as primary, got: {page2}"
-        );
+        assert!(page2.contains("      40:item39\n"), "got: {page2}");
+        assert!(!page2.contains("item00"), "got: {page2}");
     }
 
     #[test]
@@ -765,7 +879,10 @@ mod tests {
             "fn foo() {\n    let x = 1;\n    println!(\"hello\");\n    let y = 2;\n}\n",
         )
         .unwrap();
-        let result = call_in(dir.path(), serde_json::json!({ "regex": "println" }));
+        let result = call_in(
+            dir.path(),
+            serde_json::json!({ "regex": "println", "expand": true }),
+        );
         // Ancestor expands to the whole fn when it fits in the cap.
         assert!(
             result.contains("fn foo()"),
@@ -785,8 +902,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("zh.txt"), "你好世界\n").unwrap();
         let result = call_in(dir.path(), serde_json::json!({ "regex": "世界" }));
-        assert!(result.contains("你好世界"), "got: {result}");
-        assert!(result.contains("## Matches in zh.txt"), "got: {result}");
+        assert_eq!(result, "Found 1 matches:\nzh.txt\n       1:你好世界\n");
     }
 
     #[test]
@@ -797,7 +913,10 @@ mod tests {
             "before\n```\nNEEDLE inside fence\n```\nafter\n",
         )
         .unwrap();
-        let result = call_in(dir.path(), serde_json::json!({ "regex": "NEEDLE" }));
+        let result = call_in(
+            dir.path(),
+            serde_json::json!({ "regex": "NEEDLE", "expand": true }),
+        );
         assert!(result.contains("NEEDLE inside fence"), "got: {result}");
         // Outer fence must be longer than ```
         assert!(
@@ -814,7 +933,10 @@ mod tests {
             "impl Store {\n    fn save(&self) {\n        let hit = 1;\n    }\n}\n",
         )
         .unwrap();
-        let result = call_in(dir.path(), serde_json::json!({ "regex": "hit" }));
+        let result = call_in(
+            dir.path(),
+            serde_json::json!({ "regex": "hit", "expand": true }),
+        );
         assert!(
             result.contains("### impl Store › fn save › L"),
             "expected crumb › L heading, got: {result}"
@@ -831,7 +953,10 @@ mod tests {
     fn test_grep_breadcrumb_falls_back_for_txt() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "fn needle() {}\n").unwrap();
-        let result = call_in(dir.path(), serde_json::json!({ "regex": "needle" }));
+        let result = call_in(
+            dir.path(),
+            serde_json::json!({ "regex": "needle", "expand": true }),
+        );
         assert!(result.contains("### L1"), "got: {result}");
         assert!(!result.contains('›'), "got: {result}");
     }
@@ -850,7 +975,7 @@ mod tests {
 
         let if_hit = call_in(
             dir.path(),
-            serde_json::json!({ "regex": "Inside if block" }),
+            serde_json::json!({ "regex": "Inside if block", "expand": true }),
         );
         assert!(
             if_hit.contains("if condition") && if_hit.contains("Inside if block"),
@@ -861,7 +986,10 @@ mod tests {
             "got: {if_hit}"
         );
 
-        let mid = call_in(dir.path(), serde_json::json!({ "regex": "Line 5" }));
+        let mid = call_in(
+            dir.path(),
+            serde_json::json!({ "regex": "Line 5", "expand": true }),
+        );
         assert!(
             mid.contains("fn long_function"),
             "long fn should expand from start, got: {mid}"
@@ -879,7 +1007,10 @@ mod tests {
         let long = "needle_".to_string() + &"x".repeat(400);
         std::fs::write(dir.path().join("wide.txt"), format!("{long}\n")).unwrap();
 
-        let result = call_in(dir.path(), serde_json::json!({ "regex": "needle_" }));
+        let result = call_in(
+            dir.path(),
+            serde_json::json!({ "regex": "needle_", "expand": true }),
+        );
         assert!(result.contains("(line truncated)"), "got: {result}");
         assert!(!result.contains(&"x".repeat(300)), "got: {result}");
     }
@@ -942,7 +1073,8 @@ mod tests {
                 "pattern": "wrong",
                 "output_mode": "count",
                 "multiline": true,
-                "max_matches": 1
+                "max_matches": 1,
+                "expand": true
             }),
         );
         assert!(result.contains("zed_only"), "got: {result}");
@@ -1025,9 +1157,6 @@ mod tests {
             dir.path(),
             serde_json::json!({ "regex": "single_needle", "path": "single.txt" }),
         );
-        assert!(file.contains("## Matches in single.txt"), "got: {file}");
-        assert!(file.contains("single_needle"), "got: {file}");
-        assert!(!file.contains("other.txt"), "got: {file}");
-        assert!(!file.starts_with("Error"), "got: {file}");
+        assert_eq!(file, "Found 1 matches:\nsingle.txt\n       1:single_needle\n");
     }
 }
