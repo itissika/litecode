@@ -126,10 +126,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+          append_body: true
           body: |
-            > ⚠️ Unsigned build — Windows SmartScreen may warn on first run.
-            >
-            > Installer (`Litecode-Setup-x64.exe`) or portable (`Litecode-Portable-x64.exe`).
+            ## 安装包
+
+            - `Litecode-Setup-x64.exe` — 安装版
+            - `Litecode-Portable-x64.exe` — 便携版
+            - `SHA256SUMS.txt` — 校验和
+
+            > 未配置 `WIN_CSC_*` 时为未签名构建；SmartScreen 可能在首次运行时提示。
           files: |
             desktop/out/Litecode-Portable-*.exe
             desktop/out/Litecode-Setup-*.exe

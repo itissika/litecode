@@ -2,12 +2,32 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
-## [0.1.5] - 2026-08-19
+## [0.1.5] - 2026-08-24
+
+### 新增
+
+- Session 以 seq 为权威行号（wire、持久化、Revert、压缩、搜索与 UI 全链路）。
+- MCP：工具元数据、allowlist、服务器管理；OpenCode 适配器。
+- Ark Coding Plan 适配。
+- 会话 active plan 与 UI 指示。
+- 桌面 Hub 首页重设计。
+- Git 面板：提交图、树形浏览与多选。
+- 终端 bash jobs 与工作区控制；设置项自动保存。
+- 上下文占用环分项展示（system / 工具 schema / 调用 / 输出 / 对话）。
+- 安装包内嵌 embed 与 slim Linux tar；Open Remote 分传模型与服务端包。
 
 ### 变更
 
-- 本地 nightly 轻量打包：`scripts/package_local.ps1` 产出不内嵌 embed 模型、不内嵌 Linux tar 的 Windows 安装包，并在 WSL 打出同版本无模型 server tar。公开完整包流程（CI `package_win.ps1` 默认嵌入）未改。
-- 打包后的桌面端从约定路径读取 tar / 模型（`LITECODE_BUNDLE_ROOT`、`LITECODE_LINUX_BUNDLE`、`LITECODE_MODEL_DIR`、`%LOCALAPPDATA%\litecode\bundles`）。Open Remote 先上传 slim tar，再按需同步模型目录。
+- 工具设置改为按 Agent 绑定卡片，移除全局 Tool Catalog；MCP / 自定义工具支持工作区作用域。
+- grep 默认仅返回匹配行；可选 `expand` 展开代码片段。
+- read 参数改为 `start_line` / `end_line`（取代 offset / limit）。
+- `.litecode/excludes.json` 变更时自动热重载。
+- 移除 hook 系统。
+- LLM SSE 长连接取消 120s 超时。
+
+### 修复
+
+- LSP 在 Windows 上解析 npm shim。
 
 ## [0.1.4] - 2026-08-16
 
