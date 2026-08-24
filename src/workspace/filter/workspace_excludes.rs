@@ -1,5 +1,6 @@
 //! Workspace-owned exclude lists. Seeded from VS Code defaults on first open;
 //! Settings writes `.litecode/excludes.json` and activates the process cache.
+//! Direct edits to that file are reloaded by the workspace watcher.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -127,10 +128,7 @@ fn cache() -> &'static RwLock<WorkspaceExcludesFile> {
 
 /// Live lists used by walk / path matchers. Defaults until a workspace activates.
 pub fn active_workspace_excludes() -> WorkspaceExcludesFile {
-    cache()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
+    cache().read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 pub fn activate_workspace_excludes(file: WorkspaceExcludesFile) {
@@ -139,6 +137,42 @@ pub fn activate_workspace_excludes(file: WorkspaceExcludesFile) {
 
 pub fn workspace_excludes_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(".litecode").join("excludes.json")
+}
+
+/// Workspace-relative `/`-separated path of the excludes file.
+pub const WORKSPACE_EXCLUDES_REL: &str = ".litecode/excludes.json";
+
+pub fn is_workspace_excludes_rel(rel: &str) -> bool {
+    rel.trim_start_matches("./") == WORKSPACE_EXCLUDES_REL
+}
+
+/// Re-read `.litecode/excludes.json` into the process cache.
+///
+/// Missing file or parse/IO errors leave the current cache unchanged (do not
+/// re-seed). Returns whether the cache was replaced.
+pub fn reload_workspace_excludes_from_disk(workspace_root: &Path) -> bool {
+    let path = workspace_excludes_path(workspace_root);
+    if !path.exists() {
+        tracing::warn!(
+            path = %path.display(),
+            "excludes.json missing; keeping active lists"
+        );
+        return false;
+    }
+    match read_workspace_excludes(workspace_root) {
+        Ok(file) => {
+            activate_workspace_excludes(file);
+            true
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %path.display(),
+                "excludes.json reload failed; keeping active lists"
+            );
+            false
+        }
+    }
 }
 
 pub fn read_workspace_excludes(workspace_root: &Path) -> Result<WorkspaceExcludesFile> {
@@ -210,7 +244,10 @@ mod tests {
         file.search_exclude.push("**/vendor".into());
         persist_workspace_excludes(dir.path(), &file).unwrap();
         let read = read_workspace_excludes(dir.path()).unwrap();
-        assert!(!read.search_exclude.iter().any(|g| g.contains("node_modules")));
+        assert!(!read
+            .search_exclude
+            .iter()
+            .any(|g| g.contains("node_modules")));
         assert!(read.search_exclude.iter().any(|g| g == "**/vendor"));
     }
 
@@ -236,9 +273,86 @@ mod tests {
 
     #[test]
     fn ensure_seeds_missing_file() {
+        let _lock = lock_excludes_cache_for_test();
+        let _guard = CacheRestore(active_workspace_excludes());
         let dir = tempfile::tempdir().unwrap();
         let seeded = ensure_workspace_excludes(dir.path()).unwrap();
         assert!(workspace_excludes_path(dir.path()).is_file());
         assert_eq!(seeded.search_exclude, default_search_exclude());
     }
+
+    struct CacheRestore(WorkspaceExcludesFile);
+    impl Drop for CacheRestore {
+        fn drop(&mut self) {
+            activate_workspace_excludes(self.0.clone());
+        }
+    }
+
+    #[test]
+    fn reload_from_disk_activates_valid_file() {
+        let _lock = lock_excludes_cache_for_test();
+        let _guard = CacheRestore(active_workspace_excludes());
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = WorkspaceExcludesFile::builtin_defaults();
+        file.search_exclude.push("**/vendor".into());
+        persist_workspace_excludes(dir.path(), &file).unwrap();
+        activate_workspace_excludes(WorkspaceExcludesFile::builtin_defaults());
+        assert!(!active_workspace_excludes()
+            .search_exclude
+            .iter()
+            .any(|g| g == "**/vendor"));
+        assert!(reload_workspace_excludes_from_disk(dir.path()));
+        assert!(active_workspace_excludes()
+            .search_exclude
+            .iter()
+            .any(|g| g == "**/vendor"));
+    }
+
+    #[test]
+    fn reload_keeps_cache_on_invalid_json() {
+        let _lock = lock_excludes_cache_for_test();
+        let _guard = CacheRestore(active_workspace_excludes());
+        let dir = tempfile::tempdir().unwrap();
+        let mut live = WorkspaceExcludesFile::builtin_defaults();
+        live.search_exclude.push("**/keep-me".into());
+        activate_workspace_excludes(live.clone());
+        let path = workspace_excludes_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ not json").unwrap();
+        assert!(!reload_workspace_excludes_from_disk(dir.path()));
+        assert!(active_workspace_excludes()
+            .search_exclude
+            .iter()
+            .any(|g| g == "**/keep-me"));
+    }
+
+    #[test]
+    fn reload_keeps_cache_when_file_missing() {
+        let _lock = lock_excludes_cache_for_test();
+        let _guard = CacheRestore(active_workspace_excludes());
+        let dir = tempfile::tempdir().unwrap();
+        let mut live = WorkspaceExcludesFile::builtin_defaults();
+        live.search_exclude.push("**/keep-missing".into());
+        activate_workspace_excludes(live);
+        assert!(!reload_workspace_excludes_from_disk(dir.path()));
+        assert!(!workspace_excludes_path(dir.path()).exists());
+        assert!(active_workspace_excludes()
+            .search_exclude
+            .iter()
+            .any(|g| g == "**/keep-missing"));
+    }
+
+    #[test]
+    fn is_workspace_excludes_rel_matches_canonical() {
+        assert!(is_workspace_excludes_rel(WORKSPACE_EXCLUDES_REL));
+        assert!(is_workspace_excludes_rel("./.litecode/excludes.json"));
+        assert!(!is_workspace_excludes_rel(".litecode/excludes.json.bak"));
+        assert!(!is_workspace_excludes_rel("excludes.json"));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn lock_excludes_cache_for_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }

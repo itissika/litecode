@@ -6,7 +6,10 @@ use std::time::Duration;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use super::change::WorkspaceChange;
-use super::filter::{FilterPreset, path_excluded, rel_path_under};
+use super::filter::{
+    FilterPreset, is_workspace_excludes_rel, path_excluded, rel_path_under,
+    reload_workspace_excludes_from_disk,
+};
 use super::service::WorkspaceService;
 
 const DEBOUNCE_MS: u64 = 300;
@@ -73,6 +76,9 @@ impl WorkspaceWatcher {
                         let changes = coalesce_pending(&mut pending, &mut pending_deleted, |rel| {
                             rel_base.join(rel).exists()
                         });
+                        if changes_include_workspace_excludes(&changes) {
+                            reload_workspace_excludes_from_disk(&rel_base);
+                        }
                         for change in changes {
                             let _ = change_tx.send(change);
                         }
@@ -98,7 +104,7 @@ fn classify_event(event: &Event, root: &Path) -> Option<(Vec<String>, bool)> {
         .paths
         .iter()
         .filter_map(|p| rel_path_under(root, p))
-        .filter(|p| !path_excluded(p, FilterPreset::Watcher))
+        .filter(|p| is_workspace_excludes_rel(p) || !path_excluded(p, FilterPreset::Watcher))
         .collect();
 
     if paths.is_empty() {
@@ -149,6 +155,12 @@ fn coalesce_pending(
         });
     }
     changes
+}
+
+fn changes_include_workspace_excludes(changes: &[WorkspaceChange]) -> bool {
+    changes
+        .iter()
+        .any(|c| c.paths.iter().any(|p| is_workspace_excludes_rel(p)))
 }
 
 pub fn spawn_watcher(workspace: Arc<WorkspaceService>) -> anyhow::Result<Arc<WorkspaceWatcher>> {
@@ -246,6 +258,43 @@ mod tests {
         let ev = make_event(EventKind::Access(AccessKind::Any), &[f.to_str().unwrap()]);
         assert!(classify_event(&ev, &root).is_none());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn excludes_json_is_kept_even_when_watcher_exclude_matches() {
+        let _lock = crate::workspace::filter::lock_excludes_cache_for_test();
+        let prev = crate::workspace::filter::active_workspace_excludes();
+        let root = temp_root();
+        let mut lists = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
+        lists.watcher_exclude.push("**/.litecode/**".into());
+        crate::workspace::filter::activate_workspace_excludes(lists);
+        assert!(path_excluded(
+            ".litecode/excludes.json",
+            FilterPreset::Watcher
+        ));
+        let path = root.join(".litecode").join("excludes.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"{}").unwrap();
+        let ev = make_event(EventKind::Modify(ModifyKind::Any), &[path.to_str().unwrap()]);
+        let (paths, is_deleted) = classify_event(&ev, &root).unwrap();
+        assert!(!is_deleted);
+        assert_eq!(paths, vec![".litecode/excludes.json".to_string()]);
+        crate::workspace::filter::activate_workspace_excludes(prev);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flush_detects_excludes_json_among_changes() {
+        let modified = WorkspaceChange {
+            paths: vec!["src/a.rs".into(), ".litecode/excludes.json".into()],
+            kind: "modified".into(),
+        };
+        assert!(changes_include_workspace_excludes(&[modified]));
+        let other = WorkspaceChange {
+            paths: vec!["src/a.rs".into()],
+            kind: "modified".into(),
+        };
+        assert!(!changes_include_workspace_excludes(&[other]));
     }
 
     #[test]
