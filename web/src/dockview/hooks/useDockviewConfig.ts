@@ -2,6 +2,7 @@ import { useCallback, useRef } from "react";
 import type { DockviewApi, DockviewWillDropEvent } from "dockview-react";
 
 import { buildDefaultLayout, ensureDefaultPanels } from "../config/layout";
+import { buildTabContextMenuItems } from "../config/tabContextMenu";
 import { closingFlags } from "../config/sharedFlags";
 import { useEditorStore } from "../../stores/editorStore";
 import { useConnectionStore, setDockviewApi } from "../../stores/connectionStore";
@@ -174,27 +175,7 @@ export function useDockviewConfig() {
     }
   }, []);
 
-  const getTabContextMenuItems = useCallback((params: any) => {
-    const { panel, api } = params;
-    if (panel.api.tabComponent === "edge") {
-      return [
-        { label: "Popout Window", action: () => api.addPopoutGroup(panel).catch(() => {}) },
-        "separator",
-        panel.api.isMaximized()
-          ? { label: "Restore", action: () => panel.api.exitMaximized() }
-          : { label: "Maximize", action: () => panel.api.maximize() },
-        "separator",
-        {
-          label: "Rename",
-          action: () => {
-            const name = prompt("Panel name:", panel.api.title);
-            if (name) panel.api.setTitle(name);
-          },
-        },
-      ] as any;
-    }
-    return ["close", "closeOthers", "closeAll"] as any;
-  }, []);
+  const getTabContextMenuItems = buildTabContextMenuItems;
 
   return { apiRef, onReady, onWillDrop, getTabContextMenuItems };
 }
