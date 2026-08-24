@@ -264,4 +264,45 @@ mod tests {
         assert!(files.iter().any(|f| f == "a.rs"));
         assert!(is_scannable_rel_path("a.rs"));
     }
+
+    #[test]
+    fn embedding_corpus_honors_index_gitignore_switch() {
+        // The real embedding input path: walk(Index) + content gates. Toggling
+        // the search-side gitignore switch must add/drop gitignored files from
+        // the corpus, without a full reindex fingerprint.
+        use crate::workspace::filter::{WorkspaceExcludesFile, with_excludes_cache_for_test};
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        // The ignore crate only honors .gitignore with a git repo marker present.
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".gitignore"), "ref_vendor.rs\n").unwrap();
+        std::fs::write(root.join("ref_vendor.rs"), "fn r() {}\n").unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+
+        // Default: git_ignore=true → the pulled reference repo stays out.
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let files = scannable_files(root).unwrap();
+            assert!(files.iter().any(|f| f == "main.rs"), "{files:?}");
+            assert!(
+                !files.iter().any(|f| f == "ref_vendor.rs"),
+                "gitignored file must not enter the embedding corpus: {files:?}"
+            );
+        });
+
+        // git_ignore=false → the ignored file joins the corpus.
+        with_excludes_cache_for_test(
+            WorkspaceExcludesFile {
+                git_ignore: false,
+                ..WorkspaceExcludesFile::builtin_defaults()
+            },
+            || {
+                let files = scannable_files(root).unwrap();
+                assert!(
+                    files.iter().any(|f| f == "ref_vendor.rs"),
+                    "git_ignore=false must admit the file: {files:?}"
+                );
+            },
+        );
+    }
 }

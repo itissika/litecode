@@ -52,4 +52,4 @@ pub use workspace_excludes::{
 };
 
 #[cfg(test)]
-pub(crate) use workspace_excludes::lock_excludes_cache_for_test;
+pub(crate) use workspace_excludes::{lock_excludes_cache_for_test, with_excludes_cache_for_test};

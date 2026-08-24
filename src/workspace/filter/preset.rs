@@ -103,7 +103,17 @@ impl FilterPreset {
                 index_content: true,
             },
         };
-        if !active_workspace_excludes().git_ignore {
+        let cfg = active_workspace_excludes();
+        // Browse-only split: the explorer honors `.gitignore` independently from
+        // the search / index corpora switch (`git_ignore`). Watcher / Unfiltered
+        // layers already bake `git_ignore: false`; the override only ever forces
+        // layers off, never on.
+        let honor_git_ignore = if self == Self::Explorer {
+            cfg.explorer_git_ignore
+        } else {
+            cfg.git_ignore
+        };
+        if !honor_git_ignore {
             layers.git_ignore = false;
             layers.git_global = false;
             layers.git_exclude = false;
@@ -135,4 +145,72 @@ pub fn exclude_globs(preset: FilterPreset) -> Vec<String> {
         out.extend(cfg.files_exclude);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::filter::{WorkspaceExcludesFile, with_excludes_cache_for_test};
+
+    fn with_config(cfg: WorkspaceExcludesFile, f: impl FnOnce()) {
+        with_excludes_cache_for_test(cfg, f);
+    }
+
+    fn git_layers(preset: FilterPreset) -> (bool, bool, bool) {
+        let l = preset.layers();
+        (l.git_ignore, l.git_global, l.git_exclude)
+    }
+
+    #[test]
+    fn browse_search_split_explorer_reads_own_switch() {
+        // Search/index side honors gitignore, explorer does not: the split the
+        // user asked for (browse independently).
+        with_config(
+            WorkspaceExcludesFile {
+                git_ignore: true,
+                explorer_git_ignore: false,
+                ..WorkspaceExcludesFile::builtin_defaults()
+            },
+            || {
+                assert_eq!(git_layers(FilterPreset::Explorer), (false, false, false));
+                assert_eq!(git_layers(FilterPreset::Index), (true, true, true));
+                assert_eq!(git_layers(FilterPreset::TextSearch), (true, true, true));
+                assert_eq!(git_layers(FilterPreset::FileGlob), (true, true, true));
+                assert_eq!(git_layers(FilterPreset::AgentText), (true, true, true));
+            },
+        );
+    }
+
+    #[test]
+    fn browse_search_split_inverse() {
+        // Explorer honors gitignore while search/index ignores it: switches are
+        // fully independent in both directions.
+        with_config(
+            WorkspaceExcludesFile {
+                git_ignore: false,
+                explorer_git_ignore: true,
+                ..WorkspaceExcludesFile::builtin_defaults()
+            },
+            || {
+                assert_eq!(git_layers(FilterPreset::Explorer), (true, true, true));
+                assert_eq!(git_layers(FilterPreset::Index), (false, false, false));
+                assert_eq!(git_layers(FilterPreset::TextSearch), (false, false, false));
+            },
+        );
+    }
+
+    #[test]
+    fn watcher_and_unfiltered_never_honor_gitignore() {
+        with_config(
+            WorkspaceExcludesFile {
+                git_ignore: true,
+                explorer_git_ignore: true,
+                ..WorkspaceExcludesFile::builtin_defaults()
+            },
+            || {
+                assert_eq!(git_layers(FilterPreset::Watcher), (false, false, false));
+                assert_eq!(git_layers(FilterPreset::Unfiltered), (false, false, false));
+            },
+        );
+    }
 }

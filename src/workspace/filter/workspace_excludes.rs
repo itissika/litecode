@@ -25,10 +25,18 @@ pub struct WorkspaceExcludesFile {
     pub watcher_exclude: Vec<String>,
     #[serde(default = "default_git_ignore")]
     pub git_ignore: bool,
+    /// Browse-only: honor `.gitignore` in the explorer tree, independent of
+    /// [`Self::git_ignore`] which gates the search / index corpora.
+    #[serde(default = "default_explorer_git_ignore")]
+    pub explorer_git_ignore: bool,
 }
 
 fn default_git_ignore() -> bool {
     true
+}
+
+fn default_explorer_git_ignore() -> bool {
+    false
 }
 
 fn default_files_exclude() -> Vec<String> {
@@ -55,6 +63,7 @@ impl WorkspaceExcludesFile {
             search_exclude: default_search_exclude(),
             watcher_exclude: default_watcher_exclude(),
             git_ignore: true,
+            explorer_git_ignore: false,
         }
     }
 
@@ -64,6 +73,7 @@ impl WorkspaceExcludesFile {
             search_exclude: self.search_exclude.clone(),
             watcher_exclude: self.watcher_exclude.clone(),
             git_ignore: self.git_ignore,
+            explorer_git_ignore: self.explorer_git_ignore,
         }
     }
 
@@ -82,6 +92,10 @@ pub struct WorkspaceExcludesLists {
     pub search_exclude: Vec<String>,
     pub watcher_exclude: Vec<String>,
     pub git_ignore: bool,
+    /// Browse-only gitignore switch; `#[serde(default)]` keeps PUT bodies from
+    /// older clients valid.
+    #[serde(default)]
+    pub explorer_git_ignore: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -90,6 +104,7 @@ pub struct WorkspaceExcludesView {
     pub search_exclude: Vec<String>,
     pub watcher_exclude: Vec<String>,
     pub git_ignore: bool,
+    pub explorer_git_ignore: bool,
     pub defaults: WorkspaceExcludesLists,
 }
 
@@ -101,6 +116,7 @@ impl WorkspaceExcludesView {
             search_exclude: lists.search_exclude,
             watcher_exclude: lists.watcher_exclude,
             git_ignore: lists.git_ignore,
+            explorer_git_ignore: lists.explorer_git_ignore,
             defaults: WorkspaceExcludesFile::builtin_defaults().lists_view(),
         }
     }
@@ -233,6 +249,7 @@ mod tests {
         assert_eq!(d.files_exclude, default_files_exclude());
         assert_eq!(d.search_exclude, default_search_exclude());
         assert!(d.git_ignore);
+        assert!(!d.explorer_git_ignore);
         assert!(d.search_exclude.iter().any(|g| g.contains("node_modules")));
     }
 
@@ -264,11 +281,13 @@ mod tests {
             search_exclude: vec![],
             watcher_exclude: vec![],
             git_ignore: false,
+            explorer_git_ignore: true,
         }
         .normalize();
         assert_eq!(file.files_exclude, vec!["**/.git".to_string()]);
         assert_eq!(file.version, WORKSPACE_EXCLUDES_VERSION);
         assert!(!file.git_ignore);
+        assert!(file.explorer_git_ignore);
     }
 
     #[test]
@@ -343,6 +362,40 @@ mod tests {
     }
 
     #[test]
+    fn legacy_file_without_explorer_field_defaults_false() {
+        // Workspaces written before the browse/search split: missing field must
+        // parse with the new default (explorer does not honor .gitignore).
+        let dir = tempfile::tempdir().unwrap();
+        let path = workspace_excludes_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{
+                "version": 1,
+                "files_exclude": [],
+                "search_exclude": [],
+                "watcher_exclude": [],
+                "git_ignore": true
+            }"#,
+        )
+        .unwrap();
+        let file = read_workspace_excludes(dir.path()).unwrap();
+        assert!(file.git_ignore);
+        assert!(!file.explorer_git_ignore);
+    }
+
+    #[test]
+    fn explorer_switch_roundtrips_through_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = WorkspaceExcludesFile::builtin_defaults();
+        file.explorer_git_ignore = true;
+        persist_workspace_excludes(dir.path(), &file).unwrap();
+        let read = read_workspace_excludes(dir.path()).unwrap();
+        assert!(read.explorer_git_ignore);
+        assert!(read.git_ignore);
+    }
+
+    #[test]
     fn is_workspace_excludes_rel_matches_canonical() {
         assert!(is_workspace_excludes_rel(WORKSPACE_EXCLUDES_REL));
         assert!(is_workspace_excludes_rel("./.litecode/excludes.json"));
@@ -355,4 +408,20 @@ mod tests {
 pub(crate) fn lock_excludes_cache_for_test() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Activate `file` for the test body, then restore the previous cache.
+/// Serializes tests that mutate the global excludes cache.
+#[cfg(test)]
+pub(crate) fn with_excludes_cache_for_test(file: WorkspaceExcludesFile, f: impl FnOnce()) {
+    struct CacheRestore(WorkspaceExcludesFile);
+    impl Drop for CacheRestore {
+        fn drop(&mut self) {
+            activate_workspace_excludes(self.0.clone());
+        }
+    }
+    let _lock = lock_excludes_cache_for_test();
+    let _guard = CacheRestore(active_workspace_excludes());
+    activate_workspace_excludes(file);
+    f();
 }

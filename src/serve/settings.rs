@@ -807,6 +807,7 @@ async fn put_excludes(
         search_exclude: body.search_exclude,
         watcher_exclude: body.watcher_exclude,
         git_ignore: body.git_ignore,
+        explorer_git_ignore: body.explorer_git_ignore,
     };
     match write_workspace_excludes(root, file) {
         Ok(saved) => ok_json(WorkspaceExcludesView::from_file(&saved)),

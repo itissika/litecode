@@ -234,4 +234,64 @@ mod tests {
         );
         assert!(!files.iter().any(|f| f.contains(".litecode")), "{files:?}");
     }
+
+    #[test]
+    fn explorer_and_index_split_gitignore_in_walk() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        // The ignore crate only honors .gitignore with a git repo marker present.
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".gitignore"), "ignored.rs\n").unwrap();
+        std::fs::write(root.join("ignored.rs"), "fn ig() {}\n").unwrap();
+        std::fs::write(root.join("visible.rs"), "fn vs() {}\n").unwrap();
+
+        let collect = |preset: FilterPreset| -> Vec<String> {
+            walk_builder(root, preset)
+                .build()
+                .flatten()
+                .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+                .filter_map(|e| cheap_rel_under(root, e.path()))
+                .collect()
+        };
+
+        use crate::workspace::filter::{WorkspaceExcludesFile, with_excludes_cache_for_test};
+
+        // Defaults: search/index honor gitignore, explorer does not (browse split).
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let explorer = collect(FilterPreset::Explorer);
+            assert!(
+                explorer.iter().any(|f| f == "ignored.rs"),
+                "explorer must show gitignored file when explorer_git_ignore=false: {explorer:?}"
+            );
+            assert!(explorer.iter().any(|f| f == "visible.rs"));
+
+            let index = collect(FilterPreset::Index);
+            assert!(
+                !index.iter().any(|f| f == "ignored.rs"),
+                "index walk must honor gitignore: {index:?}"
+            );
+            assert!(index.iter().any(|f| f == "visible.rs"));
+        });
+
+        // Inverse: explorer honors gitignore, index ignores it.
+        with_excludes_cache_for_test(
+            WorkspaceExcludesFile {
+                git_ignore: false,
+                explorer_git_ignore: true,
+                ..WorkspaceExcludesFile::builtin_defaults()
+            },
+            || {
+                let explorer2 = collect(FilterPreset::Explorer);
+                assert!(
+                    !explorer2.iter().any(|f| f == "ignored.rs"),
+                    "explorer must honor gitignore when explorer_git_ignore=true: {explorer2:?}"
+                );
+                let index2 = collect(FilterPreset::Index);
+                assert!(
+                    index2.iter().any(|f| f == "ignored.rs"),
+                    "index walk must include gitignored file when git_ignore=false: {index2:?}"
+                );
+            },
+        );
+    }
 }

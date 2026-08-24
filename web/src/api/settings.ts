@@ -217,6 +217,7 @@ export interface WorkspaceExcludesLists {
   search_exclude: string[];
   watcher_exclude: string[];
   git_ignore: boolean;
+  explorer_git_ignore: boolean;
 }
 
 export interface WorkspaceExcludes extends WorkspaceExcludesLists {

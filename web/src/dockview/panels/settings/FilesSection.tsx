@@ -13,6 +13,7 @@ type FilesDraft = {
   searchText: string;
   watcherText: string;
   gitIgnore: boolean;
+  explorerGitIgnore: boolean;
 };
 
 export function FilesSection() {
@@ -26,6 +27,7 @@ export function FilesSection() {
     searchText: "",
     watcherText: "",
     gitIgnore: true,
+    explorerGitIgnore: false,
   });
 
   useEffect(() => {
@@ -35,6 +37,7 @@ export function FilesSection() {
       searchText: textFromGlobs(excludes.search_exclude),
       watcherText: textFromGlobs(excludes.watcher_exclude),
       gitIgnore: excludes.git_ignore,
+      explorerGitIgnore: excludes.explorer_git_ignore,
     });
   }, [excludes, persistStatus]);
 
@@ -48,12 +51,14 @@ export function FilesSection() {
         search_exclude: globsFromText(d.searchText),
         watcher_exclude: globsFromText(d.watcherText),
         git_ignore: d.gitIgnore,
+        explorer_git_ignore: d.explorerGitIgnore,
       };
       const same =
         JSON.stringify(payload.files_exclude) === JSON.stringify(excludes.files_exclude)
         && JSON.stringify(payload.search_exclude) === JSON.stringify(excludes.search_exclude)
         && JSON.stringify(payload.watcher_exclude) === JSON.stringify(excludes.watcher_exclude)
-        && payload.git_ignore === excludes.git_ignore;
+        && payload.git_ignore === excludes.git_ignore
+        && payload.explorer_git_ignore === excludes.explorer_git_ignore;
       if (same) return { skip: "unchanged" };
       return { ok: payload };
     },
@@ -69,6 +74,7 @@ export function FilesSection() {
         searchText: textFromGlobs(snap.search_exclude),
         watcherText: textFromGlobs(snap.watcher_exclude),
         gitIgnore: snap.git_ignore,
+        explorerGitIgnore: snap.explorer_git_ignore,
       });
     },
   });
@@ -81,6 +87,7 @@ export function FilesSection() {
       searchText: textFromGlobs(d.search_exclude),
       watcherText: textFromGlobs(d.watcher_exclude),
       gitIgnore: d.git_ignore,
+      explorerGitIgnore: d.explorer_git_ignore,
     });
   };
 
@@ -115,7 +122,17 @@ export function FilesSection() {
               disabled={saveBlocked}
               onChange={(e) => setDraft((d) => ({ ...d, gitIgnore: e.target.checked }))}
             />
-            Honor .gitignore in the explorer and search
+            Honor .gitignore in search and code index
+          </label>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-(--_dk-text-primary)">
+            <input
+              type="checkbox"
+              className="accent-(--_dk-accent-hover)"
+              checked={draft.explorerGitIgnore}
+              disabled={saveBlocked}
+              onChange={(e) => setDraft((d) => ({ ...d, explorerGitIgnore: e.target.checked }))}
+            />
+            Honor .gitignore in the explorer
           </label>
         </div>
 
