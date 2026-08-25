@@ -278,6 +278,14 @@ mod tests {
     }
 
     #[test]
+    fn text_token_count_handles_utf8_and_grows_monotonically() {
+        let ascii = count_text_tokens("needle");
+        let chinese = count_text_tokens("你好，世界");
+        assert!(ascii > 0 && chinese > 0);
+        assert!(count_text_tokens("needle needle") > ascii);
+    }
+
+    #[test]
     fn estimate_grows_with_text() {
         let short = vec![user_text("hi")];
         let long = vec![user_text("x".repeat(400))];
