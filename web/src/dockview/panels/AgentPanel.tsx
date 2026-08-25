@@ -149,7 +149,10 @@ export function AgentChatShell({
       dismissTimerRef.current = null;
     }
     setEditingAnchor(anchor);
-    setMiniPhase("entering");
+    // Bubble click / re-open: start the enter animation. Draft edits from the
+    // mini chat itself must NOT restart it (the wrapper would collapse back
+    // to the bubble height on every keystroke).
+    setMiniPhase((phase) => (phase === "idle" || phase === "exiting" ? "entering" : phase));
   }, []);
 
   const finishDismiss = useCallback(() => {

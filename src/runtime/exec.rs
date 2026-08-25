@@ -4,13 +4,11 @@ use std::sync::Arc;
 use crate::config::bridge::agent_config_from_profile;
 use crate::context_pipeline::build_system_prompt;
 use crate::llm::ModelRequest;
+use crate::llm::ToolDef;
 use crate::runtime::llm_resolve::binding_for_agent;
 use crate::runtime::observer::{FailReason, InternalEvent, TurnError, TurnPhase, TurnTokenStats};
 use crate::runtime::provider_registry::ProviderRegistry;
-use crate::llm::ToolDef;
-use crate::session::estimate::{
-    apply_prompt_overhead, compute_token_breakdown, count_text_tokens,
-};
+use crate::session::estimate::{apply_prompt_overhead, compute_token_breakdown, count_text_tokens};
 use crate::types::{FunctionToolCall, Item, LitecodeError, Result, Transcript};
 
 use crate::agent::AgentDeps;
@@ -148,8 +146,7 @@ impl AgentDeps for AgentRuntime {
         // Single computation: `prepare_step` reports whether a full compaction
         // actually ran; phase/compaction events are driven from that truth so
         // the wire always matches what happened (no duplicate budget math).
-        self
-            .context_pipeline
+        self.context_pipeline
             .prepare_step(
                 &self.sessions,
                 &self.session_id,

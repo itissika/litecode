@@ -9,7 +9,7 @@ import {
   ListChecksIcon,
   MagnifyingGlassIcon,
   PencilIcon,
-  PlugsIcon,
+  PlugsConnectedIcon,
   PuzzlePieceIcon,
   StopIcon,
   StrategyIcon,
@@ -23,8 +23,8 @@ export type ToolStatus = "running" | "ok" | "warning" | "failed" | "unknown";
 
 type Glyph = typeof WrenchIcon;
 
-// Glyph per built-in tool name. `mcp_*` tools share Plugs; unknown tools fall
-// back to a generic wrench.
+// Glyph per built-in tool name. `mcp_*` tools share PlugsConnected; unknown
+// tools fall back to a generic wrench.
 const NAME_GLYPH: Record<string, Glyph> = {
   bash: TerminalIcon,
   wait_shell: HourglassIcon,
@@ -46,7 +46,7 @@ const NAME_GLYPH: Record<string, Glyph> = {
 
 function glyphFor(name: string): Glyph {
   if (name in NAME_GLYPH) return NAME_GLYPH[name];
-  if (name.startsWith("mcp_")) return PlugsIcon;
+  if (name.startsWith("mcp_")) return PlugsConnectedIcon;
   return WrenchIcon;
 }
 

@@ -125,9 +125,9 @@ pub fn is_mcp_tool_id(tool_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ConfigManager;
     use crate::config::resolved::WorkspaceState;
     use crate::config::schema::{GlobalSettings, McpServerDefinition, McpTransport};
-    use crate::config::ConfigManager;
 
     #[test]
     fn workspace_mcp_overrides_global_command() {
@@ -169,10 +169,8 @@ mod tests {
 
     #[test]
     fn core_webfetch_available_without_bind() {
-        let resolved = ConfigManager::resolve(
-            GlobalSettings::default(),
-            WorkspaceState::new("/tmp/core"),
-        );
+        let resolved =
+            ConfigManager::resolve(GlobalSettings::default(), WorkspaceState::new("/tmp/core"));
         assert!(is_available(&resolved, "webfetch"));
         assert!(is_available(&resolved, "websearch"));
         assert!(!agent_tool_enabled(&resolved, "default", "webfetch"));

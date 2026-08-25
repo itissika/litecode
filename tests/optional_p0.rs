@@ -32,10 +32,7 @@ fn test_global_with_provider(dir: &TempDir) -> litecode::config::schema::GlobalS
 
 #[test]
 fn seed_optional_builtins_are_engines_only() {
-    assert_eq!(
-        tools::optional_builtin_ids(),
-        &["code_search", "lsp"]
-    );
+    assert_eq!(tools::optional_builtin_ids(), &["code_search", "lsp"]);
     assert!(tools::is_core_tool("webfetch"));
     assert!(tools::is_core_tool("websearch"));
 }
@@ -190,7 +187,9 @@ fn settings_reload_reconciles_engine_manager() {
         &db,
     );
 
-    writer.write_log(litecode::config::schema::LogSettings { level: None }).expect("bump");
+    writer
+        .write_log(litecode::config::schema::LogSettings { level: None })
+        .expect("bump");
     runtime.reload_if_needed().expect("reload");
     assert!(
         runtime

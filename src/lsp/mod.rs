@@ -1,5 +1,6 @@
 //! LSP Hub: single language-server process pool shared by Agent tool and Editor.
 
+pub mod conn;
 pub mod deps;
 pub mod format;
 pub mod hub;

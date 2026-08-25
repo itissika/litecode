@@ -1,7 +1,7 @@
 import { useCallback, useRef } from "react";
 import type { DockviewApi, DockviewWillDropEvent } from "dockview-react";
 
-import { buildDefaultLayout, ensureDefaultPanels } from "../config/layout";
+import { recoverDefaultLayout } from "../config/layout";
 import { buildTabContextMenuItems } from "../config/tabContextMenu";
 import { closingFlags } from "../config/sharedFlags";
 import { useEditorStore } from "../../stores/editorStore";
@@ -92,6 +92,10 @@ export function useDockviewConfig() {
         if (sid) {
           useConnectionStore.getState().unsubscribeSession(sid);
         }
+        // Closing a stale agent tab (session gone) can empty a group or leave
+        // a restored edge rail blank. Re-ensure the default chrome after the
+        // removal settles — no-op when the rails are already healthy.
+        queueMicrotask(() => recoverDefaultLayout(api));
       }
     });
 
@@ -102,53 +106,41 @@ export function useDockviewConfig() {
         // Discard layouts from an incompatible schema version (e.g. the old
         // left-only layout) so the restored three-rail default is rebuilt.
         if (!parsed || parsed.schemaVersion !== LAYOUT_SCHEMA_VERSION) {
-          buildDefaultLayout(api);
+          recoverDefaultLayout(api);
         } else {
         const data = parsed.layout;
         isRestoring = true;
-        api.fromJSON(data);
+        const finishRestore = () => {
+          recoverDefaultLayout(api);
+          void restoreEditorTabs(api);
+        };
+        let safetyTimer: ReturnType<typeof setTimeout> | undefined;
         const disposable = api.onDidLayoutFromJSON(() => {
           isRestoring = false;
-          clearTimeout(safetyTimer);
+          if (safetyTimer !== undefined) clearTimeout(safetyTimer);
           disposable.dispose();
-          const gridGroups = api.groups.filter(
-            (g) => g.api.location.type === "grid"
-          );
-          if (gridGroups.length === 0) {
-            buildDefaultLayout(api);
+          try {
+            finishRestore();
+          } catch {
+            recoverDefaultLayout(api);
           }
-          // fromJSON replaces the whole layout; re-ensure every default panel
-          // (Explorer / Search / Source Control / Sessions / Terminal) is
-          // present so a version update that adds a new panel never leaves a
-          // side panel missing from a restored snapshot.
-          ensureDefaultPanels(api);
-
-          // Restore editor tabs for persisted editor panels
-          void restoreEditorTabs(api);
         });
+        api.fromJSON(data);
         // Safety net: reset after 2s if onDidLayoutFromJSON never fires.
-        const safetyTimer = setTimeout(() => {
+        safetyTimer = setTimeout(() => {
           if (isRestoring) {
             isRestoring = false;
             disposable.dispose();
-            const gridGroups = api.groups.filter(
-              (g) => g.api.location.type === "grid"
-            );
-            if (gridGroups.length === 0) {
-              buildDefaultLayout(api);
-            }
-            ensureDefaultPanels(api);
-            // Restore editor tabs (safety net path)
-            void restoreEditorTabs(api);
+            finishRestore();
           }
         }, 2000);
         }
       } catch {
         isRestoring = false;
-        buildDefaultLayout(api);
+        recoverDefaultLayout(api);
       }
     } else {
-      buildDefaultLayout(api);
+      recoverDefaultLayout(api);
     }
 
     let saveTimer: ReturnType<typeof setTimeout>;

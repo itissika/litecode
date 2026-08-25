@@ -714,11 +714,7 @@ impl SettingsWriter {
                 "custom tool not found: {id}"
             )));
         }
-        let keep_binding = self
-            .load()?
-            .custom_tools
-            .iter()
-            .any(|t| t.name == id);
+        let keep_binding = self.load()?.custom_tools.iter().any(|t| t.name == id);
         if keep_binding {
             return self.bump_revision();
         }

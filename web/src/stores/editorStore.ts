@@ -31,20 +31,32 @@ export interface EditorConflict {
   source: string;
 }
 
+/** One editor caret location on the browse jump stack. */
+export interface JumpLocation {
+  path: string;
+  line: number;
+  column: number;
+}
+
 interface EditorStore {
   tabs: EditorTab[];
   conflicts: Record<string, EditorConflict>;
   activePath: string | null;
   saving: boolean;
   dockviewApi: DockviewApi | null;
-  pendingReveal: { path: string; line: number } | null;
+  pendingReveal: { path: string; line: number; column?: number } | null;
   /** Per-tab Markdown view. Missing means default (wysiwyg for `.md`). */
   mdViewByPath: Record<string, MdEditorView>;
+  jumpBack: JumpLocation[];
+  jumpForward: JumpLocation[];
 
   openFile: (path: string) => Promise<void>;
   /** Open file and reveal a 1-based line (workspace search / go-to). */
-  openFileAt: (path: string, line: number) => Promise<void>;
-  consumePendingReveal: () => { path: string; line: number } | null;
+  openFileAt: (path: string, line: number, column?: number) => Promise<void>;
+  consumePendingReveal: () => { path: string; line: number; column?: number } | null;
+  pushJump: (from: JumpLocation) => void;
+  goJumpBack: (current?: JumpLocation) => JumpLocation | null;
+  goJumpForward: (current?: JumpLocation) => JumpLocation | null;
   closeTab: (path: string) => void;
   setActive: (path: string) => void;
   setContent: (path: string, content: string) => void;
@@ -81,6 +93,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   dockviewApi: null,
   pendingReveal: null,
   mdViewByPath: {},
+  jumpBack: [],
+  jumpForward: [],
 
   setDockviewApi: (api) => set({ dockviewApi: api }),
 
@@ -90,9 +104,42 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }));
   },
 
-  openFileAt: async (path, line) => {
+  pushJump: (from) => {
     set((s) => ({
-      pendingReveal: { path, line: Math.max(1, Math.floor(line)) },
+      jumpBack: [...s.jumpBack.slice(-99), from],
+      jumpForward: [],
+    }));
+  },
+
+  goJumpBack: (current) => {
+    const s = get();
+    if (s.jumpBack.length === 0) return null;
+    const loc = s.jumpBack[s.jumpBack.length - 1];
+    set({
+      jumpBack: s.jumpBack.slice(0, -1),
+      jumpForward: current ? [...s.jumpForward, current] : s.jumpForward,
+    });
+    return loc;
+  },
+
+  goJumpForward: (current) => {
+    const s = get();
+    if (s.jumpForward.length === 0) return null;
+    const loc = s.jumpForward[s.jumpForward.length - 1];
+    set({
+      jumpForward: s.jumpForward.slice(0, -1),
+      jumpBack: current ? [...s.jumpBack, current] : s.jumpBack,
+    });
+    return loc;
+  },
+
+  openFileAt: async (path, line, column) => {
+    set((s) => ({
+      pendingReveal: {
+        path,
+        line: Math.max(1, Math.floor(line)),
+        column: column != null ? Math.max(1, Math.floor(column)) : undefined,
+      },
       mdViewByPath: isWysiwygMarkdownPath(path)
         ? { ...s.mdViewByPath, [path]: "source" }
         : s.mdViewByPath,

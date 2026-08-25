@@ -93,5 +93,4 @@ mod tests {
         assert_eq!(config.model_ref, "default");
         assert_eq!(config.temperature, default_temperature());
     }
-
 }

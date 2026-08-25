@@ -179,7 +179,10 @@ pub async fn build_tool_list(
         }
     }
 
-    let mut catalog_ids: Vec<String> = available_tools(resolved).into_iter().map(|t| t.id).collect();
+    let mut catalog_ids: Vec<String> = available_tools(resolved)
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
     catalog_ids.sort();
 
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
@@ -237,7 +240,8 @@ mod tests {
     use crate::config::resolved::{WorkspaceState, resolve};
     use crate::config::schema::{
         ADAPTER_OPENAI_RESPONSES, AgentProfile, AgentToolBinding, GlobalSettings,
-        McpServerDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition, ToolPreset,
+        McpServerDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition,
+        ToolPreset,
     };
     use crate::context_pipeline::Context;
     use crate::llm::{LlmProvider, provider_from_definition};

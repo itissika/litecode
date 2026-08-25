@@ -1,4 +1,4 @@
-import { Link, Cube, Robot, GearSix, Cpu, Code, Plugs, Tree } from "@phosphor-icons/react";
+import { Link, Cube, Robot, GearSix, Cpu, Code, PlugsConnected, Tree } from "@phosphor-icons/react";
 
 import { useSettingsStore, type SettingsSection } from "../../stores/settingsStore";
 import { SettingsSkeleton } from "../../components/ui/Skeleton";
@@ -28,7 +28,7 @@ const NAV_GROUPS: {
     items: [
       { id: "agents", label: "Agents", Icon: Robot },
       { id: "custom-tools", label: "Custom Tools", Icon: Code },
-      { id: "mcp", label: "MCP", Icon: Plugs },
+      { id: "mcp", label: "MCP", Icon: PlugsConnected },
     ],
   },
   {

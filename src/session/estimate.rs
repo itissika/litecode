@@ -146,10 +146,12 @@ pub fn compute_token_breakdown(items: &[Item]) -> ItemTokenBreakdown {
         match item {
             Item::FunctionCall(fc) => {
                 bd.tool_call = bd.tool_call.saturating_add(n);
-                let row = per_tool.entry(fc.name.clone()).or_insert_with(|| ToolTokenRow {
-                    name: fc.name.clone(),
-                    ..ToolTokenRow::default()
-                });
+                let row = per_tool
+                    .entry(fc.name.clone())
+                    .or_insert_with(|| ToolTokenRow {
+                        name: fc.name.clone(),
+                        ..ToolTokenRow::default()
+                    });
                 row.call = row.call.saturating_add(n);
             }
             Item::FunctionCallOutput(out) => {
@@ -159,10 +161,12 @@ pub fn compute_token_breakdown(items: &[Item]) -> ItemTokenBreakdown {
                     .cloned()
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "unknown".into());
-                let row = per_tool.entry(name.clone()).or_insert_with(|| ToolTokenRow {
-                    name,
-                    ..ToolTokenRow::default()
-                });
+                let row = per_tool
+                    .entry(name.clone())
+                    .or_insert_with(|| ToolTokenRow {
+                        name,
+                        ..ToolTokenRow::default()
+                    });
                 row.output = row.output.saturating_add(n);
             }
             _ => bd.conversation = bd.conversation.saturating_add(n),
@@ -373,9 +377,6 @@ mod tests {
 
     #[test]
     fn breakdown_empty_is_zero() {
-        assert_eq!(
-            compute_token_breakdown(&[]),
-            ItemTokenBreakdown::default()
-        );
+        assert_eq!(compute_token_breakdown(&[]), ItemTokenBreakdown::default());
     }
 }

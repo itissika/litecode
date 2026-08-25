@@ -24,8 +24,8 @@ pub mod working;
 pub mod workspace_lock;
 
 pub use estimate::{
-    autocompact_threshold, compact_prompt,     compute_token_breakdown, compute_token_estimate, apply_prompt_overhead,
-    ItemTokenBreakdown,
+    ItemTokenBreakdown, apply_prompt_overhead, autocompact_threshold, compact_prompt,
+    compute_token_breakdown, compute_token_estimate,
 };
 pub use event::{EventDraft, EventLog, EventType, Seq, SessionEvent};
 pub use gate::SessionGate;
@@ -36,8 +36,7 @@ pub use media_tokens::{
     IMAGE_TILE_TOKENS, VIDEO_FALLBACK_TOKENS, input_content_media_tokens,
 };
 pub use model::{
-    CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION,
-    SessionKind, SessionLogRow, SessionMeta,
+    CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION, SessionKind, SessionLogRow, SessionMeta,
 };
 pub use store::{Session, SessionContextMeter, TranscriptRow, data_root_from_db_path};
 pub use surface::{Surface, SurfaceOp, derive_messages, derive_transcript_items, fold_surface};

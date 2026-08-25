@@ -72,4 +72,13 @@ describe("toolTitle", () => {
   it("keeps a deterministic readable fallback", () => {
     expect(toolTitle("custom", { offset: 0, query: "later" }).summary).toBe('query="later"');
   });
+
+  it("surfaces the MCP server id and first string arg", () => {
+    expect(toolTitle("mcp_filesystem", { path: "/tmp", recursive: true }).summary).toBe(
+      "filesystem · /tmp",
+    );
+    expect(toolTitle("mcp_filesystem", { recursive: true, depth: 2 }).summary).toBe(
+      "filesystem",
+    );
+  });
 });

@@ -76,6 +76,14 @@ cargo run -- "fix this bug for me"
 
 > Prerequisites: Rust (MSVC, edition 2024) + Node.js 22+.
 
+Local nightly (Windows installers + slim Linux tar, `LITECODE_CHANNEL=nightly`):
+
+```powershell
+./scripts/package_local.ps1
+```
+
+Artifacts: `desktop/out/` and `dist/linux/`. Official signed builds come from GitHub Releases.
+
 ## 📚 Advanced
 
 <details>

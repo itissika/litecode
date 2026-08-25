@@ -13,9 +13,7 @@ use crate::session::event::{
     EventDraft, EventType, Seq, SessionEvent, finalize_draft, item_from_event, log_state_of_item,
     spine_agent_item,
 };
-use crate::session::model::{
-    CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION,
-};
+use crate::session::model::{CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION};
 use crate::session::snapshot;
 use crate::session::surface::{
     Surface, SurfaceOp, apply_plan, fold_surface, plan_surface, project_working_pairs,
@@ -4328,7 +4326,9 @@ mod tests {
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         session.insert_detail_rows(&[user_text("hi")]).unwrap();
         session
-            .append_job_exit(&user_text("<system-reminder>\nBackground bash bg-1 exited with code 0.\n</system-reminder>"))
+            .append_job_exit(&user_text(
+                "<system-reminder>\nBackground bash bg-1 exited with code 0.\n</system-reminder>",
+            ))
             .unwrap();
         let events = session.load_events().unwrap();
         assert_eq!(events.len(), 2);

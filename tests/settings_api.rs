@@ -164,9 +164,7 @@ async fn settings_excludes_seed_and_put() {
         .await
         .expect("json");
     assert!(get["ok"].as_bool().unwrap_or(false));
-    let search = get["search_exclude"]
-        .as_array()
-        .expect("search_exclude");
+    let search = get["search_exclude"].as_array().expect("search_exclude");
     assert!(
         search
             .iter()
@@ -195,11 +193,7 @@ async fn settings_excludes_seed_and_put() {
             .iter()
             .any(|v| v.as_str().is_some_and(|s| s.contains("node_modules")))
     );
-    assert!(
-        search2
-            .iter()
-            .any(|v| v.as_str() == Some("**/vendor"))
-    );
+    assert!(search2.iter().any(|v| v.as_str() == Some("**/vendor")));
 
     let disk = std::fs::read_to_string(ws.path().join(".litecode").join("excludes.json"))
         .expect("excludes.json");
@@ -1186,12 +1180,14 @@ async fn settings_put_agent_unknown_tool_is_dropped() {
         .expect("put");
     assert_eq!(resp.status(), 200);
     let loaded = ConfigManager::load_global_from(&db_path).unwrap();
-    assert!(!loaded
-        .agents
-        .get("default")
-        .unwrap()
-        .tools
-        .contains_key("phantom-tool"));
+    assert!(
+        !loaded
+            .agents
+            .get("default")
+            .unwrap()
+            .tools
+            .contains_key("phantom-tool")
+    );
 }
 
 #[tokio::test]

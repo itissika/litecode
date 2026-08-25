@@ -1,5 +1,5 @@
 import { BrainIcon, PencilIcon, TerminalIcon, WrenchIcon } from "@phosphor-icons/react";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import {
@@ -56,6 +56,8 @@ export interface EditingUserAnchor {
   userAnchorK: number;
   draft: string;
   settings: MiniChatInputSettings;
+  /** Height of the clicked bubble, used as the mini chat's expand-from value. */
+  startHeight: number;
 }
 
 function outputsByCallId(rows: HumanRow[]): Map<string, FunctionCallOutputItem> {
@@ -375,6 +377,76 @@ export function ProcessGroup({
   );
 }
 
+/**
+ * Wrapper that animates the mini chat in by expanding its height from the
+ * clicked bubble's height to its natural height, then hands off to auto-height
+ * (so the textarea's own sizing takes over with no jitter). Width stays 100%
+ * the whole time — the old width-based animation made the textarea measure
+ * `scrollHeight` at the narrow start width, freezing a ~2x-tall height.
+ */
+function MiniChatPanel({
+  startHeight,
+  miniPhase,
+  onDone,
+  children,
+}: {
+  startHeight: number;
+  miniPhase: "idle" | "entering" | "visible" | "exiting";
+  onDone: () => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const measuredRef = useRef(false);
+  const [height, setHeight] = useState(startHeight);
+  const [opacity, setOpacity] = useState(0);
+
+  useEffect(() => {
+    if (miniPhase !== "entering" || measuredRef.current) return;
+    measuredRef.current = true;
+    const el = ref.current;
+    if (!el) return;
+    // The textarea is already sized at full width (child layout effect runs
+    // first), so scrollHeight is the mini chat's natural height.
+    const natural = el.scrollHeight;
+    // Defer to the next frame so the browser paints the start height first,
+    // then the height/opacity transition runs.
+    requestAnimationFrame(() => {
+      setHeight(natural);
+      setOpacity(1);
+    });
+  }, [miniPhase]);
+
+  return (
+    <div
+      ref={ref}
+      className={`relative z-10 w-full origin-bottom ${
+        miniPhase === "entering" || miniPhase === "exiting"
+          ? "overflow-hidden"
+          : "overflow-visible"
+      } ${miniPhase === "entering" ? "mini-chat-enter" : ""} ${
+        miniPhase === "exiting" ? "animate-mini-chat-exit" : ""
+      }`}
+      style={miniPhase === "entering" ? { height, opacity } : undefined}
+      onTransitionEnd={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (miniPhase !== "entering") return;
+        // Height always changes unless the mini chat is exactly as tall as the
+        // bubble; opacity always changes (0 -> 1), so either one finishing is a
+        // reliable "enter done" signal.
+        if (e.propertyName === "height" || e.propertyName === "opacity") {
+          onDone();
+        }
+      }}
+      onAnimationEnd={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (miniPhase === "exiting") onDone();
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 /** Bubble for a contiguous run of rows that share the same speaker side. */
 function ItemBubbleImpl({
   rows,
@@ -467,15 +539,10 @@ function ItemBubbleImpl({
     <div className={isUser ? "py-4" : "py-2"}>
       {isUser ? (
         editing ? (
-          <div
-            className={`relative z-10 w-full origin-bottom ${
-              miniPhase === "entering" || miniPhase === "exiting"
-                ? "overflow-hidden"
-                : "overflow-visible"
-            } ${
-              miniPhase === "entering" ? "animate-mini-chat-enter" : ""
-            } ${miniPhase === "exiting" ? "animate-mini-chat-exit" : ""}`}
-            onAnimationEnd={onMiniAnimationEnd}
+          <MiniChatPanel
+            startHeight={editingAnchor.startHeight}
+            miniPhase={miniPhase}
+            onDone={onMiniAnimationEnd}
           >
             <MiniChatInput
               sessionId={sessionId}
@@ -491,12 +558,12 @@ function ItemBubbleImpl({
                 void replayFromAnchor(sessionId, userAnchorK, input, settings);
               }}
             />
-          </div>
+          </MiniChatPanel>
         ) : (
         <div
           data-user-message-bubble
           className="flex cursor-text items-start gap-2"
-          onClick={() => {
+          onClick={(event) => {
             if (!showRevert || userAnchorK === undefined || !bubbleKey || editing) return;
             onEditAnchor({
               bubbleKey,
@@ -508,6 +575,7 @@ function ItemBubbleImpl({
                 thinkingTier: sessionSettings?.thinkingTier ?? "medium",
                 contextMode: sessionSettings?.contextMode ?? "standard",
               },
+              startHeight: event.currentTarget.getBoundingClientRect().height,
             });
           }}
         >

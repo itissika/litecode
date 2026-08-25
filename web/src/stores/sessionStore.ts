@@ -31,6 +31,16 @@ function definitionsToModelInfo(models: Record<string, ModelDefinition>): ModelI
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
+/**
+ * Most-recently-updated first (event order). The backend returns the list
+ * pre-sorted, but live lifecycle events mutate it in place; re-sort so any
+ * session with new activity always bubbles to the top. Stable sort — sessions
+ * sharing an `updated_at` keep their relative order.
+ */
+function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
+  return [...sessions].sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
+}
+
 function sessionControlsLocked(sessionId: string): boolean {
   const slice = useTurnStore.getState().byId.get(sessionId);
   const run = slice?.runState;
@@ -322,7 +332,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     applySnapshot,
 
     onSessionList: (sessions: SessionInfo[]) => {
-      set({ sessions, sessionsLoading: false, sessionListError: null });
+      set({ sessions: sortSessions(sessions), sessionsLoading: false, sessionListError: null });
     },
 
     onSessionLifecycle: (params) => {
@@ -332,7 +342,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         if (event === "deleted") {
           useConnectionStore.getState().unsubscribeSession(session_id);
           getDockviewApi()?.getPanel(`agent-${session_id}`)?.api.close();
-          return exists ? { sessions: state.sessions.filter((s) => s.id !== session_id) } : {};
+          return exists
+            ? { sessions: sortSessions(state.sessions.filter((s) => s.id !== session_id)) }
+            : {};
         }
         // turn_started / turn_updated / turn_finished may arrive for a session
         // that is not yet in the local list (e.g. a push arrived before the
@@ -356,7 +368,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             api_model_id: "",
             step_kinds: step_kind ? [step_kind] : [],
           };
-          return { sessions: [...state.sessions, fresh] };
+          return { sessions: sortSessions([...state.sessions, fresh]) };
         }
         switch (event) {
           case "preview_updated": {
@@ -369,7 +381,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
                   }
                 : s,
             );
-            return { sessions };
+            return { sessions: sortSessions(sessions) };
           }
           case "turn_step": {
             const sessions = state.sessions.map((s) =>
@@ -385,7 +397,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
                   }
                 : s,
             );
-            return { sessions };
+            return { sessions: sortSessions(sessions) };
           }
           case "turn_started": {
             // New turn: wipe the previous turn's accumulated step kinds.
@@ -394,13 +406,13 @@ export const useSessionStore = create<SessionStore>((set, get) => {
                 ? { ...s, running: true, turn: turn ?? s.turn, step_kinds: [] }
                 : s,
             );
-            return { sessions };
+            return { sessions: sortSessions(sessions) };
           }
           case "turn_updated": {
             const sessions = state.sessions.map((s) =>
               s.id === session_id ? { ...s, running: true, turn: turn ?? s.turn } : s,
             );
-            return { sessions };
+            return { sessions: sortSessions(sessions) };
           }
           case "turn_finished": {
             // Keep `step_kinds` for the recap; the UI holds it for a while then
@@ -412,7 +424,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             const sessions = state.sessions.map((s) =>
               s.id === session_id ? { ...s, running: false, turn: null } : s,
             );
-            return { sessions };
+            return { sessions: sortSessions(sessions) };
           }
           default:
             return {};
@@ -427,7 +439,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         const sessions = state.sessions.map((s) =>
           s.id === session_id ? { ...s, running: true, turn } : s,
         );
-        return { sessions };
+        return { sessions: sortSessions(sessions) };
       });
     },
 
@@ -484,7 +496,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       if (target?.running) return;
 
       // Optimistic: gone from list and panel immediately.
-      set({ sessions: get().sessions.filter((s) => s.id !== id) });
+      set({ sessions: sortSessions(get().sessions.filter((s) => s.id !== id)) });
       useConnectionStore.getState().unsubscribeSession(id);
       getDockviewApi()?.getPanel(`agent-${id}`)?.api.close();
 
@@ -500,7 +512,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     listSessions: () => {
       set({ sessionsLoading: true, sessionListError: null });
       useConnectionStore.getState().sendRpc<{ sessions: SessionInfo[] }>("session/list").then((data) => {
-        set({ sessions: data.sessions, sessionsLoading: false, sessionListError: null });
+        set({ sessions: sortSessions(data.sessions), sessionsLoading: false, sessionListError: null });
       }).catch((err: unknown) => {
         set({
           sessionsLoading: false,

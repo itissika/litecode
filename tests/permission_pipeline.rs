@@ -6,9 +6,9 @@ use std::collections::HashMap;
 
 use common::bindings::{binding_all_for, binding_safe_for};
 use common::permission::recording_sink;
+use litecode::config::WorkspacePaths;
 use litecode::config::resolved::{WorkspaceState, resolve};
 use litecode::config::schema::{AgentProfile, AgentRole, GlobalSettings};
-use litecode::config::WorkspacePaths;
 use litecode::context_pipeline::Context;
 use litecode::permission::{
     BindingPathMode, DEFAULT_RULE_ID, PermissionAction, PermissionEngine, clear_runtime_grants,

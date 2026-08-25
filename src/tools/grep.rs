@@ -1157,6 +1157,9 @@ mod tests {
             dir.path(),
             serde_json::json!({ "regex": "single_needle", "path": "single.txt" }),
         );
-        assert_eq!(file, "Found 1 matches:\nsingle.txt\n       1:single_needle\n");
+        assert_eq!(
+            file,
+            "Found 1 matches:\nsingle.txt\n       1:single_needle\n"
+        );
     }
 }

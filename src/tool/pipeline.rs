@@ -112,19 +112,9 @@ impl ToolPipeline {
                     if is_cancelled() || cancel.is_cancelled() {
                         // Signal is already set. Join remaining tasks so cancellable
                         // tools can kill their process trees; do not abort-and-forget.
-                        Self::join_tool_handle(
-                            handle,
-                            &captured_id,
-                            &mut results_by_id,
-                        )
-                        .await;
+                        Self::join_tool_handle(handle, &captured_id, &mut results_by_id).await;
                         for (id, remaining) in iter {
-                            Self::join_tool_handle(
-                                remaining,
-                                &id,
-                                &mut results_by_id,
-                            )
-                            .await;
+                            Self::join_tool_handle(remaining, &id, &mut results_by_id).await;
                         }
                         self.append_cancelled_outputs(invocations, results_by_id, transcript);
                         return Err(crate::types::LitecodeError::Canceled);
@@ -134,12 +124,8 @@ impl ToolPipeline {
                             results_by_id.insert(tool_use_id, result);
                             if is_cancelled() || cancel.is_cancelled() {
                                 for (id, remaining) in iter {
-                                    Self::join_tool_handle(
-                                        remaining,
-                                        &id,
-                                        &mut results_by_id,
-                                    )
-                                    .await;
+                                    Self::join_tool_handle(remaining, &id, &mut results_by_id)
+                                        .await;
                                 }
                                 self.append_cancelled_outputs(
                                     invocations,

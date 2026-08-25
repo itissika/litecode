@@ -208,7 +208,9 @@ pub fn delete_workspace_custom_tool(workspace_root: &Path, id: &str) -> Result<b
     Ok(removed)
 }
 
-pub fn load_workspace_defs(workspace_root: &Path) -> Result<(
+pub fn load_workspace_defs(
+    workspace_root: &Path,
+) -> Result<(
     std::collections::HashMap<String, McpServerDefinition>,
     std::collections::HashMap<String, CustomToolDefinition>,
 )> {

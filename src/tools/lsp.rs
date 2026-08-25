@@ -565,7 +565,7 @@ impl Tool for LspTool {
         Ok(())
     }
 
-    /// LSP operations go through LspHub's sole async exit (`run_on_hub`).
+    /// LSP operations `.await` the hub oneshot; they must not `block_on` the hub Runtime.
     fn execute(
         &self,
         input: Value,

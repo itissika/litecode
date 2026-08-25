@@ -275,7 +275,10 @@ mod tests {
         let path = root.join(".litecode").join("excludes.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, b"{}").unwrap();
-        let ev = make_event(EventKind::Modify(ModifyKind::Any), &[path.to_str().unwrap()]);
+        let ev = make_event(
+            EventKind::Modify(ModifyKind::Any),
+            &[path.to_str().unwrap()],
+        );
         let (paths, is_deleted) = classify_event(&ev, &root).unwrap();
         assert!(!is_deleted);
         assert_eq!(paths, vec![".litecode/excludes.json".to_string()]);

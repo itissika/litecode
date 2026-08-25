@@ -84,6 +84,8 @@ pub async fn handle_jsonrpc(
             struct Params {
                 method: String,
                 params: serde_json::Value,
+                #[serde(default)]
+                rpc_id: Option<u64>,
             }
             let params: Params = match serde_json::from_value(rpc.params) {
                 Ok(params) => params,
@@ -113,7 +115,7 @@ pub async fn handle_jsonrpc(
                 return;
             }
             let hub = runtime.workspace_engines.lsp_hub();
-            match hub.request(&params.method, params.params).await {
+            match hub.request_ex(&params.method, params.params, params.rpc_id).await {
                 Ok(result) => emit(
                     sink,
                     serde_json::to_value(ok_response(id, serde_json::json!({ "result": result })))

@@ -261,10 +261,12 @@ mod tests {
         file.search_exclude.push("**/vendor".into());
         persist_workspace_excludes(dir.path(), &file).unwrap();
         let read = read_workspace_excludes(dir.path()).unwrap();
-        assert!(!read
-            .search_exclude
-            .iter()
-            .any(|g| g.contains("node_modules")));
+        assert!(
+            !read
+                .search_exclude
+                .iter()
+                .any(|g| g.contains("node_modules"))
+        );
         assert!(read.search_exclude.iter().any(|g| g == "**/vendor"));
     }
 
@@ -316,15 +318,19 @@ mod tests {
         file.search_exclude.push("**/vendor".into());
         persist_workspace_excludes(dir.path(), &file).unwrap();
         activate_workspace_excludes(WorkspaceExcludesFile::builtin_defaults());
-        assert!(!active_workspace_excludes()
-            .search_exclude
-            .iter()
-            .any(|g| g == "**/vendor"));
+        assert!(
+            !active_workspace_excludes()
+                .search_exclude
+                .iter()
+                .any(|g| g == "**/vendor")
+        );
         assert!(reload_workspace_excludes_from_disk(dir.path()));
-        assert!(active_workspace_excludes()
-            .search_exclude
-            .iter()
-            .any(|g| g == "**/vendor"));
+        assert!(
+            active_workspace_excludes()
+                .search_exclude
+                .iter()
+                .any(|g| g == "**/vendor")
+        );
     }
 
     #[test]
@@ -339,10 +345,12 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{ not json").unwrap();
         assert!(!reload_workspace_excludes_from_disk(dir.path()));
-        assert!(active_workspace_excludes()
-            .search_exclude
-            .iter()
-            .any(|g| g == "**/keep-me"));
+        assert!(
+            active_workspace_excludes()
+                .search_exclude
+                .iter()
+                .any(|g| g == "**/keep-me")
+        );
     }
 
     #[test]
@@ -355,10 +363,12 @@ mod tests {
         activate_workspace_excludes(live);
         assert!(!reload_workspace_excludes_from_disk(dir.path()));
         assert!(!workspace_excludes_path(dir.path()).exists());
-        assert!(active_workspace_excludes()
-            .search_exclude
-            .iter()
-            .any(|g| g == "**/keep-missing"));
+        assert!(
+            active_workspace_excludes()
+                .search_exclude
+                .iter()
+                .any(|g| g == "**/keep-missing")
+        );
     }
 
     #[test]

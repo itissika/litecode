@@ -5,9 +5,7 @@ use std::sync::Once;
 use std::time::Duration;
 
 use litecode::config::TurnGuard;
-use litecode::config::schema::{
-    AgentProfile, AgentToolBinding, ToolPreset, ToolReadiness,
-};
+use litecode::config::schema::{AgentProfile, AgentToolBinding, ToolPreset, ToolReadiness};
 use litecode::config::workspace::enable_code_search_engine;
 use litecode::config::{ConfigManager, WorkspaceState, init_workspace};
 use litecode::engines::code_search::{

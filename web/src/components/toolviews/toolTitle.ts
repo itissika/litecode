@@ -94,6 +94,16 @@ export function toolTitle(
   }
   if (toolName === "lsp") return { summary: lspSummary(obj) };
 
+  // MCP tools are named `mcp_<server_id>`; surface the server id plus the
+  // first meaningful string argument instead of a raw key=value fallback.
+  if (toolName.startsWith("mcp_")) {
+    const server = toolName.slice("mcp_".length);
+    const arg = Object.values(obj).find(
+      (value): value is string => typeof value === "string" && !!value.trim(),
+    );
+    return { summary: arg ? `${server} · ${truncate(arg)}` : server };
+  }
+
   if (toolName === "grep") {
     const regex = stringField(obj, "regex");
     return { summary: regex ? truncate(`/${regex}/${formatScope(obj, ["path", "include_pattern"])}`) : fallbackSummary(input) };

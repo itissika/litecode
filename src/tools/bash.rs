@@ -866,7 +866,10 @@ mod tests {
         let mode = crate::workspace::ToolPathMode::All;
 
         let keys = tool.resource_keys(&serde_json::json!({"command": "make"}), mode, root);
-        assert!(keys.is_empty(), "unparseable bash must not take a lock: {keys:?}");
+        assert!(
+            keys.is_empty(),
+            "unparseable bash must not take a lock: {keys:?}"
+        );
 
         let keys = tool.resource_keys(&serde_json::json!({}), mode, root);
         assert!(keys.is_empty());

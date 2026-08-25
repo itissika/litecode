@@ -79,6 +79,10 @@ def publish_diagnostics(uri):
     )
 
 
+last_version = {}
+pending_hover = []
+
+
 def main():
     while True:
         msg = read_message()
@@ -88,13 +92,25 @@ def main():
         # Notifications (didOpen / didChange) — optional diagnostics push.
         if "id" not in msg:
             if method in ("textDocument/didOpen", "textDocument/didChange"):
-                uri = msg.get("params", {}).get("textDocument", {}).get("uri")
+                td = msg.get("params", {}).get("textDocument", {})
+                uri = td.get("uri")
+                ver = td.get("version")
+                if uri is not None and ver is not None:
+                    last_version[uri] = ver
                 if uri:
                     publish_diagnostics(uri)
             continue
         req_id = msg["id"]
         if method == "initialize":
-            write_message({"jsonrpc": "2.0", "id": req_id, "result": {"capabilities": {}}})
+            write_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"capabilities": {"textDocumentSync": 2}},
+                }
+            )
+        elif os.environ.get("MOCK_LSP_HANG") == "1" and method == "textDocument/hover":
+            continue
         elif method == "textDocument/definition":
             pos = msg["params"]["position"]
             line = int(pos.get("line", 0))
@@ -114,15 +130,34 @@ def main():
             )
         elif method == "textDocument/hover":
             ch = int(msg["params"]["position"].get("character", 0))
+            payload = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "contents": {
+                        "kind": "markdown",
+                        "value": f"mock hover @c={ch}",
+                    }
+                },
+            }
+            if os.environ.get("MOCK_LSP_REVERSE_HOVER") == "1":
+                pending_hover.append(payload)
+                if len(pending_hover) >= 2:
+                    for item in reversed(pending_hover):
+                        write_message(item)
+                    pending_hover.clear()
+                continue
+            write_message(payload)
+        elif method == "textDocument/completion":
+            uri = msg["params"]["textDocument"]["uri"]
             write_message(
                 {
                     "jsonrpc": "2.0",
                     "id": req_id,
                     "result": {
-                        "contents": {
-                            "kind": "markdown",
-                            "value": f"mock hover @c={ch}",
-                        }
+                        "isIncomplete": False,
+                        "items": [],
+                        "litecodeMockVersion": last_version.get(uri),
                     },
                 }
             )

@@ -95,6 +95,77 @@ describe("sessionStore lifecycle turn_finished", () => {
   });
 });
 
+describe("sessionStore session list ordering", () => {
+  function info(id: string, updated_at: number, preview = ""): SessionInfo {
+    return {
+      id,
+      project: "/p",
+      updated_at,
+      preview,
+      running: false,
+      turn: null,
+      agent_id: "default",
+      model_id: null,
+      api_model_id: "m",
+      step_kinds: [],
+    };
+  }
+
+  beforeEach(() => {
+    useSessionStore.setState({
+      sessions: [info("s-old", 100, "old"), info("s-new", 200, "new")],
+    } as never);
+  });
+
+  it("keeps sessions sorted by updated_at desc on preview_updated", () => {
+    // A session lower in the list gets new activity → bubbles to the top.
+    useSessionStore.getState().onSessionLifecycle({
+      session_id: "s-old",
+      event: "preview_updated",
+      turn: null,
+      preview: "fresh",
+      updated_at: 300,
+    });
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual([
+      "s-old",
+      "s-new",
+    ]);
+  });
+
+  it("sorts an upserted new session into place instead of appending", () => {
+    useSessionStore.getState().onSessionLifecycle({
+      session_id: "s-brand",
+      event: "turn_started",
+      turn: {
+        turn_id: "t1",
+        phase: "calling_llm",
+        step: 1,
+        step_max: 5,
+        started_at_ms: 1,
+      },
+      updated_at: 50,
+    });
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual([
+      "s-new",
+      "s-old",
+      "s-brand",
+    ]);
+  });
+
+  it("sorts the list handed to onSessionList", () => {
+    useSessionStore.getState().onSessionList([
+      info("a", 10),
+      info("b", 30),
+      info("c", 20),
+    ]);
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual([
+      "b",
+      "c",
+      "a",
+    ]);
+  });
+});
+
 describe("sessionStore applySnapshot transcript hydrate", () => {
   function snap(
     sessionId: string,

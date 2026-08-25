@@ -52,6 +52,9 @@ fn clear_mock_ls_env() {
         // dropped TempDir (FileNotFoundError), cascading into unrelated
         // optional_lsp failures (stage E review finding).
         std::env::remove_var("MOCK_LSP_PID_FILE");
+        std::env::remove_var("MOCK_LSP_REVERSE_HOVER");
+        std::env::remove_var("MOCK_LSP_HANG");
+        std::env::remove_var("LITECODE_LSP_REQUEST_TIMEOUT_SECS");
     }
 }
 
@@ -301,13 +304,172 @@ async fn get_diagnostics_rpc_does_not_deadlock() {
         .request("litecode/getDiagnostics", serde_json::json!({ "uri": uri }))
         .await
         .expect("getDiagnostics should succeed");
-    assert!(res.get("text").is_some());
+    assert!(res.get("diagnostics").is_some());
 
     engines.stop_all();
     clear_mock_ls_env();
 }
 
-/// Regression: idle LS reclaim used to nest `LspHub::block_on` inside an
+#[tokio::test(flavor = "current_thread")]
+async fn overlapping_hovers_match_out_of_order_ids() {
+    let _guard = LSP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_mock_ls_env();
+    unsafe {
+        std::env::set_var("MOCK_LSP_REVERSE_HOVER", "1");
+    }
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace(root).unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
+    let lib = root.join("lib.rs");
+    std::fs::write(&lib, "fn shared() {}\n").unwrap();
+
+    let resolved = workspace_with_lsp(root);
+    let engines = WorkspaceEngines::new();
+    engines.reconcile(&resolved);
+    wait_lsp_warm(&engines).await;
+
+    let hub = engines.lsp_hub();
+    let uri = file_to_uri(&lib);
+    let a = hub.request(
+        "textDocument/hover",
+        serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 1 }
+        }),
+    );
+    let b = hub.request(
+        "textDocument/hover",
+        serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 4 }
+        }),
+    );
+    let (ra, rb) = tokio::join!(a, b);
+    let va = ra.expect("hover a")["contents"]["value"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let vb = rb.expect("hover b")["contents"]["value"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    assert!(va.contains("@c=1"), "got {va}");
+    assert!(vb.contains("@c=4"), "got {vb}");
+
+    engines.stop_all();
+    clear_mock_ls_env();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn completion_sees_did_change_version() {
+    let _guard = LSP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_mock_ls_env();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace(root).unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
+    let lib = root.join("lib.rs");
+    std::fs::write(&lib, "fn shared() {}\n").unwrap();
+
+    let resolved = workspace_with_lsp(root);
+    let engines = WorkspaceEngines::new();
+    engines.reconcile(&resolved);
+    wait_lsp_warm(&engines).await;
+
+    let hub = engines.lsp_hub();
+    let uri = file_to_uri(&lib);
+    hub.request(
+        "litecode/didChange",
+        serde_json::json!({ "uri": uri, "text": "fn shared() {}\n" }),
+    )
+    .await
+    .expect("open");
+    hub.request(
+        "litecode/didChange",
+        serde_json::json!({ "uri": uri, "text": "fn shared() { 1 }\n" }),
+    )
+    .await
+    .expect("change");
+    let completion = hub
+        .request(
+            "textDocument/completion",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 3 }
+            }),
+        )
+        .await
+        .expect("completion");
+    assert_eq!(completion["litecodeMockVersion"], 2);
+
+    engines.stop_all();
+    clear_mock_ls_env();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_timeout_does_not_kill_process() {
+    let _guard = LSP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_mock_ls_env();
+    unsafe {
+        std::env::set_var("MOCK_LSP_HANG", "1");
+        std::env::set_var("LITECODE_LSP_REQUEST_TIMEOUT_SECS", "2");
+    }
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace(root).unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
+    let lib = root.join("lib.rs");
+    std::fs::write(&lib, "fn shared() {}\n").unwrap();
+
+    let resolved = workspace_with_lsp(root);
+    let engines = WorkspaceEngines::new();
+    engines.reconcile(&resolved);
+    wait_lsp_warm(&engines).await;
+
+    let hub = engines.lsp_hub();
+    let uri = file_to_uri(&lib);
+    hub.request(
+        "textDocument/definition",
+        serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 0 }
+        }),
+    )
+    .await
+    .expect("spawn language server");
+    let pids_before = hub.language_server_pids();
+    assert!(!pids_before.is_empty(), "expected a live language server");
+
+    let hover = hub
+        .request(
+            "textDocument/hover",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 0 }
+            }),
+        )
+        .await;
+    assert!(hover.is_err(), "hanging hover should time out");
+
+    let pids_after = hub.language_server_pids();
+    assert_eq!(pids_before, pids_after, "timeout must not kill the process");
+
+    let def = hub
+        .request(
+            "textDocument/definition",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 0 }
+            }),
+        )
+        .await
+        .expect("definition after timeout");
+    assert!(def.to_string().contains("lib.rs") || def.get("uri").is_some());
+
+    engines.stop_all();
+    clear_mock_ls_env();
+}
 /// already-running `block_on`, panicking with "Cannot start a runtime from
 /// within a runtime" on the next diagnostics (or any) request.
 #[tokio::test(flavor = "current_thread")]

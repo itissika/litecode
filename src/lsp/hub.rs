@@ -1,8 +1,8 @@
 //! LSP Hub: process pool, routing, document sync orchestration.
 //!
-//! [`LspHub`] is the sole exit for language-server I/O. Caller runtimes must never
-//! drive [`LspServer`] futures or hold `op_gate`; all I/O goes through
-//! [`LspHub::run_on_hub`] → [`LspHub::block_on_gated`].
+//! Language-server stdin/stdout is multiplexed in [`crate::lsp::conn`]. Callers
+//! `.await` a oneshot; they must never `block_on` the hub Runtime (Agent
+//! `current_thread` deadlock). Spawn of LS processes hops onto [`Self::handle`].
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde_json::Value;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 use tokio::time::Duration;
 
 use crate::lsp::deps;
@@ -30,9 +30,7 @@ fn effective_restart_count(prior_restarts: u32, lifetime: Duration, watchdog_kil
 }
 use crate::lsp::server_map::{program_from_command, server_command_for_ext};
 use crate::lsp::status::{LspInstanceStatus, LspLifecycle};
-use crate::lsp::uri::{
-    canonical_project_root, file_to_uri, publish_diagnostics_uri_matches, uri_to_path,
-};
+use crate::lsp::uri::{canonical_project_root, file_to_uri, uri_to_path};
 use crate::types::{LitecodeError, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +61,7 @@ pub(crate) struct ServerKey {
 
 struct LspHubInner {
     workspace_root: Option<PathBuf>,
-    servers: HashMap<ServerKey, Arc<tokio::sync::Mutex<LspServer>>>,
+    servers: HashMap<ServerKey, Arc<LspServer>>,
     configured_commands: HashSet<String>,
     active: bool,
     last_used: HashMap<ServerKey, Instant>,
@@ -71,23 +69,18 @@ struct LspHubInner {
 }
 
 /// Shared LSP backend: lazy-spawned LS processes keyed by (command, project_root).
-///
-/// Sole exit for language-server I/O: public async methods hop onto a blocking
-/// thread via [`Self::run_on_hub`], then acquire `op_gate` and drive hub-runtime
-/// futures via [`Self::block_on_gated`]. Callers must not hold `op_gate` or poll
-/// [`LspServer`] futures themselves.
 pub struct LspHub {
     inner: Mutex<LspHubInner>,
-    /// Serializes every LSP operation (spawn, stdin/stdout I/O, sync). All
-    /// consumers enter exclusively through [`Self::block_on_gated`].
-    op_gate: tokio::sync::Mutex<()>,
     // `ManuallyDrop` so `Drop` can leak the runtime instead of dropping it from
     // within an async context (which panics tokio). See `Drop for LspHub`.
     rt: std::mem::ManuallyDrop<Runtime>,
+    handle: Handle,
 }
 
 impl LspHub {
     pub fn new() -> Self {
+        let rt = Runtime::new().expect("lsp runtime");
+        let handle = rt.handle().clone();
         Self {
             inner: Mutex::new(LspHubInner {
                 workspace_root: None,
@@ -102,43 +95,16 @@ impl LspHub {
                         .unwrap_or(600),
                 ),
             }),
-            op_gate: tokio::sync::Mutex::new(()),
-            rt: std::mem::ManuallyDrop::new(Runtime::new().expect("lsp runtime")),
+            rt: std::mem::ManuallyDrop::new(rt),
+            handle,
         }
     }
 
-    /// Only place that acquires `op_gate` then runs a future on the hub Runtime.
-    /// Callers MUST NOT be on a worker of this same runtime (would deadlock);
-    /// public APIs always enter via [`Self::run_on_hub`] (`spawn_blocking`).
-    ///
-    /// Note: `spawn_blocking` threads also report a current `Handle`
-    /// (`Handle::try_current` is Ok), so we cannot distinguish them from
-    /// workers here; the constraint stays documented rather than asserted.
-    fn block_on_gated<F: std::future::Future + Send>(&self, fut: F) -> F::Output
-    where
-        F::Output: Send,
-    {
-        (*self.rt).block_on(async {
-            let _guard = self.op_gate.lock().await;
-            fut.await
-        })
-    }
-
-    /// Hop off the caller's runtime onto a blocking thread, then run `f`.
-    /// Used by every public I/O API so hub `block_on_gated` never runs on a
-    /// tokio worker of the caller's runtime.
-    ///
-    /// Callers whose outer return is [`Result`] map [`JoinError`](tokio::task::JoinError)
-    /// to [`LitecodeError`]; `stop` ignores join failures.
-    async fn run_on_hub<T: Send + 'static>(
-        self: &Arc<Self>,
-        f: impl FnOnce() -> T + Send + 'static,
-    ) -> std::result::Result<T, tokio::task::JoinError> {
-        tokio::task::spawn_blocking(f).await
-    }
-
-    fn join_err(e: tokio::task::JoinError) -> LitecodeError {
-        LitecodeError::ToolExecution(format!("lsp hub spawn_blocking join: {e}"))
+    async fn spawn_ls(&self, binary: crate::lsp::install::LanguageServerBinary, root: PathBuf) -> Result<LspServer> {
+        self.handle
+            .spawn(async move { LspServer::spawn(&binary, &root).await })
+            .await
+            .map_err(|e| LitecodeError::ToolExecution(format!("lsp spawn join: {e}")))?
     }
 
     pub fn set_workspace(&self, root: PathBuf) {
@@ -174,7 +140,7 @@ impl LspHub {
 
     /// Per-instance status snapshots (Running / Failed / indexing, …).
     pub fn instance_statuses(&self) -> Vec<LspInstanceStatus> {
-        let servers: Vec<(ServerKey, Arc<tokio::sync::Mutex<LspServer>>)> = {
+        let servers: Vec<(ServerKey, Arc<LspServer>)> = {
             let Ok(inner) = self.inner.lock() else {
                 return Vec::new();
             };
@@ -184,22 +150,10 @@ impl LspHub {
                 .map(|(k, s)| (k.clone(), Arc::clone(s)))
                 .collect()
         };
-        let mut out = Vec::with_capacity(servers.len());
-        for (key, server) in servers {
-            if let Ok(guard) = server.try_lock() {
-                out.push(guard.status_snapshot(&key.project_root));
-            } else {
-                out.push(LspInstanceStatus {
-                    command: key.command.clone(),
-                    project_root: key.project_root.display().to_string(),
-                    state: LspLifecycle::Running,
-                    index_settled: false,
-                    last_error: None,
-                    restart_count: 0,
-                });
-            }
-        }
-        out
+        servers
+            .iter()
+            .map(|(key, server)| server.status_snapshot(&key.project_root))
+            .collect()
     }
 
     #[cfg(test)]
@@ -271,7 +225,7 @@ impl LspHub {
 
         // Reap *other* idle instances. Never shut down the server this request
         // needs — that was kill-then-spawn on the same key.
-        let need_shutdown: Vec<Arc<tokio::sync::Mutex<LspServer>>> = {
+        let need_shutdown: Vec<Arc<LspServer>> = {
             let mut inner = self
                 .inner
                 .lock()
@@ -296,8 +250,7 @@ impl LspHub {
             }
         };
         for server in need_shutdown {
-            let mut s = server.lock().await;
-            s.shutdown().await;
+            server.shutdown().await;
         }
 
         let existing = {
@@ -314,14 +267,12 @@ impl LspHub {
         };
 
         if let Some(existing) = existing {
-            let mut server = existing.lock().await;
-            if server.is_process_alive()
+            if existing.is_process_alive()
                 && !matches!(
-                    server.lifecycle,
+                    existing.lifecycle(),
                     LspLifecycle::Failed | LspLifecycle::Stopped
                 )
             {
-                drop(server);
                 let mut inner = self
                     .inner
                     .lock()
@@ -329,16 +280,12 @@ impl LspHub {
                 inner.last_used.insert(key.clone(), Instant::now());
                 return Ok(key);
             }
-            let prior_restarts = server.restart_count;
-            let last_err = server
-                .last_error
-                .clone()
+            let prior_restarts = existing.restart_count;
+            let last_err = existing
+                .last_error()
                 .unwrap_or_else(|| "language server not running".into());
-            // Restart cooldown: natural exit after a healthy lifetime resets
-            // the budget. Watchdog kills always count (no infinite respawn).
-            let watchdog_kill = server.watchdog_kill;
-            let lifetime = server.spawned_at.elapsed();
-            drop(server);
+            let watchdog_kill = existing.watchdog_kill();
+            let lifetime = existing.spawned_at.elapsed();
             // Remove dead instance; auto-restart below if under budget.
             {
                 let mut inner = self
@@ -359,17 +306,14 @@ impl LspHub {
                     "language server '{program}' could not be resolved: {e}"
                 ))
             })?;
-            match LspServer::spawn(&binary, &key.project_root).await {
+            match self.spawn_ls(binary, key.project_root.clone()).await {
                 Ok(mut server) => {
-                    server.lifecycle = LspLifecycle::Running;
                     server.restart_count = effective_prior + 1;
                     let mut inner = self
                         .inner
                         .lock()
                         .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
-                    inner
-                        .servers
-                        .insert(key.clone(), Arc::new(tokio::sync::Mutex::new(server)));
+                    inner.servers.insert(key.clone(), Arc::new(server));
                     inner.last_used.insert(key.clone(), Instant::now());
                     return Ok(key);
                 }
@@ -383,7 +327,7 @@ impl LspHub {
             ))
         })?;
 
-        match LspServer::spawn(&binary, &key.project_root).await {
+        match self.spawn_ls(binary, key.project_root.clone()).await {
             Ok(server) => {
                 let mut inner = self
                     .inner
@@ -392,7 +336,7 @@ impl LspHub {
                 inner
                     .servers
                     .entry(key.clone())
-                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(server)));
+                    .or_insert_with(|| Arc::new(server));
                 inner.last_used.insert(key.clone(), Instant::now());
                 Ok(key)
             }
@@ -406,55 +350,43 @@ impl LspHub {
         command: &str,
         project_root: &Path,
     ) -> Result<()> {
-        let hub = Arc::clone(self);
-        let command = command.to_string();
-        let project_root = project_root.to_path_buf();
-        self.run_on_hub(move || {
-            let key = ServerKey {
-                command: command.clone(),
-                project_root: canonical_project_root(&project_root),
-            };
-            hub.block_on_gated(async {
-                let old = {
-                    let mut inner = hub
-                        .inner
-                        .lock()
-                        .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
-                    if !inner.active {
-                        return Err(LitecodeError::ToolExecution("LSP hub not active".into()));
-                    }
-                    if !inner.configured_commands.contains(&command) {
-                        return Err(LitecodeError::ToolExecution(format!(
-                            "language server '{command}' not configured for this workspace"
-                        )));
-                    }
-                    inner.servers.remove(&key)
-                };
-                if let Some(old) = old {
-                    let mut s = old.lock().await;
-                    s.lifecycle = LspLifecycle::Restarting;
-                    s.shutdown().await;
-                }
-                let program = program_from_command(&command);
-                let binary = deps::resolve_server_binary(&command).map_err(|e| {
-                    LitecodeError::Config(format!(
-                        "language server '{program}' could not be resolved: {e}"
-                    ))
-                })?;
-                let server = LspServer::spawn(&binary, &key.project_root).await?;
-                let mut inner = hub
-                    .inner
-                    .lock()
-                    .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
-                inner
-                    .servers
-                    .insert(key.clone(), Arc::new(tokio::sync::Mutex::new(server)));
-                inner.last_used.insert(key, Instant::now());
-                Ok(())
-            })
-        })
-        .await
-        .unwrap_or_else(|e| Err(Self::join_err(e)))
+        let key = ServerKey {
+            command: command.to_string(),
+            project_root: canonical_project_root(project_root),
+        };
+        let old = {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
+            if !inner.active {
+                return Err(LitecodeError::ToolExecution("LSP hub not active".into()));
+            }
+            if !inner.configured_commands.contains(command) {
+                return Err(LitecodeError::ToolExecution(format!(
+                    "language server '{command}' not configured for this workspace"
+                )));
+            }
+            inner.servers.remove(&key)
+        };
+        if let Some(old) = old {
+            old.set_lifecycle(LspLifecycle::Restarting);
+            old.shutdown().await;
+        }
+        let program = program_from_command(command);
+        let binary = deps::resolve_server_binary(command).map_err(|e| {
+            LitecodeError::Config(format!(
+                "language server '{program}' could not be resolved: {e}"
+            ))
+        })?;
+        let server = self.spawn_ls(binary, key.project_root.clone()).await?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
+        inner.servers.insert(key.clone(), Arc::new(server));
+        inner.last_used.insert(key, Instant::now());
+        Ok(())
     }
 
     /// Explicit restart of every running instance.
@@ -473,28 +405,18 @@ impl LspHub {
     }
 
     pub async fn stop(self: &Arc<Self>) {
-        let hub = Arc::clone(self);
-        // Join errors are ignored on teardown.
-        let _ = self
-            .run_on_hub(move || {
-                let servers: Vec<Arc<tokio::sync::Mutex<LspServer>>> = {
-                    let mut inner = match hub.inner.lock() {
-                        Ok(g) => g,
-                        Err(_) => return,
-                    };
-                    inner.active = false;
-                    inner.configured_commands.clear();
-                    inner.servers.drain().map(|(_, s)| s).collect()
-                }; // std::sync::Mutex lock released
-
-                for server in servers {
-                    hub.block_on_gated(async {
-                        let mut s = server.lock().await;
-                        s.shutdown().await;
-                    });
-                }
-            })
-            .await;
+        let servers: Vec<Arc<LspServer>> = {
+            let mut inner = match self.inner.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            inner.active = false;
+            inner.configured_commands.clear();
+            inner.servers.drain().map(|(_, s)| s).collect()
+        };
+        for server in servers {
+            server.shutdown().await;
+        }
     }
 
     /// PIDs of spawned language-server child processes (for memory telemetry).
@@ -502,21 +424,12 @@ impl LspHub {
         let Ok(inner) = self.inner.lock() else {
             return Vec::new();
         };
-        inner
-            .servers
-            .values()
-            .filter_map(|server| server.try_lock().ok())
-            .filter_map(|server| server.child.id())
-            .collect()
+        inner.servers.values().filter_map(|s| s.child_id()).collect()
     }
 
     /// Sync (open/change/close) a document from disk through the hub I/O exit.
     pub async fn sync_document(self: &Arc<Self>, abs_path: &Path) -> Result<()> {
-        let hub = Arc::clone(self);
-        let path = abs_path.to_path_buf();
-        self.run_on_hub(move || hub.block_on_gated(hub.sync_document_work(&path)))
-            .await
-            .unwrap_or_else(|e| Err(Self::join_err(e)))
+        self.sync_document_work(abs_path).await
     }
 
     async fn sync_document_work(&self, abs_path: &Path) -> Result<()> {
@@ -541,24 +454,12 @@ impl LspHub {
                 inner.servers.get(&key).cloned()
             };
             if let Some(server) = server {
-                let mut server = server.lock().await;
-                if server.open_docs_set.contains(&uri) {
-                    server.open_docs_set.remove(&uri);
-                    server.open_docs.retain(|e| e.uri != uri);
-                    server.document_versions.remove(&uri);
-                    if let Err(e) = server
-                        .send_notification(
-                            "textDocument/didClose",
-                            serde_json::json!({ "textDocument": { "uri": &uri } }),
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            error = %e,
-                            path = %abs_path.display(),
-                            "LSP didClose after file deletion failed"
-                        );
-                    }
+                if let Err(e) = server.close_doc(&uri).await {
+                    tracing::warn!(
+                        error = %e,
+                        path = %abs_path.display(),
+                        "LSP didClose after file deletion failed"
+                    );
                 }
             }
             return Ok(());
@@ -578,88 +479,138 @@ impl LspHub {
                 ))
             })?
         };
-        let mut server = server.lock().await;
         server.sync_document_from_disk(&abs_path, &uri).await
     }
 
-    /// Execute a file-scoped LSP request against the same synchronized document
-    /// snapshot. Keeping `didOpen`/`didChange` and the request under the
-    /// server mutex prevents another consumer from observing a stale buffer
-    /// between those two operations.
+    /// Execute a file-scoped LSP request after any in-flight didOpen/didChange
+    /// for that URI has been enqueued on stdin.
     async fn request_synced_document(
         &self,
         method: &str,
         params: Value,
         abs_path: &Path,
+        rpc_id: Option<u64>,
     ) -> Result<Value> {
         let abs_path = crate::config::path::strip_verbatim(abs_path);
         let key = self.resolve_server_key(&abs_path).await?;
         let uri = file_to_uri(&abs_path);
-        let server = {
-            let inner = self
-                .inner
-                .lock()
-                .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
-            inner.servers.get(&key).cloned().ok_or_else(|| {
-                LitecodeError::ToolExecution(format!(
-                    "language server '{}' not running",
-                    key.command
-                ))
-            })?
-        };
-        let mut server = server.lock().await;
-        server.sync_document_from_disk(&abs_path, &uri).await?;
-        server.send_request(method, params).await
+        let server = self.server_arc(&key)?;
+        if !server.is_doc_open(&uri).await {
+            server.sync_document_from_disk(&abs_path, &uri).await?;
+        }
+        server.send_request_synced(&uri, method, params, rpc_id).await
+    }
+
+    fn server_arc(&self, key: &ServerKey) -> Result<Arc<LspServer>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
+        inner.servers.get(key).cloned().ok_or_else(|| {
+            LitecodeError::ToolExecution(format!(
+                "language server '{}' not running",
+                key.command
+            ))
+        })
     }
 
     pub async fn request(self: &Arc<Self>, method: &str, params: Value) -> Result<Value> {
-        let hub = Arc::clone(self);
-        let method = method.to_string();
-        self.run_on_hub(move || {
-            hub.block_on_gated(async {
-                if method == "litecode/getDiagnostics" {
-                    let uri = params.get("uri").and_then(|u| u.as_str()).ok_or_else(|| {
-                        LitecodeError::ToolExecution("litecode/getDiagnostics requires uri".into())
-                    })?;
-                    let path = uri_to_path(uri).ok_or_else(|| {
-                        LitecodeError::ToolExecution(format!("invalid uri: {uri}"))
-                    })?;
-                    hub.sync_document_work(&path).await?;
-                    let text = hub
-                        .tool_action_async("diagnostics", &path, None, None, None)
-                        .await
-                        .unwrap_or_else(|_| "No diagnostics".into());
-                    return Ok(serde_json::json!({ "text": text }));
-                }
+        self.request_ex(method, params, None).await
+    }
 
-                if method.starts_with("textDocument/")
-                    && let Some(path) = uri_path_from_params(&params)
-                {
-                    return hub.request_synced_document(&method, params, &path).await;
-                }
+    pub async fn request_ex(
+        self: &Arc<Self>,
+        method: &str,
+        params: Value,
+        rpc_id: Option<u64>,
+    ) -> Result<Value> {
+        if method == "$/cancelRequest" {
+            let id = params
+                .get("id")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| LitecodeError::ToolExecution("$/cancelRequest requires id".into()))?;
+            let servers: Vec<Arc<LspServer>> = {
+                let inner = self
+                    .inner
+                    .lock()
+                    .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
+                inner.servers.values().cloned().collect()
+            };
+            for server in servers {
+                server.io.cancel(id);
+            }
+            return Ok(Value::Null);
+        }
 
-                if method == "shutdown" || method == "exit" {
-                    let server = {
-                        let inner = hub
-                            .inner
-                            .lock()
-                            .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
-                        let key = inner.servers.keys().next().cloned().ok_or_else(|| {
-                            LitecodeError::ToolExecution("no language servers".into())
-                        })?;
-                        inner.servers.get(&key).cloned().expect("key from pool")
-                    };
-                    let mut server = server.lock().await;
-                    return server.send_request(&method, params).await;
-                }
+        if method == "litecode/getDiagnostics" {
+            let uri = params.get("uri").and_then(|u| u.as_str()).ok_or_else(|| {
+                LitecodeError::ToolExecution("litecode/getDiagnostics requires uri".into())
+            })?;
+            let path = uri_to_path(uri)
+                .ok_or_else(|| LitecodeError::ToolExecution(format!("invalid uri: {uri}")))?;
+            let key = self.resolve_server_key(&path).await?;
+            let server = self.server_arc(&key)?;
+            if !server.is_doc_open(uri).await {
+                server.sync_document_from_disk(&path, uri).await?;
+            }
+            return Ok(serde_json::json!({
+                "diagnostics": server.diagnostics_for_uri(uri)
+            }));
+        }
 
-                Err(LitecodeError::ToolExecution(
-                    "cannot route LSP request: missing textDocument.uri".into(),
-                ))
-            })
-        })
-        .await
-        .unwrap_or_else(|e| Err(Self::join_err(e)))
+        if method == "litecode/didChange" {
+            let uri = params.get("uri").and_then(|u| u.as_str()).ok_or_else(|| {
+                LitecodeError::ToolExecution("litecode/didChange requires uri".into())
+            })?;
+            let text = params.get("text").and_then(|t| t.as_str()).ok_or_else(|| {
+                LitecodeError::ToolExecution("litecode/didChange requires text".into())
+            })?;
+            let path = uri_to_path(uri)
+                .ok_or_else(|| LitecodeError::ToolExecution(format!("invalid uri: {uri}")))?;
+            let key = self.resolve_server_key(&path).await?;
+            let server = self.server_arc(&key)?;
+            server.sync_document_from_text(&path, uri, text).await?;
+            return Ok(serde_json::json!({
+                "diagnostics": server.diagnostics_for_uri(uri)
+            }));
+        }
+
+        if method == "litecode/serverCapabilities" {
+            let uri = params.get("uri").and_then(|u| u.as_str()).ok_or_else(|| {
+                LitecodeError::ToolExecution("litecode/serverCapabilities requires uri".into())
+            })?;
+            let path = uri_to_path(uri)
+                .ok_or_else(|| LitecodeError::ToolExecution(format!("invalid uri: {uri}")))?;
+            let key = self.resolve_server_key(&path).await?;
+            let server = self.server_arc(&key)?;
+            return Ok(server.editor_client_caps());
+        }
+
+        if method.starts_with("textDocument/")
+            && let Some(path) = uri_path_from_params(&params)
+        {
+            return self
+                .request_synced_document(method, params, &path, rpc_id)
+                .await;
+        }
+
+        if method == "shutdown" || method == "exit" {
+            let server = {
+                let inner = self
+                    .inner
+                    .lock()
+                    .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
+                let key = inner.servers.keys().next().cloned().ok_or_else(|| {
+                    LitecodeError::ToolExecution("no language servers".into())
+                })?;
+                inner.servers.get(&key).cloned().expect("key from pool")
+            };
+            return server.send_request(method, params).await;
+        }
+
+        Err(LitecodeError::ToolExecution(
+            "cannot route LSP request: missing textDocument.uri".into(),
+        ))
     }
 
     pub async fn tool_action(
@@ -681,21 +632,8 @@ impl LspHub {
         character: Option<u64>,
         query: Option<&str>,
     ) -> Result<String> {
-        let hub = Arc::clone(self);
-        let action = action.to_string();
-        let file_path = file_path.to_path_buf();
-        let query = query.map(|q| q.to_string());
-        self.run_on_hub(move || {
-            hub.block_on_gated(hub.tool_action_async(
-                &action,
-                &file_path,
-                line,
-                character,
-                query.as_deref(),
-            ))
-        })
-        .await
-        .unwrap_or_else(|e| Err(Self::join_err(e)))
+        self.tool_action_async(action, file_path, line, character, query)
+            .await
     }
 
     /// Post-write/edit feedback: **only** file-local Error diagnostics, and only when
@@ -725,59 +663,24 @@ impl LspHub {
         if !self.is_active() {
             return LspDiagFeedback::Silence;
         }
-        let hub = Arc::clone(self);
-        let file_path = file_path.to_path_buf();
-        self.run_on_hub(move || {
-            const BUDGET: Duration = Duration::from_millis(750);
-            match hub.block_on_gated(async {
-                tokio::time::timeout(BUDGET, hub.collect_file_error_diagnostics(&file_path)).await
-            }) {
-                Ok(Ok(Some(text))) if !text.is_empty() => LspDiagFeedback::Errors(text),
-                Ok(Ok(_)) => LspDiagFeedback::Silence,
-                Ok(Err(e)) => LspDiagFeedback::Unavailable(short_feedback_reason(&e.to_string())),
-                Err(_) => LspDiagFeedback::Silence, // publish wait budget — not a hard failure
-            }
-        })
-        .await
-        .unwrap_or_else(|e| {
-            LspDiagFeedback::Unavailable(short_feedback_reason(&Self::join_err(e).to_string()))
-        })
+        const BUDGET: Duration = Duration::from_millis(750);
+        match tokio::time::timeout(BUDGET, self.collect_file_error_diagnostics(file_path)).await {
+            Ok(Ok(Some(text))) if !text.is_empty() => LspDiagFeedback::Errors(text),
+            Ok(Ok(_)) => LspDiagFeedback::Silence,
+            Ok(Err(e)) => LspDiagFeedback::Unavailable(short_feedback_reason(&e.to_string())),
+            Err(_) => LspDiagFeedback::Silence,
+        }
     }
 
     async fn collect_file_error_diagnostics(&self, file_path: &Path) -> Result<Option<String>> {
         let file_path = crate::config::path::strip_verbatim(file_path);
         let uri = file_to_uri(&file_path);
         let key = self.resolve_server_key(&file_path).await?;
-        let server = {
-            let inner = self
-                .inner
-                .lock()
-                .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
-            inner.servers.get(&key).cloned().ok_or_else(|| {
-                LitecodeError::ToolExecution(format!(
-                    "language server '{}' not running",
-                    key.command
-                ))
-            })?
-        };
-        let mut server = server.lock().await;
-        // Prefer didChange sync so the LS sees the just-written buffer.
+        let server = self.server_arc(&key)?;
         server.sync_document_from_disk(&file_path, &uri).await?;
-        let notifications = server
-            .collect_notifications(Duration::from_millis(600))
-            .await?;
-        let mut found = Value::Array(vec![]);
-        for notif in notifications.iter().rev() {
-            if notif["method"].as_str() == Some("textDocument/publishDiagnostics") {
-                let params = &notif["params"];
-                if let Some(notif_uri) = params["uri"].as_str()
-                    && publish_diagnostics_uri_matches(notif_uri, &uri)
-                {
-                    found = params["diagnostics"].clone();
-                    break;
-                }
-            }
-        }
+        let found = server
+            .wait_file_diagnostics(&uri, Duration::from_millis(600))
+            .await;
         Ok(format_error_diagnostics_block(&found))
     }
 
@@ -797,19 +700,7 @@ impl LspHub {
         let position = serde_json::json!({ "line": lsp_line, "character": lsp_char });
 
         let key = self.resolve_server_key(&file_path).await?;
-        let server = {
-            let inner = self
-                .inner
-                .lock()
-                .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
-            inner.servers.get(&key).cloned().ok_or_else(|| {
-                LitecodeError::ToolExecution(format!(
-                    "language server '{}' not running",
-                    key.command
-                ))
-            })?
-        };
-        let mut server = server.lock().await;
+        let server = self.server_arc(&key)?;
 
         let result = match action {
             "goToDefinition" => {
@@ -952,20 +843,9 @@ impl LspHub {
             }
             "diagnostics" => {
                 server.sync_document_from_disk(&file_path, &uri).await?;
-                let notifications = server.collect_notifications(Duration::from_secs(3)).await?;
-                let mut found = Value::Array(vec![]);
-                for notif in notifications.iter().rev() {
-                    if notif["method"].as_str() == Some("textDocument/publishDiagnostics") {
-                        let params = &notif["params"];
-                        if let Some(notif_uri) = params["uri"].as_str()
-                            && publish_diagnostics_uri_matches(notif_uri, &uri)
-                        {
-                            found = params["diagnostics"].clone();
-                            break;
-                        }
-                    }
-                }
-                found
+                server
+                    .wait_file_diagnostics(&uri, Duration::from_secs(3))
+                    .await
             }
             other => {
                 return Err(LitecodeError::ToolExecution(format!(
@@ -1020,7 +900,7 @@ impl Drop for LspHub {
         // - Inside a runtime: kill every child synchronously; the stderr reader
         //   tasks then reach EOF and finish on the (leaked) runtime.
         let inside_runtime = tokio::runtime::Handle::try_current().is_ok();
-        let servers: Vec<Arc<tokio::sync::Mutex<LspServer>>> = self
+        let servers: Vec<Arc<LspServer>> = self
             .inner
             .lock()
             .ok()
@@ -1028,15 +908,12 @@ impl Drop for LspHub {
             .unwrap_or_default();
         if inside_runtime {
             for server in &servers {
-                if let Ok(mut s) = server.try_lock() {
-                    s.kill_child();
-                }
+                server.kill_child();
             }
         } else {
             (*self.rt).block_on(async {
                 for server in servers {
-                    let mut s = server.lock().await;
-                    s.shutdown().await;
+                    server.shutdown().await;
                 }
             });
         }

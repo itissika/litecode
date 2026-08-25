@@ -18,9 +18,9 @@ use crate::permission::PermissionSink;
 use crate::runtime::RuntimeHandle;
 use crate::runtime::observer::InternalEnvelope;
 use crate::runtime::observer::TurnPhase;
+use crate::session::estimate::{ItemTokenBreakdown, compute_token_breakdown};
 use crate::session::manager::SessionManager;
 use crate::session::snapshot;
-use crate::session::estimate::{compute_token_breakdown, ItemTokenBreakdown};
 use crate::types::LitecodeError;
 
 #[derive(Debug)]
@@ -191,11 +191,8 @@ impl Projection {
     }
 
     fn refresh_context_estimate(&mut self) {
-        let (n, bd) = Self::estimate_context_tokens(
-            &self.sessions,
-            &self.session_id,
-            self.context_window,
-        );
+        let (n, bd) =
+            Self::estimate_context_tokens(&self.sessions, &self.session_id, self.context_window);
         self.context_tokens_estimate = n;
         // Keep last-request mix while provider occupancy is showing that request.
         // After compact (meter cleared) fall back to the remaining working set.

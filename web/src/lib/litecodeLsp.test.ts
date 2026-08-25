@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isLspWarm, relPathFromLspUri, toFileUri } from "./litecodeLsp";
+import { isLspWarm, monacoCompletionTriggerToLsp, relPathFromLspUri, toFileUri } from "./litecodeLsp";
 import { useSettingsStore } from "../stores/settingsStore";
 
 describe("toFileUri", () => {
@@ -54,6 +54,14 @@ describe("relPathFromLspUri", () => {
     expect(() =>
       relPathFromLspUri("file:///E:/litecode/a.rs", "\\\\?\\E:\\litecode"),
     ).toThrow(/LAP|verbatim/i);
+  });
+});
+
+describe("monacoCompletionTriggerToLsp", () => {
+  it("maps Monaco 0/1/2 to LSP 1/2/3", () => {
+    expect(monacoCompletionTriggerToLsp(0)).toBe(1);
+    expect(monacoCompletionTriggerToLsp(1)).toBe(2);
+    expect(monacoCompletionTriggerToLsp(2)).toBe(3);
   });
 });
 

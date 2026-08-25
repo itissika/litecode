@@ -66,8 +66,20 @@ mod tests {
 
         let client = llm_http_client().unwrap();
         let url = format!("http://{address}/");
-        client.get(&url).send().await.unwrap().error_for_status().unwrap();
-        client.get(&url).send().await.unwrap().error_for_status().unwrap();
+        client
+            .get(&url)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        client
+            .get(&url)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
 
         server.await.unwrap();
     }

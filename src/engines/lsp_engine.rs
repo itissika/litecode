@@ -80,8 +80,8 @@ impl LspEngine {
         let hub = Arc::clone(&self.hub);
         // Sync facade for engine lifecycle: always drive `hub.stop()` on a
         // dedicated thread so we never nest `Runtime::block_on` inside a caller
-        // tokio runtime (e.g. `#[tokio::test]`). LS I/O still only runs on the
-        // hub Runtime via `run_on_hub`.
+        // tokio runtime (e.g. `#[tokio::test]`). Language-server I/O runs on
+        // the hub Runtime; callers only `.await` oneshots.
         if let Ok(handle) = std::thread::Builder::new()
             .name("lsp-engine-stop".into())
             .spawn(move || {

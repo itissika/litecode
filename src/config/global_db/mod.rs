@@ -576,8 +576,9 @@ pub mod store {
     }
 
     fn load_mcp_servers(conn: &Connection) -> Result<HashMap<String, McpServerDefinition>> {
-        let mut stmt = conn
-            .prepare("SELECT id, command, args_json, env_json, transport_json, timeout FROM mcp_servers")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, command, args_json, env_json, transport_json, timeout FROM mcp_servers",
+        )?;
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
             let args_json: String = row.get(2)?;

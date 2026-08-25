@@ -569,10 +569,7 @@ mod tests {
             .unwrap(),
         )
         .expect("job_exit");
-        assert_eq!(
-            fold_surface(log.events()).expect("fold").nodes,
-            vec![0, 1]
-        );
+        assert_eq!(fold_surface(log.events()).expect("fold").nodes, vec![0, 1]);
         let agent = derive_messages(log.events()).expect("agent");
         assert_eq!(agent.len(), 2);
         assert_eq!(item_text_preview(&agent[0]), "hi");

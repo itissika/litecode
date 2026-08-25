@@ -44,11 +44,10 @@ pub use walk::{
     walk_builder_with,
 };
 pub use workspace_excludes::{
-    WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView,
-    WORKSPACE_EXCLUDES_REL, activate_workspace_excludes, active_workspace_excludes,
-    ensure_workspace_excludes, is_workspace_excludes_rel, persist_workspace_excludes,
-    read_workspace_excludes, reload_workspace_excludes_from_disk, workspace_excludes_path,
-    write_workspace_excludes,
+    WORKSPACE_EXCLUDES_REL, WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView,
+    activate_workspace_excludes, active_workspace_excludes, ensure_workspace_excludes,
+    is_workspace_excludes_rel, persist_workspace_excludes, read_workspace_excludes,
+    reload_workspace_excludes_from_disk, workspace_excludes_path, write_workspace_excludes,
 };
 
 #[cfg(test)]

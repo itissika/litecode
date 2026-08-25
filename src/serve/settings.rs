@@ -14,10 +14,6 @@ use crate::config::schema::{
     AgentProfile, AvailableTool, CustomToolDefinition, LogSettings, McpServerDefinition,
     ModelDefinition, ProviderAuth, ProviderDefinition, ToolOrigin, ToolPreset,
 };
-use crate::workspace::filter::{
-    WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView, ensure_workspace_excludes,
-    write_workspace_excludes,
-};
 use crate::llm::{
     chat_models_url, has_remote_model_catalog, list_adapters, parse_chat_model_catalog,
 };
@@ -25,6 +21,10 @@ use crate::mcp::{McpConnectionPool, McpRunState, McpServerSnapshot, McpToolSchem
 use crate::serve::state::ServeState;
 use crate::tool::availability::available_tools;
 use crate::types::LitecodeError;
+use crate::workspace::filter::{
+    WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView,
+    ensure_workspace_excludes, write_workspace_excludes,
+};
 
 #[derive(Serialize)]
 struct ApiOk<T: Serialize> {
@@ -668,11 +668,9 @@ async fn put_mcp_server(
         .workspace
         .clone();
     let result = if workspace_scope(&query) {
-        state.settings_writer.write_workspace_mcp_server(
-            &workspace.workspace_root,
-            &id,
-            body,
-        )
+        state
+            .settings_writer
+            .write_workspace_mcp_server(&workspace.workspace_root, &id, body)
     } else {
         state.settings_writer.write_mcp_server(&id, body)
     };
@@ -733,12 +731,7 @@ async fn restart_mcp_server(
 ) -> Response {
     let key = mcp_pool_key(workspace_scope(&query), &id);
     let cwd = Some(mcp_cwd(&state));
-    mcp_lifecycle_result(
-        mcp_pool(&state).restart(&key, &def, cwd).await,
-        key,
-        &state,
-    )
-    .await
+    mcp_lifecycle_result(mcp_pool(&state).restart(&key, &def, cwd).await, key, &state).await
 }
 
 async fn stop_mcp_server(
@@ -786,7 +779,6 @@ fn reload_runtime_after_settings_write(state: &ServeState, what: &str) {
     }
     runtime.sync_workspace_tool_readiness();
 }
-
 
 async fn get_excludes(State(state): State<ServeState>) -> Response {
     let root = state.workspace.sandbox().root();

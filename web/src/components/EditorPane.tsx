@@ -10,9 +10,11 @@ import { useSessionStore } from "../stores/sessionStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { ConflictCard } from "./ConflictCard";
 import {
+  bindEditorLsp,
   getProjectRootFromStore,
   registerWorkspaceLsp,
   refreshDiagnostics,
+  type WorkspaceLspHandle,
 } from "../lib/litecodeLsp";
 import {
   applyMonacoThemeForApp,
@@ -54,9 +56,13 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
   const clearConflict = useEditorStore((s) => s.clearConflict);
 
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
-  const editorRef = useRef<editor.ICodeEditor | null>(null);
+  const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const milkdownHostRef = useRef<HTMLDivElement | null>(null);
   const lspDisposeRef = useRef<(() => void) | null>(null);
+  const lspBindRef = useRef<(() => void) | null>(null);
+  const lspHelpersRef = useRef<Pick<WorkspaceLspHandle, "ensureSemantic"> | null>(
+    null,
+  );
   const [monacoTheme, setMonacoTheme] = useState(
     () => getTheme() === "light" ? LITECODE_MONACO_THEME_LIGHT : LITECODE_MONACO_THEME_DARK
   );
@@ -74,10 +80,23 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
     if (useWysiwyg) editorRef.current = null;
   }, [useWysiwyg]);
 
+  const bindEditorToLsp = useCallback(
+    (monaco: typeof import("monaco-editor"), ed: editor.IStandaloneCodeEditor) => {
+      lspBindRef.current?.();
+      lspBindRef.current = null;
+      const helpers = lspHelpersRef.current;
+      if (!helpers || !lspDesired || !wsConnected) return;
+      const d = bindEditorLsp(ed, monaco, getProjectRootFromStore, helpers);
+      lspBindRef.current = () => d.dispose();
+    },
+    [lspDesired, wsConnected],
+  );
+
   const syncLspRegistration = useCallback(
     (monaco: typeof import("monaco-editor")) => {
       lspDisposeRef.current?.();
       lspDisposeRef.current = null;
+      lspHelpersRef.current = null;
       // Register as soon as LSP is desired, not only once it is Warm. The
       // workspace RPC then reports a visible Loading / Unavailable status
       // instead of silently omitting hover while the engine starts.
@@ -85,9 +104,14 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
         return;
       }
       const disposable = registerWorkspaceLsp(monaco, getProjectRootFromStore);
+      lspHelpersRef.current = {
+        ensureSemantic: disposable.ensureSemantic,
+      };
       lspDisposeRef.current = () => disposable.dispose();
+      const ed = editorRef.current;
+      if (ed) bindEditorToLsp(monaco, ed);
     },
-    [lspDesired, wsConnected],
+    [lspDesired, wsConnected, bindEditorToLsp],
   );
 
   // Listen to dockview panel api events
@@ -147,6 +171,8 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
     return () => {
       lspDisposeRef.current?.();
       lspDisposeRef.current = null;
+      lspBindRef.current?.();
+      lspBindRef.current = null;
     };
   }, [project, lspDesired, wsConnected, syncLspRegistration]);
 
@@ -165,8 +191,9 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
     const reveal = useEditorStore.getState().consumePendingReveal();
     if (!reveal) return;
     const line = Math.max(1, reveal.line);
+    const column = Math.max(1, reveal.column ?? 1);
     ed.revealLineInCenter(line);
-    ed.setPosition({ lineNumber: line, column: 1 });
+    ed.setPosition({ lineNumber: line, column });
     ed.focus();
   }, [filePath, tab?.loading, tab?.content, pendingReveal]);
 
@@ -251,6 +278,7 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
                   _editor.setModel(model);
                 }
                 syncLspRegistration(monaco);
+                bindEditorToLsp(monaco, _editor);
                 if (project && lspReady && !tab.dirty) {
                   void refreshDiagnostics(monaco, project, filePath);
                 }
@@ -259,8 +287,9 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
                   const reveal = useEditorStore.getState().consumePendingReveal();
                   if (reveal) {
                     const line = Math.max(1, reveal.line);
+                    const column = Math.max(1, reveal.column ?? 1);
                     _editor.revealLineInCenter(line);
-                    _editor.setPosition({ lineNumber: line, column: 1 });
+                    _editor.setPosition({ lineNumber: line, column });
                     _editor.focus();
                   }
                 }
@@ -275,13 +304,28 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
                 fontFamily: '"JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
                 lineNumbers: "on",
                 scrollBeyondLastLine: false,
-                // automaticLayout uses a ResizeObserver to reflow the editor
-                // on any container resize (dockview edge rails, panel splits,
-                // window resize). Reliable across the three-rail layout; the
-                // manual onDidDimensionsChange -> layout() below is kept only as
-                // a focus/refresh fallback.
                 automaticLayout: true,
                 tabSize: 2,
+                autoClosingBrackets: "languageDefined",
+                autoClosingQuotes: "languageDefined",
+                autoSurround: "languageDefined",
+                autoIndent: "full",
+                matchBrackets: "always",
+                formatOnType: false,
+                formatOnPaste: false,
+                wordBasedSuggestions: "off",
+                parameterHints: { enabled: true },
+                linkedEditing: true,
+                inlayHints: { enabled: "on" },
+                bracketPairColorization: { enabled: true },
+                guides: { indentation: true, bracketPairs: true },
+                "semanticHighlighting.enabled": true,
+                gotoLocation: {
+                  multiple: "goto",
+                  multipleDefinitions: "goto",
+                  multipleReferences: "peek",
+                  alternativeDefinitionCommand: "editor.action.goToReferences",
+                },
               }}
             />
             )}

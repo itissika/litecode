@@ -453,7 +453,13 @@ mod mcp_server_definition_tests {
         }))
         .unwrap();
         assert_eq!(def.call_timeout_secs(), 60);
-        assert!(!serde_json::to_value(&def).unwrap().as_object().unwrap().contains_key("timeout"));
+        assert!(
+            !serde_json::to_value(&def)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("timeout")
+        );
     }
 
     #[test]

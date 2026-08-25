@@ -94,6 +94,55 @@ function monacoColorsFromTokens(t: DkTokens, mode: "dark" | "light") {
   };
 }
 
+function semanticTokenRules(mode: "dark" | "light"): { token: string; foreground: string }[] {
+  if (mode === "light") {
+    return [
+      { token: "type", foreground: "267F99" },
+      { token: "class", foreground: "267F99" },
+      { token: "struct", foreground: "267F99" },
+      { token: "interface", foreground: "267F99" },
+      { token: "enum", foreground: "267F99" },
+      { token: "typeParameter", foreground: "267F99" },
+      { token: "function", foreground: "795E26" },
+      { token: "method", foreground: "795E26" },
+      { token: "macro", foreground: "0000FF" },
+      { token: "variable", foreground: "001080" },
+      { token: "parameter", foreground: "001080" },
+      { token: "property", foreground: "001080" },
+      { token: "enumMember", foreground: "0070C1" },
+      { token: "namespace", foreground: "267F99" },
+      { token: "keyword", foreground: "AF00DB" },
+      { token: "comment", foreground: "008000" },
+      { token: "string", foreground: "A31515" },
+      { token: "number", foreground: "098658" },
+      { token: "operator", foreground: "000000" },
+      { token: "decorator", foreground: "795E26" },
+    ];
+  }
+  return [
+    { token: "type", foreground: "4EC9B0" },
+    { token: "class", foreground: "4EC9B0" },
+    { token: "struct", foreground: "4EC9B0" },
+    { token: "interface", foreground: "4EC9B0" },
+    { token: "enum", foreground: "4EC9B0" },
+    { token: "typeParameter", foreground: "4EC9B0" },
+    { token: "function", foreground: "DCDCAA" },
+    { token: "method", foreground: "DCDCAA" },
+    { token: "macro", foreground: "569CD6" },
+    { token: "variable", foreground: "9CDCFE" },
+    { token: "parameter", foreground: "9CDCFE" },
+    { token: "property", foreground: "9CDCFE" },
+    { token: "enumMember", foreground: "4FC1FF" },
+    { token: "namespace", foreground: "4EC9B0" },
+    { token: "keyword", foreground: "C586C0" },
+    { token: "comment", foreground: "6A9955" },
+    { token: "string", foreground: "CE9178" },
+    { token: "number", foreground: "B5CEA8" },
+    { token: "operator", foreground: "D4D4D4" },
+    { token: "decorator", foreground: "DCDCAA" },
+  ];
+}
+
 /*
  * Monaco editor colors — derived from the live dark theme tokens:
  *   background: t.editor   widget bg: t.overlay
@@ -103,7 +152,7 @@ export function defineMonacoThemeDark(monaco: Monaco): void {
   monaco.editor.defineTheme(LITECODE_MONACO_THEME_DARK, {
     base: "vs-dark",
     inherit: true,
-    rules: [],
+    rules: semanticTokenRules("dark"),
     colors: monacoColorsFromTokens(t, "dark"),
   });
 }
@@ -117,7 +166,7 @@ export function defineMonacoThemeLight(monaco: Monaco): void {
   monaco.editor.defineTheme(LITECODE_MONACO_THEME_LIGHT, {
     base: "vs",
     inherit: true,
-    rules: [],
+    rules: semanticTokenRules("light"),
     colors: monacoColorsFromTokens(t, "light"),
   });
 }

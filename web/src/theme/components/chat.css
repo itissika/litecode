@@ -597,19 +597,6 @@
 
 /* ── Mini chat input overlay ── */
 
-@keyframes mini-chat-enter {
-  0% {
-    opacity: 0;
-    width: 200px;
-    transform: translateY(12px);
-  }
-  100% {
-    opacity: 1;
-    width: 100%;
-    transform: translateY(0);
-  }
-}
-
 @keyframes mini-chat-exit {
   0% {
     opacity: 1;
@@ -619,8 +606,14 @@
   }
 }
 
-.animate-mini-chat-enter {
-  animation: mini-chat-enter 200ms ease-out forwards;
+/* Mini chat entry is a height + opacity transition (see MiniChatPanel): the
+   wrapper expands from the clicked bubble's height to its natural height.
+   Width stays 100% the whole time so the textarea measures scrollHeight at
+   full width — the old width animation froze a ~2x-tall textarea. */
+.mini-chat-enter {
+  transition:
+    height 200ms ease-out,
+    opacity 200ms ease-out;
 }
 
 .animate-mini-chat-exit {
