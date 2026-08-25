@@ -40,7 +40,7 @@ import { CompactingMark, TranscriptMark, TranscriptMarkForRow } from "./transcri
 type RenderNode =
   | { kind: "text"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
   | { kind: "reasoning"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
-  | { kind: "compact_cut"; key: string; streaming: boolean; live: false }
+  | { kind: "compact_cut"; summary?: string; key: string; streaming: boolean; live: false }
   | { kind: "job_exit"; key: string; streaming: boolean; live: false }
   | {
       kind: "tool";
@@ -92,7 +92,15 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
     const key = projectionRowKey(row);
     const mark = transcriptMarkKind(row);
     if (mark) {
-      nodes.push({ kind: mark, key, streaming: false, live: false });
+      nodes.push({
+        kind: mark,
+        key,
+        streaming: false,
+        live: false,
+        ...(mark === "compact_cut" && row.kind === "compacted"
+          ? { summary: row.body.summary }
+          : {}),
+      });
       continue;
     }
     if (!isHumanViewKind(row.kind) || row.kind === "item/tool_result") continue;
@@ -247,6 +255,7 @@ export function NodeView({
         />
       );
     case "compact_cut":
+      return <TranscriptMark kind={node.kind} summary={node.summary} />;
     case "job_exit":
       return <TranscriptMark kind={node.kind} />;
   }
@@ -809,23 +818,13 @@ export const MessageList = memo(function MessageList({
     [bubbles, editingAnchor?.bubbleKey, loader],
   );
 
-  const virtualizer = useVirtualizer({
-    count,
-    getScrollElement: () => scrollRef.current,
-    estimateSize,
-    overscan: 6,
-    getItemKey,
-    paddingEnd: bottomPad,
-    anchorTo: "end",
-    followOnAppend: stickToEnd,
-  });
-
-  const virtualItems = virtualizer.getVirtualItems();
-
   // Human stick intent: true until the user scrolls up. The stick flag is an
   // authoritative ref driven by gestures (see useStickToBottom); React state
   // (`stickToEnd`) is synced from it for the virtualizer + Latest button.
-  const { setStick } = useStickToBottom({
+  // Note: `isAtEnd` only closes over `virtualizer` — it is invoked from the
+  // hook's gesture listeners, which run after this render, so declaring the
+  // virtualizer below is safe.
+  const { stickRef, setStick } = useStickToBottom({
     ref: scrollRef,
     active: true,
     initialStick: true,
@@ -838,6 +837,35 @@ export const MessageList = memo(function MessageList({
       [],
     ),
   });
+
+  const virtualizer = useVirtualizer({
+    count,
+    getScrollElement: () => scrollRef.current,
+    estimateSize,
+    overscan: 6,
+    getItemKey,
+    paddingEnd: bottomPad,
+    anchorTo: "end",
+    followOnAppend: stickToEnd,
+  });
+
+  // While the user is unpinned (scrolled up), never compensate an item's
+  // size change by shifting scrollTop. The virtualizer's default rule
+  // ("item top above the viewport → adjust by the full delta") is wrong
+  // for streamed growth and FoldCard open/close: the change happens at the
+  // bottom of the last item — below the user's reading anchor — so the
+  // adjustment pushes their view down with every flush / 240ms animation
+  // frame. Native scroll anchoring (overflow-anchor: auto) keeps the first
+  // visible node stable, which is the correct anchor in that state.
+  // `stickRef` (not the async React state) is read so a stream flush that
+  // lands in the same frame as the wheel-unpin gesture still sees the
+  // unpinned intent. This predicate is a public instance property, not a
+  // VirtualizerOptions field in this version — assigned once per instance
+  // (idempotent on re-render, same pattern as the library's own setOptions).
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () =>
+    stickRef.current;
+
+  const virtualItems = virtualizer.getVirtualItems();
 
   const pinToEnd = useCallback(() => {
     setStick(true);
