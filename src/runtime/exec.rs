@@ -8,7 +8,7 @@ use crate::llm::ToolDef;
 use crate::runtime::llm_resolve::binding_for_agent;
 use crate::runtime::observer::{FailReason, InternalEvent, TurnError, TurnPhase, TurnTokenStats};
 use crate::runtime::provider_registry::ProviderRegistry;
-use crate::session::estimate::{apply_prompt_overhead, compute_token_breakdown, count_text_tokens};
+use crate::session::{apply_prompt_overhead, compute_token_breakdown, count_text_tokens};
 use crate::types::{FunctionToolCall, Item, LitecodeError, Result, Transcript};
 
 use crate::agent::AgentDeps;
@@ -449,14 +449,48 @@ impl AgentRuntime {
                 Err(crate::types::LitecodeError::Canceled)
             }
             Err(e) => {
+                // Attach request metadata to the surfaced message (not the
+                // returned error — callers see the original). This is what
+                // tells "request dropped mid-send because the body was huge"
+                // apart from provider/network faults (see transport_error).
+                let message = format!(
+                    "{e}; model={}, tokens={token_count}, stream=true, body_bytes_est={}",
+                    request.model,
+                    estimate_request_body_bytes(request),
+                );
                 self.emit_internal(InternalEvent::Error(TurnError {
                     reason: FailReason::LlmHttp,
-                    message: e.to_string(),
+                    message,
                 }));
                 Err(e)
             }
         }
     }
+}
+
+/// Approximate wire body size in bytes for `request` (Items + tools JSON +
+/// instructions). Close to the adapter's serialized body — envelope overhead is
+/// a few hundred bytes — so it is enough to tell "request dropped mid-send
+/// because the body was huge" apart from provider/network faults.
+fn estimate_request_body_bytes(request: &ModelRequest) -> usize {
+    let items = serde_json::to_string(&request.input)
+        .unwrap_or_default()
+        .len();
+    let tools: usize = request
+        .tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "type": "function",
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.input_schema,
+            })
+            .to_string()
+            .len()
+        })
+        .sum();
+    items + tools + request.instructions.len() + 512
 }
 
 fn request_token_breakdown(request: &ModelRequest) -> crate::session::estimate::ItemTokenBreakdown {
@@ -536,5 +570,44 @@ mod should_stop_tests {
     #[test]
     fn empty_output_stops() {
         assert!(should_stop_after_output(&[]));
+    }
+}
+
+#[cfg(test)]
+mod estimate_body_bytes_tests {
+    use super::estimate_request_body_bytes;
+    use crate::llm::ModelRequest;
+    use crate::types::user_text;
+
+    fn request(input: Vec<crate::types::Item>) -> ModelRequest {
+        ModelRequest {
+            model: "test-model".into(),
+            instructions: "sys".into(),
+            input,
+            tools: vec![],
+            max_output_tokens: 64,
+            temperature: 0.0,
+            reasoning_effort: None,
+            thinking_mode: None,
+            json_output: false,
+            session_id: None,
+        }
+    }
+
+    #[test]
+    fn body_bytes_grows_with_input_size() {
+        let small = estimate_request_body_bytes(&request(vec![user_text("hello")]));
+        let large = estimate_request_body_bytes(&request(vec![user_text("x".repeat(100_000))]));
+        assert!(small > 0);
+        assert!(large > small);
+        assert!(large > 100_000);
+    }
+
+    #[test]
+    fn body_bytes_reflects_instructions() {
+        let base = estimate_request_body_bytes(&request(vec![]));
+        let mut with_sys = request(vec![]);
+        with_sys.instructions = "system prompt ".repeat(10_000);
+        assert!(estimate_request_body_bytes(&with_sys) > base);
     }
 }
