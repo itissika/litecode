@@ -65,7 +65,7 @@ export function ToolResultBlock({ output }: { output?: FunctionCallOutputItem })
   return (
     <div className="flex flex-col gap-1">
       {body && (
-        <div className="text-dk-xs leading-relaxed text-(--_dk-text-muted)">
+        <div className="whitespace-pre-wrap break-words text-dk-xs leading-relaxed text-(--_dk-text-muted)">
           {body}
         </div>
       )}

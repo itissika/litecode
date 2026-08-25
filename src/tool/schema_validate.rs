@@ -30,6 +30,10 @@ pub fn must_be(path: &str, constraint: &str) -> String {
     format!("parameter '{path}' must be {constraint}")
 }
 
+pub fn unknown_parameter(path: &str) -> String {
+    format!("unknown parameter '{path}'")
+}
+
 pub fn must_be_one_of(path: &str, allowed: &[&str], got: &str) -> String {
     let allowed: Vec<Value> = allowed.iter().map(|s| Value::String((*s).into())).collect();
     enum_error(path, &allowed, &Value::String(got.into()))
@@ -232,7 +236,17 @@ fn validate_object(
             }
         }
     }
-    let Some(properties) = schema_obj.get("properties").and_then(Value::as_object) else {
+    let properties = schema_obj.get("properties").and_then(Value::as_object);
+    if schema_obj.get("additionalProperties") == Some(&Value::Bool(false)) {
+        let unknown = map
+            .keys()
+            .filter(|key| properties.is_none_or(|props| !props.contains_key(*key)))
+            .min();
+        if let Some(key) = unknown {
+            return Err(unknown_parameter(&child_path(path, key)));
+        }
+    }
+    let Some(properties) = properties else {
         return Ok(());
     };
     for (key, prop_schema) in properties {
@@ -249,6 +263,14 @@ fn validate_array_items(
     items: &[Value],
     path: &str,
 ) -> Result<(), String> {
+    if let Some(min_items) = schema_obj.get("minItems").and_then(Value::as_u64)
+        && (items.len() as u64) < min_items
+    {
+        return Err(must_be(
+            path,
+            &format!("an array with at least {min_items} item(s)"),
+        ));
+    }
     let Some(items_schema) = schema_obj.get("items") else {
         return Ok(());
     };
@@ -493,6 +515,67 @@ mod tests {
                 &json!({"todos": [{"content": "a"}, {"content": "b"}]})
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn min_items_rejects_empty_array() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_string": {"type": "string"},
+                            "new_string": {"type": "string"}
+                        },
+                        "required": ["old_string", "new_string"]
+                    }
+                }
+            },
+            "required": ["edits"]
+        });
+        assert_eq!(
+            err(schema, json!({"edits": []})),
+            "parameter 'edits' must be an array with at least 1 item(s)"
+        );
+    }
+
+    #[test]
+    fn additional_properties_false_rejects_nested_unknown_field() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "edits": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "old_string": {"type": "string"},
+                            "new_string": {"type": "string"}
+                        },
+                        "required": ["old_string", "new_string"]
+                    }
+                }
+            }
+        });
+        assert_eq!(
+            err(
+                schema,
+                json!({
+                    "edits": [{
+                        "old_string": "a",
+                        "new_string": "b",
+                        "mode": "fuzzy"
+                    }]
+                })
+            ),
+            "unknown parameter 'edits[0].mode'"
         );
     }
 

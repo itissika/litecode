@@ -18,6 +18,7 @@ import { ToolContentView } from "./ToolContentView";
 import { ToolIcon } from "./ToolIcon";
 import { deriveToolStatus } from "./toolCallStatus";
 import { computeLineDiff } from "./toolviews/DiffView";
+import { collectEditBlocks } from "./toolviews/EditToolView";
 import { toolTitle } from "./toolviews/toolTitle";
 
 interface ToolCallCardProps {
@@ -56,21 +57,26 @@ export function ToolCallCard({
   );
   const inputSummary = toolTitle(toolName, input, rawOutput, { activePlanPath }).summary;
 
-  // edit header: file + line-level +N/−M, computed locally from old_string /
-  // new_string (same LCS as the body diff) — no backend data needed.
+  // edit header: file + line-level +N/−M, summed from edits[] (or historical
+  // top-level old_string/new_string). Request preview only — not apply status.
   const isEdit = toolName === "edit";
   const editDiff = useMemo(() => {
     if (!isEdit || !input || typeof input !== "object" || Array.isArray(input)) {
       return null;
     }
     const rec = input as Record<string, unknown>;
-    const oldS = typeof rec.old_string === "string" ? rec.old_string : "";
-    const newS = typeof rec.new_string === "string" ? rec.new_string : "";
-    const diff = computeLineDiff(oldS, newS);
+    const blocks = collectEditBlocks(input);
+    let added = 0;
+    let removed = 0;
+    for (const block of blocks) {
+      const diff = computeLineDiff(block.oldString, block.newString);
+      added += diff.filter((d) => d.type === "add").length;
+      removed += diff.filter((d) => d.type === "remove").length;
+    }
     return {
       filePath: typeof rec.file_path === "string" ? rec.file_path : undefined,
-      added: diff.filter((d) => d.type === "add").length,
-      removed: diff.filter((d) => d.type === "remove").length,
+      added,
+      removed,
     };
   }, [isEdit, input]);
 

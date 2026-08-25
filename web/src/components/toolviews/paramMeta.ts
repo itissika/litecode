@@ -14,7 +14,7 @@ export interface ToolParamConfig {
 export const TOOL_PARAM_META: Record<string, ToolParamConfig> = {
   read: { primary: ["file_path"] },
   write: { primary: ["file_path", "content"] },
-  edit: { primary: ["file_path", "old_string", "new_string"] },
+  edit: { primary: ["file_path", "edits", "old_string", "new_string"] },
   bash: { primary: ["command"] },
   wait_shell: { primary: ["id", "sec"] },
   kill_shell: { primary: ["bash_id"] },

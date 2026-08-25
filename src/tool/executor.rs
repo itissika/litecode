@@ -396,10 +396,10 @@ pub async fn run_tool(
         tool_fut.await
     };
 
-    if cancel.is_cancelled() {
-        return cancelled_tool_result(&tu_name);
-    }
-
+    // Once a tool future returns, its result is the source of truth. The
+    // cancellation token may have fired while a mutating tool was finishing
+    // post-write sync/feedback; replacing that result would hide committed
+    // side effects and invite an unsafe retry.
     let mut output = match raw_result {
         Ok(r) => r,
         Err(panic_payload) => {
@@ -951,6 +951,37 @@ mod tests {
         fn call_inner(&self, _input: serde_json::Value) -> ToolCallResult {
             ToolCallResult::ok("ran")
         }
+    }
+
+    struct SelfCancellingTool;
+
+    impl Tool for SelfCancellingTool {
+        fn name(&self) -> &str {
+            "self_cancelling"
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn description(&self, _ctx: &Context) -> String {
+            "returns a truthful result after cancellation".into()
+        }
+        fn execute(
+            &self,
+            _input: serde_json::Value,
+            execution: crate::tool::trait_::ToolExecutionContext,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>>
+        {
+            Box::pin(async move {
+                execution.cancel.cancel();
+                ToolCallResult::ok("file committed")
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_tool_result_wins_over_late_cancellation() {
+        let result = run_schema_tool(Arc::new(SelfCancellingTool), "{}").await;
+        assert_eq!(result.content, "file committed");
     }
 
     #[tokio::test]

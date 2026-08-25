@@ -32,6 +32,27 @@ pub fn with_path_risk_warning(
     resolved: &Path,
     operation: &str,
 ) -> ToolCallResult {
+    let Some(msg) = path_risk_warning_text(workspace_root, raw_path, resolved, operation) else {
+        return result;
+    };
+    match result
+        .warning_status
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+    {
+        Some(existing) => result.with_warning(format!("{existing}; {msg}")),
+        None => result.with_warning(msg),
+    }
+}
+
+/// Warning text for an outside-workspace or sensitive path, if any.
+pub fn path_risk_warning_text(
+    workspace_root: &Path,
+    raw_path: &str,
+    resolved: &Path,
+    operation: &str,
+) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if is_resolved_outside_workspace(workspace_root, resolved) {
         parts.push(format!(
@@ -44,8 +65,8 @@ pub fn with_path_risk_warning(
         parts.push("target is a sensitive system location".into());
     }
     if parts.is_empty() {
-        result
+        None
     } else {
-        result.with_warning(parts.join("; "))
+        Some(parts.join("; "))
     }
 }

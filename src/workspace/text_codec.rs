@@ -80,10 +80,25 @@ pub fn utf8_decode_error_message(err: Utf8DecodeError) -> String {
     }
 }
 
+/// Original-content byte range. `start`/`end` are UTF-8 char boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ByteSpan {
+    pub start: usize,
+    pub end: usize,
+}
+
 /// Result of exact edit matching (EOL-agnostic, then typography-confusable).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditReplace {
     Applied { content: String, count: usize },
+    NotFound,
+    Ambiguous,
+}
+
+/// All exact matches against the original snapshot, or why matching stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExactSpans {
+    Hits(Vec<ByteSpan>),
     NotFound,
     Ambiguous,
 }
@@ -123,6 +138,117 @@ fn normalize_confusables(s: &str) -> String {
     out
 }
 
+/// Locate every EOL-equivalent (then typography-confusable) match in `content`.
+/// Spans refer to the original snapshot; nothing is rewritten.
+pub fn find_exact_spans(content: &str, old: &str) -> ExactSpans {
+    let eol = find_eol_spans(content, old);
+    if !eol.is_empty() {
+        return ExactSpans::Hits(eol);
+    }
+    if !has_confusables(content) && !has_confusables(old) {
+        return ExactSpans::NotFound;
+    }
+    match find_confusable_spans(content, old) {
+        ConfusableMatch::NoMatch => ExactSpans::NotFound,
+        ConfusableMatch::Ambiguous => ExactSpans::Ambiguous,
+        ConfusableMatch::Matches(spans) => ExactSpans::Hits(
+            spans
+                .into_iter()
+                .map(|(start, end)| ByteSpan { start, end })
+                .collect(),
+        ),
+    }
+}
+
+fn find_eol_spans(content: &str, old: &str) -> Vec<ByteSpan> {
+    let (content_lf, map) = to_lf_with_index_map(content);
+    let old_lf = old.replace("\r\n", "\n");
+    if old_lf.is_empty() {
+        return Vec::new();
+    }
+    let mut spans = Vec::new();
+    let mut lf_pos = 0usize;
+    while let Some(rel) = content_lf[lf_pos..].find(&old_lf) {
+        let start = lf_pos + rel;
+        let end = start + old_lf.len();
+        let orig_start = map[start];
+        let orig_end = map[end];
+        if orig_end > orig_start
+            && content.is_char_boundary(orig_start)
+            && content.is_char_boundary(orig_end)
+        {
+            spans.push(ByteSpan {
+                start: orig_start,
+                end: orig_end,
+            });
+        }
+        lf_pos = end;
+    }
+    spans
+}
+
+/// Render `new` with the newline style inferred at `orig_start` in `content`.
+pub fn render_eol_replacement(content: &str, orig_start: usize, new: &str) -> String {
+    let new_lf = new.replace("\r\n", "\n");
+    let mut out = String::new();
+    push_replacement(&mut out, content, orig_start, &new_lf);
+    out
+}
+
+/// 1-based inclusive line range covered by `span`.
+pub fn byte_span_lines(content: &str, span: ByteSpan) -> (usize, usize) {
+    let start = span.start.min(content.len());
+    let start_line = content[..start].matches('\n').count() + 1;
+    if span.end <= span.start {
+        return (start_line, start_line);
+    }
+    let mut end = span.end.min(content.len());
+    if end > 0 && content.as_bytes()[end - 1] == b'\n' {
+        end -= 1;
+    }
+    let end_line = content[..end].matches('\n').count() + 1;
+    (start_line, end_line.max(start_line))
+}
+
+/// Reject overlapping, unordered, out-of-range, or non-UTF-8-boundary spans.
+pub fn validate_byte_spans(content: &str, spans: &[ByteSpan]) -> Result<(), String> {
+    let mut prev_end = 0usize;
+    for span in spans {
+        if span.end < span.start || span.end > content.len() {
+            return Err("edit plan span is out of range".into());
+        }
+        if !content.is_char_boundary(span.start) || !content.is_char_boundary(span.end) {
+            return Err("edit plan span is not on a UTF-8 boundary".into());
+        }
+        if span.start < prev_end {
+            return Err("edit plan spans overlap or are unordered".into());
+        }
+        prev_end = span.end;
+    }
+    Ok(())
+}
+
+/// Splice already-rendered replacements into `content`. Spans must be valid
+/// original-snapshot ranges; they are sorted by start before applying.
+pub fn apply_byte_spans(
+    content: &str,
+    replacements: &[(ByteSpan, String)],
+) -> Result<String, String> {
+    let mut ordered = replacements.to_vec();
+    ordered.sort_by_key(|(span, _)| span.start);
+    let spans: Vec<ByteSpan> = ordered.iter().map(|(span, _)| *span).collect();
+    validate_byte_spans(content, &spans)?;
+    let mut out = String::new();
+    let mut last = 0usize;
+    for (span, replacement) in &ordered {
+        out.push_str(&content[last..span.start]);
+        out.push_str(replacement);
+        last = span.end;
+    }
+    out.push_str(&content[last..]);
+    Ok(out)
+}
+
 /// Replace `old` with `new` after treating CRLF and LF as equivalent in the
 /// search. Unmatched regions keep their original line endings. The replacement
 /// text uses the newline style inferred at the match site.
@@ -132,43 +258,27 @@ pub fn eol_preserving_replace(
     new: &str,
     replace_all: bool,
 ) -> (String, usize) {
-    let (content_lf, map) = to_lf_with_index_map(content);
-    let old_lf = old.replace("\r\n", "\n");
-    let new_lf = new.replace("\r\n", "\n");
-    if old_lf.is_empty() {
-        return (content.to_string(), 0);
-    }
-
-    let mut count = 0usize;
-    let mut scan = 0usize;
-    while let Some(rel) = content_lf[scan..].find(&old_lf) {
-        count += 1;
-        scan += rel + old_lf.len();
-    }
+    let spans = find_eol_spans(content, old);
+    let count = spans.len();
     if count == 0 {
         return (content.to_string(), 0);
     }
     if !replace_all && count > 1 {
         return (content.to_string(), count);
     }
-
-    let mut out = String::new();
-    let mut lf_pos = 0usize;
-    let mut applied = 0usize;
-    while let Some(rel) = content_lf[lf_pos..].find(&old_lf) {
-        let start = lf_pos + rel;
-        let end = start + old_lf.len();
-        let orig_start = map[start];
-        out.push_str(&content[map[lf_pos]..orig_start]);
-        push_replacement(&mut out, content, orig_start, &new_lf);
-        applied += 1;
-        lf_pos = end;
-        if !replace_all {
-            break;
-        }
+    let apply: &[ByteSpan] = if replace_all { &spans } else { &spans[..1] };
+    match apply_rendered_spans(content, apply, new) {
+        Ok(edited) => (edited, apply.len()),
+        Err(_) => (content.to_string(), 0),
     }
-    out.push_str(&content[map[lf_pos]..]);
-    (out, applied)
+}
+
+fn apply_rendered_spans(content: &str, spans: &[ByteSpan], new: &str) -> Result<String, String> {
+    let replacements: Vec<(ByteSpan, String)> = spans
+        .iter()
+        .map(|span| (*span, render_eol_replacement(content, span.start, new)))
+        .collect();
+    apply_byte_spans(content, &replacements)
 }
 
 /// Exact replace used by the edit tool: EOL-agnostic first, then a confusable
@@ -179,32 +289,27 @@ pub fn edit_preserving_replace(
     new: &str,
     replace_all: bool,
 ) -> EditReplace {
-    let (edited, count) = eol_preserving_replace(content, old, new, replace_all);
-    if count > 0 {
-        return EditReplace::Applied {
-            content: edited,
-            count,
-        };
-    }
-    if !has_confusables(content) && !has_confusables(old) {
-        return EditReplace::NotFound;
-    }
-    match find_confusable_spans(content, old) {
-        ConfusableMatch::NoMatch => EditReplace::NotFound,
-        ConfusableMatch::Ambiguous => EditReplace::Ambiguous,
-        ConfusableMatch::Matches(spans) => {
+    match find_exact_spans(content, old) {
+        ExactSpans::NotFound => EditReplace::NotFound,
+        ExactSpans::Ambiguous => EditReplace::Ambiguous,
+        ExactSpans::Hits(spans) => {
             let count = spans.len();
+            if count == 0 {
+                return EditReplace::NotFound;
+            }
             if !replace_all && count > 1 {
                 return EditReplace::Applied {
                     content: content.to_string(),
                     count,
                 };
             }
-            let new_lf = new.replace("\r\n", "\n");
-            let apply_spans: &[(usize, usize)] = if replace_all { &spans } else { &spans[..1] };
-            EditReplace::Applied {
-                content: replace_original_spans(content, apply_spans, &new_lf),
-                count: apply_spans.len(),
+            let apply: &[ByteSpan] = if replace_all { &spans } else { &spans[..1] };
+            match apply_rendered_spans(content, apply, new) {
+                Ok(edited) => EditReplace::Applied {
+                    content: edited,
+                    count: apply.len(),
+                },
+                Err(_) => EditReplace::NotFound,
             }
         }
     }
@@ -212,26 +317,10 @@ pub fn edit_preserving_replace(
 
 /// 1-based start line of each EOL- or confusable-normalized match.
 pub fn edit_match_line_numbers(content: &str, old: &str) -> Vec<usize> {
-    let (content_lf, map) = to_lf_with_index_map(content);
-    let old_lf = old.replace("\r\n", "\n");
-    if old_lf.is_empty() {
-        return Vec::new();
-    }
-    let mut lines = Vec::new();
-    let mut lf_pos = 0usize;
-    while let Some(rel) = content_lf[lf_pos..].find(&old_lf) {
-        let start = lf_pos + rel;
-        let orig_start = map[start];
-        lines.push(content[..orig_start].matches('\n').count() + 1);
-        lf_pos = start + old_lf.len();
-    }
-    if !lines.is_empty() {
-        return lines;
-    }
-    match find_confusable_spans(content, old) {
-        ConfusableMatch::Matches(spans) => spans
+    match find_exact_spans(content, old) {
+        ExactSpans::Hits(spans) => spans
             .into_iter()
-            .map(|(start, _)| content[..start].matches('\n').count() + 1)
+            .map(|span| byte_span_lines(content, span).0)
             .collect(),
         _ => Vec::new(),
     }
@@ -344,12 +433,11 @@ fn find_confusable_spans(content: &str, old: &str) -> ConfusableMatch {
         validated.push((orig_start, orig_end));
     }
 
+    if had_rejected {
+        return ConfusableMatch::Ambiguous;
+    }
     if validated.is_empty() {
-        return if had_rejected {
-            ConfusableMatch::Ambiguous
-        } else {
-            ConfusableMatch::NoMatch
-        };
+        return ConfusableMatch::NoMatch;
     }
     for window in validated.windows(2) {
         if window[0].1 > window[1].0 {
@@ -357,18 +445,6 @@ fn find_confusable_spans(content: &str, old: &str) -> ConfusableMatch {
         }
     }
     ConfusableMatch::Matches(validated)
-}
-
-fn replace_original_spans(content: &str, spans: &[(usize, usize)], new_lf: &str) -> String {
-    let mut out = String::new();
-    let mut last = 0usize;
-    for &(start, end) in spans {
-        out.push_str(&content[last..start]);
-        push_replacement(&mut out, content, start, new_lf);
-        last = end;
-    }
-    out.push_str(&content[last..]);
-    out
 }
 
 fn push_replacement(out: &mut String, content: &str, orig_start: usize, new_lf: &str) {
@@ -484,15 +560,15 @@ fn to_lf_with_index_map(s: &str) -> (String, Vec<usize>) {
 
 fn inferred_eol(s: &str, at: usize) -> &'static str {
     let bytes = s.as_bytes();
-    if let Some(i) = s[..at].rfind('\n') {
-        if i > 0 && bytes[i - 1] == b'\r' {
+    if let Some(rel) = s[at..].find('\n') {
+        let abs = at + rel;
+        if abs > 0 && bytes[abs - 1] == b'\r' {
             "\r\n"
         } else {
             "\n"
         }
-    } else if let Some(rel) = s[at..].find('\n') {
-        let abs = at + rel;
-        if abs > 0 && bytes[abs - 1] == b'\r' {
+    } else if let Some(i) = s[..at].rfind('\n') {
+        if i > 0 && bytes[i - 1] == b'\r' {
             "\r\n"
         } else {
             "\n"
@@ -528,6 +604,14 @@ mod tests {
         let (result, count) = eol_preserving_replace(content, "b", "B", false);
         assert_eq!(count, 1);
         assert_eq!(result, "a\r\nB\nc\n");
+    }
+
+    #[test]
+    fn mixed_eol_multiline_replacement_uses_matched_line_ending() {
+        let content = "a\r\nb\nc\n";
+        let (result, count) = eol_preserving_replace(content, "b", "B\nB2", false);
+        assert_eq!(count, 1);
+        assert_eq!(result, "a\r\nB\nB2\nc\n");
     }
 
     #[test]
@@ -590,6 +674,14 @@ mod tests {
     }
 
     #[test]
+    fn confusable_valid_and_partial_matches_are_ambiguous_together() {
+        assert_eq!(
+            edit_preserving_replace("a\u{2013}b\u{2014}c", "-", "x", true),
+            EditReplace::Ambiguous
+        );
+    }
+
+    #[test]
     fn confusable_full_em_dash_ok() {
         let (result, count) = applied("a\u{2014}b", "--", "-", false);
         assert_eq!(count, 1);
@@ -643,5 +735,51 @@ mod tests {
         let end = start + 4;
         let orig = &original[map[start]..map[end]];
         assert_eq!(normalize_confusables(orig), "\"hi\"");
+    }
+
+    #[test]
+    fn exact_spans_map_lf_old_to_crlf_original() {
+        let content = "a\r\nb\r\nc\r\n";
+        match find_exact_spans(content, "a\nb") {
+            ExactSpans::Hits(spans) => {
+                assert_eq!(spans, vec![ByteSpan { start: 0, end: 4 }]);
+                assert_eq!(&content[0..4], "a\r\nb");
+                assert_eq!(byte_span_lines(content, spans[0]), (1, 2));
+                let rendered = render_eol_replacement(content, spans[0].start, "X");
+                let out = apply_byte_spans(content, &[(spans[0], rendered)]).unwrap();
+                assert_eq!(out, "X\r\nc\r\n");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn exact_spans_confusable_and_utf8_boundaries() {
+        let content = "say \u{201C}hello\u{201D} world";
+        match find_exact_spans(content, "\"hello\"") {
+            ExactSpans::Hits(spans) => {
+                assert_eq!(spans.len(), 1);
+                assert!(content.is_char_boundary(spans[0].start));
+                assert!(content.is_char_boundary(spans[0].end));
+                let rendered = render_eol_replacement(content, spans[0].start, "\"hi\"");
+                let out = apply_byte_spans(content, &[(spans[0], rendered)]).unwrap();
+                assert_eq!(out, "say \"hi\" world");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_byte_spans_rejects_overlap() {
+        let content = "abcdef";
+        let err = apply_byte_spans(
+            content,
+            &[
+                (ByteSpan { start: 0, end: 3 }, "X".into()),
+                (ByteSpan { start: 2, end: 4 }, "Y".into()),
+            ],
+        )
+        .unwrap_err();
+        assert!(err.contains("overlap"), "{err}");
     }
 }

@@ -86,6 +86,23 @@ describe("deriveToolStatus", () => {
     };
     expect(deriveToolStatus(output, false)).toBe("warning");
   });
+
+  it("treats edit partial-success as warning and Hint-only as ok", () => {
+    const partial: FunctionCallOutputItem = {
+      type: "function_call_output",
+      call_id: "c1",
+      output:
+        "Edited src/a.rs (1 applied / 0 warning / 1 failed). File updated.\n\nWarning: some edits were not applied",
+    };
+    expect(deriveToolStatus(partial, false)).toBe("warning");
+    const hintOnly: FunctionCallOutputItem = {
+      type: "function_call_output",
+      call_id: "c1",
+      output:
+        "Edited src/a.rs (1 applied / 0 warning / 0 failed). File updated.\n\nHint: LSP note — rust-analyzer\nError: missing semicolon",
+    };
+    expect(deriveToolStatus(hintOnly, false)).toBe("ok");
+  });
 });
 
 describe("isToolCallLive", () => {
@@ -190,6 +207,27 @@ describe("ToolCallCard open state", () => {
     expect(header.textContent).toContain("src/a.ts");
     expect(header.textContent).toContain("+2");
     expect(header.textContent).toContain("−1");
+  });
+
+  it("sums +N/−M across edits[] request previews", () => {
+    const editCall: FunctionCallItem = {
+      type: "function_call",
+      id: "fc_edit_batch",
+      call_id: "call_edit_batch",
+      name: "edit",
+      arguments: JSON.stringify({
+        file_path: "src/a.ts",
+        edits: [
+          { old_string: "foo\nbar\nbaz", new_string: "foo\nqux\nbaz\nquux" },
+          { old_string: "a", new_string: "b\nc" },
+        ],
+      }),
+      status: "completed",
+    };
+    renderCard({ call: editCall, output });
+    const header = screen.getByRole("button", { name: /edit/i });
+    expect(header.textContent).toContain("src/a.ts");
+    expect(header.textContent).toContain("+");
   });
 
   it("mounts a live tool card collapsed by default", () => {
