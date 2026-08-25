@@ -786,15 +786,78 @@ fn edit_with_warm_lsp_appends_only_when_errors_arrive() {
 
     let tool = edit_tool_with_ide(root, engines.clone());
     let result = tool.call(serde_json::json!({
-        "file_path": lib.to_str().unwrap(),
-        "old_string": "fn ok() {}",
-        "new_string": "fn ok() { broken }"
+            "file_path": lib.to_str().unwrap(),
+            "edits": [{ "old_string": "fn ok() {}", "new_string": "fn ok() { broken }" }]
     }));
     assert!(result.content.starts_with("Edited "), "{}", result.content);
     assert!(
         result.content.contains("LSP note"),
         "expected local error feedback on edit: {}",
         result.content
+    );
+
+    engines.stop_all();
+    clear_mock_ls_env();
+}
+
+/// Reproduce: LSP reports an error, agent fixes the same file, the next edit
+/// must not append the previous round's diagnostic. Prefer silence over stale.
+#[test]
+fn edit_fix_must_not_echo_previous_lsp_error() {
+    use litecode::tool::Tool;
+
+    let _guard = LSP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_mock_ls_env();
+    unsafe {
+        std::env::set_var("MOCK_LSP_DIAG", "if_broken");
+        std::env::set_var("MOCK_LSP_DIAG_DELAY_MS", "0");
+    }
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace(root).unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
+    let lib = root.join("lib.rs");
+    std::fs::write(&lib, "fn ok() {}\n").unwrap();
+
+    let resolved = workspace_with_lsp(root);
+    let engines = WorkspaceEngines::new();
+    engines.reconcile(&resolved);
+    wait_lsp_warm_blocking(&engines);
+
+    let tool = edit_tool_with_ide(root, engines.clone());
+    let broken = tool.call(serde_json::json!({
+        "file_path": lib.to_str().unwrap(),
+        "edits": [{ "old_string": "fn ok() {}", "new_string": "fn BROKEN() {}" }]
+    }));
+    assert!(
+        broken.content.contains("LSP note"),
+        "first edit should surface the live error: {}",
+        broken.content
+    );
+    assert!(
+        broken.content.contains("mock broken marker"),
+        "first edit should include the current diagnostic: {}",
+        broken.content
+    );
+
+    // Next publish is slower than the feedback budget, so the only way to
+    // still show a note is to leak the previous round's cached Error.
+    unsafe {
+        std::env::set_var("MOCK_LSP_DIAG_DELAY_MS", "2000");
+    }
+    let fixed = tool.call(serde_json::json!({
+        "file_path": lib.to_str().unwrap(),
+        "edits": [{ "old_string": "fn BROKEN() {}", "new_string": "fn ok() {}" }]
+    }));
+    assert!(
+        !fixed.content.contains("mock broken marker"),
+        "fixed edit must not echo the previous LSP error: {}",
+        fixed.content
+    );
+    assert!(
+        !fixed.content.contains("LSP note"),
+        "prefer silence over a stale LSP note after the fix: {}",
+        fixed.content
     );
 
     engines.stop_all();

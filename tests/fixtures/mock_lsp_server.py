@@ -38,8 +38,8 @@ def write_message(obj):
     sys.stdout.flush()
 
 
-def publish_diagnostics(uri):
-    """MOCK_LSP_DIAG=error|none|delay_error — default none (no notification)."""
+def publish_diagnostics(uri, text=None):
+    """MOCK_LSP_DIAG=error|none|delay_error|if_broken|warn_only — default none."""
     mode = os.environ.get("MOCK_LSP_DIAG", "none").strip().lower()
     if mode in ("", "none", "0", "off"):
         return
@@ -57,6 +57,20 @@ def publish_diagnostics(uri):
                 },
             }
         ]
+    elif mode == "if_broken":
+        if text and "BROKEN" in text:
+            diags = [
+                {
+                    "severity": 1,
+                    "message": "mock broken marker",
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 1},
+                    },
+                }
+            ]
+        else:
+            diags = []
     elif mode == "warn_only":
         diags = [
             {
@@ -70,11 +84,15 @@ def publish_diagnostics(uri):
         ]
     else:
         return
+    params = {"uri": uri, "diagnostics": diags}
+    ver = last_version.get(uri)
+    if ver is not None:
+        params["version"] = ver
     write_message(
         {
             "jsonrpc": "2.0",
             "method": "textDocument/publishDiagnostics",
-            "params": {"uri": uri, "diagnostics": diags},
+            "params": params,
         }
     )
 
@@ -92,13 +110,19 @@ def main():
         # Notifications (didOpen / didChange) — optional diagnostics push.
         if "id" not in msg:
             if method in ("textDocument/didOpen", "textDocument/didChange"):
-                td = msg.get("params", {}).get("textDocument", {})
+                params = msg.get("params", {})
+                td = params.get("textDocument", {})
                 uri = td.get("uri")
                 ver = td.get("version")
                 if uri is not None and ver is not None:
                     last_version[uri] = ver
+                if method == "textDocument/didOpen":
+                    text = td.get("text")
+                else:
+                    changes = params.get("contentChanges") or []
+                    text = changes[-1].get("text") if changes else None
                 if uri:
-                    publish_diagnostics(uri)
+                    publish_diagnostics(uri, text)
             continue
         req_id = msg["id"]
         if method == "initialize":

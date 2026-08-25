@@ -488,9 +488,7 @@ impl LspServer {
                 docs.open_docs_set.remove(&entry.uri);
                 docs.document_versions.remove(&entry.uri);
                 docs.document_text.remove(&entry.uri);
-                if let Ok(mut diags) = self.io.diagnostics.lock() {
-                    diags.retain(|k, _| !publish_diagnostics_uri_matches(k, &entry.uri));
-                }
+                self.io.forget_uri(&entry.uri);
                 (entry.uri, false)
             };
             let _ = should_stop;
@@ -590,7 +588,7 @@ impl LspServer {
     ) -> Result<()> {
         let gate = self.uri_gate(uri).await;
         let _g = gate.lock().await;
-        let (payload, opened) = {
+        let (payload, opened, version) = {
             let mut docs = self.docs.lock().await;
             if docs.open_docs_set.contains(uri) {
                 if let Some(pos) = docs.open_docs.iter().position(|e| e.uri == uri) {
@@ -629,6 +627,7 @@ impl LspServer {
                         "contentChanges": [change]
                     }),
                     false,
+                    version,
                 )
             } else {
                 let language_id = file_path
@@ -653,9 +652,11 @@ impl LspServer {
                         }
                     }),
                     true,
+                    1,
                 )
             }
         };
+        self.io.note_doc_synced(uri, version);
         if opened {
             self.send_notification("textDocument/didOpen", payload)
                 .await?;
@@ -713,6 +714,7 @@ impl LspServer {
             docs.document_versions.remove(uri);
             docs.document_text.remove(uri);
         }
+        self.io.forget_uri(uri);
         self.send_notification(
             "textDocument/didClose",
             serde_json::json!({ "textDocument": { "uri": uri } }),
@@ -800,9 +802,21 @@ mod tests {
                 "diagnostics": [{ "message": "boom", "severity": 1 }]
             }
         });
-        let (uri, diags) = publish_diagnostics_payload(&msg).expect("payload");
+        let (uri, version, diags) = publish_diagnostics_payload(&msg).expect("payload");
         assert_eq!(uri, "file:///a.rs");
+        assert_eq!(version, None);
         assert_eq!(diags.as_array().map(|a| a.len()), Some(1));
+        let versioned = serde_json::json!({
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": "file:///a.rs",
+                "version": 3,
+                "diagnostics": []
+            }
+        });
+        let (_, ver, empty) = publish_diagnostics_payload(&versioned).expect("versioned");
+        assert_eq!(ver, Some(3));
+        assert_eq!(empty, serde_json::json!([]));
         assert!(
             publish_diagnostics_payload(&serde_json::json!({
                 "method": "window/logMessage"
