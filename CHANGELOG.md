@@ -2,6 +2,21 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.1.6] - 2026-08-25
+
+### 新增
+
+- 终端多开时右键可关闭并杀进程。
+- gitignore 开关拆分：文件浏览与语义检索可独立控制忽略规则。
+
+### 变更
+
+- README 特性介绍图改用 Full.webp 动图。
+
+### 修复
+
+- LSP 移除 hub 全局互斥锁：并发请求不再互相阻塞，并支持请求取消。
+
 ## [0.1.5] - 2026-08-24
 
 ### 新增
