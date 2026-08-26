@@ -4,9 +4,12 @@ import {
   dropWorkspaceLsp,
   isLspServerReady,
   isLspWarm,
+  monacoChangeToLsp,
   monacoCompletionTriggerToLsp,
   parseDiagnosticsSnapshot,
+  parseDidChangeAck,
   relPathFromLspUri,
+  shouldApplyPublishedDiagnostics,
   toFileUri,
 } from "./litecodeLsp";
 import { useSettingsStore } from "../stores/settingsStore";
@@ -153,5 +156,60 @@ describe("parseDiagnosticsSnapshot", () => {
     });
     expect(snap.fresh && snap.serverReady).toBe(true);
     expect(snap.diagnostics).toEqual([{ message: "real" }]);
+  });
+});
+
+describe("parseDidChangeAck", () => {
+  it("reads rev/version without treating diagnostics as the payload", () => {
+    const ack = parseDidChangeAck({
+      rev: 4,
+      version: 2,
+      server_ready: true,
+      diagnostics: [{ message: "must ignore" }],
+    });
+    expect(ack).toEqual({ rev: 4, version: 2, serverReady: true });
+  });
+
+  it("does not treat a snapshot-shaped silence as ready", () => {
+    expect(parseDidChangeAck({ fresh: false, diagnostics: [] })).toEqual({
+      rev: null,
+      version: null,
+      serverReady: false,
+    });
+  });
+});
+
+describe("shouldApplyPublishedDiagnostics", () => {
+  it("keeps markers when a versioned publish is older than the sent document", () => {
+    expect(shouldApplyPublishedDiagnostics(1, 3)).toBe(false);
+    expect(shouldApplyPublishedDiagnostics(3, 3)).toBe(true);
+    expect(shouldApplyPublishedDiagnostics(4, 3)).toBe(true);
+  });
+
+  it("applies unversioned publishes", () => {
+    expect(shouldApplyPublishedDiagnostics(null, 3)).toBe(true);
+    expect(shouldApplyPublishedDiagnostics(undefined, 3)).toBe(true);
+  });
+});
+
+describe("monacoChangeToLsp", () => {
+  it("converts 1-based Monaco ranges to 0-based LSP edits", () => {
+    expect(
+      monacoChangeToLsp({
+        range: {
+          startLineNumber: 2,
+          startColumn: 3,
+          endLineNumber: 2,
+          endColumn: 5,
+        },
+        text: "xy",
+      }),
+    ).toEqual({
+      range: {
+        start: { line: 1, character: 2 },
+        end: { line: 1, character: 4 },
+      },
+      text: "xy",
+    });
   });
 });

@@ -12,6 +12,7 @@ pub mod server_map;
 pub mod status;
 pub mod uri;
 
+pub use conn::LspDiagnosticEvent;
 pub use hub::{LspDiagFeedback, LspHub, SharedLspHub};
 pub use server_map::{
     check_workspace_dependencies, command_parts, detect_needed_server_commands,

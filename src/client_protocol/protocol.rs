@@ -31,6 +31,7 @@ pub mod methods {
     pub const AGENT_SET_THINKING_TIER: &str = "agent/set-thinking-tier";
     pub const AGENT_SET_CONTEXT_MODE: &str = "agent/set-context-mode";
     pub const LSP_REQUEST: &str = "lsp/request";
+    pub const LSP_DIAGNOSTICS: &str = "lsp/diagnostics";
     pub const TERMINAL_CREATE: &str = "terminal/create";
     pub const TERMINAL_WRITE: &str = "terminal/write";
     pub const TERMINAL_RESIZE: &str = "terminal/resize";

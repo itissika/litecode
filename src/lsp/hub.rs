@@ -11,8 +11,10 @@ use std::time::Instant;
 
 use serde_json::Value;
 use tokio::runtime::{Handle, Runtime};
+use tokio::sync::broadcast;
 use tokio::time::Duration;
 
+use crate::lsp::conn::LspDiagnosticEvent;
 use crate::lsp::deps;
 use crate::lsp::format::{format_action_result, format_error_diagnostics_block};
 use crate::lsp::server::{LspServer, MAX_AUTO_RESTARTS, RESTART_COOLDOWN};
@@ -75,12 +77,14 @@ pub struct LspHub {
     // within an async context (which panics tokio). See `Drop for LspHub`.
     rt: std::mem::ManuallyDrop<Runtime>,
     handle: Handle,
+    diag_tx: broadcast::Sender<LspDiagnosticEvent>,
 }
 
 impl LspHub {
     pub fn new() -> Self {
         let rt = Runtime::new().expect("lsp runtime");
         let handle = rt.handle().clone();
+        let (diag_tx, _) = broadcast::channel(256);
         Self {
             inner: Mutex::new(LspHubInner {
                 workspace_root: None,
@@ -97,7 +101,12 @@ impl LspHub {
             }),
             rt: std::mem::ManuallyDrop::new(rt),
             handle,
+            diag_tx,
         }
+    }
+
+    pub fn subscribe_diagnostics(&self) -> broadcast::Receiver<LspDiagnosticEvent> {
+        self.diag_tx.subscribe()
     }
 
     async fn spawn_ls(
@@ -105,8 +114,9 @@ impl LspHub {
         binary: crate::lsp::install::LanguageServerBinary,
         root: PathBuf,
     ) -> Result<LspServer> {
+        let diag_tx = self.diag_tx.clone();
         self.handle
-            .spawn(async move { LspServer::spawn(&binary, &root).await })
+            .spawn(async move { LspServer::spawn(&binary, &root, Some(diag_tx)).await })
             .await
             .map_err(|e| LitecodeError::ToolExecution(format!("lsp spawn join: {e}")))?
     }
@@ -596,10 +606,12 @@ impl LspHub {
             let key = self.resolve_server_key(&path).await?;
             let server = self.server_arc(&key)?;
             if !server.is_running() {
-                return Ok(diagnostics_silence_snapshot());
+                return Ok(editor_sync_ack(None, None, false));
             }
-            server.sync_document_from_text(&path, uri, text).await?;
-            return Ok(server.diagnostics_snapshot(uri).await);
+            let (rev, version) = server
+                .sync_document_edit(&path, uri, text, params.get("contentChanges"))
+                .await?;
+            return Ok(editor_sync_ack(Some(rev), Some(version), true));
         }
 
         if method == "litecode/serverCapabilities" {
@@ -923,6 +935,14 @@ fn diagnostics_silence_snapshot() -> Value {
     })
 }
 
+fn editor_sync_ack(rev: Option<i32>, version: Option<i32>, server_ready: bool) -> Value {
+    serde_json::json!({
+        "rev": rev,
+        "version": version,
+        "server_ready": server_ready,
+    })
+}
+
 async fn ensure_open_document(
     server: &LspServer,
     file_path: &Path,
@@ -1052,5 +1072,18 @@ mod tests {
         assert_eq!(snap["server_ready"], false);
         assert_eq!(snap["diagnostics"], serde_json::json!([]));
         assert!(snap.get("diagnostics").and_then(|d| d.as_array()).is_some());
+    }
+
+    #[test]
+    fn editor_did_change_ack_has_no_diagnostic_list() {
+        let ack = editor_sync_ack(Some(3), Some(2), true);
+        assert_eq!(ack["rev"], 3);
+        assert_eq!(ack["version"], 2);
+        assert_eq!(ack["server_ready"], true);
+        assert!(ack.get("diagnostics").is_none());
+        let quiet = editor_sync_ack(None, None, false);
+        assert_eq!(quiet["server_ready"], false);
+        assert!(quiet["rev"].is_null());
+        assert!(quiet.get("diagnostics").is_none());
     }
 }

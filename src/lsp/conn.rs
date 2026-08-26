@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::ChildStdin;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::AbortHandle;
 use tokio::time::{Duration, timeout};
 
@@ -76,6 +76,14 @@ pub(crate) fn publish_diagnostics_payload(msg: &Value) -> Option<(String, Option
         .cloned()
         .unwrap_or_else(|| Value::Array(vec![]));
     Some((uri, version, diags))
+}
+
+/// Editor-facing diagnostic push (VS Code DiagnosticCollection.set).
+#[derive(Debug, Clone)]
+pub struct LspDiagnosticEvent {
+    pub uri: String,
+    pub version: Option<i32>,
+    pub diagnostics: Value,
 }
 
 fn json_i32(value: &Value) -> Option<i32> {
@@ -168,6 +176,7 @@ pub(crate) struct LspIo {
     pub(crate) pid: AtomicU32,
     writer_abort: Mutex<Option<AbortHandle>>,
     reader_abort: Mutex<Option<AbortHandle>>,
+    diag_tx: Option<broadcast::Sender<LspDiagnosticEvent>>,
 }
 
 impl LspIo {
@@ -175,6 +184,7 @@ impl LspIo {
         stdin: ChildStdin,
         stdout: tokio::process::ChildStdout,
         pid: u32,
+        diag_tx: Option<broadcast::Sender<LspDiagnosticEvent>>,
     ) -> Arc<Self> {
         let (outbound, outbound_rx) = mpsc::unbounded_channel();
         let io = Arc::new(Self {
@@ -191,6 +201,7 @@ impl LspIo {
             pid: AtomicU32::new(pid),
             writer_abort: Mutex::new(None),
             reader_abort: Mutex::new(None),
+            diag_tx,
         });
 
         let writer_io = Arc::clone(&io);
@@ -250,7 +261,21 @@ impl LspIo {
     pub(crate) fn ingest_notification(&self, msg: &Value) {
         if let Some((uri, version, diags)) = publish_diagnostics_payload(msg) {
             if let Ok(mut g) = self.diagnostics.lock() {
-                upsert_uri_map(&mut g, &uri, DiagEntry { diags, version });
+                upsert_uri_map(
+                    &mut g,
+                    &uri,
+                    DiagEntry {
+                        diags: diags.clone(),
+                        version,
+                    },
+                );
+            }
+            if let Some(tx) = &self.diag_tx {
+                let _ = tx.send(LspDiagnosticEvent {
+                    uri: uri.clone(),
+                    version,
+                    diagnostics: diags,
+                });
             }
             // Late / unversioned publishes must not abort a wait for the
             // current document version; only a covering publish wakes waiters.
@@ -557,6 +582,10 @@ mod tests {
     use std::time::Instant;
 
     fn test_io() -> Arc<LspIo> {
+        test_io_diag(None)
+    }
+
+    fn test_io_diag(diag_tx: Option<broadcast::Sender<LspDiagnosticEvent>>) -> Arc<LspIo> {
         let (outbound, rx) = mpsc::unbounded_channel();
         std::mem::forget(rx);
         Arc::new(LspIo {
@@ -573,6 +602,7 @@ mod tests {
             pid: AtomicU32::new(0),
             writer_abort: Mutex::new(None),
             reader_abort: Mutex::new(None),
+            diag_tx,
         })
     }
 
@@ -792,6 +822,25 @@ mod tests {
         assert!(
             !io.diagnostics_are_current(uri),
             "v1 cache must not cover v2 sync"
+        );
+    }
+
+    #[test]
+    fn publish_diagnostics_fans_out_to_subscribers() {
+        let (tx, mut rx) = broadcast::channel(8);
+        let io = test_io_diag(Some(tx));
+        io.ingest_notification(&publish(
+            "file:///a.rs",
+            Some(2),
+            serde_json::json!([{ "message": "x", "severity": 1 }]),
+        ));
+        let ev = rx.try_recv().expect("editor fan-out");
+        assert_eq!(ev.uri, "file:///a.rs");
+        assert_eq!(ev.version, Some(2));
+        assert_eq!(ev.diagnostics.as_array().map(|a| a.len()), Some(1));
+        assert!(
+            io.diagnostics_for_uri("file:///a.rs").is_some(),
+            "agent cache must still be written"
         );
     }
 }

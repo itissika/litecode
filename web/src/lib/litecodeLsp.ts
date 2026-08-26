@@ -26,18 +26,29 @@ const pending = new Map<
 let nextLspRpcId = 1_000_000_000;
 
 const lastHubRevByUri = new Map<string, number>();
+const lastLspVersionByUri = new Map<string, number>();
 const lastAppliedTextByUri = new Map<string, string>();
 const serverReadyByUri = new Map<string, boolean>();
+const pendingContentChangesByUri = new Map<string, LspTextEdit[]>();
+const applyInFlight = new Map<string, Promise<SyncAck | null>>();
+const changeDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-function rememberApply(uri: string, text: string, rev: unknown): void {
+export type LspTextEdit = {
+  range: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
+  text: string;
+};
+
+function rememberApply(uri: string, text: string, rev: unknown, version?: unknown): void {
   lastAppliedTextByUri.set(uri, text);
   if (typeof rev === "number") {
     lastHubRevByUri.set(uri, rev);
   }
-}
-
-function wantRevFor(uri: string): number | undefined {
-  return lastHubRevByUri.get(uri);
+  if (typeof version === "number") {
+    lastLspVersionByUri.set(uri, version);
+  }
 }
 
 function noteDocServerReady(uri: string, ready: boolean): void {
@@ -49,7 +60,12 @@ function isDocServerReady(uri: string): boolean {
 }
 
 function resetDocumentAuthority(): void {
+  for (const timer of changeDebounceTimers.values()) clearTimeout(timer);
+  changeDebounceTimers.clear();
+  applyInFlight.clear();
+  pendingContentChangesByUri.clear();
   lastHubRevByUri.clear();
+  lastLspVersionByUri.clear();
   lastAppliedTextByUri.clear();
   serverReadyByUri.clear();
 }
@@ -83,6 +99,12 @@ export type DiagnosticsSnapshot = {
   diagnostics: unknown;
 };
 
+export type SyncAck = {
+  rev: number | null;
+  version: number | null;
+  serverReady: boolean;
+};
+
 export function parseDiagnosticsSnapshot(result: unknown): DiagnosticsSnapshot {
   if (!result || typeof result !== "object") {
     return { rev: null, fresh: false, serverReady: false, diagnostics: [] };
@@ -101,7 +123,61 @@ export function parseDiagnosticsSnapshot(result: unknown): DiagnosticsSnapshot {
   };
 }
 
+export function parseDidChangeAck(result: unknown): SyncAck {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return { rev: null, version: null, serverReady: false };
+  }
+  const raw = result as {
+    rev?: unknown;
+    version?: unknown;
+    server_ready?: unknown;
+  };
+  return {
+    rev: typeof raw.rev === "number" ? raw.rev : null,
+    version: typeof raw.version === "number" ? raw.version : null,
+    serverReady: raw.server_ready === true,
+  };
+}
+
+/** VS Code languageclient: unversioned publish still applies; older version is ignored. */
+export function shouldApplyPublishedDiagnostics(
+  publishedVersion: number | null | undefined,
+  sentVersion: number | undefined,
+): boolean {
+  if (typeof publishedVersion !== "number") return true;
+  if (sentVersion === undefined) return true;
+  return publishedVersion >= sentVersion;
+}
+
+export function monacoChangeToLsp(change: {
+  range: {
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+  };
+  text: string;
+}): LspTextEdit {
+  return {
+    range: {
+      start: {
+        line: change.range.startLineNumber - 1,
+        character: change.range.startColumn - 1,
+      },
+      end: {
+        line: change.range.endLineNumber - 1,
+        character: change.range.endColumn - 1,
+      },
+    },
+    text: change.text,
+  };
+}
+
 export function handleLspWireEnvelope(env: WireEnvelope): boolean {
+  if (env.method === "lsp/diagnostics") {
+    handleLspDiagnosticsNotification(env.params ?? {});
+    return true;
+  }
   // JSON-RPC 2.0 response: { jsonrpc, id, result }
   // LSP results are embedded in the RPC result: { id: lsp_id, result/error: ... }
   if (!("jsonrpc" in env) || !("result" in env) || !("id" in env)) return false;
@@ -114,14 +190,53 @@ export function handleLspWireEnvelope(env: WireEnvelope): boolean {
   return true;
 }
 
+const FEATURE_TIMEOUT_MS = 15_000;
+/** csharp-ls / rust-analyzer initialize can exceed the feature timeout. */
+const DOCUMENT_SYNC_TIMEOUT_MS = 90_000;
+/** Merge a keystroke burst; VS Code languageclient sends Incremental immediately. */
+const DID_CHANGE_DEBOUNCE_MS = 80;
+const SEMANTIC_DEBOUNCE_MS = 300;
+const INLAY_DEBOUNCE_MS = 250;
+
+function isCanceledError(err: unknown): boolean {
+  if (!err) return false;
+  if (typeof err === "object" && "name" in err && (err as { name?: string }).name === "Canceled") {
+    return true;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return /cancel/i.test(msg);
+}
+
+function canceledError(): Error {
+  const err = new Error("Canceled");
+  err.name = "Canceled";
+  return err;
+}
+
+function sleepCancellable(ms: number, token?: Monaco.CancellationToken): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (token?.isCancellationRequested) {
+      reject(canceledError());
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    const sub = token?.onCancellationRequested(() => {
+      clearTimeout(timer);
+      sub?.dispose();
+      reject(canceledError());
+    });
+  });
+}
+
 function sendLsp(
   method: string,
   params: Record<string, unknown>,
-  opts?: { token?: Monaco.CancellationToken },
+  opts?: { token?: Monaco.CancellationToken; timeoutMs?: number },
 ): Promise<LspResult> {
   const id = nextId++;
   nextId = nextId % Number.MAX_SAFE_INTEGER || 1;
   const rpcId = nextLspRpcId++;
+  const timeoutMs = opts?.timeoutMs ?? FEATURE_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
     const cancel = () => {
@@ -129,10 +244,16 @@ function sendLsp(
         method: "$/cancelRequest",
         params: { id: rpcId },
       });
+      const waiter = pending.get(id);
+      if (waiter) {
+        pending.delete(id);
+        waiter.reject(canceledError());
+      }
     };
     const sub = opts?.token?.onCancellationRequested(cancel);
     if (opts?.token?.isCancellationRequested) {
       cancel();
+      return;
     }
     useConnectionStore.getState().sendRpc<{ result: unknown }>("lsp/request", {
       method,
@@ -142,22 +263,30 @@ function sendLsp(
       .then((response) => {
         sub?.dispose();
         const waiter = pending.get(id);
-        if (waiter) {
-          pending.delete(id);
-          waiter.resolve({ id, result: response.result } as LspResult);
+        if (!waiter) return;
+        pending.delete(id);
+        if (opts?.token?.isCancellationRequested) {
+          waiter.reject(canceledError());
+          return;
         }
+        waiter.resolve({ id, result: response.result } as LspResult);
       })
       .catch((e) => {
         sub?.dispose();
+        const waiter = pending.get(id);
+        if (!waiter) return;
         pending.delete(id);
-        reject(e instanceof Error ? e : new Error(String(e)));
+        waiter.reject(isCanceledError(e) ? canceledError() : e instanceof Error ? e : new Error(String(e)));
       });
     setTimeout(() => {
-      if (pending.has(id)) {
-        pending.delete(id);
-        reject(new Error("LSP request timed out"));
-      }
-    }, 15_000);
+      if (!pending.has(id)) return;
+      pending.delete(id);
+      void useConnectionStore.getState().sendRpc("lsp/request", {
+        method: "$/cancelRequest",
+        params: { id: rpcId },
+      });
+      reject(new Error("LSP request timed out"));
+    }, timeoutMs);
   });
 }
 
@@ -399,17 +528,154 @@ function applyRawDiagnostics(
   monaco.editor.setModelMarkers(model, "litecode-lsp", markers);
 }
 
-/** Paint markers only when the snapshot covers this document version. */
-function applySnapshotMarkers(
-  monaco: typeof import("monaco-editor"),
-  model: Monaco.editor.ITextModel,
-  snapshot: DiagnosticsSnapshot,
-): void {
-  if (snapshot.fresh && snapshot.serverReady) {
-    applyRawDiagnostics(monaco, model, snapshot.diagnostics);
+export function handleLspDiagnosticsNotification(params: {
+  uri?: unknown;
+  version?: unknown;
+  diagnostics?: unknown;
+}): void {
+  if (!workspaceLsp) return;
+  const uri = typeof params.uri === "string" ? params.uri : "";
+  if (!uri) return;
+  const publishedVersion = typeof params.version === "number" ? params.version : undefined;
+  const sentKey = uriKeyInMap(lastLspVersionByUri, uri);
+  const sentVersion = sentKey ? lastLspVersionByUri.get(sentKey) : undefined;
+  if (!shouldApplyPublishedDiagnostics(publishedVersion, sentVersion)) {
     return;
   }
-  monaco.editor.setModelMarkers(model, "litecode-lsp", []);
+  const model = findModelForLspUri(workspaceLsp.monaco, workspaceLsp.project, uri);
+  if (!model) return;
+  applyRawDiagnostics(workspaceLsp.monaco, model, params.diagnostics ?? []);
+}
+
+function uriKeyInMap<T>(map: Map<string, T>, uri: string): string | undefined {
+  if (map.has(uri)) return uri;
+  const needle = uri.replace(/\\/g, "/").toLowerCase();
+  for (const key of map.keys()) {
+    if (key.replace(/\\/g, "/").toLowerCase() === needle) return key;
+  }
+  return undefined;
+}
+
+function findModelForLspUri(
+  monaco: typeof import("monaco-editor"),
+  project: string,
+  uri: string,
+): Monaco.editor.ITextModel | undefined {
+  return monaco.editor.getModels().find((m) => {
+    const modelUri = lspFileUri(m, project);
+    return modelUri != null && urisMatch(modelUri, uri);
+  });
+}
+
+function urisMatch(a: string, b: string): boolean {
+  return a.replace(/\\/g, "/").toLowerCase() === b.replace(/\\/g, "/").toLowerCase();
+}
+
+function queueContentChanges(uri: string, changes: readonly Monaco.editor.IModelContentChange[]): void {
+  if (changes.length === 0) return;
+  const pending = pendingContentChangesByUri.get(uri) ?? [];
+  for (const change of changes) {
+    pending.push(monacoChangeToLsp(change));
+  }
+  pendingContentChangesByUri.set(uri, pending);
+}
+
+async function flushDidChange(
+  monaco: typeof import("monaco-editor"),
+  model: Monaco.editor.ITextModel,
+  uri: string,
+  depth = 0,
+): Promise<SyncAck | null> {
+  const pendingTimer = changeDebounceTimers.get(uri);
+  if (pendingTimer !== undefined) {
+    clearTimeout(pendingTimer);
+    changeDebounceTimers.delete(uri);
+  }
+  const inflight = applyInFlight.get(uri);
+  if (inflight) {
+    const last = await inflight;
+    if (model.isDisposed() || depth >= 8) return last;
+    const leftover = pendingContentChangesByUri.get(uri) ?? [];
+    if (
+      leftover.length === 0 &&
+      lastAppliedTextByUri.get(uri) === model.getValue() &&
+      isDocServerReady(uri)
+    ) {
+      return last;
+    }
+    return flushDidChange(monaco, model, uri, depth + 1);
+  }
+  if (model.isDisposed()) return null;
+  const text = model.getValue();
+  const changes = pendingContentChangesByUri.get(uri) ?? [];
+  pendingContentChangesByUri.delete(uri);
+  if (lastAppliedTextByUri.get(uri) === text && isDocServerReady(uri) && changes.length === 0) {
+    return {
+      rev: lastHubRevByUri.get(uri) ?? null,
+      version: lastLspVersionByUri.get(uri) ?? null,
+      serverReady: true,
+    };
+  }
+  const job = (async (): Promise<SyncAck | null> => {
+    const latest = model.getValue();
+    const extra = pendingContentChangesByUri.get(uri) ?? [];
+    pendingContentChangesByUri.delete(uri);
+    const contentChanges = changes.concat(extra);
+    try {
+      const params: Record<string, unknown> = { uri, text: latest };
+      if (contentChanges.length > 0) {
+        params.contentChanges = contentChanges;
+      }
+      const res = await sendLsp("litecode/didChange", params, {
+        timeoutMs: DOCUMENT_SYNC_TIMEOUT_MS,
+      });
+      if (res.error) {
+        warnLsp("didChange", res.error.message);
+        return null;
+      }
+      const ack = parseDidChangeAck(res.result);
+      rememberApply(uri, latest, ack.rev, ack.version);
+      noteDocServerReady(uri, ack.serverReady);
+      void workspaceLsp?.ensureSemantic(uri);
+      return ack;
+    } catch (e) {
+      if (!isCanceledError(e)) warnLsp("didChange", e);
+      return null;
+    } finally {
+      applyInFlight.delete(uri);
+    }
+  })();
+  applyInFlight.set(uri, job);
+  return job;
+}
+
+function scheduleDidChange(
+  monaco: typeof import("monaco-editor"),
+  model: Monaco.editor.ITextModel,
+  uri: string,
+): void {
+  const prev = changeDebounceTimers.get(uri);
+  if (prev !== undefined) clearTimeout(prev);
+  changeDebounceTimers.set(
+    uri,
+    setTimeout(() => {
+      changeDebounceTimers.delete(uri);
+      void flushDidChange(monaco, model, uri);
+    }, DID_CHANGE_DEBOUNCE_MS),
+  );
+}
+
+function isModelVisible(
+  monaco: typeof import("monaco-editor"),
+  model: Monaco.editor.ITextModel,
+): boolean {
+  return monaco.editor.getEditors().some((ed) => {
+    if (ed.getModel() !== model) return false;
+    const node = ed.getDomNode();
+    if (!node?.isConnected) return false;
+    const layout = ed.getLayoutInfo();
+    return layout.width > 0 && layout.height > 0;
+  });
 }
 
 function jumpFromEditor(
@@ -662,7 +928,130 @@ function parseLinkedEditing(
   return { ranges, wordPattern };
 }
 
-export type WorkspaceLspHandle = Monaco.IDisposable;
+function parseInlayHints(
+  monaco: typeof import("monaco-editor"),
+  result: unknown,
+): Monaco.languages.InlayHintList {
+  const items = Array.isArray(result) ? result : [];
+  const hints: Monaco.languages.InlayHint[] = [];
+  for (const raw of items) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as {
+      position?: { line?: number; character?: number };
+      label?: unknown;
+      kind?: number;
+      tooltip?: unknown;
+      paddingLeft?: boolean;
+      paddingRight?: boolean;
+    };
+    const line = (item.position?.line ?? 0) + 1;
+    const column = (item.position?.character ?? 0) + 1;
+    let label: string | Monaco.languages.InlayHintLabelPart[];
+    if (typeof item.label === "string") {
+      label = item.label;
+    } else if (Array.isArray(item.label)) {
+      label = item.label.flatMap((part) => {
+        if (typeof part === "string") return [{ label: part }];
+        if (part && typeof part === "object" && "value" in part) {
+          return [{ label: String((part as { value?: string }).value ?? "") }];
+        }
+        return [];
+      });
+    } else {
+      continue;
+    }
+    const kind =
+      item.kind === 1
+        ? monaco.languages.InlayHintKind.Type
+        : item.kind === 2
+          ? monaco.languages.InlayHintKind.Parameter
+          : undefined;
+    hints.push({
+      label,
+      position: { lineNumber: line, column },
+      kind,
+      tooltip: markupDoc(item.tooltip),
+      paddingLeft: item.paddingLeft,
+      paddingRight: item.paddingRight,
+    });
+  }
+  return { hints, dispose: () => {} };
+}
+
+function parseCodeLenses(result: unknown): Monaco.languages.CodeLensList {
+  const items = Array.isArray(result) ? result : [];
+  const lenses: Monaco.languages.CodeLens[] = [];
+  for (const raw of items) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as {
+      range?: unknown;
+      command?: { title?: string; command?: string; arguments?: unknown[] };
+    };
+    const range = lspRangeToMonaco(item.range);
+    if (!range) continue;
+    const command =
+      item.command && typeof item.command.command === "string"
+        ? {
+            id: item.command.command,
+            title: item.command.title ?? item.command.command,
+            arguments: item.command.arguments,
+          }
+        : undefined;
+    lenses.push({ range, command });
+  }
+  return { lenses, dispose: () => {} };
+}
+
+const DEFAULT_TOKEN_TYPES = [
+  "namespace",
+  "type",
+  "class",
+  "enum",
+  "interface",
+  "struct",
+  "typeParameter",
+  "parameter",
+  "variable",
+  "property",
+  "enumMember",
+  "event",
+  "function",
+  "method",
+  "macro",
+  "keyword",
+  "modifier",
+  "comment",
+  "string",
+  "number",
+  "regexp",
+  "operator",
+  "decorator",
+];
+const DEFAULT_TOKEN_MODIFIERS = [
+  "declaration",
+  "definition",
+  "readonly",
+  "static",
+  "deprecated",
+  "abstract",
+  "async",
+  "modification",
+  "documentation",
+  "defaultLibrary",
+];
+
+export type WorkspaceLspHandle = Monaco.IDisposable & {
+  ensureSemantic: (fileUri: string) => Promise<void>;
+};
+
+type WorkspaceLspLive = {
+  monaco: typeof import("monaco-editor");
+  project: string;
+  handle: WorkspaceLspHandle;
+  ensureSemantic: (fileUri: string) => Promise<void>;
+};
+
+let workspaceLsp: WorkspaceLspLive | null = null;
 
 /**
  * Register workspace-wide LSP providers on the **editor's** Monaco instance.
@@ -682,7 +1071,9 @@ export function registerWorkspaceLsp(
     if (!isLspWarm()) return null;
     const projectRoot = getProjectRoot();
     const uri = lspFileUri(model, projectRoot);
-    if (!uri || !isDocServerReady(uri)) return null;
+    if (!uri) return null;
+    const ack = await flushDidChange(monaco, model, uri);
+    if (!ack?.serverReady) return null;
     try {
       const res = await sendLsp(
         method,
@@ -690,17 +1081,17 @@ export function registerWorkspaceLsp(
           textDocument: { uri },
           position: lspPosition(position),
           ...extra,
-          want_rev: wantRevFor(uri),
         },
         { token },
       );
       if (res.error) {
-        warnLsp(method, res.error.message);
+        if (!isCanceledError(res.error.message)) warnLsp(method, res.error.message);
         return null;
       }
+      if (res.result === null || res.result === undefined) return null;
       return { projectRoot, result: res.result };
     } catch (e) {
-      warnLsp(method, e);
+      if (!isCanceledError(e)) warnLsp(method, e);
       return null;
     }
   };
@@ -770,7 +1161,8 @@ export function registerWorkspaceLsp(
   const completionProvider: Monaco.languages.CompletionItemProvider = {
     triggerCharacters: [".", ":", ">"],
     provideCompletionItems: async (model, position, context, token) => {
-      if (!isLspWarm()) return { suggestions: [] };
+      if (token.isCancellationRequested) return undefined;
+      if (!isLspWarm()) return undefined;
       const triggerKind = monacoCompletionTriggerToLsp(context.triggerKind);
       const completionContext: Record<string, unknown> = { triggerKind };
       if (context.triggerKind === 1 && context.triggerCharacter) {
@@ -783,7 +1175,7 @@ export function registerWorkspaceLsp(
         { context: completionContext },
         token,
       );
-      if (!got) return { suggestions: [] };
+      if (token.isCancellationRequested || !got) return undefined;
       return parseCompletionItems(monaco, got.result, model, position);
     },
   };
@@ -832,12 +1224,13 @@ export function registerWorkspaceLsp(
       if (!isLspWarm()) return [];
       const projectRoot = getProjectRoot();
       const uri = lspFileUri(model, projectRoot);
-      if (!uri || !isDocServerReady(uri)) return [];
+      if (!uri) return [];
+      const ack = await flushDidChange(monaco, model, uri);
+      if (!ack?.serverReady) return [];
       try {
         const res = await sendLsp("textDocument/selectionRange", {
           textDocument: { uri },
           positions: positions.map(lspPosition),
-          want_rev: wantRevFor(uri),
         });
         if (res.error) {
           warnLsp("textDocument/selectionRange", res.error.message);
@@ -845,8 +1238,143 @@ export function registerWorkspaceLsp(
         }
         return parseSelectionRangeChains(res.result);
       } catch (e) {
-        warnLsp("textDocument/selectionRange", e);
+        if (!isCanceledError(e)) warnLsp("textDocument/selectionRange", e);
         return [];
+      }
+    },
+  };
+
+  let semanticDisposable: Monaco.IDisposable | null = null;
+  const ensureSemantic = async (fileUri: string) => {
+    if (semanticDisposable) return;
+    let tokenTypes = DEFAULT_TOKEN_TYPES;
+    let tokenModifiers = DEFAULT_TOKEN_MODIFIERS;
+    try {
+      const res = await sendLsp("litecode/serverCapabilities", { uri: fileUri });
+      const raw =
+        res.result && typeof res.result === "object"
+          ? (res.result as { tokenTypes?: unknown; tokenModifiers?: unknown })
+          : {};
+      if (Array.isArray(raw.tokenTypes) && raw.tokenTypes.every((t) => typeof t === "string")) {
+        tokenTypes = raw.tokenTypes as string[];
+      }
+      if (
+        Array.isArray(raw.tokenModifiers) &&
+        raw.tokenModifiers.every((t) => typeof t === "string")
+      ) {
+        tokenModifiers = raw.tokenModifiers as string[];
+      }
+    } catch {
+      // Keep LSP defaults when capabilities are not ready yet.
+    }
+    const provider: Monaco.languages.DocumentSemanticTokensProvider = {
+      getLegend: () => ({ tokenTypes, tokenModifiers }),
+      provideDocumentSemanticTokens: async (model, _lastResultId, token) => {
+        // VS Code: version mismatch / hide throws cancel and keeps existing tokens.
+        // Returning null here would wipe highlighting.
+        if (!isModelVisible(monaco, model)) throw canceledError();
+        await sleepCancellable(SEMANTIC_DEBOUNCE_MS, token);
+        const projectRoot = getProjectRoot();
+        if (!projectRoot || !isLspWarm()) throw canceledError();
+        const uri = lspFileUri(model, projectRoot);
+        if (!uri) throw canceledError();
+        const ack = await flushDidChange(monaco, model, uri);
+        if (!ack?.serverReady || token.isCancellationRequested) throw canceledError();
+        try {
+          const res = await sendLsp(
+            "textDocument/semanticTokens/full",
+            { textDocument: { uri } },
+            { token },
+          );
+          if (res.error || !res.result || typeof res.result !== "object") {
+            throw canceledError();
+          }
+          const data = (res.result as { data?: unknown }).data;
+          if (!Array.isArray(data)) throw canceledError();
+          return { data: Uint32Array.from(data as number[]) };
+        } catch (e) {
+          if (!isCanceledError(e)) warnLsp("semanticTokens", e);
+          throw canceledError();
+        }
+      },
+      releaseDocumentSemanticTokens: () => {},
+    };
+    const parts: Monaco.IDisposable[] = [];
+    for (const langId of LSP_LANGUAGES) {
+      parts.push(
+        monaco.languages.registerDocumentSemanticTokensProvider(langId, provider),
+      );
+    }
+    semanticDisposable = {
+      dispose: () => {
+        for (const p of parts) p.dispose();
+      },
+    };
+  };
+
+  const inlayHintsProvider: Monaco.languages.InlayHintsProvider = {
+    provideInlayHints: async (model, range, token) => {
+      if (!isModelVisible(monaco, model) || token.isCancellationRequested) {
+        return { hints: [], dispose: () => {} };
+      }
+      try {
+        await sleepCancellable(INLAY_DEBOUNCE_MS, token);
+        const projectRoot = getProjectRoot();
+        const uri = projectRoot ? lspFileUri(model, projectRoot) : null;
+        if (!uri || !isLspWarm()) return { hints: [], dispose: () => {} };
+        const ack = await flushDidChange(monaco, model, uri);
+        if (!ack?.serverReady || token.isCancellationRequested) {
+          return { hints: [], dispose: () => {} };
+        }
+        const res = await sendLsp(
+          "textDocument/inlayHint",
+          {
+            textDocument: { uri },
+            range: {
+              start: {
+                line: range.startLineNumber - 1,
+                character: range.startColumn - 1,
+              },
+              end: {
+                line: range.endLineNumber - 1,
+                character: range.endColumn - 1,
+              },
+            },
+          },
+          { token },
+        );
+        if (res.error || token.isCancellationRequested) {
+          return { hints: [], dispose: () => {} };
+        }
+        return parseInlayHints(monaco, res.result);
+      } catch (e) {
+        if (!isCanceledError(e)) warnLsp("inlayHint", e);
+        return { hints: [], dispose: () => {} };
+      }
+    },
+  };
+
+  const codeLensProvider: Monaco.languages.CodeLensProvider = {
+    provideCodeLenses: async (model, token) => {
+      if (!isModelVisible(monaco, model) || token.isCancellationRequested) {
+        return { lenses: [], dispose: () => {} };
+      }
+      try {
+        const projectRoot = getProjectRoot();
+        const uri = projectRoot ? lspFileUri(model, projectRoot) : null;
+        if (!uri || !isLspWarm()) return { lenses: [], dispose: () => {} };
+        const ack = await flushDidChange(monaco, model, uri);
+        if (!ack?.serverReady || token.isCancellationRequested) {
+          return { lenses: [], dispose: () => {} };
+        }
+        const res = await sendLsp("textDocument/codeLens", { textDocument: { uri } }, { token });
+        if (res.error || token.isCancellationRequested) {
+          return { lenses: [], dispose: () => {} };
+        }
+        return parseCodeLenses(res.result);
+      } catch (e) {
+        if (!isCanceledError(e)) warnLsp("codeLens", e);
+        return { lenses: [], dispose: () => {} };
       }
     },
   };
@@ -865,6 +1393,8 @@ export function registerWorkspaceLsp(
       monaco.languages.registerDocumentHighlightProvider(langId, documentHighlightProvider),
       monaco.languages.registerLinkedEditingRangeProvider(langId, linkedEditingProvider),
       monaco.languages.registerSelectionRangeProvider(langId, selectionRangeProvider),
+      monaco.languages.registerInlayHintsProvider(langId, inlayHintsProvider),
+      monaco.languages.registerCodeLensProvider(langId, codeLensProvider),
     );
   }
 
@@ -919,17 +1449,12 @@ export function registerWorkspaceLsp(
   return {
     dispose: () => {
       for (const d of disposables) d.dispose();
+      semanticDisposable?.dispose();
+      semanticDisposable = null;
     },
+    ensureSemantic,
   };
 }
-
-type WorkspaceLspLive = {
-  monaco: typeof import("monaco-editor");
-  project: string;
-  handle: WorkspaceLspHandle;
-};
-
-let workspaceLsp: WorkspaceLspLive | null = null;
 
 /** One Language Client per workspace Monaco instance. Panes only bind. */
 export function ensureWorkspaceLsp(
@@ -945,9 +1470,14 @@ export function ensureWorkspaceLsp(
     return workspaceLsp.handle;
   }
   dropWorkspaceLsp();
-  const handle = registerWorkspaceLsp(monaco, getProjectRoot);
-  workspaceLsp = { monaco, project, handle };
-  return handle;
+  const registered = registerWorkspaceLsp(monaco, getProjectRoot);
+  workspaceLsp = {
+    monaco,
+    project,
+    handle: registered,
+    ensureSemantic: registered.ensureSemantic,
+  };
+  return registered;
 }
 
 export function dropWorkspaceLsp(): void {
@@ -964,7 +1494,6 @@ export function bindEditorLsp(
   getProjectRoot: () => string,
 ): Monaco.IDisposable {
   const disposables: Monaco.IDisposable[] = [];
-  let changeTimer: ReturnType<typeof setTimeout> | undefined;
 
   const syncBuffer = () => {
     const model = editor.getModel();
@@ -972,28 +1501,17 @@ export function bindEditorLsp(
     if (!model || !projectRoot || !isLspWarm()) return;
     const rel = relPathFromModel(model, projectRoot);
     const uri = toFileUri(projectRoot, rel);
-    const text = model.getValue();
-    if (lastAppliedTextByUri.get(uri) === text && isDocServerReady(uri)) {
-      return;
-    }
-    void sendLsp("litecode/didChange", { uri, text })
-      .then((res) => {
-        if (res.error) {
-          warnLsp("didChange", res.error.message);
-          return;
-        }
-        const snap = parseDiagnosticsSnapshot(res.result);
-        rememberApply(uri, text, snap.rev);
-        noteDocServerReady(uri, snap.serverReady);
-        applySnapshotMarkers(monaco, model, snap);
-      })
-      .catch((e) => warnLsp("didChange", e));
+    void flushDidChange(monaco, model, uri);
   };
 
   disposables.push(
-    editor.onDidChangeModelContent(() => {
-      if (changeTimer !== undefined) clearTimeout(changeTimer);
-      changeTimer = setTimeout(syncBuffer, 150);
+    editor.onDidChangeModelContent((e) => {
+      const model = editor.getModel();
+      const projectRoot = getProjectRoot();
+      if (!model || !projectRoot || !isLspWarm()) return;
+      const uri = toFileUri(projectRoot, relPathFromModel(model, projectRoot));
+      queueContentChanges(uri, e.changes);
+      scheduleDidChange(monaco, model, uri);
     }),
   );
   syncBuffer();
@@ -1011,7 +1529,6 @@ export function bindEditorLsp(
 
   return {
     dispose: () => {
-      if (changeTimer !== undefined) clearTimeout(changeTimer);
       for (const d of disposables) d.dispose();
     },
   };
@@ -1029,7 +1546,11 @@ export async function refreshDiagnostics(
   const uri = fileUri ?? toFileUri(projectRoot, relPath);
   let res: LspResult;
   try {
-    res = await sendLsp("litecode/getDiagnostics", { uri });
+    res = await sendLsp(
+      "litecode/getDiagnostics",
+      { uri },
+      { timeoutMs: DOCUMENT_SYNC_TIMEOUT_MS },
+    );
   } catch (e) {
     warnLsp("diagnostics", e);
     return;
@@ -1048,9 +1569,11 @@ export async function refreshDiagnostics(
     );
   if (!model) return;
   const snap = parseDiagnosticsSnapshot(res.result);
-  rememberApply(uri, model.getValue(), snap.rev);
+  if (typeof snap.rev === "number") lastHubRevByUri.set(uri, snap.rev);
   noteDocServerReady(uri, snap.serverReady);
-  applySnapshotMarkers(monaco, model, snap);
+  if (snap.fresh && snap.serverReady) {
+    applyRawDiagnostics(monaco, model, snap.diagnostics);
+  }
 }
 
 export function getProjectRootFromStore(): string {

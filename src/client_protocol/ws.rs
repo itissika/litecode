@@ -197,6 +197,33 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
         }
     });
 
+    let lsp_hub = state.workspace_engines.lsp_hub();
+    let mut lsp_diag_rx = lsp_hub.subscribe_diagnostics();
+    let lsp_diag_tx = response_tx.clone();
+    tokio::spawn(async move {
+        loop {
+            match lsp_diag_rx.recv().await {
+                Ok(ev) => {
+                    if lsp_diag_tx
+                        .send(project::notification(
+                            methods::LSP_DIAGNOSTICS,
+                            serde_json::json!({
+                                "uri": ev.uri,
+                                "version": ev.version,
+                                "diagnostics": ev.diagnostics,
+                            }),
+                        ))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
     // G0: forward session lifecycle events to this connection.
     let lifecycle_tx = response_tx.clone();
     let mut lifecycle_rx = state.sessions.subscribe_lifecycle();

@@ -14,7 +14,6 @@ import {
   dropWorkspaceLsp,
   ensureWorkspaceLsp,
   getProjectRootFromStore,
-  refreshDiagnostics,
 } from "../lib/litecodeLsp";
 import {
   applyMonacoThemeForApp,
@@ -37,14 +36,10 @@ const MilkdownMarkdownEditor = lazy(async () => {
 
 export function EditorPane({ filePath, api }: { filePath: string; api?: DockviewPanelApi }) {
   const tab = useEditorStore((s) => s.tabs.find((t) => t.path === filePath) ?? null);
-  const saving = useEditorStore((s) => s.saving);
   const project = useSessionStore((s) => s.project);
   const wsConnected = useConnectionStore(
     (s) => s.state === "connected",
   );
-  const lspReady = useSettingsStore((s) => {
-    return s.engineStatuses.lsp?.state === "warm";
-  });
   const lspDesired = useSettingsStore((s) => {
     return s.engineStatuses.lsp?.desired === true;
   });
@@ -162,13 +157,6 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
     };
   }, [project, lspDesired, wsConnected, syncLspRegistration]);
 
-  useEffect(() => {
-    const monaco = monacoRef.current;
-    if (!monaco || !tab || !project || saving || !lspReady) return;
-    if (tab.dirty) return;
-    void refreshDiagnostics(monaco, project, tab.path);
-  }, [tab?.path, tab?.dirty, tab?.savedContent, project, saving, lspReady]);
-
   // Reveal line requested by workspace search / go-to.
   useEffect(() => {
     const ed = editorRef.current;
@@ -265,9 +253,6 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
                 }
                 syncLspRegistration(monaco);
                 bindEditorToLsp(monaco, _editor);
-                if (project && lspReady && !tab.dirty) {
-                  void refreshDiagnostics(monaco, project, filePath);
-                }
                 const pending = useEditorStore.getState().pendingReveal;
                 if (pending && pending.path === filePath) {
                   const reveal = useEditorStore.getState().consumePendingReveal();
@@ -301,11 +286,12 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
                 formatOnPaste: false,
                 wordBasedSuggestions: "off",
                 parameterHints: { enabled: true },
+                codeLens: true,
                 linkedEditing: true,
-                inlayHints: { enabled: "off" },
+                inlayHints: { enabled: "on" },
                 bracketPairColorization: { enabled: true },
                 guides: { indentation: true, bracketPairs: true },
-                "semanticHighlighting.enabled": false,
+                "semanticHighlighting.enabled": true,
                 gotoLocation: {
                   multiple: "goto",
                   multipleDefinitions: "goto",

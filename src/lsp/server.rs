@@ -9,9 +9,10 @@ use std::time::Instant;
 use serde_json::Value;
 use tokio::io::BufReader;
 use tokio::process::{Child, Command};
+use tokio::sync::broadcast;
 use tokio::time::Duration;
 
-use crate::lsp::conn::{self, LspIo};
+use crate::lsp::conn::{self, LspDiagnosticEvent, LspIo};
 use crate::lsp::format::extract_locations;
 use crate::lsp::install::LanguageServerBinary;
 use crate::lsp::status::{LspInstanceStatus, LspLifecycle};
@@ -133,7 +134,11 @@ pub(crate) struct LspServer {
 }
 
 impl LspServer {
-    pub(crate) async fn spawn(binary: &LanguageServerBinary, root_path: &Path) -> Result<Self> {
+    pub(crate) async fn spawn(
+        binary: &LanguageServerBinary,
+        root_path: &Path,
+        diag_tx: Option<broadcast::Sender<LspDiagnosticEvent>>,
+    ) -> Result<Self> {
         let (program, args) =
             crate::lsp::install::ls_program_and_args(&binary.path, &binary.arguments);
         let mut cmd = Command::new(&program);
@@ -184,7 +189,7 @@ impl LspServer {
         let stdin = child.stdin.take().expect("stdin");
         let stdout = child.stdout.take().expect("stdout");
         let pid = child.id().unwrap_or(0);
-        let io = LspIo::start(stdin, stdout, pid);
+        let io = LspIo::start(stdin, stdout, pid, diag_tx);
         let command = binary.path.to_string_lossy().to_string();
         let server = Self {
             _command: command,
@@ -657,6 +662,21 @@ impl LspServer {
         uri: &str,
         text: &str,
     ) -> Result<i32> {
+        Ok(self.sync_document_edit(file_path, uri, text, None).await?.0)
+    }
+
+    /// Sync the hub document and notify the language server.
+    ///
+    /// `content_changes` is Monaco/LSP incremental edits when the server
+    /// advertised Incremental sync; otherwise the full buffer is sent.
+    /// Returns `(hub_rev, lsp_version)`.
+    pub(crate) async fn sync_document_edit(
+        &self,
+        file_path: &Path,
+        uri: &str,
+        text: &str,
+        content_changes: Option<&Value>,
+    ) -> Result<(i32, i32)> {
         let gate = self.uri_gate(uri).await;
         let _g = gate.lock().await;
         let (payload, opened, version, hub_rev) = {
@@ -667,12 +687,9 @@ impl LspServer {
                     docs.open_docs.push_back(entry);
                 }
                 if docs.document_text.get(uri).map(String::as_str) == Some(text) {
-                    let rev = docs
-                        .document_hub_revs
-                        .get(uri)
-                        .copied()
-                        .unwrap_or(0);
-                    return Ok(rev);
+                    let rev = docs.document_hub_revs.get(uri).copied().unwrap_or(0);
+                    let version = docs.document_versions.get(uri).copied().unwrap_or(1);
+                    return Ok((rev, version));
                 }
                 let old = docs
                     .document_text
@@ -685,23 +702,11 @@ impl LspServer {
                     .or_insert(2)
                     .to_owned();
                 let hub_rev = docs.bump_hub_rev(uri);
-                let incremental = self.uses_incremental();
-                let change = if incremental {
-                    let (end_line, end_col) = eof_position(&old);
-                    serde_json::json!({
-                        "range": {
-                            "start": { "line": 0, "character": 0 },
-                            "end": { "line": end_line, "character": end_col }
-                        },
-                        "text": text
-                    })
-                } else {
-                    serde_json::json!({ "text": text })
-                };
+                let changes = incremental_content_changes(self.uses_incremental(), content_changes, &old, text);
                 (
                     serde_json::json!({
                         "textDocument": { "uri": uri, "version": version },
-                        "contentChanges": [change]
+                        "contentChanges": changes
                     }),
                     false,
                     version,
@@ -745,7 +750,7 @@ impl LspServer {
             self.send_notification("textDocument/didChange", payload)
                 .await?;
         }
-        Ok(hub_rev)
+        Ok((hub_rev, version))
     }
 
     pub(crate) async fn wait_file_diagnostics(&self, uri: &str, budget: Duration) -> Value {
@@ -813,6 +818,43 @@ impl LspServer {
         let pid = self.io.pid.load(Ordering::Relaxed);
         if pid == 0 { None } else { Some(pid) }
     }
+}
+
+fn incremental_content_changes(
+    uses_incremental: bool,
+    content_changes: Option<&Value>,
+    old: &str,
+    text: &str,
+) -> Vec<Value> {
+    if uses_incremental {
+        if let Some(Value::Array(changes)) = content_changes {
+            if !changes.is_empty()
+                && changes.iter().all(|c| {
+                    c.get("text").and_then(Value::as_str).is_some()
+                        && c.get("range").map(lsp_range_is_valid).unwrap_or(false)
+                })
+            {
+                return changes.clone();
+            }
+        }
+        let (end_line, end_col) = eof_position(old);
+        vec![serde_json::json!({
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": end_line, "character": end_col }
+            },
+            "text": text
+        })]
+    } else {
+        vec![serde_json::json!({ "text": text })]
+    }
+}
+
+fn lsp_range_is_valid(range: &Value) -> bool {
+    range.get("start").and_then(|s| s.get("line")).is_some()
+        && range.get("start").and_then(|s| s.get("character")).is_some()
+        && range.get("end").and_then(|s| s.get("line")).is_some()
+        && range.get("end").and_then(|s| s.get("character")).is_some()
 }
 
 fn eof_position(text: &str) -> (u32, u32) {
@@ -911,5 +953,26 @@ mod tests {
         assert_eq!(eof_position(""), (0, 0));
         assert_eq!(eof_position("ab"), (0, 2));
         assert_eq!(eof_position("a\nb"), (1, 1));
+    }
+
+    #[test]
+    fn incremental_changes_prefer_client_edits() {
+        let edits = serde_json::json!([{
+            "range": {
+                "start": { "line": 0, "character": 1 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "text": "x"
+        }]);
+        let got = incremental_content_changes(true, Some(&edits), "ab", "axb");
+        assert_eq!(got, edits.as_array().cloned().unwrap());
+        let full = incremental_content_changes(false, Some(&edits), "ab", "axb");
+        assert_eq!(full, vec![serde_json::json!({ "text": "axb" })]);
+        let fallback = incremental_content_changes(true, None, "ab", "axb");
+        assert_eq!(
+            fallback[0]["range"]["end"],
+            serde_json::json!({ "line": 0, "character": 2 })
+        );
+        assert_eq!(fallback[0]["text"], "axb");
     }
 }
