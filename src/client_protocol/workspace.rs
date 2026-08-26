@@ -103,6 +103,8 @@ pub async fn handle_jsonrpc(
                 }
             };
             if !runtime.workspace_engines.is_warmed("lsp") {
+                // Hub-active (engine Warm / activate). Instance Running is
+                // enforced inside the Hub; unready servers return silence.
                 emit(
                     sink,
                     serde_json::to_value(err_response(
@@ -115,7 +117,10 @@ pub async fn handle_jsonrpc(
                 return;
             }
             let hub = runtime.workspace_engines.lsp_hub();
-            match hub.request_ex(&params.method, params.params, params.rpc_id).await {
+            match hub
+                .request_ex(&params.method, params.params, params.rpc_id)
+                .await
+            {
                 Ok(result) => emit(
                     sink,
                     serde_json::to_value(ok_response(id, serde_json::json!({ "result": result })))

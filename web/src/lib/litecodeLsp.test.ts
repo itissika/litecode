@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { isLspWarm, monacoCompletionTriggerToLsp, relPathFromLspUri, toFileUri } from "./litecodeLsp";
+import {
+  dropWorkspaceLsp,
+  isLspServerReady,
+  isLspWarm,
+  monacoCompletionTriggerToLsp,
+  parseDiagnosticsSnapshot,
+  relPathFromLspUri,
+  toFileUri,
+} from "./litecodeLsp";
 import { useSettingsStore } from "../stores/settingsStore";
 
 describe("toFileUri", () => {
@@ -80,5 +88,70 @@ describe("isLspWarm", () => {
       },
     });
     expect(isLspWarm()).toBe(false);
+  });
+});
+
+describe("isLspServerReady", () => {
+  it("is false on hub Warm with no running instance", () => {
+    dropWorkspaceLsp();
+    useSettingsStore.setState({
+      engineStatuses: {
+        lsp: { desired: true, state: "warm" },
+      },
+      lspServers: [],
+    });
+    expect(isLspWarm()).toBe(true);
+    expect(isLspServerReady()).toBe(false);
+  });
+
+  it("is true when engines detail reports a running instance", () => {
+    dropWorkspaceLsp();
+    useSettingsStore.setState({
+      engineStatuses: {
+        lsp: { desired: true, state: "warm" },
+      },
+      lspServers: [
+        {
+          command: "rust-analyzer",
+          project_root: "/proj",
+          state: "running",
+          index_settled: true,
+          restart_count: 0,
+        },
+      ],
+    });
+    expect(isLspServerReady()).toBe(true);
+  });
+});
+
+describe("parseDiagnosticsSnapshot", () => {
+  it("treats a missing version cover as silence, not an error list", () => {
+    const snap = parseDiagnosticsSnapshot({
+      rev: 2,
+      fresh: false,
+      server_ready: true,
+      diagnostics: [{ message: "stale v1", severity: 1 }],
+    });
+    expect(snap.fresh).toBe(false);
+    expect(snap.serverReady).toBe(true);
+    expect(snap.rev).toBe(2);
+  });
+
+  it("does not treat a raw diagnostic array as a fresh snapshot", () => {
+    const snap = parseDiagnosticsSnapshot([{ message: "old shape" }]);
+    expect(snap.fresh).toBe(false);
+    expect(snap.serverReady).toBe(false);
+    expect(snap.diagnostics).toEqual([]);
+  });
+
+  it("paints only when fresh and server_ready", () => {
+    const snap = parseDiagnosticsSnapshot({
+      rev: 3,
+      fresh: true,
+      server_ready: true,
+      diagnostics: [{ message: "real" }],
+    });
+    expect(snap.fresh && snap.serverReady).toBe(true);
+    expect(snap.diagnostics).toEqual([{ message: "real" }]);
   });
 });

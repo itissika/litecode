@@ -54,6 +54,7 @@ function enginesDetail(state: EngineWarmupState): EnginesDetail {
       usable: state === "warm" ? "ready" : "warming",
       configured_servers: [],
       probes: [],
+      servers: [],
     },
   };
 }
@@ -62,6 +63,7 @@ beforeEach(() => {
   resetCatalogPollState();
   useSettingsStore.setState({
     engineStatuses: {},
+    lspServers: [],
   });
   useToastStore.setState({ toasts: [] });
   mockedGetEnginesDetail.mockReset();

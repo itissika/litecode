@@ -100,7 +100,11 @@ impl LspHub {
         }
     }
 
-    async fn spawn_ls(&self, binary: crate::lsp::install::LanguageServerBinary, root: PathBuf) -> Result<LspServer> {
+    async fn spawn_ls(
+        &self,
+        binary: crate::lsp::install::LanguageServerBinary,
+        root: PathBuf,
+    ) -> Result<LspServer> {
         self.handle
             .spawn(async move { LspServer::spawn(&binary, &root).await })
             .await
@@ -424,10 +428,38 @@ impl LspHub {
         let Ok(inner) = self.inner.lock() else {
             return Vec::new();
         };
-        inner.servers.values().filter_map(|s| s.child_id()).collect()
+        inner
+            .servers
+            .values()
+            .filter_map(|s| s.child_id())
+            .collect()
     }
 
-    /// Sync (open/change/close) a document from disk through the hub I/O exit.
+    /// Apply canonical document text (editor buffer or just-written bytes).
+    /// Returns the hub revision, or `None` when the hub is inactive.
+    pub async fn apply_document(
+        self: &Arc<Self>,
+        abs_path: &Path,
+        text: &str,
+    ) -> Result<Option<i32>> {
+        if !self.is_active() {
+            return Ok(None);
+        }
+        let abs_path = crate::config::path::strip_verbatim(abs_path);
+        let key = self.resolve_server_key(&abs_path).await?;
+        let uri = file_to_uri(&abs_path);
+        let server = self.server_arc(&key)?;
+        if !server.is_running() {
+            return Ok(None);
+        }
+        let rev = server
+            .sync_document_from_text(&abs_path, &uri, text)
+            .await?;
+        Ok(Some(rev))
+    }
+
+    /// Bootstrap from disk if the document is not open; close if missing.
+    /// Never overwrites an already-open document from disk (that was the dual-writer).
     pub async fn sync_document(self: &Arc<Self>, abs_path: &Path) -> Result<()> {
         self.sync_document_work(abs_path).await
     }
@@ -439,7 +471,6 @@ impl LspHub {
 
         let abs_path = crate::config::path::strip_verbatim(abs_path);
 
-        // If the file no longer exists, send didClose and return.
         if !abs_path.exists() {
             let key = match self.resolve_server_key(&abs_path).await {
                 Ok(k) => k,
@@ -467,23 +498,15 @@ impl LspHub {
 
         let key = self.resolve_server_key(&abs_path).await?;
         let uri = file_to_uri(&abs_path);
-        let server = {
-            let inner = self
-                .inner
-                .lock()
-                .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
-            inner.servers.get(&key).cloned().ok_or_else(|| {
-                LitecodeError::ToolExecution(format!(
-                    "language server '{}' not running",
-                    key.command
-                ))
-            })?
-        };
-        server.sync_document_from_disk(&abs_path, &uri).await
+        let server = self.server_arc(&key)?;
+        if server.is_doc_open(&uri).await {
+            return Ok(());
+        }
+        server.sync_document_from_disk(&abs_path, &uri).await?;
+        Ok(())
     }
 
-    /// Execute a file-scoped LSP request after any in-flight didOpen/didChange
-    /// for that URI has been enqueued on stdin.
+    /// Execute a file-scoped LSP request bound to an optional hub revision.
     async fn request_synced_document(
         &self,
         method: &str,
@@ -492,13 +515,19 @@ impl LspHub {
         rpc_id: Option<u64>,
     ) -> Result<Value> {
         let abs_path = crate::config::path::strip_verbatim(abs_path);
+        let (params, want_rev) = split_want_rev(params);
         let key = self.resolve_server_key(&abs_path).await?;
         let uri = file_to_uri(&abs_path);
         let server = self.server_arc(&key)?;
+        if !server.is_running() {
+            return Ok(Value::Null);
+        }
         if !server.is_doc_open(&uri).await {
             server.sync_document_from_disk(&abs_path, &uri).await?;
         }
-        server.send_request_synced(&uri, method, params, rpc_id).await
+        server
+            .send_request_at_rev(&uri, want_rev, method, params, rpc_id)
+            .await
     }
 
     fn server_arc(&self, key: &ServerKey) -> Result<Arc<LspServer>> {
@@ -507,10 +536,7 @@ impl LspHub {
             .lock()
             .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
         inner.servers.get(key).cloned().ok_or_else(|| {
-            LitecodeError::ToolExecution(format!(
-                "language server '{}' not running",
-                key.command
-            ))
+            LitecodeError::ToolExecution(format!("language server '{}' not running", key.command))
         })
     }
 
@@ -525,10 +551,9 @@ impl LspHub {
         rpc_id: Option<u64>,
     ) -> Result<Value> {
         if method == "$/cancelRequest" {
-            let id = params
-                .get("id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| LitecodeError::ToolExecution("$/cancelRequest requires id".into()))?;
+            let id = params.get("id").and_then(|v| v.as_u64()).ok_or_else(|| {
+                LitecodeError::ToolExecution("$/cancelRequest requires id".into())
+            })?;
             let servers: Vec<Arc<LspServer>> = {
                 let inner = self
                     .inner
@@ -550,12 +575,13 @@ impl LspHub {
                 .ok_or_else(|| LitecodeError::ToolExecution(format!("invalid uri: {uri}")))?;
             let key = self.resolve_server_key(&path).await?;
             let server = self.server_arc(&key)?;
+            if !server.is_running() {
+                return Ok(diagnostics_silence_snapshot());
+            }
             if !server.is_doc_open(uri).await {
                 server.sync_document_from_disk(&path, uri).await?;
             }
-            return Ok(serde_json::json!({
-                "diagnostics": server.diagnostics_for_uri(uri)
-            }));
+            return Ok(server.diagnostics_snapshot(uri).await);
         }
 
         if method == "litecode/didChange" {
@@ -569,10 +595,11 @@ impl LspHub {
                 .ok_or_else(|| LitecodeError::ToolExecution(format!("invalid uri: {uri}")))?;
             let key = self.resolve_server_key(&path).await?;
             let server = self.server_arc(&key)?;
+            if !server.is_running() {
+                return Ok(diagnostics_silence_snapshot());
+            }
             server.sync_document_from_text(&path, uri, text).await?;
-            return Ok(serde_json::json!({
-                "diagnostics": server.diagnostics_for_uri(uri)
-            }));
+            return Ok(server.diagnostics_snapshot(uri).await);
         }
 
         if method == "litecode/serverCapabilities" {
@@ -600,9 +627,10 @@ impl LspHub {
                     .inner
                     .lock()
                     .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
-                let key = inner.servers.keys().next().cloned().ok_or_else(|| {
-                    LitecodeError::ToolExecution("no language servers".into())
-                })?;
+                let key =
+                    inner.servers.keys().next().cloned().ok_or_else(|| {
+                        LitecodeError::ToolExecution("no language servers".into())
+                    })?;
                 inner.servers.get(&key).cloned().expect("key from pool")
             };
             return server.send_request(method, params).await;
@@ -677,7 +705,12 @@ impl LspHub {
         let uri = file_to_uri(&file_path);
         let key = self.resolve_server_key(&file_path).await?;
         let server = self.server_arc(&key)?;
-        server.sync_document_from_disk(&file_path, &uri).await?;
+        if !server.is_running() {
+            return Ok(None);
+        }
+        if !server.is_doc_open(&uri).await {
+            server.sync_document_from_disk(&file_path, &uri).await?;
+        }
         let found = server
             .wait_file_diagnostics(&uri, Duration::from_millis(600))
             .await;
@@ -701,10 +734,17 @@ impl LspHub {
 
         let key = self.resolve_server_key(&file_path).await?;
         let server = self.server_arc(&key)?;
+        if !server.is_running() {
+            return Err(LitecodeError::ToolExecution(
+                "language server is not ready".into(),
+            ));
+        }
+        if file_path.is_file() {
+            ensure_open_document(&server, &file_path, &uri).await?;
+        }
 
         let result = match action {
             "goToDefinition" => {
-                server.sync_document_from_disk(&file_path, &uri).await?;
                 let params = serde_json::json!({
                     "textDocument": { "uri": uri },
                     "position": position
@@ -748,7 +788,6 @@ impl LspHub {
                 }
             }
             "findReferences" => {
-                server.sync_document_from_disk(&file_path, &uri).await?;
                 server
                     .request_nav_with_retry(
                         "textDocument/references",
@@ -761,7 +800,6 @@ impl LspHub {
                     .await?
             }
             "hover" => {
-                server.sync_document_from_disk(&file_path, &uri).await?;
                 server
                     .request_nav_with_retry(
                         "textDocument/hover",
@@ -773,7 +811,6 @@ impl LspHub {
                     .await?
             }
             "goToImplementation" => {
-                server.sync_document_from_disk(&file_path, &uri).await?;
                 server
                     .request_nav_with_retry(
                         "textDocument/implementation",
@@ -785,7 +822,6 @@ impl LspHub {
                     .await?
             }
             "documentSymbol" => {
-                server.sync_document_from_disk(&file_path, &uri).await?;
                 server
                     .send_request(
                         "textDocument/documentSymbol",
@@ -795,10 +831,6 @@ impl LspHub {
             }
             "workspaceSymbol" => {
                 // file_path selects/starts the LS; query filters workspace symbols.
-                // Opening the document is optional once the workspace is initialized.
-                if file_path.is_file() {
-                    server.sync_document_from_disk(&file_path, &uri).await?;
-                }
                 server
                     .send_request(
                         "workspace/symbol",
@@ -807,7 +839,6 @@ impl LspHub {
                     .await?
             }
             "prepareCallHierarchy" => {
-                server.sync_document_from_disk(&file_path, &uri).await?;
                 server
                     .send_request(
                         "textDocument/prepareCallHierarchy",
@@ -819,7 +850,6 @@ impl LspHub {
                     .await?
             }
             "incomingCalls" | "outgoingCalls" => {
-                server.sync_document_from_disk(&file_path, &uri).await?;
                 let items = server
                     .send_request(
                         "textDocument/prepareCallHierarchy",
@@ -842,7 +872,6 @@ impl LspHub {
                     .await?
             }
             "diagnostics" => {
-                server.sync_document_from_disk(&file_path, &uri).await?;
                 server
                     .wait_file_diagnostics(&uri, Duration::from_secs(3))
                     .await
@@ -874,6 +903,35 @@ pub(crate) fn uri_path_from_params(params: &Value) -> Option<PathBuf> {
         .and_then(|u| u.as_str())
         .or_else(|| params.get("uri").and_then(|u| u.as_str()))?;
     uri_to_path(uri)
+}
+
+fn split_want_rev(mut params: Value) -> (Value, Option<i32>) {
+    let want = params
+        .as_object_mut()
+        .and_then(|obj| obj.remove("want_rev"))
+        .and_then(|v| v.as_i64())
+        .and_then(|n| i32::try_from(n).ok());
+    (params, want)
+}
+
+fn diagnostics_silence_snapshot() -> Value {
+    serde_json::json!({
+        "rev": Value::Null,
+        "fresh": false,
+        "server_ready": false,
+        "diagnostics": [],
+    })
+}
+
+async fn ensure_open_document(
+    server: &LspServer,
+    file_path: &Path,
+    uri: &str,
+) -> Result<()> {
+    if !server.is_doc_open(uri).await {
+        server.sync_document_from_disk(file_path, uri).await?;
+    }
+    Ok(())
 }
 
 impl Default for LspHub {
@@ -961,5 +1019,38 @@ mod tests {
             effective_restart_count(2, Duration::from_millis(0), false),
             2
         );
+    }
+
+    #[test]
+    fn split_want_rev_is_stripped_before_the_language_server() {
+        let (params, want) = split_want_rev(serde_json::json!({
+            "textDocument": { "uri": "file:///a.rs" },
+            "position": { "line": 0, "character": 1 },
+            "want_rev": 7
+        }));
+        assert_eq!(want, Some(7));
+        assert!(params.get("want_rev").is_none());
+        assert_eq!(
+            params["textDocument"]["uri"],
+            serde_json::json!("file:///a.rs")
+        );
+    }
+
+    #[test]
+    fn split_want_rev_absent_is_none() {
+        let (params, want) = split_want_rev(serde_json::json!({
+            "textDocument": { "uri": "file:///a.rs" }
+        }));
+        assert_eq!(want, None);
+        assert!(params.get("textDocument").is_some());
+    }
+
+    #[test]
+    fn editor_rpc_silence_is_not_a_diagnostic_list() {
+        let snap = diagnostics_silence_snapshot();
+        assert_eq!(snap["fresh"], false);
+        assert_eq!(snap["server_ready"], false);
+        assert_eq!(snap["diagnostics"], serde_json::json!([]));
+        assert!(snap.get("diagnostics").and_then(|d| d.as_array()).is_some());
     }
 }

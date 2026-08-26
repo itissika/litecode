@@ -84,9 +84,13 @@ const INDEX_GRACE: Duration = Duration::from_secs(20);
 struct DocState {
     open_docs: VecDeque<OpenDocEntry>,
     open_docs_set: HashSet<String>,
+    /// Version sent to the language server (restarts at 1 after didClose).
     document_versions: HashMap<String, i32>,
+    /// Monotonic hub revision; never reused after eviction/close.
+    document_hub_revs: HashMap<String, i32>,
     document_text: HashMap<String, String>,
     uri_gates: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    next_hub_rev: i32,
 }
 
 impl DocState {
@@ -95,9 +99,18 @@ impl DocState {
             open_docs: VecDeque::new(),
             open_docs_set: HashSet::new(),
             document_versions: HashMap::new(),
+            document_hub_revs: HashMap::new(),
             document_text: HashMap::new(),
             uri_gates: HashMap::new(),
+            next_hub_rev: 1,
         }
+    }
+
+    fn bump_hub_rev(&mut self, uri: &str) -> i32 {
+        let rev = self.next_hub_rev;
+        self.next_hub_rev = self.next_hub_rev.saturating_add(1);
+        self.document_hub_revs.insert(uri.to_string(), rev);
+        rev
     }
 
     fn gate(&mut self, uri: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -342,11 +355,68 @@ impl LspServer {
         params: Value,
         rpc_id: Option<u64>,
     ) -> Result<Value> {
+        self.send_request_at_rev(uri, None, method, params, rpc_id)
+            .await
+    }
+
+    /// File-scoped request bound to a hub revision. Stale in-flight work is
+    /// discarded (Null) when the document moved on — prefer silence to a wrong hit.
+    pub(crate) async fn send_request_at_rev(
+        &self,
+        uri: &str,
+        want_rev: Option<i32>,
+        method: &str,
+        params: Value,
+        rpc_id: Option<u64>,
+    ) -> Result<Value> {
         {
             let gate = self.uri_gate(uri).await;
             let _g = gate.lock().await;
         }
-        self.send_request_id(method, params, rpc_id).await
+        if let Some(want) = want_rev
+            && self.hub_rev(uri).await != Some(want)
+        {
+            return Ok(Value::Null);
+        }
+        let result = self.send_request_id(method, params, rpc_id).await?;
+        if let Some(want) = want_rev
+            && self.hub_rev(uri).await != Some(want)
+        {
+            return Ok(Value::Null);
+        }
+        Ok(result)
+    }
+
+    pub(crate) async fn hub_rev(&self, uri: &str) -> Option<i32> {
+        let docs = self.docs.lock().await;
+        docs.document_hub_revs
+            .iter()
+            .find(|(k, _)| publish_diagnostics_uri_matches(k, uri))
+            .map(|(_, v)| *v)
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        matches!(self.lifecycle(), LspLifecycle::Running)
+    }
+
+    /// Diagnostics covering the last synced LSP version, or an empty array.
+    pub(crate) fn fresh_diagnostics_for_uri(&self, uri: &str) -> (bool, Value) {
+        if self.io.diagnostics_are_current(uri) {
+            (true, self.diagnostics_for_uri(uri))
+        } else {
+            (false, Value::Array(vec![]))
+        }
+    }
+
+    pub(crate) async fn diagnostics_snapshot(&self, uri: &str) -> Value {
+        let rev = self.hub_rev(uri).await;
+        let (fresh, diagnostics) = self.fresh_diagnostics_for_uri(uri);
+        serde_json::json!({
+            "rev": rev,
+            "fresh": fresh,
+            "server_ready": self.is_running(),
+            "diagnostics": diagnostics,
+        })
     }
 
     pub(crate) async fn send_notification(&self, method: &str, params: Value) -> Result<()> {
@@ -487,6 +557,7 @@ impl LspServer {
                 let entry = docs.open_docs.pop_front().unwrap();
                 docs.open_docs_set.remove(&entry.uri);
                 docs.document_versions.remove(&entry.uri);
+                docs.document_hub_revs.remove(&entry.uri);
                 docs.document_text.remove(&entry.uri);
                 self.io.forget_uri(&entry.uri);
                 (entry.uri, false)
@@ -573,7 +644,7 @@ impl LspServer {
         docs.gate(uri)
     }
 
-    pub(crate) async fn sync_document_from_disk(&self, file_path: &Path, uri: &str) -> Result<()> {
+    pub(crate) async fn sync_document_from_disk(&self, file_path: &Path, uri: &str) -> Result<i32> {
         let text = std::fs::read_to_string(file_path).map_err(|e| {
             LitecodeError::ToolExecution(format!("read '{}': {e}", file_path.display()))
         })?;
@@ -585,10 +656,10 @@ impl LspServer {
         file_path: &Path,
         uri: &str,
         text: &str,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         let gate = self.uri_gate(uri).await;
         let _g = gate.lock().await;
-        let (payload, opened, version) = {
+        let (payload, opened, version, hub_rev) = {
             let mut docs = self.docs.lock().await;
             if docs.open_docs_set.contains(uri) {
                 if let Some(pos) = docs.open_docs.iter().position(|e| e.uri == uri) {
@@ -596,7 +667,12 @@ impl LspServer {
                     docs.open_docs.push_back(entry);
                 }
                 if docs.document_text.get(uri).map(String::as_str) == Some(text) {
-                    return Ok(());
+                    let rev = docs
+                        .document_hub_revs
+                        .get(uri)
+                        .copied()
+                        .unwrap_or(0);
+                    return Ok(rev);
                 }
                 let old = docs
                     .document_text
@@ -608,6 +684,7 @@ impl LspServer {
                     .and_modify(|version| *version = version.saturating_add(1))
                     .or_insert(2)
                     .to_owned();
+                let hub_rev = docs.bump_hub_rev(uri);
                 let incremental = self.uses_incremental();
                 let change = if incremental {
                     let (end_line, end_col) = eof_position(&old);
@@ -628,6 +705,7 @@ impl LspServer {
                     }),
                     false,
                     version,
+                    hub_rev,
                 )
             } else {
                 let language_id = file_path
@@ -642,6 +720,7 @@ impl LspServer {
                 docs.open_docs_set.insert(uri.to_string());
                 docs.document_versions.insert(uri.to_string(), 1);
                 docs.document_text.insert(uri.to_string(), text.to_string());
+                let hub_rev = docs.bump_hub_rev(uri);
                 (
                     serde_json::json!({
                         "textDocument": {
@@ -653,6 +732,7 @@ impl LspServer {
                     }),
                     true,
                     1,
+                    hub_rev,
                 )
             }
         };
@@ -665,7 +745,7 @@ impl LspServer {
             self.send_notification("textDocument/didChange", payload)
                 .await?;
         }
-        Ok(())
+        Ok(hub_rev)
     }
 
     pub(crate) async fn wait_file_diagnostics(&self, uri: &str, budget: Duration) -> Value {
@@ -712,6 +792,7 @@ impl LspServer {
             }
             docs.open_docs.retain(|e| e.uri != uri);
             docs.document_versions.remove(uri);
+            docs.document_hub_revs.remove(uri);
             docs.document_text.remove(uri);
         }
         self.io.forget_uri(uri);

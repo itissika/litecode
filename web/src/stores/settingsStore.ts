@@ -52,7 +52,7 @@ import {
   type ToolScope,
   type EngineStatus,
 } from "../api/settings";
-import { getEnginesDetail, type EnginesDetail } from "../api/workspace";
+import { getEnginesDetail, type EnginesDetail, type LspInstanceStatusView } from "../api/workspace";
 import type { SettingsChanged } from "../api/types";
 import { useSessionStore } from "./sessionStore";
 import { useTurnStore } from "./turnStore";
@@ -146,6 +146,8 @@ interface SettingsStoreState {
   customTools: LayeredList<CustomToolDefinition> | null;
   mcpServers: LayeredList<McpServerItem> | null;
   engineStatuses: Record<string, EngineStatus>;
+  /** Live language-server instances from engines detail (Running = server ready). */
+  lspServers: LspInstanceStatusView[];
   agentIds: string[];
   selectedAgentId: string;
   agents: Record<string, AgentProfile>;
@@ -268,6 +270,10 @@ function enginesFromDetail(detail: EnginesDetail): Record<string, EngineStatus> 
   };
 }
 
+function lspServersFromDetail(detail: EnginesDetail): LspInstanceStatusView[] {
+  return detail.lsp.servers ?? [];
+}
+
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   open: false,
   section: "connection",
@@ -282,6 +288,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   customTools: null,
   mcpServers: null,
   engineStatuses: {},
+  lspServers: [],
   agentIds: ["default"],
   selectedAgentId: "default",
   agents: {},
@@ -356,7 +363,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     try {
       const detail = await getEnginesDetail();
       const engineStatuses = enginesFromDetail(detail);
-      set({ engineStatuses });
+      set({ engineStatuses, lspServers: lspServersFromDetail(detail) });
       const warming = Object.values(engineStatuses).some(
         (engine) => engine?.state === "warming",
       );
@@ -374,7 +381,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     try {
       const detail = await getEnginesDetail();
       const engineStatuses = enginesFromDetail(detail);
-      set({ engineStatuses });
+      set({ engineStatuses, lspServers: lspServersFromDetail(detail) });
       const warming = Object.values(engineStatuses).some(
         (engine) => engine?.state === "warming",
       );
@@ -438,6 +445,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         customTools,
         mcpServers,
         engineStatuses: enginesFromDetail(enginesDetail),
+        lspServers: lspServersFromDetail(enginesDetail),
         agentIds,
         agents,
         selectedAgentId: agentIds.includes(get().selectedAgentId)

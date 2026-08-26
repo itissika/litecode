@@ -221,9 +221,6 @@ impl EditTool {
             .ide
             .as_ref()
             .and_then(|ide| ide.workspace.sandbox().rel_path(&path).ok());
-        if let (Some(ide), true) = (&self.ide, workspace_relative.is_some()) {
-            ide.sync_document_if_ready(&path).await;
-        }
         let raw_bytes = match (&self.ide, &workspace_relative) {
             (Some(ide), Some(relative)) => match ide.workspace.read_file_bytes(relative) {
                 Ok((_, bytes)) => bytes,
@@ -280,7 +277,7 @@ impl EditTool {
                 return ToolCallResult::error(error);
             }
             if let (Some(ide), Some(_)) = (&self.ide, &workspace_relative) {
-                ide.sync_document_if_ready(&path).await;
+                ide.apply_document_if_ready(&path, edited).await;
             }
         }
         let result = render_tool_result(&path_display, &planned, wrote, execution.output_limit);

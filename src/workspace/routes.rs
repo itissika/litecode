@@ -669,7 +669,7 @@ async fn put_file(
     match state.workspace.write_file(&query.path, &body.content) {
         Ok(path) => {
             if let Ok(abs) = state.workspace.sandbox().resolve(&path) {
-                state.ide.sync_document_if_ready(&abs).await;
+                state.ide.apply_document_if_ready(&abs, &body.content).await;
             }
             Json(ApiOk {
                 ok: true,
@@ -685,7 +685,7 @@ async fn post_file(State(state): State<ServeState>, Json(body): Json<CreateFileB
     match state.workspace.create_file(&body.path, &body.content) {
         Ok(path) => {
             if let Ok(abs) = state.workspace.sandbox().resolve(&path) {
-                state.ide.sync_document_if_ready(&abs).await;
+                state.ide.apply_document_if_ready(&abs, &body.content).await;
             }
             (
                 StatusCode::CREATED,
@@ -737,6 +737,9 @@ async fn post_rename(State(state): State<ServeState>, Json(body): Json<RenameBod
         .rename_path(&body.from, &body.to, body.overwrite)
     {
         Ok((from, to)) => {
+            if let Ok(abs) = state.workspace.sandbox().resolve(&from) {
+                state.ide.sync_document_if_ready(&abs).await;
+            }
             if let Ok(abs) = state.workspace.sandbox().resolve(&to) {
                 state.ide.sync_document_if_ready(&abs).await;
             }
@@ -886,7 +889,11 @@ async fn write_blob(state: ServeState, path: &str, body: &Bytes, overwrite: bool
     match state.workspace.write_file_bytes(path, body, overwrite) {
         Ok(path) => {
             if let Ok(abs) = state.workspace.sandbox().resolve(&path) {
-                state.ide.sync_document_if_ready(&abs).await;
+                if let Ok(text) = std::str::from_utf8(body) {
+                    state.ide.apply_document_if_ready(&abs, text).await;
+                } else {
+                    state.ide.sync_document_if_ready(&abs).await;
+                }
             }
             let status = if overwrite {
                 StatusCode::OK

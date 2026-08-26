@@ -11,10 +11,10 @@ import { useSettingsStore } from "../stores/settingsStore";
 import { ConflictCard } from "./ConflictCard";
 import {
   bindEditorLsp,
+  dropWorkspaceLsp,
+  ensureWorkspaceLsp,
   getProjectRootFromStore,
-  registerWorkspaceLsp,
   refreshDiagnostics,
-  type WorkspaceLspHandle,
 } from "../lib/litecodeLsp";
 import {
   applyMonacoThemeForApp,
@@ -58,11 +58,7 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const milkdownHostRef = useRef<HTMLDivElement | null>(null);
-  const lspDisposeRef = useRef<(() => void) | null>(null);
   const lspBindRef = useRef<(() => void) | null>(null);
-  const lspHelpersRef = useRef<Pick<WorkspaceLspHandle, "ensureSemantic"> | null>(
-    null,
-  );
   const [monacoTheme, setMonacoTheme] = useState(
     () => getTheme() === "light" ? LITECODE_MONACO_THEME_LIGHT : LITECODE_MONACO_THEME_DARK
   );
@@ -84,9 +80,8 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
     (monaco: typeof import("monaco-editor"), ed: editor.IStandaloneCodeEditor) => {
       lspBindRef.current?.();
       lspBindRef.current = null;
-      const helpers = lspHelpersRef.current;
-      if (!helpers || !lspDesired || !wsConnected) return;
-      const d = bindEditorLsp(ed, monaco, getProjectRootFromStore, helpers);
+      if (!lspDesired || !wsConnected) return;
+      const d = bindEditorLsp(ed, monaco, getProjectRootFromStore);
       lspBindRef.current = () => d.dispose();
     },
     [lspDesired, wsConnected],
@@ -94,20 +89,13 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
 
   const syncLspRegistration = useCallback(
     (monaco: typeof import("monaco-editor")) => {
-      lspDisposeRef.current?.();
-      lspDisposeRef.current = null;
-      lspHelpersRef.current = null;
-      // Register as soon as LSP is desired, not only once it is Warm. The
-      // workspace RPC then reports a visible Loading / Unavailable status
-      // instead of silently omitting hover while the engine starts.
       if (!lspDesired || !wsConnected || !getProjectRootFromStore()) {
+        dropWorkspaceLsp();
+        lspBindRef.current?.();
+        lspBindRef.current = null;
         return;
       }
-      const disposable = registerWorkspaceLsp(monaco, getProjectRootFromStore);
-      lspHelpersRef.current = {
-        ensureSemantic: disposable.ensureSemantic,
-      };
-      lspDisposeRef.current = () => disposable.dispose();
+      ensureWorkspaceLsp(monaco, getProjectRootFromStore);
       const ed = editorRef.current;
       if (ed) bindEditorToLsp(monaco, ed);
     },
@@ -163,14 +151,12 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
     return () => window.removeEventListener(THEME_CHANGE_EVENT, handler);
   }, []);
 
-  // Re-register when hub becomes warm or workspace root changes
+  // Keep a workspace Language Client while LSP is desired; panes only bind.
   useEffect(() => {
     const monaco = monacoRef.current;
     if (!monaco) return;
     syncLspRegistration(monaco);
     return () => {
-      lspDisposeRef.current?.();
-      lspDisposeRef.current = null;
       lspBindRef.current?.();
       lspBindRef.current = null;
     };
@@ -316,10 +302,10 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
                 wordBasedSuggestions: "off",
                 parameterHints: { enabled: true },
                 linkedEditing: true,
-                inlayHints: { enabled: "on" },
+                inlayHints: { enabled: "off" },
                 bracketPairColorization: { enabled: true },
                 guides: { indentation: true, bracketPairs: true },
-                "semanticHighlighting.enabled": true,
+                "semanticHighlighting.enabled": false,
                 gotoLocation: {
                   multiple: "goto",
                   multipleDefinitions: "goto",

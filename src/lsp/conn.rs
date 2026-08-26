@@ -325,6 +325,10 @@ impl LspIo {
         cache_covers_sync(entry.version, self.synced_version_for_uri(uri))
     }
 
+    pub(crate) fn diagnostics_are_current(&self, uri: &str) -> bool {
+        self.diagnostics_current(uri)
+    }
+
     fn synced_version_for_uri(&self, uri: &str) -> Option<i32> {
         let Ok(g) = self.synced_version.lock() else {
             return None;
@@ -774,6 +778,20 @@ mod tests {
             found,
             Value::Array(vec![]),
             "unversioned publish must not be treated as covering didChange"
+        );
+    }
+
+    #[test]
+    fn diagnostics_are_current_rejects_stale_cache() {
+        let io = test_io();
+        let uri = "file:///lib.rs";
+        io.note_doc_synced(uri, 1);
+        io.ingest_notification(&publish(uri, Some(1), stale_error()));
+        assert!(io.diagnostics_are_current(uri));
+        io.note_doc_synced(uri, 2);
+        assert!(
+            !io.diagnostics_are_current(uri),
+            "v1 cache must not cover v2 sync"
         );
     }
 }

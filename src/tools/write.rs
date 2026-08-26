@@ -192,7 +192,7 @@ impl WriteTool {
             }
             return match ide.workspace.write_file(&relative, content) {
                 Ok(_) => {
-                    ide.sync_document_if_ready(&resolved).await;
+                    ide.apply_document_if_ready(&resolved, content).await;
                     self.finish_ok(
                         &resolved.to_string_lossy(),
                         format!(

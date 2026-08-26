@@ -78,6 +78,8 @@ impl LspTool {
     }
 
     fn is_ready(&self) -> bool {
+        // Hub-active. Per-request results still require instance Running
+        // (`LspHub::tool_action` / `apply_document`).
         self.engines.state("lsp") == Some(EngineState::Warm)
     }
 

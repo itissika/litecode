@@ -39,11 +39,35 @@ impl IdeBaseHandle {
         Ok(Self::new(workspace, engines, Arc::new(TerminalHub::new())))
     }
 
-    /// Sync a workspace file into the language server via the sole LspHub exit.
-    ///
+    /// Apply canonical buffer/write text into the language server.
     /// No-op when LSP is not Warm, the path has no coverage, or the path is
-    /// outside the workspace sandbox. External ALL-mode Agent paths deliberately
-    /// do not call this method.
+    /// outside the workspace sandbox.
+    pub async fn apply_document_if_ready(
+        self: &Arc<Self>,
+        abs_path: &Path,
+        text: &str,
+    ) {
+        if !self.engines.is_warmed("lsp") {
+            return;
+        }
+        let hub = self.engines.lsp_hub();
+        if !hub.file_has_lsp_coverage(abs_path) {
+            return;
+        }
+        if self.workspace.sandbox().rel_path(abs_path).is_err() {
+            return;
+        }
+        if let Err(error) = hub.apply_document(abs_path, text).await {
+            tracing::debug!(
+                error = %error,
+                path = %abs_path.display(),
+                "LSP document apply failed"
+            );
+        }
+    }
+
+    /// Bootstrap from disk if the document is not already open, or close it
+    /// when the file is gone. Does not overwrite an open document from disk.
     pub async fn sync_document_if_ready(self: &Arc<Self>, abs_path: &Path) {
         if !self.engines.is_warmed("lsp") {
             return;
