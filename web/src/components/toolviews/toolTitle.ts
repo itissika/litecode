@@ -116,7 +116,7 @@ export function toolTitle(
     const query = stringField(obj, "query");
     return {
       summary: query
-        ? truncate(`${query}${formatScope(obj, ["include_pattern", "session_filter"])}`)
+        ? truncate(`${query}${formatScope(obj, ["include_pattern", "session_id"])}`)
         : fallbackSummary(input),
     };
   }

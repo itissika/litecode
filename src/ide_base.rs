@@ -42,11 +42,7 @@ impl IdeBaseHandle {
     /// Apply canonical buffer/write text into the language server.
     /// No-op when LSP is not Warm, the path has no coverage, or the path is
     /// outside the workspace sandbox.
-    pub async fn apply_document_if_ready(
-        self: &Arc<Self>,
-        abs_path: &Path,
-        text: &str,
-    ) {
+    pub async fn apply_document_if_ready(self: &Arc<Self>, abs_path: &Path, text: &str) {
         if !self.engines.is_warmed("lsp") {
             return;
         }

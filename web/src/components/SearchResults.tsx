@@ -76,6 +76,10 @@ export interface SearchResultGroup {
   icon?: ReactNode;
   /** Matched lines under this group. */
   lines: SearchResultLine[];
+  /** Full-result match count from the server; falls back to `lines.length`. */
+  matchCount?: number;
+  /** Open the group target (file / session) without toggling fold. */
+  onOpenTitle?: () => void;
   /** Query string to highlight inside each line (matched characters). */
   highlight?: string;
   /** Whether `highlight` matching is case-sensitive. */
@@ -111,6 +115,21 @@ export function SearchResultLineRow({
 }
 
 export function SearchResultGroupCard({ group }: { group: SearchResultGroup }) {
+  const count = group.matchCount ?? group.lines.length;
+  const title = group.onOpenTitle ? (
+    <button
+      type="button"
+      onClick={group.onOpenTitle}
+      title={group.title}
+      className="truncate font-mono text-dk-xs text-(--_dk-text-secondary) hover:text-(--_dk-text-primary)"
+    >
+      {group.title}
+    </button>
+  ) : (
+    <span className="truncate font-mono text-dk-xs text-(--_dk-text-secondary)">
+      {group.title}
+    </span>
+  );
   return (
     <FoldCard
       defaultOpen
@@ -118,16 +137,14 @@ export function SearchResultGroupCard({ group }: { group: SearchResultGroup }) {
       icon={group.icon}
       label={
         <span className={`${FOLDCARD_HEADER_TONE} flex min-w-0 items-baseline gap-1.5`}>
-          <span className="truncate font-mono text-dk-xs text-(--_dk-text-secondary)">
-            {group.title}
-          </span>
+          {title}
           {group.subtitle && (
             <span className="truncate font-mono text-dk-xs text-(--_dk-text-disabled)">
               {group.subtitle}
             </span>
           )}
           <span className="ml-auto shrink-0 pl-1 text-dk-2xs text-(--_dk-text-disabled)">
-            {group.lines.length}
+            {count}
           </span>
         </span>
       }

@@ -132,7 +132,11 @@ impl RuntimeHandle {
             .get("compaction")
             .map(crate::config::bridge::agent_config_from_profile)
             .map(|agent| crate::context_pipeline::build_compaction_system_prompt(&agent))
-            .unwrap_or_else(|| crate::context_pipeline::BUILTIN_COMPACTION.trim().to_string())
+            .unwrap_or_else(|| {
+                crate::context_pipeline::BUILTIN_COMPACTION
+                    .trim()
+                    .to_string()
+            })
     }
 
     /// Reload global settings into this handle when the writer revision advanced.

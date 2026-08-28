@@ -702,7 +702,12 @@ impl LspServer {
                     .or_insert(2)
                     .to_owned();
                 let hub_rev = docs.bump_hub_rev(uri);
-                let changes = incremental_content_changes(self.uses_incremental(), content_changes, &old, text);
+                let changes = incremental_content_changes(
+                    self.uses_incremental(),
+                    content_changes,
+                    &old,
+                    text,
+                );
                 (
                     serde_json::json!({
                         "textDocument": { "uri": uri, "version": version },
@@ -852,7 +857,10 @@ fn incremental_content_changes(
 
 fn lsp_range_is_valid(range: &Value) -> bool {
     range.get("start").and_then(|s| s.get("line")).is_some()
-        && range.get("start").and_then(|s| s.get("character")).is_some()
+        && range
+            .get("start")
+            .and_then(|s| s.get("character"))
+            .is_some()
         && range.get("end").and_then(|s| s.get("line")).is_some()
         && range.get("end").and_then(|s| s.get("character")).is_some()
 }

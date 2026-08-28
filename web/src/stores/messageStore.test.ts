@@ -1,7 +1,7 @@
 /**
  * Seq-keyed message store: load/item share one map; deltas only hit an existing seq.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 
@@ -10,6 +10,7 @@ import type { BufferLoaded, Item, WireBufferEvent } from "../api/types";
 import { displayMessages, useMessageStore } from "./messageStore";
 import { EMPTY_SLICE as EMPTY_TURN, useTurnStore } from "./turnStore";
 import { useToastStore } from "./toastStore";
+import { useConnectionStore } from "./connectionStore";
 
 function assistantMsg(id: string, text: string, status: "in_progress" | "completed" = "completed"): Item {
   return {
@@ -310,5 +311,60 @@ describe("messageStore seq map", () => {
     const slice = useMessageStore.getState().bySession.get(sid)!;
     expect(slice.messages.map((r) => r.seq)).toEqual([0]);
     expect(slice.toSeq).toBe(1);
+  });
+
+  it("ensureSeqLoaded is a no-op when the seq is already in the window", async () => {
+    const sid = "s-in-window";
+    load(sid, [ev(0, userMsg("a")), ev(1, assistantMsg("x", "b"))], 0, 2);
+    const sendRpc = vi.fn();
+    useConnectionStore.setState({ sendRpc } as never);
+    await expect(useMessageStore.getState().ensureSeqLoaded(sid, 1)).resolves.toBe(true);
+    expect(sendRpc).not.toHaveBeenCalled();
+  });
+
+  it("ensureSeqLoaded pages backward until the target seq is in the store", async () => {
+    const sid = "s-history";
+    load(sid, [ev(40, userMsg("tail"))], 40, 41);
+    const sendRpc = vi.fn(async (_method: string, params?: Record<string, unknown>) => ({
+      session_id: sid,
+      from_seq: params?.from_seq,
+      to_seq: params?.to_seq,
+      events: [ev(5, userMsg("older"))],
+    }));
+    useConnectionStore.setState({ sendRpc } as never);
+    await expect(useMessageStore.getState().ensureSeqLoaded(sid, 5)).resolves.toBe(true);
+    expect(sendRpc).toHaveBeenCalled();
+    expect(useMessageStore.getState().bySession.get(sid)!.bySeq.has(5)).toBe(true);
+    expect(useMessageStore.getState().bySession.get(sid)!.fromSeq).toBe(0);
+  });
+
+  it("ensureSeqLoaded follows only the latest request", async () => {
+    const sid = "s-cancel";
+    load(sid, [ev(40, userMsg("tail"))], 40, 41);
+    let resume: ((v: BufferLoaded) => void) | undefined;
+    const sendRpc = vi.fn(
+      () =>
+        new Promise<BufferLoaded>((resolve) => {
+          resume = resolve;
+        }),
+    );
+    useConnectionStore.setState({ sendRpc } as never);
+    let currentGen = 1;
+    const first = useMessageStore.getState().ensureSeqLoaded(sid, 1, () => currentGen === 1);
+    currentGen = 2;
+    resume?.({
+      session_id: sid,
+      from_seq: 0,
+      to_seq: 40,
+      events: [ev(1, userMsg("old"))],
+    });
+    await expect(first).resolves.toBe(false);
+  });
+
+  it("ensureSeqLoaded returns false when the seq was reverted out of the window", async () => {
+    const sid = "s-gone";
+    load(sid, [ev(0, userMsg("keep"))], 0, 1);
+    useConnectionStore.setState({ sendRpc: vi.fn() } as never);
+    await expect(useMessageStore.getState().ensureSeqLoaded(sid, 4)).resolves.toBe(false);
   });
 });

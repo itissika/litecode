@@ -14,6 +14,23 @@ use super::{
     filter_hits, fuzzy_match_span, row_plain_text, snippet_from_span,
 };
 
+fn raw_row(
+    session_id: String,
+    seq: i64,
+    item_type: String,
+    body: Option<String>,
+    body_ref: Option<String>,
+) -> RawRow {
+    RawRow {
+        session_id,
+        seq,
+        kind: String::new(),
+        item_type,
+        body,
+        body_ref,
+    }
+}
+
 /// Over-fetch FTS candidates before filters / exact boost.
 const FTS_CANDIDATE_LIMIT: usize = 64;
 /// Cap fuzzy full-scan extras when FTS already returned hits.
@@ -108,13 +125,13 @@ pub fn search_lexical(db_path: &Path, query: &SessionTextQuery) -> Result<Vec<Se
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let rows = stmt
         .query_map(param_refs.as_slice(), |row| {
-            Ok(RawRow {
-                session_id: row.get(0)?,
-                seq: row.get(1)?,
-                item_type: row.get(2)?,
-                body: row.get(3)?,
-                body_ref: row.get(4)?,
-            })
+            Ok(raw_row(
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })
         .map_err(|e| LitecodeError::Config(format!("lexical scan query: {e}")))?;
 
@@ -196,13 +213,13 @@ fn hit_from_row(
         .map_err(|e| LitecodeError::Config(format!("fts hydrate prepare: {e}")))?;
     let row = stmt
         .query_row(rusqlite::params![fh.session_id, fh.seq], |r| {
-            Ok(RawRow {
-                session_id: r.get(0)?,
-                seq: r.get(1)?,
-                item_type: r.get(2)?,
-                body: r.get(3)?,
-                body_ref: r.get(4)?,
-            })
+            Ok(raw_row(
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+            ))
         })
         .optional()
         .map_err(|e| LitecodeError::Config(format!("fts hydrate: {e}")))?;
@@ -266,13 +283,13 @@ fn backfill_fts(conn: &Connection, db_path: &Path) -> Result<()> {
         .map_err(|e| LitecodeError::Config(format!("fts backfill prepare: {e}")))?;
     let rows = stmt
         .query_map([], |r| {
-            Ok(RawRow {
-                session_id: r.get(0)?,
-                seq: r.get(1)?,
-                item_type: r.get(2)?,
-                body: r.get(3)?,
-                body_ref: r.get(4)?,
-            })
+            Ok(raw_row(
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+            ))
         })
         .map_err(|e| LitecodeError::Config(format!("fts backfill query: {e}")))?;
     let mut n = 0usize;

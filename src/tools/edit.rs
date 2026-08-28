@@ -201,6 +201,11 @@ impl EditTool {
             Ok(s) => s.to_string(),
             Err(e) => return ToolCallResult::error(e),
         };
+        if crate::session::transcript_file::is_virtual_session_path(&raw_path) {
+            return ToolCallResult::error(
+                crate::session::transcript_file::READ_ONLY_MSG.to_string(),
+            );
+        }
         let blocks = match parse_edits(&input) {
             Ok(blocks) => blocks,
             Err(e) => return ToolCallResult::error(e),

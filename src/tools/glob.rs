@@ -28,7 +28,7 @@ impl Tool for GlobTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Optional directory to search under (workspace-relative preferred; absolute paths outside the workspace only under All permission). Pattern is matched relative to this directory."
+                    "description": "Optional directory to search under (workspace-relative preferred; absolute paths outside the workspace only under All permission). Pattern is matched relative to this directory. Session transcripts are listed only when this is `.litecode/sessions`."
                 },
                 "no_ignore": {
                     "type": "boolean",
@@ -88,6 +88,23 @@ impl GlobTool {
 
         let (effective_pattern, prefix_note) = strip_redundant_path_prefix(path_arg, pattern);
 
+        if let Some(path) = path_arg
+            && crate::session::transcript_file::is_virtual_session_dir(path)
+        {
+            let results = match glob_virtual_sessions(&execution.workspace_root, &effective_pattern)
+            {
+                Ok(r) => r,
+                Err(e) => return ToolCallResult::error(e.to_string()),
+            };
+            return ToolCallResult::ok(format_glob_body(
+                &results,
+                &effective_pattern,
+                path_arg,
+                pattern_warning.as_deref(),
+                prefix_note.as_deref(),
+            ));
+        }
+
         let search_path = match path_arg {
             Some(path) => {
                 match crate::workspace::resolve_agent(
@@ -120,31 +137,46 @@ impl GlobTool {
             Err(e) => return ToolCallResult::error(e.to_string()),
         };
 
-        let body = if results.is_empty() {
-            let mut msg = format!("No files found for pattern '{effective_pattern}'");
-            if let Some(p) = path_arg {
-                msg.push_str(&format!(" under path '{p}'"));
-                msg.push_str(". Pattern is relative to path — with path set, prefer '**/*.rs' over repeating the directory in pattern.");
-            }
-            if let Some(w) = pattern_warning {
-                msg.push_str(". ");
-                msg.push_str(&w);
-                msg.push_str(" Glob only matches paths under the search directory; patterns like '../*' cannot reach parent folders.");
-            }
-            if let Some(note) = prefix_note {
-                msg.push_str(". ");
-                msg.push_str(&note);
-            }
-            msg
-        } else {
-            let mut msg = results.join("\n");
-            if let Some(note) = prefix_note {
-                msg.push('\n');
-                msg.push_str(&note);
-            }
-            msg
-        };
-        ToolCallResult::ok(body)
+        ToolCallResult::ok(format_glob_body(
+            &results,
+            &effective_pattern,
+            path_arg,
+            pattern_warning.as_deref(),
+            prefix_note.as_deref(),
+        ))
+    }
+}
+
+fn format_glob_body(
+    results: &[String],
+    effective_pattern: &str,
+    path_arg: Option<&str>,
+    pattern_warning: Option<&str>,
+    prefix_note: Option<&str>,
+) -> String {
+    if results.is_empty() {
+        let mut msg = format!("No files found for pattern '{effective_pattern}'");
+        if let Some(p) = path_arg {
+            msg.push_str(&format!(" under path '{p}'"));
+            msg.push_str(". Pattern is relative to path — with path set, prefer '**/*.rs' over repeating the directory in pattern.");
+        }
+        if let Some(w) = pattern_warning {
+            msg.push_str(". ");
+            msg.push_str(w);
+            msg.push_str(" Glob only matches paths under the search directory; patterns like '../*' cannot reach parent folders.");
+        }
+        if let Some(note) = prefix_note {
+            msg.push_str(". ");
+            msg.push_str(note);
+        }
+        msg
+    } else {
+        let mut msg = results.join("\n");
+        if let Some(note) = prefix_note {
+            msg.push('\n');
+            msg.push_str(note);
+        }
+        msg
     }
 }
 
@@ -188,6 +220,19 @@ fn strip_redundant_path_prefix<'a>(
         return (std::borrow::Cow::Borrowed("**/*"), Some(note));
     }
     (std::borrow::Cow::Borrowed(pattern), None)
+}
+
+fn glob_virtual_sessions(workspace_root: &std::path::Path, pattern: &str) -> Result<Vec<String>> {
+    let matcher = compile_include_pattern(pattern)?;
+    let db = crate::engines::session_search::sessions_db_under(workspace_root);
+    let listed = crate::session::transcript_file::list_virtual_paths(&db)?;
+    let mut hits: Vec<String> = listed
+        .into_iter()
+        .filter(|path| matcher.matches(path))
+        .collect();
+    crate::workspace::sort_glob_hits(&mut hits);
+    hits.truncate(MAX_RESULTS);
+    Ok(hits)
 }
 
 fn glob_match(base: &std::path::Path, pattern: &str, no_ignore: bool) -> Result<Vec<String>> {
@@ -242,6 +287,7 @@ fn shallow_only(pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool::Tool;
     use crate::workspace::filter::compile_include_pattern;
     use tempfile::TempDir;
 
@@ -411,5 +457,137 @@ mod tests {
 
         let found = glob_match(root, "**/*.rs", false).unwrap();
         assert_eq!(found, ["root.rs", "src/mid.rs", "src/nested/deep.rs"]);
+    }
+
+    fn seed_session(root: &std::path::Path, text: &str) -> String {
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let s = crate::session::store::Session::open(
+            db.to_str().unwrap(),
+            root.to_str().unwrap(),
+            "default",
+            None,
+        )
+        .unwrap();
+        s.insert_detail_rows(&[crate::types::user_text(text)])
+            .unwrap();
+        let id = s.id.clone();
+        drop(s);
+        id
+    }
+
+    fn glob_in(root: &std::path::Path, input: Value) -> String {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(GlobTool.execute(
+            input,
+            crate::tool::trait_::ToolExecutionContext {
+                path_mode: crate::workspace::ToolPathMode::Safe,
+                workspace_root: root.to_path_buf(),
+                call_id: String::new(),
+                cancel: tokio_util::sync::CancellationToken::new(),
+                output_limit: GlobTool.max_result_size(),
+                session_id: String::new(),
+            },
+        ))
+        .content
+    }
+
+    #[test]
+    fn virtual_sessions_list_only_when_path_is_explicit() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let a = seed_session(root, "alpha");
+        let b = seed_session(root, "beta");
+        let path_a = crate::session::transcript_file::virtual_path_for(&a);
+        let path_b = crate::session::transcript_file::virtual_path_for(&b);
+
+        let listed = glob_in(
+            root,
+            serde_json::json!({
+                "pattern": "*.md",
+                "path": ".litecode/sessions",
+            }),
+        );
+        assert!(listed.contains(&path_a), "{listed}");
+        assert!(listed.contains(&path_b), "{listed}");
+
+        let unscoped = glob_in(root, serde_json::json!({ "pattern": "**/*.md" }));
+        assert!(
+            !unscoped.contains(".litecode/sessions/"),
+            "coding glob must not enter sessions, got: {unscoped}"
+        );
+
+        let pattern_only = glob_in(
+            root,
+            serde_json::json!({ "pattern": ".litecode/sessions/*.md" }),
+        );
+        assert!(
+            !pattern_only.contains(&path_a),
+            "pattern without path must not list sessions, got: {pattern_only}"
+        );
+    }
+
+    fn session_md_hits(listed: &str) -> Vec<&str> {
+        listed
+            .lines()
+            .filter(|l| l.starts_with(".litecode/sessions/") && l.ends_with(".md"))
+            .collect()
+    }
+
+    #[test]
+    fn explicit_session_dir_glob_lists_every_session() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let ids: Vec<String> = (0..3)
+            .map(|i| seed_session(root, &format!("glob body {i}")))
+            .collect();
+        let expected: Vec<String> = ids
+            .iter()
+            .map(|id| crate::session::transcript_file::virtual_path_for(id))
+            .collect();
+
+        for input in [
+            serde_json::json!({ "pattern": "**/*", "path": ".litecode/sessions" }),
+            serde_json::json!({ "pattern": "*.md", "path": ".litecode/sessions" }),
+            serde_json::json!({ "pattern": "*.md", "path": ".litecode/sessions/" }),
+            serde_json::json!({
+                "pattern": ".litecode/sessions/*.md",
+                "path": ".litecode/sessions",
+            }),
+        ] {
+            let listed = glob_in(root, input.clone());
+            let hits = session_md_hits(&listed);
+            assert_eq!(
+                hits.len(),
+                3,
+                "explicit dir glob must list all sessions for {input}:\n{listed}"
+            );
+            for path in &expected {
+                assert!(hits.contains(&path.as_str()), "missing {path} in {listed}");
+            }
+        }
+
+        let parent = glob_in(
+            root,
+            serde_json::json!({ "pattern": "**/*", "path": ".litecode" }),
+        );
+        for path in &expected {
+            assert!(
+                !parent.contains(path),
+                "parent .litecode must not list virtual transcripts, got: {parent}"
+            );
+        }
+
+        let unscoped_ignore = glob_in(
+            root,
+            serde_json::json!({ "pattern": "**/*.md", "no_ignore": true }),
+        );
+        assert!(
+            !unscoped_ignore.contains(".litecode/sessions/"),
+            "no_ignore workspace glob must still skip sessions, got: {unscoped_ignore}"
+        );
     }
 }

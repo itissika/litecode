@@ -58,6 +58,22 @@ pub fn count_text_tokens(text: &str) -> usize {
     bpe.encode_with_special_tokens(text).len()
 }
 
+/// Keep a prefix that fits `max_tokens` cl100k tokens. Appends an ellipsis when cut.
+pub fn truncate_text_tokens(text: &str, max_tokens: usize) -> String {
+    if max_tokens == 0 {
+        return String::new();
+    }
+    let bpe = tiktoken_rs::cl100k_base_singleton();
+    let encoded = bpe.encode_with_special_tokens(text);
+    if encoded.len() <= max_tokens {
+        return text.to_string();
+    }
+    let decoded = bpe
+        .decode(&encoded[..max_tokens])
+        .unwrap_or_else(|_| text.chars().take(max_tokens.saturating_mul(4)).collect());
+    format!("{decoded}…")
+}
+
 fn add_input_content_tokens(content: &InputContent, total: &mut usize) {
     match content {
         InputContent::InputText(t) => *total += count_text_tokens(&t.text),

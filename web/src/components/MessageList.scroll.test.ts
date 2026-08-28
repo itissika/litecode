@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { HumanRow } from "../api/types";
 import { isCompactCutRow, projectionRowKey } from "../api/adapter";
-import { bubbleIdentity, canRevertFiles, groupRowsForBubbles, locateBashTool } from "./MessageList";
+import { bubbleIdentity, canRevertFiles, groupRowsForBubbles, locateBashTool, locateSeq } from "./MessageList";
 
 const userRow: HumanRow = {
   seq: 0,
@@ -219,5 +219,19 @@ describe("locateBashTool", () => {
     expect(found?.bubbleIndex).toBe(1);
     expect(found?.foldIds[0]).toMatch(/:process:0$/);
     expect(found?.foldIds[1]).toMatch(/:tool:c1$/);
+  });
+});
+
+describe("locateSeq", () => {
+  it("finds a user seq in its own bubble", () => {
+    const bubbles = groupRowsForBubbles([userRow, liveReasoning, liveTool]);
+    expect(locateSeq(bubbles, 0)).toBe(0);
+  });
+
+  it("finds merged assistant rows in the same bubble", () => {
+    const bubbles = groupRowsForBubbles([userRow, liveReasoning, liveTool]);
+    expect(locateSeq(bubbles, 1)).toBe(1);
+    expect(locateSeq(bubbles, 2)).toBe(1);
+    expect(locateSeq(bubbles, 99)).toBeNull();
   });
 });

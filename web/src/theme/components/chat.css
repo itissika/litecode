@@ -595,6 +595,10 @@
   animation: bash-view-reveal 900ms ease-out;
 }
 
+.session-search-reveal {
+  animation: bash-view-reveal 900ms ease-out;
+}
+
 /* ── Mini chat input overlay ── */
 
 @keyframes mini-chat-exit {

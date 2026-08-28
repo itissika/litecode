@@ -7,46 +7,36 @@ mod semantic_index;
 
 pub use semantic_index::{SessionSemanticIndex, ensure_session_index};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 
 use crate::session::event::{EventType, Seq, SessionEvent};
-use crate::session::store::data_root_from_db_path;
 use crate::session::surface::fold_surface;
-use crate::tool::output::{BLOB_PREFIX, blob_dir};
-use crate::types::{Item, LitecodeError, Result, item_text_preview};
+use crate::session::transcript_file::{self, TranscriptFile};
+use crate::session::{count_text_tokens, truncate_text_tokens};
+use crate::types::{LitecodeError, Result};
 
-/// Hits per agent/UI page.
-pub const RESULTS_PER_PAGE: usize = 10;
+pub(crate) use crate::session::transcript_file::{SearchableRow as RawRow, row_plain_text};
+
 /// Semantic ANN over-fetch before gating / session filter.
 pub const SEMANTIC_WINDOW: usize = 16;
 /// Minimum normalized Levenshtein similarity for a fuzzy hit.
 pub const FUZZY_THRESHOLD: f64 = 0.72;
-/// Character step for expand (agent `expand` multiplies this).
-pub const EXPAND_STEP_CHARS: usize = 300;
-/// Default expand steps when agent omits `expand`: `[1, 1]`.
-pub const DEFAULT_EXPAND_UP: usize = 1;
-pub const DEFAULT_EXPAND_DOWN: usize = 1;
-/// Max characters of the hit nucleus shown/marked.
+/// Max characters of the hit nucleus used while locating a match span.
 pub const HIT_CORE_MAX_CHARS: usize = 200;
-/// Related lane: max plain-text chars per entry (no expand / no fake span).
-pub const RELATED_ENTRY_MAX_CHARS: usize = 400;
-/// Soft byte budget for agent dual-view (executor hard-caps ~`max_result_size * 4`).
-pub const AGENT_VIEW_SOFT_BYTES: usize = 28_000;
-/// Hit nucleus markers — not markdown (`**` collides with transcript MD).
-pub const HIT_MARK_OPEN: &str = "⟦";
-pub const HIT_MARK_CLOSE: &str = "⟧";
 /// Semantic score gate: `score = 1/(1+dist)`; below this is noise.
 pub const SEMANTIC_MIN_SCORE: f64 = 0.55;
-/// Short session handle length shown to agents (unique suffix / prefix resolve).
+/// Short session handle length (unique suffix / prefix resolve).
 pub const SESSION_REF_SHORT_LEN: usize = 8;
+/// Token budget for one session_search / human session page.
+pub const PAGE_TOKEN_BUDGET: usize = 6_000;
+/// Per-hit summary cap (cl100k tokens).
+pub const HIT_SUMMARY_MAX_TOKENS: usize = 96;
 /// Split long transcript text before windowed fuzzy to bound cost.
 const FUZZY_BLOCK_CHARS: usize = 4096;
-/// Separator between transcript items in the session character stream.
-const ITEM_SEP: &str = "\n\n";
 
 /// Exclude the live model window of one session: drop seqs currently on `surface.nodes`.
 /// Shadowed append-origin rows remain searchable.
@@ -82,7 +72,7 @@ pub struct SessionTextHit {
     pub session_id: String,
     pub seq: i64,
     pub item_type: String,
-    /// Short preview (legacy / human UI); agent view uses char windows.
+    /// Lane-local preview; page hydration may replace this with a physical line.
     pub summary: String,
     pub score: f64,
     /// Match start within this item's plain text (char index).
@@ -95,96 +85,51 @@ pub struct SessionTextHit {
     pub lane: SessionHitLane,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SessionTextPage {
-    pub hits: Vec<SessionTextHit>,
-    pub offset: usize,
-    pub has_more: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExpandSteps {
-    pub up: usize,
-    pub down: usize,
-}
-
-impl Default for ExpandSteps {
-    fn default() -> Self {
-        Self {
-            up: DEFAULT_EXPAND_UP,
-            down: DEFAULT_EXPAND_DOWN,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionMeta {
+pub struct SessionTimestamps {
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-/// One rendered hit window (after expand or Related entry truncate).
-#[derive(Debug, Clone, PartialEq)]
-pub struct HitWindow {
-    pub hit: SessionTextHit,
-    /// Window body; Matches wraps the nucleus in `⟦...⟧` (not markdown).
-    pub body: String,
-    /// Absolute char offset of window start in the session stream (merge math).
-    pub chars_above: usize,
-    /// Chars after window end in the session stream (merge math).
-    pub chars_below: usize,
-    /// Transcript items fully above the window (agent-facing overflow).
-    pub items_above: usize,
-    /// Transcript items fully below the window (agent-facing overflow).
-    pub items_below: usize,
-    /// More text in the same entry outside the shown span (mid-item / Related truncate).
-    pub same_item_overflow: bool,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionSearchHitRow {
+    pub line: u32,
+    pub seq: i64,
+    pub summary: String,
 }
 
-/// Strip hit markers for length / overlap math.
-pub fn strip_hit_marks(s: &str) -> String {
-    s.replace(HIT_MARK_OPEN, "").replace(HIT_MARK_CLOSE, "")
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionSearchGroup {
+    pub session_id: String,
+    pub created_time: i64,
+    pub updated_time: i64,
+    pub path: String,
+    pub match_count: usize,
+    pub hits: Vec<SessionSearchHitRow>,
 }
 
-fn sanitize_hit_marks(s: &str) -> String {
-    // Avoid nested / false markers inside transcript text.
-    s.replace(HIT_MARK_OPEN, "[").replace(HIT_MARK_CLOSE, "]")
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionSearchPage {
+    pub groups: Vec<SessionSearchGroup>,
+    pub offset: usize,
+    pub next_offset: usize,
+    pub has_more: bool,
 }
 
-fn wrap_hit_core(core: &str) -> String {
-    format!(
-        "{HIT_MARK_OPEN}{}{HIT_MARK_CLOSE}",
-        sanitize_hit_marks(core)
-    )
+#[derive(Debug, Clone)]
+struct HydratedHit {
+    session_id: String,
+    seq: i64,
+    line: u32,
+    summary: String,
 }
 
-/// Case-insensitive fuzzy search over all detail rows; paginated.
-pub fn search(db_path: &Path, query: &SessionTextQuery) -> Result<SessionTextPage> {
-    let ranked = search_all(db_path, query)?;
-    let offset = query.offset;
-    let end = offset
-        .saturating_add(RESULTS_PER_PAGE)
-        .saturating_add(1)
-        .min(ranked.len());
-    let slice = if offset >= ranked.len() {
-        &[][..]
-    } else {
-        &ranked[offset..end]
-    };
-    let has_more = slice.len() > RESULTS_PER_PAGE;
-    let hits = if has_more {
-        slice[..RESULTS_PER_PAGE].to_vec()
-    } else {
-        slice.to_vec()
-    };
-    Ok(SessionTextPage {
-        hits,
-        offset,
-        has_more,
-    })
+/// Case-insensitive fuzzy search over all detail rows.
+pub fn search(db_path: &Path, query: &SessionTextQuery) -> Result<Vec<SessionTextHit>> {
+    search_all(db_path, query)
 }
 
-/// All ranked lexical hits (no pagination) — Matches column.
+/// All ranked lexical hits (no pagination).
 pub fn search_all(db_path: &Path, query: &SessionTextQuery) -> Result<Vec<SessionTextHit>> {
     lexical::search_lexical(db_path, query)
 }
@@ -217,7 +162,25 @@ fn hit_allowed(h: &SessionTextHit, query: &SessionTextQuery) -> bool {
     true
 }
 
-/// Short handle for agent-facing output.
+/// Lexical ranked list first; gated semantic hits append when `(session_id, seq)` is new.
+pub fn merge_session_hits(
+    lexical: Vec<SessionTextHit>,
+    semantic: Vec<SessionTextHit>,
+) -> Vec<SessionTextHit> {
+    let mut seen: HashSet<(String, i64)> = lexical
+        .iter()
+        .map(|h| (h.session_id.clone(), h.seq))
+        .collect();
+    let mut out = lexical;
+    for hit in semantic {
+        if seen.insert((hit.session_id.clone(), hit.seq)) {
+            out.push(hit);
+        }
+    }
+    out
+}
+
+/// Short handle for unique suffix / prefix resolve.
 ///
 /// Uses the **trailing** `SESSION_REF_SHORT_LEN` chars of the ULID (entropy),
 /// not the timestamp prefix — sessions created in the same ms share a prefix.
@@ -364,69 +327,7 @@ pub fn load_surface_seqs(db_path: &Path, session_id: &str) -> Result<Vec<i64>> {
     Ok(surface.nodes.iter().map(|s| *s as i64).collect())
 }
 
-/// Parsed agent filter tokens (`filter` field).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SessionFilterTokens {
-    pub include_session: Option<String>,
-    pub exclude_sessions: Vec<String>,
-    pub exclude_current: bool,
-}
-
-/// Parse space-separated filter tokens: `session:<ref>`, `-session:<ref>`, `-current`.
-pub fn parse_filter_tokens(filter: &str) -> Result<SessionFilterTokens> {
-    let mut out = SessionFilterTokens::default();
-    for raw in filter.split_whitespace() {
-        let tok = raw.trim();
-        if tok.is_empty() {
-            continue;
-        }
-        if tok.eq_ignore_ascii_case("-current") {
-            out.exclude_current = true;
-            continue;
-        }
-        if let Some(refer) = strip_prefix_ci(tok, "-session:") {
-            let refer = refer.trim();
-            if refer.is_empty() {
-                return Err(LitecodeError::Config(
-                    "session_filter -session: requires a session ref".into(),
-                ));
-            }
-            out.exclude_sessions.push(refer.to_string());
-            continue;
-        }
-        if let Some(refer) = strip_prefix_ci(tok, "session:") {
-            let refer = refer.trim();
-            if refer.is_empty() {
-                return Err(LitecodeError::Config(
-                    "session_filter session: requires a session ref".into(),
-                ));
-            }
-            if out.include_session.is_some() {
-                return Err(LitecodeError::Config(
-                    "session_filter allows at most one session: include".into(),
-                ));
-            }
-            out.include_session = Some(refer.to_string());
-            continue;
-        }
-        return Err(LitecodeError::Config(format!(
-            "unknown session_filter token '{tok}'; use session:<ref>, -session:<ref>, or -current"
-        )));
-    }
-    Ok(out)
-}
-
-fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    if s.len() >= prefix.len()
-        && s.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
-    {
-        Some(&s[prefix.len()..])
-    } else {
-        None
-    }
-}
-
-/// Gate weak semantic scores. Dual-lane product path does not fuse columns.
+/// Gate weak semantic scores.
 pub fn gate_semantic_hits(mut semantic: Vec<SessionTextHit>) -> Vec<SessionTextHit> {
     semantic.retain(|h| h.score >= SEMANTIC_MIN_SCORE);
     semantic.sort_by(cmp_hits);
@@ -434,47 +335,18 @@ pub fn gate_semantic_hits(mut semantic: Vec<SessionTextHit>) -> Vec<SessionTextH
 }
 
 fn cmp_hits(a: &SessionTextHit, b: &SessionTextHit) -> std::cmp::Ordering {
-    let lane_ord = |l: SessionHitLane| match l {
-        SessionHitLane::Text => 0,
-        SessionHitLane::Semantic => 1,
-    };
     b.score
         .partial_cmp(&a.score)
         .unwrap_or(std::cmp::Ordering::Equal)
-        .then_with(|| lane_ord(a.lane).cmp(&lane_ord(b.lane)))
         .then_with(|| a.session_id.cmp(&b.session_id))
         .then_with(|| a.seq.cmp(&b.seq))
-}
-
-/// Paginate a fused hit list.
-pub fn paginate_hits(mut hits: Vec<SessionTextHit>, offset: usize) -> SessionTextPage {
-    let end = offset
-        .saturating_add(RESULTS_PER_PAGE)
-        .saturating_add(1)
-        .min(hits.len());
-    let slice = if offset >= hits.len() {
-        Vec::new()
-    } else {
-        hits.drain(offset..end).collect::<Vec<_>>()
-    };
-    let has_more = slice.len() > RESULTS_PER_PAGE;
-    let page_hits = if has_more {
-        slice[..RESULTS_PER_PAGE].to_vec()
-    } else {
-        slice
-    };
-    SessionTextPage {
-        hits: page_hits,
-        offset,
-        has_more,
-    }
 }
 
 /// Load session created_at / updated_at for ids present in hits.
 pub fn load_session_meta(
     db_path: &Path,
     session_ids: &[String],
-) -> Result<HashMap<String, SessionMeta>> {
+) -> Result<HashMap<String, SessionTimestamps>> {
     let mut out = HashMap::new();
     if session_ids.is_empty() || !db_path.is_file() {
         return Ok(out);
@@ -489,7 +361,7 @@ pub fn load_session_meta(
         ) {
             out.insert(
                 id.clone(),
-                SessionMeta {
+                SessionTimestamps {
                     created_at,
                     updated_at,
                 },
@@ -499,388 +371,190 @@ pub fn load_session_meta(
     Ok(out)
 }
 
-/// Build character windows for each hit (independent; overlapping content OK).
-///
-/// When `stream_limit` is set, the named session's stream omits current surface
-/// seqs so expand cannot pull live model-window text.
-pub fn expand_hit_windows(
+/// Build a token-bounded grouped page from a fused ranked hit list.
+pub fn build_search_page(
     db_path: &Path,
-    hits: &[SessionTextHit],
-    expand: ExpandSteps,
-    stream_limit: Option<&ContextWindowExclude>,
-) -> Result<Vec<HitWindow>> {
-    let data_root = data_root_from_db_path(&db_path.display().to_string());
-    let mut cache: HashMap<String, SessionCharStream> = HashMap::new();
-    let mut windows = Vec::with_capacity(hits.len());
+    ranked: &[SessionTextHit],
+    offset: usize,
+) -> Result<SessionSearchPage> {
+    let hydrated = hydrate_hits(db_path, ranked)?;
+    let match_counts = count_by_session(&hydrated);
+    let session_ids: Vec<String> = unique_session_order(&hydrated);
+    let meta = load_session_meta(db_path, &session_ids).unwrap_or_default();
+    Ok(pack_page(
+        &hydrated,
+        &match_counts,
+        &meta,
+        offset,
+        PAGE_TOKEN_BUDGET,
+    ))
+}
+
+fn hydrate_hits(db_path: &Path, hits: &[SessionTextHit]) -> Result<Vec<HydratedHit>> {
+    let mut cache: HashMap<String, TranscriptFile> = HashMap::new();
+    let mut out = Vec::with_capacity(hits.len());
     for hit in hits {
         if !cache.contains_key(&hit.session_id) {
-            let exclude = stream_limit.and_then(|w| {
-                if w.session_id == hit.session_id {
-                    Some(w.surface_seqs.as_slice())
-                } else {
-                    None
-                }
-            });
-            let stream = load_session_char_stream(db_path, &data_root, &hit.session_id, exclude)?;
-            cache.insert(hit.session_id.clone(), stream);
+            let file = transcript_file::load_transcript_file(db_path, &hit.session_id)?;
+            cache.insert(hit.session_id.clone(), file);
         }
-        let stream = cache.get(&hit.session_id).unwrap();
-        windows.push(window_for_hit(stream, hit, expand));
-    }
-    Ok(merge_overlapping_windows(windows))
-}
-
-struct SessionCharStream {
-    /// Full concatenated plain text.
-    text: String,
-    /// (seq, start_char, end_char exclusive) for each item in stream order.
-    spans: Vec<(i64, usize, usize)>,
-}
-
-fn load_session_char_stream(
-    db_path: &Path,
-    data_root: &Path,
-    session_id: &str,
-    exclude_seqs: Option<&[i64]>,
-) -> Result<SessionCharStream> {
-    if !db_path.is_file() {
-        return Ok(SessionCharStream {
-            text: String::new(),
-            spans: Vec::new(),
-        });
-    }
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT seq, item_type, body, body_ref FROM transcript_items
-             WHERE session_id = ?1
-               AND kind IN ('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted')
-             ORDER BY seq ASC",
-        )
-        .map_err(|e| LitecodeError::Config(format!("session stream prepare: {e}")))?;
-
-    let rows = stmt
-        .query_map(rusqlite::params![session_id], |row| {
-            Ok(RawRow {
-                session_id: session_id.to_string(),
-                seq: row.get(0)?,
-                item_type: row.get(1)?,
-                body: row.get(2)?,
-                body_ref: row.get(3)?,
-            })
-        })
-        .map_err(|e| LitecodeError::Config(format!("session stream query: {e}")))?;
-
-    let mut text = String::new();
-    let mut spans = Vec::new();
-    for row in rows {
-        let row = row.map_err(|e| LitecodeError::Config(format!("session stream row: {e}")))?;
-        if exclude_seqs.is_some_and(|ex| ex.contains(&row.seq)) {
-            continue;
-        }
-        let Some(plain) = row_plain_text(&row, data_root)? else {
+        let file = cache.get(&hit.session_id).unwrap();
+        let Some(line) = file.line_for_hit(hit.seq, hit.char_start, hit.char_end) else {
             continue;
         };
-        if !text.is_empty() {
-            text.push_str(ITEM_SEP);
+        let summary = match hit.lane {
+            SessionHitLane::Text => file
+                .line_text(line)
+                .map(collapse_summary)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| collapse_summary(&hit.summary)),
+            SessionHitLane::Semantic => collapse_summary(&hit.summary),
+        };
+        if summary.is_empty() {
+            continue;
         }
-        let start = text.chars().count();
-        text.push_str(&plain);
-        let end = text.chars().count();
-        spans.push((row.seq, start, end));
+        out.push(HydratedHit {
+            session_id: hit.session_id.clone(),
+            seq: hit.seq,
+            line,
+            summary,
+        });
     }
-    Ok(SessionCharStream { text, spans })
+    Ok(out)
 }
 
-fn window_for_hit(
-    stream: &SessionCharStream,
-    hit: &SessionTextHit,
-    expand: ExpandSteps,
-) -> HitWindow {
-    let chars: Vec<char> = stream.text.chars().collect();
-    let total = chars.len();
-    let (item_start, _item_end) = stream
-        .spans
-        .iter()
-        .find(|(seq, _, _)| *seq == hit.seq)
-        .map(|(_, s, e)| (*s, *e))
-        .unwrap_or((0, total));
-
-    let core_start = item_start.saturating_add(hit.char_start).min(total);
-    let mut core_end = item_start.saturating_add(hit.char_end).min(total);
-    if core_end < core_start {
-        core_end = core_start;
-    }
-    // Cap nucleus length.
-    if core_end.saturating_sub(core_start) > HIT_CORE_MAX_CHARS {
-        core_end = core_start + HIT_CORE_MAX_CHARS;
-    }
-    if core_start == core_end && total > 0 {
-        core_end = (core_start + 1).min(total);
-    }
-
-    let up = expand.up.saturating_mul(EXPAND_STEP_CHARS);
-    let down = expand.down.saturating_mul(EXPAND_STEP_CHARS);
-    let win_start = core_start.saturating_sub(up);
-    let win_end = (core_end + down).min(total);
-
-    let before: String = chars[win_start..core_start].iter().collect();
-    let core: String = chars[core_start..core_end].iter().collect();
-    let after: String = chars[core_end..win_end].iter().collect();
-    let body = format!(
-        "{}{}{}",
-        sanitize_hit_marks(&before),
-        wrap_hit_core(&core),
-        sanitize_hit_marks(&after)
-    );
-
-    let (items_above, items_below) = count_items_outside(stream, win_start, win_end);
-    let item_end = stream
-        .spans
-        .iter()
-        .find(|(seq, _, _)| *seq == hit.seq)
-        .map(|(_, _, e)| *e)
-        .unwrap_or(total);
-    let same_item_overflow = win_start > item_start || win_end < item_end;
-
-    HitWindow {
-        hit: hit.clone(),
-        body,
-        chars_above: win_start,
-        chars_below: total.saturating_sub(win_end),
-        items_above,
-        items_below,
-        same_item_overflow,
-    }
+fn collapse_summary(text: &str) -> String {
+    let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_text_tokens(&collapsed, HIT_SUMMARY_MAX_TOKENS)
 }
 
-fn count_items_outside(
-    stream: &SessionCharStream,
-    win_start: usize,
-    win_end: usize,
-) -> (usize, usize) {
-    let mut above = 0usize;
-    let mut below = 0usize;
-    for &(_, s, e) in &stream.spans {
-        if e <= win_start {
-            above += 1;
-        } else if s >= win_end {
-            below += 1;
-        }
-    }
-    (above, below)
-}
-
-/// Related lane: one truncated entry per hit (no expand, no fake char bold).
-pub fn related_entry_windows(db_path: &Path, hits: &[SessionTextHit]) -> Result<Vec<HitWindow>> {
-    let data_root = data_root_from_db_path(&db_path.display().to_string());
-    let mut windows = Vec::with_capacity(hits.len());
+fn count_by_session(hits: &[HydratedHit]) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
     for hit in hits {
-        let text = match load_item_plain_text(db_path, &data_root, &hit.session_id, hit.seq)? {
-            Some(t) => t,
-            None => hit.summary.clone(),
+        *counts.entry(hit.session_id.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn unique_session_order(hits: &[HydratedHit]) -> Vec<String> {
+    let mut order = Vec::new();
+    let mut seen = HashSet::new();
+    for hit in hits {
+        if seen.insert(hit.session_id.clone()) {
+            order.push(hit.session_id.clone());
+        }
+    }
+    order
+}
+
+fn pack_page(
+    hydrated: &[HydratedHit],
+    match_counts: &HashMap<String, usize>,
+    meta: &HashMap<String, SessionTimestamps>,
+    offset: usize,
+    token_budget: usize,
+) -> SessionSearchPage {
+    if offset >= hydrated.len() {
+        return SessionSearchPage {
+            groups: Vec::new(),
+            offset,
+            next_offset: offset,
+            has_more: false,
         };
-        let total = text.chars().count();
-        let truncated: String = text.chars().take(RELATED_ENTRY_MAX_CHARS).collect();
-        let shown = truncated.chars().count();
-        let overflow = total > shown;
-        windows.push(HitWindow {
-            hit: hit.clone(),
-            body: sanitize_hit_marks(&truncated),
-            chars_above: 0,
-            chars_below: total.saturating_sub(shown),
-            items_above: 0,
-            items_below: 0,
-            same_item_overflow: overflow,
-        });
     }
-    Ok(windows)
-}
-
-fn load_item_plain_text(
-    db_path: &Path,
-    data_root: &Path,
-    session_id: &str,
-    seq: i64,
-) -> Result<Option<String>> {
-    if !db_path.is_file() {
-        return Ok(None);
-    }
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))?;
-    let row = conn.query_row(
-        "SELECT item_type, body, body_ref FROM transcript_items
-         WHERE session_id = ?1 AND seq = ?2
-           AND kind IN ('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted')",
-        rusqlite::params![session_id, seq],
-        |r| {
-            Ok(RawRow {
-                session_id: session_id.to_string(),
-                seq,
-                item_type: r.get(0)?,
-                body: r.get(1)?,
-                body_ref: r.get(2)?,
-            })
-        },
-    );
-    match row {
-        Ok(row) => row_plain_text(&row, data_root),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(LitecodeError::Config(format!("load item plain: {e}"))),
-    }
-}
-
-/// Merge overlapping windows within the same session.
-///
-/// Overlapping expanded regions are collapsed to the wider body so the agent
-/// does not see duplicated transcript text under adjacent hits.
-fn merge_overlapping_windows(windows: Vec<HitWindow>) -> Vec<HitWindow> {
-    if windows.len() <= 1 {
-        return windows;
-    }
-    let mut session_order: Vec<String> = Vec::new();
-    let mut by_session: HashMap<String, Vec<HitWindow>> = HashMap::new();
-    for w in windows {
-        let sid = w.hit.session_id.clone();
-        if !by_session.contains_key(&sid) {
-            session_order.push(sid.clone());
+    let remaining = &hydrated[offset..];
+    let mut groups: Vec<SessionSearchGroup> = Vec::new();
+    let mut emitted = 0usize;
+    for hit in remaining {
+        let candidate = push_hit(groups.clone(), hit, match_counts, meta);
+        let rendered = format_agent_groups(&candidate);
+        let tokens = count_text_tokens(&rendered);
+        if emitted > 0 && tokens > token_budget {
+            break;
         }
-        by_session.entry(sid).or_default().push(w);
+        groups = candidate;
+        emitted += 1;
     }
+    if emitted == 0 && !remaining.is_empty() {
+        groups = push_hit(Vec::new(), &remaining[0], match_counts, meta);
+        emitted = 1;
+    }
+    SessionSearchPage {
+        groups,
+        offset,
+        next_offset: offset + emitted,
+        has_more: offset + emitted < hydrated.len(),
+    }
+}
 
-    let mut out = Vec::new();
-    for sid in session_order {
-        let mut group = by_session.remove(&sid).unwrap_or_default();
-        // Preserve input (score) order for which hit is "primary".
-        while !group.is_empty() {
-            let mut cur = group.remove(0);
-            let mut i = 0;
-            while i < group.len() {
-                if windows_overlap(&cur, &group[i]) {
-                    let other = group.remove(i);
-                    cur = union_windows(cur, other);
-                } else {
-                    i += 1;
-                }
-            }
-            out.push(cur);
+fn push_hit(
+    mut groups: Vec<SessionSearchGroup>,
+    hit: &HydratedHit,
+    match_counts: &HashMap<String, usize>,
+    meta: &HashMap<String, SessionTimestamps>,
+) -> Vec<SessionSearchGroup> {
+    let row = SessionSearchHitRow {
+        line: hit.line,
+        seq: hit.seq,
+        summary: hit.summary.clone(),
+    };
+    if let Some(last) = groups.last_mut()
+        && last.session_id == hit.session_id
+    {
+        last.hits.push(row);
+        return groups;
+    }
+    let ts = meta.get(&hit.session_id);
+    groups.push(SessionSearchGroup {
+        session_id: hit.session_id.clone(),
+        created_time: ts.map(|t| t.created_at).unwrap_or(0),
+        updated_time: ts.map(|t| t.updated_at).unwrap_or(0),
+        path: transcript_file::virtual_path_for(&hit.session_id),
+        match_count: match_counts.get(&hit.session_id).copied().unwrap_or(0),
+        hits: vec![row],
+    });
+    groups
+}
+
+pub fn format_agent_page(page: &SessionSearchPage) -> String {
+    let mut body = format_agent_groups(&page.groups);
+    if page.has_more {
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(&format!("(more hits; offset: {})", page.next_offset));
+    } else if page.offset > 0 {
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(&format!(
+            "(showing hits from offset {}; no further pages)",
+            page.offset
+        ));
+    }
+    body
+}
+
+fn format_agent_groups(groups: &[SessionSearchGroup]) -> String {
+    let mut parts = Vec::new();
+    for group in groups {
+        parts.push(format!("### {}", group.session_id));
+        parts.push(format!("created: {}", format_abs_time(group.created_time)));
+        parts.push(format!("updated: {}", format_abs_time(group.updated_time)));
+        parts.push(format!("path: {}", group.path));
+        parts.push(format!("matches: {}", group.match_count));
+        parts.push(String::new());
+        for hit in &group.hits {
+            parts.push(format!("L{}: {}", hit.line, hit.summary));
         }
     }
-    out
+    parts.join("\n")
 }
 
-fn window_char_range(w: &HitWindow) -> (usize, usize) {
-    let plain_len = strip_hit_marks(&w.body).chars().count();
-    let start = w.chars_above;
-    (start, start + plain_len)
-}
-
-fn windows_overlap(a: &HitWindow, b: &HitWindow) -> bool {
-    if a.hit.session_id != b.hit.session_id {
-        return false;
-    }
-    let (as_, ae) = window_char_range(a);
-    let (bs, be) = window_char_range(b);
-    as_ < be && bs < ae
-}
-
-fn union_windows(a: HitWindow, b: HitWindow) -> HitWindow {
-    let (as_, ae) = window_char_range(&a);
-    let (bs, be) = window_char_range(&b);
-    let start = as_.min(bs);
-    let a_plain = ae - as_;
-    let b_plain = be - bs;
-    // Keep the longer window body (already bolded); primary hit is higher score.
-    let (primary, secondary) = if a.hit.score >= b.hit.score {
-        (a, b)
-    } else {
-        (b, a)
-    };
-    let body = if a_plain >= b_plain {
-        primary.body.clone()
-    } else {
-        secondary.body.clone()
-    };
-    let (items_above, items_below, same_item_overflow) = if a_plain >= b_plain {
-        (
-            primary.items_above,
-            primary.items_below,
-            primary.same_item_overflow,
-        )
-    } else {
-        (
-            secondary.items_above,
-            secondary.items_below,
-            secondary.same_item_overflow,
-        )
-    };
-    HitWindow {
-        hit: primary.hit,
-        body,
-        chars_above: start,
-        chars_below: primary.chars_below.min(secondary.chars_below),
-        items_above,
-        items_below,
-        same_item_overflow,
-    }
-}
-
-pub(crate) struct RawRow {
-    pub session_id: String,
-    pub seq: i64,
-    pub item_type: String,
-    pub body: Option<String>,
-    pub body_ref: Option<String>,
-}
-
-pub(crate) fn row_plain_text(row: &RawRow, data_root: &Path) -> Result<Option<String>> {
-    let json = if let Some(body) = &row.body {
-        body.clone()
-    } else if let Some(body_ref) = &row.body_ref {
-        match load_blob_text(body_ref, data_root) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::warn!(
-                    session_id = %row.session_id,
-                    seq = row.seq,
-                    error = %e,
-                    "session search skip unread blob"
-                );
-                return Ok(None);
-            }
-        }
-    } else {
-        return Ok(None);
-    };
-    let text = if let Ok(item) = serde_json::from_str::<Item>(&json) {
-        item_text_preview(&item)
-    } else if let Ok(body) = serde_json::from_str::<crate::session::model::CompactedBody>(&json) {
-        item_text_preview(&body.agent_item())
-    } else {
-        tracing::warn!(
-            session_id = %row.session_id,
-            seq = row.seq,
-            "session search skip bad item json"
-        );
-        return Ok(None);
-    };
-    if text.trim().is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(text))
-    }
-}
-
-fn load_blob_text(body_ref: &str, data_root: &Path) -> Result<String> {
-    let rest = body_ref
-        .strip_prefix(BLOB_PREFIX)
-        .ok_or_else(|| LitecodeError::Config(format!("invalid body_ref: {body_ref}")))?;
-    let (id, _) = rest
-        .split_once(']')
-        .ok_or_else(|| LitecodeError::Config(format!("invalid body_ref: {body_ref}")))?;
-    let blob_path = blob_dir(data_root).join(format!("{id}.txt"));
-    std::fs::read_to_string(blob_path).map_err(Into::into)
+fn format_abs_time(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|| "?".into())
 }
 
 /// Returns `(score, char_start, char_end)` when the needle matches.
@@ -898,7 +572,6 @@ pub(crate) fn fuzzy_match_span(haystack: &str, needle: &str) -> Option<(f64, usi
         return None;
     }
 
-    // Exact substring (case-insensitive) on char stream.
     if let Some(byte_start) = hay.find(&ned) {
         let char_start = hay[..byte_start].chars().count();
         let char_end = (char_start + n).min(chars.len());
@@ -945,7 +618,6 @@ pub(crate) fn fuzzy_match_span(haystack: &str, needle: &str) -> Option<(f64, usi
 
 pub(crate) fn snippet_from_span(text: &str, char_start: usize, char_end: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
-    let core_len = char_end.saturating_sub(char_start).max(1);
     let pad = HIT_CORE_MAX_CHARS / 4;
     let from = char_start.saturating_sub(pad);
     let to = (char_end + pad).min(chars.len());
@@ -956,52 +628,12 @@ pub(crate) fn snippet_from_span(text: &str, char_start: usize, char_end: usize) 
     if to < chars.len() {
         snippet.push('…');
     }
-    let _ = core_len;
     snippet.chars().take(HIT_CORE_MAX_CHARS).collect()
 }
 
 /// Resolve workspace sessions DB path (`<root>/.litecode/sessions.db`).
 pub fn sessions_db_under(workspace_root: &Path) -> PathBuf {
     workspace_root.join(".litecode").join("sessions.db")
-}
-
-/// Iterate all detail rows as plain text (for semantic indexing).
-pub(crate) fn iter_detail_texts(db_path: &Path) -> Result<Vec<(String, i64, String, String)>> {
-    if !db_path.is_file() {
-        return Ok(Vec::new());
-    }
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))?;
-    let data_root = data_root_from_db_path(&db_path.display().to_string());
-    let mut stmt = conn
-        .prepare(
-            "SELECT t.session_id, t.seq, t.item_type, t.body, t.body_ref
-             FROM transcript_items t
-             WHERE t.kind IN ('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted')
-             ORDER BY t.session_id ASC, t.seq ASC",
-        )
-        .map_err(|e| LitecodeError::Config(format!("session index prepare: {e}")))?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(RawRow {
-                session_id: row.get(0)?,
-                seq: row.get(1)?,
-                item_type: row.get(2)?,
-                body: row.get(3)?,
-                body_ref: row.get(4)?,
-            })
-        })
-        .map_err(|e| LitecodeError::Config(format!("session index query: {e}")))?;
-
-    let mut out = Vec::new();
-    for row in rows {
-        let row = row.map_err(|e| LitecodeError::Config(format!("session index row: {e}")))?;
-        let Some(text) = row_plain_text(&row, &data_root)? else {
-            continue;
-        };
-        out.push((row.session_id, row.seq, row.item_type, text));
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -1030,7 +662,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (db, id_a, _) = seed_db(dir.path());
 
-        let page = search(
+        let hits = search(
             &db,
             &SessionTextQuery {
                 query: "UNIQUE_SESSION_PHRASE".into(),
@@ -1042,18 +674,17 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(page.hits.len(), 1);
-        assert_eq!(page.hits[0].session_id, id_a);
-        assert_eq!(page.hits[0].seq, 0);
-        assert!(page.hits[0].summary.contains("UNIQUE_SESSION_PHRASE"));
-        assert!(!page.has_more);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, id_a);
+        assert_eq!(hits[0].seq, 0);
+        assert!(hits[0].summary.contains("UNIQUE_SESSION_PHRASE"));
     }
 
     #[test]
     fn session_text_search_case_insensitive() {
         let dir = TempDir::new().unwrap();
         let (db, id_a, _) = seed_db(dir.path());
-        let page = search(
+        let hits = search(
             &db,
             &SessionTextQuery {
                 query: "unique_session_phrase".into(),
@@ -1062,16 +693,16 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(page.hits.len(), 1);
-        assert_eq!(page.hits[0].session_id, id_a);
-        assert!((page.hits[0].score - 1.0).abs() < 1e-9);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, id_a);
+        assert!((hits[0].score - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn session_text_search_fuzzy_typo() {
         let dir = TempDir::new().unwrap();
         let (db, id_a, _) = seed_db(dir.path());
-        let page = search(
+        let hits = search(
             &db,
             &SessionTextQuery {
                 query: "UNIQUE_SESSION_PHRAZE".into(),
@@ -1080,10 +711,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(page.hits.len(), 1);
-        assert_eq!(page.hits[0].session_id, id_a);
-        assert!(page.hits[0].score >= FUZZY_THRESHOLD);
-        assert!(page.hits[0].score < 1.0);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, id_a);
+        assert!(hits[0].score >= FUZZY_THRESHOLD);
+        assert!(hits[0].score < 1.0);
     }
 
     #[test]
@@ -1091,7 +722,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (db, id_a, id_b) = seed_db(dir.path());
 
-        let page = search(
+        let hits = search(
             &db,
             &SessionTextQuery {
                 query: "OTHER_MARKER".into(),
@@ -1103,7 +734,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            page.hits.is_empty(),
+            hits.is_empty(),
             "scoped to session A must not see B's marker"
         );
 
@@ -1118,58 +749,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(page_b.hits.len(), 1);
-        assert_eq!(page_b.hits[0].session_id, id_b);
-    }
-
-    #[test]
-    fn session_text_search_pagination() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        let mut items = Vec::new();
-        for i in 0..25 {
-            items.push(user_text(format!(
-                "pageable_token_{i:02} shared_needle_xyz"
-            )));
-        }
-        s.insert_detail_rows(&items).unwrap();
-
-        let page0 = search(
-            &db,
-            &SessionTextQuery {
-                query: "shared_needle_xyz".into(),
-                offset: 0,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(page0.hits.len(), RESULTS_PER_PAGE);
-        assert!(page0.has_more);
-
-        let page1 = search(
-            &db,
-            &SessionTextQuery {
-                query: "shared_needle_xyz".into(),
-                offset: RESULTS_PER_PAGE,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(page1.hits.len(), RESULTS_PER_PAGE);
-        assert!(page1.has_more);
-
-        let page2 = search(
-            &db,
-            &SessionTextQuery {
-                query: "shared_needle_xyz".into(),
-                offset: RESULTS_PER_PAGE * 2,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(page2.hits.len(), 5);
-        assert!(!page2.has_more);
+        assert_eq!(page_b.len(), 1);
+        assert_eq!(page_b[0].session_id, id_b);
     }
 
     #[test]
@@ -1191,7 +772,7 @@ mod tests {
     #[test]
     fn session_text_search_missing_db_returns_empty() {
         let dir = TempDir::new().unwrap();
-        let page = search(
+        let hits = search(
             &dir.path().join("nope.db"),
             &SessionTextQuery {
                 query: "anything".into(),
@@ -1200,8 +781,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(page.hits.is_empty());
-        assert!(!page.has_more);
+        assert!(hits.is_empty());
     }
 
     #[test]
@@ -1235,106 +815,45 @@ mod tests {
     }
 
     #[test]
-    fn dual_lane_keeps_semantic_without_text_veto() {
-        // Semantic-only sessions remain valid for the Related column.
-        let sem = vec![SessionTextHit {
-            session_id: "b".into(),
+    fn merge_keeps_lexical_first_and_appends_unique_semantic() {
+        let lexical = vec![SessionTextHit {
+            session_id: "a".into(),
             seq: 1,
             item_type: "message".into(),
-            summary: "other".into(),
-            score: 0.9,
+            summary: "lex".into(),
+            score: 1.0,
             char_start: 0,
-            char_end: 1,
-            lane: SessionHitLane::Semantic,
+            char_end: 3,
+            lane: SessionHitLane::Text,
         }];
-        let gated = gate_semantic_hits(sem);
-        assert_eq!(gated.len(), 1);
-        assert_eq!(gated[0].session_id, "b");
-    }
-
-    #[test]
-    fn expand_window_clamps_and_bolds_core() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        let long = format!("{}NEEDLE{}", "a".repeat(500), "b".repeat(500));
-        s.insert_detail_rows(&[user_text(&long)]).unwrap();
-        let page = search(
-            &db,
-            &SessionTextQuery {
-                query: "NEEDLE".into(),
-                offset: 0,
-                ..Default::default()
+        let semantic = vec![
+            SessionTextHit {
+                session_id: "a".into(),
+                seq: 1,
+                item_type: "message".into(),
+                summary: "dup".into(),
+                score: 0.9,
+                char_start: 0,
+                char_end: 0,
+                lane: SessionHitLane::Semantic,
             },
-        )
-        .unwrap();
-        assert_eq!(page.hits.len(), 1);
-        let windows =
-            expand_hit_windows(&db, &page.hits, ExpandSteps { up: 1, down: 1 }, None).unwrap();
-        assert_eq!(windows.len(), 1);
-        let w = &windows[0];
-        assert!(
-            w.body
-                .contains(&format!("{HIT_MARK_OPEN}NEEDLE{HIT_MARK_CLOSE}"))
-        );
-        let plain = strip_hit_marks(&w.body);
-        assert!(plain.chars().count() <= EXPAND_STEP_CHARS * 2 + HIT_CORE_MAX_CHARS + 10);
-        assert!(w.chars_above > 0);
-        assert!(w.chars_below > 0);
-        // Single long item: no other items outside, but mid-item overflow.
-        assert_eq!(w.items_above, 0);
-        assert_eq!(w.items_below, 0);
-        assert!(w.same_item_overflow);
-    }
-
-    #[test]
-    fn expand_zero_is_core_only() {
-        let dir = TempDir::new().unwrap();
-        let (db, _, _) = seed_db(dir.path());
-        let page = search(
-            &db,
-            &SessionTextQuery {
-                query: "UNIQUE_SESSION_PHRASE".into(),
-                offset: 0,
-                ..Default::default()
+            SessionTextHit {
+                session_id: "b".into(),
+                seq: 2,
+                item_type: "message".into(),
+                summary: "only-sem".into(),
+                score: 0.8,
+                char_start: 0,
+                char_end: 0,
+                lane: SessionHitLane::Semantic,
             },
-        )
-        .unwrap();
-        let windows =
-            expand_hit_windows(&db, &page.hits, ExpandSteps { up: 0, down: 0 }, None).unwrap();
-        let plain = strip_hit_marks(&windows[0].body);
-        assert!(plain.chars().count() <= HIT_CORE_MAX_CHARS);
-        assert!(windows[0].body.contains(HIT_MARK_OPEN));
-        assert!(windows[0].body.contains(HIT_MARK_CLOSE));
-    }
-
-    #[test]
-    fn related_entry_truncates_without_hit_marks() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        let long = format!("HEAD{}", "z".repeat(RELATED_ENTRY_MAX_CHARS + 80));
-        s.insert_detail_rows(&[user_text(&long)]).unwrap();
-        let sid = s.id.clone();
-        drop(s);
-
-        let hit = SessionTextHit {
-            session_id: sid,
-            seq: 0,
-            item_type: "message".into(),
-            summary: "HEAD".into(),
-            score: 0.9,
-            char_start: 0,
-            char_end: 0,
-            lane: SessionHitLane::Semantic,
-        };
-        let windows = related_entry_windows(&db, &[hit]).unwrap();
-        assert_eq!(windows.len(), 1);
-        assert!(!windows[0].body.contains(HIT_MARK_OPEN));
-        assert_eq!(windows[0].body.chars().count(), RELATED_ENTRY_MAX_CHARS);
-        assert!(windows[0].same_item_overflow);
-        assert!(windows[0].chars_below > 0);
-        assert!(windows[0].body.starts_with("HEAD"));
+        ];
+        let merged = merge_session_hits(lexical, semantic);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].session_id, "a");
+        assert_eq!(merged[0].lane, SessionHitLane::Text);
+        assert_eq!(merged[1].session_id, "b");
+        assert_eq!(merged[1].lane, SessionHitLane::Semantic);
     }
 
     #[test]
@@ -1355,7 +874,7 @@ mod tests {
         })])
         .unwrap();
 
-        let page = search(
+        let hits = search(
             &db,
             &SessionTextQuery {
                 query: "UNIQUE_TOOL_NEEDLE".into(),
@@ -1364,8 +883,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(page.hits.len(), 1);
-        assert_eq!(page.hits[0].item_type, "function_call");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].item_type, "function_call");
     }
 
     #[test]
@@ -1383,7 +902,7 @@ mod tests {
             .unwrap();
         drop(s);
 
-        let page = search(
+        let hits = search(
             &db,
             &SessionTextQuery {
                 query: "NEEDLE_ONLY".into(),
@@ -1395,16 +914,16 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(page.hits.len(), 1);
-        assert_eq!(page.hits[0].seq, 0);
-        assert!(page.hits[0].summary.contains("ARCHIVE_NEEDLE_ONLY"));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].seq, 0);
+        assert!(hits[0].summary.contains("ARCHIVE_NEEDLE_ONLY"));
     }
 
     #[test]
     fn exclude_session_ids_filters_rows() {
         let dir = TempDir::new().unwrap();
         let (db, id_a, id_b) = seed_db(dir.path());
-        let page = search(
+        let hits = search(
             &db,
             &SessionTextQuery {
                 query: "OTHER_MARKER".into(),
@@ -1413,7 +932,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(page.hits.is_empty());
+        assert!(hits.is_empty());
 
         let page_a = search(
             &db,
@@ -1424,19 +943,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(page_a.hits.len(), 1);
-        assert_eq!(page_a.hits[0].session_id, id_a);
-    }
-
-    #[test]
-    fn parse_filter_tokens_accepts_common_forms() {
-        let t = parse_filter_tokens("session:01ABC -session:01DEF -current").unwrap();
-        assert_eq!(t.include_session.as_deref(), Some("01ABC"));
-        assert_eq!(t.exclude_sessions, vec!["01DEF".to_string()]);
-        assert!(t.exclude_current);
-
-        let err = parse_filter_tokens("nope:x").unwrap_err();
-        assert!(err.to_string().contains("unknown session_filter"));
+        assert_eq!(page_a.len(), 1);
+        assert_eq!(page_a[0].session_id, id_a);
     }
 
     #[test]
@@ -1461,7 +969,7 @@ mod tests {
         .unwrap();
         drop(s);
 
-        let page = search(
+        let hits = search(
             &db,
             &SessionTextQuery {
                 query: "AuthRefactorToken".into(),
@@ -1470,9 +978,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(page.hits.len(), 1);
-        assert!(page.hits[0].score >= 0.55);
-        assert!(page.hits[0].summary.contains("AuthRefactorToken"));
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].score >= 0.55);
+        assert!(hits[0].summary.contains("AuthRefactorToken"));
     }
 
     #[test]
@@ -1486,7 +994,7 @@ mod tests {
             let conn = rusqlite::Connection::open(&db).unwrap();
             let _ = conn.execute_batch("DELETE FROM transcript_fts;");
         }
-        let page = search(
+        let hits = search(
             &db,
             &SessionTextQuery {
                 query: "BACKFILL_ONLY_MARKER".into(),
@@ -1494,6 +1002,76 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(page.hits.len(), 1);
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn build_search_page_uses_physical_line_and_match_count() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
+        s.insert_detail_rows(&[
+            user_text("first PAGE_LINE_TOKEN here"),
+            user_text("filler"),
+            user_text("second PAGE_LINE_TOKEN there"),
+        ])
+        .unwrap();
+        let sid = s.id.clone();
+        drop(s);
+
+        let hits = search(
+            &db,
+            &SessionTextQuery {
+                query: "PAGE_LINE_TOKEN".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let page = build_search_page(&db, &hits, 0).unwrap();
+        assert_eq!(page.groups.len(), 1);
+        assert_eq!(page.groups[0].session_id, sid);
+        assert_eq!(page.groups[0].match_count, 2);
+        assert_eq!(page.groups[0].hits.len(), 2);
+        assert_eq!(
+            page.groups[0].path,
+            crate::session::transcript_file::virtual_path_for(&sid)
+        );
+        assert!(page.groups[0].hits[0].line >= 2);
+        assert!(page.groups[0].hits[0].summary.contains("PAGE_LINE_TOKEN"));
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn pack_page_stops_on_whole_hit_and_advances_offset() {
+        let hits: Vec<HydratedHit> = (0..8)
+            .map(|i| HydratedHit {
+                session_id: "s".into(),
+                seq: i,
+                line: (i + 1) as u32,
+                summary: format!("hit {i} {}", "x".repeat(20)),
+            })
+            .collect();
+        let mut counts = HashMap::new();
+        counts.insert("s".into(), 8);
+        let page = pack_page(&hits, &counts, &HashMap::new(), 0, 40);
+        assert!(page.groups.len() == 1);
+        assert!(page.groups[0].hits.len() >= 1);
+        assert!(page.has_more);
+        assert_eq!(page.next_offset, page.groups[0].hits.len());
+        assert!(page.next_offset >= 1);
+    }
+
+    #[test]
+    fn pack_page_offset_past_end_is_empty() {
+        let hits = vec![HydratedHit {
+            session_id: "s".into(),
+            seq: 0,
+            line: 1,
+            summary: "only".into(),
+        }];
+        let page = pack_page(&hits, &HashMap::new(), &HashMap::new(), 3, 6000);
+        assert!(page.groups.is_empty());
+        assert_eq!(page.next_offset, 3);
+        assert!(!page.has_more);
     }
 }

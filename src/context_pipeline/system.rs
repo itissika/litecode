@@ -23,7 +23,7 @@ Do NOT use the bash tool when a dedicated tool exists. Dedicated tools let the u
 - To find files by path use glob instead of find or ls
 - To search file contents use grep instead of grep or rg in bash
 - When the search intent is very vague or you need meaning/similarity rather than exact text, use code_search (when available) instead of inventing bash pipelines
-- When information is insufficient and relevant context may live in past conversations within this workspace, use session_search instead of guessing or re-deriving from scratch
+- When information is insufficient and relevant context may live in past conversations within this workspace, use session_search to get a virtual path and L<line> hit, then read or grep that file to deepen — do not guess or re-derive from scratch
 - Reserve bash exclusively for system/terminal work that requires a shell (builds, tests, package managers, git, processes). If unsure and a dedicated tool exists, default to it; only fall back to bash when absolutely necessary.
 
 Before edit: identify the files and replacements. Then apply that planned set. Do not edit while still discovering scope.

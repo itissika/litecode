@@ -46,7 +46,7 @@ pub struct HumanSearchRequest {
     #[serde(default)]
     pub project: Option<String>,
     /// When false, code corpus skips SemanticLane (text-only / fast path).
-    /// Session: when false, skips `session_semantic` column.
+    /// Session: when false, keeps lexical hits only (skips appended semantic).
     #[serde(default = "default_include_semantic")]
     pub include_semantic: bool,
 }
@@ -57,15 +57,9 @@ pub struct HumanSearchResponse {
     /// Present only when the semantic engine is Warm and search succeeds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic: Option<Vec<SearchHit>>,
-    /// Present when `corpus=session` (Session × Text page).
+    /// Present when `corpus=session`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub session: Option<Vec<crate::engines::session_search::SessionTextHit>>,
-    /// Session × Semantic (ANN-only) when Warm; UI may ignore for now.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_semantic: Option<Vec<crate::engines::session_search::SessionTextHit>>,
-    /// Whether more Session text matches exist beyond this page.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_has_more: Option<bool>,
+    pub session_page: Option<crate::engines::session_search::SessionSearchPage>,
 }
 
 /// Text (LexicalLane) always runs. `semantic` is attached by the caller when Warm.
@@ -102,9 +96,7 @@ pub fn human_search(
     Ok(HumanSearchResponse {
         text,
         semantic,
-        session: None,
-        session_semantic: None,
-        session_has_more: None,
+        session_page: None,
     })
 }
 
@@ -145,7 +137,7 @@ mod tests {
         assert_eq!(resp.text[0].start_line, 2);
         assert!(resp.text[0].summary.contains("find_me_here"));
         assert!(resp.semantic.is_none());
-        assert!(resp.session.is_none());
+        assert!(resp.session_page.is_none());
     }
 
     #[test]
@@ -180,7 +172,7 @@ mod tests {
         .unwrap();
         assert!(resp.text.is_empty());
         assert_eq!(resp.semantic.as_ref().unwrap(), &sem);
-        assert!(resp.session.is_none());
+        assert!(resp.session_page.is_none());
     }
 
     #[test]

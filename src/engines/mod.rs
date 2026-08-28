@@ -71,14 +71,10 @@ pub struct RetrievalQuery {
     pub workspace_root: Option<PathBuf>,
 }
 
-/// Combined Session search: dual-lane pages for agents / human UI (no cross-lane fuse).
+/// Combined Session search: one ranked stream (lexical, then unique semantic).
 #[derive(Debug, Clone)]
 pub struct SessionSearchBundle {
-    pub text_hits: Vec<session_search::SessionTextHit>,
-    pub text_has_more: bool,
-    /// Present when semantic engine is Warm; empty vec if Warm but no hits.
-    pub semantic_hits: Option<Vec<session_search::SessionTextHit>>,
-    pub semantic_has_more: bool,
+    pub ranked: Vec<session_search::SessionTextHit>,
     pub offset: usize,
 }
 
@@ -221,20 +217,22 @@ impl WorkspaceEngines {
             }
             (RetrievalCorpus::Session, RetrievalModality::Text) => {
                 let db = resolve_sessions_db(&request)?;
-                let page = session_search::search(
+                let ranked = session_search::search_all(
                     &db,
                     &session_search::SessionTextQuery {
                         query: request.query,
-                        offset: request.offset,
+                        offset: 0,
                         include_session_id: request.filters.include_session_id,
                         exclude_session_ids: request.filters.exclude_session_ids,
                         project: request.filters.project,
                         exclude_context_window: request.filters.exclude_context_window,
                     },
                 )?;
-                Ok(page
-                    .hits
-                    .into_iter()
+                let start = request.offset.min(ranked.len());
+                let end = start.saturating_add(request.top_k).min(ranked.len());
+                Ok(ranked[start..end]
+                    .iter()
+                    .cloned()
                     .map(RetrievalHit::from_session)
                     .collect())
             }
@@ -269,9 +267,8 @@ impl WorkspaceEngines {
         }
     }
 
-    /// Session dual-lane search: lexical always + semantic when Warm.
-    /// Does not start engines. Returns paginated columns (no char windows —
-    /// the tool layer expands windows).
+    /// Session search: lexical always + semantic when Warm, fused into one ranked stream.
+    /// Does not start engines. Pagination / grouping happens in `session_search::build_search_page`.
     pub fn search_sessions(
         &self,
         query: &str,
@@ -297,45 +294,37 @@ impl WorkspaceEngines {
             project: filters.project.clone(),
             exclude_context_window: filters.exclude_context_window.clone(),
         };
-        let text_all = session_search::search_all(&db, &text_q)?;
-        let text_page = session_search::paginate_hits(text_all, offset);
+        let lexical = session_search::search_all(&db, &text_q)?;
 
-        let (semantic_hits, semantic_has_more) = if self.is_warmed("code_search") {
+        let semantic = if self.is_warmed("code_search") {
             match self.code_search.search_sessions(
                 query,
                 session_search::SEMANTIC_WINDOW,
                 filters.include_session_id.as_deref(),
             ) {
                 Ok(hits) => {
-                    let gated = session_search::gate_semantic_hits(session_search::filter_hits(
-                        hits, &text_q,
-                    ));
-                    let page = session_search::paginate_hits(gated, offset);
-                    (Some(page.hits), page.has_more)
+                    session_search::gate_semantic_hits(session_search::filter_hits(hits, &text_q))
                 }
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
                         "session semantic lane failed; returning text only"
                     );
-                    (None, false)
+                    Vec::new()
                 }
             }
         } else {
-            (None, false)
+            Vec::new()
         };
 
         Ok(SessionSearchBundle {
-            text_hits: text_page.hits,
-            text_has_more: text_page.has_more,
-            semantic_hits,
-            semantic_has_more,
-            offset: text_page.offset,
+            ranked: session_search::merge_session_hits(lexical, semantic),
+            offset,
         })
     }
 
     /// Grouped human search. `corpus=code` (default): LexicalLane text + optional semantic.
-    /// `corpus=session`: fuzzy text page + optional session_semantic when Warm.
+    /// `corpus=session`: lexical-then-semantic grouped token page (semantic only when Warm).
     pub fn human_search(
         &self,
         workspace_root: &Path,
@@ -404,16 +393,21 @@ impl WorkspaceEngines {
                     },
                     Some(workspace_root.to_path_buf()),
                 )?;
+                let db = session_search::sessions_db_under(workspace_root);
+                let ranked = if req.include_semantic {
+                    bundle.ranked
+                } else {
+                    bundle
+                        .ranked
+                        .into_iter()
+                        .filter(|h| h.lane == session_search::SessionHitLane::Text)
+                        .collect()
+                };
+                let page = session_search::build_search_page(&db, &ranked, bundle.offset)?;
                 Ok(crate::engines::code_search::HumanSearchResponse {
                     text: Vec::new(),
                     semantic: None,
-                    session: Some(bundle.text_hits),
-                    session_semantic: if req.include_semantic {
-                        bundle.semantic_hits
-                    } else {
-                        None
-                    },
-                    session_has_more: Some(bundle.text_has_more),
+                    session_page: Some(page),
                 })
             }
             other => Err(LitecodeError::Config(format!(
@@ -837,8 +831,13 @@ mod tests {
                 Some(root.to_path_buf()),
             )
             .unwrap();
-        assert_eq!(bundle.text_hits.len(), 1);
-        assert!(bundle.semantic_hits.is_none());
+        assert_eq!(bundle.ranked.len(), 1);
+        assert!(
+            bundle
+                .ranked
+                .iter()
+                .all(|h| h.lane == session_search::SessionHitLane::Text)
+        );
     }
 
     #[test]
@@ -879,13 +878,17 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(resp.session.as_ref().is_some_and(|h| !h.is_empty()));
-        assert!(resp.session_semantic.is_none()); // cold engine
-        assert_eq!(resp.session_has_more, Some(false));
+        assert!(
+            resp.session_page
+                .as_ref()
+                .is_some_and(|p| !p.groups.is_empty())
+        );
         assert!(resp.text.is_empty());
         assert!(resp.semantic.is_none());
-        let session_hits = resp.session.expect("session column");
-        assert_eq!(session_hits.len(), 1);
-        assert!(session_hits[0].summary.contains("HUMAN_SESSION_HIT"));
+        let page = resp.session_page.expect("session page");
+        assert_eq!(page.groups.len(), 1);
+        assert_eq!(page.groups[0].hits.len(), 1);
+        assert!(page.groups[0].hits[0].summary.contains("HUMAN_SESSION_HIT"));
+        assert!(!page.has_more);
     }
 }

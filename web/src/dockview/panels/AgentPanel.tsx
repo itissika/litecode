@@ -1,4 +1,4 @@
-import { Component, type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { Component, type ReactNode, type RefObject, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import { CaretDownIcon } from "@phosphor-icons/react";
 
@@ -7,6 +7,11 @@ import { useSessionStore } from "../../stores/sessionStore";
 import { useToastStore } from "../../stores/toastStore";
 import { useTurnStore } from "../../stores/turnStore";
 import { displayMessages, useMessageStore } from "../../stores/messageStore";
+import {
+  clearPendingReveal,
+  getPendingReveal,
+  subscribePendingReveal,
+} from "../../lib/sessionPanelNav";
 import { useNotificationStore } from "../../stores/notificationStore";
 import { AgentChatInput } from "../../components/AgentChatInput";
 import { MessageList, type EditingUserAnchor } from "../../components/MessageList";
@@ -142,6 +147,34 @@ export function AgentChatShell({
   const dismissTimerRef = useRef<number | null>(null);
   const jumpToEndRef = useRef<(() => void) | null>(null);
   const revealBashRef = useRef<((callId: string) => void) | null>(null);
+  const revealSeqRef = useRef<((seq: number) => void) | null>(null);
+  const pendingReveal = useSyncExternalStore(subscribePendingReveal, getPendingReveal);
+  const hydrated = useMessageStore((s) => s.bySession.get(sessionId)?.hydrated ?? false);
+
+  useEffect(() => {
+    if (!pendingReveal || pendingReveal.sessionId !== sessionId) return;
+    if (!hydrated) return;
+    const gen = pendingReveal.gen;
+    const seq = pendingReveal.seq;
+    let cancelled = false;
+    void (async () => {
+      const ok = await useMessageStore.getState().ensureSeqLoaded(
+        sessionId,
+        seq,
+        () => !cancelled && getPendingReveal()?.gen === gen,
+      );
+      if (cancelled) return;
+      if (!ok) {
+        clearPendingReveal(gen);
+        return;
+      }
+      revealSeqRef.current?.(seq);
+      clearPendingReveal(gen);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, hydrated, pendingReveal?.sessionId, pendingReveal?.seq, pendingReveal?.gen]);
 
   const openMini = useCallback((anchor: EditingUserAnchor) => {
     if (dismissTimerRef.current !== null) {
@@ -214,6 +247,7 @@ export function AgentChatShell({
         onStickChange={setStickToEnd}
         jumpToEndRef={jumpToEndRef}
         revealBashRef={revealBashRef}
+        revealSeqRef={revealSeqRef}
       />
       <ComposerDock
         sessionId={sessionId}
@@ -241,6 +275,7 @@ function MessageListRegion({
   onStickChange,
   jumpToEndRef,
   revealBashRef,
+  revealSeqRef,
 }: {
   sessionId: string;
   isActive: boolean;
@@ -252,6 +287,7 @@ function MessageListRegion({
   onStickChange: (stickToEnd: boolean) => void;
   jumpToEndRef: RefObject<(() => void) | null>;
   revealBashRef: RefObject<((callId: string) => void) | null>;
+  revealSeqRef: RefObject<((seq: number) => void) | null>;
 }) {
   const messages = useMessageStore((s) =>
     displayMessages(s.bySession.get(sessionId)),
@@ -329,6 +365,7 @@ function MessageListRegion({
                 onStickChange={onStickChange}
                 jumpToEndRef={jumpToEndRef}
                 revealBashRef={revealBashRef}
+                revealSeqRef={revealSeqRef}
                 editingAnchor={editingAnchor}
                 onEditAnchor={onEditAnchor}
                 onDismissEdit={onDismissEdit}

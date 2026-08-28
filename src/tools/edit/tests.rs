@@ -272,6 +272,22 @@ fn description_has_no_mode_knob() {
 }
 
 #[test]
+fn virtual_session_path_is_read_only() {
+    let result = tool().call(serde_json::json!({
+        "file_path": ".litecode/sessions/01ABCDEF.md",
+        "edits": [{ "old_string": "a", "new_string": "b" }]
+    }));
+    assert_eq!(result.level, ToolSignalLevel::Error);
+    assert!(
+        result
+            .content
+            .contains(crate::session::transcript_file::READ_ONLY_MSG),
+        "{}",
+        result.content
+    );
+}
+
+#[test]
 fn low_fuzzy_message_is_actionable_without_garbage_preview() {
     let (_dir, path) = write_temp("a.rs", "fn keep() {}\n");
     let result = call_edits(&path, one("totally_unrelated_identifier_xyz", "nope"));

@@ -6,9 +6,9 @@ import {
   getEnginesDetail,
   retrievalSearch,
   type RetrievalSearchHit,
-  type SessionSearchHit,
+  type SessionSearchGroup,
+  type SessionSearchPage,
 } from "../../api/workspace";
-import { getDockviewApi, useConnectionStore } from "../../stores/connectionStore";
 import { useEditorStore } from "../../stores/editorStore";
 import {
   fileBaseName,
@@ -17,6 +17,7 @@ import {
   SearchSection,
 } from "../../components/SearchResults";
 import type { SearchResultGroup, SearchResultLine } from "../../components/SearchResults";
+import { openSessionPanel } from "../../lib/sessionPanelNav";
 
 const TEXT_DEBOUNCE_MS = 280;
 const SEMANTIC_DEBOUNCE_MS = 3000;
@@ -94,61 +95,66 @@ function buildCodeGroups(
     });
 }
 
-/** Group flat session hits by session → lines (sorted by seq). Mirrors VSCode. */
-function buildSessionGroups(
-  hits: SessionSearchHit[],
+/** Group server session groups into SearchResultGroup cards. */
+function sessionGroupsToCards(
+  groups: SessionSearchGroup[],
   highlight: string,
   highlightCaseSensitive: boolean,
 ): SearchResultGroup[] {
-  const bySession = new Map<string, SearchResultLine[]>();
-  for (const hit of hits) {
-    const lines = bySession.get(hit.session_id) ?? [];
-    lines.push({
-      id: `${hit.session_id}:${hit.seq}`,
-      lineLabel: String(hit.seq),
+  return groups.map((group) => ({
+    key: group.session_id,
+    title: group.session_id.slice(0, 8),
+    subtitle: sessionGroupSubtitle(group),
+    matchCount: group.match_count,
+    onOpenTitle: () => openSessionPanel(group.session_id),
+    lines: group.hits.map((hit) => ({
+      id: `${group.session_id}:${hit.seq}:${hit.line}`,
+      lineLabel: String(hit.line),
       text: hit.summary,
-      onOpen: () => openAgentSession(hit.session_id),
-    });
-    bySession.set(hit.session_id, lines);
-  }
-  return [...bySession.entries()].map(([sid, lines]) => {
-    lines.sort((a, b) => Number(a.lineLabel) - Number(b.lineLabel));
-    return {
-      key: sid,
-      title: sid.slice(0, 8),
-      subtitle: sid,
-      lines,
-      highlight,
-      highlightCaseSensitive,
-    };
-  });
+      onOpen: () => openSessionPanel(group.session_id, hit.seq),
+    })),
+    highlight,
+    highlightCaseSensitive,
+  }));
 }
 
-function openAgentSession(sessionId: string) {
-  const api = getDockviewApi();
-  if (!api) return;
-  const panelId = `agent-${sessionId}`;
-  if (api.getPanel(panelId)) {
-    api.getPanel(panelId)?.api.setActive();
-    void useConnectionStore.getState().ensureSubscribe(sessionId).catch(() => {});
-    return;
+function sessionGroupSubtitle(group: SessionSearchGroup): string {
+  const created = formatSessionTime(group.created_time);
+  const updated = formatSessionTime(group.updated_time);
+  const times = [created, updated].filter(Boolean).join(" → ");
+  return [times, group.path].filter(Boolean).join(" · ");
+}
+
+function formatSessionTime(ms: number): string {
+  if (!ms) return "";
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString().replace("T", " ").slice(0, 16);
+}
+
+function mergeSessionPage(prev: SessionSearchPage | null, next: SessionSearchPage): SessionSearchPage {
+  if (!prev || next.offset === 0) return next;
+  const groups = prev.groups.map((g) => ({ ...g, hits: [...g.hits] }));
+  for (const incoming of next.groups) {
+    const last = groups[groups.length - 1];
+    if (last && last.session_id === incoming.session_id) {
+      last.hits = [...last.hits, ...incoming.hits];
+    } else {
+      groups.push({ ...incoming, hits: [...incoming.hits] });
+    }
   }
-  const gridGroups = api.groups.filter((g) => g.api.location.type === "grid");
-  let position: { referenceGroup: string } | undefined;
-  if (gridGroups.length === 0) {
-    const group = api.addGroup();
-    position = { referenceGroup: group.id };
-  } else {
-    position = { referenceGroup: gridGroups[0].api.id };
+  return { ...next, groups };
+}
+
+function uniqueMatchCount(groups: SessionSearchGroup[]): number {
+  const seen = new Set<string>();
+  let total = 0;
+  for (const group of groups) {
+    if (seen.has(group.session_id)) continue;
+    seen.add(group.session_id);
+    total += group.match_count;
   }
-  api.addPanel({
-    id: panelId,
-    component: "agent",
-    title: sessionId.slice(0, 8),
-    params: { sessionId },
-    tabComponent: "agent",
-    position,
-  });
+  return total;
 }
 
 export function SearchPanel(_props: IDockviewPanelProps) {
@@ -162,7 +168,8 @@ export function SearchPanel(_props: IDockviewPanelProps) {
   const [exclude, setExclude] = useState("");
   const [textHits, setTextHits] = useState<RetrievalSearchHit[]>([]);
   const [semanticHits, setSemanticHits] = useState<RetrievalSearchHit[]>([]);
-  const [sessionHits, setSessionHits] = useState<SessionSearchHit[]>([]);
+  const [sessionPage, setSessionPage] = useState<SessionSearchPage | null>(null);
+  const [sessionMoreBusy, setSessionMoreBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [textBusy, setTextBusy] = useState(false);
   const [semBusy, setSemBusy] = useState(false);
@@ -278,7 +285,7 @@ export function SearchPanel(_props: IDockviewPanelProps) {
       const trimmed = q.trim();
       const gen = ++sessionGenRef.current;
       if (!trimmed) {
-        setSessionHits([]);
+        setSessionPage(null);
         setError(null);
         return;
       }
@@ -289,15 +296,21 @@ export function SearchPanel(_props: IDockviewPanelProps) {
           query: trimmed,
           corpus: "session",
           case_sensitive: caseSensitive,
-          top_k: 50,
-          // Session semantic column not wired in UI yet — skip ANN cost.
-          include_semantic: false,
+          include_semantic: true,
+          offset: 0,
         });
         if (gen !== sessionGenRef.current) return;
-        setSessionHits(data.session ?? []);
+        setSessionPage(
+          data.session_page ?? {
+            groups: [],
+            offset: 0,
+            next_offset: 0,
+            has_more: false,
+          },
+        );
       } catch (e) {
         if (gen !== sessionGenRef.current) return;
-        setSessionHits([]);
+        setSessionPage(null);
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         if (gen === sessionGenRef.current) {
@@ -307,6 +320,33 @@ export function SearchPanel(_props: IDockviewPanelProps) {
     },
     [caseSensitive],
   );
+
+  const loadMoreSessions = useCallback(async () => {
+    const page = sessionPage;
+    const trimmed = query.trim();
+    if (!page?.has_more || !trimmed) return;
+    const gen = sessionGenRef.current;
+    setSessionMoreBusy(true);
+    try {
+      const data = await retrievalSearch({
+        query: trimmed,
+        corpus: "session",
+        case_sensitive: caseSensitive,
+        include_semantic: true,
+        offset: page.next_offset,
+      });
+      if (gen !== sessionGenRef.current) return;
+      const next = data.session_page;
+      if (next) setSessionPage((prev) => mergeSessionPage(prev, next));
+    } catch (e) {
+      if (gen !== sessionGenRef.current) return;
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (gen === sessionGenRef.current) {
+        setSessionMoreBusy(false);
+      }
+    }
+  }, [sessionPage, query, caseSensitive]);
 
   // Workspace: dual debounce. Sessions: single text-like debounce.
   useEffect(() => {
@@ -318,10 +358,11 @@ export function SearchPanel(_props: IDockviewPanelProps) {
       sessionGenRef.current += 1;
       setTextHits([]);
       setSemanticHits([]);
-      setSessionHits([]);
+      setSessionPage(null);
       setError(null);
       setTextBusy(false);
       setSemBusy(false);
+      setSessionMoreBusy(false);
       return;
     }
 
@@ -377,7 +418,7 @@ export function SearchPanel(_props: IDockviewPanelProps) {
     setTarget(next);
     setTextHits([]);
     setSemanticHits([]);
-    setSessionHits([]);
+    setSessionPage(null);
     setError(null);
   };
 
@@ -527,10 +568,26 @@ export function SearchPanel(_props: IDockviewPanelProps) {
         ) : (
           <SearchSection
             title="Sessions"
-            count={sessionHits.length}
+            count={uniqueMatchCount(sessionPage?.groups ?? [])}
             empty={query.trim() ? "No session matches" : "Type to search"}
           >
-            <SearchResultList groups={buildSessionGroups(sessionHits, query.trim(), caseSensitive)} />
+            <SearchResultList
+              groups={sessionGroupsToCards(
+                sessionPage?.groups ?? [],
+                query.trim(),
+                caseSensitive,
+              )}
+            />
+            {sessionPage?.has_more && (
+              <button
+                type="button"
+                onClick={() => void loadMoreSessions()}
+                disabled={sessionMoreBusy}
+                className="mx-2 mb-2 rounded px-2 py-1 text-dk-xs text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) disabled:opacity-50"
+              >
+                {sessionMoreBusy ? "Loading…" : "More"}
+              </button>
+            )}
           </SearchSection>
         )}
       </div>

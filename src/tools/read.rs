@@ -38,7 +38,10 @@ impl Tool for ReadTool {
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": crate::tools::file_path::FILE_PATH_SCHEMA_HINT
+                    "description": format!(
+                        "{} Past session transcripts are readable at `.litecode/sessions/<session_id>.md`.",
+                        crate::tools::file_path::FILE_PATH_SCHEMA_HINT
+                    )
                 },
                 "start_line": {
                     "type": "integer",
@@ -130,6 +133,9 @@ impl ReadTool {
             Ok(s) => s,
             Err(e) => return ToolCallResult::error(e),
         };
+        if let Some(result) = read_virtual_session(raw_path, &input, &execution) {
+            return result;
+        }
         let path = match crate::workspace::resolve_agent(
             &execution.workspace_root,
             raw_path,
@@ -236,67 +242,7 @@ impl ReadTool {
             }
         };
 
-        let (start_line, start_warning) = resolve_start_line(input);
-        let (end_line, window_warning, capped_window) = match resolve_end_line(input, start_line) {
-            Ok(pair) => pair,
-            Err(msg) => return ToolCallResult::error(msg),
-        };
-        let (token_budget, budget_warning) = resolve_token_budget(input);
-
-        let lines: Vec<&str> = content.lines().collect();
-        let total_lines = lines.len();
-        if start_line > total_lines && total_lines > 0 {
-            return ToolCallResult::error(format!(
-                "start_line {start_line} exceeds file length ({total_lines} lines)"
-            ));
-        }
-
-        let start = start_line - 1;
-        let end = end_line.min(total_lines);
-
-        let mut result = String::new();
-        let mut char_count = 0usize;
-        let mut lines_included = 0usize;
-        let mut hit_char_cap = false;
-
-        for (i, line) in lines[start..end].iter().enumerate() {
-            let formatted = format_read_line(start + i + 1, line);
-            let next = char_count + formatted.len();
-            if lines_included > 0 && next > token_budget {
-                hit_char_cap = true;
-                break;
-            }
-            result.push_str(&formatted);
-            char_count = next;
-            lines_included += 1;
-            if char_count > token_budget {
-                hit_char_cap = true;
-                break;
-            }
-        }
-
-        if result.is_empty() {
-            return apply_read_warnings(
-                ToolCallResult::ok("(empty file)"),
-                [&start_warning, &window_warning, &budget_warning],
-            );
-        }
-
-        if let Some(footer) = pagination_footer(
-            start + 1,
-            start + lines_included,
-            total_lines,
-            hit_char_cap,
-            capped_window,
-        ) {
-            result.push('\n');
-            result.push_str(&footer);
-        }
-
-        apply_read_warnings(
-            ToolCallResult::ok(result.trim_end_matches(['\n', '\r']).to_string()),
-            [&start_warning, &window_warning, &budget_warning],
-        )
+        render_text_page(&content, input)
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
@@ -309,6 +255,168 @@ impl ReadTool {
     fn max_result_size(&self) -> usize {
         usize::MAX // infinity — ReadTool does its own token-aware truncation
     }
+}
+
+fn read_virtual_session(
+    raw_path: &str,
+    input: &Value,
+    execution: &ToolExecutionContext,
+) -> Option<ToolCallResult> {
+    let stem = crate::session::transcript_file::try_parse_virtual_path(raw_path)?;
+    let db = crate::engines::session_search::sessions_db_under(&execution.workspace_root);
+    let session_id = match crate::engines::session_search::resolve_session_ref(&db, &stem) {
+        Ok(id) => id,
+        Err(e) => return Some(ToolCallResult::error(e.to_string())),
+    };
+    let file = match crate::session::transcript_file::load_transcript_file(&db, &session_id) {
+        Ok(f) => f,
+        Err(e) => return Some(ToolCallResult::error(e.to_string())),
+    };
+    let hidden = hidden_surface_seqs(&db, &session_id, &execution.session_id);
+    Some(render_projection_page(&file, input, &hidden))
+}
+
+fn hidden_surface_seqs(db: &Path, target_session: &str, caller_session: &str) -> Vec<i64> {
+    if caller_session.is_empty() || caller_session != target_session {
+        return Vec::new();
+    }
+    crate::engines::session_search::load_surface_seqs(db, target_session).unwrap_or_default()
+}
+
+fn render_projection_page(
+    file: &crate::session::transcript_file::TranscriptFile,
+    input: &Value,
+    hidden_seqs: &[i64],
+) -> ToolCallResult {
+    let (start_line, start_warning) = resolve_start_line(input);
+    let (end_line, window_warning, capped_window) = match resolve_end_line(input, start_line) {
+        Ok(pair) => pair,
+        Err(msg) => return ToolCallResult::error(msg),
+    };
+    let (token_budget, budget_warning) = resolve_token_budget(input);
+    let total_lines = file.total_lines();
+    if start_line > total_lines && total_lines > 0 {
+        return ToolCallResult::error(format!(
+            "start_line {start_line} exceeds file length ({total_lines} lines)"
+        ));
+    }
+    let start = start_line.saturating_sub(1);
+    let end = end_line.min(total_lines);
+    let range_hidden = (start..end).all(|i| {
+        file.seq_at((i + 1) as u32)
+            .is_some_and(|seq| hidden_seqs.contains(&seq))
+    });
+    if total_lines > 0 && start < end && range_hidden && !hidden_seqs.is_empty() {
+        return apply_read_warnings(
+            ToolCallResult::ok(crate::session::transcript_file::IN_CONTEXT_WINDOW_MSG),
+            [&start_warning, &window_warning, &budget_warning],
+        );
+    }
+    render_line_window(
+        start,
+        end,
+        total_lines,
+        token_budget,
+        capped_window,
+        [&start_warning, &window_warning, &budget_warning],
+        |i| {
+            let line_no = (i + 1) as u32;
+            if file
+                .seq_at(line_no)
+                .is_some_and(|seq| hidden_seqs.contains(&seq))
+            {
+                return None;
+            }
+            Some((i + 1, file.lines.get(i).map(String::as_str).unwrap_or("")))
+        },
+    )
+}
+
+fn render_text_page(content: &str, input: &Value) -> ToolCallResult {
+    let lines: Vec<&str> = content.lines().collect();
+    let (start_line, start_warning) = resolve_start_line(input);
+    let (end_line, window_warning, capped_window) = match resolve_end_line(input, start_line) {
+        Ok(pair) => pair,
+        Err(msg) => return ToolCallResult::error(msg),
+    };
+    let (token_budget, budget_warning) = resolve_token_budget(input);
+    let total_lines = lines.len();
+    if start_line > total_lines && total_lines > 0 {
+        return ToolCallResult::error(format!(
+            "start_line {start_line} exceeds file length ({total_lines} lines)"
+        ));
+    }
+    let start = start_line.saturating_sub(1);
+    let end = end_line.min(total_lines);
+    render_line_window(
+        start,
+        end,
+        total_lines,
+        token_budget,
+        capped_window,
+        [&start_warning, &window_warning, &budget_warning],
+        |i| Some((i + 1, lines[i])),
+    )
+}
+
+fn render_line_window<'a>(
+    start: usize,
+    end: usize,
+    total_lines: usize,
+    token_budget: usize,
+    capped_window: bool,
+    warnings: [&Option<String>; 3],
+    mut line_at: impl FnMut(usize) -> Option<(usize, &'a str)>,
+) -> ToolCallResult {
+    let mut result = String::new();
+    let mut char_count = 0usize;
+    let mut lines_included = 0usize;
+    let mut hit_char_cap = false;
+    let mut first_shown = 0usize;
+    let mut last_shown = 0usize;
+
+    for i in start..end {
+        let Some((line_no, line)) = line_at(i) else {
+            continue;
+        };
+        let formatted = format_read_line(line_no, line);
+        let next = char_count + formatted.len();
+        if lines_included > 0 && next > token_budget {
+            hit_char_cap = true;
+            break;
+        }
+        result.push_str(&formatted);
+        char_count = next;
+        lines_included += 1;
+        if first_shown == 0 {
+            first_shown = line_no;
+        }
+        last_shown = line_no;
+        if char_count > token_budget {
+            hit_char_cap = true;
+            break;
+        }
+    }
+
+    if result.is_empty() {
+        return apply_read_warnings(ToolCallResult::ok("(empty file)"), warnings);
+    }
+
+    if let Some(footer) = pagination_footer(
+        first_shown,
+        last_shown,
+        total_lines,
+        hit_char_cap,
+        capped_window,
+    ) {
+        result.push('\n');
+        result.push_str(&footer);
+    }
+
+    apply_read_warnings(
+        ToolCallResult::ok(result.trim_end_matches(['\n', '\r']).to_string()),
+        warnings,
+    )
 }
 
 fn resolve_start_line(input: &Value) -> (usize, Option<String>) {
@@ -912,6 +1020,218 @@ mod tests {
             result.content.contains("TOKEN=known-path"),
             "read must not apply discovery FilterPreset; got: {}",
             result.content
+        );
+    }
+
+    fn seed_session(root: &std::path::Path, text: &str) -> String {
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let s = crate::session::store::Session::open(
+            db.to_str().unwrap(),
+            root.to_str().unwrap(),
+            "default",
+            None,
+        )
+        .unwrap();
+        s.insert_detail_rows(&[crate::types::user_text(text)])
+            .unwrap();
+        let id = s.id.clone();
+        drop(s);
+        id
+    }
+
+    fn read_virtual(
+        root: &std::path::Path,
+        path: &str,
+        extra: serde_json::Value,
+        session_id: &str,
+    ) -> crate::types::ToolCallResult {
+        let mut input = extra;
+        input["file_path"] = serde_json::Value::String(path.to_string());
+        let tool = ReadTool::default();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(tool.execute(
+            input,
+            ToolExecutionContext {
+                path_mode: crate::workspace::ToolPathMode::All,
+                workspace_root: root.to_path_buf(),
+                call_id: String::new(),
+                cancel: tokio_util::sync::CancellationToken::new(),
+                output_limit: tool.max_result_size(),
+                session_id: session_id.to_string(),
+            },
+        ))
+    }
+
+    #[test]
+    fn virtual_session_read_keeps_canonical_line_numbers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let sid = seed_session(root, "alpha\nVIRTUAL_READ_NEEDLE here\ndelta");
+        let path = crate::session::transcript_file::virtual_path_for(&sid);
+        let other = read_virtual(root, &path, serde_json::json!({}), "");
+        assert_eq!(
+            other.level,
+            crate::types::ToolSignalLevel::Ok,
+            "{}",
+            other.content
+        );
+        assert!(
+            other.content.contains("VIRTUAL_READ_NEEDLE"),
+            "{}",
+            other.content
+        );
+        let needle_line = other
+            .content
+            .lines()
+            .find(|l| l.contains("VIRTUAL_READ_NEEDLE"))
+            .expect("needle line");
+        assert!(
+            needle_line.trim_start().starts_with('3')
+                || needle_line.contains("|VIRTUAL_READ_NEEDLE")
+                || needle_line.contains("VIRTUAL_READ_NEEDLE"),
+            "canonical body line should stay numbered, got: {needle_line}"
+        );
+
+        let self_read = read_virtual(root, &path, serde_json::json!({}), &sid);
+        assert_eq!(
+            self_read.level,
+            crate::types::ToolSignalLevel::Ok,
+            "{}",
+            self_read.content
+        );
+        assert!(
+            self_read
+                .content
+                .contains(crate::session::transcript_file::IN_CONTEXT_WINDOW_MSG),
+            "live surface should be filtered: {}",
+            self_read.content
+        );
+        assert!(
+            !self_read.content.contains("VIRTUAL_READ_NEEDLE"),
+            "filtered read must not re-number remaining lines around the live item: {}",
+            self_read.content
+        );
+    }
+
+    fn seed_compacted(root: &std::path::Path, archived: &str, live: &str) -> String {
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let s = crate::session::store::Session::open(
+            db.to_str().unwrap(),
+            root.to_str().unwrap(),
+            "default",
+            None,
+        )
+        .unwrap();
+        s.insert_detail_rows(&[
+            crate::types::user_text(archived),
+            crate::types::user_text("filler middle"),
+            crate::types::user_text(live),
+        ])
+        .unwrap();
+        s.apply_compact_checkpoint_from(&crate::types::user_text("[summary] compact"), Some(2), 10)
+            .unwrap();
+        let id = s.id.clone();
+        drop(s);
+        id
+    }
+
+    #[test]
+    fn read_peels_current_surface_keeps_canonical_lines_and_other_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let current = seed_compacted(
+            root,
+            "ARCHIVED_READ_TOKEN buried",
+            "LIVE_READ_TOKEN still in window",
+        );
+        let other = seed_session(root, "LIVE_READ_TOKEN in other");
+        let current_path = crate::session::transcript_file::virtual_path_for(&current);
+        let other_path = crate::session::transcript_file::virtual_path_for(&other);
+
+        let full = read_virtual(root, &current_path, serde_json::json!({}), "");
+        let archived_line = full
+            .content
+            .lines()
+            .find(|l| l.contains("ARCHIVED_READ_TOKEN"))
+            .expect(&format!("archived line in full read:\n{}", full.content))
+            .to_string();
+        let live_line = full
+            .content
+            .lines()
+            .find(|l| l.contains("LIVE_READ_TOKEN still in window"))
+            .expect(&format!("live line in full read:\n{}", full.content))
+            .to_string();
+        let archived_no: usize = archived_line
+            .split(':')
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let live_no: usize = live_line.split(':').next().unwrap().trim().parse().unwrap();
+        assert!(live_no > archived_no);
+
+        let peeled = read_virtual(root, &current_path, serde_json::json!({}), &current);
+        assert!(
+            peeled.content.contains("ARCHIVED_READ_TOKEN"),
+            "archived rows stay readable:\n{}",
+            peeled.content
+        );
+        assert!(
+            !peeled.content.contains("LIVE_READ_TOKEN still in window"),
+            "current live surface must be peeled:\n{}",
+            peeled.content
+        );
+        let peeled_archived = peeled
+            .content
+            .lines()
+            .find(|l| l.contains("ARCHIVED_READ_TOKEN"))
+            .expect("archived after peel");
+        let peeled_no: usize = peeled_archived
+            .split(':')
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            peeled_no, archived_no,
+            "peel must keep canonical line numbers, full={archived_line} peeled={peeled_archived}"
+        );
+
+        let other_as_current = read_virtual(root, &other_path, serde_json::json!({}), &current);
+        assert!(
+            other_as_current
+                .content
+                .contains("LIVE_READ_TOKEN in other"),
+            "other sessions are not peeled:\n{}",
+            other_as_current.content
+        );
+
+        let live_only = read_virtual(
+            root,
+            &current_path,
+            serde_json::json!({ "start_line": live_no, "end_line": live_no }),
+            &current,
+        );
+        assert!(
+            live_only
+                .content
+                .contains(crate::session::transcript_file::IN_CONTEXT_WINDOW_MSG),
+            "offset into the live surface must stay in-window:\n{}",
+            live_only.content
+        );
+        assert!(
+            !live_only
+                .content
+                .contains("LIVE_READ_TOKEN still in window"),
+            "live-only window must not leak surface text:\n{}",
+            live_only.content
         );
     }
 }

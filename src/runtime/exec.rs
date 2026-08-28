@@ -136,7 +136,9 @@ impl AgentDeps for AgentRuntime {
             let compaction_agent = agent_config_from_profile(profile);
             crate::context_pipeline::build_compaction_system_prompt(&compaction_agent)
         } else {
-            crate::context_pipeline::BUILTIN_COMPACTION.trim().to_string()
+            crate::context_pipeline::BUILTIN_COMPACTION
+                .trim()
+                .to_string()
         };
 
         let task_state = self

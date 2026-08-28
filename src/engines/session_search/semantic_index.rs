@@ -314,7 +314,7 @@ impl SessionSemanticIndex {
         embedder: &mut dyn Embedder,
     ) -> Result<bool> {
         let db = sessions_db_under(workspace_root);
-        let live = super::iter_detail_texts(&db)?;
+        let live = crate::session::transcript_file::iter_searchable_texts(&db)?;
         let live_keys: HashSet<(String, i64)> = live
             .iter()
             .map(|(sid, seq, _, _)| (sid.clone(), *seq))

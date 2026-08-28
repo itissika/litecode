@@ -52,6 +52,8 @@ export interface MessageSlice {
    */
   userDetailBefore: number;
   loadingHistory: boolean;
+  /** True after the first buffer/load for this session (including empty). */
+  hydrated: boolean;
   shapeError: string | null;
   subagentBindings: Record<string, string>;
   blockLogGrowth: boolean;
@@ -76,6 +78,7 @@ export const EMPTY_SLICE: MessageSlice = {
   toSeq: 0,
   userDetailBefore: 0,
   loadingHistory: false,
+  hydrated: false,
   shapeError: null,
   subagentBindings: {},
   blockLogGrowth: false,
@@ -248,6 +251,11 @@ interface MessageStore extends MessageState {
   discardOptimisticUserMessage: (sessionId: string, clientId: string) => void;
   loadRange: (sessionId: string, fromSeq: number, toSeq: number) => Promise<void>;
   loadMoreHistory: (sessionId: string) => void;
+  ensureSeqLoaded: (
+    sessionId: string,
+    seq: number,
+    isCurrent?: () => boolean,
+  ) => Promise<boolean>;
   revertToUserAnchor: (sessionId: string, k: number) => void;
   revertFiles: (sessionId: string, k: number) => void;
   reset: (sessionId: string) => void;
@@ -297,6 +305,7 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         slice.userDetailBefore,
       );
       next.loadingHistory = false;
+      next.hydrated = true;
       next.subagentBindings = {
         ...slice.subagentBindings,
         ...(loaded.subagent_bindings ?? {}),
@@ -494,6 +503,22 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         .catch(() => {
           patch(sessionId, { loadingHistory: false });
         });
+    },
+
+    ensureSeqLoaded: async (sessionId, seq, isCurrent = () => true) => {
+      while (isCurrent()) {
+        const slice = get().bySession.get(sessionId) ?? emptySlice();
+        if (slice.bySeq.has(seq)) return true;
+        if (!slice.hydrated) return false;
+        if (seq >= slice.fromSeq && seq < slice.toSeq) return false;
+        if (slice.fromSeq <= 0) return false;
+        if (seq >= slice.toSeq) return false;
+        const toSeq = slice.fromSeq;
+        const fromSeq = Math.max(0, toSeq - HISTORY_PAGE);
+        if (fromSeq >= toSeq) return false;
+        await get().loadRange(sessionId, fromSeq, toSeq);
+      }
+      return false;
     },
 
     revertToUserAnchor: (sessionId, k) => {

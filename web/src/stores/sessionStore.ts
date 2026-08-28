@@ -18,6 +18,7 @@ import { useBashStore } from "./bashStore";
 import { useToastStore } from "./toastStore";
 import { useTurnStore } from "./turnStore";
 import { useMessageStore } from "./messageStore";
+import { openSessionPanel } from "../lib/sessionPanelNav";
 
 function definitionsToModelInfo(models: Record<string, ModelDefinition>): ModelInfo[] {
   return Object.entries(models)
@@ -188,6 +189,12 @@ export const useSessionStore = create<SessionStore>((set, get) => {
 
     if (snap.buffer.next_seq === 0) {
       useTurnStore.getState().clearPendingStream(sessionId);
+      useMessageStore.getState().onBufferLoaded(sessionId, {
+        session_id: sessionId,
+        from_seq: 0,
+        to_seq: 0,
+        events: [],
+      });
       set({ pendingSessionOp: null });
       return;
     }
@@ -456,30 +463,8 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       });
       useConnectionStore.getState().sendRpc<{ session_id: string }>("session/new").then((result) => {
         set({ pendingSessionOp: null, statusMessage: null });
-        // Open agent panel for the new session via dockview API.
-        const api = getDockviewApi();
-        if (api && result.session_id) {
-          const sid = result.session_id;
-          const panelId = `agent-${sid}`;
-          if (!api.getPanel(panelId)) {
-            // Open in the center grid, not the active edge group (e.g. Sessions).
-            const gridGroups = api.groups.filter((g) => g.api.location.type === "grid");
-            let position: { referenceGroup: string } | undefined;
-            if (gridGroups.length === 0) {
-              const group = api.addGroup();
-              position = { referenceGroup: group.id };
-            } else {
-              position = { referenceGroup: gridGroups[0].api.id };
-            }
-            api.addPanel({
-              id: panelId,
-              component: "agent",
-              title: sid.slice(0, 8),
-              params: { sessionId: sid },
-              tabComponent: "agent",
-              position,
-            });
-          }
+        if (result.session_id) {
+          openSessionPanel(result.session_id);
         }
       }).catch(() => {
         set({

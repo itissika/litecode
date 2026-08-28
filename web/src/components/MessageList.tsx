@@ -688,6 +688,14 @@ export function canRevertFiles(
   return maxFileRevertK != null && k <= maxFileRevertK;
 }
 
+/** Find the virtual bubble that contains a transcript seq. */
+export function locateSeq(bubbles: HumanRow[][], seq: number): number | null {
+  for (let i = 0; i < bubbles.length; i++) {
+    if (bubbles[i]!.some((row) => row.seq === seq)) return i;
+  }
+  return null;
+}
+
 /** Find the virtual bubble + FoldCard ids for a live bash job's tool card. */
 export function locateBashTool(
   bubbles: HumanRow[][],
@@ -721,6 +729,10 @@ function bashCallSelector(callId: string): string {
   return `[data-bash-call-id="${escaped}"]`;
 }
 
+function seqHitSelector(seq: number): string {
+  return `[data-seq-hit~="${seq}"]`;
+}
+
 interface MessageListProps {
   messages: HumanRow[];
   loadingHistory: boolean;
@@ -736,6 +748,7 @@ interface MessageListProps {
   onStickChange?: (stickToEnd: boolean) => void;
   jumpToEndRef?: RefObject<(() => void) | null>;
   revealBashRef?: RefObject<((callId: string) => void) | null>;
+  revealSeqRef?: RefObject<((seq: number) => void) | null>;
   editingAnchor?: EditingUserAnchor | null;
   onEditAnchor?: (anchor: EditingUserAnchor) => void;
   onDismissEdit?: () => void;
@@ -756,6 +769,7 @@ export const MessageList = memo(function MessageList({
   onStickChange,
   jumpToEndRef,
   revealBashRef,
+  revealSeqRef,
   editingAnchor,
   onEditAnchor = () => {},
   onDismissEdit = () => {},
@@ -901,6 +915,32 @@ export const MessageList = memo(function MessageList({
   );
   if (revealBashRef) revealBashRef.current = revealBash;
 
+  const revealSeq = useCallback(
+    (seq: number) => {
+      setStick(false);
+      const bubbleIndex = locateSeq(bubbles, seq);
+      if (bubbleIndex == null) return;
+      virtualizer.scrollToIndex(loader + bubbleIndex, {
+        align: "center",
+      });
+      const started = performance.now();
+      const tick = () => {
+        const el = document.querySelector(seqHitSelector(seq));
+        if (el instanceof HTMLElement) {
+          el.scrollIntoView({ block: "center", inline: "nearest" });
+          el.classList.remove("session-search-reveal");
+          void el.offsetWidth;
+          el.classList.add("session-search-reveal");
+          return;
+        }
+        if (performance.now() - started < 800) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    },
+    [bubbles, loader, setStick, virtualizer],
+  );
+  if (revealSeqRef) revealSeqRef.current = revealSeq;
+
   const totalSize = virtualizer.getTotalSize();
   useLayoutEffect(() => {
     if (!stickToEnd) return;
@@ -982,6 +1022,7 @@ export const MessageList = memo(function MessageList({
               <div
                 key={virtualItem.key}
                 data-index={virtualItem.index}
+                data-seq-hit={group.map((row) => row.seq).join(" ")}
                 ref={virtualizer.measureElement}
                 style={itemStyle(virtualItem.start)}
               >

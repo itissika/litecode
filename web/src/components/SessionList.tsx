@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { useConnectionStore, getDockviewApi } from "../stores/connectionStore";
+import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { SessionItem } from "./SessionItem";
+import { openSessionPanel } from "../lib/sessionPanelNav";
 
 export function SessionList() {
   const sessions = useSessionStore((s) => s.sessions);
@@ -37,32 +38,7 @@ export function SessionList() {
   const connecting = connState === "connecting" || connState === "reconnecting";
 
   const handleSessionClick = (sessionId: string) => {
-    const api = getDockviewApi();
-    if (!api) return;
-    const panelId = `agent-${sessionId}`;
-    if (api.getPanel(panelId)) {
-      // A restored panel may exist without a live projection yet.
-      api.getPanel(panelId)?.api.setActive();
-      void useConnectionStore.getState().ensureSubscribe(sessionId).catch(() => {});
-    } else {
-      // Open in the center grid, not the active edge group (e.g. Sessions).
-      const gridGroups = api.groups.filter((g) => g.api.location.type === "grid");
-      let position: { referenceGroup: string } | undefined;
-      if (gridGroups.length === 0) {
-        const group = api.addGroup();
-        position = { referenceGroup: group.id };
-      } else {
-        position = { referenceGroup: gridGroups[0].api.id };
-      }
-      api.addPanel({
-        id: panelId,
-        component: "agent",
-        title: sessionId.slice(0, 8),
-        params: { sessionId },
-        tabComponent: "agent",
-        position,
-      });
-    }
+    openSessionPanel(sessionId);
   };
 
   const renderBody = () => {

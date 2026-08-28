@@ -21,6 +21,12 @@ describe("toolTitle", () => {
         include_pattern: "**/*.tsx",
       }).summary,
     ).toBe("terminal status indicator · in **/*.tsx");
+    expect(
+      toolTitle("session_search", {
+        query: "auth middleware",
+        session_id: "01ABCDEF",
+      }).summary,
+    ).toBe("auth middleware · in 01ABCDEF");
   });
 
   it("identifies both LSP action and target file", () => {

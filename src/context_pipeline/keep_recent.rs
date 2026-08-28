@@ -213,7 +213,10 @@ pub fn build_compaction_prompt(discarded: &[Item]) -> String {
         } else {
             "[]".into()
         };
-        format!("Previous summary:\n{}\n\nNew transcript JSON:\n{}", prev, rest)
+        format!(
+            "Previous summary:\n{}\n\nNew transcript JSON:\n{}",
+            prev, rest
+        )
     } else {
         format!("Transcript JSON:\n{}", serialize_for_summary(discarded))
     }

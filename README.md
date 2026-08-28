@@ -30,7 +30,7 @@ A vibe-coded agent framework built specifically for coding. It focuses on **Tool
 - **Hot-plug tools** — Settings take effect on the next turn without restarting serve.
 - **Full LSP experience** — With LSP on, write / edit get automatic diagnostics feedback — the agent edits like a human.
 - **Safety policies** — One-click preset switch for tool authorization; sensitive-path protection; session snapshots with mid-run revert.
-- **Context compression** — auto or one-click manual; keep-recent automatically keeps key content; built-in `session_search` tool recalls history losslessly.
+- **Context compression** — auto or one-click manual; keep-recent automatically keeps key content; built-in `session_search` finds past transcripts as path:line hits, then `read` / `grep` to deepen.
 
 ### 🖥️ IDE
 - **Lightweight editing** — Embedded Monaco editor, ready out of the box; IDE capabilities are Agent capabilities, prioritized for the agent side.

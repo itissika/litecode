@@ -19,13 +19,14 @@ pub mod snapshot_paths;
 pub mod store;
 pub mod surface;
 pub mod task_state;
+pub mod transcript_file;
 pub mod transcript_fts;
 pub mod working;
 pub mod workspace_lock;
 
 pub use estimate::{
-    ItemTokenBreakdown, apply_prompt_overhead, autocompact_threshold,
-    compute_token_breakdown, compute_token_estimate, count_text_tokens,
+    ItemTokenBreakdown, apply_prompt_overhead, autocompact_threshold, compute_token_breakdown,
+    compute_token_estimate, count_text_tokens, truncate_text_tokens,
 };
 pub use event::{EventDraft, EventLog, EventType, Seq, SessionEvent};
 pub use gate::SessionGate;

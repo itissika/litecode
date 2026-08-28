@@ -380,7 +380,10 @@ export async function retrievalSearch(body: {
   exclude?: string;
   top_k?: number;
   project?: string;
-  /** When false, code corpus skips semantic lane (text-only). Default true. */
+  /** 0-based hit offset for session corpus pagination. */
+  offset?: number;
+  /** When false, code corpus skips semantic lane (text-only). Default true.
+   *  Session corpus: when false, keeps lexical hits only. */
   include_semantic?: boolean;
 }): Promise<RetrievalSearchResult> {
   const res = await apiFetch("/api/workspace/retrieval/search", {
@@ -399,20 +402,32 @@ export interface RetrievalSearchHit {
   score: number;
 }
 
-export interface SessionSearchHit {
-  session_id: string;
+export interface SessionSearchHitRow {
+  line: number;
   seq: number;
-  item_type: string;
   summary: string;
-  score: number;
+}
+
+export interface SessionSearchGroup {
+  session_id: string;
+  created_time: number;
+  updated_time: number;
+  path: string;
+  match_count: number;
+  hits: SessionSearchHitRow[];
+}
+
+export interface SessionSearchPage {
+  groups: SessionSearchGroup[];
+  offset: number;
+  next_offset: number;
+  has_more: boolean;
 }
 
 export interface RetrievalSearchResult {
   text: RetrievalSearchHit[];
   semantic?: RetrievalSearchHit[] | null;
-  session?: SessionSearchHit[] | null;
-  session_semantic?: SessionSearchHit[] | null;
-  session_has_more?: boolean | null;
+  session_page?: SessionSearchPage | null;
 }
 
 export async function getEnginesDetail(): Promise<EnginesDetail> {

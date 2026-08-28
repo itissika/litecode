@@ -943,11 +943,7 @@ fn editor_sync_ack(rev: Option<i32>, version: Option<i32>, server_ready: bool) -
     })
 }
 
-async fn ensure_open_document(
-    server: &LspServer,
-    file_path: &Path,
-    uri: &str,
-) -> Result<()> {
+async fn ensure_open_document(server: &LspServer, file_path: &Path, uri: &str) -> Result<()> {
     if !server.is_doc_open(uri).await {
         server.sync_document_from_disk(file_path, uri).await?;
     }

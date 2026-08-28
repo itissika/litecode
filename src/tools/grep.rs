@@ -65,7 +65,7 @@ impl Tool for GrepTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Optional directory or single file to search (workspace-relative preferred; absolute paths outside the workspace only under All permission). Omit to search the workspace. A directory is the walk root; a file searches only that file, including large files."
+                    "description": "Optional directory or single file to search (workspace-relative preferred; absolute paths outside the workspace only under All permission). Omit to search the workspace. A directory is the walk root; a file searches only that file, including large files. Session transcripts are searchable only when this is `.litecode/sessions` or `.litecode/sessions/<session_id>.md`."
                 },
                 "offset": {
                     "type": "integer",
@@ -134,25 +134,68 @@ fn compile_regex_preview(pattern: &str) -> std::result::Result<(), regex::Error>
 
 impl GrepTool {
     fn call_for_execution(&self, input: Value, execution: ToolExecutionContext) -> ToolCallResult {
-        match run_grep(&input, &execution.workspace_root, execution.path_mode) {
+        match run_grep(
+            &input,
+            &execution.workspace_root,
+            execution.path_mode,
+            &execution.session_id,
+        ) {
             Ok(output) => ToolCallResult::ok(output),
             Err(e) => ToolCallResult::error(e.to_string()),
         }
     }
 }
 
-fn run_grep(input: &Value, workspace_root: &Path, path_mode: ToolPathMode) -> Result<String> {
-    run_grep_with_token_budget(input, workspace_root, path_mode, GREP_TOKEN_BUDGET)
+fn run_grep(
+    input: &Value,
+    workspace_root: &Path,
+    path_mode: ToolPathMode,
+    caller_session_id: &str,
+) -> Result<String> {
+    run_grep_with_token_budget(
+        input,
+        workspace_root,
+        path_mode,
+        caller_session_id,
+        GREP_TOKEN_BUDGET,
+    )
 }
 
 fn run_grep_with_token_budget(
     input: &Value,
     workspace_root: &Path,
     path_mode: ToolPathMode,
+    caller_session_id: &str,
     token_budget: usize,
 ) -> Result<String> {
     let regex = crate::tool::require_nonempty_string(input, "regex")
         .map_err(LitecodeError::ToolExecution)?;
+
+    if let Some(raw_path) = input["path"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if crate::session::transcript_file::is_virtual_session_path(raw_path) {
+            return grep_virtual_session(
+                raw_path,
+                regex,
+                input,
+                workspace_root,
+                caller_session_id,
+                token_budget,
+            );
+        }
+        if crate::session::transcript_file::is_virtual_session_dir(raw_path) {
+            return grep_virtual_session_dir(
+                regex,
+                input,
+                workspace_root,
+                caller_session_id,
+                token_budget,
+            );
+        }
+    }
 
     let include_pattern = input["include_pattern"]
         .as_str()
@@ -254,7 +297,138 @@ fn run_grep_with_token_budget(
         ));
     }
 
-    Ok(render_grep_page(&root, &matches, offset, token_budget))
+    Ok(render_grep_page(
+        &root,
+        &matches,
+        offset,
+        token_budget,
+        false,
+    ))
+}
+
+fn grep_virtual_session(
+    raw_path: &str,
+    regex: &str,
+    input: &Value,
+    workspace_root: &Path,
+    caller_session_id: &str,
+    token_budget: usize,
+) -> Result<String> {
+    let stem = crate::session::transcript_file::try_parse_virtual_path(raw_path)
+        .ok_or_else(|| LitecodeError::ToolExecution("invalid session transcript path".into()))?;
+    let db = crate::engines::session_search::sessions_db_under(workspace_root);
+    let session_id = crate::engines::session_search::resolve_session_ref(&db, &stem)
+        .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+    let file = crate::session::transcript_file::load_transcript_file(&db, &session_id)
+        .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+    let re = compile_virtual_grep_regex(regex)?;
+    let matches = grep_transcript_file(&db, &file, &re, caller_session_id);
+    finish_virtual_grep_matches(matches, input, workspace_root, token_budget)
+}
+
+fn grep_virtual_session_dir(
+    regex: &str,
+    input: &Value,
+    workspace_root: &Path,
+    caller_session_id: &str,
+    token_budget: usize,
+) -> Result<String> {
+    let db = crate::engines::session_search::sessions_db_under(workspace_root);
+    let listed = crate::session::transcript_file::list_virtual_paths(&db)
+        .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+    let include = input["include_pattern"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(crate::workspace::filter::compile_include_pattern)
+        .transpose()
+        .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+    let re = compile_virtual_grep_regex(regex)?;
+    let mut matches = Vec::new();
+    for virtual_path in listed {
+        if include.as_ref().is_some_and(|m| !m.matches(&virtual_path)) {
+            continue;
+        }
+        let Some(stem) = crate::session::transcript_file::try_parse_virtual_path(&virtual_path)
+        else {
+            continue;
+        };
+        let file = match crate::session::transcript_file::load_transcript_file(&db, &stem) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(path = %virtual_path, error = %e, "skip unread session transcript");
+                continue;
+            }
+        };
+        matches.extend(grep_transcript_file(&db, &file, &re, caller_session_id));
+    }
+    finish_virtual_grep_matches(matches, input, workspace_root, token_budget)
+}
+
+fn compile_virtual_grep_regex(regex: &str) -> Result<regex::Regex> {
+    regex::RegexBuilder::new(regex)
+        .case_insensitive(true)
+        .build()
+        .map_err(|e| LitecodeError::ToolExecution(format!("invalid regular expression: {e}")))
+}
+
+fn grep_transcript_file(
+    db: &Path,
+    file: &crate::session::transcript_file::TranscriptFile,
+    re: &regex::Regex,
+    caller_session_id: &str,
+) -> Vec<LexicalMatch> {
+    let hidden = if !caller_session_id.is_empty() && caller_session_id == file.session_id {
+        crate::engines::session_search::load_surface_seqs(db, &file.session_id).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let mut matches = Vec::new();
+    for (i, line) in file.lines.iter().enumerate() {
+        let line_no = (i + 1) as u32;
+        if file
+            .seq_at(line_no)
+            .is_some_and(|seq| hidden.contains(&seq))
+        {
+            continue;
+        }
+        if re.is_match(line) {
+            matches.push(LexicalMatch {
+                path: file.virtual_path.clone(),
+                start_line: line_no,
+                end_line: line_no,
+                line_text: line.clone(),
+                context_before: Vec::new(),
+                context_after: Vec::new(),
+            });
+        }
+    }
+    matches
+}
+
+fn finish_virtual_grep_matches(
+    mut matches: Vec<LexicalMatch>,
+    input: &Value,
+    workspace_root: &Path,
+    token_budget: usize,
+) -> Result<String> {
+    if matches.is_empty() {
+        return Ok("No matches found".to_string());
+    }
+    sort_grep_matches(&mut matches);
+    let offset = input["offset"].as_u64().map(|o| o as usize).unwrap_or(0);
+    if offset >= matches.len() {
+        return Ok(format!(
+            "offset {offset} past end ({} matches); try offset 0",
+            matches.len()
+        ));
+    }
+    Ok(render_grep_page(
+        workspace_root,
+        &matches,
+        offset,
+        token_budget,
+        true,
+    ))
 }
 
 fn sort_grep_matches(matches: &mut [LexicalMatch]) {
@@ -294,10 +468,15 @@ fn render_grep_page(
     matches: &[LexicalMatch],
     offset: usize,
     token_budget: usize,
+    force_matches: bool,
 ) -> String {
     let remaining = &matches[offset..];
 
-    let view = select_grep_view(root, matches, token_budget);
+    let view = if force_matches {
+        GrepView::Matches
+    } else {
+        select_grep_view(root, matches, token_budget)
+    };
     if view != GrepView::Matches {
         let body = format_grep_body(root, remaining, view);
         return wrap_grep_page(&body, offset, remaining.len(), matches.len(), view);
@@ -632,6 +811,7 @@ mod tests {
             &input,
             dir,
             crate::workspace::ToolPathMode::Safe,
+            "",
             token_budget,
         )
         .expect("grep succeeds")
@@ -954,7 +1134,7 @@ mod tests {
             crate::session::count_text_tokens(&expanded) > context_cap,
             "fixture must make ancestor view larger"
         );
-        let degraded = render_grep_page(dir.path(), &[rich_match], 0, context_cap);
+        let degraded = render_grep_page(dir.path(), &[rich_match], 0, context_cap, false);
         assert!(degraded.contains("view: context"), "got: {degraded}");
         assert!(
             crate::session::count_text_tokens(&degraded) <= context_cap,
@@ -997,7 +1177,7 @@ mod tests {
             crate::session::count_text_tokens(&context_all) > compact_cap,
             "fixture must make context view larger"
         );
-        let compact = render_grep_page(dir.path(), &many_matches, 0, compact_cap);
+        let compact = render_grep_page(dir.path(), &many_matches, 0, compact_cap, false);
         assert!(compact.contains("view: matches"), "got: {compact}");
         assert!(compact.contains("needle_119"), "got: {compact}");
         assert!(
@@ -1376,5 +1556,290 @@ mod tests {
         );
         assert!(file.contains("view: expanded"), "got: {file}");
         assert!(file.contains("single_needle"), "got: {file}");
+    }
+
+    fn seed_session(root: &std::path::Path, text: &str) -> String {
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let s = crate::session::store::Session::open(
+            db.to_str().unwrap(),
+            root.to_str().unwrap(),
+            "default",
+            None,
+        )
+        .unwrap();
+        s.insert_detail_rows(&[crate::types::user_text(text)])
+            .unwrap();
+        let id = s.id.clone();
+        drop(s);
+        id
+    }
+
+    fn call_in_session(dir: &std::path::Path, input: Value, session_id: &str) -> String {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(GrepTool.execute(
+            input,
+            ToolExecutionContext {
+                path_mode: crate::workspace::ToolPathMode::Safe,
+                workspace_root: dir.to_path_buf(),
+                call_id: String::new(),
+                cancel: tokio_util::sync::CancellationToken::new(),
+                output_limit: GrepTool.max_result_size(),
+                session_id: session_id.to_string(),
+            },
+        ))
+        .content
+    }
+
+    #[test]
+    fn virtual_session_grep_hits_canonical_line_and_skips_workspace_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let sid = seed_session(root, "alpha\nVIRTUAL_GREP_NEEDLE here\ndelta");
+        let path = crate::session::transcript_file::virtual_path_for(&sid);
+
+        let hit = call_in(
+            root,
+            serde_json::json!({ "regex": "VIRTUAL_GREP_NEEDLE", "path": path }),
+        );
+        assert!(
+            hit.contains("view: matches"),
+            "virtual grep must stay matches, got: {hit}"
+        );
+        assert!(hit.contains(&path), "{hit}");
+        assert!(hit.contains("VIRTUAL_GREP_NEEDLE"), "{hit}");
+        assert!(hit.contains("3:"), "canonical line 3, got: {hit}");
+
+        let self_hit = call_in_session(
+            root,
+            serde_json::json!({ "regex": "VIRTUAL_GREP_NEEDLE", "path": path }),
+            &sid,
+        );
+        assert!(
+            self_hit.contains("No matches found"),
+            "current surface seqs must be skipped, got: {self_hit}"
+        );
+
+        let workspace = call_in(root, serde_json::json!({ "regex": "VIRTUAL_GREP_NEEDLE" }));
+        assert!(
+            !workspace.contains(".litecode/sessions/"),
+            "workspace grep must not scan virtual sessions, got: {workspace}"
+        );
+
+        let other = seed_session(root, "DIR_GREP_NEEDLE in other session");
+        let dir_hit = call_in(
+            root,
+            serde_json::json!({
+                "regex": "DIR_GREP_NEEDLE",
+                "path": ".litecode/sessions",
+            }),
+        );
+        assert!(dir_hit.contains("view: matches"), "{dir_hit}");
+        assert!(
+            dir_hit.contains(&crate::session::transcript_file::virtual_path_for(&other)),
+            "{dir_hit}"
+        );
+        assert!(dir_hit.contains("DIR_GREP_NEEDLE"), "{dir_hit}");
+        let unscoped_dir = call_in(root, serde_json::json!({ "regex": "DIR_GREP_NEEDLE" }));
+        assert!(
+            !unscoped_dir.contains(".litecode/sessions/"),
+            "omit path must not scan sessions, got: {unscoped_dir}"
+        );
+    }
+
+    fn seed_compacted(root: &std::path::Path, archived: &str, live: &str) -> String {
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let s = crate::session::store::Session::open(
+            db.to_str().unwrap(),
+            root.to_str().unwrap(),
+            "default",
+            None,
+        )
+        .unwrap();
+        s.insert_detail_rows(&[
+            crate::types::user_text(archived),
+            crate::types::user_text("filler middle"),
+            crate::types::user_text(live),
+        ])
+        .unwrap();
+        s.apply_compact_checkpoint_from(&crate::types::user_text("[summary] compact"), Some(2), 10)
+            .unwrap();
+        let id = s.id.clone();
+        drop(s);
+        id
+    }
+
+    fn session_md_file_hits(out: &str) -> usize {
+        out.lines()
+            .filter(|l| l.starts_with(".litecode/sessions/") && l.ends_with(".md"))
+            .count()
+    }
+
+    #[test]
+    fn explicit_session_dir_grep_hits_every_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let ids: Vec<String> = (0..3)
+            .map(|i| seed_session(root, &format!("SHARED_DIR_TOKEN session {i}")))
+            .collect();
+        let expected: Vec<String> = ids
+            .iter()
+            .map(|id| crate::session::transcript_file::virtual_path_for(id))
+            .collect();
+
+        for input in [
+            serde_json::json!({
+                "regex": "SHARED_DIR_TOKEN",
+                "path": ".litecode/sessions",
+            }),
+            serde_json::json!({
+                "regex": "SHARED_DIR_TOKEN",
+                "path": ".litecode/sessions/",
+            }),
+            serde_json::json!({
+                "regex": "SHARED_DIR_TOKEN",
+                "path": ".litecode/sessions",
+                "include_pattern": "*.md",
+            }),
+        ] {
+            let out = call_in(root, input.clone());
+            assert!(out.contains("view: matches"), "{out}");
+            for path in &expected {
+                assert!(out.contains(path), "missing {path} in\n{out}");
+            }
+            assert_eq!(
+                session_md_file_hits(&out),
+                3,
+                "dir grep must hit all sessions for {input}:\n{out}"
+            );
+        }
+
+        let parent = call_in(
+            root,
+            serde_json::json!({
+                "regex": "SHARED_DIR_TOKEN",
+                "path": ".litecode",
+            }),
+        );
+        assert!(
+            !parent.contains(".litecode/sessions/"),
+            "parent .litecode must not scan virtual transcripts, got: {parent}"
+        );
+
+        let hidden = call_in(root, serde_json::json!({ "regex": "SHARED_DIR_TOKEN" }));
+        assert!(
+            !hidden.contains(".litecode/sessions/"),
+            "omit path must not scan sessions, got: {hidden}"
+        );
+        let unscoped_ignore = call_in(
+            root,
+            serde_json::json!({ "regex": "SHARED_DIR_TOKEN", "no_ignore": true }),
+        );
+        assert!(
+            !unscoped_ignore.contains(".litecode/sessions/"),
+            "no_ignore workspace grep must still skip sessions, got: {unscoped_ignore}"
+        );
+    }
+
+    #[test]
+    fn dir_grep_peels_current_surface_keeps_other_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let current = seed_compacted(
+            root,
+            "ARCHIVED_DIR_TOKEN in current",
+            "LIVE_DIR_TOKEN in current",
+        );
+        let other = seed_session(root, "LIVE_DIR_TOKEN in other");
+        let current_path = crate::session::transcript_file::virtual_path_for(&current);
+        let other_path = crate::session::transcript_file::virtual_path_for(&other);
+
+        let live = call_in_session(
+            root,
+            serde_json::json!({
+                "regex": "LIVE_DIR_TOKEN",
+                "path": ".litecode/sessions",
+            }),
+            &current,
+        );
+        assert!(
+            live.contains(&other_path),
+            "other session stays visible:\n{live}"
+        );
+        assert!(
+            !live.contains(&current_path),
+            "current live surface must be peeled from dir grep:\n{live}"
+        );
+
+        let archived = call_in_session(
+            root,
+            serde_json::json!({
+                "regex": "ARCHIVED_DIR_TOKEN",
+                "path": ".litecode/sessions",
+            }),
+            &current,
+        );
+        assert!(
+            archived.contains(&current_path),
+            "archived rows of current session remain greppable:\n{archived}"
+        );
+
+        let as_other = call_in_session(
+            root,
+            serde_json::json!({
+                "regex": "LIVE_DIR_TOKEN",
+                "path": current_path,
+            }),
+            &other,
+        );
+        assert!(
+            as_other.contains("LIVE_DIR_TOKEN"),
+            "reading another session must not peel its surface:\n{as_other}"
+        );
+
+        let full_archived = call_in(
+            root,
+            serde_json::json!({
+                "regex": "ARCHIVED_DIR_TOKEN",
+                "path": current_path,
+            }),
+        );
+        let peeled_archived = call_in_session(
+            root,
+            serde_json::json!({
+                "regex": "ARCHIVED_DIR_TOKEN",
+                "path": current_path,
+            }),
+            &current,
+        );
+        let full_line = full_archived
+            .lines()
+            .find(|l| l.contains("ARCHIVED_DIR_TOKEN"))
+            .expect(&format!("archived line in full grep:\n{full_archived}"));
+        let peeled_line = peeled_archived
+            .lines()
+            .find(|l| l.contains("ARCHIVED_DIR_TOKEN"))
+            .expect(&format!("archived line after peel:\n{peeled_archived}"));
+        assert_eq!(
+            full_line, peeled_line,
+            "file grep peel must keep canonical lines"
+        );
+
+        let peeled_live = call_in_session(
+            root,
+            serde_json::json!({
+                "regex": "LIVE_DIR_TOKEN",
+                "path": current_path,
+            }),
+            &current,
+        );
+        assert!(
+            peeled_live.contains("No matches found"),
+            "file grep of current live surface must be empty:\n{peeled_live}"
+        );
     }
 }

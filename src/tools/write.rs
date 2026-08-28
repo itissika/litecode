@@ -166,6 +166,11 @@ impl WriteTool {
             Ok(s) => s,
             Err(e) => return ToolCallResult::error(e),
         };
+        if crate::session::transcript_file::is_virtual_session_path(raw_path) {
+            return ToolCallResult::error(
+                crate::session::transcript_file::READ_ONLY_MSG.to_string(),
+            );
+        }
         let content = match crate::tool::require_string(&input, "content") {
             Ok(s) => s,
             Err(e) => return ToolCallResult::error(e),
@@ -517,5 +522,22 @@ mod tests {
             "external ALL must not emit workspace change"
         );
         assert_eq!(std::fs::read_to_string(&external_file).unwrap(), "external");
+    }
+
+    #[test]
+    fn virtual_session_path_is_read_only() {
+        let tool = WriteTool::new();
+        let result = tool.call(serde_json::json!({
+            "file_path": ".litecode/sessions/01ABCDEF.md",
+            "content": "nope"
+        }));
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Error);
+        assert!(
+            result
+                .content
+                .contains(crate::session::transcript_file::READ_ONLY_MSG),
+            "{}",
+            result.content
+        );
     }
 }
