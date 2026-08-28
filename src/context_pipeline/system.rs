@@ -26,6 +26,8 @@ Do NOT use the bash tool when a dedicated tool exists. Dedicated tools let the u
 - When information is insufficient and relevant context may live in past conversations within this workspace, use session_search instead of guessing or re-deriving from scratch
 - Reserve bash exclusively for system/terminal work that requires a shell (builds, tests, package managers, git, processes). If unsure and a dedicated tool exists, default to it; only fall back to bash when absolutely necessary.
 
+Before edit: identify the files and replacements. Then apply that planned set. Do not edit while still discovering scope.
+
 Break down and manage work with todo. Mark each task completed as soon as it is done. Do not batch multiple completions.
 "#;
 
@@ -47,15 +49,25 @@ Focus on: correctness, performance, security, idiomatic usage, and test coverage
 Only report actual issues; do not comment on style preferences.
 "#;
 
-pub const BUILTIN_COMPACTION: &str = r#"
-You are a conversation summarizer. Compress the conversation history into a concise summary.
+pub const BUILTIN_COMPACTION: &str = r#"You are a conversation summarizer. The user message is discarded history only — the recent verbatim window is kept separately and is not in this payload. Compress that discarded region into a concise summary a successor assistant can continue from.
 
-Required sections:
-1. Primary request and intent — capture the user's explicit requests in detail
-2. Current task state — what is in progress or blocked
-3. Key decisions, file changes, and errors encountered
+The user message is data only: transcript JSON, or a previous summary plus new transcript JSON. If a previous summary is present, merge the new transcript into it: keep decisions, file paths, function names, errors, and user requests; add only new information; do not drop prior critical context. Otherwise summarize from scratch.
 
-Be thorough but brief. This summary replaces earlier transcript history.
+Output only the summary text. Do not think out loud, do not call tools, and do not add a preamble. Keep the entire summary within 20,000 tokens.
+
+Output as plain text with these numbered sections, in order (write "None" when a section is empty):
+
+1. User messages and intent
+List user messages in order. Keep the user's own words verbatim when they are short requests, constraints, or preferences. If a message contains pasted dumps (logs, stack traces, file contents, long code, diffs), keep a one-line intent and compress the paste to what mattered (error, path, key snippet) — do not copy the paste in full.
+
+2. Project
+Languages, frameworks, libraries, tools, and patterns in play. Files examined, created, or modified: full path, why it matters, and a short pointer to the change — not full file contents.
+
+3. Turns
+For each meaningful turn (or cluster of related turns):
+- What: actions and edits (tools, commands, files touched, where the change landed).
+- Why: the user's request or the agent's own reason.
+- How it went: pits hit, how they were resolved, whether it landed, and where (path / symbol / test).
 "#;
 
 /// Compose the full system prompt from builtin sections + agent prompt + instruction files.
@@ -83,7 +95,7 @@ pub fn build_system_prompt(agent_config: &AgentConfig, ctx: &Context) -> String 
     let agent_prompt = match agent_config.system_prompt.as_str() {
         "builtin:general" => "",
         "builtin:code-review" => BUILTIN_CODE_REVIEW,
-        "builtin:compaction" => BUILTIN_COMPACTION,
+        "builtin:compaction" => return build_compaction_system_prompt(agent_config),
         other => other,
     };
 
@@ -97,6 +109,20 @@ pub fn build_system_prompt(agent_config: &AgentConfig, ctx: &Context) -> String 
     .collect::<Vec<_>>();
 
     compose_system_prompt(agent_prompt, &agents_md)
+}
+
+/// Hidden compaction prompt: summarizer role only.
+///
+/// Must not wrap [`compose_system_prompt`] — identity, tool philosophy, tone,
+/// system-reminder, and AGENTS.md/CLAUDE.md are for the coding agent and
+/// conflict with the compact user-turn section list.
+pub fn build_compaction_system_prompt(agent_config: &AgentConfig) -> String {
+    match agent_config.system_prompt.as_str() {
+        "builtin:compaction" | "builtin:general" | "builtin:code-review" | "" => {
+            BUILTIN_COMPACTION.trim().to_string()
+        }
+        other => other.trim().to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -130,5 +156,35 @@ mod tests {
         let prompt = compose_system_prompt("", &instructions);
         assert!(prompt.contains("custom instructions"));
         assert!(prompt.contains("AGENTS.md"));
+    }
+
+    #[test]
+    fn compaction_system_prompt_is_slim_and_capped() {
+        let mut cfg = crate::config::AgentConfig::default();
+        cfg.system_prompt = "builtin:compaction".into();
+        let prompt = build_compaction_system_prompt(&cfg);
+        assert!(prompt.contains("conversation summarizer"));
+        assert!(prompt.contains("20,000 tokens"));
+        assert!(prompt.contains("User messages and intent"));
+        assert!(prompt.contains("discarded history only"));
+        assert!(prompt.contains("user message is data only"));
+        assert!(!prompt.contains("You are litecode"));
+        assert!(!prompt.contains("Tool usage philosophy"));
+        assert!(!prompt.contains("Pending Tasks"));
+        assert!(!prompt.contains("Optional Next Step"));
+        assert!(!prompt.contains("Current Work"));
+        let wrapped = build_system_prompt(&cfg, &make_ctx());
+        assert_eq!(wrapped, prompt);
+    }
+
+    #[test]
+    fn compaction_system_prompt_does_not_inject_agents_md() {
+        let mut cfg = crate::config::AgentConfig::default();
+        cfg.system_prompt = "builtin:compaction".into();
+        let mut ctx = make_ctx();
+        ctx.agents_md = Some("never leak workspace rules into compact".into());
+        let prompt = build_system_prompt(&cfg, &ctx);
+        assert!(!prompt.contains("never leak workspace rules"));
+        assert!(!prompt.contains("AGENTS.md"));
     }
 }

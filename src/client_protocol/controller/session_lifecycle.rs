@@ -158,8 +158,7 @@ impl SessionController {
             ));
         }
         let compaction_binding = self.runtime.resolve_compaction_binding()?;
-        let ctx = self.runtime.compaction_context();
-        let compaction_system = self.runtime.compaction_system_prompt(&ctx);
+        let compaction_system = self.runtime.compaction_system_prompt();
 
         let lease = self.sessions.try_begin_operation(
             session_id,
@@ -200,7 +199,7 @@ impl SessionController {
                 &compaction_binding.api_key,
                 &compaction_binding.api_model_id,
                 &compaction_system,
-                compaction_binding.max_tokens,
+                crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
                 &mut transcript,
                 &cancel,
                 Some(&op_id),

@@ -126,21 +126,13 @@ impl RuntimeHandle {
         Ok(binding)
     }
 
-    pub fn compaction_context(&self) -> Context {
-        build_context(
-            &self.resolved,
-            &self.workspace.workspace_root,
-            &self.workspace.paths,
-        )
-    }
-
-    pub fn compaction_system_prompt(&self, ctx: &Context) -> String {
+    pub fn compaction_system_prompt(&self) -> String {
         self.resolved
             .agents()
             .get("compaction")
             .map(crate::config::bridge::agent_config_from_profile)
-            .map(|agent| crate::context_pipeline::build_system_prompt(&agent, ctx))
-            .unwrap_or_else(|| crate::context_pipeline::BUILTIN_COMPACTION.to_string())
+            .map(|agent| crate::context_pipeline::build_compaction_system_prompt(&agent))
+            .unwrap_or_else(|| crate::context_pipeline::BUILTIN_COMPACTION.trim().to_string())
     }
 
     /// Reload global settings into this handle when the writer revision advanced.

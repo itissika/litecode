@@ -134,9 +134,9 @@ impl AgentDeps for AgentRuntime {
         };
         let compaction_system = if let Some(profile) = self.resolved.agents().get("compaction") {
             let compaction_agent = agent_config_from_profile(profile);
-            crate::context_pipeline::build_system_prompt(&compaction_agent, &self.rctx().ctx)
+            crate::context_pipeline::build_compaction_system_prompt(&compaction_agent)
         } else {
-            crate::context_pipeline::BUILTIN_COMPACTION.to_string()
+            crate::context_pipeline::BUILTIN_COMPACTION.trim().to_string()
         };
 
         let task_state = self
@@ -154,7 +154,7 @@ impl AgentDeps for AgentRuntime {
                 &compaction_binding.api_key,
                 &compaction_binding.api_model_id,
                 &compaction_system,
-                compaction_binding.max_tokens,
+                crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
                 &self.prompt_usage_baseline,
                 transcript,
                 step,

@@ -6,7 +6,6 @@
 //! the leftover. One LLM pass — no second-pass / aggressive rewrite.
 
 use crate::authority::responses::{FunctionCallOutput, InputContent, Item, MessageItem};
-use crate::context_pipeline::estimate::compact_prompt;
 use crate::context_pipeline::summary::{is_compact_summary_item, summary_body_text};
 use crate::session::estimate::{autocompact_threshold, item_token_estimate};
 
@@ -204,7 +203,8 @@ pub fn serialize_for_summary(items: &[Item]) -> String {
     serde_json::to_string(&truncated).unwrap_or_else(|_| "[]".into())
 }
 
-/// Build the LLM compaction prompt for the discarded region.
+/// Build the LLM compaction user message: data only (history / prior summary).
+/// Structure, budget, and merge rules live in the compaction system prompt.
 pub fn build_compaction_prompt(discarded: &[Item]) -> String {
     if discarded.first().is_some_and(is_compact_summary_item) {
         let prev = summary_body_text(&discarded[0]);
@@ -213,27 +213,10 @@ pub fn build_compaction_prompt(discarded: &[Item]) -> String {
         } else {
             "[]".into()
         };
-        format!(
-            "{}\n\nPrevious summary:\n{}\n\nNew transcript JSON:\n{}",
-            update_compaction_prompt(),
-            prev,
-            rest
-        )
+        format!("Previous summary:\n{}\n\nNew transcript JSON:\n{}", prev, rest)
     } else {
-        format!(
-            "{}\n\nTranscript JSON:\n{}",
-            compact_prompt(),
-            serialize_for_summary(discarded)
-        )
+        format!("Transcript JSON:\n{}", serialize_for_summary(discarded))
     }
-}
-
-fn update_compaction_prompt() -> &'static str {
-    r#"Update the previous conversation summary by merging the new transcript. Preserve
-all decisions, open tasks, file paths, function names, and error messages from the
-previous summary, and carry forward the user's explicit requests and messages. Only add
-new information; do not drop prior critical context. Maintain the same numbered-section
-structure, updating each section with the new information."#
 }
 
 #[cfg(test)]
@@ -359,6 +342,8 @@ mod tests {
         assert!(prompt.contains("Previous summary:"));
         assert!(prompt.contains("old decisions"));
         assert!(prompt.contains("New transcript JSON:"));
+        assert!(!prompt.contains("20,000 tokens"));
+        assert!(!prompt.contains("User messages and intent"));
         assert!(!prompt.contains("[Conversation summary]\nold decisions"));
     }
 
@@ -367,6 +352,8 @@ mod tests {
         let discarded = vec![user_text("a"), user_text("b")];
         let prompt = build_compaction_prompt(&discarded);
         assert!(prompt.contains("Transcript JSON:"));
+        assert!(!prompt.contains("20,000 tokens"));
+        assert!(!prompt.contains("User messages and intent"));
         assert!(!prompt.contains("Previous summary:"));
     }
 

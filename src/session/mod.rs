@@ -24,7 +24,7 @@ pub mod working;
 pub mod workspace_lock;
 
 pub use estimate::{
-    ItemTokenBreakdown, apply_prompt_overhead, autocompact_threshold, compact_prompt,
+    ItemTokenBreakdown, apply_prompt_overhead, autocompact_threshold,
     compute_token_breakdown, compute_token_estimate, count_text_tokens,
 };
 pub use event::{EventDraft, EventLog, EventType, Seq, SessionEvent};

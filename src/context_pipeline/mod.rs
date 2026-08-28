@@ -26,7 +26,7 @@ pub use compact::CompactPolicy;
 pub use env::{Context, build_context};
 pub use system::{
     BUILTIN_CODE_REVIEW, BUILTIN_COMPACTION, BUILTIN_IDENTITY, BUILTIN_REMINDER, BUILTIN_TONE,
-    BUILTIN_TOOLS, build_system_prompt, compose_system_prompt,
+    BUILTIN_TOOLS, build_compaction_system_prompt, build_system_prompt, compose_system_prompt,
 };
 pub use view::{HotView, PreparedView};
 

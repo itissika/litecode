@@ -101,7 +101,7 @@ impl Tool for EditTool {
                 "edits": {
                     "type": "array",
                     "minItems": 1,
-                    "description": "Replacements to apply to this file. Every old_string is matched against the file as it is before this call; later items cannot depend on earlier new_string. Independent edits can share one call; chained edits must be a later edit call.",
+                    "description": "Replacements to apply to this file.",
                     "items": {
                         "type": "object",
                         "additionalProperties": false,
@@ -182,7 +182,7 @@ impl Tool for EditTool {
 
     fn description(&self, _ctx: &Context) -> String {
         format!(
-            "Replace text in one file. Pass file_path and a non-empty edits array; each item is old_string, new_string, and optional replace_all (default false). Empty new_string deletes old_string. Do not include read's line-number prefix (`    N: `).\n\
+            "Replace text in one file. Multiple files: multiple calls (one file_path each). Pass file_path and a non-empty edits array; each item is old_string, new_string, and optional replace_all (default false). Empty new_string deletes old_string.\n\
              Matching tries exact first (CRLF/LF and common typography such as smart quotes and dashes are equivalent), then a unique high-confidence line-aligned fuzzy match. replace_all applies every exact match and never auto-replaces multiple fuzzy candidates.\n\
              {SNAPSHOT_RULE}\n\
              Example (one edit): {{\"file_path\":\"src/a.rs\",\"edits\":[{{\"old_string\":\"fn start() {{}}\",\"new_string\":\"fn main() {{}}\"}}]}}\n\

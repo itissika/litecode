@@ -221,46 +221,6 @@ pub fn autocompact_threshold(context_window: usize) -> usize {
     (context_window as f64 * 0.8) as usize
 }
 
-/// Compact prompt text (not tokenized into the threshold itself; estimate stays Item-based).
-pub fn compact_prompt() -> &'static str {
-    r#"Produce a faithful, concise summary of the conversation so far so that a successor
-assistant can continue the work seamlessly after the earlier turns are discarded.
-Capture what is needed to continue — the user's explicit requests, your most recent
-actions, key technical details, file paths, commands, configuration, and architectural
-decisions — but be economical: prefer tight prose and short references over long
-verbatim dumps. A focused summary that fits is more useful than an exhaustive one
-that gets cut off.
-
-Output the summary as plain text with the following numbered sections, in order
-(write "None" when a section is empty):
-
-1. Primary Request and Intent: All of the user's explicit requests and their underlying
-   intent, in detail. Preserve nuance, constraints, scope boundaries, and stated
-   preferences.
-2. Key Technical Concepts: Important technologies, languages, frameworks, libraries,
-   tools, and patterns relied upon.
-3. Files and Code Sections: Every file examined, created, or modified — full path, why
-   it matters, and relevant code, with the most recent edits in full.
-4. Errors and Fixes: Every error, failed command, or test/build failure, the root cause,
-   and exactly how it was fixed. Note any fix that came from user feedback verbatim.
-5. Problem Solving: Problems solved and any in-progress diagnosis, including hypotheses
-   still being evaluated.
-6. All User Messages: List ALL user messages that are not tool results, in order,
-   verbatim or high-fidelity. These are critical for understanding intent and how it
-   evolved.
-7. Pending Tasks: Tasks the user explicitly asked for that are not yet complete. Do not
-   invent tasks the user never requested.
-8. Current Work: Precisely what you were doing immediately before this summary, with the
-   most recent file names, code, commands, and state, specific enough to resume mid-stream.
-9. Optional Next Step: The single next step that directly continues the most recent work,
-   strictly in line with the user's latest request. If the prior task was finished, only
-   propose a next step that is clearly part of the user's stated goal; otherwise state
-   that you should confirm with the user. Include a verbatim quote from the most recent
-   messages showing where you left off.
-
-Do not call any tools. Respond with only the summary text."#
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,5 +1,6 @@
 use tokio_util::sync::CancellationToken;
 
+use crate::authority::responses::MessageItem;
 use crate::context_pipeline::keep_recent::{build_compaction_prompt, find_keep_recent_cut};
 use crate::llm::{LlmProvider, ModelRequest};
 use crate::runtime::observer::{
@@ -7,7 +8,7 @@ use crate::runtime::observer::{
 };
 use crate::session::event::Seq;
 use crate::session::manager::SessionManager;
-use crate::types::{LitecodeError, Result, Transcript, item_text_preview, user_text};
+use crate::types::{Item, LitecodeError, Result, Transcript, item_text_preview, user_text};
 
 use super::budget::{BudgetPolicy, ProviderPromptBaseline};
 use super::summary::compact_summary_message_with_reminder;
@@ -408,6 +409,9 @@ impl CompactPolicy {
             return Err(LitecodeError::Canceled);
         }
 
+        // LLM input is discarded-only: `transcript` here is already the persist
+        // prefix (in-flight tail split off by the caller). Keep-recent stays in
+        // `kept` and is never serialized into the compact prompt.
         let discarded = &transcript[..cut];
         let kept = transcript[cut..].to_vec();
         let prompt = build_compaction_prompt(discarded);
@@ -459,26 +463,43 @@ impl CompactPolicy {
             return Err(LitecodeError::Canceled);
         }
 
-        let request = ModelRequest {
-            model: model.to_string(),
-            instructions: system.to_string(),
-            input: vec![user_text(prompt)],
-            max_output_tokens: max_tokens,
-            temperature: 0.3,
-            tools: vec![],
-            thinking_mode: None,
-            reasoning_effort: None,
-            json_output: false,
-            session_id: Some(session_id.to_string()),
-        };
-
+        let request = compact_model_request(model, system, prompt, max_tokens, session_id);
         let items = provider.complete(&request, api_key).await?;
-        Ok(items
-            .iter()
-            .map(item_text_preview)
-            .collect::<Vec<_>>()
-            .join(""))
+        Ok(summary_text_from_compact_output(&items))
     }
+}
+
+/// Compact is a one-shot summarizer: no thinking, fixed output cap from the caller.
+fn compact_model_request(
+    model: &str,
+    system: &str,
+    prompt: &str,
+    max_tokens: u32,
+    session_id: &str,
+) -> ModelRequest {
+    ModelRequest {
+        model: model.to_string(),
+        instructions: system.to_string(),
+        input: vec![user_text(prompt)],
+        max_output_tokens: max_tokens,
+        temperature: 0.3,
+        tools: vec![],
+        thinking_mode: Some("disabled".into()),
+        reasoning_effort: Some("none".into()),
+        json_output: false,
+        session_id: Some(session_id.to_string()),
+    }
+}
+
+/// Keep only assistant output text. Reasoning items must not enter the checkpoint.
+fn summary_text_from_compact_output(items: &[Item]) -> String {
+    items
+        .iter()
+        .filter(|item| matches!(item, Item::Message(MessageItem::Output(_))))
+        .map(item_text_preview)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn compact_fail_kind(err: &LitecodeError) -> CompactionFailKind {
@@ -540,7 +561,23 @@ fn require_persisted_prefix(transcript_len: usize, persisted_prefix_len: usize) 
 
 #[cfg(test)]
 mod tests {
-    use super::require_persisted_prefix;
+    use super::*;
+    use crate::authority::responses::{
+        OutputStatus, ReasoningItem, ReasoningItemContent, ReasoningTextContent,
+    };
+    use crate::types::assistant_text;
+
+    fn reasoning(text: &str) -> Item {
+        Item::Reasoning(ReasoningItem {
+            id: Some("rs_compact".into()),
+            summary: vec![],
+            content: Some(vec![ReasoningItemContent::ReasoningText(
+                ReasoningTextContent { text: text.into() },
+            )]),
+            encrypted_content: None,
+            status: Some(OutputStatus::Completed),
+        })
+    }
 
     #[test]
     fn persisted_prefix_gate_errors_when_cursor_exceeds_memory() {
@@ -555,5 +592,31 @@ mod tests {
     #[test]
     fn persisted_prefix_gate_keeps_exact_cursor_when_tail_exists() {
         assert_eq!(require_persisted_prefix(12, 10).unwrap(), 10);
+    }
+
+    #[test]
+    fn compact_request_disables_thinking_and_uses_caller_cap() {
+        let req = compact_model_request("m", "sys", "prompt", 20_480, "s1");
+        assert_eq!(req.thinking_mode.as_deref(), Some("disabled"));
+        assert_eq!(req.reasoning_effort.as_deref(), Some("none"));
+        assert_eq!(req.max_output_tokens, 20_480);
+        assert!(req.tools.is_empty());
+    }
+
+    #[test]
+    fn compact_summary_drops_reasoning_items() {
+        let items = vec![
+            reasoning("chain of thought leak"),
+            assistant_text("1. Primary Request\nFix the compact preview"),
+        ];
+        let summary = summary_text_from_compact_output(&items);
+        assert_eq!(summary, "1. Primary Request\nFix the compact preview");
+        assert!(!summary.contains("chain of thought"));
+    }
+
+    #[test]
+    fn compact_summary_empty_when_only_reasoning() {
+        let items = vec![reasoning("only thinking")];
+        assert!(summary_text_from_compact_output(&items).is_empty());
     }
 }
