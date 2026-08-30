@@ -411,27 +411,44 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       set({ loading: true, loadError: null });
     }
     try {
-      const summary = await getSettingsSummary();
-      const [adapters, providers, websearch, models, availableTools, customTools, mcpServers, log, excludes, enginesDetail] =
-        await Promise.all([
-          getAdapters(),
-          getProviders(),
-          getWebSearch(),
-          getModels(),
-          getAvailableTools(),
-          getCustomTools(),
-          getMcpServers(),
-          getLog(),
-          getExcludes(),
-          getEnginesDetail(),
-        ]);
-      const agentIds = await loadSettingsAgentIds();
-      const agents: Record<string, AgentProfile> = {};
-      await Promise.all(
-        agentIds.map(async (id) => {
-          agents[id] = await getAgent(id);
-        }),
-      );
+      // Config only. Engine live-state (LSP probes, index, warmup) lives on
+      // ensureCatalogLoaded / EnginesSection — waiting for it here blocks every
+      // settings page, including Provider.
+      const [
+        summary,
+        adapters,
+        providers,
+        websearch,
+        models,
+        availableTools,
+        customTools,
+        mcpServers,
+        log,
+        excludes,
+        agentBundle,
+      ] = await Promise.all([
+        getSettingsSummary(),
+        getAdapters(),
+        getProviders(),
+        getWebSearch(),
+        getModels(),
+        getAvailableTools(),
+        getCustomTools(),
+        getMcpServers(),
+        getLog(),
+        getExcludes(),
+        (async () => {
+          const agentIds = await loadSettingsAgentIds();
+          const agents: Record<string, AgentProfile> = {};
+          await Promise.all(
+            agentIds.map(async (id) => {
+              agents[id] = await getAgent(id);
+            }),
+          );
+          return { agentIds, agents };
+        })(),
+      ]);
+      const { agentIds, agents } = agentBundle;
       const firstProvider = Object.values(providers)[0] ?? null;
       set({
         summary,
@@ -444,8 +461,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         availableTools,
         customTools,
         mcpServers,
-        engineStatuses: enginesFromDetail(enginesDetail),
-        lspServers: lspServersFromDetail(enginesDetail),
         agentIds,
         agents,
         selectedAgentId: agentIds.includes(get().selectedAgentId)

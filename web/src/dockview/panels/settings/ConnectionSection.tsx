@@ -21,7 +21,7 @@ import {
   type SerializeResult,
 } from "./persist";
 
-type ProviderDraft = {
+export type ProviderDraft = {
   id: string;
   adapter_id: string;
   label: string;
@@ -54,18 +54,35 @@ function viewToDraft(view: ProviderView, adapters: AdapterDescriptor[]): Provide
   };
 }
 
-function serializeProviderDrafts(
+function providerDraftIncomplete(
+  d: ProviderDraft,
+  adapters: AdapterDescriptor[],
+): boolean {
+  if (!d.id.trim() || !d.adapter_id) return true;
+  if (endpointFieldRequired(adapters, d.adapter_id) && !d.endpoint.trim()) return true;
+  return !(d.api_key.trim() || d.masked_key);
+}
+
+/** Label or key typed — the row is no longer a blank "just added" card. */
+function providerDraftStarted(d: ProviderDraft): boolean {
+  return Boolean(d.label.trim() || d.api_key.trim());
+}
+
+export function serializeProviderDrafts(
   drafts: ProviderDraft[],
   adapters: AdapterDescriptor[],
 ): SerializeResult<Record<string, ProviderDefinition>> {
+  const complete: ProviderDraft[] = [];
   for (const d of drafts) {
-    if (!d.id.trim() || !d.adapter_id) return { skip: "invalid" };
-    if (endpointFieldRequired(adapters, d.adapter_id) && !d.endpoint.trim()) {
-      return { skip: "invalid" };
+    if (!providerDraftIncomplete(d, adapters)) {
+      complete.push(d);
+      continue;
     }
-    if (!(d.api_key.trim() || d.masked_key)) return { skip: "invalid" };
+    // Brand-new empty card: omit so Add does not flash "Fix fields to save".
+    if (!d.masked_key && !providerDraftStarted(d)) continue;
+    return { skip: "invalid" };
   }
-  return { ok: draftsToProviders(drafts) };
+  return { ok: draftsToProviders(complete) };
 }
 
 function snapshotProviderDrafts(): ProviderDraft[] {
@@ -99,7 +116,7 @@ export function ConnectionSection() {
   const persistStatus = useSettingsStore((s) => s.persistStatus);
   const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const saveProviders = useSettingsStore((s) => s.saveProviders);
-  const [drafts, setDrafts] = useState<ProviderDraft[]>([]);
+  const [drafts, setDrafts] = useState<ProviderDraft[]>(snapshotProviderDrafts);
   const [justAddedProviderId, setJustAddedProviderId] = useState<string | null>(null);
 
   useEffect(() => {

@@ -161,6 +161,14 @@ describe("ensureCatalogLoaded warming poll (FE-03)", () => {
   });
 });
 
+describe("refresh vs engine live-state", () => {
+  it("does not call engines/detail — that probe path must not block Provider", async () => {
+    mockedGetEnginesDetail.mockResolvedValue(enginesDetail("warming"));
+    await useSettingsStore.getState().refresh();
+    expect(mockedGetEnginesDetail).not.toHaveBeenCalled();
+  });
+});
+
 describe("settings persist toasts", () => {
   it("does not success-toast settings/changed while the dialog is open", () => {
     useToastStore.setState({ toasts: [] });

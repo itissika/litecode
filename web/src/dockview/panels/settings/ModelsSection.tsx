@@ -214,15 +214,23 @@ function RemoteCatalogModelId({
   );
 }
 
-function serializeModels(
+export function serializeModels(
   draft: Record<string, ModelDefinition>,
+  savedIds: Set<string> = new Set(),
 ): SerializeResult<Record<string, ModelDefinition>> {
+  const complete: Record<string, ModelDefinition> = {};
   for (const model of Object.values(draft)) {
-    if (!model.provider_ref.trim() || !(model.config?.api_model_id ?? "").trim()) {
-      return { skip: "invalid" };
+    const incomplete =
+      !model.provider_ref.trim() || !(model.config?.api_model_id ?? "").trim();
+    if (!incomplete) {
+      complete[model.id] = model;
+      continue;
     }
+    // Unsaved incomplete row: omit so Add does not flash "Fix fields to save".
+    if (!savedIds.has(model.id)) continue;
+    return { skip: "invalid" };
   }
-  return { ok: draft };
+  return { ok: complete };
 }
 
 export function ModelsSection() {
@@ -234,7 +242,9 @@ export function ModelsSection() {
   const persistStatus = useSettingsStore((s) => s.persistStatus);
   const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const saveModels = useSettingsStore((s) => s.saveModels);
-  const [draft, setDraft] = useState<Record<string, ModelDefinition>>({});
+  const [draft, setDraft] = useState<Record<string, ModelDefinition>>(
+    () => useSettingsStore.getState().models ?? {},
+  );
 
   useEffect(() => {
     if (!shouldHydrateDraftFromStore(persistStatus)) return;
@@ -244,7 +254,8 @@ export function ModelsSection() {
   useSettingsPersist(draft, {
     debounceMs: 400,
     setStatus: setPersistStatus,
-    serialize: serializeModels,
+    serialize: (d) =>
+      serializeModels(d, new Set(Object.keys(useSettingsStore.getState().models ?? {}))),
     commit: (p) => saveModels(p),
     revert: () => setDraft(useSettingsStore.getState().models ?? {}),
   });
