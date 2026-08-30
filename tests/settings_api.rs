@@ -1937,6 +1937,29 @@ async fn settings_engines_detail_exposes_engine_native_state() {
 }
 
 #[tokio::test]
+async fn settings_engines_cheap_payload_includes_lsp_servers() {
+    let ws = TempDir::new().expect("ws");
+    let db_dir = TempDir::new().expect("db");
+    let db_path = db_dir.path().join("litecode.db");
+    seed_global_db(&db_path);
+
+    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
+    let addr = spawn_server(state, web_dist).await;
+    let body: Value = test_http_client()
+        .get(format!("http://{addr}/api/workspace/engines"))
+        .send()
+        .await
+        .expect("engines")
+        .json()
+        .await
+        .expect("engines json");
+
+    assert_eq!(body["ok"], true);
+    assert!(body["data"]["engines"].is_object());
+    assert!(body["data"]["lsp_servers"].is_array());
+}
+
+#[tokio::test]
 async fn settings_lsp_stop_preserves_servers_and_clears_desired() {
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");

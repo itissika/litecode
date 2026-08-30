@@ -5,7 +5,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use super::{EngineState, EngineStatus, WorkspaceEngines};
-use crate::lsp::deps::probe_workspace_servers;
+use crate::lsp::deps::{LspServerProbe, probe_workspace_servers};
 
 #[derive(Debug, Clone)]
 pub struct EngineUsability {
@@ -32,7 +32,11 @@ impl WorkspaceEngines {
         });
 
         let retrieval = self.retrieval_detail(workspace_root, &retrieval_status);
-        let lsp = self.lsp_detail(workspace_root, &lsp_status);
+        // Probing starts child processes and may take seconds. Keep one probe
+        // result per detail response rather than running it again via
+        // `lsp_usability`.
+        let probes = probe_workspace_servers(workspace_root);
+        let lsp = self.lsp_detail(workspace_root, &lsp_status, probes);
         serde_json::json!({
             "retrieval": retrieval,
             "lsp": lsp,
@@ -51,6 +55,15 @@ impl WorkspaceEngines {
             });
         let configured_servers = crate::config::workspace::lsp_servers_from_engines(workspace_root);
         let probes = probe_workspace_servers(workspace_root);
+        self.lsp_usability_from_probes(status, configured_servers, &probes)
+    }
+
+    fn lsp_usability_from_probes(
+        &self,
+        status: EngineStatus,
+        configured_servers: Vec<String>,
+        probes: &[LspServerProbe],
+    ) -> EngineUsability {
         let configured_ok = configured_servers.iter().all(|id| {
             probes
                 .iter()
@@ -169,10 +182,18 @@ impl WorkspaceEngines {
         })
     }
 
-    fn lsp_detail(&self, workspace_root: &Path, lsp_status: &EngineStatus) -> Value {
+    fn lsp_detail(
+        &self,
+        workspace_root: &Path,
+        lsp_status: &EngineStatus,
+        probes: Vec<LspServerProbe>,
+    ) -> Value {
         let configured_servers = crate::config::workspace::lsp_servers_from_engines(workspace_root);
-        let probes = probe_workspace_servers(workspace_root);
-        let usability = self.lsp_usability(workspace_root);
+        let usability = self.lsp_usability_from_probes(
+            lsp_status.clone(),
+            configured_servers.clone(),
+            &probes,
+        );
         serde_json::json!({
             "desired": lsp_status.desired,
             "state": lsp_status.state,

@@ -27,5 +27,5 @@ pub use tool_path::{
     raw_path_outside_workspace, resolve_agent, resolve_human_relative, resolve_lsp_workspace,
     resolve_tool_path, resolve_tool_path_from,
 };
-pub use tree::{TreeEntry, TreeError, list_tree};
+pub use tree::{GlobListing, TreeEntry, TreeError, list_glob, list_tree, list_tree_reveal};
 pub use watcher::{WorkspaceWatcher, restart_watcher, spawn_watcher};

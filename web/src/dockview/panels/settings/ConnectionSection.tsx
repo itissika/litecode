@@ -14,6 +14,7 @@ import {
   TextInput,
   SettingsPageShell,
   adapterDefaultEndpoint,
+  useSettingsSaveBlocked,
 } from "./shared";
 import {
   shouldHydrateDraftFromStore,
@@ -112,7 +113,7 @@ function draftsToProviders(drafts: ProviderDraft[]): Record<string, ProviderDefi
 export function ConnectionSection() {
   const adapters = useSettingsStore((s) => s.adapters);
   const providers = useSettingsStore((s) => s.providers);
-  const saveBlocked = useSettingsStore((s) => s.isSaveBlocked());
+  const saveBlocked = useSettingsSaveBlocked();
   const persistStatus = useSettingsStore((s) => s.persistStatus);
   const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const saveProviders = useSettingsStore((s) => s.saveProviders);
@@ -183,7 +184,7 @@ export function ConnectionSection() {
           <div className="space-y-2">
           {drafts.map((row, index) => (
             <FoldCard
-              key={index}
+              key={row.id}
               defaultOpen={row.id === justAddedProviderId}
               label={
                 <span className="flex flex-1 items-center justify-between gap-2">

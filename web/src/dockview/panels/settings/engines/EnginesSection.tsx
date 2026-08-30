@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { getEnginesDetail, type EnginesDetail } from "../../../../api/workspace";
-import { useSettingsStore } from "../../../../stores/settingsStore";
+import { useEngineStore } from "../../../../stores/engineStore";
 import { EngineView } from "./EngineView";
 import { EnginesSkeleton } from "../../../../components/ui/Skeleton";
 import { SettingsPageShell } from "../shared";
@@ -14,9 +14,7 @@ export function EnginesSection() {
       .then((next) => {
         setDetail(next);
         setError(null);
-        // Keep EditorPane LSP gate (settingsStore.engineStatuses) in sync with
-        // Engine panel start/stop/clear — those ops do not emit settings/changed.
-        void useSettingsStore.getState().refreshEngineStatuses();
+        useEngineStore.getState().applyFromDetail(next);
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);

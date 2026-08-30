@@ -61,10 +61,17 @@ pub struct TreeQuery {
     pub path: String,
     #[serde(default = "default_depth")]
     pub depth: usize,
+    /// `1` / `true` → ancestor listing (`by_dir`) instead of one directory's `entries`.
+    #[serde(default)]
+    pub reveal: String,
 }
 
 fn default_depth() -> usize {
     1
+}
+
+fn reveal_requested(flag: &str) -> bool {
+    flag == "1" || flag.eq_ignore_ascii_case("true")
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,6 +125,23 @@ struct TreeData {
 }
 
 #[derive(Serialize)]
+struct TreeRevealData {
+    by_dir: std::collections::BTreeMap<String, Vec<TreeEntry>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GlobQuery {
+    #[serde(default)]
+    pub pattern: String,
+}
+
+#[derive(Serialize)]
+struct GlobData {
+    entries: Vec<TreeEntry>,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
 struct FileData {
     path: String,
     content: String,
@@ -131,6 +155,7 @@ struct PathData {
 pub fn router() -> Router<ServeState> {
     Router::new()
         .route("/tree", get(get_tree))
+        .route("/glob", get(get_glob))
         .route("/lsp/probe", get(get_lsp_probe))
         .route("/lsp/init", post(post_lsp_init))
         .route("/lsp/stop", post(post_lsp_stop))
@@ -193,6 +218,7 @@ struct LspInitFailureBody {
 #[derive(Serialize)]
 struct EnginesData {
     engines: std::collections::HashMap<String, crate::engines::EngineStatus>,
+    lsp_servers: Vec<crate::lsp::LspInstanceStatus>,
 }
 
 #[derive(Serialize)]
@@ -225,7 +251,19 @@ async fn get_lsp_probe(State(state): State<ServeState>) -> Response {
         .expect("runtime lock")
         .workspace_root()
         .to_path_buf();
-    let servers = probe_workspace_servers(&root);
+    let servers = match tokio::task::spawn_blocking(move || probe_workspace_servers(&root)).await {
+        Ok(servers) => servers,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiErr {
+                    ok: false,
+                    error: format!("LSP probe task failed: {err}"),
+                }),
+            )
+                .into_response();
+        }
+    };
     Json(ApiOk {
         ok: true,
         data: LspProbeData { servers },
@@ -244,6 +282,7 @@ async fn get_engines(State(state): State<ServeState>) -> Response {
         ok: true,
         data: EnginesData {
             engines: state.ide.engines.workspace_engine_statuses(&root),
+            lsp_servers: state.ide.engines.lsp_hub().instance_statuses(),
         },
     })
     .into_response()
@@ -256,7 +295,21 @@ async fn get_engines_detail(State(state): State<ServeState>) -> Response {
         .expect("runtime lock")
         .workspace_root()
         .to_path_buf();
-    let detail = state.ide.engines.engines_detail_view(&root);
+    let engines = state.ide.engines.clone();
+    let detail = match tokio::task::spawn_blocking(move || engines.engines_detail_view(&root)).await
+    {
+        Ok(detail) => detail,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiErr {
+                    ok: false,
+                    error: format!("engine detail task failed: {err}"),
+                }),
+            )
+                .into_response();
+        }
+    };
     Json(ApiOk {
         ok: true,
         data: EnginesDetailData {
@@ -640,24 +693,76 @@ fn open_error(status: StatusCode, msg: String) -> Response {
 }
 
 async fn get_tree(State(state): State<ServeState>, Query(query): Query<TreeQuery>) -> Response {
-    match state.workspace.tree(&query.path, query.depth) {
-        Ok(entries) => Json(ApiOk {
+    let workspace = state.workspace.clone();
+    let path = query.path;
+    let depth = query.depth;
+    let reveal = reveal_requested(&query.reveal);
+    match tokio::task::spawn_blocking(move || {
+        if reveal {
+            workspace
+                .tree_reveal(&path)
+                .map(std::ops::ControlFlow::Break)
+        } else {
+            workspace.tree(&path, depth).map(std::ops::ControlFlow::Continue)
+        }
+    })
+    .await
+    {
+        Ok(Ok(std::ops::ControlFlow::Continue(entries))) => Json(ApiOk {
             ok: true,
             data: TreeData { entries },
         })
         .into_response(),
-        Err(e) => workspace_error(e),
+        Ok(Ok(std::ops::ControlFlow::Break(layers))) => {
+            let by_dir = layers.into_iter().collect();
+            Json(ApiOk {
+                ok: true,
+                data: TreeRevealData { by_dir },
+            })
+            .into_response()
+        }
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("tree task join: {e}"),
+        ),
+    }
+}
+
+async fn get_glob(State(state): State<ServeState>, Query(query): Query<GlobQuery>) -> Response {
+    let workspace = state.workspace.clone();
+    let pattern = query.pattern;
+    match tokio::task::spawn_blocking(move || workspace.glob(&pattern)).await {
+        Ok(Ok(listing)) => Json(ApiOk {
+            ok: true,
+            data: GlobData {
+                entries: listing.entries,
+                truncated: listing.truncated,
+            },
+        })
+        .into_response(),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("glob task join: {e}"),
+        ),
     }
 }
 
 async fn get_file(State(state): State<ServeState>, Query(query): Query<PathQuery>) -> Response {
-    match state.workspace.read_file(&query.path) {
-        Ok((path, content)) => Json(ApiOk {
+    let workspace = state.workspace.clone();
+    let path = query.path;
+    match tokio::task::spawn_blocking(move || workspace.read_file(&path)).await {
+        Ok(Ok((path, content))) => Json(ApiOk {
             ok: true,
             data: FileData { path, content },
         })
         .into_response(),
-        Err(e) => workspace_error(e),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("file task join: {e}"),
+        ),
     }
 }
 

@@ -20,6 +20,7 @@ import {
   TextInput,
   SettingsPageShell,
   adapterDefaultEndpoint,
+  useSettingsSaveBlocked,
 } from "./shared";
 import {
   shouldHydrateDraftFromStore,
@@ -238,7 +239,7 @@ export function ModelsSection() {
   const providers = useSettingsStore((s) => s.providers);
   const models = useSettingsStore((s) => s.models);
   const agents = useSettingsStore((s) => s.agents);
-  const saveBlocked = useSettingsStore((s) => s.isSaveBlocked());
+  const saveBlocked = useSettingsSaveBlocked();
   const persistStatus = useSettingsStore((s) => s.persistStatus);
   const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const saveModels = useSettingsStore((s) => s.saveModels);

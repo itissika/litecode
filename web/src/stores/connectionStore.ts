@@ -27,6 +27,7 @@ import type {
 import type { WorkspaceChangeKind } from "../api/workspace";
 import { useBashStore } from "./bashStore";
 import { useToastStore } from "./toastStore";
+import { useEngineStore } from "./engineStore";
 
 /** Module-level dockview API reference, set by useDockviewConfig. */
 let _dockviewApi: DockviewApi | null = null;
@@ -229,7 +230,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               );
             }
             settings?.setRevision(hello.settings_revision);
-            void settings?.ensureCatalogLoaded();
+            void useEngineStore.getState().ensureLoaded();
             void settings?.notifySetupIfNeeded();
             // hello.session_id is empty string in single-WS mode; only set
             // global info (project, workspace_id, models, settings_revision, etc.).
@@ -386,6 +387,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
             settings?.onRemoteSettingsChanged(
               params as unknown as SettingsChanged,
             );
+            void useEngineStore.getState().ensureLoaded();
             return;
           }
 

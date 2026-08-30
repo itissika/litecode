@@ -1,4 +1,4 @@
-import type { EngineWarmupState } from "./settings";
+import type { EngineStatus, EngineWarmupState } from "./settings";
 import { apiFetch } from "./auth";
 
 export type TreeEntryKind = "file" | "dir";
@@ -47,6 +47,34 @@ export async function fetchTree(
   }
   const data = await parseJson<{ entries: TreeEntry[] }>(res);
   return data.entries;
+}
+
+/** One-shot ancestor listing so a file becomes visible without N expand calls. */
+export async function fetchTreeReveal(
+  path: string,
+): Promise<Record<string, TreeEntry[]>> {
+  const params = new URLSearchParams();
+  params.set("path", path);
+  params.set("reveal", "1");
+  const res = await apiFetch(`/api/workspace/tree?${params}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  const data = await parseJson<{ by_dir: Record<string, TreeEntry[]> }>(res);
+  return data.by_dir;
+}
+
+export interface GlobListing {
+  entries: TreeEntry[];
+  truncated: boolean;
+}
+
+export async function fetchGlob(pattern: string): Promise<GlobListing> {
+  const params = new URLSearchParams();
+  params.set("pattern", pattern);
+  const res = await apiFetch(`/api/workspace/glob?${params}`);
+  return parseJson<GlobListing>(res);
 }
 
 export async function readFile(path: string): Promise<string> {
@@ -428,6 +456,16 @@ export interface RetrievalSearchResult {
   text: RetrievalSearchHit[];
   semantic?: RetrievalSearchHit[] | null;
   session_page?: SessionSearchPage | null;
+}
+
+export async function getEngines(): Promise<EnginesSnapshot> {
+  const res = await apiFetch("/api/workspace/engines");
+  return parseJson<EnginesSnapshot>(res);
+}
+
+export interface EnginesSnapshot {
+  engines: Record<string, EngineStatus>;
+  lsp_servers: LspInstanceStatusView[];
 }
 
 export async function getEnginesDetail(): Promise<EnginesDetail> {

@@ -4,7 +4,7 @@ import type { LspResult } from "../api/types";
 import type { WireEnvelope } from "../api/agentWs";
 import { useConnectionStore, attachSiblingStores } from "../stores/connectionStore";
 import { useEditorStore } from "../stores/editorStore";
-import { useSettingsStore } from "../stores/settingsStore";
+import { useEngineStore } from "../stores/engineStore";
 
 const LSP_LANGUAGES = [
   "rust",
@@ -77,7 +77,7 @@ export function monacoCompletionTriggerToLsp(monacoKind: number): number {
 
 /** Hub active: pool/config intent (`activate`), not a live language server. */
 export function isLspWarm(): boolean {
-  return useSettingsStore.getState().engineStatuses.lsp?.state === "warm";
+  return useEngineStore.getState().engineStatuses.lsp?.state === "warm";
 }
 
 /**
@@ -88,7 +88,7 @@ export function isLspServerReady(): boolean {
   for (const ready of serverReadyByUri.values()) {
     if (ready) return true;
   }
-  const servers = useSettingsStore.getState().lspServers;
+  const servers = useEngineStore.getState().lspServers;
   return Array.isArray(servers) && servers.some((s) => s.state === "running");
 }
 

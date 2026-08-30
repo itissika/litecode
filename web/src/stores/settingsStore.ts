@@ -1,4 +1,4 @@
-import { create } from "zustand";
+﻿import { create } from "zustand";
 
 import { attachSiblingStores } from "./connectionStore";
 
@@ -50,9 +50,7 @@ import {
   type SettingsSummary,
   type ToolPreset,
   type ToolScope,
-  type EngineStatus,
 } from "../api/settings";
-import { getEnginesDetail, type EnginesDetail, type LspInstanceStatusView } from "../api/workspace";
 import type { SettingsChanged } from "../api/types";
 import { useSessionStore } from "./sessionStore";
 import { useTurnStore } from "./turnStore";
@@ -75,60 +73,37 @@ export type SettingsSection =
   | "files"
   | "advanced";
 
-// Catalog warmup poll: exponential backoff, then a quiet keep-alive at the
-// max delay. Engines (ORT / LSP) can stay `warming` for minutes; that is
-// visible in Settings → Engines and must not spam error toasts (FE-03).
-const WARMUP_BASE_MS = 500;
-const WARMUP_MAX_DELAY_MS = 8000;
-const WARMUP_MAX_ATTEMPTS = 8;
-let warmupAttempts = 0;
-let catalogPollTimer: ReturnType<typeof setTimeout> | null = null;
-let catalogFetchErrorToasted = false;
-
-/** Exponential backoff delay (ms) for the `attempt`-th catalog poll (1-based). */
-export function catalogPollDelayMs(attempt: number): number {
-  const n = Math.max(0, attempt - 1);
-  return Math.min(WARMUP_BASE_MS * 2 ** n, WARMUP_MAX_DELAY_MS);
-}
-
-function clearCatalogPollTimer(): void {
-  if (catalogPollTimer !== null) {
-    clearTimeout(catalogPollTimer);
-    catalogPollTimer = null;
+export function sectionNeedsSkeleton(
+  section: SettingsSection,
+  state: {
+    providers: Record<string, ProviderView> | null;
+    models: Record<string, ModelDefinition> | null;
+    availableTools: AvailableTool[] | null;
+    customTools: LayeredList<CustomToolDefinition> | null;
+    mcpServers: LayeredList<McpServerItem> | null;
+    log: LogSettings | null;
+    websearch: WebSearchView | null;
+    excludes: WorkspaceExcludes | null;
+  },
+): boolean {
+  switch (section) {
+    case "connection":
+      return state.providers === null;
+    case "models":
+      return state.models === null || state.providers === null;
+    case "agents":
+      return state.availableTools === null || state.models === null;
+    case "custom-tools":
+      return state.customTools === null;
+    case "mcp":
+      return state.mcpServers === null;
+    case "files":
+      return state.excludes === null;
+    case "advanced":
+      return state.log === null || state.websearch === null;
+    case "engines":
+      return false;
   }
-}
-
-/** Test hook: module poll state is not in the zustand store. */
-export function resetCatalogPollState(): void {
-  warmupAttempts = 0;
-  catalogFetchErrorToasted = false;
-  clearCatalogPollTimer();
-}
-
-function markCatalogSettled(): void {
-  warmupAttempts = 0;
-  catalogFetchErrorToasted = false;
-  clearCatalogPollTimer();
-}
-
-/** Coalesce overlapping callers (hello + settings/changed + Engines 1s refresh). */
-function scheduleCatalogPoll(error?: unknown): void {
-  if (catalogPollTimer !== null) {
-    return;
-  }
-  warmupAttempts += 1;
-  if (warmupAttempts > WARMUP_MAX_ATTEMPTS) {
-    warmupAttempts = WARMUP_MAX_ATTEMPTS;
-    if (error instanceof Error && !catalogFetchErrorToasted) {
-      catalogFetchErrorToasted = true;
-      useToastStore.getState().showToast(error.message, "error");
-    }
-  }
-  const delay = catalogPollDelayMs(warmupAttempts);
-  catalogPollTimer = setTimeout(() => {
-    catalogPollTimer = null;
-    void useSettingsStore.getState().ensureCatalogLoaded();
-  }, delay);
 }
 
 interface SettingsStoreState {
@@ -138,26 +113,19 @@ interface SettingsStoreState {
   summary: SettingsSummary | null;
   adapters: AdapterDescriptor[];
   providers: Record<string, ProviderView> | null;
-  /** @deprecated first provider convenience */
-  provider: ProviderView | null;
   websearch: WebSearchView | null;
   models: Record<string, ModelDefinition> | null;
   availableTools: AvailableTool[] | null;
   customTools: LayeredList<CustomToolDefinition> | null;
   mcpServers: LayeredList<McpServerItem> | null;
-  engineStatuses: Record<string, EngineStatus>;
-  /** Live language-server instances from engines detail (Running = server ready). */
-  lspServers: LspInstanceStatusView[];
   agentIds: string[];
   selectedAgentId: string;
   agents: Record<string, AgentProfile>;
   log: LogSettings | null;
   excludes: WorkspaceExcludes | null;
-  loading: boolean;
-  saving: boolean;
   loadError: string | null;
-  restartRequired: boolean;
   persistStatus: PersistStatus;
+  loadedRevisionBySection: Partial<Record<SettingsSection, number>>;
 }
 
 interface SettingsStore extends SettingsStoreState {
@@ -167,13 +135,8 @@ interface SettingsStore extends SettingsStoreState {
   setPersistStatus: (status: PersistStatus) => void;
   setRevision: (revision: number) => void;
   onRemoteSettingsChanged: (event: SettingsChanged) => void;
-  /** Load engine statuses (needed for Editor LSP gate). */
-  ensureCatalogLoaded: () => Promise<void>;
-  /** Refresh only engineStatuses after Engine panel start/stop/clear. */
-  refreshEngineStatuses: () => Promise<void>;
-  /** Fetch summary and toast if AI setup is incomplete. */
   notifySetupIfNeeded: () => Promise<void>;
-  refresh: () => Promise<void>;
+  ensureSectionLoaded: (section: SettingsSection, force?: boolean) => Promise<void>;
   refreshAgents: () => Promise<void>;
   setSelectedAgentId: (id: string) => void;
   saveProviders: (providers: Record<string, ProviderDefinition>) => Promise<void>;
@@ -255,25 +218,6 @@ export function toastLlmConfigFailure(fallback?: string): void {
 }
 
 
-function enginesFromDetail(detail: EnginesDetail): Record<string, EngineStatus> {
-  return {
-    lsp: {
-      desired: detail.lsp.desired,
-      state: detail.lsp.state,
-      error: detail.lsp.error,
-    },
-    code_search: {
-      desired: detail.retrieval.desired,
-      state: detail.retrieval.state,
-      error: detail.retrieval.error,
-    },
-  };
-}
-
-function lspServersFromDetail(detail: EnginesDetail): LspInstanceStatusView[] {
-  return detail.lsp.servers ?? [];
-}
-
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   open: false,
   section: "connection",
@@ -281,28 +225,23 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   summary: null,
   adapters: [],
   providers: null,
-  provider: null,
   websearch: null,
   models: null,
   availableTools: null,
   customTools: null,
   mcpServers: null,
-  engineStatuses: {},
-  lspServers: [],
   agentIds: ["default"],
   selectedAgentId: "default",
   agents: {},
   log: null,
   excludes: null,
-  loading: false,
-  saving: false,
   loadError: null,
-  restartRequired: false,
   persistStatus: "idle",
+  loadedRevisionBySection: {},
 
   openSettings: (section = "connection") => {
-    set({ open: true, section, persistStatus: "idle" });
-    void get().refresh();
+    set({ open: true, section, persistStatus: "idle", loadError: null });
+    void get().ensureSectionLoaded(section);
   },
 
   closeSettings: async () => {
@@ -313,7 +252,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   setSection: async (section) => {
     if (get().section === section) return;
     await flushRegisteredSettings();
-    set({ section, persistStatus: "idle" });
+    set({ section, persistStatus: "idle", loadError: null });
+    void get().ensureSectionLoaded(section);
   },
 
   setPersistStatus: (persistStatus) => {
@@ -322,14 +262,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   setRevision: (revision) => {
-    const { revision: current, open } = get();
-    if (revision > current) {
-      set({ revision });
-      if (open) {
-        void get().refresh();
-      }
-    } else {
-      set({ revision });
+    const { revision: current, open, section } = get();
+    set({ revision });
+    if (open && revision > current) {
+      void get().ensureSectionLoaded(section, true);
     }
   },
 
@@ -346,50 +282,13 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         .getState()
         .showToast("Settings changed — effective next turn", "success");
     }
-    void get().ensureCatalogLoaded();
     void useSessionStore.getState().refreshAvailableModels();
     if (get().open) {
       const status = get().persistStatus;
-      // Own-write echo: persist already applied the payload. A full refresh
-      // would flip `loading` and remount the section onto a skeleton.
-      if (status === "pending" || status === "saving" || status === "saved") {
+      if (status === "pending" || status === "saving") {
         return;
       }
-      void get().refresh();
-    }
-  },
-
-  ensureCatalogLoaded: async () => {
-    try {
-      const detail = await getEnginesDetail();
-      const engineStatuses = enginesFromDetail(detail);
-      set({ engineStatuses, lspServers: lspServersFromDetail(detail) });
-      const warming = Object.values(engineStatuses).some(
-        (engine) => engine?.state === "warming",
-      );
-      if (warming) {
-        scheduleCatalogPoll();
-      } else {
-        markCatalogSettled();
-      }
-    } catch (err) {
-      scheduleCatalogPoll(err);
-    }
-  },
-
-  refreshEngineStatuses: async () => {
-    try {
-      const detail = await getEnginesDetail();
-      const engineStatuses = enginesFromDetail(detail);
-      set({ engineStatuses, lspServers: lspServersFromDetail(detail) });
-      const warming = Object.values(engineStatuses).some(
-        (engine) => engine?.state === "warming",
-      );
-      if (warming) {
-        scheduleCatalogPoll();
-      }
-    } catch (err) {
-      console.error("engine status refresh failed", err);
+      void get().ensureSectionLoaded(get().section, true);
     }
   },
 
@@ -405,74 +304,82 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   isSaveBlocked: () => turnInProgress(),
 
-  refresh: async () => {
-    const firstLoad = !get().adapters.length && get().providers === null;
-    if (firstLoad) {
-      set({ loading: true, loadError: null });
+  ensureSectionLoaded: async (section, force = false) => {
+    if (section === "engines") return;
+    const state = get();
+    if (
+      !force &&
+      state.loadedRevisionBySection[section] === state.revision &&
+      !sectionNeedsSkeleton(section, state)
+    ) {
+      return;
     }
     try {
-      // Config only. Engine live-state (LSP probes, index, warmup) lives on
-      // ensureCatalogLoaded / EnginesSection — waiting for it here blocks every
-      // settings page, including Provider.
-      const [
-        summary,
-        adapters,
-        providers,
-        websearch,
-        models,
-        availableTools,
-        customTools,
-        mcpServers,
-        log,
-        excludes,
-        agentBundle,
-      ] = await Promise.all([
-        getSettingsSummary(),
-        getAdapters(),
-        getProviders(),
-        getWebSearch(),
-        getModels(),
-        getAvailableTools(),
-        getCustomTools(),
-        getMcpServers(),
-        getLog(),
-        getExcludes(),
-        (async () => {
-          const agentIds = await loadSettingsAgentIds();
-          const agents: Record<string, AgentProfile> = {};
-          await Promise.all(
-            agentIds.map(async (id) => {
-              agents[id] = await getAgent(id);
-            }),
-          );
-          return { agentIds, agents };
-        })(),
-      ]);
-      const { agentIds, agents } = agentBundle;
-      const firstProvider = Object.values(providers)[0] ?? null;
-      set({
-        summary,
-        revision: summary.revision,
-        adapters,
-        providers,
-        provider: firstProvider,
-        websearch,
-        models,
-        availableTools,
-        customTools,
-        mcpServers,
-        agentIds,
-        agents,
-        selectedAgentId: agentIds.includes(get().selectedAgentId)
-          ? get().selectedAgentId
-          : agentIds[0] ?? "default",
-        log,
-        excludes,
-        loading: false,
+      const markFresh = (revision: number) => ({
+        loadedRevisionBySection: {
+          ...get().loadedRevisionBySection,
+          [section]: revision,
+        },
+        loadError: null,
       });
+      if (section === "connection") {
+        const [summary, adapters, providers] = await Promise.all([
+          getSettingsSummary(),
+          getAdapters(),
+          getProviders(),
+        ]);
+        set({
+          summary,
+          revision: summary.revision,
+          adapters,
+          providers,
+          ...markFresh(summary.revision),
+        });
+        return;
+      }
+      if (section === "models") {
+        const [adapters, providers, models] = await Promise.all([
+          getAdapters(),
+          getProviders(),
+          getModels(),
+        ]);
+        set({ adapters, providers, models, ...markFresh(get().revision) });
+        void get().refreshAgents();
+        return;
+      }
+      if (section === "agents") {
+        const [models, availableTools, mcpServers] = await Promise.all([
+          getModels(),
+          getAvailableTools(),
+          getMcpServers(),
+        ]);
+        set({ models, availableTools, mcpServers });
+        await get().refreshAgents();
+        set(markFresh(get().revision));
+        return;
+      }
+      if (section === "custom-tools") {
+        const customTools = await getCustomTools();
+        set({ customTools, ...markFresh(get().revision) });
+        return;
+      }
+      if (section === "mcp") {
+        const mcpServers = await getMcpServers();
+        set({ mcpServers, ...markFresh(get().revision) });
+        return;
+      }
+      if (section === "files") {
+        const excludes = await getExcludes();
+        set({ excludes, ...markFresh(get().revision) });
+        return;
+      }
+      if (section === "advanced") {
+        const [log, websearch] = await Promise.all([getLog(), getWebSearch()]);
+        set({ log, websearch, ...markFresh(get().revision) });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load settings";
-      set({ loading: false, loadError: message });
+      set({ loadError: message });
       useToastStore.getState().showToast(message, "error");
     }
   },
@@ -502,18 +409,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
-    set({ saving: true });
     try {
       const { revision } = await putProviders(providers);
       const next = await getProviders();
-      set({
-        revision,
-        providers: next,
-        provider: Object.values(next)[0] ?? null,
-        saving: false,
-      });
+      set({ revision, providers: next });
     } catch (err) {
-      set({ saving: false });
       handleSaveError(err);
       throw err;
     }
@@ -525,13 +425,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
-    set({ saving: true });
     try {
       const { revision } = await putWebSearch(body);
       const websearch = await getWebSearch();
-      set({ revision, websearch, saving: false });
+      set({ revision, websearch });
     } catch (err) {
-      set({ saving: false });
       handleSaveError(err);
       throw err;
     }
@@ -543,13 +441,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
-    set({ saving: true });
     try {
       const { revision } = await putModels(models);
-      set({ revision, models, saving: false });
+      set({ revision, models });
       void useSessionStore.getState().refreshAvailableModels();
     } catch (err) {
-      set({ saving: false });
       handleSaveError(err);
       throw err;
     }
@@ -561,21 +457,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
-    set({ saving: true });
     try {
       const { revision } = await putCustomTool(id, def, scope);
       const [customTools, availableTools] = await Promise.all([
         getCustomTools(),
         getAvailableTools(),
       ]);
-      set({
-        revision,
-        customTools,
-        availableTools,
-        saving: false,
-      });
+      set({ revision, customTools, availableTools });
     } catch (err) {
-      set({ saving: false });
       handleSaveError(err);
       throw err;
     }
@@ -587,7 +476,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
-    set({ saving: true });
     try {
       const { revision } = await deleteCustomTool(id, scope);
       const [customTools, availableTools] = await Promise.all([
@@ -595,14 +483,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         getAvailableTools(),
       ]);
       await get().refreshAgents();
-      set({
-        revision,
-        customTools,
-        availableTools,
-        saving: false,
-      });
+      set({ revision, customTools, availableTools });
     } catch (err) {
-      set({ saving: false });
       handleSaveError(err);
       throw err;
     }
@@ -614,21 +496,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
-    set({ saving: true });
     try {
       const { revision } = await putMcpServer(id, def, scope);
       const [mcpServers, availableTools] = await Promise.all([
         getMcpServers(),
         getAvailableTools(),
       ]);
-      set({
-        revision,
-        mcpServers,
-        availableTools,
-        saving: false,
-      });
+      set({ revision, mcpServers, availableTools });
     } catch (err) {
-      set({ saving: false });
       handleSaveError(err);
       throw err;
     }
@@ -640,7 +515,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
-    set({ saving: true });
     try {
       const { revision } = await deleteMcpServer(id, scope);
       const [mcpServers, availableTools] = await Promise.all([
@@ -648,14 +522,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         getAvailableTools(),
       ]);
       await get().refreshAgents();
-      set({
-        revision,
-        mcpServers,
-        availableTools,
-        saving: false,
-      });
+      set({ revision, mcpServers, availableTools });
     } catch (err) {
-      set({ saving: false });
       handleSaveError(err);
       throw err;
     }
@@ -688,17 +556,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
-    set({ saving: true });
     try {
       const synced = withSyncedToolSeries(profile);
       const { revision } = await putAgent(id, synced);
       set((s) => ({
         revision,
         agents: { ...s.agents, [id]: synced },
-        saving: false,
       }));
     } catch (err) {
-      set({ saving: false });
       handleSaveError(err);
       throw err;
     }
@@ -710,17 +575,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
-    set({ saving: true });
     try {
       const { revision } = await applyAgentToolPreset(id, preset);
       const profile = await getAgent(id);
       set((s) => ({
         revision,
         agents: { ...s.agents, [id]: profile },
-        saving: false,
       }));
     } catch (err) {
-      set({ saving: false });
       handleSaveError(err);
       throw err;
     }
@@ -738,7 +600,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
-    set({ saving: true });
     try {
       const { revision } = await deleteAgent(id);
       const agentIds = await loadSettingsAgentIds();
@@ -755,10 +616,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         selectedAgentId: agentIds.includes(get().selectedAgentId)
           ? get().selectedAgentId
           : agentIds[0] ?? "default",
-        saving: false,
       });
     } catch (err) {
-      set({ saving: false });
       handleSaveError(err);
       throw err;
     }
@@ -770,12 +629,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
-    set({ saving: true });
     try {
       const { revision } = await putLog(level);
-      set({ revision, log: { level }, saving: false });
+      set({ revision, log: { level } });
     } catch (err) {
-      set({ saving: false });
       handleSaveError(err);
       throw err;
     }
@@ -787,12 +644,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       handleSaveError(err);
       throw err;
     }
-    set({ saving: true });
     try {
       const excludes = await putExcludes(body);
-      set({ excludes, saving: false });
+      set({ excludes });
     } catch (err) {
-      set({ saving: false });
       handleSaveError(err);
       throw err;
     }

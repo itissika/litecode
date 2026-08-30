@@ -1,171 +1,153 @@
+import { waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { catalogPollDelayMs, resetCatalogPollState, useSettingsStore } from "./settingsStore";
+import { useSettingsStore } from "./settingsStore";
 import { useToastStore } from "./toastStore";
 import { registerSettingsFlush } from "../dockview/panels/settings/persist";
-import type { EnginesDetail } from "../api/workspace";
-import type { EngineWarmupState } from "../api/settings";
+
+vi.mock("../api/settings", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/settings")>();
+  return {
+    ...actual,
+    getSettingsSummary: vi.fn(),
+    getAdapters: vi.fn(),
+    getProviders: vi.fn(),
+    getModels: vi.fn(),
+    getAgent: vi.fn(),
+    loadSettingsAgentIds: vi.fn(),
+    getMcpServers: vi.fn(),
+    getAvailableTools: vi.fn(),
+    getCustomTools: vi.fn(),
+    getLog: vi.fn(),
+    getExcludes: vi.fn(),
+    getWebSearch: vi.fn(),
+  };
+});
 
 vi.mock("../api/workspace", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/workspace")>();
   return {
     ...actual,
     getEnginesDetail: vi.fn(),
+    getEngines: vi.fn(),
   };
 });
 
+import {
+  getAdapters,
+  getAgent,
+  getAvailableTools,
+  getCustomTools,
+  getMcpServers,
+  getModels,
+  getProviders,
+  getSettingsSummary,
+  loadSettingsAgentIds,
+} from "../api/settings";
 import { getEnginesDetail } from "../api/workspace";
 
-const mockedGetEnginesDetail = vi.mocked(getEnginesDetail);
+const mockedSummary = vi.mocked(getSettingsSummary);
+const mockedAdapters = vi.mocked(getAdapters);
+const mockedProviders = vi.mocked(getProviders);
+const mockedModels = vi.mocked(getModels);
+const mockedAgent = vi.mocked(getAgent);
+const mockedAgentIds = vi.mocked(loadSettingsAgentIds);
+const mockedMcp = vi.mocked(getMcpServers);
+const mockedTools = vi.mocked(getAvailableTools);
+const mockedCustom = vi.mocked(getCustomTools);
+const mockedDetail = vi.mocked(getEnginesDetail);
 
-function enginesDetail(state: EngineWarmupState): EnginesDetail {
+function summary(revision: number) {
   return {
-    retrieval: {
-      desired: false,
-      state: "stopped",
-      usable: "stopped",
-      error: null,
-      model: {
-        model_found: false,
-        tokenizer_found: false,
-        ready: false,
-      },
-      index: {
-        status: "absent",
-        exists: false,
-        needs_rebuild: false,
-        vectors_ready: false,
-        indexed_files: 0,
-        indexed_chunks: 0,
-      },
-      policy: {
-        product_internal_dirs: [],
-        exclude_globs: [],
-        extensions: [],
-        max_file_bytes: 0,
-        binary_files: false,
-        lockfiles: false,
-        minified_files: false,
-      },
-    },
-    lsp: {
-      desired: true,
-      state,
-      usable: state === "warm" ? "ready" : "warming",
-      configured_servers: [],
-      probes: [],
-      servers: [],
-    },
+    revision,
+    provider_endpoint: null,
+    model_count: 0,
+    agent_count: 1,
+    catalog_count: 0,
+    log_level: "info",
+    effective_next_turn: true,
+    restart_required: false,
   };
 }
 
 beforeEach(() => {
-  resetCatalogPollState();
   useSettingsStore.setState({
-    engineStatuses: {},
-    lspServers: [],
+    open: false,
+    section: "connection",
+    revision: 0,
+    summary: null,
+    adapters: [],
+    providers: null,
+    models: null,
+    availableTools: null,
+    customTools: null,
+    mcpServers: null,
+    loadError: null,
+    persistStatus: "idle",
+    loadedRevisionBySection: {},
   });
   useToastStore.setState({ toasts: [] });
-  mockedGetEnginesDetail.mockReset();
+  mockedSummary.mockReset().mockResolvedValue(summary(1));
+  mockedAdapters.mockReset().mockResolvedValue([]);
+  mockedProviders.mockReset().mockResolvedValue({});
+  mockedModels.mockReset().mockResolvedValue({});
+  mockedAgent.mockReset();
+  mockedAgentIds.mockReset().mockResolvedValue(["default"]);
+  mockedMcp.mockReset().mockResolvedValue({ global: [], workspace: [] });
+  mockedTools.mockReset().mockResolvedValue([]);
+  mockedCustom.mockReset().mockResolvedValue({ global: [], workspace: [] });
+  mockedDetail.mockReset();
 });
 
 afterEach(() => {
-  resetCatalogPollState();
   vi.useRealTimers();
 });
 
-describe("catalogPollDelayMs (FE-03 backoff sequence)", () => {
-  it("grows exponentially from the base and caps at the maximum", () => {
-    const sequence = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(catalogPollDelayMs);
-    expect(sequence).toEqual([
-      500, 1000, 2000, 4000, 8000, 8000, 8000, 8000, 8000, 8000,
-    ]);
-    expect(sequence[0]).toBe(500);
-    expect(sequence[4]).toBe(8000);
-    expect(sequence[9]).toBe(8000);
-  });
-});
-
-describe("ensureCatalogLoaded warming poll (FE-03)", () => {
-  it("keeps polling with backoff while an engine warms, then settles", async () => {
-    vi.useFakeTimers();
-    mockedGetEnginesDetail
-      .mockResolvedValueOnce(enginesDetail("warming"))
-      .mockResolvedValueOnce(enginesDetail("warming"))
-      .mockResolvedValueOnce(enginesDetail("warm"));
-
-    void useSettingsStore.getState().ensureCatalogLoaded();
-    await vi.advanceTimersByTimeAsync(500); // poll #2
-    await vi.advanceTimersByTimeAsync(1000); // poll #3 → warm
-
-    expect(mockedGetEnginesDetail).toHaveBeenCalledTimes(3);
-    expect(useSettingsStore.getState().engineStatuses.lsp.state).toBe("warm");
-  });
-
-  it("keeps polling quietly after the cap while an engine stays warming — no error toast", async () => {
-    vi.useFakeTimers();
-    mockedGetEnginesDetail.mockResolvedValue(enginesDetail("warming"));
-
-    void useSettingsStore.getState().ensureCatalogLoaded();
-    // Poll delays: 500, 1000, 2000, 4000, then 8000… (cap).
-    const delays = [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000];
-    for (const delay of delays) {
-      await vi.advanceTimersByTimeAsync(delay);
-    }
-
-    expect(mockedGetEnginesDetail).toHaveBeenCalledTimes(9);
-    expect(useToastStore.getState().toasts).toHaveLength(0);
-
-    await vi.advanceTimersByTimeAsync(8000);
-    expect(mockedGetEnginesDetail).toHaveBeenCalledTimes(10);
-    expect(useToastStore.getState().toasts).toHaveLength(0);
-  });
-
-  it("toasts a sustained catalog fetch error once, then retries without repeating the toast", async () => {
-    vi.useFakeTimers();
-    mockedGetEnginesDetail.mockRejectedValue(new Error("catalog fetch failed"));
-    const shown: string[] = [];
-    let toastCount = 0;
-    const unsub = useToastStore.subscribe((s) => {
-      if (s.toasts.length > toastCount) {
-        shown.push(s.toasts[s.toasts.length - 1].message);
-      }
-      toastCount = s.toasts.length;
+describe("ensureSectionLoaded", () => {
+  it("opens Provider without fetching agents, MCP, or engines/detail", async () => {
+    useSettingsStore.getState().openSettings("connection");
+    await waitFor(() => {
+      expect(useSettingsStore.getState().providers).toEqual({});
     });
 
-    void useSettingsStore.getState().ensureCatalogLoaded();
-    const delays = [500, 1000, 2000, 4000, 8000, 8000, 8000, 8000];
-    for (const delay of delays) {
-      await vi.advanceTimersByTimeAsync(delay);
-    }
-
-    expect(shown).toEqual(["catalog fetch failed"]);
-
-    await vi.advanceTimersByTimeAsync(8000);
-    expect(mockedGetEnginesDetail.mock.calls.length).toBeGreaterThan(9);
-    expect(shown).toEqual(["catalog fetch failed"]);
-    unsub();
+    expect(useSettingsStore.getState().open).toBe(true);
+    expect(mockedProviders).toHaveBeenCalled();
+    expect(mockedAgent).not.toHaveBeenCalled();
+    expect(mockedMcp).not.toHaveBeenCalled();
+    expect(mockedCustom).not.toHaveBeenCalled();
+    expect(mockedDetail).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().providers).toEqual({});
   });
 
-  it("retries a transient fetch error with backoff and does not swallow it silently", async () => {
-    vi.useFakeTimers();
-    mockedGetEnginesDetail
-      .mockRejectedValueOnce(new Error("catalog fetch failed"))
-      .mockResolvedValueOnce(enginesDetail("warm"));
+  it("refreshes the current section after a save when persistStatus is saved", async () => {
+    useSettingsStore.setState({
+      open: true,
+      section: "connection",
+      persistStatus: "saved",
+      providers: {},
+      loadedRevisionBySection: { connection: 1 },
+      revision: 1,
+    });
+    mockedProviders.mockResolvedValue({
+      p1: {
+        id: "p1",
+        adapter_id: "openai",
+        label: "Remote",
+        endpoint: "https://api.openai.com/v1",
+        api_key: "sk-…",
+        auth: "bearer",
+      },
+    });
+    useSettingsStore.getState().onRemoteSettingsChanged({
+      revision: 2,
+      summary: summary(2),
+    });
+    await waitFor(() => {
+      expect(useSettingsStore.getState().providers?.p1?.label).toBe("Remote");
+    });
 
-    void useSettingsStore.getState().ensureCatalogLoaded();
-    await vi.advanceTimersByTimeAsync(500); // error → retry poll #2
-
-    expect(mockedGetEnginesDetail).toHaveBeenCalledTimes(2);
-    expect(useSettingsStore.getState().engineStatuses.lsp.state).toBe("warm");
-  });
-});
-
-describe("refresh vs engine live-state", () => {
-  it("does not call engines/detail — that probe path must not block Provider", async () => {
-    mockedGetEnginesDetail.mockResolvedValue(enginesDetail("warming"));
-    await useSettingsStore.getState().refresh();
-    expect(mockedGetEnginesDetail).not.toHaveBeenCalled();
+    expect(mockedProviders).toHaveBeenCalled();
+    expect(useSettingsStore.getState().providers?.p1?.label).toBe("Remote");
   });
 });
 
@@ -175,16 +157,7 @@ describe("settings persist toasts", () => {
     useSettingsStore.setState({ open: true, persistStatus: "saving" });
     useSettingsStore.getState().onRemoteSettingsChanged({
       revision: 99,
-      summary: {
-        revision: 99,
-        provider_endpoint: null,
-        model_count: 1,
-        agent_count: 1,
-        catalog_count: 1,
-        log_level: "info",
-        effective_next_turn: true,
-        restart_required: false,
-      },
+      summary: summary(99),
     });
     expect(useToastStore.getState().toasts.map((t) => t.message)).not.toContain(
       "Settings changed — effective next turn",

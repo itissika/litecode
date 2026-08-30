@@ -57,6 +57,7 @@ export class SettingsPersistController<D, P> {
   private pendingFp: string | null = null;
   private everCommitted = false;
   private disposed = false;
+  private savedTimer: ReturnType<typeof setTimeout> | null = null;
   private fingerprint: (payload: P) => string;
 
   constructor(
@@ -107,8 +108,7 @@ export class SettingsPersistController<D, P> {
     this.clearTimer();
     const result = this.opts.serialize(this.latest);
     if ("skip" in result && result.skip === "invalid") {
-      this.opts.revert();
-      this.opts.setStatus("idle");
+      this.opts.setStatus("invalid");
       return;
     }
     await this.run();
@@ -118,6 +118,10 @@ export class SettingsPersistController<D, P> {
   dispose(): void {
     this.disposed = true;
     this.clearTimer();
+    if (this.savedTimer !== null) {
+      clearTimeout(this.savedTimer);
+      this.savedTimer = null;
+    }
   }
 
   private clearTimer(): void {
@@ -161,6 +165,11 @@ export class SettingsPersistController<D, P> {
         this.pendingFp = null;
         if (this.gen === started) {
           this.opts.setStatus("saved");
+          this.savedTimer = setTimeout(() => {
+            this.savedTimer = null;
+            if (this.disposed || this.gen !== started) return;
+            this.opts.setStatus("idle");
+          }, 800);
         } else {
           void this.run();
         }

@@ -128,6 +128,80 @@ async fn workspace_tree_lists_files() {
 }
 
 #[tokio::test]
+async fn workspace_tree_reveal_returns_by_dir_ancestors() {
+    let _guard = WORKSPACE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/a")).unwrap();
+    std::fs::write(dir.path().join("src/a/b.ts"), "").unwrap();
+    std::fs::write(dir.path().join("README.md"), "").unwrap();
+
+    let (state, _serve, web_dist) = test_state(dir.path().to_path_buf());
+    let addr = spawn_test_server(state, web_dist).await;
+    let client = test_http_client();
+
+    let resp: Value = client
+        .get(format!(
+            "http://{addr}/api/workspace/tree?path=src/a/b.ts&reveal=1"
+        ))
+        .send()
+        .await
+        .expect("reveal")
+        .json()
+        .await
+        .expect("json");
+
+    assert_eq!(resp["ok"], true);
+    assert!(resp["data"]["entries"].is_null());
+    let by_dir = resp["data"]["by_dir"].as_object().expect("by_dir");
+    assert!(by_dir.contains_key(""));
+    assert!(by_dir.contains_key("src"));
+    assert!(by_dir.contains_key("src/a"));
+    assert!(!by_dir.contains_key("src/a/b.ts"));
+    let src_a: Vec<_> = by_dir["src/a"]
+        .as_array()
+        .expect("src/a entries")
+        .iter()
+        .map(|e| e["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(src_a, vec!["src/a/b.ts"]);
+}
+
+#[tokio::test]
+async fn workspace_glob_finds_nested_filename() {
+    let _guard = WORKSPACE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/FileTree.tsx"), "").unwrap();
+    std::fs::write(dir.path().join("README.md"), "").unwrap();
+
+    let (state, _serve, web_dist) = test_state(dir.path().to_path_buf());
+    let addr = spawn_test_server(state, web_dist).await;
+    let client = test_http_client();
+
+    let resp: Value = client
+        .get(format!("http://{addr}/api/workspace/glob?pattern=FileTree"))
+        .send()
+        .await
+        .expect("glob")
+        .json()
+        .await
+        .expect("json");
+
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["data"]["truncated"], false);
+    let entries = resp["data"]["entries"].as_array().expect("entries");
+    let paths: Vec<_> = entries
+        .iter()
+        .map(|e| e["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, vec!["src/FileTree.tsx"]);
+}
+
+#[tokio::test]
 async fn workspace_file_crud() {
     let _guard = WORKSPACE_TEST_LOCK
         .lock()

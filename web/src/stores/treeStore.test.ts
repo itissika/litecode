@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useTreeStore } from "./treeStore";
-import { fetchTree, type TreeEntry } from "../api/workspace";
+import { fetchTree, fetchTreeReveal, type TreeEntry } from "../api/workspace";
 
 vi.mock("../api/workspace", () => ({
   fetchTree: vi.fn(),
+  fetchTreeReveal: vi.fn(),
 }));
 
 const mockedFetchTree = vi.mocked(fetchTree);
+const mockedFetchTreeReveal = vi.mocked(fetchTreeReveal);
 
 const dir = (path: string, name: string): TreeEntry => ({ path, name, kind: "dir" });
 const file = (path: string, name: string): TreeEntry => ({ path, name, kind: "file" });
@@ -20,11 +22,16 @@ beforeEach(() => {
     error: null,
   });
   mockedFetchTree.mockReset();
+  mockedFetchTreeReveal.mockReset();
 });
 
 describe("revealPath", () => {
   it("expands every ancestor so the file becomes visible", async () => {
-    mockedFetchTree.mockResolvedValue([]);
+    mockedFetchTreeReveal.mockResolvedValue({
+      "": [],
+      src: [],
+      "src/components": [],
+    });
     await useTreeStore.getState().revealPath("src/components/FileTree.tsx");
 
     expect(useTreeStore.getState().expanded.has("src")).toBe(true);
@@ -36,17 +43,18 @@ describe("revealPath", () => {
     ).toBe(false);
   });
 
-  it("loads children of ancestors lazily when not fetched yet", async () => {
-    mockedFetchTree.mockImplementation(async (path) => {
-      if (path === "src") return [dir("src/components", "components")];
-      if (path === "src/components") return [file("src/components/a.ts", "a.ts")];
-      return [];
+  it("loads children of ancestors in one reveal request", async () => {
+    mockedFetchTreeReveal.mockResolvedValue({
+      "": [dir("src", "src")],
+      src: [dir("src/components", "components")],
+      "src/components": [file("src/components/a.ts", "a.ts")],
     });
 
     await useTreeStore.getState().revealPath("src/components/a.ts");
 
-    expect(mockedFetchTree).toHaveBeenCalledWith("src", 1);
-    expect(mockedFetchTree).toHaveBeenCalledWith("src/components", 1);
+    expect(mockedFetchTreeReveal).toHaveBeenCalledTimes(1);
+    expect(mockedFetchTreeReveal).toHaveBeenCalledWith("src/components/a.ts");
+    expect(mockedFetchTree).not.toHaveBeenCalled();
     expect(useTreeStore.getState().children["src"]).toEqual([
       dir("src/components", "components"),
     ]);
@@ -55,6 +63,7 @@ describe("revealPath", () => {
   it("does nothing for the workspace root or empty paths", async () => {
     await useTreeStore.getState().revealPath("");
     expect(useTreeStore.getState().expanded.size).toBe(0);
+    expect(mockedFetchTreeReveal).not.toHaveBeenCalled();
     expect(mockedFetchTree).not.toHaveBeenCalled();
   });
 });

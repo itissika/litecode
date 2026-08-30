@@ -5,7 +5,7 @@ import { useTreeStore } from "../../../stores/treeStore";
 import type { WorkspaceExcludesLists } from "../../../api/settings";
 import { globsFromText, textFromGlobs } from "../../../utils/excludeGlobs";
 import { FoldCard } from "../../../components/FoldCard";
-import { FieldLabel, TextArea, SectionHeader, SettingsPageShell } from "./shared";
+import { FieldLabel, TextArea, SectionHeader, SettingsPageShell, useSettingsSaveBlocked } from "./shared";
 import { isPersistBusy, useSettingsPersist } from "./persist";
 
 type FilesDraft = {
@@ -16,19 +16,33 @@ type FilesDraft = {
   explorerGitIgnore: boolean;
 };
 
+function snapshotFilesDraft(): FilesDraft {
+  const excludes = useSettingsStore.getState().excludes;
+  if (!excludes) {
+    return {
+      filesText: "",
+      searchText: "",
+      watcherText: "",
+      gitIgnore: true,
+      explorerGitIgnore: false,
+    };
+  }
+  return {
+    filesText: textFromGlobs(excludes.files_exclude),
+    searchText: textFromGlobs(excludes.search_exclude),
+    watcherText: textFromGlobs(excludes.watcher_exclude),
+    gitIgnore: excludes.git_ignore,
+    explorerGitIgnore: excludes.explorer_git_ignore,
+  };
+}
+
 export function FilesSection() {
   const excludes = useSettingsStore((s) => s.excludes);
-  const saveBlocked = useSettingsStore((s) => s.isSaveBlocked());
+  const saveBlocked = useSettingsSaveBlocked();
   const persistStatus = useSettingsStore((s) => s.persistStatus);
   const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const saveExcludes = useSettingsStore((s) => s.saveExcludes);
-  const [draft, setDraft] = useState<FilesDraft>({
-    filesText: "",
-    searchText: "",
-    watcherText: "",
-    gitIgnore: true,
-    explorerGitIgnore: false,
-  });
+  const [draft, setDraft] = useState<FilesDraft>(snapshotFilesDraft);
 
   useEffect(() => {
     if (isPersistBusy(persistStatus) || !excludes) return;

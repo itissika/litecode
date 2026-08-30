@@ -7,7 +7,7 @@ import type { editor } from "monaco-editor";
 import { useEditorStore } from "../stores/editorStore";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
-import { useSettingsStore } from "../stores/settingsStore";
+import { useEngineStore } from "../stores/engineStore";
 import { ConflictCard } from "./ConflictCard";
 import {
   bindEditorLsp,
@@ -40,7 +40,7 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
   const wsConnected = useConnectionStore(
     (s) => s.state === "connected",
   );
-  const lspDesired = useSettingsStore((s) => {
+  const lspDesired = useEngineStore((s) => {
     return s.engineStatuses.lsp?.desired === true;
   });
   const setContent = useEditorStore((s) => s.setContent);

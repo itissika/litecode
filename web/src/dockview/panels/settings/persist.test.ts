@@ -82,6 +82,15 @@ describe("SettingsPersistController", () => {
     expect(statuses).toContain("invalid");
   });
 
+  it("does not revert local drafts when flushing an invalid payload", async () => {
+    const revert = vi.fn();
+    const { controller, getSnapshot } = makeController({ revert });
+    controller.schedule("invalid");
+    await controller.flush();
+    expect(revert).not.toHaveBeenCalled();
+    expect(getSnapshot()).toBe("a");
+  });
+
   it("reverts to the snapshot when commit fails", async () => {
     vi.useFakeTimers();
     const commit = vi.fn(async () => {

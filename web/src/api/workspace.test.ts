@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   clearLspServers,
+  fetchGlob,
+  fetchTreeReveal,
   getEnginesDetail,
   gitStatus,
   initRetrieval,
@@ -101,5 +103,50 @@ describe("workspace engine API", () => {
     const status = await gitStatus();
     expect(status.branch).toBe("main");
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/workspace/git/status");
+  });
+
+  it("fetches filename glob hits from the workspace glob endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        data: {
+          entries: [{ name: "FileTree.tsx", path: "src/FileTree.tsx", kind: "file" }],
+          truncated: false,
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const listing = await fetchGlob("FileTree");
+    expect(listing.entries).toEqual([
+      { name: "FileTree.tsx", path: "src/FileTree.tsx", kind: "file" },
+    ]);
+    expect(listing.truncated).toBe(false);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/workspace/glob?pattern=FileTree",
+    );
+  });
+
+  it("fetches tree reveal ancestor listings", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        data: {
+          by_dir: {
+            "": [{ name: "src", path: "src", kind: "dir" }],
+            src: [{ name: "a.ts", path: "src/a.ts", kind: "file" }],
+          },
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const byDir = await fetchTreeReveal("src/a.ts");
+    expect(byDir.src).toEqual([{ name: "a.ts", path: "src/a.ts", kind: "file" }]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/workspace/tree?path=src%2Fa.ts&reveal=1",
+    );
   });
 });

@@ -25,6 +25,7 @@ import {
   TextInput,
   TextArea,
   SettingsPageShell,
+  useSettingsSaveBlocked,
 } from "./shared";
 import {
   flushRegisteredSettings,
@@ -543,8 +544,7 @@ export function AgentsSection() {
   const agentIds = useSettingsStore((s) => s.agentIds);
   const selectedAgentId = useSettingsStore((s) => s.selectedAgentId);
   const agents = useSettingsStore((s) => s.agents);
-  const saving = useSettingsStore((s) => s.saving);
-  const saveBlocked = useSettingsStore((s) => s.isSaveBlocked());
+  const saveBlocked = useSettingsSaveBlocked();
   const persistStatus = useSettingsStore((s) => s.persistStatus);
   const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const setSelectedAgentId = useSettingsStore((s) => s.setSelectedAgentId);
@@ -718,7 +718,7 @@ export function AgentsSection() {
             <button
               type="button"
               onClick={onCreate}
-              disabled={saveBlocked || !newAgentId.trim() || saving}
+              disabled={saveBlocked || !newAgentId.trim() || isPersistBusy(persistStatus)}
               className="btn-primary btn-sm"
             >
               Create
@@ -827,7 +827,7 @@ export function AgentsSection() {
                 <button
                   type="button"
                   onClick={onDelete}
-                  disabled={saveBlocked || saving}
+                  disabled={saveBlocked || isPersistBusy(persistStatus)}
                   className="btn-danger btn-xs"
                 >
                   Delete

@@ -4,7 +4,7 @@ use tokio::sync::broadcast;
 
 use super::change::WorkspaceChange;
 use super::sandbox::{Sandbox, SandboxError};
-use super::tree::{TreeEntry, TreeError, list_tree};
+use super::tree::{GlobListing, TreeEntry, TreeError, list_glob, list_tree, list_tree_reveal};
 
 /// Maximum file size for read/write (10 MB), matching the read tool.
 pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
@@ -67,6 +67,17 @@ impl WorkspaceService {
     pub fn tree(&self, path: &str, depth: usize) -> Result<Vec<TreeEntry>, WorkspaceError> {
         let sandbox = self.sandbox();
         Ok(list_tree(sandbox, path, depth)?)
+    }
+
+    pub fn tree_reveal(
+        &self,
+        path: &str,
+    ) -> Result<Vec<(String, Vec<TreeEntry>)>, WorkspaceError> {
+        Ok(list_tree_reveal(self.sandbox(), path)?)
+    }
+
+    pub fn glob(&self, pattern: &str) -> Result<GlobListing, WorkspaceError> {
+        Ok(list_glob(self.sandbox(), pattern)?)
     }
 
     pub fn read_file(&self, path: &str) -> Result<(String, String), WorkspaceError> {

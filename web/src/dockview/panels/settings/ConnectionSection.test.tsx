@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AdapterDescriptor } from "../../../api/settings";
+import { useSettingsStore } from "../../../stores/settingsStore";
 import {
+  ConnectionSection,
   serializeProviderDrafts,
   type ProviderDraft,
 } from "./ConnectionSection";
@@ -82,5 +85,47 @@ describe("serializeProviderDrafts", () => {
         },
       },
     });
+  });
+});
+
+describe("ConnectionSection persist UX", () => {
+  const saveProviders = vi.fn(async () => undefined);
+
+  beforeEach(() => {
+    saveProviders.mockClear();
+    useSettingsStore.setState({
+      adapters,
+      providers: {},
+      persistStatus: "idle",
+      saveProviders,
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("does not show Fix fields to save or PUT when adding an empty provider", async () => {
+    vi.useFakeTimers();
+    render(<ConnectionSection />);
+    fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
+    await vi.advanceTimersByTimeAsync(400);
+    expect(screen.queryByText("Fix fields to save")).toBeNull();
+    expect(saveProviders).not.toHaveBeenCalled();
+  });
+
+  it("commits once after the new provider has a key", async () => {
+    vi.useFakeTimers();
+    render(<ConnectionSection />);
+    fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
+    fireEvent.change(screen.getByPlaceholderText("sk-…"), {
+      target: { value: "sk-test" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/provider_/), {
+      target: { value: "Mine" },
+    });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(saveProviders).toHaveBeenCalledTimes(1);
   });
 });

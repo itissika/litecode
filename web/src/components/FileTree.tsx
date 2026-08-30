@@ -1,4 +1,5 @@
-import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 import type { TreeEntry } from "../api/workspace";
 import { getDockviewApi } from "../stores/connectionStore";
@@ -24,10 +25,15 @@ import {
 import { validateFileName } from "../lib/fileTreeNames";
 import { FileTreeSkeleton } from "./ui/Skeleton";
 import { FileTreeContextMenu, type FileTreeMenuItem } from "./FileTreeContextMenu";
+import { FileTreeGlobHits, FileTreeGlobInput } from "./FileTreeGlob";
 import { fileNameFromPath } from "../utils/language";
 import { getFileIcon, FolderIcon } from "../utils/fileIcon";
 import { isSelfOrDescendant, parentPath } from "../utils/path";
 import { useToastStore } from "../stores/toastStore";
+import {
+  flattenVisibleRows,
+  visibleEntryPaths,
+} from "../lib/fileTreeVisible";
 
 export const LITECODE_PATHS_MIME = "application/x-litecode-paths";
 
@@ -36,21 +42,8 @@ export const LITECODE_PATHS_MIME = "application/x-litecode-paths";
 const CHANGED_DIR_CLASS =
   "text-[color-mix(in_srgb,var(--_dk-amber-500)_60%,var(--_dk-text-secondary))]";
 
-function flattenVisible(
-  children: Record<string, TreeEntry[] | undefined>,
-  expanded: Set<string>,
-  parent = "",
-): TreeEntry[] {
-  const list = children[parent] ?? [];
-  const out: TreeEntry[] = [];
-  for (const entry of list) {
-    out.push(entry);
-    if (entry.kind === "dir" && expanded.has(entry.path)) {
-      out.push(...flattenVisible(children, expanded, entry.path));
-    }
-  }
-  return out;
-}
+/** Matches `py-0.5` + `text-sm` + 16px icon row. */
+const TREE_ROW_PX = 22;
 
 function entryKind(
   children: Record<string, TreeEntry[] | undefined>,
@@ -230,7 +223,6 @@ function TreeNode({
   gitLetters: Map<string, string>;
   changedDirs: Set<string>;
 }) {
-  const children = useTreeStore((s) => s.children[entry.path]);
   const expanded = useTreeStore((s) => s.expanded.has(entry.path));
   const loading = useTreeStore((s) => s.loading.has(entry.path));
   const toggleExpand = useTreeStore((s) => s.toggleExpand);
@@ -253,14 +245,6 @@ function TreeNode({
   const isActive = !isDir && activePath === entry.path;
   const isCut = clipboard?.mode === "cut" && clipboard.paths.includes(entry.path);
   const renaming = inline?.kind === "rename" && inline.path === entry.path;
-  const ghostKind =
-    isDir &&
-    expanded &&
-    inline &&
-    (inline.kind === "newFile" || inline.kind === "newFolder") &&
-    inline.parent === entry.path
-      ? inline.kind
-      : null;
   const isDrop = dropTarget === entry.path;
 
   const handleClick = (e: React.MouseEvent) => {
@@ -304,7 +288,6 @@ function TreeNode({
       : "text-(--_dk-text-secondary)";
 
   return (
-    <div>
       <div
         role="treeitem"
         aria-selected={selected}
@@ -391,24 +374,6 @@ function TreeNode({
           )}
         </span>
       </div>
-      {isDir && expanded && (
-        <div>
-          {ghostKind && (
-            <GhostRow parent={entry.path} depth={depth + 1} kind={ghostKind} />
-          )}
-          {(children ?? []).map((child) => (
-            <TreeNode
-              key={child.path}
-              entry={child}
-              depth={depth + 1}
-              visible={visible}
-              gitLetters={gitLetters}
-              changedDirs={changedDirs}
-            />
-          ))}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -436,6 +401,9 @@ export function FileTree() {
   const clearSelection = useExplorerStore((s) => s.clearSelection);
   const activePath = useEditorStore((s) => s.activePath);
   const rootRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [globQuery, setGlobQuery] = useState("");
+  const filtering = globQuery.trim().length > 0;
   // Last path we scrolled into view. Guards the scroll effect so it only
   // scrolls when the active file *becomes* visible (tree re-renders on
   // expansion / refresh), never fighting the user's own browsing.
@@ -445,10 +413,23 @@ export function FileTree() {
   const gitLetters = useMemo(() => gitFileLetters(gitStatus), [gitStatus]);
   const changedDirs = useMemo(() => gitChangedDirs(gitStatus), [gitStatus]);
 
-  const visible = useMemo(
-    () => flattenVisible(childrenMap, expanded).map((e) => e.path),
-    [childrenMap, expanded],
+  const ghost =
+    inline && (inline.kind === "newFile" || inline.kind === "newFolder")
+      ? { parent: inline.parent, kind: inline.kind }
+      : null;
+  const rows = useMemo(
+    () => flattenVisibleRows(childrenMap, expanded, ghost),
+    [childrenMap, expanded, ghost],
   );
+  const visible = useMemo(() => visibleEntryPaths(rows), [rows]);
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => TREE_ROW_PX,
+    overscan: 8,
+    paddingEnd: 80,
+  });
 
   useEffect(() => {
     void loadRoot();
@@ -465,25 +446,20 @@ export function FileTree() {
 
   useEffect(() => {
     const p = activePath;
-    if (!p || !rootRef.current || revealedRef.current === p) return;
-    const row = rootRef.current.querySelector(`[data-path="${CSS.escape(p)}"]`);
-    if (!row) return; // collapsed or still loading; re-runs when children land
+    if (!p || revealedRef.current === p) return;
+    const idx = rows.findIndex(
+      (r) => r.type === "entry" && r.entry.path === p,
+    );
+    if (idx < 0) return;
     revealedRef.current = p;
-    row.scrollIntoView({ block: "nearest" });
-  }, [activePath, childrenMap, expanded]);
+    virtualizer.scrollToIndex(idx, { align: "auto" });
+  }, [activePath, rows, virtualizer]);
 
   // Seed git status on mount so change badges render even when the Source
   // Control panel has never been opened (its own refresh only runs there).
   useEffect(() => {
     void useGitStore.getState().refresh({ silent: true });
   }, []);
-
-  const rootGhostKind =
-    inline &&
-    (inline.kind === "newFile" || inline.kind === "newFolder") &&
-    inline.parent === ""
-      ? inline.kind
-      : null;
 
   const operatePaths = (): string[] => {
     if (menu?.path && selected.has(menu.path)) return [...selected];
@@ -494,6 +470,8 @@ export function FileTree() {
   };
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("input, textarea")) return;
     if (inline) {
       if (e.key === "Escape") setInline(null);
       return;
@@ -539,6 +517,10 @@ export function FileTree() {
       return;
     }
     if (e.key === "Escape") {
+      if (filtering) {
+        setGlobQuery("");
+        return;
+      }
       setMenu(null);
       clearSelection();
       return;
@@ -562,6 +544,10 @@ export function FileTree() {
       if (next) {
         select(next, { range: e.shiftKey, visible });
         setFocus(next);
+        const rowIdx = rows.findIndex(
+          (r) => r.type === "entry" && r.entry.path === next,
+        );
+        if (rowIdx >= 0) virtualizer.scrollToIndex(rowIdx, { align: "auto" });
       }
     }
   };
@@ -672,60 +658,96 @@ export function FileTree() {
     <div
       ref={rootRef}
       tabIndex={0}
-      role="tree"
+      role={filtering ? "search" : "tree"}
       className="flex min-h-0 h-full flex-col outline-none"
       onKeyDown={onKeyDown}
       onClick={() => rootRef.current?.focus()}
     >
-      <div className="flex items-center px-2 py-1">
+      <div className="flex shrink-0 flex-col gap-1 px-2 py-1">
         <span
           className="truncate px-1 text-[11px] text-(--_dk-text-disabled)"
           title={project || undefined}
         >
           {project ? fileNameFromPath(project) || project : "Project"}
         </span>
+        <FileTreeGlobInput query={globQuery} onQueryChange={setGlobQuery} />
       </div>
 
-      <div
-        className={`min-h-0 flex-1 overflow-y-auto py-1 ${
-          dropTarget === "" ? "outline outline-1 outline-(--_dk-accent-hover)" : ""
-        }`}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          setMenu({ x: e.clientX, y: e.clientY, path: null });
-        }}
-        onDragOver={(e) => {
-          e.preventDefault();
-          e.dataTransfer.dropEffect = e.ctrlKey || e.metaKey ? "copy" : "move";
-          setDropTarget("");
-        }}
-        onDragLeave={() => setDropTarget(null)}
-        onDrop={(e) => {
-          e.preventDefault();
-          handleDropEvent(e, dropTarget, childrenMap);
-          setDropTarget(null);
-        }}
-        onClick={(e) => {
-          if (e.target === e.currentTarget) clearSelection();
-        }}
-      >
-        {error && (
-          <p className="px-3 py-2 text-xs text-(--_dk-red-500)">{error}</p>
-        )}
-        {loading && !rootChildren && <FileTreeSkeleton />}
-        {rootGhostKind && <GhostRow parent="" depth={0} kind={rootGhostKind} />}
-        {rootChildren?.map((entry) => (
-          <TreeNode
-            key={entry.path}
-            entry={entry}
-            depth={0}
-            visible={visible}
-            gitLetters={gitLetters}
-            changedDirs={changedDirs}
-          />
-        ))}
-        <div aria-hidden className="shrink-0" style={{ height: "30%" }} />
-      </div>
+      {filtering ? (
+        <FileTreeGlobHits query={globQuery.trim()} onClear={() => setGlobQuery("")} />
+      ) : (
+        <div
+          ref={scrollRef}
+          className={`min-h-0 flex-1 overflow-y-auto py-1 ${
+            dropTarget === "" ? "outline outline-1 outline-(--_dk-accent-hover)" : ""
+          }`}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setMenu({ x: e.clientX, y: e.clientY, path: null });
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = e.ctrlKey || e.metaKey ? "copy" : "move";
+            setDropTarget("");
+          }}
+          onDragLeave={() => setDropTarget(null)}
+          onDrop={(e) => {
+            e.preventDefault();
+            handleDropEvent(e, dropTarget, childrenMap);
+            setDropTarget(null);
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) clearSelection();
+          }}
+        >
+          {error && (
+            <p className="px-3 py-2 text-xs text-(--_dk-red-500)">{error}</p>
+          )}
+          {loading && !rootChildren && <FileTreeSkeleton />}
+          <div
+            style={{
+              height: `${virtualizer.getTotalSize()}px`,
+              position: "relative",
+              width: "100%",
+            }}
+          >
+            {virtualizer.getVirtualItems().map((vi) => {
+              const row = rows[vi.index];
+              if (!row) return null;
+              return (
+                <div
+                  key={row.type === "entry" ? row.entry.path : `ghost:${row.parent}:${row.kind}`}
+                  data-index={vi.index}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    height: `${vi.size}px`,
+                    transform: `translateY(${vi.start}px)`,
+                  }}
+                >
+                  {row.type === "ghost" ? (
+                    <GhostRow
+                      parent={row.parent}
+                      depth={row.depth}
+                      kind={row.kind}
+                    />
+                  ) : (
+                    <TreeNode
+                      entry={row.entry}
+                      depth={row.depth}
+                      visible={visible}
+                      gitLetters={gitLetters}
+                      changedDirs={changedDirs}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {menu && (
         <FileTreeContextMenu

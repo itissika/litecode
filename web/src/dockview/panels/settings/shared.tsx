@@ -2,6 +2,18 @@ import type { ReactNode } from "react";
 
 import type { AdapterDescriptor } from "../../../api/settings";
 import { useSettingsStore, type PersistStatus } from "../../../stores/settingsStore";
+import { useTurnStore } from "../../../stores/turnStore";
+
+export function useSettingsSaveBlocked(): boolean {
+  return useTurnStore((s) => {
+    for (const slice of s.byId.values()) {
+      if (slice.runState === "running" || slice.runState === "cancelling") {
+        return true;
+      }
+    }
+    return false;
+  });
+}
 
 export function FieldLabel({
   children,

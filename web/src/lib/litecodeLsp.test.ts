@@ -12,7 +12,7 @@ import {
   shouldApplyPublishedDiagnostics,
   toFileUri,
 } from "./litecodeLsp";
-import { useSettingsStore } from "../stores/settingsStore";
+import { useEngineStore } from "../stores/engineStore";
 
 describe("toFileUri", () => {
   it("builds absolute file uri from workspace root and relative path", () => {
@@ -78,14 +78,14 @@ describe("monacoCompletionTriggerToLsp", () => {
 
 describe("isLspWarm", () => {
   it("requires warm engine state", () => {
-    useSettingsStore.setState({
+    useEngineStore.setState({
       engineStatuses: {
         lsp: { desired: true, state: "warm" },
       },
     });
     expect(isLspWarm()).toBe(true);
 
-    useSettingsStore.setState({
+    useEngineStore.setState({
       engineStatuses: {
         lsp: { desired: true, state: "warming" },
       },
@@ -97,7 +97,7 @@ describe("isLspWarm", () => {
 describe("isLspServerReady", () => {
   it("is false on hub Warm with no running instance", () => {
     dropWorkspaceLsp();
-    useSettingsStore.setState({
+    useEngineStore.setState({
       engineStatuses: {
         lsp: { desired: true, state: "warm" },
       },
@@ -109,7 +109,7 @@ describe("isLspServerReady", () => {
 
   it("is true when engines detail reports a running instance", () => {
     dropWorkspaceLsp();
-    useSettingsStore.setState({
+    useEngineStore.setState({
       engineStatuses: {
         lsp: { desired: true, state: "warm" },
       },

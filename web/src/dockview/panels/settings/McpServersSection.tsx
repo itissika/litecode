@@ -9,7 +9,7 @@ import {
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { FoldCard } from "../../../components/FoldCard";
 import { Dropdown, dropdownItemClass } from "../../../components/ui/Dropdown";
-import { FieldLabel, TextArea, SettingsPageShell } from "./shared";
+import { FieldLabel, TextArea, SettingsPageShell, useSettingsSaveBlocked } from "./shared";
 import { parseMcpJson } from "./jsonDefinitions";
 import {
   flushRegisteredSettings,
@@ -43,8 +43,7 @@ function prettyServer(item: McpServerItem): string {
 
 export function McpServersSection() {
   const mcpServers = useSettingsStore((s) => s.mcpServers);
-  const saving = useSettingsStore((s) => s.saving);
-  const saveBlocked = useSettingsStore((s) => s.isSaveBlocked());
+  const saveBlocked = useSettingsSaveBlocked();
   const persistStatus = useSettingsStore((s) => s.persistStatus);
   const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const saveMcpServer = useSettingsStore((s) => s.saveMcpServer);
@@ -263,7 +262,7 @@ export function McpServersSection() {
             <button
               type="button"
               className="btn-primary btn-sm"
-              disabled={saveBlocked || saving}
+              disabled={saveBlocked || isPersistBusy(persistStatus)}
               onClick={onCreate}
             >
               Create
@@ -277,7 +276,7 @@ export function McpServersSection() {
               <button
                 type="button"
                 className="btn btn-icon"
-                disabled={saveBlocked || saving}
+                disabled={saveBlocked || isPersistBusy(persistStatus)}
                 aria-label="New MCP server"
                 aria-haspopup="menu"
                 aria-expanded={open}
@@ -357,7 +356,7 @@ export function McpServersSection() {
                         <button
                           type="button"
                           className="btn-danger btn-icon"
-                          disabled={saveBlocked || saving}
+                          disabled={saveBlocked || isPersistBusy(persistStatus)}
                           onClick={(e) => {
                             e.stopPropagation();
                             onDelete(server.id, scope);

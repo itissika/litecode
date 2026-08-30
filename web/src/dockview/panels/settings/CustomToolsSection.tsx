@@ -8,7 +8,7 @@ import {
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { FoldCard } from "../../../components/FoldCard";
 import { Dropdown, dropdownItemClass } from "../../../components/ui/Dropdown";
-import { FieldLabel, TextArea, SettingsPageShell } from "./shared";
+import { FieldLabel, TextArea, SettingsPageShell, useSettingsSaveBlocked } from "./shared";
 import { parseCustomToolJson } from "./jsonDefinitions";
 import {
   flushRegisteredSettings,
@@ -52,8 +52,7 @@ function prettyTool(def: CustomToolDefinition): string {
 
 export function CustomToolsSection() {
   const customTools = useSettingsStore((s) => s.customTools);
-  const saving = useSettingsStore((s) => s.saving);
-  const saveBlocked = useSettingsStore((s) => s.isSaveBlocked());
+  const saveBlocked = useSettingsSaveBlocked();
   const persistStatus = useSettingsStore((s) => s.persistStatus);
   const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const saveCustomTool = useSettingsStore((s) => s.saveCustomTool);
@@ -172,7 +171,7 @@ export function CustomToolsSection() {
             <button
               type="button"
               className="btn-primary btn-sm"
-              disabled={saveBlocked || saving}
+              disabled={saveBlocked || isPersistBusy(persistStatus)}
               onClick={onCreate}
             >
               Create
@@ -186,7 +185,7 @@ export function CustomToolsSection() {
               <button
                 type="button"
                 className="btn btn-icon"
-                disabled={saveBlocked || saving}
+                disabled={saveBlocked || isPersistBusy(persistStatus)}
                 aria-label="New custom tool"
                 aria-haspopup="menu"
                 aria-expanded={open}
@@ -263,7 +262,7 @@ export function CustomToolsSection() {
                         <button
                           type="button"
                           className="btn-danger btn-icon"
-                          disabled={saveBlocked || saving}
+                          disabled={saveBlocked || isPersistBusy(persistStatus)}
                           onClick={(e) => {
                             e.stopPropagation();
                             onDelete(tool.name, scope);

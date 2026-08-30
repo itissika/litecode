@@ -1,6 +1,6 @@
 import { Link, Cube, Robot, GearSix, Cpu, Code, PlugsConnected, Tree } from "@phosphor-icons/react";
 
-import { useSettingsStore, type SettingsSection } from "../../stores/settingsStore";
+import { useSettingsStore, sectionNeedsSkeleton, type SettingsSection } from "../../stores/settingsStore";
 import { SettingsSkeleton } from "../../components/ui/Skeleton";
 import { FloatingDialog } from "../components/FloatingDialog";
 import { ConnectionSection } from "./settings/ConnectionSection";
@@ -11,6 +11,7 @@ import { AgentsSection } from "./settings/AgentsSection";
 import { AdvancedSection } from "./settings/AdvancedSection";
 import { FilesSection } from "./settings/FilesSection";
 import { EnginesSection } from "./settings/engines/EnginesSection";
+import { useSettingsSaveBlocked } from "./settings/shared";
 
 const NAV_GROUPS: {
   title: string;
@@ -42,7 +43,7 @@ const NAV_GROUPS: {
 ];
 
 function TurnBlockedBanner() {
-  const blocked = useSettingsStore((s) => s.isSaveBlocked());
+  const blocked = useSettingsSaveBlocked();
   if (!blocked) return null;
   return (
     <div className="border-b border-(--_dk-amber-900\/20) bg-(--_dk-amber-900\/20) px-4 py-2 text-sm text-(--_dk-amber-500)">
@@ -76,8 +77,8 @@ export function SettingsDialog() {
   const open = useSettingsStore((s) => s.open);
   const section = useSettingsStore((s) => s.section);
   const revision = useSettingsStore((s) => s.revision);
-  const loading = useSettingsStore((s) => s.loading);
   const loadError = useSettingsStore((s) => s.loadError);
+  const showSkeleton = useSettingsStore((s) => sectionNeedsSkeleton(s.section, s));
   const closeSettings = useSettingsStore((s) => s.closeSettings);
   const setSection = useSettingsStore((s) => s.setSection);
 
@@ -123,7 +124,7 @@ export function SettingsDialog() {
 
           <div className="min-w-0 flex-1 bg-(--_dk-overlay)">
             <div key={section} className="settings-content-enter h-full">
-              {loading ? (
+              {showSkeleton ? (
                 <div className="h-full overflow-y-auto px-6 py-5">
                   <SettingsSkeleton />
                 </div>

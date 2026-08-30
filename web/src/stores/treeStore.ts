@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import {
   fetchTree,
+  fetchTreeReveal,
   type TreeEntry,
   type WorkspaceChangeKind,
 } from "../api/workspace";
@@ -211,14 +212,20 @@ export const useTreeStore = create<TreeStore>((set, get) => {
 
     revealPath: async (path) => {
       if (!path) return;
-      const dirs: string[] = [];
-      let cur = parentPath(path);
-      while (cur) {
-        dirs.unshift(cur);
-        cur = parentPath(cur);
-      }
-      for (const dir of dirs) {
-        await get().expandDir(dir);
+      try {
+        const byDir = await fetchTreeReveal(path);
+        set((s) => {
+          const children = { ...s.children };
+          const expanded = cloneSet(s.expanded);
+          for (const [dir, entries] of Object.entries(byDir)) {
+            children[dir] = entries;
+            if (dir) expanded.add(dir);
+          }
+          return { children, expanded, error: null };
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        set({ error: msg });
       }
     },
 

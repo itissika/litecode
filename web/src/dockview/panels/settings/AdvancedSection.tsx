@@ -7,6 +7,7 @@ import {
   TextInput,
   SectionHeader,
   SettingsPageShell,
+  useSettingsSaveBlocked,
 } from "./shared";
 import { isPersistBusy, useSettingsPersist } from "./persist";
 
@@ -14,18 +15,23 @@ const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
 
 type AdvancedDraft = { logLevel: string; searchEndpoint: string };
 
+function snapshotAdvancedDraft(): AdvancedDraft {
+  const { log, websearch } = useSettingsStore.getState();
+  return {
+    logLevel: log?.level ?? "info",
+    searchEndpoint: websearch?.search_endpoint ?? "",
+  };
+}
+
 export function AdvancedSection() {
   const log = useSettingsStore((s) => s.log);
   const websearch = useSettingsStore((s) => s.websearch);
-  const saveBlocked = useSettingsStore((s) => s.isSaveBlocked());
+  const saveBlocked = useSettingsSaveBlocked();
   const persistStatus = useSettingsStore((s) => s.persistStatus);
   const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const saveLog = useSettingsStore((s) => s.saveLog);
   const saveWebSearch = useSettingsStore((s) => s.saveWebSearch);
-  const [draft, setDraft] = useState<AdvancedDraft>({
-    logLevel: "info",
-    searchEndpoint: "",
-  });
+  const [draft, setDraft] = useState<AdvancedDraft>(snapshotAdvancedDraft);
 
   useEffect(() => {
     if (isPersistBusy(persistStatus)) return;
