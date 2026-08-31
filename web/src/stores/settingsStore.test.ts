@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useSettingsStore } from "./settingsStore";
 import { useToastStore } from "./toastStore";
-import { registerSettingsFlush } from "../dockview/panels/settings/persist";
+import { registerSettingsFlush } from "../lib/settingsPersist";
 
 vi.mock("../api/settings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/settings")>();
@@ -38,6 +38,7 @@ import {
   getAgent,
   getAvailableTools,
   getCustomTools,
+  getExcludes,
   getMcpServers,
   getModels,
   getProviders,
@@ -55,6 +56,7 @@ const mockedAgentIds = vi.mocked(loadSettingsAgentIds);
 const mockedMcp = vi.mocked(getMcpServers);
 const mockedTools = vi.mocked(getAvailableTools);
 const mockedCustom = vi.mocked(getCustomTools);
+const mockedExcludes = vi.mocked(getExcludes);
 const mockedDetail = vi.mocked(getEnginesDetail);
 
 function summary(revision: number) {
@@ -70,6 +72,21 @@ function summary(revision: number) {
   };
 }
 
+const emptyExcludes = {
+  files_exclude: [] as string[],
+  search_exclude: [] as string[],
+  watcher_exclude: [] as string[],
+  git_ignore: true,
+  explorer_git_ignore: false,
+  defaults: {
+    files_exclude: [] as string[],
+    search_exclude: [] as string[],
+    watcher_exclude: [] as string[],
+    git_ignore: true,
+    explorer_git_ignore: false,
+  },
+};
+
 beforeEach(() => {
   useSettingsStore.setState({
     open: false,
@@ -81,10 +98,12 @@ beforeEach(() => {
     models: null,
     availableTools: null,
     customTools: null,
-    mcpServers: null,
+    mcpDefs: null,
+    mcpRuntime: null,
     loadError: null,
     persistStatus: "idle",
-    loadedRevisionBySection: {},
+    docClock: {},
+    excludes: null,
   });
   useToastStore.setState({ toasts: [] });
   mockedSummary.mockReset().mockResolvedValue(summary(1));
@@ -96,6 +115,7 @@ beforeEach(() => {
   mockedMcp.mockReset().mockResolvedValue({ global: [], workspace: [] });
   mockedTools.mockReset().mockResolvedValue([]);
   mockedCustom.mockReset().mockResolvedValue({ global: [], workspace: [] });
+  mockedExcludes.mockReset().mockResolvedValue(emptyExcludes);
   mockedDetail.mockReset();
 });
 
@@ -119,13 +139,34 @@ describe("ensureSectionLoaded", () => {
     expect(useSettingsStore.getState().providers).toEqual({});
   });
 
-  it("refreshes the current section after a save when persistStatus is saved", async () => {
+  it("does not fetch agents when opening Models — only after the models docs land", async () => {
+    mockedAgent.mockResolvedValue({
+      role: "primary",
+      model_ref: "",
+      system_prompt: "",
+      temperature: 0,
+      max_steps: 1,
+      description: "",
+      tools: {},
+      allowed_subagents: [],
+    });
+    useSettingsStore.getState().openSettings("models");
+    await waitFor(() => {
+      expect(useSettingsStore.getState().models).toEqual({});
+    });
+    expect(mockedModels).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mockedAgentIds).toHaveBeenCalled();
+    });
+  });
+
+  it("refreshes the current section after a remote change even while persistStatus is saving", async () => {
     useSettingsStore.setState({
       open: true,
       section: "connection",
-      persistStatus: "saved",
+      persistStatus: "saving",
       providers: {},
-      loadedRevisionBySection: { connection: 1 },
+      docClock: { providers: 1, adapters: 1, summary: 1 },
       revision: 1,
     });
     mockedProviders.mockResolvedValue({
@@ -147,7 +188,37 @@ describe("ensureSectionLoaded", () => {
     });
 
     expect(mockedProviders).toHaveBeenCalled();
-    expect(useSettingsStore.getState().providers?.p1?.label).toBe("Remote");
+  });
+
+  it("does not paint a failed Provider load onto Files after switching tabs", async () => {
+    mockedProviders.mockRejectedValue(new Error("provider boom"));
+    useSettingsStore.getState().openSettings("connection");
+    await useSettingsStore.getState().setSection("files");
+    await waitFor(() => {
+      expect(useSettingsStore.getState().excludes).not.toBeNull();
+    });
+    await Promise.resolve();
+    expect(useSettingsStore.getState().section).toBe("files");
+    expect(useSettingsStore.getState().loadError).toBeNull();
+  });
+});
+
+describe("workspace excludes clock", () => {
+  it("reloads Files when .litecode/excludes.json changes", async () => {
+    useSettingsStore.setState({
+      open: true,
+      section: "files",
+      excludes: emptyExcludes,
+      docClock: { excludes: 1 },
+    });
+    mockedExcludes.mockResolvedValue({
+      ...emptyExcludes,
+      git_ignore: false,
+    });
+    useSettingsStore.getState().handleWorkspaceChange([".litecode/excludes.json"], "modified");
+    await waitFor(() => {
+      expect(useSettingsStore.getState().excludes?.git_ignore).toBe(false);
+    });
   });
 });
 

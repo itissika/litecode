@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import {
   ArrowsClockwise,
   CheckCircle,
@@ -28,7 +28,11 @@ import {
 } from "../../../../api/workspace";
 import { useSettingsStore } from "../../../../stores/settingsStore";
 import { useToastStore } from "../../../../stores/toastStore";
-import { SETTINGS_PERSIST_ERROR_CHANNEL } from "../persist";
+import {
+  SETTINGS_PERSIST_ERROR_CHANNEL,
+  shouldHydrateDraftFromStore,
+  useSettingsPersist,
+} from "../persist";
 
 /* ------------------------------------------------------------------ */
 /* Retrieval section                                                   */
@@ -427,6 +431,10 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
     };
   }, []);
 
+  const persistStatus = useSettingsStore((s) => s.persistStatus);
+  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
+  const selectedIds = useMemo(() => [...selected].sort(), [selected]);
+
   const load = useCallback(async () => {
     const next = await probeLspServers();
     if (mountedRef.current) setProbes(next);
@@ -434,7 +442,36 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
   // Probe once when this view mounts (i.e. the user switches to the engines
   // page). Servers rarely change, so no manual Refresh button is exposed.
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => { setProbes(detail.probes); setSelected(new Set(detail.configured_servers)); }, [detail]);
+  useEffect(() => {
+    setProbes(detail.probes);
+    if (!shouldHydrateDraftFromStore(persistStatus)) return;
+    setSelected(new Set(detail.configured_servers));
+  }, [detail, persistStatus]);
+
+  useSettingsPersist(selectedIds, {
+    debounceMs: 0,
+    setStatus: setPersistStatus,
+    serialize: (ids) => ({ ok: ids }),
+    commit: async (ids) => {
+      try {
+        if (ids.length === 0) await clearLspServers();
+        else await initLspServers(ids);
+        refresh();
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        useToastStore.getState().showToast(
+          message === "turn_in_progress"
+            ? "Cannot change engines while an agent turn is in progress"
+            : message,
+          "error",
+          5000,
+          SETTINGS_PERSIST_ERROR_CHANNEL,
+        );
+        throw e;
+      }
+    },
+    revert: () => setSelected(new Set(detail.configured_servers)),
+  });
 
   const install = async (id: string) => {
     if (!mountedRef.current) return;
@@ -497,36 +534,8 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
     else void run(stopLsp);
   };
 
-  // Silent persist of the enabled set. Empty set clears servers + stops (unlike
-  // the engine Stop button, which keeps the list for a later Start).
-  const persist = async (ids: string[]) => {
-    const committed = [...detail.configured_servers];
-    try {
-      useSettingsStore.getState().setPersistStatus("saving");
-      if (ids.length === 0) await clearLspServers();
-      else await initLspServers(ids);
-      useSettingsStore.getState().setPersistStatus("saved");
-    } catch (e) {
-      setSelected(new Set(committed));
-      useSettingsStore.getState().setPersistStatus("error");
-      const message = e instanceof Error ? e.message : String(e);
-      useToastStore
-        .getState()
-        .showToast(
-          message === "turn_in_progress"
-            ? "Cannot change engines while an agent turn is in progress"
-            : message,
-          "error",
-          5000,
-          SETTINGS_PERSIST_ERROR_CHANNEL,
-        );
-    } finally {
-      refresh();
-    }
-  };
-
   // Toggle a card. Gate: a not-installed (×) server cannot be enabled; it can
-  // only be turned off if already on. Persisted silently — no Save button.
+  // only be turned off if already on. Persisted via useSettingsPersist.
   const toggle = (probe: LspServerProbe) => {
     const ready = probe.status === "available";
     const checked = selected.has(probe.id);
@@ -534,7 +543,6 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
     const next = new Set(selected);
     next.has(probe.id) ? next.delete(probe.id) : next.add(probe.id);
     setSelected(next);
-    void persist([...next]);
   };
 
   const tag = engineTag(detail.usable);

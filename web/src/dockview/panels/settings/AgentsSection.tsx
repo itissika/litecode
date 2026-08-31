@@ -16,6 +16,7 @@ import {
   type ModelDefinition,
 } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
+import { mergeLayeredMcp } from "../../../stores/settingsDocuments";
 import { Select } from "../../../components/ui/Select";
 import { Dropdown } from "../../../components/ui/Dropdown";
 import { FoldCard } from "../../../components/FoldCard";
@@ -30,6 +31,7 @@ import {
 import {
   flushRegisteredSettings,
   isPersistBusy,
+  shouldHydrateDraftFromStore,
   useSettingsPersist,
 } from "./persist";
 
@@ -536,11 +538,12 @@ function agentPersistPayload(
 export function AgentsSection() {
   const availableTools = useSettingsStore((s) => s.availableTools);
   const models = useSettingsStore((s) => s.models);
-  const mcpServers = useSettingsStore((s) => s.mcpServers);
-  const mcpList = useMemo(
-    () => [...(mcpServers?.global ?? []), ...(mcpServers?.workspace ?? [])],
-    [mcpServers],
-  );
+  const mcpDefs = useSettingsStore((s) => s.mcpDefs);
+  const mcpRuntime = useSettingsStore((s) => s.mcpRuntime);
+  const mcpList = useMemo(() => {
+    const layered = mergeLayeredMcp(mcpDefs, mcpRuntime);
+    return [...layered.global, ...layered.workspace];
+  }, [mcpDefs, mcpRuntime]);
   const agentIds = useSettingsStore((s) => s.agentIds);
   const selectedAgentId = useSettingsStore((s) => s.selectedAgentId);
   const agents = useSettingsStore((s) => s.agents);
@@ -589,7 +592,7 @@ export function AgentsSection() {
 
   useEffect(() => {
     if (!profile || creating) return;
-    if (isPersistBusy(persistStatus)) return;
+    if (!shouldHydrateDraftFromStore(persistStatus)) return;
     const bindableIds = new Set(
       (profile.role === "subagent" ? bindableToolsSubagent : bindableToolsPrimary).map(
         (e) => e.id,

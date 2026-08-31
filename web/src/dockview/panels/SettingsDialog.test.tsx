@@ -47,7 +47,7 @@ describe("SettingsDialog", () => {
       models: {},
       persistStatus: "idle",
       loadError: null,
-      loadedRevisionBySection: { connection: 1 },
+      docClock: { providers: 1, adapters: 1 },
     });
   });
 

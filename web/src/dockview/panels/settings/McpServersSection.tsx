@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash } from "@phosphor-icons/react";
 
 import {
@@ -7,6 +7,7 @@ import {
   type ToolScope,
 } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
+import { mergeLayeredMcp } from "../../../stores/settingsDocuments";
 import { FoldCard } from "../../../components/FoldCard";
 import { Dropdown, dropdownItemClass } from "../../../components/ui/Dropdown";
 import { FieldLabel, TextArea, SettingsPageShell, useSettingsSaveBlocked } from "./shared";
@@ -14,6 +15,7 @@ import { parseMcpJson } from "./jsonDefinitions";
 import {
   flushRegisteredSettings,
   isPersistBusy,
+  shouldHydrateDraftFromStore,
   useSettingsPersist,
 } from "./persist";
 
@@ -42,7 +44,12 @@ function prettyServer(item: McpServerItem): string {
 }
 
 export function McpServersSection() {
-  const mcpServers = useSettingsStore((s) => s.mcpServers);
+  const mcpDefs = useSettingsStore((s) => s.mcpDefs);
+  const mcpRuntime = useSettingsStore((s) => s.mcpRuntime);
+  const mcpServers = useMemo(
+    () => mergeLayeredMcp(mcpDefs, mcpRuntime),
+    [mcpDefs, mcpRuntime],
+  );
   const saveBlocked = useSettingsSaveBlocked();
   const persistStatus = useSettingsStore((s) => s.persistStatus);
   const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
@@ -66,7 +73,7 @@ export function McpServersSection() {
 
   useEffect(() => {
     if (isNew) return;
-    if (isPersistBusy(persistStatus)) return;
+    if (!shouldHydrateDraftFromStore(persistStatus)) return;
     if (selectedId) {
       const found = servers.find((s) => s.id === selectedId);
       if (found) {
@@ -88,7 +95,10 @@ export function McpServersSection() {
     serialize: (text) => parseMcpJson(text, selectedId),
     commit: (p) => saveMcpServer(p.id, p.def, selectedScope),
     revert: () => {
-      const layered = useSettingsStore.getState().mcpServers;
+      const layered = mergeLayeredMcp(
+        useSettingsStore.getState().mcpDefs,
+        useSettingsStore.getState().mcpRuntime,
+      );
       const found = (selectedScope === "workspace"
         ? layered?.workspace
         : layered?.global

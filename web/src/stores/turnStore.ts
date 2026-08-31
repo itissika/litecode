@@ -21,7 +21,8 @@ import { debugTrace } from "../lib/debugTrace";
 import { useConnectionStore, attachSiblingStores } from "./connectionStore";
 import { useMessageStore, type TurnEndNotice } from "./messageStore";
 import { useNotificationStore } from "./notificationStore";
-import { toastLlmConfigFailure, useSettingsStore } from "./settingsStore";
+import { toastLlmConfigFailure } from "../lib/settingsGuidance";
+import { useSettingsStore } from "./settingsStore";
 import { useToastStore } from "./toastStore";
 
 export interface PendingPermission {
@@ -896,3 +897,17 @@ export const useTurnStore = create<TurnStore>((set, get) => {
 });
 
 attachSiblingStores({ turn: useTurnStore });
+
+export function turnMapIsBusy(byId: Map<string, TurnSlice>): boolean {
+  for (const slice of byId.values()) {
+    if (slice.runState === "running" || slice.runState === "cancelling") {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Any session is running or cancelling an agent turn. */
+export function anyTurnRunning(): boolean {
+  return turnMapIsBusy(useTurnStore.getState().byId);
+}

@@ -13,6 +13,7 @@ import { parseCustomToolJson } from "./jsonDefinitions";
 import {
   flushRegisteredSettings,
   isPersistBusy,
+  shouldHydrateDraftFromStore,
   useSettingsPersist,
 } from "./persist";
 
@@ -70,7 +71,7 @@ export function CustomToolsSection() {
 
   useEffect(() => {
     if (isNew) return;
-    if (isPersistBusy(persistStatus)) return;
+    if (!shouldHydrateDraftFromStore(persistStatus)) return;
     if (selectedId) {
       const found = tools.find((t) => t.name === selectedId);
       if (found) {

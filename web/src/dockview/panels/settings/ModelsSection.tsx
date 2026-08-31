@@ -246,6 +246,7 @@ export function ModelsSection() {
   const [draft, setDraft] = useState<Record<string, ModelDefinition>>(
     () => useSettingsStore.getState().models ?? {},
   );
+  const [justAddedModelId, setJustAddedModelId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!shouldHydrateDraftFromStore(persistStatus)) return;
@@ -329,6 +330,7 @@ export function ModelsSection() {
         },
       },
     }));
+    setJustAddedModelId(id);
   };
 
   const removeModel = (id: string) => {
@@ -376,7 +378,7 @@ export function ModelsSection() {
           return (
             <FoldCard
               key={model.id}
-              defaultOpen={false}
+              defaultOpen={model.id === justAddedModelId}
               label={
                 <span className="flex flex-1 items-center justify-between gap-2">
                   <span className="font-mono text-sm text-(--_dk-text-secondary)">

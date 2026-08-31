@@ -9,18 +9,16 @@ import {
   SettingsPageShell,
   useSettingsSaveBlocked,
 } from "./shared";
-import { isPersistBusy, useSettingsPersist } from "./persist";
+import { shouldHydrateDraftFromStore, useSettingsPersist } from "./persist";
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
 
-type AdvancedDraft = { logLevel: string; searchEndpoint: string };
+function snapshotLogLevel(): string {
+  return useSettingsStore.getState().log?.level ?? "info";
+}
 
-function snapshotAdvancedDraft(): AdvancedDraft {
-  const { log, websearch } = useSettingsStore.getState();
-  return {
-    logLevel: log?.level ?? "info",
-    searchEndpoint: websearch?.search_endpoint ?? "",
-  };
+function snapshotSearchEndpoint(): string {
+  return useSettingsStore.getState().websearch?.search_endpoint ?? "";
 }
 
 export function AdvancedSection() {
@@ -31,43 +29,29 @@ export function AdvancedSection() {
   const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const saveLog = useSettingsStore((s) => s.saveLog);
   const saveWebSearch = useSettingsStore((s) => s.saveWebSearch);
-  const [draft, setDraft] = useState<AdvancedDraft>(snapshotAdvancedDraft);
+  const [logLevel, setLogLevel] = useState(snapshotLogLevel);
+  const [searchEndpoint, setSearchEndpoint] = useState(snapshotSearchEndpoint);
 
   useEffect(() => {
-    if (isPersistBusy(persistStatus)) return;
-    setDraft({
-      logLevel: log?.level ?? "info",
-      searchEndpoint: websearch?.search_endpoint ?? "",
-    });
+    if (!shouldHydrateDraftFromStore(persistStatus)) return;
+    setLogLevel(log?.level ?? "info");
+    setSearchEndpoint(websearch?.search_endpoint ?? "");
   }, [log, websearch, persistStatus]);
 
-  useSettingsPersist(draft, {
+  useSettingsPersist(searchEndpoint, {
     debounceMs: 400,
     setStatus: setPersistStatus,
-    serialize: (d) => ({
-      ok: {
-        logLevel: d.logLevel || null,
-        searchEndpoint: d.searchEndpoint.trim() || undefined,
-      },
-    }),
-    commit: async (p) => {
-      const snap = useSettingsStore.getState();
-      const prevEndpoint = snap.websearch?.search_endpoint ?? "";
-      const prevLevel = snap.log?.level ?? "info";
-      if ((p.searchEndpoint ?? "") !== prevEndpoint) {
-        await saveWebSearch({ search_endpoint: p.searchEndpoint });
-      }
-      if ((p.logLevel ?? "info") !== prevLevel) {
-        await saveLog(p.logLevel);
-      }
-    },
-    revert: () => {
-      const snap = useSettingsStore.getState();
-      setDraft({
-        logLevel: snap.log?.level ?? "info",
-        searchEndpoint: snap.websearch?.search_endpoint ?? "",
-      });
-    },
+    serialize: (value) => ({ ok: value.trim() || undefined }),
+    commit: (search_endpoint) => saveWebSearch({ search_endpoint }),
+    revert: () => setSearchEndpoint(snapshotSearchEndpoint()),
+  });
+
+  useSettingsPersist(logLevel, {
+    debounceMs: 400,
+    setStatus: setPersistStatus,
+    serialize: (value) => ({ ok: value || null }),
+    commit: (level) => saveLog(level),
+    revert: () => setLogLevel(snapshotLogLevel()),
   });
 
   return (
@@ -77,8 +61,8 @@ export function AdvancedSection() {
           <SectionHeader title="Web search" />
           <FieldLabel>Exa MCP URL (optional override)</FieldLabel>
           <TextInput
-            value={draft.searchEndpoint}
-            onChange={(e) => setDraft((d) => ({ ...d, searchEndpoint: e.target.value }))}
+            value={searchEndpoint}
+            onChange={(e) => setSearchEndpoint(e.target.value)}
             placeholder="https://mcp.exa.ai/mcp"
             disabled={saveBlocked}
           />
@@ -88,8 +72,8 @@ export function AdvancedSection() {
           <SectionHeader title="Log level" />
           <FieldLabel>Level</FieldLabel>
           <Select
-            value={draft.logLevel}
-            onChange={(logLevel) => setDraft((d) => ({ ...d, logLevel }))}
+            value={logLevel}
+            onChange={setLogLevel}
             options={LOG_LEVELS.map((level) => ({ value: level, label: level }))}
             disabled={saveBlocked}
             className="w-full"

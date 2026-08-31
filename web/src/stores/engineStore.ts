@@ -32,6 +32,7 @@ function clearCatalogPollTimer(): void {
 export function resetCatalogPollState(): void {
   warmupAttempts = 0;
   catalogFetchErrorToasted = false;
+  detailPolling = false;
   clearCatalogPollTimer();
 }
 
@@ -41,7 +42,23 @@ function markCatalogSettled(): void {
   clearCatalogPollTimer();
 }
 
+/** When Engines page polls /engines/detail, cheap GET /engines must not also poll. */
+let detailPolling = false;
+
+export function setEngineDetailPolling(on: boolean): void {
+  detailPolling = on;
+  if (on) {
+    clearCatalogPollTimer();
+    return;
+  }
+  const warming = Object.values(useEngineStore.getState().engineStatuses).some(
+    (engine) => engine?.state === "warming",
+  );
+  if (warming) scheduleCatalogPoll();
+}
+
 function scheduleCatalogPoll(error?: unknown): void {
+  if (detailPolling) return;
   if (catalogPollTimer !== null) {
     return;
   }

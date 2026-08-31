@@ -6,7 +6,7 @@ import type { WorkspaceExcludesLists } from "../../../api/settings";
 import { globsFromText, textFromGlobs } from "../../../utils/excludeGlobs";
 import { FoldCard } from "../../../components/FoldCard";
 import { FieldLabel, TextArea, SectionHeader, SettingsPageShell, useSettingsSaveBlocked } from "./shared";
-import { isPersistBusy, useSettingsPersist } from "./persist";
+import { shouldHydrateDraftFromStore, useSettingsPersist } from "./persist";
 
 type FilesDraft = {
   filesText: string;
@@ -45,7 +45,7 @@ export function FilesSection() {
   const [draft, setDraft] = useState<FilesDraft>(snapshotFilesDraft);
 
   useEffect(() => {
-    if (isPersistBusy(persistStatus) || !excludes) return;
+    if (!shouldHydrateDraftFromStore(persistStatus) || !excludes) return;
     setDraft({
       filesText: textFromGlobs(excludes.files_exclude),
       searchText: textFromGlobs(excludes.search_exclude),
@@ -58,24 +58,15 @@ export function FilesSection() {
   useSettingsPersist<FilesDraft, WorkspaceExcludesLists>(draft, {
     debounceMs: 400,
     setStatus: setPersistStatus,
-    serialize: (d): { ok: WorkspaceExcludesLists } | { skip: "unchanged" } => {
-      if (!excludes) return { skip: "unchanged" };
-      const payload: WorkspaceExcludesLists = {
+    serialize: (d) => ({
+      ok: {
         files_exclude: globsFromText(d.filesText),
         search_exclude: globsFromText(d.searchText),
         watcher_exclude: globsFromText(d.watcherText),
         git_ignore: d.gitIgnore,
         explorer_git_ignore: d.explorerGitIgnore,
-      };
-      const same =
-        JSON.stringify(payload.files_exclude) === JSON.stringify(excludes.files_exclude)
-        && JSON.stringify(payload.search_exclude) === JSON.stringify(excludes.search_exclude)
-        && JSON.stringify(payload.watcher_exclude) === JSON.stringify(excludes.watcher_exclude)
-        && payload.git_ignore === excludes.git_ignore
-        && payload.explorer_git_ignore === excludes.explorer_git_ignore;
-      if (same) return { skip: "unchanged" };
-      return { ok: payload };
-    },
+      },
+    }),
     commit: async (p) => {
       await saveExcludes(p);
       await useTreeStore.getState().refreshAll();

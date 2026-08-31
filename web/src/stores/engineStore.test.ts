@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { catalogPollDelayMs, resetCatalogPollState, useEngineStore } from "./engineStore";
+import { catalogPollDelayMs, resetCatalogPollState, setEngineDetailPolling, useEngineStore } from "./engineStore";
 import { useToastStore } from "./toastStore";
 import type { EnginesDetail, EnginesSnapshot } from "../api/workspace";
 import type { EngineWarmupState } from "../api/settings";
@@ -153,5 +153,15 @@ describe("ensureLoaded uses cheap GET /engines", () => {
     useEngineStore.getState().applyFromDetail(enginesDetail("warm"));
     expect(mockedGetEnginesDetail).not.toHaveBeenCalled();
     expect(useEngineStore.getState().engineStatuses.lsp.state).toBe("warm");
+  });
+
+  it("does not cheap-poll while the Engines page is detail-polling", async () => {
+    vi.useFakeTimers();
+    setEngineDetailPolling(true);
+    mockedGetEngines.mockResolvedValue(enginesSnap("warming"));
+    void useEngineStore.getState().ensureLoaded();
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(mockedGetEngines).toHaveBeenCalledTimes(1);
+    setEngineDetailPolling(false);
   });
 });

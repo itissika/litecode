@@ -128,4 +128,24 @@ describe("ConnectionSection persist UX", () => {
     await vi.advanceTimersByTimeAsync(400);
     expect(saveProviders).toHaveBeenCalledTimes(1);
   });
+
+  it("PUTs remaining providers after Remove", async () => {
+    vi.useFakeTimers();
+    useSettingsStore.setState({
+      providers: {
+        saved: {
+          id: "saved",
+          adapter_id: "openai",
+          label: "Prod",
+          endpoint: "https://api.openai.com/v1",
+          api_key: "sk-…abcd",
+          auth: "bearer",
+        },
+      },
+    });
+    render(<ConnectionSection />);
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await vi.advanceTimersByTimeAsync(400);
+    expect(saveProviders).toHaveBeenCalledWith({});
+  });
 });

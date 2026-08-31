@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { getEnginesDetail, type EnginesDetail } from "../../../../api/workspace";
-import { useEngineStore } from "../../../../stores/engineStore";
+import { setEngineDetailPolling, useEngineStore } from "../../../../stores/engineStore";
 import { EngineView } from "./EngineView";
 import { EnginesSkeleton } from "../../../../components/ui/Skeleton";
 import { SettingsPageShell } from "../shared";
@@ -9,6 +9,10 @@ import { SettingsPageShell } from "../shared";
 export function EnginesSection() {
   const [detail, setDetail] = useState<EnginesDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setEngineDetailPolling(true);
+    return () => setEngineDetailPolling(false);
+  }, []);
   const refresh = useCallback(() => {
     void getEnginesDetail()
       .then((next) => {

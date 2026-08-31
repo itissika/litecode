@@ -379,6 +379,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
             const changeKind = kind as WorkspaceChangeKind;
             void editor?.handleWorkspaceChange(paths, changeKind);
             void tree?.handleWorkspaceChange(paths, changeKind);
+            settings?.getState().handleWorkspaceChange?.(paths, changeKind);
             git?.scheduleRefresh?.(paths);
             return;
           }

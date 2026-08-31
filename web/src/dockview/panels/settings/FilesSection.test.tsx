@@ -1,4 +1,4 @@
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useSettingsStore } from "../../../stores/settingsStore";
@@ -42,5 +42,15 @@ describe("FilesSection", () => {
     render(<FilesSection />);
     await vi.advanceTimersByTimeAsync(400);
     expect(saveExcludes).not.toHaveBeenCalled();
+  });
+
+  it("PUTs after toggling an exclude flag", async () => {
+    vi.useFakeTimers();
+    render(<FilesSection />);
+    fireEvent.click(screen.getByRole("checkbox", { name: /Honor \.gitignore in the explorer/i }));
+    await vi.advanceTimersByTimeAsync(400);
+    expect(saveExcludes).toHaveBeenCalledWith(
+      expect.objectContaining({ explorer_git_ignore: true }),
+    );
   });
 });

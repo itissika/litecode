@@ -6,7 +6,7 @@ import {
   registerSettingsFlush,
   shouldHydrateDraftFromStore,
   type PersistStatus,
-} from "./persist";
+} from "../../../lib/settingsPersist";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -157,5 +157,17 @@ describe("flushRegisteredSettings", () => {
     unreg();
     await flushRegisteredSettings();
     expect(flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs every registered flush", async () => {
+    const a = vi.fn(async () => undefined);
+    const b = vi.fn(async () => undefined);
+    const ua = registerSettingsFlush(a);
+    const ub = registerSettingsFlush(b);
+    await flushRegisteredSettings();
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(b).toHaveBeenCalledTimes(1);
+    ua();
+    ub();
   });
 });

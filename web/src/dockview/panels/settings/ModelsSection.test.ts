@@ -33,6 +33,22 @@ describe("serializeModels", () => {
     ).toEqual({ skip: "invalid" });
   });
 
+  it("keeps saved models while a blank new card is still empty", () => {
+    const saved = draftModel({
+      id: "saved",
+      provider_ref: "prov",
+      config: {
+        api_model_id: "gpt-4o",
+        context_window: 200_000,
+        max_tokens: 8192,
+        capabilities: ["text"],
+      },
+    });
+    expect(
+      serializeModels({ saved, model_1: draftModel() }, new Set(["saved"])),
+    ).toEqual({ ok: { saved } });
+  });
+
   it("serializes a complete new model", () => {
     const model = draftModel({
       provider_ref: "prov",
