@@ -11,7 +11,8 @@ import { ContextUsageRing } from "./ContextUsageRing";
 import { Dropdown, dropdownItemClass, dropdownItemActiveClass } from "./ui/Dropdown";
 import { ModelSwitcher } from "./ModelSwitcher";
 import { NotificationBell } from "./NotificationBell";
-import { composerCardClass } from "./composerCard";
+import { ShapeBlur } from "./ShapeBlur";
+import { composerCardClass, actionButtonGlass } from "./composerCard";
 import { AgentTypeIcon, agentColor } from "./agentIdentity";
 
 const CTRL_H = "h-7";
@@ -405,14 +406,34 @@ export function AgentChatInput({ sessionId }: { sessionId: string }) {
             <circle cx="8" cy="2" r="1" />
           </svg>
         </div>
+        {/* Floating action row. Bell (fill = state) and ring (a circle on its
+            own) stay bare; only the send/cancel action buttons carry the 66%
+            glass fill + blur (actionButtonGlass) so scrolled draft text under
+            them is softly obscured instead of colliding. */}
         <div className="absolute right-2 bottom-2 z-10 flex items-center gap-1.5">
           <NotificationBell sessionId={sessionId} />
-          <ContextUsageRing sessionId={sessionId} />
+          {/* Ring container stays ring-sized (30×30); overflow-visible keeps the
+              blur halo from being clipped — it spills out as a pure visual
+              overlay and never contributes to layout size. */}
+          <span className="relative flex h-[30px] w-[30px] items-center justify-center overflow-visible">
+            {/* EXPERIMENTAL ShapeBlur test — sits under the ring (DOM order).
+                Delete or move freely; does not touch ProgressiveBlur. */}
+            <ShapeBlur
+              shape="radial"
+              size={34}
+              inset={{ left: -2, top: -2 }}
+              strength={6}
+              maskSolid={40}
+              tintColor="var(--_dk-editor)"
+              tint={0.66}
+            />
+            <ContextUsageRing sessionId={sessionId} />
+          </span>
           {isRunning ? (
             <button
               type="button"
               onClick={cancelAgent}
-              className="send-spin-glow flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border border-(--_dk-border-strong) bg-transparent text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90"
+              className={`${actionButtonGlass} send-spin-glow flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90`}
               title="Cancel"
             >
               {runState === "cancelling" ? (
@@ -431,7 +452,7 @@ export function AgentChatInput({ sessionId }: { sessionId: string }) {
               ref={sendBtnRef}
               type="submit"
               disabled={isBlocked || !draft.trim()}
-              className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border border-(--_dk-border-strong) bg-transparent text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:brightness-100"
+              className={`${actionButtonGlass} flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:brightness-100`}
               title="Send"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

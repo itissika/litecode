@@ -574,7 +574,12 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             };
             let kind = match outcome {
                 CommitDeltaOutcome::Discarded => CommitKind::Idempotent,
-                CommitDeltaOutcome::Applied { .. } => CommitKind::MetaUpdated,
+                CommitDeltaOutcome::Applied { sealed_seqs, .. } if sealed_seqs.is_empty() => {
+                    CommitKind::MetaUpdated
+                }
+                CommitDeltaOutcome::Applied { sealed_seqs, .. } => {
+                    CommitKind::Sealed { seqs: sealed_seqs }
+                }
             };
             bump_receipt(state, &session_id, &operation_id.0, expected_revision, kind)
         }

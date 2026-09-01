@@ -7,6 +7,12 @@
  *  its panel is active — so the shadow follows the panel focus state. */
 export const composerShadow = "shadow-(--_dk-composer-card-shadow)";
 
+/** Floating action-button glass: 66% editor fill + backdrop blur. Draft text
+ *  scrolling under the buttons gets softly obscured (not hidden) — same glass
+ *  language as the composer card itself, just stronger so buttons stay legible. */
+export const actionButtonGlass =
+  "bg-[color-mix(in_srgb,var(--_dk-editor)_66%,transparent)] backdrop-blur-[12px]";
+
 export const composerCardClass = [
   "rounded-md",
   "border",

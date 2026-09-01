@@ -7,6 +7,7 @@ import {
   useNotificationStore,
 } from "../stores/notificationStore";
 import { Popover } from "./ui/Popover";
+import { ShapeBlur } from "./ShapeBlur";
 
 const KIND_BORDER: Record<string, string> = {
   error: "border-(--_dk-red-500)",
@@ -52,10 +53,27 @@ export function NotificationBell({ sessionId }: { sessionId: string }) {
           initial={reduceMotion ? false : { scale: 1 }}
           animate={hasNew ? { scale: [1, 1.3, 0.95, 1.05, 1] } : { scale: 1 }}
           transition={{ duration: 0.4, ease: "easeInOut" }}
-          className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md text-(--_dk-text-muted) transition-transform duration-100 hover:bg-(--_dk-ix-bg-hover) hover:brightness-110 active:scale-90 active:brightness-90"
+          className="relative flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md text-(--_dk-text-muted) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90"
           title={`${items.length} notification${items.length !== 1 ? "s" : ""}`}
         >
-          <Bell size={14} weight={items.length > 0 ? "fill" : "regular"} />
+          {/* Outline bell (no fill) on a soft circular gradient base — the same
+              ShapeBlur halo as the ring, so the bare icon reads clearly against
+              the card without a solid glyph. */}
+          <ShapeBlur
+            shape="radial"
+            size={20}
+            inset={{ left: 5, top: 5 }}
+            strength={6}
+            maskSolid={40}
+            tintColor="var(--_dk-editor)"
+            tint={0.66}
+          />
+          <Bell
+            size={16}
+            className={`relative z-10 ${
+              hasNew ? "text-(--_dk-accent-hover)" : "text-(--_dk-text-muted)"
+            }`}
+          />
         </motion.button>
       )}
     >

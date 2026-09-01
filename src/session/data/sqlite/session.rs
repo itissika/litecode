@@ -3682,15 +3682,22 @@ mod tests {
             status: OutputStatus::Completed,
             phase: None,
         }));
-        data.mutate_blocking(crate::session::SessionMutation::CommitTurnDelta {
-            session_id: id.clone(),
-            expected_revision: data.revision_blocking(&id).unwrap(),
-            operation_id: crate::session::MutationId::new(),
-            rows: vec![crate::session::WorkingRow::persisted(seq, sealed)],
-            expected_max_seq: seq as i64,
-            turn_id: "crash-recovery".into(),
-        })
-        .unwrap();
+        let seal_receipt = data
+            .mutate_blocking(crate::session::SessionMutation::CommitTurnDelta {
+                session_id: id.clone(),
+                expected_revision: data.revision_blocking(&id).unwrap(),
+                operation_id: crate::session::MutationId::new(),
+                rows: vec![crate::session::WorkingRow::persisted(seq, sealed)],
+                expected_max_seq: seq as i64,
+                turn_id: "crash-recovery".into(),
+            })
+            .unwrap();
+        match seal_receipt.outcome {
+            crate::session::data::CommitKind::Sealed { seqs } => {
+                assert_eq!(seqs, vec![seq], "in-place seal must surface seqs for restamp");
+            }
+            other => panic!("expected Sealed receipt, got {other:?}"),
+        }
         assert_eq!(data.events_blocking(&id).unwrap().len(), 1);
         let loaded =
             crate::session::event::item_from_event(&data.events_blocking(&id).unwrap()[0]).unwrap();

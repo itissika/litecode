@@ -2,12 +2,8 @@ import { type FormEvent, type KeyboardEvent, useEffect, useLayoutEffect, useRef 
 
 import type { ContextMode, ThinkingTier } from "../api/types";
 import { useSessionStore } from "../stores/sessionStore";
-import { composerCardClass } from "./composerCard";
-import {
-  AgentPicker,
-  ContextModeToggle,
-  ThinkSlider,
-} from "./AgentChatInput";
+import { actionButtonGlass, composerCardClass } from "./composerCard";
+import { AgentPicker, ContextModeToggle, ThinkSlider } from "./AgentChatInput";
 import { ModelSwitcher } from "./ModelSwitcher";
 
 export interface MiniChatInputSettings {
@@ -126,7 +122,7 @@ export function MiniChatInput({
         <button
           type="submit"
           disabled={disabled || !draft.trim() || !settings.modelId}
-          className="absolute right-2 bottom-2 flex h-[30px] w-[30px] items-center justify-center rounded-md border border-(--_dk-border-strong) bg-transparent text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 disabled:cursor-not-allowed disabled:opacity-40"
+          className={`${actionButtonGlass} absolute right-2 bottom-2 flex h-[30px] w-[30px] items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 disabled:cursor-not-allowed disabled:opacity-40`}
           title="Revert and resend"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

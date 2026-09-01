@@ -21,6 +21,7 @@ use super::bash_safety::{is_destructive_command, is_readonly_command};
 use super::bash_status;
 
 pub const FOREGROUND_WAIT: Duration = Duration::from_secs(30);
+const MAX_TIMEOUT_SECS: u64 = 600;
 
 pub struct BashTool {
     pub hub: Arc<TerminalHub>,
@@ -69,6 +70,10 @@ impl BashTool {
 
         let run_in_background = input["run_in_background"].as_bool().unwrap_or(false);
         let workdir = input["workdir"].as_str().map(Path::new);
+        let foreground_wait = input["timeout"]
+            .as_u64()
+            .map(Duration::from_secs)
+            .unwrap_or(self.foreground_wait);
         let sid = self.session_id();
         let call_id = self.call_id();
 
@@ -102,7 +107,7 @@ impl BashTool {
         match self.hub.jobs.wait(
             &sid,
             Some(&spawned.id),
-            Some(self.foreground_wait),
+            Some(foreground_wait),
             &self.cancel,
             false,
         ) {
@@ -175,6 +180,13 @@ impl Tool for BashTool {
                     "type": "boolean",
                     "description": "Return immediately with bash_id. Inspect with read/grep; wait_shell to wait; kill_shell to stop.",
                     "default": false
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Seconds to wait for exit before returning as a background job (1-600, default 30). Ignored when run_in_background is true. Prefer this over a follow-up wait_shell when the command should finish in that window.",
+                    "minimum": 1,
+                    "maximum": 600,
+                    "default": 30
                 }
             },
             "required": ["command"]
@@ -204,7 +216,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Run a shell command. cwd and environment do not persist across calls — chain with && in one command. Prefer read, the dedicated grep tool, and glob for files; do not run Unix grep, rg, or ripgrep here. Use bash for builds, tests, git, and scripts. Short commands return when they exit. Longer ones keep running in the background: inspect with read/grep on the output file, wait_shell to wait, kill_shell to stop.".into()
+        "Run a shell command. cwd and environment do not persist across calls — chain with && in one command. Prefer read, the dedicated grep tool, and glob for files; do not run Unix grep, rg, or ripgrep here. Use bash for builds, tests, git, and scripts. Short commands return when they exit. For longer work, set timeout (seconds, default 30) so this call waits that long; if still running, the job continues in the background: inspect with read/grep on the output file, wait_shell to wait, kill_shell to stop.".into()
     }
 
     fn max_result_size(&self) -> usize {
@@ -270,6 +282,15 @@ impl Tool for BashTool {
             let path = Path::new(workdir);
             if !path.exists() {
                 return Err(format!("workdir does not exist: {workdir}"));
+            }
+        }
+
+        if let Some(v) = input.get("timeout").filter(|v| !v.is_null()) {
+            let n = v
+                .as_u64()
+                .ok_or_else(|| crate::tool::expected_type("timeout", "integer", v))?;
+            if !(1..=MAX_TIMEOUT_SECS).contains(&n) {
+                return Err(crate::tool::must_be("timeout", "between 1 and 600"));
             }
         }
 
@@ -452,6 +473,31 @@ mod tests {
         assert!(test_tool().validate_input(&input).is_err());
     }
 
+    #[test]
+    fn test_validate_input_timeout_range() {
+        let tool = test_tool();
+        assert!(
+            tool.validate_input(&serde_json::json!({"command": "ls", "timeout": 1}))
+                .is_ok()
+        );
+        assert!(
+            tool.validate_input(&serde_json::json!({"command": "ls", "timeout": 600}))
+                .is_ok()
+        );
+        assert!(
+            tool.validate_input(&serde_json::json!({"command": "ls", "timeout": 0}))
+                .is_err()
+        );
+        assert!(
+            tool.validate_input(&serde_json::json!({"command": "ls", "timeout": 601}))
+                .is_err()
+        );
+        assert!(
+            tool.validate_input(&serde_json::json!({"command": "ls", "timeout": "30"}))
+                .is_err()
+        );
+    }
+
     fn sample_capture(
         frozen: bool,
         head: &str,
@@ -549,6 +595,7 @@ mod tests {
         assert!(d.contains("grep"));
         assert!(d.contains("wait_shell"));
         assert!(d.contains("kill_shell"));
+        assert!(d.contains("timeout"));
         assert!(
             !d.contains("head+tail")
                 && !d.contains(".litecode/bash")

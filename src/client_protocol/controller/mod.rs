@@ -1742,4 +1742,82 @@ mod compact_item_wire_tests {
         assert_eq!(again[0]["params"]["body"]["status"], "incomplete");
         assert_eq!(again[1]["params"]["body"]["status"], "incomplete");
     }
+
+    #[test]
+    fn commit_delta_seal_restamps_completed_body_without_next_seq_growth() {
+        use crate::authority::responses::{
+            AssistantRole, MessageItem, OutputMessage, OutputMessageContent, OutputStatus,
+            OutputTextContent,
+        };
+        use crate::session::data::command::CommitKind;
+        use crate::session::working::WorkingRow;
+        use crate::types::Item;
+
+        let (mut proj, sid, sessions) = setup_with_details(&["u0"]);
+        sessions
+            .persist_item(
+                &sid,
+                &Item::Message(MessageItem::Output(OutputMessage {
+                    id: "asst_live".into(),
+                    role: AssistantRole::Assistant,
+                    content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                        text: "hel".into(),
+                        annotations: vec![],
+                        logprobs: None,
+                    })],
+                    status: OutputStatus::InProgress,
+                    phase: None,
+                })),
+            )
+            .unwrap();
+        proj.bump_buffer_revision("/p", &binding());
+        let _ = proj.take_outgoing();
+        let next_before_seal = proj.next_seq;
+        let live_seq = next_before_seal.saturating_sub(1);
+
+        let sealed = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_live".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hello".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::Completed,
+            phase: None,
+        }));
+        let (kind, _) = sessions
+            .commit_turn_delta(
+                &sid,
+                vec![
+                    WorkingRow::persisted(0, user_text("u0")),
+                    WorkingRow::persisted(live_seq, sealed),
+                ],
+                live_seq as i64,
+                "t-complete",
+            )
+            .unwrap();
+        let seqs = match kind {
+            CommitKind::Sealed { seqs } => seqs,
+            other => panic!("commit-seal must return Sealed seqs, got {other:?}"),
+        };
+        assert_eq!(seqs, vec![live_seq]);
+
+        proj.bump_buffer_revision("/p", &binding());
+        let after_bump = proj.take_outgoing();
+        assert!(
+            buffer_item_frames(&after_bump).is_empty(),
+            "in-place commit seal must not be shipped by next_seq-only revision"
+        );
+        assert_eq!(proj.next_seq, next_before_seal);
+
+        proj.on_event(InternalEvent::BufferRestamp { seqs }, "/p", &binding());
+        let restamp_out = proj.take_outgoing();
+        let restamp = buffer_item_frames(&restamp_out);
+        assert_eq!(restamp.len(), 1);
+        assert_eq!(restamp[0]["params"]["seq"], live_seq);
+        assert_eq!(restamp[0]["params"]["body"]["status"], "completed");
+        assert_eq!(restamp[0]["params"]["body"]["content"][0]["text"], "hello");
+        assert_eq!(restamp[0]["params"]["state"], "final");
+    }
 }

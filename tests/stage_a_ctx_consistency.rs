@@ -1683,6 +1683,11 @@ async fn compact_then_send_message_matches_run_with_turn() {
         user_commit.committed,
         "BLAST-user-commit: expected Applied, got {user_commit:?}"
     );
+    assert!(
+        user_commit.sealed_seqs.is_empty(),
+        "BLAST-user-commit: append-only commit must not restamp, got {:?}",
+        user_commit.sealed_seqs
+    );
     let after_user: Vec<String> = sessions
         .data()
         .transcript_blocking(&sid)
@@ -1710,7 +1715,7 @@ async fn compact_then_send_message_matches_run_with_turn() {
     sessions
         .persist_item(&sid, &live)
         .expect("BLAST-added: persist_item at output_item.added");
-    let added_seq = sessions.entry_wire_seq_cursor(&sid).0;
+    let added_seq = sessions.entry_wire_seq_cursor(&sid).0 as u64;
     let sealed = assistant_text_item("hello after compact", "asst_after_compact");
     items.push(WorkingRow::pending(sealed.clone()));
     let seal_commit = pipeline
@@ -1721,6 +1726,15 @@ async fn compact_then_send_message_matches_run_with_turn() {
         "BLAST-seal-commit: Discarded after persist_item+commit. seq={added_seq} cursor={} items={}",
         pipeline.persisted_prefix_len(),
         items.len()
+    );
+    assert_eq!(
+        seal_commit.sealed_seqs,
+        vec![added_seq],
+        "BLAST-seal-commit: persist then commit must return sealed seqs for BufferRestamp"
+    );
+    assert!(
+        seal_commit.committed,
+        "BLAST-seal-commit: seal is a commit, got {seal_commit:?}"
     );
 
     let mut prepared = sessions.data().working_set_blocking(&sid).unwrap();

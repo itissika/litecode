@@ -147,14 +147,27 @@ impl GlobTool {
     }
 }
 
+struct GlobListing {
+    hits: Vec<String>,
+    total: usize,
+}
+
+impl GlobListing {
+    fn capped(mut hits: Vec<String>) -> Self {
+        let total = hits.len();
+        hits.truncate(MAX_RESULTS);
+        Self { hits, total }
+    }
+}
+
 fn format_glob_body(
-    results: &[String],
+    listing: &GlobListing,
     effective_pattern: &str,
     path_arg: Option<&str>,
     pattern_warning: Option<&str>,
     prefix_note: Option<&str>,
 ) -> String {
-    if results.is_empty() {
+    if listing.hits.is_empty() {
         let mut msg = format!("No files found for pattern '{effective_pattern}'");
         if let Some(p) = path_arg {
             msg.push_str(&format!(" under path '{p}'"));
@@ -171,7 +184,14 @@ fn format_glob_body(
         }
         msg
     } else {
-        let mut msg = results.join("\n");
+        let mut msg = listing.hits.join("\n");
+        if listing.hits.len() < listing.total {
+            msg.push_str(&format!(
+                "\n[showing {} of {}. Narrow pattern or path to see the rest.]",
+                listing.hits.len(),
+                listing.total
+            ));
+        }
         if let Some(note) = prefix_note {
             msg.push('\n');
             msg.push_str(note);
@@ -225,7 +245,7 @@ fn strip_redundant_path_prefix<'a>(
 fn glob_virtual_sessions(
     execution: &crate::tool::trait_::ToolExecutionContext,
     pattern: &str,
-) -> Result<Vec<String>> {
+) -> Result<GlobListing> {
     let matcher = compile_include_pattern(pattern)?;
     let reader = execution.session_reader()?;
     let listed = crate::session::transcript_file::list_virtual_paths(
@@ -236,11 +256,10 @@ fn glob_virtual_sessions(
         .filter(|path| matcher.matches(path))
         .collect();
     crate::workspace::sort_glob_hits(&mut hits);
-    hits.truncate(MAX_RESULTS);
-    Ok(hits)
+    Ok(GlobListing::capped(hits))
 }
 
-fn glob_match(base: &std::path::Path, pattern: &str, no_ignore: bool) -> Result<Vec<String>> {
+fn glob_match(base: &std::path::Path, pattern: &str, no_ignore: bool) -> Result<GlobListing> {
     let glob_matcher = compile_include_pattern(pattern)?;
     let preset = discovery_preset(no_ignore);
     let rel_ctx = RelPathCtx::new(base).unwrap_or_else(|_| RelPathCtx::new_lossy(base));
@@ -271,8 +290,7 @@ fn glob_match(base: &std::path::Path, pattern: &str, no_ignore: bool) -> Result<
     }
 
     crate::workspace::sort_glob_hits(&mut hits);
-    hits.truncate(MAX_RESULTS);
-    Ok(hits)
+    Ok(GlobListing::capped(hits))
 }
 
 fn discovery_preset(no_ignore: bool) -> FilterPreset {
@@ -315,7 +333,7 @@ mod tests {
         std::fs::write(root.join("node_modules/pkg/index.js"), "module.exports=1\n").unwrap();
         std::fs::write(root.join(".env"), "AGENT_GLOB=1\n").unwrap();
 
-        let found = glob_match(root, "**/*.{rs,js,env}", false).unwrap();
+        let found = glob_match(root, "**/*.{rs,js,env}", false).unwrap().hits;
         assert!(
             found
                 .iter()
@@ -343,12 +361,12 @@ mod tests {
         std::fs::write(root.join("ignored.txt"), "x\n").unwrap();
         std::fs::write(root.join("keep.txt"), "x\n").unwrap();
 
-        let filtered = glob_match(root, "**/*", false).unwrap();
+        let filtered = glob_match(root, "**/*", false).unwrap().hits;
         assert!(filtered.iter().any(|p| p == "keep.txt"));
         assert!(!filtered.iter().any(|p| p == "ignored.txt"));
         assert!(!filtered.iter().any(|p| p.contains("node_modules")));
 
-        let raw = glob_match(root, "**/*", true).unwrap();
+        let raw = glob_match(root, "**/*", true).unwrap().hits;
         assert!(raw.iter().any(|p| p == "ignored.txt"), "got {raw:?}");
         assert!(
             raw.iter().any(|p| p == "node_modules/pkg/index.js"),
@@ -364,7 +382,9 @@ mod tests {
         std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
         std::fs::write(root.join("node_modules/pkg/index.js"), "x\n").unwrap();
 
-        let found = glob_match(&root.join("node_modules"), "**/*", false).unwrap();
+        let found = glob_match(&root.join("node_modules"), "**/*", false)
+            .unwrap()
+            .hits;
         assert!(
             found
                 .iter()
@@ -416,7 +436,9 @@ mod tests {
 
         // After strip: path=src + pattern=src/**/*.rs → **/*.rs under src
         let (effective, _) = strip_redundant_path_prefix(Some("src"), "src/**/*.rs");
-        let found = glob_match(&root.join("src"), &effective, false).unwrap();
+        let found = glob_match(&root.join("src"), &effective, false)
+            .unwrap()
+            .hits;
         assert!(
             found
                 .iter()
@@ -461,7 +483,29 @@ mod tests {
         std::fs::write(root.join("src/mid.rs"), "fn m() {}\n").unwrap();
 
         let found = glob_match(root, "**/*.rs", false).unwrap();
-        assert_eq!(found, ["root.rs", "src/mid.rs", "src/nested/deep.rs"]);
+        assert_eq!(found.hits, ["root.rs", "src/mid.rs", "src/nested/deep.rs"]);
+        assert_eq!(found.total, 3);
+    }
+
+    #[test]
+    fn truncates_with_count_note() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        for i in 0..(MAX_RESULTS + 7) {
+            std::fs::write(root.join(format!("f{i:04}.txt")), "x\n").unwrap();
+        }
+        let listing = glob_match(root, "*.txt", true).unwrap();
+        assert_eq!(listing.hits.len(), MAX_RESULTS);
+        assert_eq!(listing.total, MAX_RESULTS + 7);
+        let body = format_glob_body(&listing, "*.txt", None, None, None);
+        assert!(
+            body.contains(&format!(
+                "[showing {MAX_RESULTS} of {}. Narrow pattern or path to see the rest.]",
+                MAX_RESULTS + 7
+            )),
+            "got: {body}"
+        );
+        assert!(!body.contains(&format!("f{:04}.txt", MAX_RESULTS + 6)));
     }
 
     fn seed_session(root: &std::path::Path, text: &str) -> String {

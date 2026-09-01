@@ -326,44 +326,33 @@ impl ContextPipeline {
             .commit_turn_delta(session_id, rows.clone(), expected_max_seq, &tid)
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
         *rows = working;
-        match kind {
+        let (committed, discarded, sealed_seqs, clear_prepared) = match kind {
             crate::session::data::command::CommitKind::Idempotent => {
-                let mut state = self.state.borrow_mut();
-                state.working = rows.clone();
-                state.surface_len = rows.len();
-                state.log_max_seq = sessions.entry_wire_seq_cursor(session_id).0;
-                state.hot.replace(project_items(rows));
-                state.prepared = None;
-                Ok(CommitStepOutcome {
-                    committed: false,
-                    discarded: true,
-                    preview: None,
-                    sealed_seqs: Vec::new(),
-                })
+                (false, true, Vec::new(), true)
+            }
+            crate::session::data::command::CommitKind::Sealed { seqs } => {
+                (true, false, seqs, false)
             }
             crate::session::data::command::CommitKind::MetaUpdated
             | crate::session::data::command::CommitKind::Appended { .. } => {
-                let mut state = self.state.borrow_mut();
-                state.working = rows.clone();
-                state.surface_len = rows.len();
-                state.log_max_seq = sessions.entry_wire_seq_cursor(session_id).0;
-                state.hot.replace(project_items(rows));
-                Ok(CommitStepOutcome {
-                    committed: true,
-                    discarded: false,
-                    preview: None,
-                    sealed_seqs: Vec::new(),
-                })
+                (true, false, Vec::new(), false)
             }
-            _ => {
-                let mut state = self.state.borrow_mut();
-                state.working = rows.clone();
-                state.surface_len = rows.len();
-                state.log_max_seq = sessions.entry_wire_seq_cursor(session_id).0;
-                state.hot.replace(project_items(rows));
-                Ok(CommitStepOutcome::default())
-            }
+            _ => (false, false, Vec::new(), false),
+        };
+        let mut state = self.state.borrow_mut();
+        state.working = rows.clone();
+        state.surface_len = rows.len();
+        state.log_max_seq = sessions.entry_wire_seq_cursor(session_id).0;
+        state.hot.replace(project_items(rows));
+        if clear_prepared {
+            state.prepared = None;
         }
+        Ok(CommitStepOutcome {
+            committed,
+            discarded,
+            preview: None,
+            sealed_seqs,
+        })
     }
 
     /// Token estimate for the last prepared view or hot items.

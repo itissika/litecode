@@ -206,6 +206,37 @@ fn short_command_uses_completed_view_not_running_status() {
 }
 
 #[test]
+fn foreground_timeout_param_overrides_default_wait() {
+    let flow = Flow::new("s1");
+    let started = Instant::now();
+    let result = flow.run_bash(
+        serde_json::json!({ "command": sleep_cmd(20), "timeout": 1 }),
+        Some(Duration::from_secs(30)),
+    );
+    assert!(started.elapsed() < Duration::from_secs(4));
+    assert_eq!(result.level, ToolSignalLevel::Ok);
+    let id = bash_id_of(&result.content);
+    assert_eq!(result.content, expected_running(&flow, &id));
+    assert!(flow.hub.jobs.get(&id).is_some_and(|(alive, _, _, _)| alive));
+}
+
+#[test]
+fn foreground_timeout_param_lets_command_finish() {
+    let flow = Flow::new("s1");
+    let result = flow.run_bash(
+        serde_json::json!({ "command": sleep_cmd(1), "timeout": 5 }),
+        Some(Duration::from_millis(400)),
+    );
+    assert_eq!(result.level, ToolSignalLevel::Ok);
+    assert!(
+        result.content.starts_with("exit_code: 0\n"),
+        "{}",
+        result.content
+    );
+    assert!(!result.content.contains("status: running"));
+}
+
+#[test]
 fn wait_id_after_exit_equals_exited_formatter() {
     let flow = Flow::new("s1");
     let launched = flow.run_bash(
