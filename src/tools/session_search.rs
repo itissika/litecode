@@ -21,16 +21,15 @@ impl SessionSearchTool {
     fn search_in_workspace(
         &self,
         workspace_root: &std::path::Path,
+        reader: &crate::session::SessionDataReader,
         query: &str,
         session_id: Option<&str>,
         offset: usize,
         active_session_id: Option<&str>,
     ) -> ToolCallResult {
-        let db = session_search::sessions_db_under(workspace_root);
-
         let include_session = match session_id {
             Some(refer) if !refer.trim().is_empty() => {
-                match session_search::resolve_session_ref(&db, refer.trim()) {
+                match session_search::resolve_session_ref(reader, refer.trim()) {
                     Ok(id) => Some(id),
                     Err(e) => return ToolCallResult::error(e.to_string()),
                 }
@@ -40,7 +39,7 @@ impl SessionSearchTool {
 
         let exclude_context_window = match active_session_id {
             Some(sid) if include_session.as_ref().map(|i| i == sid).unwrap_or(true) => {
-                match session_search::load_surface_seqs(&db, sid) {
+                match session_search::load_surface_seqs(reader, sid) {
                     Ok(surface_seqs) => Some(ContextWindowExclude {
                         session_id: sid.to_string(),
                         surface_seqs,
@@ -57,6 +56,7 @@ impl SessionSearchTool {
             RetrievalFilters {
                 include_session_id: include_session,
                 exclude_context_window,
+                session: Some(reader.clone()),
                 ..Default::default()
             },
             Some(workspace_root.to_path_buf()),
@@ -65,7 +65,7 @@ impl SessionSearchTool {
             Err(e) => return ToolCallResult::error(e.to_string()),
         };
 
-        let page = match session_search::build_search_page(&db, &bundle.ranked, bundle.offset) {
+        let page = match session_search::build_search_page(reader, &bundle.ranked, bundle.offset) {
             Ok(p) => p,
             Err(e) => return ToolCallResult::error(e.to_string()),
         };
@@ -129,6 +129,7 @@ impl Tool for SessionSearchTool {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 output_limit: self.max_result_size(),
                 session_id: String::new(),
+                session: None,
             },
         )
     }
@@ -152,6 +153,10 @@ impl Tool for SessionSearchTool {
 
 impl SessionSearchTool {
     fn search_from_input(&self, input: Value, execution: &ToolExecutionContext) -> ToolCallResult {
+        let reader = match execution.session_reader() {
+            Ok(reader) => reader,
+            Err(error) => return ToolCallResult::error(error.to_string()),
+        };
         let query = match crate::tool::require_nonempty_string_trimmed(&input, "query") {
             Ok(q) => q,
             Err(e) => return ToolCallResult::error(e),
@@ -170,6 +175,7 @@ impl SessionSearchTool {
         };
         self.search_in_workspace(
             &execution.workspace_root,
+            reader,
             query.trim(),
             session_id,
             offset,
@@ -197,7 +203,7 @@ fn parse_offset(v: &Value) -> std::result::Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::store::Session;
+    use crate::session::{SessionData, WorkspaceWriteLease};
     use crate::session::transcript_file;
     use crate::types::ToolSignalLevel;
     use crate::types::user_text;
@@ -238,23 +244,26 @@ mod tests {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 output_limit: tool.max_result_size(),
                 session_id: active.to_string(),
+                session: Some(crate::session::SessionDataReader::open(
+                    &root.join(".litecode").join("sessions.db"),
+                )),
             },
         ))
     }
 
     fn seed_session(root: &std::path::Path, text: &str) -> String {
+        seed_items(root, &[user_text(text)])
+    }
+
+    fn seed_items(root: &std::path::Path, items: &[crate::types::Item]) -> String {
         let db = root.join(".litecode").join("sessions.db");
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let s = Session::open(
-            db.to_str().unwrap(),
-            root.to_str().unwrap(),
-            "default",
-            None,
-        )
-        .unwrap();
-        s.insert_detail_rows(&[user_text(text)]).unwrap();
-        let id = s.id.clone();
-        drop(s);
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data
+            .create_session(root.to_str().unwrap(), "default", None)
+            .unwrap();
+        data.insert_items(&id, items).unwrap();
         id
     }
 
@@ -299,23 +308,14 @@ mod tests {
     fn typical_multi_hit_same_session_lists_lines() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let db = root.join(".litecode").join("sessions.db");
-        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let s = Session::open(
-            db.to_str().unwrap(),
-            root.to_str().unwrap(),
-            "default",
-            None,
-        )
-        .unwrap();
-        let sid = s.id.clone();
-        s.insert_detail_rows(&[
-            user_text("first MULTI_HIT_TOKEN occurrence here"),
-            user_text("unrelated filler line"),
-            user_text("second MULTI_HIT_TOKEN occurrence there"),
-        ])
-        .unwrap();
-        drop(s);
+        let sid = seed_items(
+            root,
+            &[
+                user_text("first MULTI_HIT_TOKEN occurrence here"),
+                user_text("unrelated filler line"),
+                user_text("second MULTI_HIT_TOKEN occurrence there"),
+            ],
+        );
 
         let tool = SessionSearchTool::new(WorkspaceEngines::new());
         let out = call_ok(
@@ -339,15 +339,6 @@ mod tests {
     fn pagination_footer_guides_next_offset() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let db = root.join(".litecode").join("sessions.db");
-        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let s = Session::open(
-            db.to_str().unwrap(),
-            root.to_str().unwrap(),
-            "default",
-            None,
-        )
-        .unwrap();
         let mut items = Vec::new();
         for i in 0..40 {
             items.push(user_text(format!(
@@ -355,8 +346,7 @@ mod tests {
                 "word ".repeat(80)
             )));
         }
-        s.insert_detail_rows(&items).unwrap();
-        drop(s);
+        seed_items(root, &items);
 
         let tool = SessionSearchTool::new(WorkspaceEngines::new());
         let page0 = call_ok(
@@ -425,23 +415,19 @@ mod tests {
         let root = dir.path();
         let db = root.join(".litecode").join("sessions.db");
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let s = Session::open(
-            db.to_str().unwrap(),
-            root.to_str().unwrap(),
-            "default",
-            None,
-        )
-        .unwrap();
-        let sid = s.id.clone();
-        s.insert_detail_rows(&[
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let sid = data
+            .create_session(root.to_str().unwrap(), "default", None)
+            .unwrap();
+        data.insert_items(&sid, &[
             user_text("ARCHIVED_OLD_MARKER buried before compact"),
             user_text("filler middle"),
             user_text("LIVE_TAIL_MARKER still in window"),
         ])
         .unwrap();
-        s.apply_compact_checkpoint_from(&user_text("[summary] prior archived"), Some(2), 10)
+        data.compact_from(&sid, &user_text("[summary] prior archived"), Some(2), 10)
             .unwrap();
-        drop(s);
 
         let tool = SessionSearchTool::new(WorkspaceEngines::new());
         let archived = call_ok(
@@ -556,6 +542,9 @@ mod tests {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 output_limit: usize::MAX,
                 session_id: String::new(),
+                session: Some(crate::session::SessionDataReader::open(
+                    &root.join(".litecode").join("sessions.db"),
+                )),
             },
         ));
         assert_eq!(read.level, ToolSignalLevel::Ok, "{}", read.content);

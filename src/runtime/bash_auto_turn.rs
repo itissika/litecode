@@ -74,10 +74,7 @@ pub fn try_begin_idle_auto_turn(
     }
     let jobs = hub.jobs.running(sid);
     let input = bash_status::format_exit_reminder(&notices, &jobs, workspace_root);
-    let append_result = sessions.with_entry_store(sid, |session| {
-        session.append_job_exit(&crate::types::user_text(&input))?;
-        Ok(())
-    });
+    let append_result = sessions.append_job_exit(sid, &crate::types::user_text(&input));
     if let Err(error) = append_result {
         tracing::warn!(session_id = sid, %error, "failed to persist bash exit reminder");
         sessions.release_turn_reservation(sid, &turn_id);
@@ -220,7 +217,6 @@ mod tests {
     use crate::engines::WorkspaceEngines;
     use crate::ide_base::IdeBaseHandle;
     use crate::optional::EngineManager;
-    use crate::session::store::Session;
     use crate::workspace::WorkspaceService;
     use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
@@ -253,7 +249,7 @@ mod tests {
             Arc::new(AtomicU64::new(0)),
             root.join("global.db"),
         );
-        let sessions = Arc::new(SessionManager::new(
+        let sessions = Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             root.join("sessions.db").to_string_lossy().to_string(),
         ));
@@ -290,10 +286,9 @@ mod tests {
     fn idle_without_subscribers_does_not_reserve() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions, hub) = test_runtime(dir.path());
-        let session =
-            Session::ephemeral(&dir.path().display().to_string(), "default", None).unwrap();
-        let sid = session.id.clone();
-        sessions.register_for_test(session);
+        let sid = sessions
+            .open_session_sync(&dir.path().display().to_string(), "default", None)
+            .unwrap();
         let id = spawn_echo(&hub, dir.path(), &sid);
         wait_job_exit(&hub, &id);
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
@@ -308,10 +303,9 @@ mod tests {
     fn busy_session_leaves_mailbox() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions, hub) = test_runtime(dir.path());
-        let session =
-            Session::ephemeral(&dir.path().display().to_string(), "default", None).unwrap();
-        let sid = session.id.clone();
-        sessions.register_for_test(session);
+        let sid = sessions
+            .open_session_sync(&dir.path().display().to_string(), "default", None)
+            .unwrap();
         let _ = sessions.attach(&sid);
         sessions
             .reserve_turn(
@@ -335,10 +329,9 @@ mod tests {
     fn idle_with_subscribers_prepares_turn_using_exit_reminder() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions, hub) = test_runtime(dir.path());
-        let session =
-            Session::ephemeral(&dir.path().display().to_string(), "default", None).unwrap();
-        let sid = session.id.clone();
-        sessions.register_for_test(session);
+        let sid = sessions
+            .open_session_sync(&dir.path().display().to_string(), "default", None)
+            .unwrap();
         let _ = sessions.attach(&sid);
         let id = spawn_echo(&hub, dir.path(), &sid);
         wait_job_exit(&hub, &id);
@@ -359,9 +352,7 @@ mod tests {
                 assert_eq!(input, expected);
                 assert!(input.starts_with("<system-reminder>"));
                 assert!(!input.contains("status: exited"));
-                let events = sessions
-                    .with_entry_store(&sid, |s| Ok(s.load_events()?))
-                    .unwrap();
+                let events = sessions.data().events_blocking(&sid).unwrap();
                 assert_eq!(
                     events.last().unwrap().event_type,
                     crate::session::EventType::ReminderJobExit
@@ -378,10 +369,9 @@ mod tests {
     fn ui_kill_while_busy_prepares_user_stopped_reminder_once_idle() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions, hub) = test_runtime(dir.path());
-        let session =
-            Session::ephemeral(&dir.path().display().to_string(), "default", None).unwrap();
-        let sid = session.id.clone();
-        sessions.register_for_test(session);
+        let sid = sessions
+            .open_session_sync(&dir.path().display().to_string(), "default", None)
+            .unwrap();
         let _ = sessions.attach(&sid);
         sessions
             .reserve_turn(

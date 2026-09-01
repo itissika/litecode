@@ -61,6 +61,18 @@ pub enum LitecodeError {
     #[error("canceled")]
     Canceled,
 
+    #[error("session conflict: expected revision {expected}, actual {actual}")]
+    SessionConflict { expected: u64, actual: u64 },
+
+    #[error("session data is closed")]
+    SessionDataClosed,
+
+    #[error("session data writer queue is full")]
+    SessionBackpressure,
+
+    #[error("session storage error: {0}")]
+    SessionStorage(String),
+
     #[error("{0}")]
     Anyhow(#[from] anyhow::Error),
 }

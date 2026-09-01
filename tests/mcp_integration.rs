@@ -1,7 +1,7 @@
 //! Typical MCP host path against `tests/fixtures/mock_mcp_server.py`:
 //!
-//! Settings start (async hop) → schemas for the LLM list → sync `Tool::call`
-//! from a current-thread runtime (the turn) → hub I/O.
+//! Settings start (async hop) →schemas for the LLM list →sync `Tool::call`
+//! from a current-thread runtime (the turn) →hub I/O.
 //!
 //! Direct `McpStdioClient` tests cover the JSON-RPC codec only.
 
@@ -246,7 +246,7 @@ async fn block_on_hub_from_turn_runtime_does_not_panic() {
     assert_eq!(n, 7);
 }
 
-/// Catalog enable + agent bind → `build_tool_list` advertises MCP's own names
+/// Catalog enable + agent bind →`build_tool_list` advertises MCP's own names
 /// (`echo`), not `mcp_<id>`, and `Tool::call` works on the turn runtime.
 #[tokio::test(flavor = "current_thread")]
 async fn catalog_and_bind_exposes_echo_and_round_trips() {
@@ -323,7 +323,7 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
         workspace_engines,
         ide,
         "test-parent-session",
-        Arc::new(SessionManager::new(
+        Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             String::new(),
         )),

@@ -15,7 +15,10 @@ use tantivy::schema::{
 use tantivy::tokenizer::NgramTokenizer;
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term, doc};
 
-use crate::engines::code_search::{LexicalMatch, LexicalQuery, LexicalSearchOutcome};
+use crate::engines::code_search::{
+    LexicalMatch, LexicalQuery, LexicalSearchOutcome, compile_exclude_globs,
+    path_glob_match_exclude,
+};
 use crate::types::{LitecodeError, Result};
 use crate::workspace::filter::{
     FilterPreset, RelPathCtx, cheap_rel_under, compile_include_patterns, looks_binary,
@@ -345,6 +348,7 @@ pub fn verify_with_ripgrep(
         None | Some("") => Vec::new(),
         Some(p) => compile_include_patterns(p)?,
     };
+    let exclude = compile_exclude_globs(query.exclude.as_deref())?;
 
     let mut matches = Vec::new();
     let mut files_searched = 0usize;
@@ -353,6 +357,12 @@ pub fn verify_with_ripgrep(
             break;
         }
         if !include.is_empty() && !path_matches_include(rel, &include) {
+            continue;
+        }
+        if exclude
+            .iter()
+            .any(|pattern| path_glob_match_exclude(pattern, rel))
+        {
             continue;
         }
         let abs = workspace_root.join(rel);

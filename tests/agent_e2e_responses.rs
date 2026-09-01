@@ -130,7 +130,8 @@ async fn agent_e2e_incomplete_seals_text_to_disk() {
     let sid = runtime.session_id.clone();
     let items = runtime
         .sessions()
-        .with_entry_store(&sid, |s| Ok(s.load_transcript()?))
+        .data()
+        .transcript_blocking(&sid)
         .expect("load transcript");
     assert!(
         items.iter().any(|item| {

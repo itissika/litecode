@@ -19,7 +19,7 @@ use crate::session::manager::SessionManager;
 use crate::session::store::Session;
 use crate::session::task_state::TaskReminders;
 use crate::session::working::{WorkingRow, align_working, project_items};
-use crate::types::{Item, Result, Transcript};
+use crate::types::{Item, LitecodeError, Result, Transcript};
 
 pub use budget::{BudgetPolicy, ProviderPromptBaseline, manual_compact_eligible};
 pub use compact::CompactPolicy;
@@ -60,12 +60,7 @@ pub struct ContextPipeline {
 }
 
 impl ContextPipeline {
-    pub fn new(
-        _session: &Session,
-        context_window: usize,
-        _ctx: Context,
-        data_root: PathBuf,
-    ) -> Self {
+    pub fn new(context_window: usize, _ctx: Context, data_root: PathBuf) -> Self {
         Self {
             budget: BudgetPolicy::new(context_window),
             compact: CompactPolicy,
@@ -107,22 +102,27 @@ impl ContextPipeline {
     }
 
     /// Load turn working set from Session DB (§5.1 turn load — sole path).
-    pub fn begin_turn(&self, session: &Session) -> Result<Vec<WorkingRow>> {
-        self.begin_turn_with_id(session, None)
+    pub fn begin_turn(
+        &self,
+        sessions: &SessionManager,
+        session_id: &str,
+    ) -> Result<Vec<WorkingRow>> {
+        self.begin_turn_with_id(sessions, session_id, None)
     }
 
     pub fn begin_turn_with_id(
         &self,
-        session: &Session,
+        sessions: &SessionManager,
+        session_id: &str,
         turn_id: Option<String>,
     ) -> Result<Vec<WorkingRow>> {
-        let rows = session.load_working_set()?;
-        session.reload_persisted_max_seq()?;
+        let rows = sessions.data().working_set_blocking(session_id)?;
+        let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
 
         let mut state = self.state.borrow_mut();
         state.turn_id = turn_id;
         state.surface_len = rows.len();
-        state.log_max_seq = session.persisted_max_seq();
+        state.log_max_seq = max_seq;
         state.working = rows.clone();
         state.hot.replace(project_items(&rows));
         state.prepared = None;
@@ -171,10 +171,8 @@ impl ContextPipeline {
             return Ok(false);
         }
 
-        if let Ok((from_log, max_seq)) = sessions.with_entry_store(session_id, |s| {
-            s.reload_persisted_max_seq()?;
-            Ok((s.load_working_set()?, s.persisted_max_seq()))
-        }) {
+        if let Ok(from_log) = sessions.data().working_set_blocking(session_id) {
+            let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
             let persisted_len = from_log.len();
             let tail: Vec<Item> = if turn_items.len() > persisted_len {
                 turn_items[persisted_len..].to_vec()
@@ -230,10 +228,8 @@ impl ContextPipeline {
         }
 
         if compacted {
-            let (persisted, max_seq) = sessions.with_entry_store(session_id, |s| {
-                s.reload_persisted_max_seq()?;
-                Ok((s.load_working_set()?, s.persisted_max_seq()))
-            })?;
+            let persisted = sessions.data().working_set_blocking(session_id)?;
+            let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
             let mut rows = persisted;
             for item in transcript.iter().skip(rows.len()) {
                 rows.push(WorkingRow::pending(item.clone()));
@@ -290,27 +286,30 @@ impl ContextPipeline {
     /// `rows` is unchanged.
     pub fn commit_step(
         &self,
-        session: &Session,
+        sessions: &SessionManager,
+        session_id: &str,
         rows: &mut Vec<WorkingRow>,
     ) -> Result<CommitStepOutcome> {
-        self.commit_step_with_turn(session, rows, "")
+        self.commit_step_with_turn(sessions, session_id, rows, "")
     }
 
     pub fn commit_step_from_items(
         &self,
-        session: &Session,
+        sessions: &SessionManager,
+        session_id: &str,
         items: &mut Vec<Item>,
     ) -> Result<CommitStepOutcome> {
         let mut rows = self.state.borrow().working.clone();
         align_working(&mut rows, items);
-        let outcome = self.commit_step(session, &mut rows)?;
+        let outcome = self.commit_step(sessions, session_id, &mut rows)?;
         *items = project_items(&rows);
         Ok(outcome)
     }
 
     pub fn commit_step_with_turn(
         &self,
-        session: &Session,
+        sessions: &SessionManager,
+        session_id: &str,
         rows: &mut Vec<WorkingRow>,
         turn_id: &str,
     ) -> Result<CommitStepOutcome> {
@@ -323,14 +322,16 @@ impl ContextPipeline {
                 turn_id.to_string()
             }
         };
-        let outcome =
-            session.commit_turn_delta_with_orphan_cleanup(rows, &[], expected_max_seq, &tid)?;
-        match outcome {
-            crate::session::store::CommitDeltaOutcome::Discarded => {
+        let (kind, working) = sessions
+            .commit_turn_delta(session_id, rows.clone(), expected_max_seq, &tid)
+            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+        *rows = working;
+        match kind {
+            crate::session::data::command::CommitKind::Idempotent => {
                 let mut state = self.state.borrow_mut();
                 state.working = rows.clone();
                 state.surface_len = rows.len();
-                state.log_max_seq = session.persisted_max_seq();
+                state.log_max_seq = sessions.entry_wire_seq_cursor(session_id).0;
                 state.hot.replace(project_items(rows));
                 state.prepared = None;
                 Ok(CommitStepOutcome {
@@ -340,25 +341,27 @@ impl ContextPipeline {
                     sealed_seqs: Vec::new(),
                 })
             }
-            crate::session::store::CommitDeltaOutcome::Applied {
-                preview,
-                sealed_seqs,
-                mutated,
-            } => {
+            crate::session::data::command::CommitKind::MetaUpdated
+            | crate::session::data::command::CommitKind::Appended { .. } => {
                 let mut state = self.state.borrow_mut();
                 state.working = rows.clone();
                 state.surface_len = rows.len();
-                state.log_max_seq = session.persisted_max_seq();
+                state.log_max_seq = sessions.entry_wire_seq_cursor(session_id).0;
                 state.hot.replace(project_items(rows));
-                if !mutated {
-                    return Ok(CommitStepOutcome::default());
-                }
                 Ok(CommitStepOutcome {
                     committed: true,
                     discarded: false,
-                    preview,
-                    sealed_seqs,
+                    preview: None,
+                    sealed_seqs: Vec::new(),
                 })
+            }
+            _ => {
+                let mut state = self.state.borrow_mut();
+                state.working = rows.clone();
+                state.surface_len = rows.len();
+                state.log_max_seq = sessions.entry_wire_seq_cursor(session_id).0;
+                state.hot.replace(project_items(rows));
+                Ok(CommitStepOutcome::default())
             }
         }
     }

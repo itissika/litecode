@@ -204,7 +204,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Run a shell command. cwd and environment do not persist across calls — chain with && in one command. Prefer read, grep, and glob for files; use bash for builds, tests, git, and scripts. Short commands return when they exit. Longer ones keep running in the background: inspect with read/grep on the output file, wait_shell to wait, kill_shell to stop.".into()
+        "Run a shell command. cwd and environment do not persist across calls — chain with && in one command. Prefer read, the dedicated grep tool, and glob for files; do not run Unix grep, rg, or ripgrep here. Use bash for builds, tests, git, and scripts. Short commands return when they exit. Longer ones keep running in the background: inspect with read/grep on the output file, wait_shell to wait, kill_shell to stop.".into()
     }
 
     fn max_result_size(&self) -> usize {

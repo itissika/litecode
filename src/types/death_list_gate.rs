@@ -507,8 +507,11 @@ fn session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let compact =
         fs::read_to_string(root.join("src/context_pipeline/compact.rs")).expect("compact.rs");
+    let persist = compact
+        .find("SessionMutation::Compact")
+        .expect("compact persist must go through SessionMutation::Compact");
     assert!(
-        compact.contains("s.load_transcript()"),
+        compact[persist..].contains("working_set_blocking"),
         "after compact persist, working set must reload from fold"
     );
     assert!(
@@ -556,21 +559,34 @@ fn session_seq_g6_derived_paths_use_surface_not_pointers() {
         hits.join("\n")
     );
 
-    let store = fs::read_to_string(root.join("src/session/store.rs")).expect("store.rs");
-    let start = store
-        .find("pub fn revert_to_user_anchor")
-        .expect("revert_to_user_anchor");
-    let body = &store[start..];
-    let end = body[1..]
-        .find("\n    pub fn ")
-        .map(|i| i + 1)
-        .unwrap_or(body.len());
-    let revert = &body[..end];
-    for needle in needles {
-        assert!(
-            !revert.contains(needle),
-            "revert_to_user_anchor must not use `{needle}` as a window pointer"
-        );
+    let manager = fs::read_to_string(root.join("src/session/manager.rs")).expect("manager.rs");
+    let sqlite =
+        fs::read_to_string(root.join("src/session/data/sqlite/session.rs")).expect("session.rs");
+    for (label, source, sig) in [
+        (
+            "entry_revert_to_user_anchor",
+            manager.as_str(),
+            "pub fn entry_revert_to_user_anchor",
+        ),
+        (
+            "Session::revert_to_user_anchor",
+            sqlite.as_str(),
+            "pub fn revert_to_user_anchor",
+        ),
+    ] {
+        let start = source.find(sig).unwrap_or_else(|| panic!("{label}"));
+        let body = &source[start..];
+        let end = body[1..]
+            .find("\n    pub fn ")
+            .map(|i| i + 1)
+            .unwrap_or(body.len());
+        let revert = &body[..end];
+        for needle in needles {
+            assert!(
+                !revert.contains(needle),
+                "{label} must not use `{needle}` as a window pointer"
+            );
+        }
     }
 }
 #[test]

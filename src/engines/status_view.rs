@@ -104,38 +104,11 @@ impl WorkspaceEngines {
             .error
             .clone()
             .or_else(|| index_view.job_error.clone());
-        let retrieval_usable = if !retrieval_status.desired {
-            "stopped"
-        } else if model.as_ref().is_none_or(|m| !m.ready) {
-            "unavailable"
-        } else if matches!(retrieval_status.state, Some(EngineState::Failed))
-            || matches!(
-                index_view.status,
-                crate::engines::code_search::IndexStatus::Failed
-            )
-        {
-            "unavailable"
-        } else if matches!(retrieval_status.state, Some(EngineState::Warming))
-            || matches!(
-                index_view.status,
-                crate::engines::code_search::IndexStatus::Building
-                    | crate::engines::code_search::IndexStatus::Refreshing
-            )
-        {
-            "warming"
-        } else if matches!(retrieval_status.state, Some(EngineState::Warm))
-            && meta.as_ref().is_some_and(|m| m.indexed_chunks > 0)
-            && !needs_rebuild
-            && matches!(
-                index_view.status,
-                crate::engines::code_search::IndexStatus::Ready
-                    | crate::engines::code_search::IndexStatus::Stale
-            )
-        {
-            "ready"
-        } else {
-            "warming"
-        };
+        let retrieval_usable = retrieval_usable_label(
+            retrieval_status.desired,
+            model.as_ref().is_some_and(|m| m.ready),
+            retrieval_status.state,
+        );
 
         let model_json = model.map_or_else(
             || serde_json::json!({ "ready": false }),
@@ -189,11 +162,8 @@ impl WorkspaceEngines {
         probes: Vec<LspServerProbe>,
     ) -> Value {
         let configured_servers = crate::config::workspace::lsp_servers_from_engines(workspace_root);
-        let usability = self.lsp_usability_from_probes(
-            lsp_status.clone(),
-            configured_servers.clone(),
-            &probes,
-        );
+        let usability =
+            self.lsp_usability_from_probes(lsp_status.clone(), configured_servers.clone(), &probes);
         serde_json::json!({
             "desired": lsp_status.desired,
             "state": lsp_status.state,
@@ -203,5 +173,67 @@ impl WorkspaceEngines {
             "probes": probes,
             "servers": self.lsp_hub().instance_statuses(),
         })
+    }
+}
+
+/// Engine usable flag: worker liveness, not index completeness.
+/// `indexed_chunks == 0` must still be `ready` when Warm.
+fn retrieval_usable_label(
+    desired: bool,
+    model_ready: bool,
+    state: Option<EngineState>,
+) -> &'static str {
+    if !desired {
+        "stopped"
+    } else if !model_ready {
+        "unavailable"
+    } else if matches!(state, Some(EngineState::Failed)) {
+        "unavailable"
+    } else if matches!(state, Some(EngineState::Warm)) {
+        "ready"
+    } else {
+        "warming"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retrieval_usable_label;
+    use crate::engines::EngineState;
+
+    #[test]
+    fn usable_ready_when_warm_even_without_chunks() {
+        assert_eq!(
+            retrieval_usable_label(true, true, Some(EngineState::Warm)),
+            "ready"
+        );
+    }
+
+    #[test]
+    fn usable_warming_while_worker_starts() {
+        assert_eq!(
+            retrieval_usable_label(true, true, Some(EngineState::Warming)),
+            "warming"
+        );
+    }
+
+    #[test]
+    fn usable_unavailable_when_model_missing_or_failed() {
+        assert_eq!(
+            retrieval_usable_label(true, false, Some(EngineState::Warm)),
+            "unavailable"
+        );
+        assert_eq!(
+            retrieval_usable_label(true, true, Some(EngineState::Failed)),
+            "unavailable"
+        );
+    }
+
+    #[test]
+    fn usable_stopped_when_not_desired() {
+        assert_eq!(
+            retrieval_usable_label(false, true, Some(EngineState::Warm)),
+            "stopped"
+        );
     }
 }

@@ -135,7 +135,7 @@ impl Projection {
     /// Current-envelope restamp for already-allocated seqs. Order is caller-defined.
     /// Idempotent: the durable row is re-projected as-is.
     fn restamp_changed_seqs(&mut self, seqs: &[crate::session::event::Seq]) {
-        let data_root = crate::session::store::data_root_from_db_path(&self.sessions.db_path());
+        let data_root = self.sessions.data_root_path();
         for seq in seqs {
             let events = match self.sessions.entry_load_events_range(
                 &self.session_id,
@@ -181,11 +181,12 @@ impl Projection {
         window: usize,
     ) -> (usize, ItemTokenBreakdown) {
         sessions
-            .with_entry_store(session_id, |s| {
-                let mut items = s.load_transcript()?;
+            .data()
+            .transcript_blocking(session_id)
+            .map(|mut items| {
                 crate::session::store::Session::snip_stale_results(&mut items);
                 let n = crate::context_pipeline::BudgetPolicy::new(window).token_count(&items, 0);
-                Ok((n, compute_token_breakdown(&items)))
+                (n, compute_token_breakdown(&items))
             })
             .unwrap_or((0, ItemTokenBreakdown::default()))
     }
@@ -208,7 +209,8 @@ impl Projection {
         let (context_tokens_estimate, context_token_breakdown) =
             Self::estimate_context_tokens(&sessions, &session_id, context_window);
         let meter = sessions
-            .with_entry_store(&session_id, |s| Ok(s.load_context_meter()?))
+            .data()
+            .meter_blocking(&session_id)
             .unwrap_or_default();
         let last_turn_token_stats = if meter.is_empty() {
             None
@@ -291,10 +293,7 @@ impl Projection {
             .unwrap_or_default();
         snap.todos = task_state.todos;
         snap.active_plan_path = task_state.active_plan.map(|plan| plan.relative_path);
-        if let Ok(meta) = self
-            .sessions
-            .with_entry_store(&self.session_id, |store| Ok(store.meta()?))
-        {
+        if let Ok(meta) = self.sessions.data().meta_blocking(&self.session_id) {
             snap.meta = crate::client_protocol::protocol::SessionMetaWire {
                 id: meta.id,
                 project: meta.project,
@@ -457,8 +456,7 @@ impl Projection {
                 .entry_load_events_range(&self.session_id, old_next, self.next_seq)
             {
                 Ok(events) => {
-                    let data_root =
-                        crate::session::store::data_root_from_db_path(&self.sessions.db_path());
+                    let data_root = self.sessions.data_root_path();
                     for event in events {
                         let encoded = crate::session::event::item_from_event(&event)
                             .ok()
@@ -675,7 +673,7 @@ impl Projection {
         let events = self
             .sessions
             .entry_load_events_range(&self.session_id, from_seq, to_seq)?;
-        let data_root = crate::session::store::data_root_from_db_path(&self.sessions.db_path());
+        let data_root = self.sessions.data_root_path();
         let mut out = Vec::with_capacity(events.len());
         for event in events {
             let encoded = crate::session::event::item_from_event(&event)
@@ -1381,7 +1379,6 @@ mod compact_item_wire_tests {
     use super::*;
     use crate::runtime::observer::{CompactionStage, CompactionTrigger};
     use crate::session::EventType;
-    use crate::session::store::Session;
     use crate::types::user_text;
     use std::sync::Arc;
 
@@ -1401,33 +1398,37 @@ mod compact_item_wire_tests {
 
     fn setup_with_details(texts: &[&str]) -> (Projection, String, Arc<SessionManager>) {
         let sessions = Arc::new(SessionManager::ephemeral_registry());
-        let session = Session::ephemeral("/p", "default", Some("m")).unwrap();
-        let sid = session.id.clone();
-        session
-            .insert_detail_rows(&texts.iter().map(|t| user_text(*t)).collect::<Vec<_>>())
+        let sid = sessions
+            .open_session_sync("/p", "default", Some("m"))
             .unwrap();
-        sessions.insert_session_for_test(session);
+        sessions
+            .insert_detail_rows(
+                &sid,
+                &texts.iter().map(|t| user_text(*t)).collect::<Vec<_>>(),
+            )
+            .unwrap();
         let proj = Projection::new(sid.clone(), sessions.clone(), 0);
         (proj, sid, sessions)
     }
 
     fn apply_compact(sessions: &SessionManager, sid: &str, summary: &str) {
+        let expected = sessions.data().revision_blocking(sid).unwrap_or(0);
         sessions
-            .with_entry_store(sid, |s| {
-                s.apply_compact_checkpoint(&user_text(summary), 10)
-                    .map(|_| ())
-                    .map_err(|e| anyhow::anyhow!("{e}"))
+            .mutate_blocking(crate::session::data::command::SessionMutation::Compact {
+                session_id: sid.to_string(),
+                expected_revision: expected,
+                operation_id: crate::session::data::command::MutationId::new(),
+                summary: user_text(summary),
+                token_estimate: 10,
+                kept_from: None,
+                expected_prefix: None,
             })
             .unwrap();
     }
 
     fn insert_detail(sessions: &SessionManager, sid: &str, text: &str) {
         sessions
-            .with_entry_store(sid, |s| {
-                s.insert_detail_rows(&[user_text(text)])
-                    .map(|_| ())
-                    .map_err(|e| anyhow::anyhow!("{e}"))
-            })
+            .insert_detail_rows(sid, &[user_text(text)])
             .unwrap();
     }
 
@@ -1497,11 +1498,7 @@ mod compact_item_wire_tests {
         assert_eq!(items[0]["params"]["kind"], "compacted");
         assert_eq!(items[0]["params"]["body"]["summary"], "second-cut");
 
-        let events = sessions
-            .with_entry_store(&sid, |s| {
-                s.load_events().map_err(|e| anyhow::anyhow!("{e}"))
-            })
-            .unwrap();
+        let events = sessions.data().events_blocking(&sid).unwrap();
         let compacts = events
             .iter()
             .filter(|e| e.event_type == EventType::Compacted)
@@ -1515,19 +1512,22 @@ mod compact_item_wire_tests {
         use crate::types::Item;
 
         let sessions = Arc::new(SessionManager::ephemeral_registry());
-        let session = Session::ephemeral("/p", "default", Some("m")).unwrap();
-        let sid = session.id.clone();
-        session
-            .persist_item(&Item::FunctionCall(FunctionToolCall {
-                arguments: "{}".into(),
-                call_id: "call_sub".into(),
-                namespace: None,
-                name: "subagent_launch".into(),
-                id: None,
-                status: None,
-            }))
+        let sid = sessions
+            .open_session_sync("/p", "default", Some("m"))
             .unwrap();
-        sessions.insert_session_for_test(session);
+        sessions
+            .persist_item(
+                &sid,
+                &Item::FunctionCall(FunctionToolCall {
+                    arguments: "{}".into(),
+                    call_id: "call_sub".into(),
+                    namespace: None,
+                    name: "subagent_launch".into(),
+                    id: None,
+                    status: None,
+                }),
+            )
+            .unwrap();
         let mut proj = Projection::new(sid.clone(), sessions, 0);
         proj.on_event(
             InternalEvent::SubagentBound {
@@ -1565,8 +1565,9 @@ mod compact_item_wire_tests {
 
         let (proj, sid, sessions) = setup_with_details(&["u0", "u1"]);
         sessions
-            .with_entry_store(&sid, |s| {
-                s.persist_item(&Item::Message(MessageItem::Output(OutputMessage {
+            .persist_item(
+                &sid,
+                &Item::Message(MessageItem::Output(OutputMessage {
                     id: "asst_live".into(),
                     role: AssistantRole::Assistant,
                     content: vec![OutputMessageContent::OutputText(OutputTextContent {
@@ -1576,10 +1577,8 @@ mod compact_item_wire_tests {
                     })],
                     status: OutputStatus::InProgress,
                     phase: None,
-                })))
-                .map(|_| ())
-                .map_err(|e| anyhow::anyhow!("{e}"))
-            })
+                })),
+            )
             .unwrap();
         let range = proj.materialize_range(0, 10).unwrap();
         assert_eq!(range.user_detail_before, 0);
@@ -1598,8 +1597,9 @@ mod compact_item_wire_tests {
 
         let (mut proj, sid, sessions) = setup_with_details(&["u0"]);
         sessions
-            .with_entry_store(&sid, |s| {
-                s.apply(SessionApply::Append(EventDraft {
+            .apply(
+                &sid,
+                SessionApply::Append(EventDraft {
                     time: 1,
                     event_type: EventType::TurnEnd,
                     data: serde_json::json!({"turn": "t1", "reason": "cancelled"}),
@@ -1607,10 +1607,8 @@ mod compact_item_wire_tests {
                     source_seqs: None,
                     ignorable: false,
                     state: LogState::Final,
-                }))
-                .map(|_| ())
-                .map_err(|e| anyhow::anyhow!("{e}"))
-            })
+                }),
+            )
             .unwrap();
         let _ = proj.take_outgoing();
         proj.bump_buffer_revision("/p", &binding());
@@ -1655,8 +1653,9 @@ mod compact_item_wire_tests {
 
         let (mut proj, sid, sessions) = setup_with_details(&["u0"]);
         sessions
-            .with_entry_store(&sid, |s| {
-                s.persist_item(&Item::Message(MessageItem::Output(OutputMessage {
+            .persist_item(
+                &sid,
+                &Item::Message(MessageItem::Output(OutputMessage {
                     id: "asst_live".into(),
                     role: AssistantRole::Assistant,
                     content: vec![OutputMessageContent::OutputText(OutputTextContent {
@@ -1666,31 +1665,27 @@ mod compact_item_wire_tests {
                     })],
                     status: OutputStatus::InProgress,
                     phase: None,
-                })))
-                .map(|_| ())
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-                s.persist_item(&Item::FunctionCall(FunctionToolCall {
+                })),
+            )
+            .unwrap();
+        sessions
+            .persist_item(
+                &sid,
+                &Item::FunctionCall(FunctionToolCall {
                     arguments: "{\"cmd\":\"ls\"}".into(),
                     call_id: "call_live".into(),
                     namespace: None,
                     name: "bash".into(),
                     id: Some("fc_live".into()),
                     status: Some(OutputStatus::InProgress),
-                }))
-                .map(|_| ())
-                .map_err(|e| anyhow::anyhow!("{e}"))
-            })
+                }),
+            )
             .unwrap();
         proj.bump_buffer_revision("/p", &binding());
         let _ = proj.take_outgoing();
         let next_before_seal = proj.next_seq;
 
-        let seqs = sessions
-            .with_entry_store(&sid, |s| {
-                Ok(s.seal_in_progress_items()
-                    .map_err(|e| anyhow::anyhow!("{e}"))?)
-            })
-            .unwrap();
+        let seqs = sessions.seal_in_progress_items(&sid).unwrap();
         assert_eq!(seqs, vec![1, 2]);
 
         proj.bump_buffer_revision("/p", &binding());

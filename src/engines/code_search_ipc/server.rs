@@ -10,6 +10,7 @@ use std::time::Instant;
 use super::protocol::{
     InitializeParams, JsonRpcRequest, JsonRpcResponse, NotifyFsChangesParams, RefreshMode,
     RefreshResult, SearchParams, SearchResult, SessionSearchParams, SessionSearchResult,
+    SetSessionDbParams,
 };
 use crate::engines::code_search::{
     CodeSearchRuntime, INDEX_RECONCILE_INTERVAL, SemanticEngine, SharedRuntime,
@@ -23,6 +24,7 @@ const ERR_INTERNAL: i32 = -32000;
 
 struct WorkerState {
     workspace_root: Option<PathBuf>,
+    session_reader: Option<crate::session::SessionDataReader>,
     runtime: SharedRuntime,
     warmed: bool,
     last_reconcile: Instant,
@@ -32,24 +34,49 @@ impl WorkerState {
     fn new() -> Self {
         Self {
             workspace_root: None,
+            session_reader: None,
             runtime: Arc::new(RwLock::new(None)),
             warmed: false,
             last_reconcile: Instant::now(),
         }
     }
 
-    fn initialize(&mut self, root: PathBuf) -> Result<()> {
+    fn initialize(&mut self, root: PathBuf, session_db_path: Option<PathBuf>) -> Result<()> {
         let root = crate::config::path::canon_abs_lossy(&root);
         if self
             .workspace_root
             .as_ref()
             .is_some_and(|w| crate::config::path::canon_abs_lossy(w) == root)
         {
+            if let Some(path) = session_db_path {
+                self.set_session_db(path)?;
+            }
             return Ok(());
         }
         *self.runtime.write().unwrap() = None;
         self.warmed = false;
         self.workspace_root = Some(root);
+        self.session_reader = session_db_path.map(|path| {
+            crate::session::SessionDataReader::from_worker_config(
+                crate::session::data::SessionDataReaderConfig::from_path(path),
+            )
+        });
+        Ok(())
+    }
+
+    fn set_session_db(&mut self, session_db_path: PathBuf) -> Result<()> {
+        let reader = crate::session::SessionDataReader::from_worker_config(
+            crate::session::data::SessionDataReaderConfig::from_path(session_db_path),
+        );
+        self.session_reader = Some(reader.clone());
+        if let Ok(guard) = self.runtime.read()
+            && let Some(runtime) = guard.as_ref()
+        {
+            runtime.attach_session_reader(reader);
+            if let Err(e) = runtime.ensure_session_index() {
+                tracing::warn!(error = %e, "session semantic index inject skipped");
+            }
+        }
         Ok(())
     }
 
@@ -62,15 +89,18 @@ impl WorkerState {
         init_workspace_index(&root)?;
         let mut embedder = open_production_embedder()?;
         let index = warmup_index(&root, &mut *embedder)?;
-        // Session is ephemeral: drop after warmup peak (L1 OrtCold). Reloaded on next embed.
-        let runtime = CodeSearchRuntime::new(root.clone(), index, Some(embedder));
-        // Startup reconcile: catch drift while worker was down / pending lost on crash.
+        let runtime = CodeSearchRuntime::new(
+            root.clone(),
+            index,
+            Some(embedder),
+            self.session_reader.clone(),
+        );
         sync_index_with_disk(&runtime);
-        // Build/load Session ANN while embedder still resident.
-        if let Err(e) = runtime.ensure_session_index() {
+        if self.session_reader.is_some()
+            && let Err(e) = runtime.ensure_session_index()
+        {
             tracing::warn!(error = %e, "session semantic index warmup skipped");
         }
-        // Reclaim ORT arena / session RSS immediately after build+reconcile.
         runtime.drop_embedder_for_cool();
         *self.runtime.write().unwrap() = Some(runtime);
         self.warmed = true;
@@ -200,11 +230,22 @@ fn dispatch(state: &mut WorkerState, req: JsonRpcRequest) -> JsonRpcResponse {
         "initialize" => match serde_json::from_value::<InitializeParams>(req.params) {
             Ok(p) => {
                 let root = PathBuf::from(p.workspace_root);
-                match state.initialize(root) {
+                let session_db_path = p
+                    .session_db_path
+                    .filter(|s| !s.is_empty())
+                    .map(PathBuf::from);
+                match state.initialize(root, session_db_path) {
                     Ok(()) => JsonRpcResponse::ok(id, serde_json::json!({})),
                     Err(e) => JsonRpcResponse::err(id, ERR_INTERNAL, e.to_string()),
                 }
             }
+            Err(e) => JsonRpcResponse::err(id, ERR_INVALID, e.to_string()),
+        },
+        "set_session_db" => match serde_json::from_value::<SetSessionDbParams>(req.params) {
+            Ok(p) => match state.set_session_db(PathBuf::from(p.session_db_path)) {
+                Ok(()) => JsonRpcResponse::ok(id, serde_json::json!({})),
+                Err(e) => JsonRpcResponse::err(id, ERR_INTERNAL, e.to_string()),
+            },
             Err(e) => JsonRpcResponse::err(id, ERR_INVALID, e.to_string()),
         },
         "warmup" => match state.warmup() {

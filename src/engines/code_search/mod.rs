@@ -51,6 +51,7 @@ pub use lexical::{
     LexicalMatch, LexicalQuery, LexicalSearchOutcome, lexical_search, lexical_search_with_preset,
     type_to_include_globs,
 };
+pub(crate) use lexical::{compile_exclude_globs, path_glob_match_exclude};
 pub use lexical_primitive::LexicalPrimitive;
 pub use meta::{
     IndexMeta, index_dir, init_workspace_index, meta_path, needs_rebuild, read_meta, write_meta,
@@ -121,6 +122,7 @@ pub struct FileStamp {
 /// Shared runtime after warmup. ORT Session and RAM index may cool-drop; disk artifacts stay.
 pub struct CodeSearchRuntime {
     pub workspace_root: PathBuf,
+    session_reader: Mutex<Option<crate::session::SessionDataReader>>,
     /// Dense ANN + chunks; `None` while IndexCold (reload from `.litecode/index/`).
     pub index: Mutex<Option<CodeSearchIndex>>,
     /// Session corpus ANN (`.litecode/session-index/`); cools with L2 alongside Code index.
@@ -143,10 +145,12 @@ impl CodeSearchRuntime {
         workspace_root: PathBuf,
         index: CodeSearchIndex,
         embedder: Option<Box<dyn embed::Embedder>>,
+        session_reader: Option<crate::session::SessionDataReader>,
     ) -> Self {
         let now = Instant::now();
         let runtime = Self {
             workspace_root,
+            session_reader: Mutex::new(session_reader),
             index: Mutex::new(Some(index)),
             session_index: Mutex::new(None),
             bm25: Mutex::new(None),
@@ -201,8 +205,27 @@ impl CodeSearchRuntime {
         self.embedder.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
+    pub fn attach_session_reader(&self, reader: crate::session::SessionDataReader) {
+        if let Ok(mut guard) = self.session_reader.lock() {
+            *guard = Some(reader);
+        }
+    }
+
+    fn session_reader(&self) -> Result<crate::session::SessionDataReader> {
+        self.session_reader
+            .lock()
+            .map_err(|e| LitecodeError::Config(format!("session_reader lock: {e}")))?
+            .clone()
+            .ok_or_else(|| {
+                LitecodeError::Config(
+                    "session semantic index unavailable: SessionData reader not ready".into(),
+                )
+            })
+    }
+
     /// Warm-time or IndexCold reload: build/load Session ANN from `sessions.db`.
     pub fn ensure_session_index(&self) -> Result<()> {
+        let reader = self.session_reader()?;
         {
             let guard = self
                 .session_index
@@ -214,7 +237,11 @@ impl CodeSearchRuntime {
         }
         tracing::info!("session_search loading session ANN index");
         let loaded = self.with_embedder(|emb| {
-            crate::engines::session_search::ensure_session_index(&self.workspace_root, emb)
+            crate::engines::session_search::ensure_session_index(
+                &self.workspace_root,
+                &reader,
+                emb,
+            )
         })?;
         let mut guard = self
             .session_index
@@ -241,7 +268,8 @@ impl CodeSearchRuntime {
             let index = guard.as_mut().ok_or_else(|| {
                 LitecodeError::Config("session_index missing after ensure".into())
             })?;
-            let _ = index.reconcile(&self.workspace_root, emb)?;
+            let reader = self.session_reader()?;
+            let _ = index.reconcile(&reader, &self.workspace_root, emb)?;
             let qv = emb.embed_one(query)?;
             let hits = index.search(&qv, top_k, session_id)?;
             self.touch_index_at();
@@ -508,6 +536,11 @@ impl CodeSearchRuntime {
 }
 
 /// Load or build index for warmup. Caller owns embedder lifecycle.
+///
+/// Compatible on-disk vectors are **loaded**. Stale/pending file drift is not a
+/// startup full rebuild (worker `sync_index_with_disk` catches up). Full build
+/// only when the library is absent, a shell with no vectors, or unloadable
+/// (pipeline/embedder mismatch).
 pub fn warmup_index(
     workspace_root: &Path,
     embedder: &mut dyn embed::Embedder,
@@ -515,10 +548,7 @@ pub fn warmup_index(
     let dir = index_dir(workspace_root);
     std::fs::create_dir_all(&dir).map_err(|e| LitecodeError::Config(e.to_string()))?;
 
-    let meta_on_disk = meta::read_meta(workspace_root)?;
-    let rebuild = meta_on_disk
-        .as_ref()
-        .is_none_or(|m| needs_rebuild(m) || !store::index_files_exist(workspace_root));
+    let rebuild = should_full_rebuild(workspace_root);
 
     let result: Result<CodeSearchIndex> = if rebuild {
         let index = build::build_full_index(workspace_root, embedder)?;
@@ -730,7 +760,12 @@ mod cool_tests {
         let mut emb = HashEmbedder;
         let index = build_full_index(root, &mut emb).unwrap();
         index.save(root).unwrap();
-        CodeSearchRuntime::new(root.to_path_buf(), index, Some(Box::new(HashEmbedder)))
+        CodeSearchRuntime::new(
+            root.to_path_buf(),
+            index,
+            Some(Box::new(HashEmbedder)),
+            None,
+        )
     }
 
     #[test]

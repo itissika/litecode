@@ -10,9 +10,12 @@ use crate::config::TurnGuard;
 use crate::runtime::RuntimeHandle;
 use crate::runtime::TurnHandle;
 use crate::runtime::observer::{InternalEnvelope, InternalEvent, TurnPhase};
-use crate::session::gate::SessionGate;
+use crate::session::data::command::{
+    CommitKind, MutationId, ReadValue, SessionMutation, SessionRead,
+};
+use crate::session::data::{SessionData, SessionDataReader};
 use crate::session::live::{LifecycleEvent, TurnProgress};
-use crate::session::store::Session;
+use crate::session::store::{Session, SessionApply, SessionContextMeter};
 use crate::session::task_state::{TaskReminders, prune_stale_active_plan};
 use crate::types::{LitecodeError, Result};
 
@@ -101,9 +104,9 @@ impl Drop for SubagentSlotLease {
     }
 }
 
-/// One session: durable store + exclusive activity + L2 subscription fanout.
+/// One session: exclusive activity + L2 subscription fanout + committed revision.
 pub struct SessionRecord {
-    pub store: Arc<SessionGate>,
+    pub revision: u64,
     pub task_state: TaskReminders,
     activity: SessionActivity,
     /// Always present so L2 can subscribe before a turn starts.
@@ -111,13 +114,13 @@ pub struct SessionRecord {
     /// Ring buffer for reconnect replay (cleared on next start_turn).
     event_buffer: VecDeque<InternalEnvelope>,
     subscriber_count: usize,
-    /// Sticky agent selection — isomorphic with `sessions.agent_id`.
+    /// Sticky agent selection �?isomorphic with `sessions.agent_id`.
     pub agent_id: String,
-    /// Sticky model catalog id — isomorphic with `sessions.model_id` (NULL = unset).
+    /// Sticky model catalog id �?isomorphic with `sessions.model_id` (NULL = unset).
     pub model_id: Option<String>,
-    /// Platform thinking tier — isomorphic with `sessions.thinking_tier`.
+    /// Platform thinking tier �?isomorphic with `sessions.thinking_tier`.
     pub thinking_tier: crate::platform_knobs::ThinkingTier,
-    /// Platform context mode — isomorphic with `sessions.context_mode`.
+    /// Platform context mode �?isomorphic with `sessions.context_mode`.
     pub context_mode: crate::platform_knobs::ContextMode,
     /// Parent session when this is a subagent child; `None` for root sessions.
     pub parent_session_id: Option<String>,
@@ -128,33 +131,28 @@ pub struct SessionRecord {
 }
 
 impl SessionRecord {
-    fn new(store: Arc<SessionGate>, task_state: TaskReminders) -> Self {
-        let (agent_id, model_id, thinking_tier, context_mode, parent_session_id, parent_call_id) =
-            store.with(|s| {
-                (
-                    s.agent_id.clone(),
-                    s.model_id.clone(),
-                    s.thinking_tier,
-                    s.context_mode,
-                    s.parent_session_id.clone(),
-                    s.parent_call_id.clone(),
-                )
-            });
+    fn from_meta(
+        meta: &crate::session::model::SessionMeta,
+        task_state: TaskReminders,
+        revision: u64,
+    ) -> Self {
         let (event_tx, _) = broadcast::channel(256);
         Self {
-            store,
+            revision,
             task_state,
             activity: SessionActivity::Idle,
             event_tx,
             event_buffer: VecDeque::new(),
             subscriber_count: 0,
-            agent_id,
-            model_id,
-            thinking_tier,
-            context_mode,
-            parent_session_id,
-            parent_call_id,
-            project: None,
+            agent_id: meta.agent_id.clone(),
+            model_id: meta.model_id.clone(),
+            thinking_tier: crate::platform_knobs::ThinkingTier::parse(&meta.thinking_tier)
+                .unwrap_or_default(),
+            context_mode: crate::platform_knobs::ContextMode::parse(&meta.context_mode)
+                .unwrap_or_default(),
+            parent_session_id: meta.parent_session_id.clone(),
+            parent_call_id: meta.parent_call_id.clone(),
+            project: Some(meta.project.clone()),
             last_permission_sink: None,
         }
     }
@@ -164,8 +162,9 @@ impl SessionRecord {
 pub struct SessionManager {
     records: std::sync::Mutex<HashMap<String, SessionRecord>>,
     pub turn_guard: Arc<TurnGuard>,
-    /// Workspace sessions DB path (fixed for the lifetime of this process).
-    db_path: std::sync::Mutex<String>,
+    data: Arc<SessionData>,
+    /// Keeps a test-created lease alive for the manager's writer lifetime.
+    _test_lease: Option<crate::session::WorkspaceWriteLease>,
     lifecycle_tx: broadcast::Sender<LifecycleEvent>,
     /// In-flight subagent launches keyed by parent session id.
     subagent_slots: std::sync::Mutex<HashMap<String, u32>>,
@@ -175,23 +174,89 @@ const EVENT_BUFFER_CAPACITY: usize = 1024;
 pub const EMPTY_SESSION_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 impl SessionManager {
-    pub fn new(turn_guard: Arc<TurnGuard>, db_path: String) -> Self {
+    /// Test-only convenience constructor. Production must inject `SessionData`
+    /// through [`SessionManager::from_data`] so the workspace lease remains
+    /// owned by the process root.
+    pub fn new_for_test(turn_guard: Arc<TurnGuard>, db_path: String) -> Self {
+        let (data, test_lease) = if db_path.is_empty() {
+            (
+                SessionData::open_ephemeral().expect("ephemeral sessions.db"),
+                None,
+            )
+        } else {
+            let root = std::path::Path::new(&db_path)
+                .parent()
+                .expect("sessions.db parent");
+            let lease = crate::session::WorkspaceWriteLease::acquire(root)
+                .expect("acquire test workspace lease");
+            let data = SessionData::open(&lease, std::path::Path::new(&db_path))
+                .expect("open sessions.db");
+            (data, Some(lease))
+        };
         let (lifecycle_tx, _) = broadcast::channel(256);
         Self {
             records: std::sync::Mutex::new(HashMap::new()),
             turn_guard,
-            db_path: std::sync::Mutex::new(db_path),
+            data,
+            _test_lease: test_lease,
             lifecycle_tx,
             subagent_slots: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
+    pub fn from_data(turn_guard: Arc<TurnGuard>, data: Arc<SessionData>) -> Self {
+        let (lifecycle_tx, _) = broadcast::channel(256);
+        Self {
+            records: std::sync::Mutex::new(HashMap::new()),
+            turn_guard,
+            data,
+            _test_lease: None,
+            lifecycle_tx,
+            subagent_slots: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn data(&self) -> &Arc<SessionData> {
+        &self.data
+    }
+
+    pub fn reader(&self) -> SessionDataReader {
+        self.data.reader()
+    }
+
     /// Current workspace sessions DB path.
     pub fn db_path(&self) -> String {
-        self.db_path
+        self.data.path().display().to_string()
+    }
+
+    fn expected_revision(&self, session_id: &str) -> u64 {
+        // The durable revision is the CAS authority.  A manager may observe a
+        // receipt produced by a different in-process adapter after a restart
+        // or during transition, so its hot record is only a post-commit cache.
+        self.data.revision_blocking(session_id).unwrap_or(0)
+    }
+
+    fn note_receipt(&self, receipt: &crate::session::data::command::CommitReceipt) {
+        if receipt.session_id.is_empty() {
+            return;
+        }
+        if let Some(record) = self
+            .records
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .get_mut(&receipt.session_id)
+        {
+            record.revision = receipt.revision;
+        }
+    }
+
+    pub fn mutate_blocking(
+        &self,
+        mutation: SessionMutation,
+    ) -> Result<crate::session::data::command::CommitReceipt> {
+        let receipt = self.data.mutate_blocking(mutation)?;
+        self.note_receipt(&receipt);
+        Ok(receipt)
     }
 
     /// Fail-closed capacity gate: one in-flight child per parent session.
@@ -234,17 +299,40 @@ impl SessionManager {
     /// without a workspace DB path.
     #[cfg(test)]
     pub fn ephemeral_registry() -> Self {
-        Self::new(Arc::new(TurnGuard::new()), String::new())
+        Self::new_for_test(Arc::new(TurnGuard::new()), String::new())
     }
 
-    #[cfg(test)]
-    pub fn insert_session_for_test(&self, session: Session) {
-        let id = session.id.clone();
-        let record = SessionRecord::new(
-            Arc::new(SessionGate::new(session)),
+    pub fn insert_session_for_test(&self, session_id: &str) {
+        let meta = self.data.meta_blocking(session_id).unwrap_or_else(|_| {
+            crate::session::model::SessionMeta {
+                id: session_id.to_string(),
+                project: String::new(),
+                created_at: 0,
+                parent_session_id: None,
+                parent_call_id: None,
+                subagent_depth: 0,
+                agent_id: "default".into(),
+                model_id: None,
+                thinking_tier: "medium".into(),
+                context_mode: "standard".into(),
+                updated_at: 0,
+                compacted_seq: None,
+                spine_from: 0,
+                todos: Vec::new(),
+                plan_slug: None,
+                preview: String::new(),
+            }
+        });
+        let revision = self.data.revision_blocking(session_id).unwrap_or(0);
+        let record = SessionRecord::from_meta(
+            &meta,
             crate::session::task_state::TaskReminders::default(),
+            revision,
         );
-        self.records.lock().unwrap().insert(id, record);
+        self.records
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), record);
     }
 
     pub fn subscribe_lifecycle(&self) -> broadcast::Receiver<LifecycleEvent> {
@@ -256,9 +344,9 @@ impl SessionManager {
         if let Some(record) = self.records.lock().unwrap().get(session_id) {
             return record.parent_session_id.is_some();
         }
-        let db = self.db_path();
-        Session::resume(&db, session_id)
-            .map(|s| s.parent_session_id.is_some())
+        self.data
+            .meta_blocking(session_id)
+            .map(|m| m.parent_session_id.is_some())
             .unwrap_or(false)
     }
 
@@ -290,14 +378,45 @@ impl SessionManager {
         agent_id: &str,
         model_id: Option<&str>,
     ) -> Result<String> {
-        let store = Session::open(&self.db_path(), project, agent_id, model_id)
-            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
-        let sid = store.id.clone();
-        let mut task_state = store.load_task_state().unwrap_or_default();
+        self.open_session_sync(project, agent_id, model_id)
+    }
+
+    pub fn open_session_sync(
+        &self,
+        project: &str,
+        agent_id: &str,
+        model_id: Option<&str>,
+    ) -> Result<String> {
+        let receipt = self.mutate_blocking(SessionMutation::Create {
+            operation_id: MutationId::new(),
+            project: project.to_string(),
+            agent_id: agent_id.to_string(),
+            model_id: model_id.map(|s| s.to_string()),
+            parent_session_id: None,
+            parent_call_id: None,
+        })?;
+        let sid = receipt.session_id.clone();
+        let meta = self.data.meta_blocking(&sid)?;
+        let mut task_state = TaskReminders {
+            todos: meta
+                .todos
+                .iter()
+                .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                .collect(),
+            active_plan: meta
+                .plan_slug
+                .as_ref()
+                .map(|slug| crate::session::task_state::PlanRef::new(slug)),
+        };
         if prune_stale_active_plan(&mut task_state) {
-            let _ = store.save_task_state(&task_state);
+            let _ = self.mutate_blocking(SessionMutation::SaveTaskState {
+                session_id: sid.clone(),
+                expected_revision: receipt.revision,
+                operation_id: MutationId::new(),
+                state: task_state.clone(),
+            });
         }
-        let mut record = SessionRecord::new(Arc::new(SessionGate::new(store)), task_state);
+        let mut record = SessionRecord::from_meta(&meta, task_state, receipt.revision);
         record.project = Some(project.to_string());
         self.records.lock().unwrap().insert(sid.clone(), record);
         Ok(sid)
@@ -312,32 +431,31 @@ impl SessionManager {
         parent_session_id: &str,
         parent_call_id: &str,
     ) -> Result<String> {
-        if self.db_path().is_empty() {
+        if self.db_path().is_empty() || self.db_path() == ":memory:" {
             return Err(LitecodeError::ToolExecution(
                 "open_child_session requires a workspace SessionManager".into(),
             ));
         }
-        let db = self.db_path();
-        let store = Session::open_with_parent(
-            &db,
-            project,
-            agent_id,
-            model_id,
-            Some(parent_session_id),
-            Some(parent_call_id),
-        )
-        .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
-        let parent_depth = Session::subagent_depth_for(&db, parent_session_id)
-            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
-        store
-            .set_subagent_depth(parent_depth.saturating_add(1))
-            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
-        let sid = store.id.clone();
-        let mut task_state = store.load_task_state().unwrap_or_default();
+        let receipt = self.mutate_blocking(SessionMutation::Create {
+            operation_id: MutationId::new(),
+            project: project.to_string(),
+            agent_id: agent_id.to_string(),
+            model_id: model_id.map(|s| s.to_string()),
+            parent_session_id: Some(parent_session_id.to_string()),
+            parent_call_id: Some(parent_call_id.to_string()),
+        })?;
+        let sid = receipt.session_id.clone();
+        let meta = self.data.meta_blocking(&sid)?;
+        let mut task_state = TaskReminders::default();
         if prune_stale_active_plan(&mut task_state) {
-            let _ = store.save_task_state(&task_state);
+            let _ = self.mutate_blocking(SessionMutation::SaveTaskState {
+                session_id: sid.clone(),
+                expected_revision: receipt.revision,
+                operation_id: MutationId::new(),
+                state: task_state.clone(),
+            });
         }
-        let mut record = SessionRecord::new(Arc::new(SessionGate::new(store)), task_state);
+        let mut record = SessionRecord::from_meta(&meta, task_state, receipt.revision);
         record.project = Some(project.to_string());
         self.records.lock().unwrap().insert(sid.clone(), record);
         Ok(sid)
@@ -348,12 +466,28 @@ impl SessionManager {
         if records.contains_key(session_id) {
             return Ok(());
         }
-        let store = Session::resume(&self.db_path(), session_id)?;
-        let mut task_state = store.load_task_state().unwrap_or_default();
+        let meta = self.data.meta_blocking(session_id)?;
+        let revision = self.data.revision_blocking(session_id).unwrap_or(0);
+        let mut task_state = TaskReminders {
+            todos: meta
+                .todos
+                .iter()
+                .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                .collect(),
+            active_plan: meta
+                .plan_slug
+                .as_ref()
+                .map(|slug| crate::session::task_state::PlanRef::new(slug)),
+        };
         if prune_stale_active_plan(&mut task_state) {
-            let _ = store.save_task_state(&task_state);
+            let _ = self.mutate_blocking(SessionMutation::SaveTaskState {
+                session_id: session_id.to_string(),
+                expected_revision: revision,
+                operation_id: MutationId::new(),
+                state: task_state.clone(),
+            });
         }
-        let mut record = SessionRecord::new(Arc::new(SessionGate::new(store)), task_state);
+        let mut record = SessionRecord::from_meta(&meta, task_state, revision);
         record.project = None;
         records.insert(session_id.to_string(), record);
         Ok(())
@@ -367,11 +501,9 @@ impl SessionManager {
     }
 
     pub fn entry_buffer_len(&self, session_id: &str) -> usize {
-        self.records
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .map(|e| e.store.with(|s| s.buffer_len()))
+        self.data
+            .working_set_blocking(session_id)
+            .map(|rows| rows.len())
             .unwrap_or(0)
     }
 
@@ -380,12 +512,14 @@ impl SessionManager {
     }
 
     pub fn entry_wire_seq_cursor(&self, session_id: &str) -> (i64, u64) {
-        self.records
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .and_then(|e| e.store.with(|s| s.wire_seq_cursor().ok()))
-            .unwrap_or((-1, 0))
+        match self.data.events_blocking(session_id) {
+            Ok(events) => {
+                let last = events.last().map(|e| e.seq as i64).unwrap_or(-1);
+                let next = last.saturating_add(1) as u64;
+                (last, next)
+            }
+            Err(_) => (-1, 0),
+        }
     }
 
     pub fn entry_load_events_range(
@@ -394,28 +528,29 @@ impl SessionManager {
         from_seq: crate::session::event::Seq,
         to_seq: crate::session::event::Seq,
     ) -> Result<Vec<crate::session::event::SessionEvent>> {
-        let records = self.records.lock().unwrap();
-        let entry = records.get(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
-        })?;
-        entry.store.with(|s| s.load_events_range(from_seq, to_seq))
+        self.data
+            .events_range_blocking(session_id, from_seq as i64, to_seq as i64)
     }
 
     pub fn entry_revert_to_user_anchor(&self, session_id: &str, k: i64) -> Result<()> {
-        let records = self.records.lock().unwrap();
-        let entry = records.get(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::Apply {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            op: SessionApply::Truncate { user_k: k },
         })?;
-        entry.store.with(|s| s.revert_to_user_anchor(k))
+        Ok(())
     }
 
-    /// User-message count for RPC `k` (file-revert maps `k` via [`Self::entry_snapshot_stem_for_user_k`]).
     pub fn entry_user_detail_count(&self, session_id: &str) -> Result<i64> {
-        let records = self.records.lock().unwrap();
-        let entry = records.get(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
-        })?;
-        entry.store.with(|s| s.user_detail_count())
+        match self.data.read_blocking(SessionRead::UserDetailBefore {
+            session_id: session_id.to_string(),
+            from_seq: i64::MAX,
+        })? {
+            ReadValue::Count(n) => Ok(n),
+            _ => Err(LitecodeError::SessionStorage("unexpected count".into())),
+        }
     }
 
     pub fn entry_user_detail_before_seq(
@@ -423,47 +558,46 @@ impl SessionManager {
         session_id: &str,
         from_seq: crate::session::event::Seq,
     ) -> Result<i64> {
-        let records = self.records.lock().unwrap();
-        let entry = records.get(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
-        })?;
-        entry.store.with(|s| s.user_detail_before_seq(from_seq))
+        match self.data.read_blocking(SessionRead::UserDetailBefore {
+            session_id: session_id.to_string(),
+            from_seq: from_seq as i64,
+        })? {
+            ReadValue::Count(n) => Ok(n),
+            _ => Err(LitecodeError::SessionStorage("unexpected count".into())),
+        }
     }
 
     pub fn entry_snapshot_stem_for_user_k(&self, session_id: &str, k: i64) -> Result<i64> {
-        let records = self.records.lock().unwrap();
-        let entry = records.get(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
-        })?;
-        entry.store.with(|s| s.snapshot_stem_for_user_k(k))
+        match self.data.read_blocking(SessionRead::SnapshotStem {
+            session_id: session_id.to_string(),
+            k,
+        })? {
+            ReadValue::Count(n) => Ok(n.saturating_add(1)),
+            _ => Err(LitecodeError::InvalidRevertAnchor(format!("k={k}"))),
+        }
     }
 
-    /// Test probe (2.15 REV-5): true when the records lock is currently FREE.
-    /// Lets a test assert that `with_entry_store` runs its closure outside the
-    /// records lock (the lock may only be held by this thread mid-closure).
     #[doc(hidden)]
     pub fn records_lock_free(&self) -> bool {
         self.records.try_lock().is_ok()
     }
 
-    pub fn with_entry_store<F, R>(&self, session_id: &str, f: F) -> anyhow::Result<R>
-    where
-        F: FnOnce(&Session) -> anyhow::Result<R>,
-    {
-        // REV-5: only clone the Arc<SessionGate> while holding the records lock,
-        // then run the (potentially SQLite-I/O-bound) closure OUTSIDE the lock —
-        // no DB I/O happens while the records lock is held.
-        let gate = {
-            let records = self
-                .records
-                .lock()
-                .map_err(|e| anyhow::anyhow!("records lock poisoned: {}", e))?;
-            records
+    pub fn save_task_state(&self, session_id: &str) -> anyhow::Result<()> {
+        let state = {
+            let records = self.records.lock().unwrap();
+            let entry = records
                 .get(session_id)
-                .map(|e| Arc::clone(&e.store))
-                .ok_or_else(|| anyhow::anyhow!("session entry not found: {}", session_id))?
+                .ok_or_else(|| anyhow::anyhow!("session entry not found: {}", session_id))?;
+            entry.task_state.clone()
         };
-        gate.with(f)
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::SaveTaskState {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            state,
+        })?;
+        Ok(())
     }
 
     pub fn with_entry_task_state_mut<F, R>(&self, session_id: &str, f: F) -> anyhow::Result<R>
@@ -492,16 +626,6 @@ impl SessionManager {
             .get(session_id)
             .ok_or_else(|| anyhow::anyhow!("session entry not found: {}", session_id))?;
         f(&entry.task_state)
-    }
-
-    pub fn save_task_state(&self, session_id: &str) -> anyhow::Result<()> {
-        let records = self.records.lock().unwrap();
-        let entry = records
-            .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("session entry not found: {}", session_id))?;
-        let state = entry.task_state.clone();
-        entry.store.with(|s| s.save_task_state(&state))?;
-        Ok(())
     }
 
     /// Attach a viewer; returns cached progress when a turn is running.
@@ -651,7 +775,7 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Finish a turn (Running → Idle). Sole path that clears running; emits lifecycle TurnFinished.
+    /// Finish a turn (Running �?Idle). Sole path that clears running; emits lifecycle TurnFinished.
     ///
     /// Idempotent when already Idle or turn_id mismatches a different live turn.
     pub fn finish_turn(&self, session_id: &str, turn_id: &str) -> Option<TurnProgress> {
@@ -903,13 +1027,17 @@ impl SessionManager {
                 if record.activity.is_busy() {
                     return false;
                 }
-                return record.store.with(|s| s.buffer_len()) == 0;
+                return self
+                    .data
+                    .working_set_blocking(session_id)
+                    .map(|rows| rows.is_empty())
+                    .unwrap_or(true);
             }
         }
-        match Session::resume(&self.db_path(), session_id) {
-            Ok(session) => session.buffer_len() == 0,
-            Err(_) => true,
-        }
+        self.data
+            .working_set_blocking(session_id)
+            .map(|rows| rows.is_empty())
+            .unwrap_or(true)
     }
 
     pub async fn subscriber_count(&self, session_id: &str) -> usize {
@@ -955,6 +1083,7 @@ impl SessionManager {
         for id in &ids {
             self.cancel_turn(id).await;
         }
+        self.data.shutdown();
     }
 
     /// Remove only stale, empty durable sessions. Closing a panel merely
@@ -962,7 +1091,7 @@ impl SessionManager {
     pub async fn gc_stale_empty_sessions(&self, max_age: Duration) {
         let cutoff = chrono::Utc::now().timestamp_millis()
             - i64::try_from(max_age.as_millis()).unwrap_or(i64::MAX);
-        let rows = match Session::list_sessions_for_gc(&self.db_path()) {
+        let rows = match self.data.list_gc_blocking() {
             Ok(rows) => rows,
             Err(error) => {
                 tracing::warn!(error = %error, "session GC: failed to list sessions");
@@ -985,8 +1114,12 @@ impl SessionManager {
 
     pub fn remove_session(&self, session_id: &str) -> Result<()> {
         // Cancel live turns on this session and any in-memory children first.
-        let child_ids =
-            Session::list_child_session_ids(&self.db_path(), session_id).unwrap_or_default();
+        let child_ids = match self.data.read_blocking(SessionRead::ListChildIds {
+            parent_session_id: session_id.to_string(),
+        }) {
+            Ok(ReadValue::Ids(ids)) => ids,
+            _ => Vec::new(),
+        };
         {
             let records = self.records.lock().unwrap();
             if let Some(record) = records.get(session_id)
@@ -1003,9 +1136,14 @@ impl SessionManager {
             }
         }
 
-        // Durable cascade (children first) via Session::delete.
-        match Session::delete(&self.db_path(), session_id) {
-            Ok(()) => {
+        // Durable cascade (children first) via SessionData delete.
+        let expected = self.expected_revision(session_id);
+        match self.mutate_blocking(SessionMutation::Delete {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+        }) {
+            Ok(_) => {
                 {
                     let mut records = self.records.lock().unwrap();
                     for child_id in &child_ids {
@@ -1088,24 +1226,33 @@ impl SessionManager {
         // Prefer in-memory records (same process as the launch).
         {
             let records = self.records.lock().unwrap();
-            for record in records.values() {
+            for (id, record) in records.iter() {
                 if record.parent_session_id.as_deref() == Some(parent_session_id)
                     && record.parent_call_id.as_deref() == Some(parent_call_id)
                 {
-                    return record.store.with(|s| Some(s.id.clone()));
+                    return Some(id.clone());
                 }
             }
         }
-        Session::child_session_id_for_call(&self.db_path(), parent_session_id, parent_call_id)
-            .ok()
-            .flatten()
+        match self.data.read_blocking(SessionRead::ChildForCall {
+            parent_session_id: parent_session_id.to_string(),
+            parent_call_id: parent_call_id.to_string(),
+        }) {
+            Ok(ReadValue::OptionalId(id)) => id,
+            _ => None,
+        }
     }
 
     pub fn child_bindings_for_parent(
         &self,
         parent_session_id: &str,
     ) -> std::collections::HashMap<String, String> {
-        Session::child_bindings_for_parent(&self.db_path(), parent_session_id).unwrap_or_default()
+        match self.data.read_blocking(SessionRead::ChildBindings {
+            parent_session_id: parent_session_id.to_string(),
+        }) {
+            Ok(ReadValue::ChildBindings(pairs)) => pairs.into_iter().collect(),
+            _ => std::collections::HashMap::new(),
+        }
     }
 
     /// Find the persisted function_call event for `call_id`.
@@ -1114,25 +1261,21 @@ impl SessionManager {
         session_id: &str,
         call_id: &str,
     ) -> Option<crate::session::event::SessionEvent> {
-        let records = self.records.lock().unwrap();
-        let record = records.get(session_id)?;
-        record.store.with(|s| {
-            let events = s.load_events().ok()?;
-            events.into_iter().find(|event| {
-                crate::session::event::item_from_event(event)
-                    .ok()
-                    .is_some_and(|item| {
-                        matches!(
-                            item,
-                            crate::types::Item::FunctionCall(ref fc) if fc.call_id == call_id
-                        )
-                    })
-            })
+        let events = self.data.events_blocking(session_id).ok()?;
+        events.into_iter().find(|event| {
+            crate::session::event::item_from_event(event)
+                .ok()
+                .is_some_and(|item| {
+                    matches!(
+                        item,
+                        crate::types::Item::FunctionCall(ref fc) if fc.call_id == call_id
+                    )
+                })
         })
     }
 
     /// Snapshot of the replay buffer (bounded at EVENT_BUFFER_CAPACITY). Each
-    /// subscriber gets the same recent events — draining on first consume would
+    /// subscriber gets the same recent events �?draining on first consume would
     /// lose replay for every later subscriber (6a-6j).
     pub fn event_buffer_snapshot(&self, session_id: &str) -> Vec<InternalEnvelope> {
         let records = self.records.lock().unwrap();
@@ -1152,19 +1295,21 @@ impl SessionManager {
 
     /// Persist sticky session model catalog id. Does not touch `agent_id`.
     pub fn set_session_model_id(&self, session_id: &str, model_id: Option<String>) -> Result<()> {
-        let mut records = self.records.lock().unwrap();
-        let record = records.get_mut(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
-        })?;
         let normalized = model_id
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
-        record
-            .store
-            .with_mut(|s| s.set_model_id(normalized.as_deref()))?;
-        record.model_id = normalized;
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::SetModel {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            model_id: normalized.clone(),
+        })?;
+        if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
+            record.model_id = normalized;
+        }
         Ok(())
     }
 
@@ -1175,12 +1320,16 @@ impl SessionManager {
 
     /// Persist sticky session agent id. Does not touch `model_id`.
     pub fn set_agent_id(&self, session_id: &str, agent_id: String) -> Result<()> {
-        let mut records = self.records.lock().unwrap();
-        let record = records.get_mut(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::SetAgent {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            agent_id: agent_id.clone(),
         })?;
-        record.store.with_mut(|s| s.set_agent_id(&agent_id))?;
-        record.agent_id = agent_id;
+        if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
+            record.agent_id = agent_id;
+        }
         Ok(())
     }
 
@@ -1204,12 +1353,16 @@ impl SessionManager {
         session_id: &str,
         tier: crate::platform_knobs::ThinkingTier,
     ) -> Result<()> {
-        let mut records = self.records.lock().unwrap();
-        let record = records.get_mut(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::SetThinkingTier {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            tier,
         })?;
-        record.store.with_mut(|s| s.set_thinking_tier(tier))?;
-        record.thinking_tier = tier;
+        if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
+            record.thinking_tier = tier;
+        }
         Ok(())
     }
 
@@ -1218,12 +1371,16 @@ impl SessionManager {
         session_id: &str,
         mode: crate::platform_knobs::ContextMode,
     ) -> Result<()> {
-        let mut records = self.records.lock().unwrap();
-        let record = records.get_mut(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::SetContextMode {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            mode,
         })?;
-        record.store.with_mut(|s| s.set_context_mode(mode))?;
-        record.context_mode = mode;
+        if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
+            record.context_mode = mode;
+        }
         Ok(())
     }
 
@@ -1234,21 +1391,19 @@ impl SessionManager {
         &self,
         valid_model_ids: &std::collections::HashSet<String>,
     ) -> Result<Vec<String>> {
-        let cleared = Session::clear_orphaned_model_ids(&self.db_path(), valid_model_ids)?;
-        if cleared.is_empty() {
-            return Ok(cleared);
-        }
-        let cleared_set: std::collections::HashSet<&str> =
-            cleared.iter().map(String::as_str).collect();
+        let receipt = self.mutate_blocking(SessionMutation::ClearOrphanedModelIds {
+            operation_id: MutationId::new(),
+            valid_ids: valid_model_ids.iter().cloned().collect(),
+        })?;
+        let _ = receipt;
         let mut records = self.records.lock().unwrap();
+        let mut cleared = Vec::new();
         for (id, record) in records.iter_mut() {
-            if cleared_set.contains(id.as_str()) {
-                record.model_id = None;
-            } else if let Some(mid) = record.model_id.as_ref()
+            if let Some(mid) = record.model_id.as_ref()
                 && !valid_model_ids.contains(mid)
             {
-                let _ = record.store.with_mut(|s| s.set_model_id(None));
                 record.model_id = None;
+                cleared.push(id.clone());
             }
         }
         Ok(cleared)
@@ -1268,19 +1423,148 @@ impl SessionManager {
         Ok(agent_id)
     }
 
-    pub fn register_session(&self, session: Session, mut task_state: TaskReminders) {
-        let id = session.id.clone();
+    pub fn register_session(&self, session_id: &str, mut task_state: TaskReminders) {
+        let meta = self.data.meta_blocking(session_id).ok();
+        let revision = self.data.revision_blocking(session_id).unwrap_or(0);
         if prune_stale_active_plan(&mut task_state) {
-            let _ = session.save_task_state(&task_state);
+            let _ = self.mutate_blocking(SessionMutation::SaveTaskState {
+                session_id: session_id.to_string(),
+                expected_revision: revision,
+                operation_id: MutationId::new(),
+                state: task_state.clone(),
+            });
         }
-        let mut record = SessionRecord::new(Arc::new(SessionGate::new(session)), task_state);
-        record.project = None;
-        self.records.lock().unwrap().insert(id, record);
+        if let Some(meta) = meta {
+            let mut record = SessionRecord::from_meta(&meta, task_state, revision);
+            record.project = None;
+            self.records
+                .lock()
+                .unwrap()
+                .insert(session_id.to_string(), record);
+        }
     }
 
     pub fn register_for_test(&self, session: Session) {
-        let task = session.load_task_state().unwrap_or_default();
-        self.register_session(session, task);
+        let id = session.id.clone();
+        drop(session);
+        self.insert_session_for_test(&id);
+    }
+
+    pub fn data_root_path(&self) -> std::path::PathBuf {
+        self.data.data_root().to_path_buf()
+    }
+
+    pub fn apply(
+        &self,
+        session_id: &str,
+        op: SessionApply,
+    ) -> anyhow::Result<crate::session::data::command::CommitReceipt> {
+        let expected = self.expected_revision(session_id);
+        Ok(self.mutate_blocking(SessionMutation::Apply {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            op,
+        })?)
+    }
+
+    pub fn persist_item(&self, session_id: &str, item: &crate::types::Item) -> anyhow::Result<()> {
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::PersistItem {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            item: item.clone(),
+        })?;
+        Ok(())
+    }
+
+    pub fn append_job_exit(
+        &self,
+        session_id: &str,
+        item: &crate::types::Item,
+    ) -> anyhow::Result<()> {
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::AppendJobExit {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            item: item.clone(),
+        })?;
+        Ok(())
+    }
+
+    pub fn seal_in_progress_items(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<crate::session::event::Seq>> {
+        let expected = self.expected_revision(session_id);
+        match self.mutate_blocking(SessionMutation::SealInProgress {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+        }) {
+            Ok(receipt) => match receipt.outcome {
+                crate::session::data::command::CommitKind::Sealed { seqs } => Ok(seqs),
+                crate::session::data::command::CommitKind::Idempotent => Ok(Vec::new()),
+                _ => Ok(Vec::new()),
+            },
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn save_context_meter(
+        &self,
+        session_id: &str,
+        meter: &SessionContextMeter,
+    ) -> anyhow::Result<()> {
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::SaveContextMeter {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            meter: meter.clone(),
+        })?;
+        Ok(())
+    }
+
+    pub fn insert_detail_rows(
+        &self,
+        session_id: &str,
+        items: &[crate::types::Item],
+    ) -> anyhow::Result<()> {
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::InsertDetails {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            items: items.to_vec(),
+            turn_id: String::new(),
+        })?;
+        Ok(())
+    }
+
+    pub fn commit_turn_delta(
+        &self,
+        session_id: &str,
+        rows: Vec<crate::session::working::WorkingRow>,
+        expected_max_seq: i64,
+        turn_id: &str,
+    ) -> anyhow::Result<(
+        crate::session::data::command::CommitKind,
+        Vec<crate::session::working::WorkingRow>,
+    )> {
+        let expected = self.expected_revision(session_id);
+        let receipt = self.mutate_blocking(SessionMutation::CommitTurnDelta {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            rows,
+            expected_max_seq,
+            turn_id: turn_id.to_string(),
+        })?;
+        let working = self.data.working_set_blocking(session_id)?;
+        Ok((receipt.outcome, working))
     }
 }
 
@@ -1535,7 +1819,10 @@ mod child_session_tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sessions.db");
         let db_path = db.to_str().unwrap().to_string();
-        let mgr = Arc::new(SessionManager::new(Arc::new(TurnGuard::new()), db_path));
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db_path,
+        ));
 
         let parent_id = mgr
             .open_session("/proj", "default", None)
@@ -1546,7 +1833,7 @@ mod child_session_tests {
             .expect("child");
 
         assert!(mgr.records.lock().unwrap().contains_key(&child_id));
-        let resumed = Session::resume(&mgr.db_path(), &child_id).unwrap();
+        let resumed = mgr.data().meta_blocking(&child_id).unwrap();
         assert_eq!(
             resumed.parent_session_id.as_deref(),
             Some(parent_id.as_str())
@@ -1556,7 +1843,7 @@ mod child_session_tests {
         mgr.remove_session(&parent_id).expect("remove parent");
         assert!(!mgr.records.lock().unwrap().contains_key(&parent_id));
         assert!(!mgr.records.lock().unwrap().contains_key(&child_id));
-        assert!(Session::resume(&mgr.db_path(), &child_id).is_err());
+        assert!(mgr.data().meta_blocking(&child_id).is_err());
     }
 
     #[tokio::test]
@@ -1567,7 +1854,10 @@ mod child_session_tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sessions.db");
         let db_path = db.to_str().unwrap().to_string();
-        let mgr = Arc::new(SessionManager::new(Arc::new(TurnGuard::new()), db_path));
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db_path,
+        ));
 
         let parent_id = mgr.open_session("/proj", "default", None).await.unwrap();
         let child_id = mgr
@@ -1641,7 +1931,7 @@ mod child_session_tests {
         let db = dir.path().join("sessions.db");
         let db_path = db.to_str().unwrap().to_string();
         let guard = Arc::new(TurnGuard::new());
-        let mgr = Arc::new(SessionManager::new(Arc::clone(&guard), db_path));
+        let mgr = Arc::new(SessionManager::new_for_test(Arc::clone(&guard), db_path));
         let sid = mgr.open_session("/proj", "default", None).await.unwrap();
 
         mgr.begin_turn(
@@ -1675,7 +1965,7 @@ mod child_session_tests {
         let db = dir.path().join("sessions.db");
         let db_path = db.to_str().unwrap().to_string();
         let guard = Arc::new(TurnGuard::new());
-        let mgr = Arc::new(SessionManager::new(Arc::clone(&guard), db_path));
+        let mgr = Arc::new(SessionManager::new_for_test(Arc::clone(&guard), db_path));
         let sid = mgr.open_session("/proj", "default", None).await.unwrap();
 
         mgr.begin_turn(
@@ -1714,7 +2004,7 @@ mod child_session_tests {
     async fn compact_lease_atomically_blocks_turn_and_revert() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sessions.db");
-        let mgr = Arc::new(SessionManager::new(
+        let mgr = Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             db.to_str().unwrap().to_string(),
         ));
@@ -1754,19 +2044,19 @@ mod child_session_tests {
     async fn revert_during_running_turn_cancels_without_exclusive_lease() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sessions.db");
-        let mgr = Arc::new(SessionManager::new(
+        let mgr = Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             db.to_str().unwrap().to_string(),
         ));
         let sid = mgr.open_session("/proj", "default", None).await.unwrap();
-        mgr.with_entry_store(&sid, |s| {
-            s.insert_detail_rows(&[
+        mgr.insert_detail_rows(
+            &sid,
+            &[
                 crate::types::user_text("u0"),
                 crate::types::user_text("u1"),
                 crate::types::user_text("u2"),
-            ])?;
-            Ok(())
-        })
+            ],
+        )
         .unwrap();
         let cancel = CancellationToken::new();
         mgr.begin_turn(
@@ -1795,9 +2085,7 @@ mod child_session_tests {
         assert_eq!(mgr.entry_snapshot_stem_for_user_k(&sid, 0).unwrap(), 1);
 
         mgr.entry_revert_to_user_anchor(&sid, 1).unwrap();
-        let len = mgr
-            .with_entry_store(&sid, |s| Ok(s.load_transcript()?.len()))
-            .unwrap();
+        let len = mgr.data().transcript_blocking(&sid).unwrap().len();
         assert_eq!(len, 1, "running-turn revert must truncate the log");
     }
 
@@ -1805,15 +2093,15 @@ mod child_session_tests {
     async fn revert_during_starting_turn_releases_reservation() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sessions.db");
-        let mgr = Arc::new(SessionManager::new(
+        let mgr = Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             db.to_str().unwrap().to_string(),
         ));
         let sid = mgr.open_session("/proj", "default", None).await.unwrap();
-        mgr.with_entry_store(&sid, |s| {
-            s.insert_detail_rows(&[crate::types::user_text("u0"), crate::types::user_text("u1")])?;
-            Ok(())
-        })
+        mgr.insert_detail_rows(
+            &sid,
+            &[crate::types::user_text("u0"), crate::types::user_text("u1")],
+        )
         .unwrap();
         mgr.reserve_turn(&sid, "reserved".into(), 5, "default", "/proj")
             .expect("reserve turn");
@@ -1833,9 +2121,7 @@ mod child_session_tests {
         assert!(matches!(sneak, LitecodeError::AgentAlreadyRunning));
 
         mgr.entry_revert_to_user_anchor(&sid, 1).unwrap();
-        let len = mgr
-            .with_entry_store(&sid, |s| Ok(s.load_transcript()?.len()))
-            .unwrap();
+        let len = mgr.data().transcript_blocking(&sid).unwrap().len();
         assert_eq!(len, 1);
     }
 
@@ -1844,7 +2130,7 @@ mod child_session_tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sessions.db");
         let guard = Arc::new(TurnGuard::new());
-        let mgr = Arc::new(SessionManager::new(
+        let mgr = Arc::new(SessionManager::new_for_test(
             Arc::clone(&guard),
             db.to_str().unwrap().to_string(),
         ));
@@ -1895,7 +2181,7 @@ mod child_session_tests {
     fn start_turn_fanout_survives_caller_runtime_drop() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sessions.db");
-        let mgr = Arc::new(SessionManager::new(
+        let mgr = Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             db.to_str().unwrap().to_string(),
         ));

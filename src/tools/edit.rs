@@ -74,6 +74,7 @@ impl EditTool {
             cancel: CancellationToken::new(),
             output_limit: self.max_result_size(),
             session_id: String::new(),
+            session: None,
         }
     }
 }

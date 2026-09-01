@@ -7,8 +7,8 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use super::change::WorkspaceChange;
 use super::filter::{
-    FilterPreset, is_workspace_excludes_rel, path_excluded, rel_path_under,
-    reload_workspace_excludes_from_disk,
+    FilterPreset, is_workspace_excludes_rel, path_excluded, path_has_product_internal_dir,
+    rel_path_under, reload_workspace_excludes_from_disk,
 };
 use super::service::WorkspaceService;
 
@@ -104,7 +104,7 @@ fn classify_event(event: &Event, root: &Path) -> Option<(Vec<String>, bool)> {
         .paths
         .iter()
         .filter_map(|p| rel_path_under(root, p))
-        .filter(|p| is_workspace_excludes_rel(p) || !path_excluded(p, FilterPreset::Watcher))
+        .filter(|p| watcher_rel_is_noteworthy(p))
         .collect();
 
     if paths.is_empty() {
@@ -112,6 +112,18 @@ fn classify_event(event: &Event, root: &Path) -> Option<(Vec<String>, bool)> {
     }
 
     Some((paths, deleted))
+}
+
+/// Keep `.litecode/excludes.json`; drop product-internal trees (index writes)
+/// even when the workspace `watcher_exclude` list has not been updated.
+fn watcher_rel_is_noteworthy(rel: &str) -> bool {
+    if is_workspace_excludes_rel(rel) {
+        return true;
+    }
+    if path_has_product_internal_dir(rel) {
+        return false;
+    }
+    !path_excluded(rel, FilterPreset::Watcher)
 }
 
 /// Coalesce the pending modify/delete sets into the changes to broadcast.
@@ -282,6 +294,26 @@ mod tests {
         let (paths, is_deleted) = classify_event(&ev, &root).unwrap();
         assert!(!is_deleted);
         assert_eq!(paths, vec![".litecode/excludes.json".to_string()]);
+        crate::workspace::filter::activate_workspace_excludes(prev);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn product_internal_index_is_not_broadcast() {
+        let _lock = crate::workspace::filter::lock_excludes_cache_for_test();
+        let prev = crate::workspace::filter::active_workspace_excludes();
+        let root = temp_root();
+        let mut lists = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
+        lists.watcher_exclude = vec!["*.litecode-tmp*".into()];
+        crate::workspace::filter::activate_workspace_excludes(lists);
+        let path = root.join(".litecode").join("index").join("chunks.jsonl");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"x").unwrap();
+        let ev = make_event(
+            EventKind::Modify(ModifyKind::Any),
+            &[path.to_str().unwrap()],
+        );
+        assert!(classify_event(&ev, &root).is_none());
         crate::workspace::filter::activate_workspace_excludes(prev);
         let _ = fs::remove_dir_all(&root);
     }

@@ -6,9 +6,9 @@
 //! **Schema policy:** delete-and-rebuild only. Half-old `sessions.db` shapes fail closed;
 //! delete `.litecode/sessions.db` to recreate. Empty leftover `messages` may be DROP'd.
 
+pub mod data;
 pub mod estimate;
 pub mod event;
-pub mod gate;
 pub mod live;
 pub mod manager;
 pub mod media;
@@ -20,16 +20,18 @@ pub mod store;
 pub mod surface;
 pub mod task_state;
 pub mod transcript_file;
-pub mod transcript_fts;
 pub mod working;
 pub mod workspace_lock;
 
+pub use data::{
+    CommitReceipt, FaultKind, MutationId, ReadValue, SessionData, SessionDataReader,
+    SessionMutation, SessionRead, SessionRevision, WRITER_QUEUE_CAPACITY,
+};
 pub use estimate::{
     ItemTokenBreakdown, apply_prompt_overhead, autocompact_threshold, compute_token_breakdown,
     compute_token_estimate, count_text_tokens, truncate_text_tokens,
 };
 pub use event::{EventDraft, EventLog, EventType, Seq, SessionEvent};
-pub use gate::SessionGate;
 pub use live::{LifecycleEvent, LiveTurn, TurnProgress};
 pub use manager::{SessionManager, SessionRecord};
 pub use media_tokens::{
@@ -39,10 +41,10 @@ pub use media_tokens::{
 pub use model::{
     CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION, SessionKind, SessionLogRow, SessionMeta,
 };
-pub use store::{Session, SessionContextMeter, TranscriptRow, data_root_from_db_path};
+pub use store::{Session, SessionContextMeter, TranscriptRow};
 pub use surface::{Surface, SurfaceOp, derive_messages, derive_transcript_items, fold_surface};
 pub use task_state::{
     PlanRef, TaskReminders, TodoItem, TodoStatus, plan_dir, prune_stale_active_plan, render_todos,
 };
 pub use working::{WorkingRow, align_working, project_items};
-pub use workspace_lock::WorkspaceLock;
+pub use workspace_lock::{WorkspaceLock, WorkspaceWriteLease};

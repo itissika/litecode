@@ -703,7 +703,9 @@ async fn get_tree(State(state): State<ServeState>, Query(query): Query<TreeQuery
                 .tree_reveal(&path)
                 .map(std::ops::ControlFlow::Break)
         } else {
-            workspace.tree(&path, depth).map(std::ops::ControlFlow::Continue)
+            workspace
+                .tree(&path, depth)
+                .map(std::ops::ControlFlow::Continue)
         }
     })
     .await

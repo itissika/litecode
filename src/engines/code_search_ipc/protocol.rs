@@ -56,6 +56,13 @@ impl JsonRpcResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InitializeParams {
     pub workspace_root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_db_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetSessionDbParams {
+    pub session_db_path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

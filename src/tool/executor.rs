@@ -291,6 +291,7 @@ pub async fn run_tool(
     spill_threshold: usize,
     _turn_anchor_k: Option<i64>,
     write_lock: Arc<WorkspaceWriteLock>,
+    session: Option<crate::session::SessionDataReader>,
 ) -> ToolCallResult {
     let tu_name = tool_use.name.clone();
     let tu_id = call_id(tool_use);
@@ -380,6 +381,7 @@ pub async fn run_tool(
         cancel: cancel.clone(),
         output_limit: tool.max_result_size(),
         session_id: session_id.to_string(),
+        session,
     };
     // Build the tool execution future
     let tool_fut = AssertUnwindSafe(tool_clone.execute(input, execution)).catch_unwind();
@@ -740,6 +742,7 @@ mod tests {
             4096,
             None,
             Arc::new(WorkspaceWriteLock::new()),
+            None,
         )
         .await;
         assert!(
@@ -905,6 +908,7 @@ mod tests {
             4096,
             None,
             Arc::new(WorkspaceWriteLock::new()),
+            None,
         )
         .await;
         result
@@ -1097,6 +1101,7 @@ mod tests {
             4096,
             None,
             Arc::new(WorkspaceWriteLock::new()),
+            None,
         )
         .await;
         result

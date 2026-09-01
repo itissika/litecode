@@ -1,4 +1,4 @@
-//! Subagent first-class session isolation — end-to-end coverage.
+//! Subagent first-class session isolation —end-to-end coverage.
 //!
 //! Asserts durable child sessions, parent linkage, no parent-channel pollution,
 //! lifecycle filtering, and cascade delete.
@@ -19,7 +19,6 @@ use litecode::optional::EngineManager;
 use litecode::runtime::observer::InternalEvent;
 use litecode::session::live::LifecycleEvent;
 use litecode::session::manager::SessionManager;
-use litecode::session::store::Session;
 use litecode::tool::Tool;
 use litecode::tool::trait_::ToolExecutionContext;
 use litecode::tools::subagent::SubagentLaunchTool;
@@ -93,6 +92,7 @@ async fn run_subagent(
         cancel: CancellationToken::new(),
         output_limit: 8_000,
         session_id: String::new(),
+        session: None,
     };
     tool.execute(input, ctx).await
 }
@@ -105,7 +105,7 @@ async fn subagent_launch_creates_durable_child_with_parent_link() {
     let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
     let project = cwd.to_string_lossy().to_string();
 
-    let sessions = Arc::new(SessionManager::new(
+    let sessions = Arc::new(SessionManager::new_for_test(
         Arc::new(TurnGuard::new()),
         db_path.clone(),
     ));
@@ -150,15 +150,21 @@ async fn subagent_launch_creates_durable_child_with_parent_link() {
         .expect("child_session_id in metadata")
         .to_string();
 
-    let child = Session::resume(&db_path, &child_id).expect("child row");
-    assert_eq!(child.parent_session_id.as_deref(), Some(parent_id.as_str()));
-    assert_eq!(child.parent_call_id.as_deref(), Some("call_launch_1"));
+    let child_meta = sessions.data().meta_blocking(&child_id).expect("child row");
+    assert_eq!(
+        child_meta.parent_session_id.as_deref(),
+        Some(parent_id.as_str())
+    );
+    assert_eq!(child_meta.parent_call_id.as_deref(), Some("call_launch_1"));
 
-    let listed = Session::list_sessions(&db_path).unwrap();
+    let listed = sessions.data().list_sessions_blocking().unwrap();
     assert_eq!(listed.len(), 1, "child must not appear in top-level list");
     assert_eq!(listed[0].0, parent_id);
 
-    let transcript = child.load_transcript().expect("child transcript");
+    let transcript = sessions
+        .data()
+        .transcript_blocking(&child_id)
+        .expect("child transcript");
     assert!(
         !transcript.is_empty(),
         "child transcript must persist after tool returns"
@@ -173,7 +179,7 @@ async fn parent_event_channel_does_not_receive_child_turn_events() {
     let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
     let project = cwd.to_string_lossy().to_string();
 
-    let sessions = Arc::new(SessionManager::new(
+    let sessions = Arc::new(SessionManager::new_for_test(
         Arc::new(TurnGuard::new()),
         db_path.clone(),
     ));
@@ -207,7 +213,7 @@ async fn parent_event_channel_does_not_receive_child_turn_events() {
         result.content
     );
 
-    // Drain any pending parent envelopes — must not include child TurnStarted.
+    // Drain any pending parent envelopes —must not include child TurnStarted.
     let mut leaked = Vec::new();
     while let Ok(env) = parent_rx.try_recv() {
         if matches!(env.event, InternalEvent::TurnStarted { .. }) {
@@ -228,7 +234,7 @@ async fn subagent_bound_arrives_on_parent_before_tool_returns() {
     let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
     let project = cwd.to_string_lossy().to_string();
 
-    let sessions = Arc::new(SessionManager::new(
+    let sessions = Arc::new(SessionManager::new_for_test(
         Arc::new(TurnGuard::new()),
         db_path.clone(),
     ));
@@ -288,7 +294,7 @@ async fn subagent_bound_arrives_on_parent_before_tool_returns() {
         "child_session_id must be non-empty on bind"
     );
     assert!(
-        Session::resume(&db_path, &bound.1).is_ok(),
+        sessions.data().meta_blocking(&bound.1).is_ok(),
         "child session must exist when SubagentBound arrives"
     );
     assert!(
@@ -310,7 +316,7 @@ async fn subagent_bound_arrives_on_parent_before_tool_returns() {
     assert_eq!(
         bindings.get("call_bind_1").map(String::as_str),
         Some(bound.1.as_str()),
-        "rebuild path must resolve call_id → child via bindings"
+        "rebuild path must resolve call_id →child via bindings"
     );
     assert_eq!(
         sessions
@@ -328,7 +334,10 @@ async fn child_lifecycle_is_not_broadcast_to_workspace() {
     let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
     let project = cwd.to_string_lossy().to_string();
 
-    let sessions = Arc::new(SessionManager::new(Arc::new(TurnGuard::new()), db_path));
+    let sessions = Arc::new(SessionManager::new_for_test(
+        Arc::new(TurnGuard::new()),
+        db_path,
+    ));
     let parent_id = sessions
         .open_session(&project, "default", Some("default"))
         .await
@@ -392,7 +401,7 @@ async fn failed_binding_aborts_orphan_child_session() {
     let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
     let project = cwd.to_string_lossy().to_string();
 
-    let sessions = Arc::new(SessionManager::new(
+    let sessions = Arc::new(SessionManager::new_for_test(
         Arc::new(TurnGuard::new()),
         db_path.clone(),
     ));
@@ -425,7 +434,7 @@ async fn failed_binding_aborts_orphan_child_session() {
         result.content
     );
 
-    let children = Session::list_child_session_ids(&db_path, &parent_id).unwrap();
+    let children = sessions.data().list_child_ids_blocking(&parent_id).unwrap();
     assert!(
         children.is_empty(),
         "failed launch must not leave orphan child rows: {children:?}"
@@ -440,7 +449,7 @@ fn missing_call_id_scope_errors_without_creating_child() {
     let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
     let project = cwd.to_string_lossy().to_string();
 
-    let sessions = Arc::new(SessionManager::new(
+    let sessions = Arc::new(SessionManager::new_for_test(
         Arc::new(TurnGuard::new()),
         db_path.clone(),
     ));
@@ -468,7 +477,9 @@ fn missing_call_id_scope_errors_without_creating_child() {
         result.content
     );
     assert!(
-        Session::list_child_session_ids(&db_path, &parent_id)
+        sessions
+            .data()
+            .list_child_ids_blocking(&parent_id)
             .unwrap()
             .is_empty()
     );
@@ -482,7 +493,7 @@ async fn gc_skips_empty_child_while_parent_exists() {
     let db_path = workspace.paths.sessions_db.to_string_lossy().to_string();
     let project = cwd.to_string_lossy().to_string();
 
-    let sessions = Arc::new(SessionManager::new(
+    let sessions = Arc::new(SessionManager::new_for_test(
         Arc::new(TurnGuard::new()),
         db_path.clone(),
     ));
@@ -492,10 +503,7 @@ async fn gc_skips_empty_child_while_parent_exists() {
         .unwrap();
     // Keep parent non-empty so GC cannot cascade-delete via the parent row.
     sessions
-        .with_entry_store(&parent_id, |s| {
-            s.insert_detail_rows(&[litecode::types::user_text("keep")])?;
-            Ok(())
-        })
+        .insert_detail_rows(&parent_id, &[litecode::types::user_text("keep")])
         .expect("seed parent transcript");
     let child_id = sessions
         .open_child_session(&project, "reviewer", None, &parent_id, "call_gc")
@@ -505,22 +513,12 @@ async fn gc_skips_empty_child_while_parent_exists() {
         "child must be recognized before GC"
     );
 
-    // Force child updated_at into the past.
-    {
-        let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute(
-            "UPDATE sessions SET updated_at = 1 WHERE id = ?1",
-            rusqlite::params![child_id],
-        )
-        .unwrap();
-    }
-
     sessions
         .gc_stale_empty_sessions(Duration::from_secs(0))
         .await;
 
     assert!(
-        Session::resume(&db_path, &child_id).is_ok(),
+        sessions.data().meta_blocking(&child_id).is_ok(),
         "GC must not delete empty child while parent still exists"
     );
 }
@@ -533,7 +531,7 @@ async fn remove_parent_cascades_child() {
     let db_path = workspace.paths.sessions_db.to_string_lossy().to_string();
     let project = cwd.to_string_lossy().to_string();
 
-    let sessions = Arc::new(SessionManager::new(
+    let sessions = Arc::new(SessionManager::new_for_test(
         Arc::new(TurnGuard::new()),
         db_path.clone(),
     ));
@@ -546,6 +544,6 @@ async fn remove_parent_cascades_child() {
         .unwrap();
 
     sessions.remove_session(&parent_id).unwrap();
-    assert!(Session::resume(&db_path, &parent_id).is_err());
-    assert!(Session::resume(&db_path, &child_id).is_err());
+    assert!(sessions.data().meta_blocking(&parent_id).is_err());
+    assert!(sessions.data().meta_blocking(&child_id).is_err());
 }

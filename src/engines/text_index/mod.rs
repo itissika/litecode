@@ -475,6 +475,36 @@ mod tests {
     }
 
     #[test]
+    fn indexed_verify_respects_exclude_pattern() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("tests")).unwrap();
+        std::fs::write(root.join("main.rs"), "unique_needle_xyz\n").unwrap();
+        std::fs::write(root.join("tests/ignored.rs"), "unique_needle_xyz\n").unwrap();
+
+        let store = TextIndexStore::build(root, || false).unwrap();
+        let q = LexicalQuery {
+            pattern: "unique_needle_xyz".into(),
+            root: root.to_path_buf(),
+            path: None,
+            case_sensitive: false,
+            whole_word: false,
+            is_regex: false,
+            include: None,
+            exclude: Some("**/tests/**".into()),
+            multiline: false,
+            max_matches: 10,
+            before_context: 0,
+            after_context: 0,
+            search_hidden: false,
+        };
+        let paths = store.search_candidates(&q).unwrap().expect("indexable");
+        let out = verify_with_ripgrep(root, &q, FilterPreset::AgentText, &paths).unwrap();
+        assert_eq!(out.matches.len(), 1, "{out:?}");
+        assert_eq!(out.matches[0].path, "main.rs");
+    }
+
+    #[test]
     fn file_scoped_search_falls_back_when_index_does_not_contain_file() {
         use crate::engines::code_search::lexical_search_with_preset;
 

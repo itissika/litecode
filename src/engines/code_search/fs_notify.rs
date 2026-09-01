@@ -44,6 +44,7 @@ mod tests {
             root.to_path_buf(),
             index,
             Some(Box::new(HashEmbedder)),
+            None,
         ))))
     }
 

@@ -24,6 +24,8 @@ export interface AgentWsOptions {
 
 const DEFAULT_WS_PATH = "/ws";
 const HANDSHAKE_TIMEOUT_MS = 2000;
+/** Drop a stuck partial frame rather than holding it forever. */
+const MAX_WS_BUFFER = 8 * 1024 * 1024;
 
 function resolveWsUrl(explicit?: string): string {
   if (explicit) return explicit;
@@ -229,6 +231,12 @@ export class AgentWsClient {
 
   private handleIncoming(chunk: string): void {
     this.lineBuffer += chunk;
+    if (this.lineBuffer.length > MAX_WS_BUFFER) {
+      const preview = this.lineBuffer.trimStart().slice(0, 80);
+      this.lineBuffer = "";
+      this.options.onError?.(`Invalid JSON: ${preview}`);
+      return;
+    }
     const lines = this.lineBuffer.split("\n");
     this.lineBuffer = lines.pop() ?? "";
 
@@ -236,11 +244,18 @@ export class AgentWsClient {
       this.dispatchLine(line);
     }
 
-    if (this.lineBuffer.trim()) {
-      const pending = this.lineBuffer;
-      this.lineBuffer = "";
-      this.dispatchLine(pending);
+    // One WS text frame is usually one compact JSON object with no trailing
+    // newline. Parse the remainder only when it is complete; otherwise keep it
+    // so a split frame is not toasted as Invalid JSON.
+    const pending = this.lineBuffer.trim();
+    if (!pending) return;
+    try {
+      JSON.parse(pending);
+    } catch {
+      return;
     }
+    this.lineBuffer = "";
+    this.dispatchLine(pending);
   }
 
   private dispatchLine(line: string): void {

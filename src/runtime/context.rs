@@ -25,6 +25,7 @@ pub struct RuntimeContext {
     pub turn_anchor_k: Arc<AtomicI64>,
     /// Process-wide write lock for cross-session resource exclusion (Phase 3).
     pub write_lock: Arc<WorkspaceWriteLock>,
+    pub session: Option<crate::session::SessionDataReader>,
 }
 
 impl RuntimeContext {
@@ -38,6 +39,7 @@ impl RuntimeContext {
         data_root: PathBuf,
         spill_threshold: usize,
         write_lock: Arc<WorkspaceWriteLock>,
+        session: Option<crate::session::SessionDataReader>,
     ) -> Self {
         Self {
             tools,
@@ -50,6 +52,7 @@ impl RuntimeContext {
             spill_threshold,
             turn_anchor_k: Arc::new(AtomicI64::new(-1)),
             write_lock,
+            session,
         }
     }
 
@@ -81,6 +84,7 @@ impl RuntimeContext {
             PathBuf::from("."),
             0,
             write_lock,
+            None,
         )
     }
 

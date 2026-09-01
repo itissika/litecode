@@ -69,10 +69,7 @@ impl WorkspaceService {
         Ok(list_tree(sandbox, path, depth)?)
     }
 
-    pub fn tree_reveal(
-        &self,
-        path: &str,
-    ) -> Result<Vec<(String, Vec<TreeEntry>)>, WorkspaceError> {
+    pub fn tree_reveal(&self, path: &str) -> Result<Vec<(String, Vec<TreeEntry>)>, WorkspaceError> {
         Ok(list_tree_reveal(self.sandbox(), path)?)
     }
 

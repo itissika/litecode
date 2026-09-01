@@ -16,7 +16,6 @@ use litecode::llm::LlmProvider;
 use litecode::optional::EngineManager;
 use litecode::runtime::{AgentRuntime, TurnLlmBinding};
 use litecode::session::manager::SessionManager;
-use litecode::session::store::Session;
 
 use super::bindings::{binding_all_for, binding_none_tool};
 use super::permission::test_auto_approve_sink;
@@ -109,7 +108,7 @@ pub fn test_resolved_with_budget(
 
 /// Empty `SessionManager` for tests that only need tool catalog assembly.
 pub fn test_sessions_manager(db_path: impl Into<String>) -> Arc<SessionManager> {
-    Arc::new(SessionManager::new(
+    Arc::new(SessionManager::new_for_test(
         Arc::new(TurnGuard::new()),
         db_path.into(),
     ))
@@ -167,14 +166,13 @@ pub fn build_runtime_with_provider(
         .get("default")
         .map(|p| p.model_ref.as_str())
         .filter(|s| !s.is_empty());
-    let session =
-        Session::open(&db_path.to_string_lossy(), &project, "default", model_ref).unwrap();
-    let session_id = session.id.clone();
-    let sessions = Arc::new(SessionManager::new(
+    let sessions = Arc::new(SessionManager::new_for_test(
         Arc::new(TurnGuard::new()),
         db_path.to_string_lossy().to_string(),
     ));
-    sessions.register_for_test(session);
+    let session_id = sessions
+        .open_session_sync(&project, "default", model_ref)
+        .unwrap();
 
     let model_id = resolved
         .agents()

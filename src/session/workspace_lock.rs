@@ -146,6 +146,30 @@ impl Drop for WorkspaceLock {
     }
 }
 
+/// Proof that this process owns exclusive write access to a workspace.
+///
+/// RW [`crate::session::data::SessionData`] may only be constructed while this
+/// lease is held. The lease outlives SessionData and is stored on ServeState.
+pub struct WorkspaceWriteLease {
+    lock: WorkspaceLock,
+}
+
+impl WorkspaceWriteLease {
+    pub fn acquire(litecode_dir: &Path) -> Result<Self> {
+        Ok(Self {
+            lock: WorkspaceLock::acquire(litecode_dir)?,
+        })
+    }
+
+    pub fn inner(&self) -> &WorkspaceLock {
+        &self.lock
+    }
+
+    pub fn path(&self) -> &Path {
+        self.lock.path()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

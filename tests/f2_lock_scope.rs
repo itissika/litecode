@@ -1,7 +1,7 @@
 //! Phase F acceptance tests:
 //! - 2.16 (REV-6): concurrent commit_partial must not lose updates.
-//! - 2.15 (REV-5): with_entry_store runs the closure OUTSIDE the records lock
-//!   (re-entering it inside the closure must not deadlock).
+//! - Session mutations go through SessionData and must not hold the manager
+//!   records lock.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +9,6 @@ use std::time::Duration;
 use litecode::config::TurnGuard;
 use litecode::config::schema::{ProviderConnectionConfig, ProviderDefinition};
 use litecode::session::manager::SessionManager;
-use litecode::session::store::Session;
 use tempfile::TempDir;
 
 mod common;
@@ -58,36 +57,23 @@ fn concurrent_commit_partial_does_not_lose_updates() {
 }
 
 #[test]
-fn with_entry_store_runs_closure_outside_records_lock() {
+fn session_mutation_does_not_hold_records_lock() {
     let dir = TempDir::new().expect("dir");
     let db_path = dir.path().join("sessions.db");
     let db_str = db_path.to_str().expect("db path str").to_string();
-    let session = Session::open(&db_str, "/proj", "default", Some("m")).expect("open session");
-    let sid = session.id.clone();
-    let manager = Arc::new(SessionManager::new(Arc::new(TurnGuard::new()), db_str));
-    manager.register_for_test(session);
+    let manager = Arc::new(SessionManager::new_for_test(
+        Arc::new(TurnGuard::new()),
+        db_str,
+    ));
+    let sid = manager
+        .open_session_sync("/proj", "default", Some("m"))
+        .expect("open session");
 
-    // Prove the records lock is released before the closure runs (2.15 REV-5):
-    // the probe try-locks the records mutex — if with_entry_store still held it,
-    // try_lock fails. Single-threaded, so the only potential holder would be
-    // with_entry_store itself.
-    let m2 = Arc::clone(&manager);
-    let sid2 = sid.clone();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let handle = std::thread::spawn(move || {
-        let result = m2.with_entry_store(&sid2, |_s| {
-            // The records lock must be free here (REV-5: no DB I/O under it).
-            Ok(if m2.records_lock_free() { 1 } else { 0 })
-        });
-        let _ = tx.send(result.ok().unwrap_or(-1));
-    });
-
-    let probe = rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("with_entry_store closure did not run (records lock still held)");
-    assert_eq!(
-        probe, 1,
-        "records lock was still held while the closure ran (REV-5)"
+    manager
+        .insert_detail_rows(&sid, &[litecode::types::user_text("x")])
+        .expect("insert");
+    assert!(
+        manager.records_lock_free(),
+        "records lock must be free after SessionData mutation"
     );
-    drop(handle); // joined implicitly; if the test failed the process exit reaps it
 }

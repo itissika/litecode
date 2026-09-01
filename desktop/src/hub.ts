@@ -202,7 +202,7 @@ button.btn-danger{color:var(--_dk-ix-danger-fg)}
 button.btn-danger:hover{background:var(--_dk-ix-danger-bg-hover)}
 button.btn-danger:active{background:var(--_dk-ix-danger-bg-pressed)}
 button:disabled{opacity:0.5;cursor:not-allowed}
-#status{flex-shrink:0;min-height:0;margin:0;color:var(--_dk-amber-500);font-size:var(--_dk-text-sm)}
+#status{flex-shrink:0;min-height:0;margin:0;color:var(--_dk-amber-500);font-size:var(--_dk-text-sm);white-space:pre-wrap;overflow:auto;max-height:220px}
 #status:not(:empty){min-height:22px;margin:8px 0 0}
 #status.error{color:var(--_dk-red-500)}
 .home-list{

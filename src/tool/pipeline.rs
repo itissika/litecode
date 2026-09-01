@@ -99,6 +99,7 @@ impl ToolPipeline {
                                 runtime.spill_threshold,
                                 runtime.turn_anchor_k(),
                                 write_lock,
+                                runtime.session.clone(),
                             )
                             .await;
                             (tu.call_id.clone(), result)
@@ -170,6 +171,7 @@ impl ToolPipeline {
                         self.runtime.spill_threshold,
                         self.runtime.turn_anchor_k(),
                         Arc::clone(&self.runtime.write_lock),
+                        self.runtime.session.clone(),
                     )
                     .await;
                     results_by_id.insert(tool_use_id.clone(), result);

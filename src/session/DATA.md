@@ -247,3 +247,22 @@ AgentView = 装配(脊骨)
 ## 旁路
 
 meter、FTS、snapshot、plan 文件正文、配置：派生或邻接，不另立时间线。当前 plan 的 slug 在 SessionMeta。
+
+---
+
+## 物理所有权
+
+| | |
+|---|---|
+| 职责 | 谁可以碰 `sessions.db` 以及与行生命周期绑定的文件 |
+| 身份 | 一个 workspace 一个 `SessionData` 写所有者 |
+| 形状 | writer actor（队列 256）+ 只读执行器（并发 4）+ BlobStore |
+| 规则 | 只有持有 `WorkspaceWriteLease` 才能构造 RW `SessionData`。code-search worker / 只读 CLI 只能拿 `SessionDataReader`。调用方看不到 `Connection`、事务或 DB 路径 |
+
+读写模式：写连接 `WAL` + `foreign_keys=ON` + `synchronous=FULL` + 5s busy timeout。每个命令一个短 `BEGIN IMMEDIATE`。事务内不做文件 I/O、模型调用、广播或进程锁。blob 先原子落盘，事务只登记引用。
+
+取消：入队前可取消；已接纳 mutation 必须提交或明确失败。内存投影、广播、索引 delta 只在 commit 之后按 `CommitReceipt` 更新。
+
+幂等：`(session_id, operation_id)` 重复提交返回原 receipt，不得再 append。同 `expected_revision` 的双写一个成功、一个 `SessionConflict`。
+
+派生：FTS 是同一事务里的 external-content 投影。`session_change_log` 是 semantic 增量水位。index 文件可丢，用 `last_change_id` 追平。

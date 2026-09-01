@@ -143,7 +143,7 @@ fn engines_json_off_no_lsp_tool() {
         litecode::ide_base::IdeBaseHandle::open(root, std::sync::Arc::new(engines.clone()))
             .expect("ide"),
         "test-parent-session",
-        Arc::new(SessionManager::new(
+        Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             String::new(),
         )),
@@ -613,7 +613,7 @@ fn write_with_warm_lsp_but_no_errors_stays_clean() {
 
     let _guard = LSP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     clear_mock_ls_env();
-    // Explicit none — mock must not publish diagnostics.
+    // Explicit none —mock must not publish diagnostics.
     unsafe {
         std::env::set_var("MOCK_LSP_DIAG", "none");
     }
@@ -692,7 +692,7 @@ fn write_ignores_slow_diagnostics_past_budget() {
 
     let _guard = LSP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     clear_mock_ls_env();
-    // Diagnostics arrive after feedback budget (750ms) — must stay silent.
+    // Diagnostics arrive after feedback budget (750ms) —must stay silent.
     unsafe {
         std::env::set_var("MOCK_LSP_DIAG", "delay_error");
         std::env::set_var("MOCK_LSP_DIAG_DELAY_MS", "2000");
@@ -932,6 +932,7 @@ fn agent_lsp_tool_line_text_scenarios() {
         cancel: tokio_util::sync::CancellationToken::new(),
         output_limit: 20_000,
         session_id: String::new(),
+        session: None,
     };
     let rt = tokio::runtime::Runtime::new().unwrap();
     let run =
@@ -1005,7 +1006,7 @@ fn agent_lsp_tool_line_text_scenarios() {
         "definition should name the landing file: {}",
         def.content
     );
-    // Mock echoes the query position; unique_sym starts at 1-based col 4 → LSP char 3.
+    // Mock echoes the query position; unique_sym starts at 1-based col 4 →LSP char 3.
     assert!(
         def.content.contains(":1:4") || def.content.contains(":1:"),
         "definition should include path:line:col: {}",
@@ -1160,12 +1161,12 @@ fn agent_lsp_tool_line_text_scenarios() {
     );
     assert!(
         amb_hover.content.contains("mock hover @c=0"),
-        "first foo is column 1 → LSP char 0: {}",
+        "first foo is column 1 →LSP char 0: {}",
         amb_hover.content
     );
     assert!(
         amb_hover.content.contains("mock hover @c=4"),
-        "second foo is column 5 → LSP char 4: {}",
+        "second foo is column 5 →LSP char 4: {}",
         amb_hover.content
     );
 
@@ -1211,7 +1212,7 @@ fn agent_lsp_tool_line_text_scenarios() {
         "should list allowed actions: {removed_msg}"
     );
 
-    // Error: LSP not enabled — fail closed (no fake empty)
+    // Error: LSP not enabled —fail closed (no fake empty)
     let cold = WorkspaceEngines::new();
     let cold_tool = LspTool::new(cold, root.to_path_buf());
     let disabled = rt
@@ -1284,14 +1285,14 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
     )
     .unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
-    // Line 1: unique. Line 4: `target` twice → multi-hit fan-out.
+    // Line 1: unique. Line 4: `target` twice →multi-hit fan-out.
     std::fs::write(
         root.join("src/lib.rs"),
         "pub fn target() {}\n\npub fn caller() {\n    target(); target();\n}\n",
     )
     .unwrap();
 
-    // Real RA — do not set LITECODE_LSP_SERVERS mock override.
+    // Real RA —do not set LITECODE_LSP_SERVERS mock override.
     seed_lsp_engines(root);
     let mut global = litecode::config::schema::GlobalSettings::default();
     global.agents.insert(
@@ -1327,11 +1328,12 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
         cancel: tokio_util::sync::CancellationToken::new(),
         output_limit: 20_000,
         session_id: String::new(),
+        session: None,
     };
     let run =
         |input: serde_json::Value| rt.block_on(tool.execute(input, exec())).finalize_signals();
 
-    // Retry a few times while RA finishes indexing (inconclusive → later hit).
+    // Retry a few times while RA finishes indexing (inconclusive →later hit).
     let mut def = None;
     for _ in 0..8 {
         let out = run(serde_json::json!({
@@ -1397,7 +1399,7 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
     assert!(
         multi
             .content
-            .contains("matched 2 times on line 4 → 1 unique definition"),
+            .contains("matched 2 times on line 4 →1 unique definition"),
         "{}",
         multi.content
     );
@@ -1406,7 +1408,7 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
         "two source headings expected: {}",
         multi.content
     );
-    // Same landing collapsed — definition path should appear once in the body.
+    // Same landing collapsed —definition path should appear once in the body.
     let landing_hits = multi.content.matches("lib.rs:1:").count();
     assert_eq!(
         landing_hits, 1,
@@ -1502,7 +1504,7 @@ fn process_exists(pid: u32) -> bool {
             .output();
         match out {
             Ok(o) => String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()),
-            Err(_) => true, // cannot determine → assume alive
+            Err(_) => true, // cannot determine →assume alive
         }
     }
     #[cfg(not(windows))]
@@ -1517,8 +1519,7 @@ fn process_exists(pid: u32) -> bool {
 
 #[tokio::test(flavor = "current_thread")]
 async fn hub_drop_kills_spawned_server_process() {
-    // 2.11: dropping the LspHub must reap the language-server child process —
-    // the runtime may be leaked, but no LSP process may outlive the hub.
+    // 2.11: dropping the LspHub must reap the language-server child process —    // the runtime may be leaked, but no LSP process may outlive the hub.
     let _guard = LSP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     clear_mock_ls_env();
     let dir = TempDir::new().unwrap();
@@ -1541,7 +1542,7 @@ async fn hub_drop_kills_spawned_server_process() {
 
     // Spawn the mock server through the real sync entry.
     if hub.sync_document(&lib).await.is_err() {
-        // Mock LS unavailable (no python3) — skip rather than flake.
+        // Mock LS unavailable (no python3) —skip rather than flake.
         drop(hub);
         drop(engines);
         return;

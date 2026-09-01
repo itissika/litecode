@@ -886,7 +886,6 @@ fn runtime_clone_reloads_stale_provider_after_settings_write() {
 async fn set_session_model_reloads_stale_catalog_after_model_write() {
     use litecode::client_protocol::controller::SessionController;
     use litecode::runtime::RuntimeHandle;
-    use litecode::session::store::Session;
 
     use common::{ready_test_model, test_resolved};
 
@@ -954,9 +953,9 @@ async fn set_session_model_reloads_stale_catalog_after_model_write() {
     );
 
     let sessions = common::test_sessions_manager(&session_db);
-    let session = Session::open(&session_db, &project, "default", None).expect("open");
-    let sid = session.id.clone();
-    sessions.register_for_test(session);
+    let sid = sessions
+        .open_session_sync(&project, "default", None)
+        .expect("open");
 
     let mut ctrl =
         SessionController::with_turn_guard(runtime, None, sessions.clone()).expect("ctrl");

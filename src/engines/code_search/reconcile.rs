@@ -172,8 +172,12 @@ mod tests {
 
         let mut emb = HashEmbedder;
         let index = build_full_index(root, &mut emb).unwrap();
-        let runtime =
-            CodeSearchRuntime::new(root.to_path_buf(), index, Some(Box::new(HashEmbedder)));
+        let runtime = CodeSearchRuntime::new(
+            root.to_path_buf(),
+            index,
+            Some(Box::new(HashEmbedder)),
+            None,
+        );
         // Seed stamps as if we had just indexed.
         sync_index_with_disk(&runtime);
         assert!(runtime.pending_updates.lock().unwrap().is_empty());
@@ -211,7 +215,12 @@ mod tests {
         std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
         let mut emb = HashEmbedder;
         let index = build_full_index(root, &mut emb).unwrap();
-        let runtime = CodeSearchRuntime::new(root.to_path_buf(), index, None);
+        let runtime = CodeSearchRuntime::new(
+            root.to_path_buf(),
+            index,
+            None,
+            None,
+        );
         sync_index_with_disk(&runtime);
 
         queue_reconcile_dirty(&runtime);
@@ -230,8 +239,12 @@ mod tests {
         let mut emb = HashEmbedder;
         let index = build_full_index(root, &mut emb).unwrap();
         index.save(root).unwrap();
-        let runtime =
-            CodeSearchRuntime::new(root.to_path_buf(), index, Some(Box::new(HashEmbedder)));
+        let runtime = CodeSearchRuntime::new(
+            root.to_path_buf(),
+            index,
+            Some(Box::new(HashEmbedder)),
+            None,
+        );
         runtime.drop_index_for_cool();
         assert!(!runtime.index_is_loaded());
 

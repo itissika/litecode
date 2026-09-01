@@ -18,7 +18,6 @@ use crate::client_protocol::project::{IncomingWire, classify_incoming};
 use crate::client_protocol::protocol::{JsonRpcRequestEnvelope, WireEvent};
 use crate::config::{ConfigManager, ResolvedConfig, SettingsWriter, cli_turn_guard};
 use crate::runtime::RuntimeHandle;
-use crate::session::store::Session;
 use crate::types::LitecodeError;
 
 #[derive(Parser)]
@@ -274,31 +273,52 @@ fn print_wire_event(event: &WireEvent) {
     }
 }
 
-struct CliSession {
+struct CliConversation {
     rt: tokio::runtime::Runtime,
     conn: ConnectionHandle,
+    _lease: crate::session::WorkspaceWriteLease,
 }
 
-impl CliSession {
-    fn new(runtime: RuntimeHandle, session_id: &str) -> anyhow::Result<Self> {
+impl CliConversation {
+    fn open(
+        runtime: RuntimeHandle,
+        project: &str,
+        agent_id: &str,
+        model_id: Option<&str>,
+    ) -> anyhow::Result<Self> {
         let turn_guard = cli_turn_guard();
         let db_path = runtime.db_path();
-        let sessions = std::sync::Arc::new(crate::session::SessionManager::new(
+        let litecode_dir = Path::new(&db_path)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| Path::new(".").to_path_buf());
+        let lease = crate::session::WorkspaceWriteLease::acquire(&litecode_dir)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let data = crate::session::SessionData::open(&lease, Path::new(&db_path))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let sessions = std::sync::Arc::new(crate::session::SessionManager::from_data(
             turn_guard.clone(),
-            db_path,
+            data,
         ));
+        runtime
+            .workspace_engines
+            .set_session_reader(sessions.reader());
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .worker_threads(2)
             .build()?;
+        let session_id = rt.block_on(sessions.open_session(project, agent_id, model_id))?;
         let mut controller =
-            SessionController::with_turn_guard(runtime, Some(session_id.to_string()), sessions)?;
+            SessionController::with_turn_guard(runtime, Some(session_id.clone()), sessions)?;
         let conn = rt.block_on(async {
-            // Ensure proper broadcast subscription for the session.
-            controller.subscribe(session_id).await;
+            controller.subscribe(&session_id).await;
             ConnectionHandle::spawn(controller)
         });
-        Ok(Self { rt, conn })
+        Ok(Self {
+            rt,
+            conn,
+            _lease: lease,
+        })
     }
 
     fn run_turn(&mut self, prompt: &str) -> anyhow::Result<String> {
@@ -307,7 +327,7 @@ impl CliSession {
 }
 
 /// Run an interactive REPL loop via the wire connection.
-fn run_interactive(session: &mut CliSession) -> anyhow::Result<()> {
+fn run_interactive(session: &mut CliConversation) -> anyhow::Result<()> {
     println!("\n--- interactive mode (type /help for commands) ---");
 
     loop {
@@ -429,7 +449,14 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     if cli.list_sessions || matches!(cli.command, Some(Commands::ListSessions)) {
-        let sessions = Session::list_sessions(db_path.to_str().expect("valid path"))?;
+        let data_root = db_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("sessions.db has no parent directory"))?;
+        let lease = crate::session::WorkspaceWriteLease::acquire(data_root)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let data = crate::session::SessionData::open(&lease, &db_path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let sessions = data.reader().list_sessions_blocking()?;
         for (id, project, updated, preview, _agent_id, _model_id) in sessions {
             let preview_str = if preview.is_empty() {
                 ""
@@ -438,6 +465,7 @@ pub fn run() -> anyhow::Result<()> {
             };
             println!("{}  {}  {}{}", id, project, updated, preview_str);
         }
+        data.shutdown();
         return Ok(());
     }
 
@@ -470,10 +498,9 @@ pub fn run() -> anyhow::Result<()> {
         .resolved
         .agents()
         .get(&agent_id)
-        .map(|p| p.model_ref.as_str())
+        .map(|p| p.model_ref.clone())
         .filter(|s| !s.is_empty());
-    let session = Session::open(runtime.db_path().as_str(), &project, &agent_id, model_id)?;
-    let mut cli_session = CliSession::new(runtime, &session.id)?;
+    let mut cli_session = CliConversation::open(runtime, &project, &agent_id, model_id.as_deref())?;
 
     if !cli.prompt.is_empty() {
         let prompt = cli.prompt.join(" ");

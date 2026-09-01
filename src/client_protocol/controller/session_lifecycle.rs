@@ -166,10 +166,7 @@ impl SessionController {
         )?;
         let operation_id = lease.operation_id().to_string();
 
-        let mut transcript = self
-            .sessions
-            .with_entry_store(session_id, |s| Ok(s.load_transcript()?))
-            .map_err(LitecodeError::Anyhow)?;
+        let mut transcript = self.sessions.data().transcript_blocking(session_id)?;
         Session::snip_stale_results(&mut transcript);
         let budget = BudgetPolicy::new(session_binding.context_window);
         let token_count = budget.token_count(&transcript, 0);
@@ -208,10 +205,7 @@ impl SessionController {
             .map(|_| ());
 
             if result.is_ok() {
-                let _ = sessions.with_entry_store(&sid, |s| {
-                    s.reload_persisted_max_seq()?;
-                    Ok(())
-                });
+                let _ = sessions.data().revision_blocking(&sid);
             }
             drop(lease);
         });
@@ -302,9 +296,8 @@ impl SessionController {
     }
 
     pub async fn list_sessions(&mut self) -> anyhow::Result<Vec<SessionInfo>> {
-        let db_path = self.runtime.db_path();
         let sessions_mgr = self.sessions.clone();
-        let db_sessions = Session::list_sessions(&db_path)?;
+        let db_sessions = sessions_mgr.data().list_sessions_blocking()?;
         let default_primary = self.runtime.desired_primary_agent();
         let mut result = Vec::with_capacity(db_sessions.len());
         for (id, project, updated_at, preview, _agent_id, _model_id) in db_sessions {

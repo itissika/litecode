@@ -178,9 +178,11 @@ impl AgentDeps for AgentRuntime {
     }
 
     fn persist_items(&self, items: &mut Vec<Item>) -> Result<bool> {
-        let outcome = self.sessions.with_entry_store(&self.session_id, |s| {
-            Ok(self.context_pipeline.commit_step_from_items(s, items)?)
-        })?;
+        let outcome = self.context_pipeline.commit_step_from_items(
+            &self.sessions,
+            &self.session_id,
+            items,
+        )?;
         if outcome.discarded {
             // 回退 shortened the log; do not append this turn's tail.
             return Ok(true);
@@ -287,6 +289,7 @@ impl AgentRuntime {
             rctx.spill_threshold,
             rctx.turn_anchor_k(),
             Arc::clone(&rctx.write_lock),
+            rctx.session.clone(),
         )
         .await;
         drop(lease);
@@ -394,10 +397,7 @@ impl AgentRuntime {
             Some(Box::new(move |ev| {
                 if let crate::types::StreamEvents::ResponseOutputItemAdded(added) = &ev {
                     let item = Item::from(added.item.clone());
-                    match sessions.with_entry_store(&session_id, |s| {
-                        s.persist_item(&item)?;
-                        Ok(())
-                    }) {
+                    match sessions.persist_item(&session_id, &item) {
                         Ok(()) => observer.on_internal(InternalEvent::StepCommitted),
                         Err(e) => tracing::warn!(%e, "persist Item at output_item.added failed"),
                     }

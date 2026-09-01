@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use super::protocol::{
     InitializeParams, JsonRpcRequest, JsonRpcResponse, NotifyFsChangesParams, RefreshResult,
-    SearchParams, SearchResult, SessionSearchParams, SessionSearchResult,
+    SearchParams, SearchResult, SessionSearchParams, SessionSearchResult, SetSessionDbParams,
 };
 use crate::engines::code_search::SearchHit;
 use crate::engines::session_search::SessionTextHit;
@@ -96,11 +96,24 @@ impl CodeSearchWorkerClient {
         Ok(resp.result.unwrap_or(Value::Null))
     }
 
-    pub fn initialize(&mut self, workspace_root: &std::path::Path) -> Result<()> {
+    pub fn initialize(
+        &mut self,
+        workspace_root: &std::path::Path,
+        session_db_path: Option<&std::path::Path>,
+    ) -> Result<()> {
         let params = serde_json::to_value(InitializeParams {
             workspace_root: workspace_root.to_string_lossy().into_owned(),
+            session_db_path: session_db_path.map(|p| p.to_string_lossy().into_owned()),
         })?;
         self.request("initialize", params)?;
+        Ok(())
+    }
+
+    pub fn set_session_db(&mut self, session_db_path: &std::path::Path) -> Result<()> {
+        let params = serde_json::to_value(SetSessionDbParams {
+            session_db_path: session_db_path.to_string_lossy().into_owned(),
+        })?;
+        self.request("set_session_db", params)?;
         Ok(())
     }
 

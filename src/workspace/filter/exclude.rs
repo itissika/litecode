@@ -175,7 +175,7 @@ pub fn path_excluded(rel: &str, preset: FilterPreset) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::filter::defaults::{FILES_EXCLUDE, SEARCH_EXCLUDE};
+    use crate::workspace::filter::defaults::{FILES_EXCLUDE, SEARCH_EXCLUDE, WATCHER_EXCLUDE};
 
     #[test]
     fn files_exclude_hits_git_and_ds_store() {
@@ -214,6 +214,14 @@ mod tests {
         assert!(m.matches("nested/.git/objects/ab/cd"));
         assert!(!m.matches("src/main.rs"));
         assert!(!m.matches("node_modules/pkg/index.js"));
+    }
+
+    #[test]
+    fn watcher_defaults_skip_product_internal_index() {
+        let m = ExcludeMatcher::from_globs(WATCHER_EXCLUDE);
+        assert!(m.matches(".litecode/index/chunks.jsonl"));
+        assert!(m.matches(".litecode/text-index/x"));
+        assert!(!m.matches("src/main.rs"));
     }
 
     #[test]

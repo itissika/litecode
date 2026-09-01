@@ -6,9 +6,7 @@
 
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags};
-
-use crate::session::store::data_root_from_db_path;
+use crate::session::data::read_bytes;
 use crate::tool::output::{BLOB_PREFIX, blob_dir};
 use crate::types::{Item, LitecodeError, Result, item_text_preview};
 
@@ -27,9 +25,6 @@ pub const SEARCHABLE_KINDS: &[&str] = &[
     "item/tool_result",
     "compacted",
 ];
-
-const KIND_SQL: &str =
-    "'item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted'";
 
 #[derive(Debug, Clone)]
 pub struct SearchableRow {
@@ -160,27 +155,16 @@ pub fn is_virtual_session_path(raw: &str) -> bool {
     try_parse_virtual_path(raw).is_some()
 }
 
-/// Canonical virtual paths for every session row. Missing DB → empty.
-pub fn list_virtual_paths(db: &Path) -> Result<Vec<String>> {
-    if !db.is_file() {
-        return Ok(Vec::new());
-    }
-    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))?;
-    let mut stmt = conn
-        .prepare("SELECT id FROM sessions ORDER BY id ASC")
-        .map_err(|e| LitecodeError::Config(format!("list sessions prepare: {e}")))?;
-    let ids = stmt
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|e| LitecodeError::Config(format!("list sessions query: {e}")))?;
-    let mut out = Vec::new();
-    for id in ids {
-        let id = id.map_err(|e| LitecodeError::Config(format!("list sessions row: {e}")))?;
-        if !id.is_empty() {
-            out.push(virtual_path_for(&id));
-        }
-    }
-    Ok(out)
+/// Canonical virtual paths for every session id.
+pub fn list_virtual_paths(ids: impl IntoIterator<Item = impl AsRef<str>>) -> Vec<String> {
+    let mut out: Vec<String> = ids
+        .into_iter()
+        .map(|id| id.as_ref().to_string())
+        .filter(|id| !id.is_empty())
+        .map(|id| virtual_path_for(&id))
+        .collect();
+    out.sort();
+    out
 }
 
 pub fn row_plain_text(row: &SearchableRow, data_root: &Path) -> Result<Option<String>> {
@@ -228,86 +212,43 @@ pub fn load_blob_text(body_ref: &str, data_root: &Path) -> Result<String> {
     let (id, _) = rest
         .split_once(']')
         .ok_or_else(|| LitecodeError::Config(format!("invalid body_ref: {body_ref}")))?;
-    let blob_path = blob_dir(data_root).join(format!("{id}.txt"));
-    std::fs::read_to_string(blob_path).map_err(Into::into)
+    match read_bytes(data_root, id) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map_err(|e| LitecodeError::SessionStorage(format!("blob {id} is not utf-8: {e}"))),
+        Err(_) => {
+            let blob_path = blob_dir(data_root).join(format!("{id}.txt"));
+            std::fs::read_to_string(blob_path).map_err(Into::into)
+        }
+    }
 }
 
-pub fn iter_searchable_texts(db_path: &Path) -> Result<Vec<(String, i64, String, String)>> {
-    if !db_path.is_file() {
-        return Ok(Vec::new());
-    }
-    let conn = open_ro(db_path)?;
-    let data_root = data_root_from_db_path(&db_path.display().to_string());
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT t.session_id, t.seq, t.item_type, t.body, t.body_ref
-             FROM transcript_items t
-             WHERE t.kind IN ({KIND_SQL})
-             ORDER BY t.session_id ASC, t.seq ASC"
-        ))
-        .map_err(|e| LitecodeError::Config(format!("session index prepare: {e}")))?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(SearchableRow {
-                session_id: row.get(0)?,
-                seq: row.get(1)?,
-                kind: String::new(),
-                item_type: row.get(2)?,
-                body: row.get(3)?,
-                body_ref: row.get(4)?,
-            })
-        })
-        .map_err(|e| LitecodeError::Config(format!("session index query: {e}")))?;
-
+pub fn iter_searchable_texts(
+    rows: &[SearchableRow],
+    data_root: &Path,
+) -> Result<Vec<(String, i64, String, String)>> {
     let mut out = Vec::new();
     for row in rows {
-        let row = row.map_err(|e| LitecodeError::Config(format!("session index row: {e}")))?;
-        let Some(text) = row_plain_text(&row, &data_root)? else {
+        let Some(text) = row_plain_text(row, data_root)? else {
             continue;
         };
-        out.push((row.session_id, row.seq, row.item_type, text));
+        out.push((row.session_id.clone(), row.seq, row.item_type.clone(), text));
     }
     Ok(out)
 }
 
-pub fn load_transcript_file(db_path: &Path, session_id: &str) -> Result<TranscriptFile> {
+pub fn load_transcript_file(
+    session_id: &str,
+    rows: &[SearchableRow],
+    data_root: &Path,
+) -> Result<TranscriptFile> {
     let virtual_path = virtual_path_for(session_id);
-    if !db_path.is_file() {
-        return Ok(TranscriptFile {
-            session_id: session_id.to_string(),
-            virtual_path,
-            lines: Vec::new(),
-            line_index: Vec::new(),
-        });
-    }
-    let conn = open_ro(db_path)?;
-    let data_root = data_root_from_db_path(&db_path.display().to_string());
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT seq, kind, item_type, body, body_ref FROM transcript_items
-             WHERE session_id = ?1
-               AND kind IN ({KIND_SQL})
-             ORDER BY seq ASC"
-        ))
-        .map_err(|e| LitecodeError::Config(format!("transcript file prepare: {e}")))?;
-    let rows = stmt
-        .query_map(rusqlite::params![session_id], |row| {
-            Ok(SearchableRow {
-                session_id: session_id.to_string(),
-                seq: row.get(0)?,
-                kind: row.get(1)?,
-                item_type: row.get(2)?,
-                body: row.get(3)?,
-                body_ref: row.get(4)?,
-            })
-        })
-        .map_err(|e| LitecodeError::Config(format!("transcript file query: {e}")))?;
-
     let mut lines = Vec::new();
     let mut line_index = Vec::new();
     for row in rows {
-        let row = row.map_err(|e| LitecodeError::Config(format!("transcript file row: {e}")))?;
-        let Some(plain) = row_plain_text(&row, &data_root)? else {
+        if row.session_id != session_id {
+            continue;
+        }
+        let Some(plain) = row_plain_text(row, data_root)? else {
             continue;
         };
         push_item(
@@ -410,17 +351,20 @@ fn normalize_newlines(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-fn open_ro(db_path: &Path) -> Result<Connection> {
-    Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::store::Session;
+    use crate::session::{SessionData, WorkspaceWriteLease};
     use crate::types::user_text;
+    use std::sync::Arc;
     use tempfile::TempDir;
+
+    fn seeded(items: &[crate::types::Item]) -> (Arc<SessionData>, String) {
+        let data = SessionData::open_ephemeral().unwrap();
+        let session_id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&session_id, items).unwrap();
+        (data, session_id)
+    }
 
     #[test]
     fn parse_virtual_path_accepts_full_id_and_normalizes_slashes() {
@@ -454,15 +398,10 @@ mod tests {
 
     #[test]
     fn projection_maps_multiline_body_and_char_offsets() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        s.insert_detail_rows(&[user_text("alpha\nbeta NEEDLE gamma\ndelta")])
-            .unwrap();
-        let sid = s.id.clone();
-        drop(s);
-
-        let file = load_transcript_file(&db, &sid).unwrap();
+        let (data, sid) = seeded(&[user_text("alpha\nbeta NEEDLE gamma\ndelta")]);
+        let reader = data.reader();
+        let rows = reader.searchable_rows_blocking(Some(&sid)).unwrap();
+        let file = load_transcript_file(&sid, &rows, reader.data_root()).unwrap();
         assert_eq!(file.virtual_path, virtual_path_for(&sid));
         assert!(file.lines[0].starts_with("[seq:0 item/user "));
         assert_eq!(file.lines[1], "alpha");
@@ -479,14 +418,10 @@ mod tests {
 
     #[test]
     fn empty_rows_are_skipped() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        s.insert_detail_rows(&[user_text("   "), user_text("kept UNIQUE")])
-            .unwrap();
-        let sid = s.id.clone();
-        drop(s);
-        let file = load_transcript_file(&db, &sid).unwrap();
+        let (data, sid) = seeded(&[user_text("   "), user_text("kept UNIQUE")]);
+        let reader = data.reader();
+        let rows = reader.searchable_rows_blocking(Some(&sid)).unwrap();
+        let file = load_transcript_file(&sid, &rows, reader.data_root()).unwrap();
         let headers: Vec<_> = file
             .line_index
             .iter()
@@ -500,14 +435,16 @@ mod tests {
     fn compacted_rows_are_projected() {
         let dir = TempDir::new().unwrap();
         let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        s.insert_detail_rows(&[user_text("old"), user_text("live")])
+        let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let sid = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&sid, &[user_text("old"), user_text("live")])
             .unwrap();
-        s.apply_compact_checkpoint_from(&user_text("summary compact body"), Some(1), 3)
+        data.compact_from(&sid, &user_text("summary compact body"), Some(1), 3)
             .unwrap();
-        let sid = s.id.clone();
-        drop(s);
-        let file = load_transcript_file(&db, &sid).unwrap();
+        let reader = data.reader();
+        let rows = reader.searchable_rows_blocking(Some(&sid)).unwrap();
+        let file = load_transcript_file(&sid, &rows, reader.data_root()).unwrap();
         let kinds: Vec<_> = file
             .line_index
             .iter()
@@ -526,15 +463,17 @@ mod tests {
     fn blob_rows_round_trip_into_projection() {
         let dir = TempDir::new().unwrap();
         let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        let data_root = data_root_from_db_path(db.to_str().unwrap());
+        let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let session_id = data.create_session("/proj", "default", None).unwrap();
+        let data_root = db.parent().unwrap().to_path_buf();
         let blobs = blob_dir(&data_root);
         std::fs::create_dir_all(&blobs).unwrap();
         std::fs::write(blobs.join("abc.txt"), r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"BLOB_NEEDLE here"}]}"#).unwrap();
         // Direct SQL insert of a blob-backed user item is heavy; instead verify
         // load_blob_text + row_plain_text which the projection uses.
         let row = SearchableRow {
-            session_id: s.id.clone(),
+            session_id,
             seq: 9,
             kind: "item/user".into(),
             item_type: "message".into(),
@@ -547,13 +486,10 @@ mod tests {
 
     #[test]
     fn crlf_is_normalized_to_lf() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        s.insert_detail_rows(&[user_text("one\r\ntwo")]).unwrap();
-        let sid = s.id.clone();
-        drop(s);
-        let file = load_transcript_file(&db, &sid).unwrap();
+        let (data, sid) = seeded(&[user_text("one\r\ntwo")]);
+        let reader = data.reader();
+        let rows = reader.searchable_rows_blocking(Some(&sid)).unwrap();
+        let file = load_transcript_file(&sid, &rows, reader.data_root()).unwrap();
         assert_eq!(file.lines[1], "one");
         assert_eq!(file.lines[2], "two");
         assert!(!file.lines.iter().any(|l| l.contains('\r')));

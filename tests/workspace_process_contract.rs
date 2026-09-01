@@ -16,7 +16,6 @@ use litecode::serve::ServeState;
 use litecode::serve::router;
 use litecode::session::WorkspaceLock;
 use litecode::session::manager::SessionManager;
-use litecode::session::store::Session;
 use litecode::workspace::restart_watcher;
 use tokio::net::TcpListener;
 
@@ -200,19 +199,13 @@ fn agent_runtime_cwd_uses_resolved_workspace_not_process_cwd() {
     let resolved = litecode::config::resolved::resolve(global, workspace.clone());
 
     let db_path = workspace.paths.sessions_db.clone();
-    let session = Session::open(
-        &db_path.to_string_lossy(),
-        &expected.to_string_lossy(),
-        "default",
-        Some("default"),
-    )
-    .expect("session");
-    let session_id = session.id.clone();
-    let sessions = Arc::new(SessionManager::new(
+    let sessions = Arc::new(SessionManager::new_for_test(
         Arc::new(TurnGuard::new()),
         db_path.to_string_lossy().to_string(),
     ));
-    sessions.register_for_test(session);
+    let session_id = sessions
+        .open_session_sync(&expected.to_string_lossy(), "default", Some("default"))
+        .expect("session");
 
     let provider = Arc::new(ScriptedProvider::with_text("ok"));
     let binding = test_turn_binding(&resolved, provider, "test-key", "default");

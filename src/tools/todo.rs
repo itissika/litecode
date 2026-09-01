@@ -1,4 +1,4 @@
-//! Todo tool — session-scoped task tracking (SQLite authority).
+//! Todo tool 鈥?session-scoped task tracking (SQLite authority).
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -108,7 +108,7 @@ impl Tool for TodoWriteTool {
                 // arguments (and in TaskState for compact); echoing it here
                 // duplicated noise into every later LLM view.
                 ToolCallResult::ok(format!(
-                    "OK. Status — pending: {}, in_progress: {}, completed: {}",
+                    "OK. Status 鈥?pending: {}, in_progress: {}, completed: {}",
                     pending, in_progress, completed
                 ))
             }
@@ -197,7 +197,6 @@ mod tests {
     use crate::config::WorkspacePaths;
     use crate::config::workspace::set_runtime_paths;
     use crate::session::manager::SessionManager;
-    use crate::session::store::Session;
     use crate::session::task_state::TaskReminders;
     use crate::session::task_state::render_todos;
 
@@ -206,13 +205,13 @@ mod tests {
     }
 
     fn make_manager(db_path: &str) -> (Arc<SessionManager>, String) {
-        let session = Session::open(db_path, "/proj", "default", Some("m")).unwrap();
-        let sid = session.id.clone();
-        let manager = Arc::new(SessionManager::new(
+        let manager = Arc::new(SessionManager::new_for_test(
             Arc::new(crate::config::TurnGuard::new()),
             db_path.to_string(),
         ));
-        manager.register_for_test(session);
+        let sid = manager
+            .open_session_sync("/proj", "default", Some("m"))
+            .unwrap();
         (manager, sid)
     }
 
@@ -439,7 +438,7 @@ mod tests {
 
     #[test]
     fn test_requires_active_session() {
-        let manager = Arc::new(SessionManager::new(
+        let manager = Arc::new(SessionManager::new_for_test(
             Arc::new(crate::config::TurnGuard::new()),
             String::new(),
         ));
@@ -457,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_validate_input() {
-        let manager = Arc::new(SessionManager::new(
+        let manager = Arc::new(SessionManager::new_for_test(
             Arc::new(crate::config::TurnGuard::new()),
             String::new(),
         ));

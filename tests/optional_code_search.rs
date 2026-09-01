@@ -28,7 +28,7 @@ use common::bindings::binding_all_for;
 static HASH_EMBEDDER_ENV: Once = Once::new();
 
 fn ensure_hash_embedder_for_worker() {
-    // Worker is a separate process — force hash so CI/dev does not need candle weights.
+    // Worker is a separate process —force hash so CI/dev does not need candle weights.
     HASH_EMBEDDER_ENV.call_once(|| unsafe {
         std::env::set_var("LITECODE_CODE_SEARCH_USE_HASH", "1");
     });
@@ -78,7 +78,12 @@ fn small_repo_index_round_trip_and_query() {
     let index = build_full_index(root, &mut emb).unwrap();
     index.save(root).unwrap();
 
-    let runtime = CodeSearchRuntime::new(root.to_path_buf(), index, Some(Box::new(HashEmbedder)));
+    let runtime = CodeSearchRuntime::new(
+        root.to_path_buf(),
+        index,
+        Some(Box::new(HashEmbedder)),
+        None,
+    );
     let hits = search(&runtime, "target_fn", None, 8).unwrap();
     assert!(!hits.is_empty());
     assert!(hits.iter().any(|h| h.path.contains("find.rs")));
@@ -96,6 +101,28 @@ fn warmup_creates_vectors_usearch() {
     let mut emb = HashEmbedder;
     let _index = warmup_index(root, &mut emb).unwrap();
     assert!(root.join(".litecode/index/vectors.usearch").is_file());
+}
+
+#[test]
+fn warmup_loads_compatible_index_without_full_rebuild() {
+    ensure_hash_embedder_for_worker();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace_index(root).unwrap();
+    std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+
+    let mut emb = HashEmbedder;
+    let first = warmup_index(root, &mut emb).unwrap();
+    let n = first.chunks().len();
+    assert!(n >= 1);
+
+    std::fs::write(root.join("later.rs"), "fn later_only() {}\n").unwrap();
+    let second = warmup_index(root, &mut emb).unwrap();
+    assert_eq!(second.chunks().len(), n);
+    assert!(
+        !second.indexed_paths().contains("later.rs"),
+        "compatible warmup must load, not rebuild around new files"
+    );
 }
 
 #[test]
@@ -128,7 +155,7 @@ async fn catalog_on_warmup_enables_tool_in_list() {
     let resolved = workspace_with_code_search(root);
     let global_engines = EngineManager::new();
     let engines = WorkspaceEngines::new();
-    // Bind ∧ engines.json desired: on the list even while first Warming.
+    // Bind ∈engines.json desired: on the list even while first Warming.
     assert!(should_include_in_llm_list(
         &resolved,
         "default",
@@ -348,7 +375,7 @@ async fn build_tool_list_includes_code_search_after_warmup() {
         litecode::ide_base::IdeBaseHandle::open(root, std::sync::Arc::new(engines.clone()))
             .expect("ide"),
         "test-parent-session",
-        Arc::new(SessionManager::new(
+        Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             String::new(),
         )),

@@ -57,6 +57,7 @@ impl WriteTool {
             cancel: tokio_util::sync::CancellationToken::new(),
             output_limit: self.max_result_size(),
             session_id: String::new(),
+            session: None,
         }
     }
 }
@@ -470,6 +471,7 @@ mod tests {
                     cancel: tokio_util::sync::CancellationToken::new(),
                     output_limit: 8_000,
                     session_id: String::new(),
+                    session: None,
                 },
             )
             .await;
@@ -509,6 +511,7 @@ mod tests {
                     cancel: tokio_util::sync::CancellationToken::new(),
                     output_limit: 8_000,
                     session_id: String::new(),
+                    session: None,
                 },
             )
             .await;

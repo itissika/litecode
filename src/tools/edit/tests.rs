@@ -239,6 +239,7 @@ fn edit_tool_cancel_before_write() {
         cancel,
         output_limit: 8_000,
         session_id: String::new(),
+        session: None,
     };
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()

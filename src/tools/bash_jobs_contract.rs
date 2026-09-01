@@ -68,6 +68,7 @@ impl Flow {
                 cancel: CancellationToken::new(),
                 output_limit: usize::MAX,
                 session_id: sid.into(),
+                session: None,
             },
         ))
         .finalize_signals()

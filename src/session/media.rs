@@ -17,26 +17,27 @@ pub fn media_blob_path(data_root: &Path, blob_id: &str) -> PathBuf {
     media_dir(data_root).join(blob_id)
 }
 
-/// Write raw bytes to `media/{blob_id}`; returns the blob id.
+/// Write raw bytes via the content-addressed blob store; returns the blob id.
 pub fn write_media_blob(data_root: &Path, bytes: &[u8]) -> Result<String> {
-    let blob_id = ulid::Ulid::new().to_string();
-    let path = media_blob_path(data_root, &blob_id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, bytes)?;
-    Ok(blob_id)
+    crate::session::data::put_bytes(data_root, bytes)
 }
 
 pub fn read_media_blob(data_root: &Path, blob_id: &str) -> Result<Vec<u8>> {
-    let path = media_blob_path(data_root, blob_id);
-    fs::read(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            LitecodeError::MediaBlobMissing(blob_id.to_string())
-        } else {
-            LitecodeError::ToolExecution(format!("failed to read media blob '{blob_id}': {e}"))
+    match crate::session::data::read_bytes(data_root, blob_id) {
+        Ok(bytes) => Ok(bytes),
+        Err(_) => {
+            let path = media_blob_path(data_root, blob_id);
+            fs::read(path).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    LitecodeError::MediaBlobMissing(blob_id.to_string())
+                } else {
+                    LitecodeError::ToolExecution(format!(
+                        "failed to read media blob '{blob_id}': {e}"
+                    ))
+                }
+            })
         }
-    })
+    }
 }
 
 /// Resolve a typed media artifact to a URL suitable for OpenAI wire encoding.

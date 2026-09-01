@@ -80,6 +80,7 @@ pub fn run(
     engine_manager.reconcile(&resolved);
     workspace_engines.reconcile(&resolved);
 
+    let sessions_db = workspace.paths.sessions_db.clone();
     let state = ServeState::new(
         resolved,
         agent_name,
@@ -90,7 +91,14 @@ pub fn run(
         auth_token,
         turn_guard,
         settings_writer,
-    )?;
+    )
+    .map_err(|e| {
+        eprintln!(
+            "sidecar failed before READY\n  sessions.db: {}\n  {e:#}",
+            sessions_db.display()
+        );
+        e
+    })?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

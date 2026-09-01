@@ -64,7 +64,7 @@ fn instantiate_tool(
     {
         // Handshake must have succeeded this turn (`mcp_schemas` is filled only
         // after start). Do not advertise a dummy catalog-id tool when the
-        // process is down — the model would see it and try to call it.
+        // process is down —the model would see it and try to call it.
         let Some(tool_schemas) = mcp_schemas.get(server_id) else {
             return vec![];
         };
@@ -315,7 +315,7 @@ mod tests {
     }
 
     fn dummy_sessions() -> Arc<SessionManager> {
-        Arc::new(SessionManager::new(
+        Arc::new(SessionManager::new_for_test(
             Arc::new(crate::config::TurnGuard::new()),
             String::new(),
         ))

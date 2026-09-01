@@ -63,6 +63,7 @@ impl Tool for GlobTool {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 output_limit: self.max_result_size(),
                 session_id: String::new(),
+                session: None,
             },
         )
     }
@@ -91,8 +92,7 @@ impl GlobTool {
         if let Some(path) = path_arg
             && crate::session::transcript_file::is_virtual_session_dir(path)
         {
-            let results = match glob_virtual_sessions(&execution.workspace_root, &effective_pattern)
-            {
+            let results = match glob_virtual_sessions(&execution, &effective_pattern) {
                 Ok(r) => r,
                 Err(e) => return ToolCallResult::error(e.to_string()),
             };
@@ -222,10 +222,15 @@ fn strip_redundant_path_prefix<'a>(
     (std::borrow::Cow::Borrowed(pattern), None)
 }
 
-fn glob_virtual_sessions(workspace_root: &std::path::Path, pattern: &str) -> Result<Vec<String>> {
+fn glob_virtual_sessions(
+    execution: &crate::tool::trait_::ToolExecutionContext,
+    pattern: &str,
+) -> Result<Vec<String>> {
     let matcher = compile_include_pattern(pattern)?;
-    let db = crate::engines::session_search::sessions_db_under(workspace_root);
-    let listed = crate::session::transcript_file::list_virtual_paths(&db)?;
+    let reader = execution.session_reader()?;
+    let listed = crate::session::transcript_file::list_virtual_paths(
+        reader.list_session_ids_blocking().unwrap_or_default(),
+    );
     let mut hits: Vec<String> = listed
         .into_iter()
         .filter(|path| matcher.matches(path))
@@ -462,17 +467,13 @@ mod tests {
     fn seed_session(root: &std::path::Path, text: &str) -> String {
         let db = root.join(".litecode").join("sessions.db");
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let s = crate::session::store::Session::open(
-            db.to_str().unwrap(),
-            root.to_str().unwrap(),
-            "default",
-            None,
-        )
-        .unwrap();
-        s.insert_detail_rows(&[crate::types::user_text(text)])
+        let lease = crate::session::WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = crate::session::SessionData::open(&lease, &db).unwrap();
+        let id = data
+            .create_session(root.to_str().unwrap(), "default", None)
             .unwrap();
-        let id = s.id.clone();
-        drop(s);
+        data.insert_items(&id, &[crate::types::user_text(text)])
+            .unwrap();
         id
     }
 
@@ -490,6 +491,9 @@ mod tests {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 output_limit: GlobTool.max_result_size(),
                 session_id: String::new(),
+                session: Some(crate::session::SessionDataReader::open(
+                    &root.join(".litecode").join("sessions.db"),
+                )),
             },
         ))
         .content

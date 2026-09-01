@@ -5,8 +5,16 @@ Agent coding product. Kernel truth is OpenAI Responses `Item`. Session identity 
 ## Language
 
 **门**:
-The only writer for a session log. Three primitives: **append** (new `seq` = `MAX(seq)+1`), **seal** (same `seq`, in_progress → terminal), **truncate** (回退: delete from a user-message anchor). Compact is append with `surface_op=replace`. Loop and the UI do not invent a second authority.
-_Avoid_: a second INSERT path, `MAX(seq)+1` outside the gate, persist vs revert without the same lock
+The only durable mutation interface for a session log: typed commands on `SessionData`, not a per-session SQLite connection or lock. Three log primitives: **append** (new `seq` = `MAX(seq)+1`), **seal** (same `seq`, in_progress → terminal), **truncate** (回退: delete from a user-message anchor). Compact is append with `surface_op=replace`.
+_Avoid_: a second INSERT path, `MAX(seq)+1` outside the gate, `Connection::open` beside SessionData, persist vs revert without the same writer
+
+**storage revision**:
+A monotonic integer on the session row. Each accepted mutation that changes that session increments it. Concurrent writers send `expected_revision`; a mismatch is a conflict, not a merge. Distinct from wire `buffer_revision`.
+_Avoid_: treating Live overlay version as disk truth, silently retrying a stale mutation, using `buffer_revision` as the SQLite CAS token
+
+**已接纳 mutation**:
+A command that entered the SessionData writer queue. Cancel is only allowed before enqueue. Once accepted, the writer commits or returns a structured failure; it does not drop the command.
+_Avoid_: cancelling an in-flight SQLite transaction as “discard”, inferring persist failure from a dropped reply channel
 
 **投影可丢**:
 Empty assistants and unmatched `function_call_output`s stay on the log. Model / wire / UI projections may skip them. Skipping is not DELETE and is not 回退.

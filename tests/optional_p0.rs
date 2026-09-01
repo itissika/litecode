@@ -217,7 +217,7 @@ fn settings_reload_reconciles_engine_manager() {
         (*runtime.workspace_engines).clone(),
         Arc::clone(&runtime.ide),
         "test-parent-session",
-        Arc::new(SessionManager::new(
+        Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             String::new(),
         )),

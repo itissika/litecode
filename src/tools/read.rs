@@ -102,6 +102,7 @@ impl Tool for ReadTool {
             cancel: tokio_util::sync::CancellationToken::new(),
             output_limit: self.max_result_size(),
             session_id: String::new(),
+            session: None,
         };
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -263,24 +264,31 @@ fn read_virtual_session(
     execution: &ToolExecutionContext,
 ) -> Option<ToolCallResult> {
     let stem = crate::session::transcript_file::try_parse_virtual_path(raw_path)?;
-    let db = crate::engines::session_search::sessions_db_under(&execution.workspace_root);
-    let session_id = match crate::engines::session_search::resolve_session_ref(&db, &stem) {
+    let reader = match execution.session_reader() {
+        Ok(r) => r,
+        Err(e) => return Some(ToolCallResult::error(e.to_string())),
+    };
+    let session_id = match crate::engines::session_search::resolve_session_ref(reader, &stem) {
         Ok(id) => id,
         Err(e) => return Some(ToolCallResult::error(e.to_string())),
     };
-    let file = match crate::session::transcript_file::load_transcript_file(&db, &session_id) {
+    let file = match reader.transcript_file_blocking(&session_id) {
         Ok(f) => f,
         Err(e) => return Some(ToolCallResult::error(e.to_string())),
     };
-    let hidden = hidden_surface_seqs(&db, &session_id, &execution.session_id);
+    let hidden = hidden_surface_seqs(reader, &session_id, &execution.session_id);
     Some(render_projection_page(&file, input, &hidden))
 }
 
-fn hidden_surface_seqs(db: &Path, target_session: &str, caller_session: &str) -> Vec<i64> {
+fn hidden_surface_seqs(
+    reader: &crate::session::SessionDataReader,
+    target_session: &str,
+    caller_session: &str,
+) -> Vec<i64> {
     if caller_session.is_empty() || caller_session != target_session {
         return Vec::new();
     }
-    crate::engines::session_search::load_surface_seqs(db, target_session).unwrap_or_default()
+    crate::engines::session_search::load_surface_seqs(reader, target_session).unwrap_or_default()
 }
 
 fn render_projection_page(
@@ -1026,17 +1034,13 @@ mod tests {
     fn seed_session(root: &std::path::Path, text: &str) -> String {
         let db = root.join(".litecode").join("sessions.db");
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let s = crate::session::store::Session::open(
-            db.to_str().unwrap(),
-            root.to_str().unwrap(),
-            "default",
-            None,
-        )
-        .unwrap();
-        s.insert_detail_rows(&[crate::types::user_text(text)])
+        let lease = crate::session::WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = crate::session::SessionData::open(&lease, &db).unwrap();
+        let id = data
+            .create_session(root.to_str().unwrap(), "default", None)
             .unwrap();
-        let id = s.id.clone();
-        drop(s);
+        data.insert_items(&id, &[crate::types::user_text(text)])
+            .unwrap();
         id
     }
 
@@ -1062,6 +1066,9 @@ mod tests {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 output_limit: tool.max_result_size(),
                 session_id: session_id.to_string(),
+                session: Some(crate::session::SessionDataReader::open(
+                    &root.join(".litecode").join("sessions.db"),
+                )),
             },
         ))
     }
@@ -1120,23 +1127,27 @@ mod tests {
     fn seed_compacted(root: &std::path::Path, archived: &str, live: &str) -> String {
         let db = root.join(".litecode").join("sessions.db");
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let s = crate::session::store::Session::open(
-            db.to_str().unwrap(),
-            root.to_str().unwrap(),
-            "default",
-            None,
+        let lease = crate::session::WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = crate::session::SessionData::open(&lease, &db).unwrap();
+        let id = data
+            .create_session(root.to_str().unwrap(), "default", None)
+            .unwrap();
+        data.insert_items(
+            &id,
+            &[
+                crate::types::user_text(archived),
+                crate::types::user_text("filler middle"),
+                crate::types::user_text(live),
+            ],
         )
         .unwrap();
-        s.insert_detail_rows(&[
-            crate::types::user_text(archived),
-            crate::types::user_text("filler middle"),
-            crate::types::user_text(live),
-        ])
+        data.compact_from(
+            &id,
+            &crate::types::user_text("[summary] compact"),
+            Some(2),
+            10,
+        )
         .unwrap();
-        s.apply_compact_checkpoint_from(&crate::types::user_text("[summary] compact"), Some(2), 10)
-            .unwrap();
-        let id = s.id.clone();
-        drop(s);
         id
     }
 

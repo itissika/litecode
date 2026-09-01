@@ -11,6 +11,7 @@ use crate::types::{LitecodeError, Result};
 pub struct CodeSearchEngine {
     client: Mutex<Option<CodeSearchWorkerClient>>,
     workspace_root: Arc<RwLock<Option<PathBuf>>>,
+    session_db_path: Arc<RwLock<Option<PathBuf>>>,
     warmup_epoch: AtomicU64,
     /// OS PID of the worker child. Set at spawn (before warmup finishes) so
     /// status-bar RSS can attribute embed memory while indexing is in progress.
@@ -25,6 +26,7 @@ impl CodeSearchEngine {
         Self {
             client: Mutex::new(None),
             workspace_root: Arc::new(RwLock::new(None)),
+            session_db_path: Arc::new(RwLock::new(None)),
             warmup_epoch: AtomicU64::new(0),
             worker_os_pid: AtomicU32::new(0),
             on_worker_failed: Mutex::new(None),
@@ -55,6 +57,34 @@ impl CodeSearchEngine {
     pub fn set_workspace(&self, root: PathBuf) {
         if let Ok(mut guard) = self.workspace_root.write() {
             *guard = Some(crate::config::path::canon_abs_lossy(&root));
+        }
+    }
+
+    pub fn set_session_reader(&self, reader: crate::session::SessionDataReader) {
+        let path = reader.path().to_path_buf();
+        if let Ok(mut guard) = self.session_db_path.write() {
+            *guard = Some(path.clone());
+        }
+        self.inject_session_db(&path);
+    }
+
+    pub fn workspace_root(&self) -> Option<PathBuf> {
+        self.workspace_root.read().ok().and_then(|g| g.clone())
+    }
+
+    /// SessionData nod: store path and push it to a live worker without restarting.
+    pub fn inject_session_db(&self, session_db_path: &std::path::Path) {
+        if let Ok(mut guard) = self.session_db_path.write() {
+            *guard = Some(session_db_path.to_path_buf());
+        }
+        let Ok(mut guard) = self.client.lock() else {
+            return;
+        };
+        let Some(client) = guard.as_mut() else {
+            return;
+        };
+        if let Err(e) = client.set_session_db(session_db_path) {
+            tracing::warn!(error = %e, "code_search set_session_db failed");
         }
     }
 
@@ -96,9 +126,11 @@ impl CodeSearchEngine {
         match client.search(query, glob_filter, top_k) {
             Ok(hits) => Ok(hits),
             Err(e) => {
-                tracing::warn!(tool = "code_search", error = %e, "worker exited");
+                tracing::warn!(tool = "code_search", error = %e, "worker search failed");
                 drop(guard);
-                self.notify_worker_failed();
+                if !self.worker_alive() {
+                    self.notify_worker_failed();
+                }
                 Err(e)
             }
         }
@@ -131,7 +163,9 @@ impl CodeSearchEngine {
             Err(e) => {
                 tracing::warn!(tool = "session_search", error = %e, "worker session_search failed");
                 drop(guard);
-                self.notify_worker_failed();
+                if !self.worker_alive() {
+                    self.notify_worker_failed();
+                }
                 Err(e)
             }
         }
@@ -265,6 +299,11 @@ impl CodeSearchEngine {
             .map_err(|e| LitecodeError::Config(format!("workspace lock: {e}")))?
             .clone()
             .ok_or_else(|| LitecodeError::Config("code_search: workspace not set".into()))?;
+        let session_db_path = self
+            .session_db_path
+            .read()
+            .map_err(|e| LitecodeError::Config(format!("session reader lock: {e}")))?
+            .clone();
 
         if !self.warmup_still_valid(epoch) {
             return Ok(());
@@ -285,9 +324,12 @@ impl CodeSearchEngine {
             return Ok(());
         }
 
-        if let Err(e) = client.initialize(&root) {
+        if let Err(e) = client.initialize(&root, session_db_path.as_deref()) {
             client.kill();
             self.set_worker_os_pid(None);
+            if !self.warmup_still_valid(epoch) {
+                return Ok(());
+            }
             return Err(e);
         }
 
@@ -300,6 +342,9 @@ impl CodeSearchEngine {
         if let Err(e) = client.warmup() {
             client.kill();
             self.set_worker_os_pid(None);
+            if !self.warmup_still_valid(epoch) {
+                return Ok(());
+            }
             return Err(e);
         }
 
@@ -310,6 +355,18 @@ impl CodeSearchEngine {
         }
 
         self.flush_pending_fs(&mut client);
+
+        // SessionData may have nodded during warmup (client not installed yet).
+        let inject_path = self
+            .session_db_path
+            .read()
+            .ok()
+            .and_then(|g| g.clone());
+        if let Some(ref path) = inject_path
+            && let Err(e) = client.set_session_db(path)
+        {
+            tracing::warn!(error = %e, "code_search set_session_db after warmup skipped");
+        }
 
         if let Ok(mut guard) = self.client.lock() {
             // Slot-time epoch re-check: `stop()` may have bumped the epoch and
@@ -367,6 +424,9 @@ mod tests {
 
     #[test]
     fn stop_during_warmup_kills_worker() {
+        unsafe {
+            std::env::set_var("LITECODE_CODE_SEARCH_USE_HASH", "1");
+        }
         let dir = TempDir::new().unwrap();
         let root = dir.path().to_path_buf();
         init_workspace_index(&root).unwrap();
@@ -399,6 +459,14 @@ mod tests {
 
     #[test]
     fn worker_pid_available_during_warmup() {
+        if std::env::var("CARGO_BIN_EXE_litecode").is_err() {
+            // Product worker is `litecode code-search-worker`. `cargo test --lib`
+            // uses the test harness as current_exe, so spawn cannot speak IPC.
+            return;
+        }
+        unsafe {
+            std::env::set_var("LITECODE_CODE_SEARCH_USE_HASH", "1");
+        }
         let dir = TempDir::new().unwrap();
         let root = dir.path().to_path_buf();
         init_workspace_index(&root).unwrap();
@@ -431,6 +499,19 @@ mod tests {
         );
         if engine.worker_alive() {
             assert!(engine.worker_pid().is_some());
+            engine
+                .search("main", None, 5)
+                .expect("code search must not require SessionData");
+            let err = engine
+                .search_sessions("x", 5, None)
+                .expect_err("session lane needs SessionData nod");
+            assert!(
+                err.to_string().contains("SessionData reader not ready"),
+                "got: {err}"
+            );
+            engine
+                .search("main", None, 5)
+                .expect("code search still Ok after session lane error");
         }
     }
 }

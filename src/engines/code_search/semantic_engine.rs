@@ -81,8 +81,12 @@ mod tests {
         let mut emb = HashEmbedder;
         let index = build_full_index(root, &mut emb).unwrap();
         index.save(root).unwrap();
-        let runtime =
-            CodeSearchRuntime::new(root.to_path_buf(), index, Some(Box::new(HashEmbedder)));
+        let runtime = CodeSearchRuntime::new(
+            root.to_path_buf(),
+            index,
+            Some(Box::new(HashEmbedder)),
+            None,
+        );
 
         let hits = SemanticEngine::search(&runtime, "auth_login", None, 8).unwrap();
         assert!(!hits.is_empty());

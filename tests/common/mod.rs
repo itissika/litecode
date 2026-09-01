@@ -5,7 +5,10 @@ pub mod responses_replay;
 pub mod runtime;
 pub mod scripted_provider;
 pub mod seed;
+pub mod session_data_fixture;
 pub mod workspace_fixture;
+
+pub use session_data_fixture::SessionDataFixture;
 
 pub use fake_deps::{FakeAgentDeps, assistant_text_item, function_call_item};
 pub use permission::{recording_sink, test_auto_approve_sink};

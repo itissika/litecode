@@ -1240,19 +1240,15 @@ pub fn delete_session_snapshots(snapshots_dir: &Path, session_id: &str) -> Resul
 /// Remove orphan (dead session) and stale (untouched N days) snapshot refs.
 pub fn maintain_snapshots(
     snapshots_dir: &Path,
-    sessions_db: &Path,
+    active_session_ids: &[String],
 ) -> Result<SnapshotMaintenanceReport> {
     let Ok(repo) =
         Repository::open_bare(snapshots_dir).or_else(|_| Repository::open(snapshots_dir))
     else {
         return Ok(SnapshotMaintenanceReport::default());
     };
-    if !sessions_db.is_file() {
-        return Ok(SnapshotMaintenanceReport::default());
-    }
 
-    let active_ids = session_ids_from_db(sessions_db).unwrap_or_default();
-    let active: HashSet<_> = active_ids.into_iter().collect();
+    let active: HashSet<_> = active_session_ids.iter().cloned().collect();
     let snapshot_sessions = all_session_ids(&repo).unwrap_or_default();
     let cutoff = snapshot_cutoff_time(SNAPSHOT_RETENTION_DAYS);
 
@@ -1293,14 +1289,6 @@ fn repo_mtime_before(repo: &Repository, cutoff: SystemTime) -> Result<bool> {
 
 // ── helpers ──
 
-fn session_ids_from_db(sessions_db: &Path) -> Result<Vec<String>> {
-    let conn = rusqlite::Connection::open(sessions_db)?;
-    let mut stmt = conn.prepare("SELECT id FROM sessions")?;
-    let rows = stmt.query_map([], |row| row.get(0))?;
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Into::into)
-}
-
 fn snapshot_cutoff_time(retention_days: u64) -> SystemTime {
     UNIX_EPOCH
         + Duration::from_secs(
@@ -1318,6 +1306,7 @@ mod tests {
     use crate::session::snapshot_paths::{
         SNAPSHOTS_ROOT_ENV, path_is_under, snapshots_dir_for_workspace,
     };
+    use crate::session::{MutationId, SessionData, SessionMutation, WorkspaceWriteLease};
     use std::sync::Arc as StdArc;
 
     fn env_lock() -> &'static std::sync::Mutex<()> {
@@ -1824,20 +1813,22 @@ mod tests {
             let litecode = ws.join(".litecode");
             std::fs::create_dir_all(&litecode).unwrap();
             let db = litecode.join("sessions.db");
-            let session = crate::session::store::Session::open(
-                db.to_str().unwrap(),
-                ws.to_str().unwrap(),
-                "default",
-                None,
-            )
-            .unwrap();
-            let sid = session.id.clone();
+            let lease = WorkspaceWriteLease::acquire(&ws).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let sid = data
+                .create_session(ws.to_str().unwrap(), "default", None)
+                .unwrap();
             let snaps = snapshots_dir_for_workspace(&ws);
             snapshot_track(&ws, &snaps, &sid, 0).unwrap();
             assert!(snapshot_exists(&snaps, &sid, 0));
-            drop(session);
 
-            crate::session::store::Session::delete(db.to_str().unwrap(), &sid).unwrap();
+            let expected_revision = data.revision_blocking(&sid).unwrap();
+            data.mutate_blocking(SessionMutation::Delete {
+                session_id: sid.clone(),
+                expected_revision,
+                operation_id: MutationId::new(),
+            })
+            .unwrap();
 
             assert!(
                 !litecode.join("snapshots").exists(),

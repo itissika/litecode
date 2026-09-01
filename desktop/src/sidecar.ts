@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
-import { createInterface } from "node:readline";
 
 import { resolveBundledModelDir } from "./bundle-paths";
 import { normalizeWorkspace } from "./lap-path";
@@ -14,6 +13,43 @@ export type SidecarHandle = {
 };
 
 const READY_RE = /^LITECODE_READY (http:\/\/127\.0\.0\.1:\d+\/?)\s*$/;
+const MAX_CAPTURED_CHARS = 8_000;
+const DRAIN_MS = 80;
+
+export function formatSidecarBootFailure(opts: {
+  bin: string;
+  workspace: string;
+  code: number | null;
+  signal?: NodeJS.Signals | null;
+  timedOut?: boolean;
+  timeoutMs?: number;
+  output: string;
+}): string {
+  const lines: string[] = [];
+  if (opts.timedOut) {
+    lines.push(`sidecar timed out waiting for LITECODE_READY (${opts.timeoutMs}ms)`);
+  } else {
+    const code = opts.code == null ? "null" : String(opts.code);
+    const signal = opts.signal ? ` signal=${opts.signal}` : "";
+    lines.push(`sidecar exited before READY (code=${code}${signal})`);
+  }
+  lines.push(`binary: ${opts.bin}`);
+  lines.push(`workspace: ${opts.workspace}`);
+  lines.push(`log file: ${path.join(opts.workspace, ".litecode", "logs", "litecode.log")}`);
+  const output = opts.output.trim();
+  if (output) {
+    lines.push("sidecar output:");
+    lines.push(output);
+  } else {
+    lines.push("sidecar produced no stdout/stderr before exit.");
+  }
+  return lines.join("\n");
+}
+
+function clipOutput(text: string): string {
+  if (text.length <= MAX_CAPTURED_CHARS) return text;
+  return `${text.slice(0, MAX_CAPTURED_CHARS)}\n… [truncated]`;
+}
 
 export async function startSidecar(opts: {
   token: string;
@@ -55,56 +91,90 @@ export async function startSidecar(opts: {
   });
 
   const timeoutMs = opts.timeoutMs ?? 90_000;
-  const readyUrl = await waitForReady(child, timeoutMs);
+  const readyUrl = await waitForReady(child, timeoutMs, { bin, workspace });
   return { process: child, readyUrl, token: opts.token, workspace };
 }
 
-function waitForReady(child: ChildProcess, timeoutMs: number): Promise<string> {
+function waitForReady(
+  child: ChildProcess,
+  timeoutMs: number,
+  ctx: { bin: string; workspace: string },
+): Promise<string> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        try {
-          child.kill();
-        } catch {
-          /* ignore */
-        }
-        reject(new Error(`timeout waiting for LITECODE_READY (${timeoutMs}ms)`));
-      }
-    }, timeoutMs);
+    let stdoutBuf = "";
+    let stderrBuf = "";
+    const captured: string[] = [];
 
-    const onLine = (line: string) => {
-      const m = READY_RE.exec(line.trim());
-      if (!m || settled) return;
+    const fail = (err: Error) => {
+      if (settled) return;
       settled = true;
       clearTimeout(timer);
-      const url = m[1].endsWith("/") ? m[1] : `${m[1]}/`;
-      resolve(url);
+      console.error(err.message);
+      reject(err);
+    };
+
+    const bootError = (extra: {
+      timedOut?: boolean;
+      code?: number | null;
+      signal?: NodeJS.Signals | null;
+    }) =>
+      new Error(
+        formatSidecarBootFailure({
+          bin: ctx.bin,
+          workspace: ctx.workspace,
+          code: extra.code ?? child.exitCode,
+          signal: extra.signal ?? child.signalCode,
+          timedOut: extra.timedOut,
+          timeoutMs,
+          output: clipOutput(captured.join("")),
+        }),
+      );
+
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+      fail(bootError({ timedOut: true }));
+    }, timeoutMs);
+
+    const onChunk = (chunk: Buffer | string, stream: "stdout" | "stderr") => {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      captured.push(text);
+      const carry = stream === "stdout" ? stdoutBuf + text : stderrBuf + text;
+      const parts = carry.split(/\r?\n/);
+      const rest = parts.pop() ?? "";
+      if (stream === "stdout") stdoutBuf = rest;
+      else stderrBuf = rest;
+      for (const line of parts) {
+        const m = READY_RE.exec(line.trim());
+        if (!m || settled) continue;
+        settled = true;
+        clearTimeout(timer);
+        const url = m[1].endsWith("/") ? m[1] : `${m[1]}/`;
+        resolve(url);
+        return;
+      }
     };
 
     if (!child.stdout || !child.stderr) {
-      clearTimeout(timer);
-      reject(new Error("sidecar stdio pipes missing"));
+      fail(new Error("sidecar stdio pipes missing"));
       return;
     }
 
-    const rlOut = createInterface({ input: child.stdout });
-    const rlErr = createInterface({ input: child.stderr });
-    rlOut.on("line", onLine);
-    rlErr.on("line", onLine);
+    child.stdout.on("data", (chunk) => onChunk(chunk, "stdout"));
+    child.stderr.on("data", (chunk) => onChunk(chunk, "stderr"));
 
     child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(err);
+      fail(new Error(`${err.message}\nbinary: ${ctx.bin}\nworkspace: ${ctx.workspace}`));
     });
-    child.on("exit", (code) => {
+    child.on("exit", (code, signal) => {
       if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(new Error(`sidecar exited before READY (code=${code})`));
+      setTimeout(() => {
+        fail(bootError({ code, signal }));
+      }, DRAIN_MS);
     });
   });
 }

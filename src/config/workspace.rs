@@ -364,11 +364,6 @@ pub fn init_workspace(workspace_root: &Path) -> Result<()> {
         tracing::warn!(error = %e, "failed to purge legacy in-workspace snapshots");
     }
 
-    let sessions_db = litecode_dir.join("sessions.db");
-    if !sessions_db.exists() {
-        std::fs::File::create(&sessions_db).map_err(|e| LitecodeError::Config(e.to_string()))?;
-    }
-
     // Persist / reconcile stable workspace_id (move vs copy).
     super::workspace_identity::ensure_workspace_identity(workspace_root)?;
 
@@ -436,17 +431,6 @@ pub fn load_workspace_state(override_path: Option<&Path>) -> Result<WorkspaceSta
         workspace_mcp_servers,
         workspace_custom_tools,
     };
-    match snapshot::maintain_snapshots(&paths.snapshots_dir, &paths.sessions_db) {
-        Ok(report) if report.orphans_removed > 0 || report.stale_removed > 0 => {
-            tracing::info!(
-                orphans = report.orphans_removed,
-                stale = report.stale_removed,
-                "snapshot maintenance"
-            );
-        }
-        Err(e) => tracing::warn!(error = %e, "snapshot maintenance failed"),
-        _ => {}
-    }
     if let Err(e) = snapshot::warm_snapshot_repo(&workspace_root, &paths.snapshots_dir) {
         tracing::warn!(error = %e, "snapshot warm failed");
     }
@@ -611,7 +595,10 @@ mod tests {
             !litecode.join("snapshots").exists(),
             "in-workspace snapshots must be purged"
         );
-        assert!(litecode.join("sessions.db").is_file());
+        assert!(
+            !litecode.join("sessions.db").exists(),
+            "init_workspace must not create sessions.db; SessionData bootstraps it after the write lease"
+        );
         assert!(
             litecode.join("workspace.json").is_file(),
             "init_workspace must persist workspace identity"

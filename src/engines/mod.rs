@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::resolved::ResolvedConfig;
 use crate::engines::code_search_ipc::protocol::RefreshMode;
+use crate::session::SessionDataReader;
 use crate::types::{LitecodeError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,8 +55,8 @@ pub struct RetrievalFilters {
     pub project: Option<String>,
     /// Soft-exclude live model window (current surface seqs).
     pub exclude_context_window: Option<session_search::ContextWindowExclude>,
-    /// Override sessions DB path; default = `<workspace>/.litecode/sessions.db`.
-    pub sessions_db: Option<PathBuf>,
+    /// Override sessions reader for tests; production injects via ServeState.
+    pub session: Option<SessionDataReader>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,6 +166,7 @@ pub struct WorkspaceEngines {
     lsp: Arc<LspEngine>,
     text_index: Arc<TextIndexEngine>,
     refresh_busy: Arc<AtomicBool>,
+    session_reader: Arc<RwLock<Option<SessionDataReader>>>,
 }
 
 impl WorkspaceEngines {
@@ -193,7 +195,20 @@ impl WorkspaceEngines {
             lsp,
             text_index,
             refresh_busy: Arc::new(AtomicBool::new(false)),
+            session_reader: Arc::new(RwLock::new(None)),
         }
+    }
+
+    pub fn set_session_reader(&self, reader: SessionDataReader) {
+        // Inject into a live worker; do not restart warmup for SessionData nod.
+        self.code_search.set_session_reader(reader.clone());
+        if let Ok(mut guard) = self.session_reader.write() {
+            *guard = Some(reader);
+        }
+    }
+
+    pub fn session_reader(&self) -> Option<SessionDataReader> {
+        self.session_reader.read().ok().and_then(|g| g.clone())
     }
 
     pub fn code_search(&self) -> Arc<CodeSearchEngine> {
@@ -216,9 +231,18 @@ impl WorkspaceEngines {
                 Ok(hits.into_iter().map(RetrievalHit::from_code).collect())
             }
             (RetrievalCorpus::Session, RetrievalModality::Text) => {
-                let db = resolve_sessions_db(&request)?;
+                let reader = request
+                    .filters
+                    .session
+                    .clone()
+                    .or_else(|| self.session_reader())
+                    .ok_or_else(|| {
+                        LitecodeError::Config(
+                            "session search requires an injected SessionDataReader".into(),
+                        )
+                    })?;
                 let ranked = session_search::search_all(
-                    &db,
+                    &reader,
                     &session_search::SessionTextQuery {
                         query: request.query,
                         offset: 0,
@@ -276,13 +300,13 @@ impl WorkspaceEngines {
         filters: RetrievalFilters,
         workspace_root: Option<PathBuf>,
     ) -> Result<SessionSearchBundle> {
-        let db = if let Some(p) = filters.sessions_db.clone() {
-            p
-        } else if let Some(root) = workspace_root.as_ref() {
-            session_search::sessions_db_under(root)
+        let reader = if let Some(r) = filters.session.clone() {
+            r
+        } else if let Some(r) = self.session_reader() {
+            r
         } else {
             return Err(LitecodeError::Config(
-                "session search requires workspace_root or sessions_db".into(),
+                "session search requires an injected SessionDataReader".into(),
             ));
         };
 
@@ -294,7 +318,7 @@ impl WorkspaceEngines {
             project: filters.project.clone(),
             exclude_context_window: filters.exclude_context_window.clone(),
         };
-        let lexical = session_search::search_all(&db, &text_q)?;
+        let lexical = session_search::search_all(&reader, &text_q)?;
 
         let semantic = if self.is_warmed("code_search") {
             match self.code_search.search_sessions(
@@ -393,7 +417,6 @@ impl WorkspaceEngines {
                     },
                     Some(workspace_root.to_path_buf()),
                 )?;
-                let db = session_search::sessions_db_under(workspace_root);
                 let ranked = if req.include_semantic {
                     bundle.ranked
                 } else {
@@ -403,7 +426,15 @@ impl WorkspaceEngines {
                         .filter(|h| h.lane == session_search::SessionHitLane::Text)
                         .collect()
                 };
-                let page = session_search::build_search_page(&db, &ranked, bundle.offset)?;
+                let page = session_search::build_search_page(
+                    &self.session_reader().ok_or_else(|| {
+                        LitecodeError::Config(
+                            "session search requires an injected SessionDataReader".into(),
+                        )
+                    })?,
+                    &ranked,
+                    bundle.offset,
+                )?;
                 Ok(crate::engines::code_search::HumanSearchResponse {
                     text: Vec::new(),
                     semantic: None,
@@ -635,6 +666,9 @@ impl WorkspaceEngines {
 
         let finish = move |result: Result<()>| {
             if let Ok(mut guard) = states.write() {
+                if matches!(guard.get(&id_owned), Some(EngineState::Stopped)) {
+                    return;
+                }
                 guard.insert(
                     id_owned.clone(),
                     if result.is_ok() {
@@ -693,18 +727,6 @@ impl WorkspaceEngines {
     }
 }
 
-fn resolve_sessions_db(request: &RetrievalQuery) -> Result<PathBuf> {
-    if let Some(p) = &request.filters.sessions_db {
-        return Ok(p.clone());
-    }
-    let root = request.workspace_root.as_ref().ok_or_else(|| {
-        LitecodeError::Config(
-            "session search requires workspace_root or filters.sessions_db".into(),
-        )
-    })?;
-    Ok(session_search::sessions_db_under(root))
-}
-
 enum EngineCall {
     Retrieval(Arc<CodeSearchEngine>),
     Lsp(Arc<LspEngine>),
@@ -728,7 +750,7 @@ impl Default for WorkspaceEngines {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::store::Session;
+    use crate::session::{SessionData, WorkspaceWriteLease};
     use crate::types::user_text;
     use tempfile::TempDir;
 
@@ -739,20 +761,19 @@ mod tests {
         let litecode = root.join(".litecode");
         std::fs::create_dir_all(&litecode).unwrap();
         let db = litecode.join("sessions.db");
-        let session = Session::open(
-            db.to_str().unwrap(),
-            root.to_str().unwrap(),
-            "default",
-            None,
-        )
-        .unwrap();
-        session
-            .insert_detail_rows(&[user_text("route me ROUTER_MARKER please")])
-            .unwrap();
-        let sid = session.id.clone();
-        drop(session);
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(&litecode).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data
+                .create_session(root.to_str().unwrap(), "default", None)
+                .unwrap();
+            data.insert_items(&id, &[user_text("route me ROUTER_MARKER please")])
+                .unwrap();
+            id
+        };
 
         let engines = WorkspaceEngines::new();
+        engines.set_session_reader(SessionDataReader::open(&db));
         // Must not require code_search Warm.
         assert!(!engines.is_warmed("code_search"));
 
@@ -783,6 +804,19 @@ mod tests {
     }
 
     #[test]
+    fn search_sessions_without_reader_is_explicit_error() {
+        let engines = WorkspaceEngines::new();
+        let err = engines
+            .search_sessions("q", 0, RetrievalFilters::default(), None)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("SessionDataReader"),
+            "got: {err}"
+        );
+        assert_ne!(engines.state("code_search"), Some(EngineState::Failed));
+    }
+
+    #[test]
     fn session_semantic_requires_warm() {
         let engines = WorkspaceEngines::new();
         let err = engines
@@ -809,19 +843,18 @@ mod tests {
         let litecode = root.join(".litecode");
         std::fs::create_dir_all(&litecode).unwrap();
         let db = litecode.join("sessions.db");
-        let session = Session::open(
-            db.to_str().unwrap(),
-            root.to_str().unwrap(),
-            "default",
-            None,
-        )
-        .unwrap();
-        session
-            .insert_detail_rows(&[user_text("bundle BUNDLE_MARKER text")])
-            .unwrap();
-        drop(session);
+        {
+            let lease = WorkspaceWriteLease::acquire(&litecode).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data
+                .create_session(root.to_str().unwrap(), "default", None)
+                .unwrap();
+            data.insert_items(&id, &[user_text("bundle BUNDLE_MARKER text")])
+                .unwrap();
+        }
 
         let engines = WorkspaceEngines::new();
+        engines.set_session_reader(SessionDataReader::open(&db));
         assert!(!engines.is_warmed("code_search"));
         let bundle = engines
             .search_sessions(
@@ -847,19 +880,18 @@ mod tests {
         let litecode = root.join(".litecode");
         std::fs::create_dir_all(&litecode).unwrap();
         let db = litecode.join("sessions.db");
-        let session = Session::open(
-            db.to_str().unwrap(),
-            root.to_str().unwrap(),
-            "default",
-            None,
-        )
-        .unwrap();
-        session
-            .insert_detail_rows(&[user_text("human HUMAN_SESSION_HIT panel")])
-            .unwrap();
-        drop(session);
+        {
+            let lease = WorkspaceWriteLease::acquire(&litecode).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data
+                .create_session(root.to_str().unwrap(), "default", None)
+                .unwrap();
+            data.insert_items(&id, &[user_text("human HUMAN_SESSION_HIT panel")])
+                .unwrap();
+        }
 
         let engines = WorkspaceEngines::new();
+        engines.set_session_reader(SessionDataReader::open(&db));
         let resp = engines
             .human_search(
                 root,

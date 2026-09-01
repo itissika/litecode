@@ -268,7 +268,7 @@ fn path_allowed(
     path_matches_include(rel, include)
 }
 
-fn path_glob_match_exclude(pat: &Pattern, rel: &str) -> bool {
+pub(crate) fn path_glob_match_exclude(pat: &Pattern, rel: &str) -> bool {
     if pat.matches(rel) {
         return true;
     }
@@ -285,7 +285,7 @@ fn compile_include_globs(raw: Option<&str>) -> Result<Vec<PathGlobMatcher>> {
     compile_include_patterns(raw)
 }
 
-fn compile_exclude_globs(raw: Option<&str>) -> Result<Vec<Pattern>> {
+pub(crate) fn compile_exclude_globs(raw: Option<&str>) -> Result<Vec<Pattern>> {
     let Some(raw) = raw.filter(|s| !s.is_empty()) else {
         return Ok(Vec::new());
     };

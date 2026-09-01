@@ -53,12 +53,12 @@ impl CompactPolicy {
         }
         let prompt_baseline = ProviderPromptBaseline::default();
         let prefix_len = transcript.len();
-        let persisted_seqs: Vec<Seq> = sessions.with_entry_store(session_id, |s| {
-            Ok(s.load_working_set()?
-                .into_iter()
-                .filter_map(|row| row.log_seq)
-                .collect())
-        })?;
+        let persisted_seqs: Vec<Seq> = sessions
+            .data()
+            .working_set_blocking(session_id)?
+            .into_iter()
+            .filter_map(|row| row.log_seq)
+            .collect();
         let reminder = sessions
             .with_entry_task_state(session_id, |state| {
                 Ok(crate::context_pipeline::tail_reminders::build_compaction_content(state))
@@ -333,17 +333,17 @@ impl CompactPolicy {
             .cloned()
             .unwrap_or_else(|| compact_summary_message_with_reminder(&summary, false, reminder));
 
-        if let Err(e) = sessions.with_entry_store(session_id, |s| {
-            if cancel.is_cancelled() {
-                return Err(LitecodeError::Canceled.into());
-            }
-            Ok(s.apply_compact_checkpoint_checked(
-                &summary_item,
-                Some(kept_from_seq),
-                final_count as i64,
-                Some(persisted_prefix_len),
-            )?)
-        }) {
+        if let Err(e) =
+            sessions.mutate_blocking(crate::session::data::command::SessionMutation::Compact {
+                session_id: session_id.to_string(),
+                expected_revision: sessions.data().revision_blocking(session_id).unwrap_or(0),
+                operation_id: crate::session::data::command::MutationId::new(),
+                summary: summary_item,
+                token_estimate: final_count as i64,
+                kept_from: Some(kept_from_seq as crate::session::event::Seq),
+                expected_prefix: Some(persisted_prefix_len),
+            })
+        {
             *transcript = snapshot;
             emit_compact_lifecycle(
                 sessions,
@@ -358,11 +358,8 @@ impl CompactPolicy {
         }
 
         // Align in-memory working set with the folded log, plus unpersisted tail.
-        let mut model = match sessions.with_entry_store(session_id, |s| {
-            s.reload_persisted_max_seq()?;
-            Ok(s.load_transcript()?)
-        }) {
-            Ok(items) => items,
+        let mut model: Transcript = match sessions.data().working_set_blocking(session_id) {
+            Ok(rows) => rows.into_iter().map(|row| row.item).collect(),
             Err(e) => {
                 *transcript = snapshot;
                 emit_compact_lifecycle(

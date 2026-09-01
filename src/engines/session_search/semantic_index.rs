@@ -16,7 +16,9 @@ use crate::engines::code_search::{
 };
 use crate::types::{LitecodeError, Result};
 
-use super::{SEMANTIC_WINDOW, SessionHitLane, SessionTextHit, sessions_db_under};
+use super::{SEMANTIC_WINDOW, SessionHitLane, SessionTextHit};
+
+use crate::session::SessionDataReader;
 
 const EMBED_BATCH: usize = 32;
 const SNIPPET_CHARS: usize = 200;
@@ -38,6 +40,8 @@ pub struct SessionIndexMeta {
     pub embed_dim: usize,
     pub created_at: String,
     pub indexed_chunks: usize,
+    #[serde(default)]
+    pub last_change_id: i64,
 }
 
 impl SessionIndexMeta {
@@ -49,6 +53,7 @@ impl SessionIndexMeta {
             embed_dim: EMBED_DIM,
             created_at: Utc::now().to_rfc3339(),
             indexed_chunks,
+            last_change_id: 0,
         }
     }
 }
@@ -113,6 +118,7 @@ pub struct SessionSemanticIndex {
     ann: Index,
     next_id: u64,
     embedder_id: String,
+    last_change_id: i64,
 }
 
 impl SessionSemanticIndex {
@@ -123,6 +129,7 @@ impl SessionSemanticIndex {
             ann: new_ann_index()?,
             next_id: 1,
             embedder_id: production_embedder_id().into(),
+            last_change_id: 0,
         })
     }
 
@@ -145,6 +152,7 @@ impl SessionSemanticIndex {
             ann,
             next_id: 1,
             embedder_id,
+            last_change_id: meta_on_disk.as_ref().map(|m| m.last_change_id).unwrap_or(0),
         };
 
         let file = File::open(&chunks_file).map_err(|e| LitecodeError::Config(e.to_string()))?;
@@ -189,7 +197,10 @@ impl SessionSemanticIndex {
 
         write_meta(
             workspace_root,
-            &SessionIndexMeta::shell(&self.embedder_id, self.chunks.len()),
+            &SessionIndexMeta {
+                last_change_id: self.last_change_id,
+                ..SessionIndexMeta::shell(&self.embedder_id, self.chunks.len())
+            },
         )?;
         Ok(())
     }
@@ -310,11 +321,20 @@ impl SessionSemanticIndex {
     /// Reconcile against live sessions.db: add missing / changed texts, drop stale keys.
     pub fn reconcile(
         &mut self,
+        reader: &SessionDataReader,
         workspace_root: &Path,
         embedder: &mut dyn Embedder,
     ) -> Result<bool> {
-        let db = sessions_db_under(workspace_root);
-        let live = crate::session::transcript_file::iter_searchable_texts(&db)?;
+        let latest = reader.latest_change_id_blocking().unwrap_or(0);
+        if latest == self.last_change_id && latest > 0 {
+            return Ok(false);
+        }
+        if latest < self.last_change_id {
+            *self = Self::new_empty()?;
+        }
+        let rows = reader.searchable_rows_blocking(None)?;
+        let live =
+            crate::session::transcript_file::iter_searchable_texts(&rows, reader.data_root())?;
         let live_keys: HashSet<(String, i64)> = live
             .iter()
             .map(|(sid, seq, _, _)| (sid.clone(), *seq))
@@ -358,9 +378,11 @@ impl SessionSemanticIndex {
             dirty = true;
         }
 
-        if dirty {
+        if dirty || self.last_change_id != latest {
             self.embedder_id = embedder.embedder_id().into();
+            self.last_change_id = latest;
             self.save(workspace_root)?;
+            dirty = true;
         }
         Ok(dirty)
     }
@@ -373,6 +395,7 @@ fn index_files_exist(workspace_root: &Path) -> bool {
 /// Load from disk or build empty + reconcile from sessions.db.
 pub fn ensure_session_index(
     workspace_root: &Path,
+    reader: &SessionDataReader,
     embedder: &mut dyn Embedder,
 ) -> Result<SessionSemanticIndex> {
     let dir = session_index_dir(workspace_root);
@@ -391,7 +414,7 @@ pub fn ensure_session_index(
         SessionSemanticIndex::load(workspace_root)?
     };
 
-    index.reconcile(workspace_root, embedder)?;
+    index.reconcile(reader, workspace_root, embedder)?;
     Ok(index)
 }
 
@@ -399,7 +422,7 @@ pub fn ensure_session_index(
 mod tests {
     use super::*;
     use crate::engines::code_search::HashEmbedder;
-    use crate::session::store::Session;
+    use crate::session::{SessionData, WorkspaceWriteLease};
     use crate::types::user_text;
     use tempfile::TempDir;
 
@@ -407,14 +430,19 @@ mod tests {
     fn session_index_round_trip_and_search() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
-        let db = sessions_db_under(root);
+        let db = root.join(".litecode").join("sessions.db");
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        s.insert_detail_rows(&[user_text("alpha session semantic marker omega")])
-            .unwrap();
+        {
+            let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(&id, &[user_text("alpha session semantic marker omega")])
+                .unwrap();
+        }
+        let reader = crate::session::SessionDataReader::open(&db);
 
         let mut emb = HashEmbedder;
-        let index = ensure_session_index(root, &mut emb).unwrap();
+        let index = ensure_session_index(root, &reader, &mut emb).unwrap();
         assert!(!index.is_empty());
 
         let q = emb.embed_one("session semantic marker").unwrap();
@@ -431,17 +459,20 @@ mod tests {
     fn session_index_reconcile_adds_new_rows() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
-        let db = sessions_db_under(root);
+        let db = root.join(".litecode").join("sessions.db");
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        s.insert_detail_rows(&[user_text("first row")]).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("first row")]).unwrap();
 
         let mut emb = HashEmbedder;
-        let mut index = ensure_session_index(root, &mut emb).unwrap();
+        let reader = crate::session::SessionDataReader::open(&db);
+        let mut index = ensure_session_index(root, &reader, &mut emb).unwrap();
         assert_eq!(index.len(), 1);
 
-        s.insert_detail_rows(&[user_text("second row")]).unwrap();
-        index.reconcile(root, &mut emb).unwrap();
+        data.insert_items(&id, &[user_text("second row")]).unwrap();
+        index.reconcile(&reader, root, &mut emb).unwrap();
         assert_eq!(index.len(), 2);
     }
 }

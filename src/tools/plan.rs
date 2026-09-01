@@ -1,4 +1,4 @@
-//! Plan tool — workspace-scoped markdown plans under `.litecode/plan/`.
+//! Plan tool 鈥?workspace-scoped markdown plans under `.litecode/plan/`.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -83,7 +83,7 @@ impl Tool for PlanTool {
     fn description(&self, _ctx: &Context) -> String {
         "Create or finish the session plan under .litecode/plan/. \
          create writes a product-owned Markdown file (filename is auto-generated). \
-         finish clears the active plan pointer — that is the only way to end a plan. \
+         finish clears the active plan pointer 鈥?that is the only way to end a plan. \
          Never delete, move, or overwrite .litecode/plan/ with write, edit, or bash; \
          never rm the plan file or the .litecode directory."
             .into()
@@ -161,7 +161,7 @@ impl PlanTool {
         let tmp_path = plan_root.join(format!(".{slug}.md.tmp"));
 
         // Atomic create (REV-10): stage the .md as a temp file, persist the
-        // active-plan pointer, then publish via rename — a failure before the
+        // active-plan pointer, then publish via rename 鈥?a failure before the
         // rename leaves neither a visible .md nor a DB pointer.
         std::fs::write(&tmp_path, content)?;
         if let Err(e) = self.set_active_plan(&session_id, &slug) {
@@ -203,18 +203,17 @@ mod tests {
     use crate::config::WorkspacePaths;
     use crate::config::workspace::set_runtime_paths;
     use crate::session::manager::SessionManager;
-    use crate::session::store::Session;
     use crate::session::task_state::TaskReminders;
     use std::sync::Arc;
 
     fn make_manager(db_path: &str) -> (Arc<SessionManager>, String) {
-        let session = Session::open(db_path, "/proj", "default", Some("m")).unwrap();
-        let sid = session.id.clone();
-        let manager = Arc::new(SessionManager::new(
+        let manager = Arc::new(SessionManager::new_for_test(
             Arc::new(crate::config::TurnGuard::new()),
             db_path.to_string(),
         ));
-        manager.register_for_test(session);
+        let sid = manager
+            .open_session_sync("/proj", "default", Some("m"))
+            .unwrap();
         (manager, sid)
     }
 
@@ -404,12 +403,9 @@ mod tests {
             .and_then(|rest| rest.strip_suffix(".md"))
             .expect("slug in create output");
 
-        let db = dir.path().join(".litecode").join("sessions.db");
-        let resumed = Session::resume(&db.to_string_lossy(), &sid).unwrap();
-        let state = resumed.load_task_state().unwrap();
-        let plan = state
-            .active_plan
-            .as_ref()
+        let plan = manager
+            .with_entry_task_state(&sid, |state| Ok(state.active_plan.clone()))
+            .unwrap()
             .expect("active plan after resume");
         assert_eq!(plan.slug, slug);
         assert_eq!(plan.relative_path, format!(".litecode/plan/{slug}.md"));
@@ -429,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_requires_active_session() {
-        let manager = Arc::new(SessionManager::new(
+        let manager = Arc::new(SessionManager::new_for_test(
             Arc::new(crate::config::TurnGuard::new()),
             String::new(),
         ));

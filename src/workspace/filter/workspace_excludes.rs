@@ -251,6 +251,7 @@ mod tests {
         assert!(d.git_ignore);
         assert!(!d.explorer_git_ignore);
         assert!(d.search_exclude.iter().any(|g| g.contains("node_modules")));
+        assert!(d.watcher_exclude.iter().any(|g| g.contains(".litecode")));
     }
 
     #[test]

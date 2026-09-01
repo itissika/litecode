@@ -18,6 +18,15 @@ pub struct ToolExecutionContext {
     pub cancel: tokio_util::sync::CancellationToken,
     pub output_limit: usize,
     pub session_id: String,
+    pub session: Option<crate::session::SessionDataReader>,
+}
+
+impl ToolExecutionContext {
+    pub fn session_reader(&self) -> crate::types::Result<&crate::session::SessionDataReader> {
+        self.session.as_ref().ok_or_else(|| {
+            crate::types::LitecodeError::ToolExecution("session reader not injected".into())
+        })
+    }
 }
 
 pub trait Tool: Send + Sync {
@@ -165,6 +174,7 @@ mod tests {
                     cancel: tokio_util::sync::CancellationToken::new(),
                     output_limit: 8_000,
                     session_id: String::new(),
+                    session: None,
                 },
             )
             .await;

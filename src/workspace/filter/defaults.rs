@@ -34,6 +34,12 @@ pub const WATCHER_EXCLUDE: &[&str] = &[
     "*/.git/objects/**",
     "*/.git/subtree-cache/**",
     "*/.hg/store/**",
+    // Product-owned trees (not VS Code). Seeded into new `excludes.json`;
+    // classify also hard-gates [`PRODUCT_INTERNAL_DIRS`] so existing workspace
+    // files still skip index/session writes (`excludes.json` itself is kept).
+    "**/.litecode/**",
+    "**/.data/**",
+    "**/.venv-ort/**",
 ];
 
 /// Product-owned directory basenames (not VS Code).

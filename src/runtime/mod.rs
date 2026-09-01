@@ -497,15 +497,8 @@ impl AgentRuntime {
         let context = build_context(&resolved, &cwd, &paths);
 
         let context_window = turn_llm.context_window;
-        let context_pipeline = sessions.with_entry_store(&session_id, |s| {
-            let data_root = s.data_root().to_path_buf();
-            Ok(ContextPipeline::new(
-                s,
-                context_window,
-                context.clone(),
-                data_root,
-            ))
-        })?;
+        let context_pipeline =
+            ContextPipeline::new(context_window, context.clone(), sessions.data_root_path());
 
         let build_tool_params = Arc::new(BuildToolParams {
             resolved: resolved.clone(),
@@ -641,7 +634,8 @@ impl AgentRuntime {
         if stats.has_provider_usage() {
             let previous = self
                 .sessions
-                .with_entry_store(&self.session_id, |s| Ok(s.load_context_meter()?))
+                .data()
+                .meter_blocking(&self.session_id)
                 .unwrap_or_default();
             // Prefer turn_totals (Σ every request); fall back to last-request stats
             // if totals were somehow empty while stats still hold truth.
@@ -666,10 +660,7 @@ impl AgentRuntime {
                     .cum_cache_miss_tokens
                     .saturating_add(add.cache_miss_tokens),
             };
-            if let Err(e) = self
-                .sessions
-                .with_entry_store(&self.session_id, |s| Ok(s.save_context_meter(&meter)?))
-            {
+            if let Err(e) = self.sessions.save_context_meter(&self.session_id, &meter) {
                 tracing::warn!(
                     session_id = %self.session_id,
                     error = %e,
@@ -681,8 +672,9 @@ impl AgentRuntime {
         // in SessionLog so replay never infers completion from a disconnected
         // stream.
         let reason_name = reason.as_log_reason();
-        if let Err(error) = self.sessions.with_entry_store(&self.session_id, |store| {
-            store.apply(SessionApply::Append(EventDraft {
+        if let Err(error) = self.sessions.apply(
+            &self.session_id,
+            SessionApply::Append(EventDraft {
                 time: chrono::Utc::now().timestamp_millis(),
                 event_type: EventType::TurnEnd,
                 data: serde_json::json!({
@@ -693,9 +685,8 @@ impl AgentRuntime {
                 source_seqs: None,
                 ignorable: false,
                 state: crate::session::LogState::Final,
-            }))?;
-            Ok(())
-        }) {
+            }),
+        ) {
             tracing::warn!(session_id = %self.session_id, %error, "failed to append turn/end");
         }
         let _ = self.sessions.finish_turn(&self.session_id, turn_id);
@@ -722,10 +713,7 @@ impl AgentRuntime {
                 self.emit_turn_completed(turn_id, TurnEndReason::Completed, Some(final_text))
             }
             TurnOutcome::Cancelled { final_text } => {
-                match self
-                    .sessions
-                    .with_entry_store(&self.session_id, |s| Ok(s.seal_in_progress_items()?))
-                {
+                match self.sessions.seal_in_progress_items(&self.session_id) {
                     Ok(seqs) if !seqs.is_empty() => {
                         self.emit_internal(InternalEvent::BufferRestamp { seqs });
                     }
@@ -809,9 +797,7 @@ impl AgentRuntime {
                 Arc::clone(&self.observer),
                 Arc::clone(&self.current_step),
             );
-            let data_root = self
-                .sessions
-                .with_entry_store(&self.session_id, |s| Ok(s.data_root().to_path_buf()))?;
+            let data_root = self.sessions.data_root_path();
             let spill_threshold = output::DEFAULT_SPILL_THRESHOLD;
             let write_lock = crate::tool::write_lock::process_write_lock();
             let runtime_ctx = Arc::new(RuntimeContext::new(
@@ -824,6 +810,7 @@ impl AgentRuntime {
                 data_root,
                 spill_threshold,
                 write_lock,
+                Some(self.sessions.reader()),
             ));
             let mut tool_pipeline = ToolPipeline::new(Arc::clone(&runtime_ctx));
             tool_pipeline.bind_session(self.session_id.clone());
@@ -850,20 +837,25 @@ impl AgentRuntime {
         let sid = self.session_id.clone();
         // Propagate begin_turn errors explicitly — a failed load must not start
         // the turn with an empty (silently truncated) transcript.
-        let mut working = self.sessions.with_entry_store(&sid, |s| {
-            s.apply(SessionApply::Append(EventDraft {
-                time: chrono::Utc::now().timestamp_millis(),
-                event_type: EventType::TurnStart,
-                data: serde_json::json!({ "turn": turn_id }),
-                surface_op: None,
-                source_seqs: None,
-                ignorable: false,
-                state: crate::session::LogState::Final,
-            }))?;
-            Ok(self
-                .context_pipeline
-                .begin_turn_with_id(s, Some(turn_id.to_string()))?)
-        })?;
+        let mut working = {
+            self.sessions.apply(
+                &sid,
+                SessionApply::Append(EventDraft {
+                    time: chrono::Utc::now().timestamp_millis(),
+                    event_type: EventType::TurnStart,
+                    data: serde_json::json!({ "turn": turn_id }),
+                    surface_op: None,
+                    source_seqs: None,
+                    ignorable: false,
+                    state: crate::session::LogState::Final,
+                }),
+            )?;
+            self.context_pipeline.begin_turn_with_id(
+                &self.sessions,
+                &sid,
+                Some(turn_id.to_string()),
+            )?
+        };
         let mut items = project_items(&working);
 
         let already_last_user = items
@@ -877,9 +869,11 @@ impl AgentRuntime {
         // User Items are complete before any model stream. Persist
         // so the working set and disk agree before InFlight begins.
         {
-            let commit_outcome = self.sessions.with_entry_store(&self.session_id, |s| {
-                Ok(self.context_pipeline.commit_step(s, &mut working)?)
-            })?;
+            let commit_outcome = self.context_pipeline.commit_step(
+                &self.sessions,
+                &self.session_id,
+                &mut working,
+            )?;
             if commit_outcome.discarded {
                 return self.finalize_agent_outcome(
                     turn_id,
@@ -964,11 +958,11 @@ impl AgentRuntime {
         // Persist the final turn delta before TurnCompleted so the DB already
         // contains the whole turn when the event lands.
         if should_commit {
-            let commit_outcome = self.sessions.with_entry_store(&self.session_id, |s| {
-                Ok(self
-                    .context_pipeline
-                    .commit_step_from_items(s, &mut items)?)
-            })?;
+            let commit_outcome = self.context_pipeline.commit_step_from_items(
+                &self.sessions,
+                &self.session_id,
+                &mut items,
+            )?;
             if !commit_outcome.discarded {
                 if commit_outcome.committed {
                     self.emit_internal(crate::runtime::observer::InternalEvent::StepCommitted);

@@ -8,13 +8,11 @@ mod semantic_index;
 pub use semantic_index::{SessionSemanticIndex, ensure_session_index};
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 
-use crate::session::event::{EventType, Seq, SessionEvent};
-use crate::session::surface::fold_surface;
+use crate::session::SessionDataReader;
 use crate::session::transcript_file::{self, TranscriptFile};
 use crate::session::{count_text_tokens, truncate_text_tokens};
 use crate::types::{LitecodeError, Result};
@@ -125,13 +123,16 @@ struct HydratedHit {
 }
 
 /// Case-insensitive fuzzy search over all detail rows.
-pub fn search(db_path: &Path, query: &SessionTextQuery) -> Result<Vec<SessionTextHit>> {
-    search_all(db_path, query)
+pub fn search(reader: &SessionDataReader, query: &SessionTextQuery) -> Result<Vec<SessionTextHit>> {
+    search_all(reader, query)
 }
 
 /// All ranked lexical hits (no pagination).
-pub fn search_all(db_path: &Path, query: &SessionTextQuery) -> Result<Vec<SessionTextHit>> {
-    lexical::search_lexical(db_path, query)
+pub fn search_all(
+    reader: &SessionDataReader,
+    query: &SessionTextQuery,
+) -> Result<Vec<SessionTextHit>> {
+    lexical::search_lexical(reader, query)
 }
 
 /// Drop hits that violate include / exclude / context-window filters.
@@ -197,61 +198,16 @@ pub fn short_session_ref(session_id: &str) -> &str {
 }
 
 /// Resolve a full id, unique prefix, or unique short suffix to a durable session id.
-pub fn resolve_session_ref(db_path: &Path, refer: &str) -> Result<String> {
+pub fn resolve_session_ref(reader: &SessionDataReader, refer: &str) -> Result<String> {
     let refer = refer.trim();
     if refer.is_empty() {
         return Err(LitecodeError::Config("empty session ref".into()));
     }
-    if !db_path.is_file() {
-        return Err(LitecodeError::Config(format!(
-            "session ref '{refer}' not found (no sessions.db)"
-        )));
-    }
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))?;
-
-    let exact: Option<String> = conn
-        .query_row(
-            "SELECT id FROM sessions WHERE id = ?1",
-            rusqlite::params![refer],
-            |r| r.get(0),
-        )
-        .ok();
-    if let Some(id) = exact {
-        return Ok(id);
-    }
-
-    let mut stmt = conn
-        .prepare("SELECT id FROM sessions ORDER BY id ASC")
-        .map_err(|e| LitecodeError::Config(format!("session ref prepare: {e}")))?;
-    let rows = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(|e| LitecodeError::Config(format!("session ref query: {e}")))?;
-    let mut prefix_matches = Vec::new();
-    let mut suffix_matches = Vec::new();
-    for row in rows {
-        let id = row.map_err(|e| LitecodeError::Config(format!("session ref row: {e}")))?;
-        if id.starts_with(refer) {
-            prefix_matches.push(id.clone());
-        }
-        if id.ends_with(refer) {
-            suffix_matches.push(id);
-        }
-    }
-
-    match prefix_matches.len() {
-        1 => return Ok(prefix_matches.remove(0)),
-        n if n > 1 => {
-            return Err(ambiguous_session_ref(refer, &prefix_matches));
-        }
-        _ => {}
-    }
-    match suffix_matches.len() {
-        0 => Err(LitecodeError::Config(format!(
+    match reader.resolve_ref_blocking(refer)? {
+        Some(id) => Ok(id),
+        None => Err(LitecodeError::Config(format!(
             "session ref '{refer}' matched no sessions"
         ))),
-        1 => Ok(suffix_matches.remove(0)),
-        _ => Err(ambiguous_session_ref(refer, &suffix_matches)),
     }
 }
 
@@ -269,62 +225,8 @@ fn ambiguous_session_ref(refer: &str, matches: &[String]) -> LitecodeError {
 }
 
 /// Fold the session log and return current surface seqs. Empty session → empty vec.
-///
-/// Opens SQLite read-only (search must not migrate or take a write lock).
-pub fn load_surface_seqs(db_path: &Path, session_id: &str) -> Result<Vec<i64>> {
-    if !db_path.is_file() {
-        return Ok(Vec::new());
-    }
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT seq, event_type, surface_op, body, source_seqs FROM transcript_items
-             WHERE session_id = ?1 ORDER BY seq ASC",
-        )
-        .map_err(|e| LitecodeError::Config(format!("surface seqs prepare: {e}")))?;
-    let rows = stmt
-        .query_map(rusqlite::params![session_id], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
-        })
-        .map_err(|e| LitecodeError::Config(format!("surface seqs query: {e}")))?;
-    let mut events = Vec::new();
-    for row in rows {
-        let (seq, event_type, surface_op, body, source_seqs) =
-            row.map_err(|e| LitecodeError::Config(format!("surface seqs row: {e}")))?;
-        let seq = Seq::try_from(seq)
-            .map_err(|_| LitecodeError::InvalidSessionEvent(format!("negative seq {seq}")))?;
-        let event_type = EventType::from_str_name(&event_type);
-        let data = if matches!(event_type, EventType::Compacted) {
-            serde_json::from_str(body.as_deref().unwrap_or(""))?
-        } else {
-            serde_json::Value::Null
-        };
-        events.push(SessionEvent {
-            seq,
-            time: 0,
-            event_type,
-            data,
-            surface_op: (!surface_op.is_empty())
-                .then(|| serde_json::from_str(&surface_op))
-                .transpose()?,
-            source_seqs: source_seqs
-                .as_deref()
-                .filter(|value| !value.is_empty())
-                .map(serde_json::from_str)
-                .transpose()?,
-            ignorable: false,
-            state: crate::session::LogState::Final,
-        });
-    }
-    let surface = fold_surface(&events)?;
-    Ok(surface.nodes.iter().map(|s| *s as i64).collect())
+pub fn load_surface_seqs(reader: &SessionDataReader, session_id: &str) -> Result<Vec<i64>> {
+    reader.surface_seqs_blocking(session_id)
 }
 
 /// Gate weak semantic scores.
@@ -344,26 +246,17 @@ fn cmp_hits(a: &SessionTextHit, b: &SessionTextHit) -> std::cmp::Ordering {
 
 /// Load session created_at / updated_at for ids present in hits.
 pub fn load_session_meta(
-    db_path: &Path,
+    reader: &SessionDataReader,
     session_ids: &[String],
 ) -> Result<HashMap<String, SessionTimestamps>> {
     let mut out = HashMap::new();
-    if session_ids.is_empty() || !db_path.is_file() {
-        return Ok(out);
-    }
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| LitecodeError::Config(format!("open sessions.db read-only: {e}")))?;
     for id in session_ids {
-        if let Ok((created_at, updated_at)) = conn.query_row(
-            "SELECT created_at, updated_at FROM sessions WHERE id = ?1",
-            rusqlite::params![id],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
-        ) {
+        if let Ok(meta) = reader.meta_blocking(id) {
             out.insert(
                 id.clone(),
                 SessionTimestamps {
-                    created_at,
-                    updated_at,
+                    created_at: meta.created_at,
+                    updated_at: meta.updated_at,
                 },
             );
         }
@@ -373,14 +266,14 @@ pub fn load_session_meta(
 
 /// Build a token-bounded grouped page from a fused ranked hit list.
 pub fn build_search_page(
-    db_path: &Path,
+    reader: &SessionDataReader,
     ranked: &[SessionTextHit],
     offset: usize,
 ) -> Result<SessionSearchPage> {
-    let hydrated = hydrate_hits(db_path, ranked)?;
+    let hydrated = hydrate_hits(reader, ranked)?;
     let match_counts = count_by_session(&hydrated);
     let session_ids: Vec<String> = unique_session_order(&hydrated);
-    let meta = load_session_meta(db_path, &session_ids).unwrap_or_default();
+    let meta = load_session_meta(reader, &session_ids).unwrap_or_default();
     Ok(pack_page(
         &hydrated,
         &match_counts,
@@ -390,12 +283,12 @@ pub fn build_search_page(
     ))
 }
 
-fn hydrate_hits(db_path: &Path, hits: &[SessionTextHit]) -> Result<Vec<HydratedHit>> {
+fn hydrate_hits(reader: &SessionDataReader, hits: &[SessionTextHit]) -> Result<Vec<HydratedHit>> {
     let mut cache: HashMap<String, TranscriptFile> = HashMap::new();
     let mut out = Vec::with_capacity(hits.len());
     for hit in hits {
         if !cache.contains_key(&hit.session_id) {
-            let file = transcript_file::load_transcript_file(db_path, &hit.session_id)?;
+            let file = reader.transcript_file_blocking(&hit.session_id)?;
             cache.insert(hit.session_id.clone(), file);
         }
         let file = cache.get(&hit.session_id).unwrap();
@@ -631,39 +524,37 @@ pub(crate) fn snippet_from_span(text: &str, char_start: usize, char_end: usize) 
     snippet.chars().take(HIT_CORE_MAX_CHARS).collect()
 }
 
-/// Resolve workspace sessions DB path (`<root>/.litecode/sessions.db`).
-pub fn sessions_db_under(workspace_root: &Path) -> PathBuf {
-    workspace_root.join(".litecode").join("sessions.db")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::store::Session;
+    use crate::session::{SessionData, SessionDataReader, WorkspaceWriteLease};
     use crate::types::user_text;
+    use std::path::Path;
     use tempfile::TempDir;
 
-    fn seed_db(dir: &Path) -> (PathBuf, String, String) {
+    fn seed_db(dir: &Path) -> (SessionDataReader, String, String) {
         let db = dir.join("sessions.db");
-        let a = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        a.insert_detail_rows(&[user_text("alpha UNIQUE_SESSION_PHRASE omega")])
-            .unwrap();
-        let id_a = a.id.clone();
-
-        let b = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        b.insert_detail_rows(&[user_text("other OTHER_MARKER content")])
-            .unwrap();
-        let id_b = b.id.clone();
-        (db, id_a, id_b)
+        let (id_a, id_b) = {
+            let lease = WorkspaceWriteLease::acquire(dir).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id_a = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(&id_a, &[user_text("alpha UNIQUE_SESSION_PHRASE omega")])
+                .unwrap();
+            let id_b = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(&id_b, &[user_text("other OTHER_MARKER content")])
+                .unwrap();
+            (id_a, id_b)
+        };
+        (SessionDataReader::open(&db), id_a, id_b)
     }
 
     #[test]
     fn session_text_search_finds_seeded_transcript() {
         let dir = TempDir::new().unwrap();
-        let (db, id_a, _) = seed_db(dir.path());
+        let (reader, id_a, _) = seed_db(dir.path());
 
         let hits = search(
-            &db,
+            &reader,
             &SessionTextQuery {
                 query: "UNIQUE_SESSION_PHRASE".into(),
                 offset: 0,
@@ -683,9 +574,9 @@ mod tests {
     #[test]
     fn session_text_search_case_insensitive() {
         let dir = TempDir::new().unwrap();
-        let (db, id_a, _) = seed_db(dir.path());
+        let (reader, id_a, _) = seed_db(dir.path());
         let hits = search(
-            &db,
+            &reader,
             &SessionTextQuery {
                 query: "unique_session_phrase".into(),
                 offset: 0,
@@ -701,9 +592,9 @@ mod tests {
     #[test]
     fn session_text_search_fuzzy_typo() {
         let dir = TempDir::new().unwrap();
-        let (db, id_a, _) = seed_db(dir.path());
+        let (reader, id_a, _) = seed_db(dir.path());
         let hits = search(
-            &db,
+            &reader,
             &SessionTextQuery {
                 query: "UNIQUE_SESSION_PHRAZE".into(),
                 offset: 0,
@@ -720,10 +611,10 @@ mod tests {
     #[test]
     fn session_text_search_respects_scope() {
         let dir = TempDir::new().unwrap();
-        let (db, id_a, id_b) = seed_db(dir.path());
+        let (reader, id_a, id_b) = seed_db(dir.path());
 
         let hits = search(
-            &db,
+            &reader,
             &SessionTextQuery {
                 query: "OTHER_MARKER".into(),
                 offset: 0,
@@ -739,7 +630,7 @@ mod tests {
         );
 
         let page_b = search(
-            &db,
+            &reader,
             &SessionTextQuery {
                 query: "OTHER_MARKER".into(),
                 offset: 0,
@@ -756,9 +647,9 @@ mod tests {
     #[test]
     fn session_text_search_skips_empty_query() {
         let dir = TempDir::new().unwrap();
-        let (db, _, _) = seed_db(dir.path());
+        let (reader, _, _) = seed_db(dir.path());
         let err = search(
-            &db,
+            &reader,
             &SessionTextQuery {
                 query: "   ".into(),
                 offset: 0,
@@ -773,7 +664,7 @@ mod tests {
     fn session_text_search_missing_db_returns_empty() {
         let dir = TempDir::new().unwrap();
         let hits = search(
-            &dir.path().join("nope.db"),
+            &SessionDataReader::open(&dir.path().join("nope.db")),
             &SessionTextQuery {
                 query: "anything".into(),
                 offset: 0,
@@ -863,19 +754,27 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        s.insert_detail_rows(&[Item::FunctionCall(FunctionToolCall {
-            arguments: r#"{"cmd":"UNIQUE_TOOL_NEEDLE"}"#.into(),
-            call_id: "c1".into(),
-            namespace: None,
-            name: "bash".into(),
-            id: None,
-            status: None,
-        })])
-        .unwrap();
+        {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(
+                &id,
+                &[Item::FunctionCall(FunctionToolCall {
+                    arguments: r#"{"cmd":"UNIQUE_TOOL_NEEDLE"}"#.into(),
+                    call_id: "c1".into(),
+                    namespace: None,
+                    name: "bash".into(),
+                    id: None,
+                    status: None,
+                })],
+            )
+            .unwrap();
+        }
+        let reader = SessionDataReader::open(&db);
 
         let hits = search(
-            &db,
+            &reader,
             &SessionTextQuery {
                 query: "UNIQUE_TOOL_NEEDLE".into(),
                 offset: 0,
@@ -891,24 +790,31 @@ mod tests {
     fn context_window_exclude_drops_live_seqs_keeps_archive() {
         let dir = TempDir::new().unwrap();
         let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        let sid = s.id.clone();
-        s.insert_detail_rows(&[
-            user_text("ARCHIVE_NEEDLE_ONLY"),
-            user_text("LIVE_NEEDLE_ONLY"),
-        ])
-        .unwrap();
-        s.apply_compact_checkpoint_from(&user_text("sum"), Some(1), 3)
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(
+                &id,
+                &[
+                    user_text("ARCHIVE_NEEDLE_ONLY"),
+                    user_text("LIVE_NEEDLE_ONLY"),
+                ],
+            )
             .unwrap();
-        drop(s);
+            data.compact_from(&id, &user_text("sum"), Some(1), 3)
+                .unwrap();
+            id
+        };
+        let reader = SessionDataReader::open(&db);
 
         let hits = search(
-            &db,
+            &reader,
             &SessionTextQuery {
                 query: "NEEDLE_ONLY".into(),
                 exclude_context_window: Some(ContextWindowExclude {
                     session_id: sid.clone(),
-                    surface_seqs: load_surface_seqs(&db, &sid).unwrap(),
+                    surface_seqs: load_surface_seqs(&reader, &sid).unwrap(),
                 }),
                 ..Default::default()
             },
@@ -922,9 +828,9 @@ mod tests {
     #[test]
     fn exclude_session_ids_filters_rows() {
         let dir = TempDir::new().unwrap();
-        let (db, id_a, id_b) = seed_db(dir.path());
+        let (reader, id_a, id_b) = seed_db(dir.path());
         let hits = search(
-            &db,
+            &reader,
             &SessionTextQuery {
                 query: "OTHER_MARKER".into(),
                 exclude_session_ids: vec![id_b.clone()],
@@ -935,7 +841,7 @@ mod tests {
         assert!(hits.is_empty());
 
         let page_a = search(
-            &db,
+            &reader,
             &SessionTextQuery {
                 query: "UNIQUE_SESSION_PHRASE".into(),
                 exclude_session_ids: vec![id_b],
@@ -950,11 +856,11 @@ mod tests {
     #[test]
     fn resolve_session_ref_unique_prefix() {
         let dir = TempDir::new().unwrap();
-        let (db, id_a, _) = seed_db(dir.path());
+        let (reader, id_a, _) = seed_db(dir.path());
         let short = short_session_ref(&id_a);
-        assert_eq!(resolve_session_ref(&db, short).unwrap(), id_a);
-        assert_eq!(resolve_session_ref(&db, &id_a).unwrap(), id_a);
-        let err = resolve_session_ref(&db, "ZZZZNOPE").unwrap_err();
+        assert_eq!(resolve_session_ref(&reader, short).unwrap(), id_a);
+        assert_eq!(resolve_session_ref(&reader, &id_a).unwrap(), id_a);
+        let err = resolve_session_ref(&reader, "ZZZZNOPE").unwrap_err();
         assert!(err.to_string().contains("matched no sessions"));
     }
 
@@ -962,15 +868,22 @@ mod tests {
     fn lexical_fts_indexes_on_insert_and_finds_token() {
         let dir = TempDir::new().unwrap();
         let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        s.insert_detail_rows(&[user_text(
-            "decision: use middleware for AuthRefactorToken login path",
-        )])
-        .unwrap();
-        drop(s);
+        {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(
+                &id,
+                &[user_text(
+                    "decision: use middleware for AuthRefactorToken login path",
+                )],
+            )
+            .unwrap();
+        }
+        let reader = SessionDataReader::open(&db);
 
         let hits = search(
-            &db,
+            &reader,
             &SessionTextQuery {
                 query: "AuthRefactorToken".into(),
                 offset: 0,
@@ -984,50 +897,35 @@ mod tests {
     }
 
     #[test]
-    fn lexical_backfill_recovers_pre_fts_rows() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        s.insert_detail_rows(&[user_text("BACKFILL_ONLY_MARKER unique")])
-            .unwrap();
-        {
-            let conn = rusqlite::Connection::open(&db).unwrap();
-            let _ = conn.execute_batch("DELETE FROM transcript_fts;");
-        }
-        let hits = search(
-            &db,
-            &SessionTextQuery {
-                query: "BACKFILL_ONLY_MARKER".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(hits.len(), 1);
-    }
-
-    #[test]
     fn build_search_page_uses_physical_line_and_match_count() {
         let dir = TempDir::new().unwrap();
         let db = dir.path().join("sessions.db");
-        let s = Session::open(db.to_str().unwrap(), "/proj", "default", None).unwrap();
-        s.insert_detail_rows(&[
-            user_text("first PAGE_LINE_TOKEN here"),
-            user_text("filler"),
-            user_text("second PAGE_LINE_TOKEN there"),
-        ])
-        .unwrap();
-        let sid = s.id.clone();
-        drop(s);
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(
+                &id,
+                &[
+                    user_text("first PAGE_LINE_TOKEN here"),
+                    user_text("filler"),
+                    user_text("second PAGE_LINE_TOKEN there"),
+                ],
+            )
+            .unwrap();
+            id
+        };
+        let reader = SessionDataReader::open(&db);
 
         let hits = search(
-            &db,
+            &reader,
             &SessionTextQuery {
                 query: "PAGE_LINE_TOKEN".into(),
                 ..Default::default()
             },
         )
         .unwrap();
-        let page = build_search_page(&db, &hits, 0).unwrap();
+        let page = build_search_page(&reader, &hits, 0).unwrap();
         assert_eq!(page.groups.len(), 1);
         assert_eq!(page.groups[0].session_id, sid);
         assert_eq!(page.groups[0].match_count, 2);
