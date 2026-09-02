@@ -17,6 +17,16 @@ describe("ToolIcon settle animation", () => {
     expect(container.querySelector(".tool-icon--pop")).toBeTruthy();
   });
 
+  it("pops with the warn colour when streaming transitions true→false on warning", () => {
+    const { container, rerender } = render(
+      <ToolIcon name="write" status="warning" streaming />,
+    );
+    expect(container.querySelector(".tool-icon--pop")).toBeNull();
+    rerender(<ToolIcon name="write" status="warning" streaming={false} />);
+    expect(container.querySelector(".tool-icon--pop")).toBeTruthy();
+    expect(container.querySelector(".tool-icon--warn")).toBeTruthy();
+  });
+
   it("stays static when mounted with streaming=false (no transition)", () => {
     const { container } = render(
       <ToolIcon name="write" status="ok" streaming={false} />,

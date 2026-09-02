@@ -37,8 +37,6 @@ pub struct LexicalQuery {
     pub max_matches: usize,
     pub before_context: usize,
     pub after_context: usize,
-    /// When true, include hidden files (agent grep default).
-    pub search_hidden: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -73,14 +71,13 @@ pub struct LexicalSearchOutcome {
 
 /// Run LexicalLane search entirely in-process.
 pub fn lexical_search(query: &LexicalQuery) -> Result<Vec<LexicalMatch>> {
-    Ok(lexical_search_with_preset(query, FilterPreset::TextSearch)?.matches)
+    Ok(lexical_search_with_preset(query, FilterPreset::Search)?.matches)
 }
 
 /// Run LexicalLane with a consumer-specific workspace filter preset.
 ///
-/// Human workspace search uses [`FilterPreset::TextSearch`]; agent `grep`
-/// defaults to [`FilterPreset::AgentText`]. [`FilterPreset::Unfiltered`] is
-/// only for explicit `no_ignore` discovery.
+/// Human workspace search and agent `grep` share [`FilterPreset::Search`].
+/// [`FilterPreset::Unfiltered`] is only for explicit `no_ignore` discovery.
 ///
 /// When the text index is Ready, it only chooses which files to open; matching
 /// and excludes are the same as a full ripgrep walk with `preset`.
@@ -180,11 +177,6 @@ fn lexical_search_ripgrep(
     let mut walker = WalkBuilder::new(search_ctx.root_lap());
     // Exclude/include matching uses workspace-relative paths (query.root).
     configure_walk_with(&mut walker, rel_ctx.root_lap(), preset, walk_opts);
-    // Retained for the human TextSearch caller's explicit hidden-file option.
-    // AgentText / FileGlob / Unfiltered own hidden behavior via the preset.
-    if preset == FilterPreset::TextSearch {
-        walker.hidden(!query.search_hidden);
-    }
     walker.parents(true);
 
     let include_via_walk = !include.is_empty();
@@ -449,7 +441,6 @@ mod tests {
             max_matches: 50,
             before_context: 0,
             after_context: 0,
-            search_hidden: false,
         }
     }
 
@@ -620,20 +611,18 @@ mod tests {
     }
 
     #[test]
-    fn text_search_hidden_files_gated() {
+    fn search_includes_unignored_hidden_files() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::write(root.join(".secret"), "hidden_token\n").unwrap();
         std::fs::write(root.join("open.txt"), "hidden_token\n").unwrap();
 
-        let mut query = q(root, "hidden_token");
-        query.search_hidden = false;
-        let hits = lexical_search(&query).unwrap();
-        assert!(hits.iter().all(|h| !h.path.contains(".secret")));
-
-        query.search_hidden = true;
-        let hits = lexical_search(&query).unwrap();
-        assert!(hits.iter().any(|h| h.path.contains(".secret")));
+        let hits = lexical_search(&q(root, "hidden_token")).unwrap();
+        assert!(
+            hits.iter().any(|h| h.path.contains(".secret")),
+            "Search must not hide un-ignored dotfiles: {hits:?}"
+        );
+        assert!(hits.iter().any(|h| h.path.contains("open.txt")));
     }
 
     #[test]
@@ -702,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_text_respects_excludes_keeps_hidden() {
+    fn search_respects_excludes_keeps_hidden() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
@@ -714,17 +703,23 @@ mod tests {
         std::fs::write(root.join("open.txt"), "agent_needle\n").unwrap();
 
         let outcome =
-            lexical_search_with_preset(&q(root, "agent_needle"), FilterPreset::AgentText).unwrap();
+            lexical_search_with_preset(&q(root, "agent_needle"), FilterPreset::Search).unwrap();
         let hits = &outcome.matches;
         assert!(hits.iter().any(|h| h.path == "open.txt"), "{hits:?}");
         assert!(hits.iter().any(|h| h.path == ".env"), "{hits:?}");
         assert!(
             !hits.iter().any(|h| h.path == "ignored.txt"),
-            "AgentText must respect .gitignore: {hits:?}"
+            "Search must respect .gitignore: {hits:?}"
         );
         assert!(
             !hits.iter().any(|h| h.path.contains("node_modules")),
-            "AgentText must apply search.exclude: {hits:?}"
+            "Search must apply search.exclude: {hits:?}"
+        );
+        let human = lexical_search(&q(root, "agent_needle")).unwrap();
+        assert_eq!(
+            human.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
+            hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
+            "human search and agent grep share Search corpus"
         );
     }
 

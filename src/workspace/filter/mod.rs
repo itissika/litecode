@@ -2,15 +2,16 @@
 //!
 //! Exclude globs are workspace-owned (`.litecode/excludes.json`), seeded from
 //! VS Code (`files.exclude` / `search.exclude` / `files.watcherExclude`).
-//! Walks also compose ripgrep (gitignore / hidden / binary). Index
-//! content gates are the product [`index_policy`] migrated from code_search.
-//! Directory discovery for search / Agent / Index shares files∪search; product
-//! internal dirs and snapshot-only trees compose via [`dirs`].
+//! Three faces: Explorer (tree), Search (human/agent/index), Watcher (hard cut).
+//! Walks compose ripgrep gitignore / binary. Index content gates (binary /
+//! size only) stay in [`index_policy`]. Product-internal dirs compose via
+//! [`dirs`].
 
 mod binary;
 mod defaults;
 mod dirs;
 mod exclude;
+mod gitignore;
 mod index_policy;
 mod layers;
 mod path;
@@ -28,9 +29,10 @@ pub use dirs::{
     is_product_internal_dir_name, path_has_product_internal_dir, snapshot_exclude_dir_basenames,
 };
 pub use exclude::{ExcludeMatcher, path_excluded};
+pub use gitignore::path_gitignored;
 pub use index_policy::{
-    MAX_INDEX_FILE_BYTES, SKIP_DIRS, TEXT_EXTENSIONS, is_indexable_rel_path, is_noise_basename,
-    is_scannable_rel_path, path_has_skipped_dir, should_queue_index_update,
+    MAX_INDEX_FILE_BYTES, SKIP_DIRS, is_indexable_rel_path, is_scannable_rel_path,
+    path_has_skipped_dir, should_queue_index_update,
 };
 pub use layers::FilterLayers;
 pub use path::{RelPathCtx, cheap_rel_under, rel_path_under};

@@ -216,7 +216,7 @@ pub fn scannable_files(workspace_root: &Path) -> Result<Vec<String>> {
     let mut out = Vec::new();
     let rel_ctx =
         RelPathCtx::new(workspace_root).unwrap_or_else(|_| RelPathCtx::new_lossy(workspace_root));
-    let walker = walk_builder(workspace_root, FilterPreset::Index);
+    let walker = walk_builder(workspace_root, FilterPreset::Search);
     for result in walker.build() {
         let entry = match result {
             Ok(e) => e,
@@ -260,8 +260,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::write(root.join("a.rs"), "x\n").unwrap();
+        std::fs::write(root.join("LICENSE"), "MIT\n").unwrap();
+        std::fs::write(root.join("serve.ps1"), "Write-Host hi\n").unwrap();
         let files = scannable_files(root).unwrap();
         assert!(files.iter().any(|f| f == "a.rs"));
+        assert!(files.iter().any(|f| f == "LICENSE"));
+        assert!(files.iter().any(|f| f == "serve.ps1"));
         assert!(is_scannable_rel_path("a.rs"));
     }
 

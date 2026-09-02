@@ -62,8 +62,9 @@ type ToolAnim = "pop" | "fail" | null;
 /**
  * Tool glyph with two static states and one-shot feedback:
  *   - ok / unknown / running → static theme-foreground colour (no animation)
+ *   - warning               → static amber
  *   - failed                → static failure red
- *   - settling to ok        → bounce + green flash once, then settle to static
+ *   - settling to ok/warn   → bounce + colour flash once, then settle to static
  *   - settling to failed    → shrink + red flash + shockwave once, then red
  *
  * The animation fires exactly once: when `streaming` (tool-level work-live)
@@ -107,7 +108,7 @@ export function ToolIcon({
       return;
     }
 
-    if (status === "ok") {
+    if (status === "ok" || status === "warning") {
       setAnim("pop");
       clearTimer.current = window.setTimeout(() => setAnim(null), 700);
     } else if (status === "failed") {

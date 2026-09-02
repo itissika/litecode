@@ -17,13 +17,9 @@ pub struct FilterLayers {
     pub git_global: bool,
     /// Respect `$GIT_DIR/info/exclude`.
     pub git_exclude: bool,
-    /// Skip hidden files/dirs (ripgrep default).
-    pub hide_hidden: bool,
-    /// Skip files that look binary (NUL in first 8 KiB).
+    /// Skip files that look binary (NUL in first 8 KiB). Search-line content
+    /// gate, not a fourth exclude list.
     pub skip_binary: bool,
-    /// Semantic-index: caller content gates (extensions / size / noise / binary).
-    /// Directory prune of `.litecode` is [`FilterPreset::prune_product_internal_dirs`].
-    pub index_content: bool,
 }
 
 impl FilterLayers {
@@ -34,8 +30,6 @@ impl FilterLayers {
         git_ignore: false,
         git_global: false,
         git_exclude: false,
-        hide_hidden: false,
         skip_binary: false,
-        index_content: false,
     };
 }

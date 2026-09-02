@@ -16,7 +16,7 @@ pub struct TextIndexMeta {
     pub built_unix_ms: u64,
     #[serde(default)]
     pub corpus_fingerprint: String,
-    /// AgentText files too large for Tantivy; still verified on every grep.
+    /// Search files too large for Tantivy; still verified on every grep.
     #[serde(default)]
     pub oversized: Vec<String>,
     /// Rel paths currently in the corpus (Tantivy docs ∪ oversized sidecar).

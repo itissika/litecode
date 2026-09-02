@@ -18,13 +18,13 @@
 
 打开工作区时若不存在会按内置默认种子。
 
-**干什么。** 工作区排除。三套 glob **不要并成一套**：
+**干什么。** 工作区排除。三套 glob **不要并成一套**（对齐 VS Code：树 / 检索 / 监视器）：
 
-- `files_exclude`：资源管理器当文件不存在，默认搜索也不碰。
-- `search_exclude`：资源管理器还能看见，但 `grep` / `glob` / 文本索引 / 语义索引默认不扫。
-- `watcher_exclude`：少给界面报文件变化（省 CPU）。**不表示「不要搜」**。
+- `files_exclude`：资源管理器当文件不存在；检索默认也不碰。
+- `search_exclude`：资源管理器还能看见，但人的搜索、`grep` / `glob`、文本索引、语义索引默认不扫。生成物（`Cargo.lock`、`package-lock.json`、`*.min.js` 等）不想被检索时写在这里，不要靠引擎再滤一层语言表。
+- `watcher_exclude`：监视器**源上硬切**，命中的路径不上变化总线（引擎和界面都收不到增量）。默认含 `**/.litecode/**`。**例外**（硬编码放行，否则设置无法热加载）：`excludes.json`、`mcp.json`、`custom_tools.json`。不放行 `index/` 等产物。
 
-另两个开关：`git_ignore`（搜索与索引是否尊重 `.gitignore`，默认 `true`）；`explorer_git_ignore`（资源管理器是否尊重 `.gitignore`，默认 `false`）。检索语料 = `files_exclude` ∪ `search_exclude`，再按 `git_ignore` 决定是否套 `.gitignore`。本目录自身的硬跳不走这份列表。
+另两个开关：`git_ignore`（检索是否尊重 `.gitignore`，默认 `true`）；`explorer_git_ignore`（资源管理器是否尊重 `.gitignore`，默认 `false`）。检索只认排除名单 + 是否用 ignore 文件；不另藏 hidden。本目录自身的硬跳不走这份列表。
 
 **怎么改。** 设置页；或按下面格式改本文件。目录写 `dir` 或 `**/dir`，不要写 `dir/`（`.gitignore` 的尾斜杠语义这里没有；保存时会去掉尾 `/`）。空行、`#` 行、重复 glob 会被丢掉。删掉本文件会在下次打开时重新种子。
 
@@ -41,7 +41,7 @@
 }
 ```
 
-**怎么生效。** 监视器重载进程内列表（JSON 无效则保持上一份）。文本索引按新语料调和；已打开代码语义检索时会同步索引（对齐完成前 `code_search` 可能提示稍后再试）。改仓库里的 `.gitignore` 同样会调和索引，不经本文件。
+**怎么生效。** 监视器放行本文件，重载进程内列表（JSON 无效则保持上一份）。文本索引按新语料调和；已打开代码语义检索时会同步索引（对齐完成前 `code_search` 可能提示稍后再试）。改仓库里的 `.gitignore` 同样会调和索引，不经本文件。
 
 ### `mcp.json`
 
@@ -116,7 +116,7 @@
 | `bash/` | 后台命令输出：`bash/<id>.output`（id 形如 `bg_<8 位 hex>`）。用 `read` 看，不要改正在写的文件 |
 | `index/` | `code_search` 语义索引产物。不要手编 |
 | `session-index/` | 会话语料的语义索引。字面检索走 `sessions.db` |
-| `text-index/` | `grep` 加速索引。语料跟 `excludes.json` 的检索规则对齐，不跟 `watcher_exclude` 对齐 |
+| `text-index/` | `grep` 加速索引。语料跟检索规则（`files_exclude` ∪ `search_exclude` + `git_ignore`）对齐，不把 `watcher_exclude` 当第四套搜索排除 |
 | `sessions/` | **虚拟**，磁盘上通常没有。投影为 `sessions/<完整 session_id>.md`。`read` / `grep` / `glob` 必须把 `path` 指到 `sessions` 或某个 `.md`。不要 `mkdir` |
 
 旧的 `snapshots/` 打开工作区会清掉。文件回退在 `~/.litecode/snapshots/<workspace_id>/`。

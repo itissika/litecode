@@ -305,7 +305,7 @@ fn discovery_preset(no_ignore: bool) -> FilterPreset {
     if no_ignore {
         FilterPreset::Unfiltered
     } else {
-        FilterPreset::FileGlob
+        FilterPreset::Search
     }
 }
 
@@ -344,11 +344,11 @@ mod tests {
         );
         assert!(
             !found.iter().any(|p| p.contains("node_modules")),
-            "FileGlob must apply search.exclude; got {found:?}"
+            "Search must apply search.exclude; got {found:?}"
         );
         assert!(
             found.iter().any(|p| p == ".env"),
-            "FileGlob must not hide dotfiles; got {found:?}"
+            "Search must not hide dotfiles; got {found:?}"
         );
     }
 
@@ -407,7 +407,7 @@ mod tests {
         assert!(filtered.iter().any(|p| p == "keep.rs"), "{filtered:?}");
         assert!(
             !filtered.iter().any(|p| p.contains(".litecode")),
-            "FileGlob must skip nested .litecode; got {filtered:?}"
+            "Search must skip nested .litecode; got {filtered:?}"
         );
 
         let inside = glob_match(&root.join(".litecode"), "**/*", false).unwrap();

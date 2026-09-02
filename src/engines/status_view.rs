@@ -136,13 +136,10 @@ impl WorkspaceEngines {
         let policy_json = serde_json::json!({
             "product_internal_dirs": crate::workspace::filter::PRODUCT_INTERNAL_DIRS,
             "exclude_globs": crate::workspace::filter::exclude_globs(
-                crate::workspace::filter::FilterPreset::Index
+                crate::workspace::filter::FilterPreset::Search
             ),
-            "extensions": crate::workspace::filter::TEXT_EXTENSIONS,
             "max_file_bytes": crate::workspace::filter::MAX_INDEX_FILE_BYTES,
             "binary_files": true,
-            "lockfiles": true,
-            "minified_files": true,
         });
         serde_json::json!({
             "desired": retrieval_status.desired,

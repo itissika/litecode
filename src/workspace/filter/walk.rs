@@ -41,7 +41,8 @@ pub fn configure_walk_with(
 ) {
     let layers = preset.layers();
     builder
-        .hidden(layers.hide_hidden)
+        // VS Code search passes ripgrep `--hidden`; gitignore is the ignore axis.
+        .hidden(false)
         .git_ignore(layers.git_ignore)
         .git_global(layers.git_global)
         .git_exclude(layers.git_exclude);
@@ -174,7 +175,7 @@ mod tests {
         std::fs::write(root.join("ok.rs"), "fn ok() {}\n").unwrap();
         std::fs::write(root.join("bad.bin"), b"hello\x00world").unwrap();
 
-        let files: Vec<String> = walk_builder(root, FilterPreset::TextSearch)
+        let files: Vec<String> = walk_builder(root, FilterPreset::Search)
             .build()
             .flatten()
             .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
@@ -227,7 +228,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".data")).unwrap();
         std::fs::write(root.join(".data/foo.rs"), "fn d() {}\n").unwrap();
 
-        let files: Vec<String> = walk_builder(root, FilterPreset::Index)
+        let files: Vec<String> = walk_builder(root, FilterPreset::Search)
             .build()
             .flatten()
             .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
@@ -266,15 +267,12 @@ mod tests {
         std::fs::write(root.join(".litecode/index/x.rs"), "fn l() {}\n").unwrap();
         std::fs::write(root.join("src.rs"), "fn s() {}\n").unwrap();
 
-        let agent = collect_files(root, FilterPreset::AgentText);
-        assert!(agent.iter().any(|f| f == "src.rs"), "{agent:?}");
+        let search = collect_files(root, FilterPreset::Search);
+        assert!(search.iter().any(|f| f == "src.rs"), "{search:?}");
         assert!(
-            !agent.iter().any(|f| f.contains(".litecode")),
-            "AgentText must hard-skip nested .litecode; got {agent:?}"
+            !search.iter().any(|f| f.contains(".litecode")),
+            "Search must hard-skip nested .litecode; got {search:?}"
         );
-
-        let glob = collect_files(root, FilterPreset::FileGlob);
-        assert!(!glob.iter().any(|f| f.contains(".litecode")), "{glob:?}");
 
         let explorer = collect_files(root, FilterPreset::Explorer);
         assert!(
@@ -288,7 +286,7 @@ mod tests {
             "Unfiltered must not prune .litecode; got {raw:?}"
         );
 
-        let nested = collect_files(&root.join(".litecode"), FilterPreset::AgentText);
+        let nested = collect_files(&root.join(".litecode"), FilterPreset::Search);
         assert!(
             nested
                 .iter()
@@ -327,7 +325,7 @@ mod tests {
             );
             assert!(explorer.iter().any(|f| f == "visible.rs"));
 
-            let index = collect(FilterPreset::Index);
+            let index = collect(FilterPreset::Search);
             assert!(
                 !index.iter().any(|f| f == "ignored.rs"),
                 "index walk must honor gitignore: {index:?}"
@@ -348,7 +346,7 @@ mod tests {
                     !explorer2.iter().any(|f| f == "ignored.rs"),
                     "explorer must honor gitignore when explorer_git_ignore=true: {explorer2:?}"
                 );
-                let index2 = collect(FilterPreset::Index);
+                let index2 = collect(FilterPreset::Search);
                 assert!(
                     index2.iter().any(|f| f == "ignored.rs"),
                     "index walk must include gitignored file when git_ignore=false: {index2:?}"
@@ -374,7 +372,7 @@ mod tests {
                 ..WorkspaceExcludesFile::builtin_defaults()
             },
             || {
-                let files: Vec<String> = walk_builder(root, FilterPreset::AgentText)
+                let files: Vec<String> = walk_builder(root, FilterPreset::Search)
                     .build()
                     .flatten()
                     .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
@@ -387,5 +385,31 @@ mod tests {
                 assert!(files.iter().any(|f| f == "keep.rs"), "{files:?}");
             },
         );
+    }
+
+    #[test]
+    fn search_walk_honors_gitignore_target() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("target/foo.rs"), "fn t() {}\n").unwrap();
+        std::fs::write(root.join("src.rs"), "fn s() {}\n").unwrap();
+
+        use crate::workspace::filter::{WorkspaceExcludesFile, with_excludes_cache_for_test};
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let files = collect_files(root, FilterPreset::Search);
+            assert!(files.iter().any(|f| f == "src.rs"), "{files:?}");
+            assert!(
+                !files.iter().any(|f| f.contains("target")),
+                "Search walk must honor gitignore target/: {files:?}"
+            );
+            let explorer = collect_files(root, FilterPreset::Explorer);
+            assert!(
+                explorer.iter().any(|f| f.contains("target")),
+                "Explorer default still lists gitignored files: {explorer:?}"
+            );
+        });
     }
 }

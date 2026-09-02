@@ -7,20 +7,24 @@ use crate::workspace::filter::should_queue_index_update;
 
 use super::{SharedRuntime, write_pending_hint};
 
-/// Queue workspace-relative paths into `pending_updates` after Index gates.
+/// Queue workspace-relative paths into `pending_updates` after Search gates.
 pub fn queue_fs_changes(runtime: &SharedRuntime, paths: &[String], deleted: bool) {
+    let Ok(guard) = runtime.read() else {
+        return;
+    };
+    let Some(rt) = guard.as_ref() else {
+        return;
+    };
+    let root = rt.workspace_root.clone();
     let filtered: Vec<String> = paths
         .iter()
-        .filter(|p| should_queue_index_update(p, deleted))
+        .filter(|p| should_queue_index_update(&root, p, deleted))
         .cloned()
         .collect();
     if filtered.is_empty() {
         return;
     }
-    if let Ok(guard) = runtime.read()
-        && let Some(rt) = guard.as_ref()
-        && let Ok(mut pending) = rt.pending_updates.lock()
-    {
+    if let Ok(mut pending) = rt.pending_updates.lock() {
         for path in filtered {
             pending.insert((path, deleted));
         }

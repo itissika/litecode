@@ -365,11 +365,8 @@ export interface RetrievalEngineDetail {
     product_internal_dirs: string[];
     /** Index preset exclude globs (files∪search + product dirs). */
     exclude_globs: string[];
-    extensions: string[];
     max_file_bytes: number;
     binary_files: boolean;
-    lockfiles: boolean;
-    minified_files: boolean;
   };
 }
 

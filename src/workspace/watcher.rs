@@ -16,10 +16,10 @@ const DEBOUNCE_MS: u64 = 300;
 
 /// Keeps the OS watcher alive for the lifetime of the server.
 ///
-/// Sole `notify` owner for the workspace (DESIGN §2.9). Broadcast keeps
-/// search/index corpus paths even when `watcher_exclude` would hide them from
-/// the UI; [`filter_change_for_ui`] applies `FilterPreset::Watcher` on the
-/// way to the frontend. Engines consume the unfiltered-for-search stream.
+/// Sole `notify` owner for the workspace (DESIGN §2.9). Watcher exclude is a
+/// hard cut at the source; the shared bus never sees those paths (except
+/// editable `.litecode` json). Consumers filter again: engines with Search,
+/// the UI with Explorer.
 pub struct WorkspaceWatcher {
     // The watcher is held purely for ownership (kept alive for the server's
     // lifetime); it is never locked after creation, so a Mutex is not needed.
@@ -116,9 +116,8 @@ fn classify_event(event: &Event, root: &Path) -> Option<(Vec<String>, bool)> {
     Some((paths, deleted))
 }
 
-/// Keep editable `.litecode/*.json`; drop product-internal trees (index writes).
-/// `watcher_exclude` does not hide a path that AgentText / Index would still
-/// ingest — those lists are search/index policy, not this gate.
+/// Keep editable `.litecode/*.json`; drop product-internal trees (index writes);
+/// otherwise `watcher_exclude` is a hard cut — no Search-line rescue.
 fn event_rel_is_broadcast(rel: &str) -> bool {
     if is_editable_litecode_json(rel) {
         return true;
@@ -126,18 +125,11 @@ fn event_rel_is_broadcast(rel: &str) -> bool {
     if path_has_product_internal_dir(rel) {
         return false;
     }
-    if !path_excluded(rel, FilterPreset::Watcher) {
-        return true;
-    }
-    if rel.contains("litecode-tmp") {
-        return false;
-    }
-    // Search corpus still wants this path (AgentText discovery, not watcher).
-    !path_excluded(rel, FilterPreset::AgentText)
+    !path_excluded(rel, FilterPreset::Watcher)
 }
 
-/// Paths the explorer / editor should hear. Search-only trees stay off this
-/// list so `watcher_exclude` still quiets the UI.
+/// Paths the explorer / editor should hear. Same bus as engines; Explorer
+/// (`files.exclude`) is the UI face. Source already applied Watcher.
 pub fn filter_change_for_ui(mut change: WorkspaceChange) -> Option<WorkspaceChange> {
     change.paths.retain(|rel| ui_rel_is_noteworthy(rel));
     if change.paths.is_empty() {
@@ -154,7 +146,7 @@ fn ui_rel_is_noteworthy(rel: &str) -> bool {
     if path_has_product_internal_dir(rel) {
         return false;
     }
-    !path_excluded(rel, FilterPreset::Watcher)
+    !path_excluded(rel, FilterPreset::Explorer)
 }
 
 /// Coalesce the pending modify/delete sets into the changes to broadcast.
@@ -382,24 +374,26 @@ mod tests {
     }
 
     #[test]
-    fn search_corpus_under_watcher_exclude_is_still_broadcast() {
+    fn watcher_exclude_is_hard_cut() {
         let _lock = crate::workspace::filter::lock_excludes_cache_for_test();
         let prev = crate::workspace::filter::active_workspace_excludes();
-        crate::workspace::filter::activate_workspace_excludes(
-            crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults(),
-        );
+        let mut lists = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
+        lists.watcher_exclude.push("**/heavy/**".into());
+        crate::workspace::filter::activate_workspace_excludes(lists);
         let root = temp_root();
-        let path = root.join(".data").join("eval.rs");
+        let path = root.join("heavy").join("eval.rs");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, b"fn x() {}\n").unwrap();
-        assert!(path_excluded(".data/eval.rs", FilterPreset::Watcher));
-        assert!(!path_excluded(".data/eval.rs", FilterPreset::AgentText));
+        assert!(path_excluded("heavy/eval.rs", FilterPreset::Watcher));
+        assert!(!path_excluded("heavy/eval.rs", FilterPreset::Search));
         let ev = make_event(
             EventKind::Modify(ModifyKind::Any),
             &[path.to_str().unwrap()],
         );
-        let (paths, _) = classify_event(&ev, &root).expect("search corpus must reach engines");
-        assert_eq!(paths, vec![".data/eval.rs".to_string()]);
+        assert!(
+            classify_event(&ev, &root).is_none(),
+            "watcher_exclude must not reach the bus"
+        );
         crate::workspace::filter::activate_workspace_excludes(prev);
         let _ = fs::remove_dir_all(&root);
     }
@@ -428,16 +422,19 @@ mod tests {
     }
 
     #[test]
-    fn ui_filter_drops_watcher_exclude_keeps_excludes_json() {
+    fn ui_filter_uses_explorer_keeps_watcher_only_trees() {
         let _lock = crate::workspace::filter::lock_excludes_cache_for_test();
         let prev = crate::workspace::filter::active_workspace_excludes();
         crate::workspace::filter::activate_workspace_excludes(
             crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults(),
         );
-        let dropped = filter_change_for_ui(changed(&[".data/eval.rs"]));
-        assert!(dropped.is_none(), "UI must stay quiet on watcher_exclude");
+        // Explorer is `files.exclude` only — a path that is not on that list stays.
+        let watcher_only = filter_change_for_ui(changed(&[".data/eval.rs"])).unwrap();
+        assert_eq!(watcher_only.paths, vec![".data/eval.rs".to_string()]);
+        let dropped = filter_change_for_ui(changed(&[".git/config"]));
+        assert!(dropped.is_none(), "UI Explorer uses files.exclude");
         let mixed = filter_change_for_ui(changed(&[
-            ".data/eval.rs",
+            ".git/config",
             "src/a.rs",
             ".litecode/excludes.json",
             ".litecode/mcp.json",

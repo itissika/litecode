@@ -26,8 +26,15 @@ export function EditorTab(props: IDockviewPanelProps<{ filePath: string }>) {
         {fileNameFromPath(filePath)}
       </span>
       <button
-        className="rounded p-0.5 opacity-50 hover:opacity-100 hover:text-(--_dk-red-500) transition-opacity flex-shrink-0"
+        className="rounded p-0.5 opacity-50 hover:opacity-100 hover:bg-(--_dk-ix-danger-bg-hover) hover:text-(--_dk-ix-danger-fg-hover) transition-colors flex-shrink-0"
         title="Close"
+        onPointerDown={(e) => {
+          // Prevent the tab strip's pointerdown activation from switching to
+          // this panel before the click closes it (dockview's default tab
+          // does the same). Without this, closing a non-active tab flashes it.
+          e.preventDefault();
+          e.stopPropagation();
+        }}
         onClick={(e) => { e.stopPropagation(); props.api.close(); }}
       >
         <svg width="10" height="10" viewBox="0 0 15 15" fill="currentColor">

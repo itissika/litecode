@@ -1,33 +1,28 @@
 //! Named presets: fixed compositions of [`super::layers::FilterLayers`].
+//!
+//! Three user-facing faces (VS Code): Explorer, Search, Watcher. Plus
+//! [`FilterPreset::Unfiltered`] for explicit `no_ignore`.
 
 use super::layers::FilterLayers;
 use super::workspace_excludes::active_workspace_excludes;
 
-/// Consumer-facing filter presets. Semantics follow VS Code / ripgrep / product
-/// index policy — not ad-hoc denylists.
+/// Consumer-facing filter presets. Semantics follow VS Code — not ad-hoc denylists.
 ///
 /// Path trust (ALL/SAFE) is orthogonal: presets only shape discovery corpora.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterPreset {
-    /// File tree: `files.exclude` + gitignore (hidden shown).
+    /// File tree: `files.exclude`. Gitignore only when `explorer_git_ignore`.
     Explorer,
     /// Zero walk filters — escape hatch for explicit `no_ignore` discovery.
     /// Not the Agent default; known-path read/write never uses walk presets.
     Unfiltered,
-    /// Human workspace text search: files∪search exclude + gitignore + hide
-    /// hidden + binary skip (ripgrep + VS Code Search defaults).
-    TextSearch,
-    /// File name discovery (Agent `glob` default / VS Code `findFiles`):
-    /// files∪search exclude + gitignore; hidden files shown.
-    FileGlob,
-    /// Agent content discovery (`grep` default): [`FileGlob`] layers plus
-    /// binary skip; does **not** hide_hidden (so un-ignored `.env` remains).
-    AgentText,
-    /// OS watcher event gate: `files.watcherExclude` only.
+    /// Search line (human text, Agent grep/glob, text + vector index):
+    /// `files.exclude ∪ search.exclude` + `git_ignore`. Hidden files are not
+    /// skipped here (VS Code ripgrep `--hidden`); gitignore decides.
+    Search,
+    /// OS watcher event gate: `files.watcherExclude` only. Hard cut; consumers
+    /// do not get events this preset drops.
     Watcher,
-    /// Semantic index scan: search-style excludes + gitignore + index content
-    /// gates at callers; `.litecode` pruned via [`Self::prune_product_internal_dirs`].
-    Index,
 }
 
 impl FilterPreset {
@@ -40,43 +35,17 @@ impl FilterPreset {
                 git_ignore: true,
                 git_global: true,
                 git_exclude: true,
-                hide_hidden: false,
                 skip_binary: false,
-                index_content: false,
             },
             Self::Unfiltered => FilterLayers::NONE,
-            Self::TextSearch => FilterLayers {
+            Self::Search => FilterLayers {
                 files_exclude: true,
                 search_exclude: true,
                 watcher_exclude: false,
                 git_ignore: true,
                 git_global: true,
                 git_exclude: true,
-                hide_hidden: true,
                 skip_binary: true,
-                index_content: false,
-            },
-            Self::FileGlob => FilterLayers {
-                files_exclude: true,
-                search_exclude: true,
-                watcher_exclude: false,
-                git_ignore: true,
-                git_global: true,
-                git_exclude: true,
-                hide_hidden: false,
-                skip_binary: false,
-                index_content: false,
-            },
-            Self::AgentText => FilterLayers {
-                files_exclude: true,
-                search_exclude: true,
-                watcher_exclude: false,
-                git_ignore: true,
-                git_global: true,
-                git_exclude: true,
-                hide_hidden: false,
-                skip_binary: true,
-                index_content: false,
             },
             Self::Watcher => FilterLayers {
                 files_exclude: false,
@@ -85,26 +54,12 @@ impl FilterPreset {
                 git_ignore: false,
                 git_global: false,
                 git_exclude: false,
-                hide_hidden: false,
                 skip_binary: false,
-                index_content: false,
-            },
-            Self::Index => FilterLayers {
-                files_exclude: true,
-                search_exclude: true,
-                watcher_exclude: false,
-                git_ignore: true,
-                git_global: true,
-                git_exclude: true,
-                // Match prior `scannable_files` WalkBuilder (hidden=false).
-                hide_hidden: false,
-                skip_binary: true,
-                index_content: true,
             },
         };
         let cfg = active_workspace_excludes();
-        // Browse-only split: the explorer honors `.gitignore` independently from
-        // the search / index corpora switch (`git_ignore`). Watcher / Unfiltered
+        // Browse-only split: explorer honors `.gitignore` independently from
+        // the search corpora switch (`git_ignore`). Watcher / Unfiltered
         // layers already bake `git_ignore: false`; the override only ever forces
         // layers off, never on.
         let honor_git_ignore = if self == Self::Explorer {
@@ -169,8 +124,6 @@ mod tests {
 
     #[test]
     fn browse_search_split_explorer_reads_own_switch() {
-        // Search/index side honors gitignore, explorer does not: the split the
-        // user asked for (browse independently).
         with_config(
             WorkspaceExcludesFile {
                 git_ignore: true,
@@ -179,18 +132,13 @@ mod tests {
             },
             || {
                 assert_eq!(git_layers(FilterPreset::Explorer), (false, false, false));
-                assert_eq!(git_layers(FilterPreset::Index), (true, true, true));
-                assert_eq!(git_layers(FilterPreset::TextSearch), (true, true, true));
-                assert_eq!(git_layers(FilterPreset::FileGlob), (true, true, true));
-                assert_eq!(git_layers(FilterPreset::AgentText), (true, true, true));
+                assert_eq!(git_layers(FilterPreset::Search), (true, true, true));
             },
         );
     }
 
     #[test]
     fn browse_search_split_inverse() {
-        // Explorer honors gitignore while search/index ignores it: switches are
-        // fully independent in both directions.
         with_config(
             WorkspaceExcludesFile {
                 git_ignore: false,
@@ -199,8 +147,7 @@ mod tests {
             },
             || {
                 assert_eq!(git_layers(FilterPreset::Explorer), (true, true, true));
-                assert_eq!(git_layers(FilterPreset::Index), (false, false, false));
-                assert_eq!(git_layers(FilterPreset::TextSearch), (false, false, false));
+                assert_eq!(git_layers(FilterPreset::Search), (false, false, false));
             },
         );
     }
@@ -224,10 +171,7 @@ mod tests {
     fn prune_product_internal_presets() {
         assert!(!FilterPreset::Explorer.prune_product_internal_dirs());
         assert!(!FilterPreset::Unfiltered.prune_product_internal_dirs());
-        assert!(FilterPreset::AgentText.prune_product_internal_dirs());
-        assert!(FilterPreset::FileGlob.prune_product_internal_dirs());
-        assert!(FilterPreset::TextSearch.prune_product_internal_dirs());
-        assert!(FilterPreset::Index.prune_product_internal_dirs());
+        assert!(FilterPreset::Search.prune_product_internal_dirs());
         assert!(FilterPreset::Watcher.prune_product_internal_dirs());
     }
 }

@@ -9,12 +9,9 @@ use super::preset::{FilterPreset, exclude_globs};
 #[derive(Debug, Clone)]
 pub struct ExcludeMatcher {
     /// Path segments that exclude a path when any component equals the name
-    /// (e.g. `**/node_modules`, `**/.git`).
+    /// (e.g. `**/node_modules`, `target`, `**/.git`).
     segments: HashSet<String>,
-    /// Basenames that exclude when the final component matches (e.g. `.DS_Store`).
-    /// Overlaps with segments are fine — either hit excludes.
-    basenames: HashSet<String>,
-    /// Patterns that could not be classified as segment/basename — full regex path.
+    /// Patterns that could not be classified as a folder segment — full regex path.
     patterns: Vec<PathGlobMatcher>,
 }
 
@@ -25,16 +22,12 @@ impl ExcludeMatcher {
         S: AsRef<str>,
     {
         let mut segments = HashSet::new();
-        let mut basenames = HashSet::new();
         let mut patterns = Vec::new();
         for g in globs {
             let g = g.as_ref();
             match classify_exclude_glob(g) {
                 ExcludeClass::Segment(name) => {
                     segments.insert(name);
-                }
-                ExcludeClass::Basename(name) => {
-                    basenames.insert(name);
                 }
                 ExcludeClass::Complex => {
                     if let Ok(m) = compile_include_pattern(g) {
@@ -45,7 +38,6 @@ impl ExcludeMatcher {
         }
         Self {
             segments,
-            basenames,
             patterns,
         }
     }
@@ -55,21 +47,19 @@ impl ExcludeMatcher {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.segments.is_empty() && self.basenames.is_empty() && self.patterns.is_empty()
+        self.segments.is_empty() && self.patterns.is_empty()
     }
 
     /// True when `rel` (workspace-relative, `/`-separated) is excluded.
     ///
-    /// Matches path components against segment/basename sets (VS Code fold children
-    /// when a folder segment matches), then remaining regex patterns on the full
+    /// Folder segments fold children (VS Code). Remaining globs match the full
     /// path and ancestors.
     pub fn matches(&self, rel: &str) -> bool {
         if rel.is_empty() || self.is_empty() {
             return false;
         }
         let rel = rel.trim_start_matches("./");
-        if !self.segments.is_empty() || !self.basenames.is_empty() {
-            let mut last = "";
+        if !self.segments.is_empty() {
             for component in rel.split('/') {
                 if component.is_empty() {
                     continue;
@@ -77,10 +67,6 @@ impl ExcludeMatcher {
                 if self.segments.contains(component) {
                     return true;
                 }
-                last = component;
-            }
-            if !last.is_empty() && self.basenames.contains(last) {
-                return true;
             }
         }
         if self.patterns.is_empty() {
@@ -100,7 +86,6 @@ impl ExcludeMatcher {
 
 enum ExcludeClass {
     Segment(String),
-    Basename(String),
     Complex,
 }
 
@@ -114,10 +99,8 @@ pub fn segment_name_from_exclude_glob(glob: &str) -> Option<String> {
 
 /// Classify product-default-shaped globs for O(components) matching.
 ///
-/// - `**/NAME` or `**/NAME/**` → segment NAME (no wildcards in NAME)
-/// - `NAME` or `**/NAME` where NAME looks like a basename file (contains `.` and
-///   no path seps beyond the `**/` prefix) still segment if `**/NAME`
-/// - `*.ext` / `**/*.ext` without other wildcards → not segment; Complex (suffix)
+/// - `**/NAME`, `**/NAME/**`, or bare `NAME` → segment NAME (folder fold)
+/// - `*.ext` / `**/*.ext` without other wildcards → Complex (suffix)
 /// - anything with `*`, `?`, `[`, `{` in the name part → Complex
 fn classify_exclude_glob(glob: &str) -> ExcludeClass {
     let g = normalize_pattern(glob);
@@ -131,16 +114,14 @@ fn classify_exclude_glob(glob: &str) -> ExcludeClass {
     if let Some(rest) = g.strip_prefix("**/") {
         let name = rest.strip_suffix("/**").unwrap_or(rest);
         if is_plain_segment(name) {
-            // Basename-only product defaults (`.DS_Store`, `Thumbs.db`) still
-            // work as segment checks on any component — same fold semantics.
             return ExcludeClass::Segment(name.to_string());
         }
         return ExcludeClass::Complex;
     }
 
-    // Bare `NAME` with no separators / wildcards → basename
+    // Bare `NAME` / `NAME/` — folder fold (VS Code files.exclude of a directory).
     if is_plain_segment(g) {
-        return ExcludeClass::Basename(g.to_string());
+        return ExcludeClass::Segment(g.to_string());
     }
 
     ExcludeClass::Complex
@@ -195,7 +176,7 @@ mod tests {
 
     #[test]
     fn text_search_inherits_files_and_search() {
-        let m = ExcludeMatcher::for_preset(FilterPreset::TextSearch);
+        let m = ExcludeMatcher::for_preset(FilterPreset::Search);
         assert!(m.matches(".git/config"));
         assert!(m.matches("node_modules/x.js"));
         assert!(m.matches("bower_components/y"));
@@ -225,6 +206,8 @@ mod tests {
         let m = ExcludeMatcher::from_globs(WATCHER_EXCLUDE);
         assert!(m.matches(".litecode/index/chunks.jsonl"));
         assert!(m.matches(".litecode/text-index/x"));
+        assert!(!m.matches(".data/eval.rs"));
+        assert!(!m.matches(".venv-ort/lib/x.py"));
         assert!(!m.matches("src/main.rs"));
     }
 
@@ -240,7 +223,7 @@ mod tests {
 
     #[test]
     fn deep_node_modules_and_bower_segments() {
-        let m = ExcludeMatcher::for_preset(FilterPreset::TextSearch);
+        let m = ExcludeMatcher::for_preset(FilterPreset::Search);
         assert!(m.matches("a/b/node_modules/c/d.js"));
         assert!(m.matches("vendor/bower_components/pkg/index.js"));
         assert!(m.matches("apps/web/node_modules/.bin/cli"));
@@ -266,11 +249,25 @@ mod tests {
         ));
         assert!(matches!(
             classify_exclude_glob("ArtSource/"),
-            ExcludeClass::Basename(s) if s == "ArtSource"
+            ExcludeClass::Segment(s) if s == "ArtSource"
+        ));
+        assert!(matches!(
+            classify_exclude_glob("target"),
+            ExcludeClass::Segment(s) if s == "target"
         ));
         assert!(matches!(
             classify_exclude_glob("**/Library/"),
             ExcludeClass::Segment(s) if s == "Library"
         ));
+    }
+
+    #[test]
+    fn bare_directory_name_folds_children() {
+        let m = ExcludeMatcher::from_globs(["target"]);
+        assert!(m.matches("target"));
+        assert!(m.matches("target/foo.rs"));
+        assert!(m.matches("pkg/target/lib.rs"));
+        assert!(!m.matches("src/target.rs"));
+        assert!(!m.matches("src/main.rs"));
     }
 }

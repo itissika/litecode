@@ -100,16 +100,22 @@
 /* ── Tool icon ───────────────────────────────────────────────
    Two static states, transition-driven feedback:
      ok / unknown / running → theme foreground (--_dk-status-ok)
+     warning                → amber (--_dk-amber-500)
      failed                 → failure red (--_dk-status-fail)
-   running→ok   : big pop + green flash + blurred emerald glow burst,
-                  slow colour/glow fade-out, then settle to static
-   running→fail : grow→hard-shrink + landing jitter + wide shockwave ───── */
+   running→ok/warn : big pop + colour flash + blurred glow burst,
+                     slow colour/glow fade-out, then settle to static
+   running→fail    : grow→hard-shrink + landing jitter + wide shockwave ───── */
 .tool-icon {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--_dk-status-ok);
+
+  /* pop flash/base colours, overridable per status so warning reuses the
+     exact same pop animation but flashes amber instead of emerald */
+  --_tool-icon-base: var(--_dk-status-ok);
+  --_tool-icon-flash: var(--_dk-emerald-500);
 }
 
 .tool-icon--fail {
@@ -118,6 +124,8 @@
 
 .tool-icon--warn {
   color: var(--_dk-amber-500);
+  --_tool-icon-base: var(--_dk-amber-500);
+  --_tool-icon-flash: var(--_dk-amber-500);
 }
 
 .tool-icon-glyph {
@@ -127,10 +135,11 @@
   transform-origin: center;
 }
 
-/* running → ok :
-   - glyph: snappy big pop + emerald flash that bursts fast, then a long,
-     slow colour fade-out (退场久)
-   - glow : blurred emerald halo that bursts quickly, then lingers and fades
+/* running → ok / warning :
+   - glyph: snappy big pop + colour flash that bursts fast, then a long,
+     slow colour fade-out (退场久). Colour comes from --_tool-icon-flash
+     (emerald for ok, amber for warning)
+   - glow : blurred halo that bursts quickly, then lingers and fades
      out slowly (辉光爆发快、退场久) */
 .tool-icon--pop .tool-icon-glyph {
   animation: tool-pop 700ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
@@ -139,30 +148,30 @@
 @keyframes tool-pop {
   0% {
     transform: scale(1);
-    color: var(--_dk-status-ok);
+    color: var(--_tool-icon-base);
   }
-  /* fast burst: bigger than before (1.85) + instant green */
+  /* fast burst: bigger than before (1.85) + instant flash colour */
   12% {
     transform: scale(1.85);
-    color: var(--_dk-emerald-500);
+    color: var(--_tool-icon-flash);
   }
-  /* hold the enlarged, green state briefly */
+  /* hold the enlarged, flash-coloured state briefly */
   32% {
     transform: scale(1.55);
-    color: var(--_dk-emerald-500);
+    color: var(--_tool-icon-flash);
   }
-  /* slow exit: colour lingers in green, only fading back at the tail */
+  /* slow exit: colour lingers in flash colour, only fading back at the tail */
   72% {
     transform: scale(1.06);
-    color: var(--_dk-emerald-500);
+    color: var(--_tool-icon-flash);
   }
   100% {
     transform: scale(1);
-    color: var(--_dk-status-ok);
+    color: var(--_tool-icon-base);
   }
 }
 
-/* blurred emerald halo behind the glyph, only for the ok pop.
+/* blurred halo behind the glyph, only for the pop (ok / warning).
    Sizing is chosen so the glow never escapes the .foldcard-scroll clip box:
    glyph half (6px) + inset (3px) = 9px box half; peak scale 1.35 → 12.15px;
    blur(4px) spreads ~2σ (8px) → ~20px total reach from icon center, safely
@@ -172,7 +181,7 @@
   inset: -3px;
   z-index: 0;
   border-radius: 999px;
-  background: var(--_dk-emerald-500);
+  background: var(--_tool-icon-flash);
   filter: blur(4px);
   opacity: 0;
   pointer-events: none;

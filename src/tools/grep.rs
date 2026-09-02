@@ -324,7 +324,7 @@ fn run_grep_with_token_budget(
     let preset = if options.no_ignore {
         FilterPreset::Unfiltered
     } else {
-        FilterPreset::AgentText
+        FilterPreset::Search
     };
 
     // Search root is the turn's workspace, or the `path` arg resolved under the
@@ -378,7 +378,6 @@ fn run_grep_with_token_budget(
             max_matches: usize::MAX,
             before_context: CONTEXT_LINES,
             after_context: CONTEXT_LINES,
-            search_hidden: false,
         },
         preset,
     )?;
@@ -1501,7 +1500,7 @@ mod tests {
         assert!(result.contains("visible.txt"), "got: {result}");
         assert!(
             !result.contains("secret.txt"),
-            "AgentText must respect .gitignore by default, got: {result}"
+            "Search must respect .gitignore by default, got: {result}"
         );
 
         let raw = call_in(
@@ -1606,7 +1605,7 @@ mod tests {
         assert!(result.contains("open.txt"), "got: {result}");
         assert!(
             result.contains(".env"),
-            "AgentText must not skip un-ignored dotfiles, got: {result}"
+            "Search must not skip un-ignored dotfiles, got: {result}"
         );
     }
 

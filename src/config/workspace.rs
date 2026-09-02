@@ -617,6 +617,9 @@ mod tests {
         assert!(litecode.join("plan").is_dir());
         let guide = std::fs::read_to_string(litecode.join("README.md")).unwrap();
         assert!(guide.contains("excludes.json"));
+        assert!(guide.contains("mcp.json"));
+        assert!(guide.contains("custom_tools.json"));
+        assert!(guide.contains("源上硬切"));
         assert!(guide.contains("sessions.db"));
         assert!(guide.contains(".litecode/sessions/"));
         assert!(

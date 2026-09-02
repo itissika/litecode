@@ -30,7 +30,7 @@ use policy::{
     HARD_FILE_CAP, corpus_delta, corpus_fingerprint, delta_prefers_rebuild,
     is_corpus_definition_rel, should_build, should_queue_text_path,
 };
-use store::{CandidateHits, TextIndexStore, count_agent_text_files, list_agent_text_paths};
+use store::{CandidateHits, TextIndexStore, count_search_files, list_search_paths};
 
 const PENDING_DEBOUNCE: Duration = Duration::from_millis(300);
 
@@ -155,6 +155,7 @@ impl TextIndexEngine {
         if matches!(g.state, TextIndexState::Off | TextIndexState::Failed) {
             return;
         }
+        let root = g.root.clone();
         let mut wake = false;
         for p in paths {
             if is_corpus_definition_rel(p) {
@@ -162,7 +163,10 @@ impl TextIndexEngine {
                 wake = true;
                 continue;
             }
-            if should_queue_text_path(p, deleted) {
+            let Some(root) = root.as_ref() else {
+                continue;
+            };
+            if should_queue_text_path(root, p, deleted) {
                 g.pending.insert((p.clone(), deleted));
                 wake = true;
             }
@@ -261,7 +265,7 @@ impl TextIndexEngine {
         Ok(())
     }
 
-    /// Walk current AgentText paths, diff against the tracked set, apply
+    /// Walk current Search paths, diff against the tracked set, apply
     /// add/delete. Rebuild only when the store is missing or the delta is huge.
     fn reconcile_sync(&self, root: &Path) -> Result<()> {
         let ready = self
@@ -273,7 +277,7 @@ impl TextIndexEngine {
         if !ready {
             return self.rebuild_sync(root);
         }
-        let want = list_agent_text_paths(root, || self.stop.load(Ordering::SeqCst))?;
+        let want = list_search_paths(root, || self.stop.load(Ordering::SeqCst))?;
         if self.stop.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -394,7 +398,7 @@ impl TextIndexEngine {
         if self.stop.load(Ordering::SeqCst) {
             return;
         }
-        let count = match count_agent_text_files(root, HARD_FILE_CAP + 1) {
+        let count = match count_search_files(root, HARD_FILE_CAP + 1) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "text_index file count failed");
@@ -600,7 +604,6 @@ mod tests {
             max_matches: 200,
             before_context: 0,
             after_context: 0,
-            search_hidden: false,
         }
     }
 
@@ -621,7 +624,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::write(root.join("a.rs"), "fn a() { hello_world(); }\n").unwrap();
-        let count = count_agent_text_files(root, 100).unwrap();
+        let count = count_search_files(root, 100).unwrap();
         assert_eq!(count, 1);
         assert!(should_build(TextIndexMode::Auto, count));
     }
@@ -642,16 +645,22 @@ mod tests {
             paths = hits.paths
         );
         assert!(!hits.truncated);
-        let out = verify_with_ripgrep(root, &q, FilterPreset::AgentText, &hits.paths).unwrap();
+        let out = verify_with_ripgrep(root, &q, FilterPreset::Search, &hits.paths).unwrap();
         assert_eq!(out.matches.len(), 1);
         assert_eq!(out.matches[0].path, "a.rs");
+    }
+
+    fn lock_text_index_registry_for_test() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn register_ready_engine(
         root: &Path,
         store: TextIndexStore,
         file_count: u64,
-    ) -> Arc<TextIndexEngine> {
+    ) -> (std::sync::MutexGuard<'static, ()>, Arc<TextIndexEngine>) {
+        let lock = lock_text_index_registry_for_test();
         let engine = Arc::new(TextIndexEngine::new());
         {
             let mut g = engine.inner.lock().unwrap();
@@ -667,7 +676,7 @@ mod tests {
                 engine: Arc::clone(&engine),
             });
         }
-        engine
+        (lock, engine)
     }
 
     fn unregister_engine() {
@@ -688,7 +697,7 @@ mod tests {
         q.exclude = Some("**/tests/**".into());
         q.max_matches = 10;
         let hits = store.search_candidates(&q).unwrap().expect("indexable");
-        let out = verify_with_ripgrep(root, &q, FilterPreset::AgentText, &hits.paths).unwrap();
+        let out = verify_with_ripgrep(root, &q, FilterPreset::Search, &hits.paths).unwrap();
         assert_eq!(out.matches.len(), 1, "{out:?}");
         assert_eq!(out.matches[0].path, "main.rs");
     }
@@ -701,12 +710,12 @@ mod tests {
         let store = TextIndexStore::build(root, || false).unwrap();
         std::fs::write(root.join("target.rs"), "ApplyAppearance in target\n").unwrap();
 
-        let engine = register_ready_engine(root, store, 1);
+        let (_reg, engine) = register_ready_engine(root, store, 1);
         let mut q = sample_query(root, "ApplyAppearance|Addressables|async|LoadAsset");
         q.path = Some(root.join("target.rs"));
         q.is_regex = true;
         q.max_matches = 10;
-        let out = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let out = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         unregister_engine();
         drop(engine);
         assert!(
@@ -723,10 +732,10 @@ mod tests {
         let store = TextIndexStore::build(root, || false).unwrap();
         std::fs::write(root.join("late.rs"), "shared_needle_xyz\n").unwrap();
 
-        let engine = register_ready_engine(root, store, 1);
+        let (_reg, engine) = register_ready_engine(root, store, 1);
         engine.notify_fs_changes(&["late.rs".into()], false);
         let q = sample_query(root, "shared_needle_xyz");
-        let out = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let out = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         unregister_engine();
         drop(engine);
         let paths = match_paths(&out);
@@ -745,6 +754,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::write(root.join("indexed.rs"), "shared_needle_xyz\n").unwrap();
+        let _reg = lock_text_index_registry_for_test();
         let engine = Arc::new(TextIndexEngine::new());
         {
             let mut g = engine.inner.lock().unwrap();
@@ -762,7 +772,7 @@ mod tests {
             });
         }
         let q = sample_query(root, "shared_needle_xyz");
-        let out = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let out = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         unregister_engine();
         let paths = match_paths(&out);
         assert!(
@@ -799,7 +809,7 @@ mod tests {
         assert_eq!(hits.paths.len(), N, "{} paths", hits.paths.len());
         let mut q = q;
         q.max_matches = N;
-        let out = verify_with_ripgrep(root, &q, FilterPreset::AgentText, &hits.paths).unwrap();
+        let out = verify_with_ripgrep(root, &q, FilterPreset::Search, &hits.paths).unwrap();
         assert_eq!(out.matches.len(), N);
     }
 
@@ -825,31 +835,23 @@ mod tests {
     }
 
     #[test]
-    fn accelerator_matches_scan_including_hidden_split() {
+    fn accelerator_matches_scan_including_hidden() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::write(root.join("vis.rs"), "parity_needle_xyz\n").unwrap();
         std::fs::write(root.join(".env"), "parity_needle_xyz\n").unwrap();
         let store = TextIndexStore::build(root, || false).unwrap();
-        let engine = register_ready_engine(root, store, 2);
+        let (_reg, engine) = register_ready_engine(root, store, 2);
         let q = sample_query(root, "parity_needle_xyz");
 
-        let agent = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let acc = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         engine.detach();
-        let agent_scan = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
-        assert_eq!(match_paths(&agent), match_paths(&agent_scan));
-        assert!(match_paths(&agent).iter().any(|p| p.ends_with(".env")));
-
-        let store = TextIndexStore::build(root, || false).unwrap();
-        let engine = register_ready_engine(root, store, 2);
-        let ui = lexical_search_with_preset(&q, FilterPreset::TextSearch).unwrap();
-        engine.detach();
-        let ui_scan = lexical_search_with_preset(&q, FilterPreset::TextSearch).unwrap();
-        assert_eq!(match_paths(&ui), match_paths(&ui_scan));
+        let scan = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+        assert_eq!(match_paths(&acc), match_paths(&scan));
         assert!(
-            !match_paths(&ui).iter().any(|p| p.ends_with(".env")),
-            "TextSearch must hide .env: {:?}",
-            match_paths(&ui)
+            match_paths(&acc).iter().any(|p| p.ends_with(".env")),
+            "Search must include un-ignored hidden files: {:?}",
+            match_paths(&acc)
         );
         unregister_engine();
     }
@@ -868,9 +870,9 @@ mod tests {
             "oversized sidecar: {:?}",
             store.oversized
         );
-        let engine = register_ready_engine(root, store, 2);
+        let (_reg, engine) = register_ready_engine(root, store, 2);
         let q = sample_query(root, "oversize_needle_xyz");
-        let out = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let out = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         unregister_engine();
         drop(engine);
         let paths = match_paths(&out);
@@ -917,13 +919,13 @@ mod tests {
         let store = TextIndexStore::build(root, || false).unwrap();
         assert!(store.tracked.iter().any(|p| p.ends_with("skip_me.rs")));
 
-        let engine = register_ready_engine(root, store, 2);
+        let (_reg, engine) = register_ready_engine(root, store, 2);
         std::fs::write(root.join(".gitignore"), "skip_me.rs\n").unwrap();
         engine.notify_fs_changes(&[".gitignore".into()], false);
         let q = sample_query(root, "gitignore_needle_xyz");
-        let acc = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let acc = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         engine.detach();
-        let scan = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let scan = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         unregister_engine();
         assert_eq!(match_paths(&acc), match_paths(&scan));
         let paths = match_paths(&acc);
@@ -947,13 +949,13 @@ mod tests {
             store.tracked
         );
 
-        let engine = register_ready_engine(root, store, 1);
+        let (_reg, engine) = register_ready_engine(root, store, 1);
         std::fs::write(root.join(".gitignore"), "\n").unwrap();
         engine.notify_fs_changes(&[".gitignore".into()], false);
         let q = sample_query(root, "gitignore_needle_xyz");
-        let acc = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let acc = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         engine.detach();
-        let scan = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let scan = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         unregister_engine();
         assert_eq!(match_paths(&acc), match_paths(&scan));
         let paths = match_paths(&acc);
@@ -972,9 +974,9 @@ mod tests {
         let store = TextIndexStore::build(root, || false).unwrap();
         std::fs::write(root.join("late.rs"), "shared_needle_xyz\n").unwrap();
 
-        let engine = register_ready_engine(root, store, 1);
+        let (_reg, engine) = register_ready_engine(root, store, 1);
         let q = sample_query(root, "shared_needle_xyz");
-        let stale = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let stale = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         let stale_paths = match_paths(&stale);
         assert!(
             stale_paths.iter().any(|p| p.ends_with("indexed.rs")),
@@ -986,9 +988,9 @@ mod tests {
         );
 
         engine.notify_fs_changes(&["late.rs".into()], false);
-        let flushed = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let flushed = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         engine.detach();
-        let scan = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let scan = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         unregister_engine();
         assert_eq!(match_paths(&flushed), match_paths(&scan));
         assert!(
@@ -1001,20 +1003,26 @@ mod tests {
     }
 
     #[test]
-    fn list_agent_text_paths_honors_search_exclude() {
+    fn list_search_paths_honors_search_exclude() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("vendor")).unwrap();
         std::fs::write(root.join("src.rs"), "x\n").unwrap();
         std::fs::write(root.join("vendor/lib.rs"), "x\n").unwrap();
-        let all = list_agent_text_paths(root, || false).unwrap();
-        assert!(all.iter().any(|p| p.ends_with("src.rs")), "{all:?}");
-        assert!(all.iter().any(|p| p.contains("vendor")), "{all:?}");
+
+        crate::workspace::filter::with_excludes_cache_for_test(
+            crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults(),
+            || {
+                let all = list_search_paths(root, || false).unwrap();
+                assert!(all.iter().any(|p| p.ends_with("src.rs")), "{all:?}");
+                assert!(all.iter().any(|p| p.contains("vendor")), "{all:?}");
+            },
+        );
 
         let mut file = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
         file.search_exclude.push("**/vendor".into());
         crate::workspace::filter::with_excludes_cache_for_test(file, || {
-            let tight = list_agent_text_paths(root, || false).unwrap();
+            let tight = list_search_paths(root, || false).unwrap();
             assert!(tight.iter().any(|p| p.ends_with("src.rs")), "{tight:?}");
             assert!(
                 !tight.iter().any(|p| p.contains("vendor")),
@@ -1030,17 +1038,26 @@ mod tests {
         std::fs::create_dir_all(root.join("vendor")).unwrap();
         std::fs::write(root.join("src.rs"), "cfg_needle_xyz\n").unwrap();
         std::fs::write(root.join("vendor/lib.rs"), "cfg_needle_xyz\n").unwrap();
-        let store = TextIndexStore::build(root, || false).unwrap();
+        let store = {
+            let mut built = None;
+            crate::workspace::filter::with_excludes_cache_for_test(
+                crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults(),
+                || {
+                    built = Some(TextIndexStore::build(root, || false).unwrap());
+                },
+            );
+            built.unwrap()
+        };
         assert!(store.tracked.iter().any(|p| p.contains("vendor")));
 
-        let engine = register_ready_engine(root, store, 2);
+        let (_reg, engine) = register_ready_engine(root, store, 2);
         let gen_before = engine.inner.lock().unwrap().build_gen;
         let mut file = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
         file.search_exclude.push("**/vendor".into());
         crate::workspace::filter::with_excludes_cache_for_test(file, || {
             engine.request_reconcile();
             let q = sample_query(root, "cfg_needle_xyz");
-            let out = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+            let out = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
             let paths = match_paths(&out);
             assert!(paths.iter().any(|p| p.ends_with("src.rs")), "{paths:?}");
             assert!(
@@ -1085,14 +1102,14 @@ mod tests {
             store.tracked
         );
 
-        let engine = register_ready_engine(root, store, 1);
+        let (_reg, engine) = register_ready_engine(root, store, 1);
         let gen_before = engine.inner.lock().unwrap().build_gen;
         crate::workspace::filter::with_excludes_cache_for_test(
             crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults(),
             || {
                 engine.request_reconcile();
                 let q = sample_query(root, "cfg_needle_xyz");
-                let out = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+                let out = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
                 let paths = match_paths(&out);
                 assert!(paths.iter().any(|p| p.ends_with("src.rs")), "{paths:?}");
                 assert!(
@@ -1129,7 +1146,7 @@ mod tests {
         let mut file = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
         file.search_exclude.push("**/vendor".into());
         crate::workspace::filter::with_excludes_cache_for_test(file, || {
-            let out = verify_with_ripgrep(root, &q, FilterPreset::AgentText, &hits.paths).unwrap();
+            let out = verify_with_ripgrep(root, &q, FilterPreset::Search, &hits.paths).unwrap();
             let paths = match_paths(&out);
             assert!(paths.iter().any(|p| p.ends_with("src.rs")), "{paths:?}");
             assert!(
@@ -1151,7 +1168,7 @@ mod tests {
         use std::time::Instant;
 
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let count = count_agent_text_files(&root, HARD_FILE_CAP + 1).unwrap();
+        let count = count_search_files(&root, HARD_FILE_CAP + 1).unwrap();
         eprintln!("agent_text_file_count={count}");
 
         let t0 = Instant::now();
@@ -1177,15 +1194,15 @@ mod tests {
         let pattern = "lexical_search_with_preset";
         let mk = || sample_query(&root, pattern);
 
-        let _ = lexical_search_with_preset(&mk(), FilterPreset::AgentText).unwrap();
+        let _ = lexical_search_with_preset(&mk(), FilterPreset::Search).unwrap();
         let t1 = Instant::now();
-        let on = lexical_search_with_preset(&mk(), FilterPreset::AgentText).unwrap();
+        let on = lexical_search_with_preset(&mk(), FilterPreset::Search).unwrap();
         let on_ms = t1.elapsed().as_millis();
 
         engine.detach();
-        let _ = lexical_search_with_preset(&mk(), FilterPreset::AgentText).unwrap();
+        let _ = lexical_search_with_preset(&mk(), FilterPreset::Search).unwrap();
         let t2 = Instant::now();
-        let off = lexical_search_with_preset(&mk(), FilterPreset::AgentText).unwrap();
+        let off = lexical_search_with_preset(&mk(), FilterPreset::Search).unwrap();
         let off_ms = t2.elapsed().as_millis();
 
         eprintln!(

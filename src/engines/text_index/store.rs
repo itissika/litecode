@@ -77,7 +77,7 @@ pub struct TextIndexStore {
     index: Index,
     reader: IndexReader,
     fields: Fields,
-    /// Rel paths walked as AgentText but too large for Tantivy.
+    /// Rel paths walked as Search but too large for Tantivy.
     pub(crate) oversized: HashSet<String>,
     /// Rel paths currently in the corpus (Tantivy docs ∪ oversized).
     pub(crate) tracked: HashSet<String>,
@@ -161,7 +161,7 @@ impl TextIndexStore {
         let mut added = 0u64;
         let mut oversized = HashSet::new();
         let mut tracked = HashSet::new();
-        for entry in walk_builder(workspace_root, FilterPreset::AgentText).build() {
+        for entry in walk_builder(workspace_root, FilterPreset::Search).build() {
             if should_stop() {
                 break;
             }
@@ -232,7 +232,7 @@ impl TextIndexStore {
                 self.tracked.remove(rel);
                 continue;
             }
-            if path_skipped_by_preset(rel, FilterPreset::AgentText, false) {
+            if path_skipped_by_preset(workspace_root, rel, FilterPreset::Search) {
                 self.tracked.remove(rel);
                 continue;
             }
@@ -460,15 +460,15 @@ fn path_prefix_under(workspace_root: &Path, search_path: &Path) -> Option<String
     }
 }
 
-/// AgentText file paths that belong in the corpus (skip binaries; no body read).
-pub fn list_agent_text_paths(
+/// Search file paths that belong in the corpus (skip binaries; no body read).
+pub fn list_search_paths(
     workspace_root: &Path,
     should_stop: impl Fn() -> bool,
 ) -> Result<HashSet<String>> {
     let rel_ctx = RelPathCtx::new(workspace_root)
         .unwrap_or_else(|_| RelPathCtx::new_lossy(workspace_root));
     let mut out = HashSet::new();
-    for entry in walk_builder(workspace_root, FilterPreset::AgentText).build() {
+    for entry in walk_builder(workspace_root, FilterPreset::Search).build() {
         if should_stop() {
             break;
         }
@@ -490,10 +490,10 @@ pub fn list_agent_text_paths(
     Ok(out)
 }
 
-/// Count files under AgentText walk, stopping after `limit` (inclusive stop).
-pub fn count_agent_text_files(workspace_root: &Path, limit: u64) -> Result<u64> {
+/// Count files under Search walk, stopping after `limit` (inclusive stop).
+pub fn count_search_files(workspace_root: &Path, limit: u64) -> Result<u64> {
     let mut n = 0u64;
-    for entry in walk_builder(workspace_root, FilterPreset::AgentText).build() {
+    for entry in walk_builder(workspace_root, FilterPreset::Search).build() {
         let Ok(entry) = entry else {
             continue;
         };
@@ -541,7 +541,6 @@ pub fn verify_with_ripgrep(
         Some(p) => compile_include_patterns(p)?,
     };
     let exclude = compile_exclude_globs(query.exclude.as_deref())?;
-    let hide_hidden = preset.layers().hide_hidden && !query.search_hidden;
 
     let mut matches = Vec::new();
     let mut files_searched = 0usize;
@@ -549,7 +548,7 @@ pub fn verify_with_ripgrep(
         if matches.len() >= query.max_matches {
             break;
         }
-        if path_skipped_by_preset(rel, preset, hide_hidden) {
+        if path_skipped_by_preset(workspace_root, rel, preset) {
             continue;
         }
         if !include.is_empty() && !path_matches_include(rel, &include) {

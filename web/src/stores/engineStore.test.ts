@@ -52,11 +52,8 @@ function enginesDetail(state: EngineWarmupState): EnginesDetail {
       policy: {
         product_internal_dirs: [],
         exclude_globs: [],
-        extensions: [],
         max_file_bytes: 0,
         binary_files: false,
-        lockfiles: false,
-        minified_files: false,
       },
     },
     lsp: {

@@ -1,8 +1,10 @@
 //! Thresholds and path gates for the adaptive text index.
 
+use std::path::Path;
+
 use crate::workspace::filter::{
     FilterPreset, active_workspace_excludes, is_workspace_excludes_rel, path_excluded,
-    path_has_product_internal_dir,
+    path_gitignored, path_has_product_internal_dir, should_queue_index_update,
 };
 
 /// Refuse to build above this (protect against $HOME-sized roots).
@@ -31,7 +33,7 @@ pub fn mode_from_env() -> TextIndexMode {
     }
 }
 
-/// Auto and On both build whenever the AgentText corpus fits under the cap.
+/// Auto and On both build whenever the Search corpus fits under the cap.
 pub fn should_build(mode: TextIndexMode, file_count: u64) -> bool {
     match mode {
         TextIndexMode::Off => false,
@@ -39,7 +41,7 @@ pub fn should_build(mode: TextIndexMode, file_count: u64) -> bool {
     }
 }
 
-/// Fingerprint of the AgentText corpus definition. A mismatch means the
+/// Fingerprint of the Search corpus definition. A mismatch means the
 /// tracked path set must be reconciled (delta add/delete, or rebuild if huge).
 pub fn corpus_fingerprint() -> String {
     let cfg = active_workspace_excludes();
@@ -95,32 +97,20 @@ pub fn corpus_delta(
     out
 }
 
-/// Queue gate for text-index incremental updates (AgentText discovery face).
-pub fn should_queue_text_path(rel: &str, deleted: bool) -> bool {
-    if path_has_product_internal_dir(rel) {
-        return false;
-    }
-    if path_excluded(rel, FilterPreset::AgentText) {
-        // Still queue deletes so a path that later matches excludes is dropped.
-        return deleted;
-    }
-    true
+/// Queue gate for text-index incremental updates (same Search face as semantic).
+pub fn should_queue_text_path(workspace_root: &Path, rel: &str, deleted: bool) -> bool {
+    should_queue_index_update(workspace_root, rel, deleted)
 }
 
 /// Whether this relative path is skipped by `preset` at query time.
-pub fn path_skipped_by_preset(rel: &str, preset: FilterPreset, hide_hidden: bool) -> bool {
+pub fn path_skipped_by_preset(workspace_root: &Path, rel: &str, preset: FilterPreset) -> bool {
     if path_has_product_internal_dir(rel) {
         return true;
     }
     if path_excluded(rel, preset) {
         return true;
     }
-    hide_hidden && path_has_hidden_component(rel)
-}
-
-fn path_has_hidden_component(rel: &str) -> bool {
-    rel.split(['/', '\\'])
-        .any(|c| c.starts_with('.') && c != "." && c != "..")
+    path_gitignored(workspace_root, rel, preset)
 }
 
 #[cfg(test)]
@@ -129,21 +119,25 @@ mod tests {
 
     #[test]
     fn queue_skips_node_modules_and_litecode() {
-        assert!(!should_queue_text_path("node_modules/x.js", false));
-        assert!(!should_queue_text_path(".litecode/text-index/x", false));
-        assert!(!should_queue_text_path(".git/config", false));
-        assert!(should_queue_text_path("src/main.rs", false));
-        assert!(should_queue_text_path("src/main.rs", true));
-        // target/ is NOT discovery-excluded (same as AgentText/grep); only gitignore drops it.
-        assert!(should_queue_text_path("target/foo.rs", false));
-        assert!(should_queue_text_path(".data/foo.rs", false));
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        assert!(!should_queue_text_path(root, "node_modules/x.js", false));
+        assert!(!should_queue_text_path(root, ".litecode/text-index/x", false));
+        assert!(!should_queue_text_path(root, ".git/config", false));
+        assert!(should_queue_text_path(root, "src/main.rs", false));
+        assert!(should_queue_text_path(root, "src/main.rs", true));
+        // target/ is NOT a Search glob exclude; only gitignore drops it.
+        assert!(should_queue_text_path(root, "target/foo.rs", false));
+        assert!(should_queue_text_path(root, ".data/foo.rs", false));
         // Excluded path: delete still queues so the posting can be removed.
-        assert!(should_queue_text_path("node_modules/x.js", true));
+        assert!(should_queue_text_path(root, "node_modules/x.js", true));
     }
 
     #[test]
-    fn queue_gate_matches_agent_text_exclude_matcher() {
+    fn queue_gate_matches_search_exclude_matcher() {
         use crate::workspace::filter::path_excluded;
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
         for rel in [
             "node_modules/pkg/index.js",
             "bower_components/x",
@@ -152,14 +146,32 @@ mod tests {
             ".DS_Store",
         ] {
             assert!(
-                path_excluded(rel, FilterPreset::AgentText),
-                "{rel} should be AgentText-excluded"
+                path_excluded(rel, FilterPreset::Search),
+                "{rel} should be Search-excluded"
             );
             assert!(
-                !should_queue_text_path(rel, false),
+                !should_queue_text_path(root, rel, false),
                 "{rel} must not enter text-index queue on create"
             );
         }
+    }
+
+    #[test]
+    fn gitignore_target_does_not_queue_create() {
+        use crate::workspace::filter::{WorkspaceExcludesFile, with_excludes_cache_for_test};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("target/foo.rs"), "fn t() {}\n").unwrap();
+
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            assert!(!should_queue_text_path(root, "target/foo.rs", false));
+            assert!(should_queue_text_path(root, "target/foo.rs", true));
+            assert!(should_queue_text_path(root, "src/main.rs", false));
+        });
     }
 
     #[test]
@@ -204,21 +216,19 @@ mod tests {
     }
 
     #[test]
-    fn hidden_skip_for_text_search() {
-        assert!(path_skipped_by_preset(
-            ".env",
-            FilterPreset::TextSearch,
-            true
-        ));
+    fn search_does_not_skip_unignored_hidden() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        assert!(!path_skipped_by_preset(root, ".env", FilterPreset::Search));
         assert!(!path_skipped_by_preset(
-            ".env",
-            FilterPreset::AgentText,
-            false
+            root,
+            "src/.secret/a.rs",
+            FilterPreset::Search
         ));
         assert!(path_skipped_by_preset(
-            "src/.secret/a.rs",
-            FilterPreset::TextSearch,
-            true
+            root,
+            "node_modules/x.js",
+            FilterPreset::Search
         ));
     }
 }
