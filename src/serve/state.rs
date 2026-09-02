@@ -87,8 +87,8 @@ impl ServeState {
                 litecode_dir.display()
             )
         })?;
-        let session_data =
-            crate::session::SessionData::open(&workspace_lock, &sessions_db_path).map_err(|e| {
+        let session_data = crate::session::SessionData::open(&workspace_lock, &sessions_db_path)
+            .map_err(|e| {
                 anyhow::anyhow!(
                     "cannot open sessions.db at {} ({e})",
                     sessions_db_path.display()

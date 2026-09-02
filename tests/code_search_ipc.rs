@@ -1,8 +1,8 @@
 //! IPC integration: spawn worker, warmup with hash embedder, search round-trip.
 
 use litecode::engines::code_search::{index_dir, init_workspace_index, read_meta, write_meta};
-use litecode::engines::code_search_ipc::protocol::RefreshMode;
 use litecode::engines::code_search_ipc::CodeSearchWorkerClient;
+use litecode::engines::code_search_ipc::protocol::RefreshMode;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -43,9 +43,7 @@ fn worker_ping_initialize_warmup_search_shutdown() {
 
     client.ping().expect("ping");
 
-    client
-        .initialize(root, None)
-        .expect("initialize");
+    client.initialize(root, None).expect("initialize");
     client.warmup().expect("warmup");
 
     let hits = client.search("ipc_target", None, 5).expect("search");

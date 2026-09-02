@@ -389,8 +389,9 @@ fn run_grep_with_token_budget(
             && outcome.files_searched == 0
         {
             return Ok(format!(
-                "No files matched include_pattern '{pat}' under '{}'. Use forward slashes; multi-ext like '**/*.ts,**/*.tsx'; or omit include_pattern.",
-                resolved_display
+                "No files matched include_pattern '{pat}' under '{}'. Use forward slashes; multi-ext like '**/*.ts,**/*.tsx'; or omit include_pattern. {}",
+                resolved_display,
+                crate::workspace::filter::empty_discovery_hint()
             ));
         }
         if outcome.files_searched > 0 {
@@ -405,7 +406,10 @@ fn run_grep_with_token_budget(
                     .to_string(),
             );
         }
-        return Ok("No matches found".to_string());
+        return Ok(format!(
+            "No matches found. {}",
+            crate::workspace::filter::empty_discovery_hint()
+        ));
     }
 
     render_matches(&root, &matches, &options, token_budget, false)
@@ -1262,6 +1266,10 @@ mod tests {
             result.contains("No files matched include_pattern"),
             "got: {result}"
         );
+        assert!(
+            result.contains(".litecode/excludes.json"),
+            "zero-file include scope should hint excludes, got: {result}"
+        );
     }
 
     #[test]
@@ -1504,6 +1512,46 @@ mod tests {
     }
 
     #[test]
+    fn test_grep_skips_nested_litecode_unless_path_or_no_ignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode/index")).unwrap();
+        std::fs::write(root.join(".litecode/index/x.rs"), "litecode_only_needle\n").unwrap();
+        std::fs::write(root.join("visible.rs"), "litecode_only_needle\n").unwrap();
+
+        let filtered = call_in(root, serde_json::json!({ "regex": "litecode_only_needle" }));
+        assert!(filtered.contains("visible.rs"), "got: {filtered}");
+        assert!(
+            !filtered.contains(".litecode"),
+            "default grep must skip nested .litecode, got: {filtered}"
+        );
+
+        let scoped = call_in(
+            root,
+            serde_json::json!({
+                "regex": "litecode_only_needle",
+                "path": ".litecode",
+            }),
+        );
+        assert!(
+            scoped.contains("index/x.rs") || scoped.contains("x.rs"),
+            "path=.litecode must search, got: {scoped}"
+        );
+
+        let raw = call_in(
+            root,
+            serde_json::json!({
+                "regex": "litecode_only_needle",
+                "no_ignore": true,
+            }),
+        );
+        assert!(
+            raw.contains(".litecode"),
+            "no_ignore must include .litecode, got: {raw}"
+        );
+    }
+
+    #[test]
     fn test_grep_includes_hidden_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "SECRET_TOKEN=1\n").unwrap();
@@ -1652,7 +1700,14 @@ mod tests {
             dir.path(),
             serde_json::json!({ "regex": "fn lexical_search" }),
         );
-        assert_eq!(result, "No matches found");
+        assert!(
+            result.contains("No matches found"),
+            "empty tree must not leak repo cwd, got: {result}"
+        );
+        assert!(
+            result.contains(".litecode/excludes.json"),
+            "zero-file corpus should hint excludes config, got: {result}"
+        );
     }
 
     #[test]

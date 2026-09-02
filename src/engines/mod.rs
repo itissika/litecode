@@ -809,10 +809,7 @@ mod tests {
         let err = engines
             .search_sessions("q", 0, RetrievalFilters::default(), None)
             .unwrap_err();
-        assert!(
-            err.to_string().contains("SessionDataReader"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("SessionDataReader"), "got: {err}");
         assert_ne!(engines.state("code_search"), Some(EngineState::Failed));
     }
 

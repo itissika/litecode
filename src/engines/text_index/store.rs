@@ -1,4 +1,8 @@
 //! Tantivy ngram store for adaptive text index.
+//!
+//! Candidates are the full posting-list intersection (Cox / codesearch), not a
+//! scored Top-K window. Matching is always libripgrep on that superset, filtered
+//! by the query's current [`FilterPreset`].
 
 use grep::regex::RegexMatcherBuilder;
 use grep::searcher::{
@@ -6,14 +10,17 @@ use grep::searcher::{
 };
 use std::collections::HashSet;
 use std::path::Path;
-use tantivy::collector::TopDocs;
+use tantivy::collector::{Collector, SegmentCollector};
 use tantivy::query::{BooleanQuery, Occur, Query, TermQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, STORED, STRING, Schema, TantivyDocument, TextFieldIndexing,
     TextOptions, Value,
 };
 use tantivy::tokenizer::NgramTokenizer;
-use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term, doc};
+use tantivy::{
+    DocAddress, DocId, Index, IndexReader, IndexWriter, ReloadPolicy, Score, SegmentOrdinal,
+    SegmentReader, Term, doc,
+};
 
 use crate::engines::code_search::{
     LexicalMatch, LexicalQuery, LexicalSearchOutcome, compile_exclude_globs,
@@ -27,11 +34,20 @@ use crate::workspace::filter::{
 
 use super::literal::{indexable_literal, trigrams};
 use super::meta::tantivy_dir;
-use super::policy::MAX_INDEX_FILE_BYTES;
+use super::policy::{MAX_INDEX_FILE_BYTES, path_skipped_by_preset};
 
 const WRITER_HEAP_BYTES: usize = 50_000_000;
 const TOKENIZER_NAME: &str = "ngram3_lc";
-const MAX_CANDIDATES: usize = 2_000;
+/// Hard cap on posting hits. Hitting it means abandon acceleration and scan.
+pub(crate) const MAX_CANDIDATES: usize = 50_000;
+
+/// Trigram candidate set for accelerated grep.
+#[derive(Debug, Clone)]
+pub struct CandidateHits {
+    pub paths: Vec<String>,
+    /// True when the posting intersection exceeded [`MAX_CANDIDATES`].
+    pub truncated: bool,
+}
 
 struct Fields {
     path: Field,
@@ -61,6 +77,8 @@ pub struct TextIndexStore {
     index: Index,
     reader: IndexReader,
     fields: Fields,
+    /// Rel paths walked as AgentText but too large for Tantivy.
+    pub(crate) oversized: HashSet<String>,
 }
 
 impl TextIndexStore {
@@ -78,10 +96,14 @@ impl TextIndexStore {
                 path: self.fields.path,
                 body: self.fields.body,
             },
+            oversized: self.oversized.clone(),
         })
     }
 
-    pub fn open(workspace_root: &Path) -> Result<Self> {
+    pub fn open(
+        workspace_root: &Path,
+        oversized: impl IntoIterator<Item = String>,
+    ) -> Result<Self> {
         let dir = tantivy_dir(workspace_root);
         if !dir.is_dir() {
             return Err(LitecodeError::Config(format!(
@@ -110,6 +132,7 @@ impl TextIndexStore {
             index,
             reader,
             fields,
+            oversized: oversized.into_iter().collect(),
         })
     }
 
@@ -131,6 +154,7 @@ impl TextIndexStore {
         let rel_ctx = RelPathCtx::new(workspace_root)
             .unwrap_or_else(|_| RelPathCtx::new_lossy(workspace_root));
         let mut added = 0u64;
+        let mut oversized = HashSet::new();
         for entry in walk_builder(workspace_root, FilterPreset::AgentText).build() {
             if should_stop() {
                 break;
@@ -146,18 +170,23 @@ impl TextIndexStore {
             else {
                 continue;
             };
-            if let Some(content) = read_indexable_file(path) {
-                let content = content.to_lowercase();
-                writer
-                    .add_document(doc!(
-                        fields.path => rel,
-                        fields.body => content,
-                    ))
-                    .map_err(|e| LitecodeError::Config(format!("text_index add: {e}")))?;
-                added += 1;
-                if added.is_multiple_of(5000) {
-                    tracing::debug!(added, "text_index build progress");
+            match classify_index_file(path) {
+                IndexFileKind::Body(content) => {
+                    writer
+                        .add_document(doc!(
+                            fields.path => rel,
+                            fields.body => content,
+                        ))
+                        .map_err(|e| LitecodeError::Config(format!("text_index add: {e}")))?;
+                    added += 1;
+                    if added.is_multiple_of(5000) {
+                        tracing::debug!(added, "text_index build progress");
+                    }
                 }
+                IndexFileKind::Oversized => {
+                    oversized.insert(rel);
+                }
+                IndexFileKind::Skip => {}
             }
         }
         writer
@@ -173,6 +202,7 @@ impl TextIndexStore {
             index,
             reader,
             fields,
+            oversized,
         })
     }
 
@@ -188,18 +218,27 @@ impl TextIndexStore {
         for (rel, deleted) in updates {
             let term = Term::from_field_text(self.fields.path, rel);
             writer.delete_term(term);
+            self.oversized.remove(rel);
             if *deleted {
                 continue;
             }
+            if path_skipped_by_preset(rel, FilterPreset::AgentText, false) {
+                continue;
+            }
             let abs = workspace_root.join(rel);
-            if let Some(content) = read_indexable_file(&abs) {
-                let content = content.to_lowercase();
-                writer
-                    .add_document(doc!(
-                        self.fields.path => rel.as_str(),
-                        self.fields.body => content,
-                    ))
-                    .map_err(|e| LitecodeError::Config(format!("text_index add: {e}")))?;
+            match classify_index_file(&abs) {
+                IndexFileKind::Body(content) => {
+                    writer
+                        .add_document(doc!(
+                            self.fields.path => rel.as_str(),
+                            self.fields.body => content,
+                        ))
+                        .map_err(|e| LitecodeError::Config(format!("text_index add: {e}")))?;
+                }
+                IndexFileKind::Oversized => {
+                    self.oversized.insert(rel.clone());
+                }
+                IndexFileKind::Skip => {}
             }
         }
         writer
@@ -212,7 +251,15 @@ impl TextIndexStore {
     }
 
     /// Returns candidate relative paths, or `None` if the query is not indexable.
-    pub fn search_candidates(&self, query: &LexicalQuery) -> Result<Option<Vec<String>>> {
+    pub fn search_candidates(&self, query: &LexicalQuery) -> Result<Option<CandidateHits>> {
+        self.search_candidates_with_limit(query, MAX_CANDIDATES)
+    }
+
+    pub(crate) fn search_candidates_with_limit(
+        &self,
+        query: &LexicalQuery,
+        limit: usize,
+    ) -> Result<Option<CandidateHits>> {
         let Some(lit) = indexable_literal(&query.pattern, query.is_regex) else {
             return Ok(None);
         };
@@ -220,6 +267,7 @@ impl TextIndexStore {
         if grams.is_empty() {
             return Ok(None);
         }
+        let limit = limit.max(1);
 
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
         for g in &grams {
@@ -229,19 +277,11 @@ impl TextIndexStore {
                 Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
             ));
         }
-        // Optional path prefix when searching a subdirectory.
-        if let Some(sub) = query.path.as_ref() {
-            let prefix = path_prefix_under(&query.root, sub);
-            if let Some(pref) = prefix {
-                // Soft filter after retrieval; stored for verify scope.
-                let _ = pref;
-            }
-        }
 
         let bq = BooleanQuery::new(clauses);
         let searcher = self.reader.searcher();
-        let top = searcher
-            .search(&bq, &TopDocs::with_limit(MAX_CANDIDATES))
+        let (addrs, truncated) = searcher
+            .search(&bq, &AllMatchingDocs { limit })
             .map_err(|e| LitecodeError::Config(format!("text_index search: {e}")))?;
 
         let mut paths = Vec::new();
@@ -250,7 +290,7 @@ impl TextIndexStore {
             .path
             .as_ref()
             .and_then(|p| path_prefix_under(&query.root, p));
-        for (_score, addr) in top {
+        for addr in addrs {
             let doc: TantivyDocument = searcher
                 .doc(addr)
                 .map_err(|e| LitecodeError::Config(format!("text_index doc: {e}")))?;
@@ -270,7 +310,124 @@ impl TextIndexStore {
                 paths.push(path.to_string());
             }
         }
-        Ok(Some(paths))
+        if !truncated {
+            for p in &self.oversized {
+                if let Some(ref pref) = path_prefix
+                    && !p.starts_with(pref.as_str())
+                    && p != pref.as_str()
+                {
+                    continue;
+                }
+                if seen.insert(p.clone()) {
+                    paths.push(p.clone());
+                }
+            }
+        }
+        Ok(Some(CandidateHits { paths, truncated }))
+    }
+}
+
+/// Collect every matching document up to `limit` (no scoring / Top-K).
+struct AllMatchingDocs {
+    limit: usize,
+}
+
+struct AllMatchingDocsSegment {
+    segment_ord: SegmentOrdinal,
+    docs: Vec<DocId>,
+    truncated: bool,
+    limit: usize,
+}
+
+impl Collector for AllMatchingDocs {
+    type Fruit = (Vec<DocAddress>, bool);
+    type Child = AllMatchingDocsSegment;
+
+    fn for_segment(
+        &self,
+        segment_local_id: SegmentOrdinal,
+        _segment: &SegmentReader,
+    ) -> tantivy::Result<Self::Child> {
+        Ok(AllMatchingDocsSegment {
+            segment_ord: segment_local_id,
+            docs: Vec::new(),
+            truncated: false,
+            limit: self.limit,
+        })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        false
+    }
+
+    fn merge_fruits(
+        &self,
+        segment_fruits: Vec<Self::Fruit>,
+    ) -> tantivy::Result<(Vec<DocAddress>, bool)> {
+        let mut out = Vec::new();
+        let mut truncated = false;
+        for (docs, t) in segment_fruits {
+            truncated |= t;
+            for addr in docs {
+                if out.len() >= self.limit {
+                    truncated = true;
+                    break;
+                }
+                out.push(addr);
+            }
+        }
+        truncated |= out.len() >= self.limit;
+        Ok((out, truncated))
+    }
+}
+
+impl SegmentCollector for AllMatchingDocsSegment {
+    type Fruit = (Vec<DocAddress>, bool);
+
+    fn collect(&mut self, doc: DocId, _score: Score) {
+        if self.docs.len() >= self.limit {
+            self.truncated = true;
+            return;
+        }
+        self.docs.push(doc);
+    }
+
+    fn harvest(self) -> Self::Fruit {
+        let truncated = self.truncated || self.docs.len() >= self.limit;
+        let docs = self
+            .docs
+            .into_iter()
+            .map(|doc| DocAddress {
+                segment_ord: self.segment_ord,
+                doc_id: doc,
+            })
+            .collect();
+        (docs, truncated)
+    }
+}
+
+enum IndexFileKind {
+    Body(String),
+    Oversized,
+    Skip,
+}
+
+fn classify_index_file(path: &Path) -> IndexFileKind {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return IndexFileKind::Skip;
+    };
+    if !meta.is_file() {
+        return IndexFileKind::Skip;
+    }
+    if looks_binary(path) {
+        return IndexFileKind::Skip;
+    }
+    if meta.len() > MAX_INDEX_FILE_BYTES {
+        return IndexFileKind::Oversized;
+    }
+    match std::fs::read_to_string(path) {
+        Ok(content) => IndexFileKind::Body(content.to_lowercase()),
+        Err(_) => IndexFileKind::Skip,
     }
 }
 
@@ -286,17 +443,6 @@ fn path_prefix_under(workspace_root: &Path, search_path: &Path) -> Option<String
     } else {
         Some(rel.replace('\\', "/"))
     }
-}
-
-fn read_indexable_file(path: &Path) -> Option<String> {
-    let meta = std::fs::metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > MAX_INDEX_FILE_BYTES {
-        return None;
-    }
-    if looks_binary(path) {
-        return None;
-    }
-    std::fs::read_to_string(path).ok()
 }
 
 /// Count files under AgentText walk, stopping after `limit` (inclusive stop).
@@ -316,11 +462,12 @@ pub fn count_agent_text_files(workspace_root: &Path, limit: u64) -> Result<u64> 
     Ok(n)
 }
 
-/// Verify candidates with the same ripgrep matcher as LexicalLane.
+/// Verify candidates with the same ripgrep matcher as LexicalLane, after
+/// dropping paths the current preset would not walk.
 pub fn verify_with_ripgrep(
     workspace_root: &Path,
     query: &LexicalQuery,
-    _preset: FilterPreset,
+    preset: FilterPreset,
     candidates: &[String],
 ) -> Result<LexicalSearchOutcome> {
     let pattern = if query.is_regex {
@@ -349,12 +496,16 @@ pub fn verify_with_ripgrep(
         Some(p) => compile_include_patterns(p)?,
     };
     let exclude = compile_exclude_globs(query.exclude.as_deref())?;
+    let hide_hidden = preset.layers().hide_hidden && !query.search_hidden;
 
     let mut matches = Vec::new();
     let mut files_searched = 0usize;
     for rel in candidates {
         if matches.len() >= query.max_matches {
             break;
+        }
+        if path_skipped_by_preset(rel, preset, hide_hidden) {
+            continue;
         }
         if !include.is_empty() && !path_matches_include(rel, &include) {
             continue;

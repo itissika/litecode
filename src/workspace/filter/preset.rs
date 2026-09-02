@@ -26,8 +26,7 @@ pub enum FilterPreset {
     /// OS watcher event gate: `files.watcherExclude` only.
     Watcher,
     /// Semantic index scan: search-style excludes + gitignore + index content
-    /// policy (product-internal dir prune + caller content gates); hidden files
-    /// not blanket-skipped.
+    /// gates at callers; `.litecode` pruned via [`Self::prune_product_internal_dirs`].
     Index,
 }
 
@@ -119,6 +118,13 @@ impl FilterPreset {
             layers.git_exclude = false;
         }
         layers
+    }
+
+    /// Hard-skip nested `.litecode` (product runtime). Explorer stays visible;
+    /// `Unfiltered` (`no_ignore`) does not prune. Never prune the walk root so
+    /// `path=.litecode` still lists.
+    pub fn prune_product_internal_dirs(self) -> bool {
+        !matches!(self, Self::Explorer | Self::Unfiltered)
     }
 }
 
@@ -212,5 +218,16 @@ mod tests {
                 assert_eq!(git_layers(FilterPreset::Unfiltered), (false, false, false));
             },
         );
+    }
+
+    #[test]
+    fn prune_product_internal_presets() {
+        assert!(!FilterPreset::Explorer.prune_product_internal_dirs());
+        assert!(!FilterPreset::Unfiltered.prune_product_internal_dirs());
+        assert!(FilterPreset::AgentText.prune_product_internal_dirs());
+        assert!(FilterPreset::FileGlob.prune_product_internal_dirs());
+        assert!(FilterPreset::TextSearch.prune_product_internal_dirs());
+        assert!(FilterPreset::Index.prune_product_internal_dirs());
+        assert!(FilterPreset::Watcher.prune_product_internal_dirs());
     }
 }

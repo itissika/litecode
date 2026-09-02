@@ -2300,8 +2300,8 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::schema::ensure_session_schema;
+    use super::*;
     use crate::authority::responses::{
         AssistantRole, FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
         MessageItem, OutputMessage, OutputMessageContent, OutputStatus, OutputTextContent,
@@ -2553,8 +2553,10 @@ mod tests {
         let db = dir.path().join("sessions.db");
         let lease = crate::session::WorkspaceWriteLease::acquire(dir.path()).unwrap();
         let data = crate::session::SessionData::open(&lease, &db).unwrap();
-        data.create_session("/p", "default", Some("keep-me")).unwrap();
-        data.create_session("/p", "default", Some("drop-me")).unwrap();
+        data.create_session("/p", "default", Some("keep-me"))
+            .unwrap();
+        data.create_session("/p", "default", Some("drop-me"))
+            .unwrap();
 
         let mut valid = std::collections::HashSet::new();
         valid.insert("keep-me".into());
@@ -3694,7 +3696,11 @@ mod tests {
             .unwrap();
         match seal_receipt.outcome {
             crate::session::data::CommitKind::Sealed { seqs } => {
-                assert_eq!(seqs, vec![seq], "in-place seal must surface seqs for restamp");
+                assert_eq!(
+                    seqs,
+                    vec![seq],
+                    "in-place seal must surface seqs for restamp"
+                );
             }
             other => panic!("expected Sealed receipt, got {other:?}"),
         }

@@ -81,6 +81,9 @@ pub fn lexical_search(query: &LexicalQuery) -> Result<Vec<LexicalMatch>> {
 /// Human workspace search uses [`FilterPreset::TextSearch`]; agent `grep`
 /// defaults to [`FilterPreset::AgentText`]. [`FilterPreset::Unfiltered`] is
 /// only for explicit `no_ignore` discovery.
+///
+/// When the text index is Ready, it only chooses which files to open; matching
+/// and excludes are the same as a full ripgrep walk with `preset`.
 pub fn lexical_search_with_preset(
     query: &LexicalQuery,
     preset: FilterPreset,
@@ -92,7 +95,9 @@ pub fn lexical_search_with_preset(
         });
     }
 
-    // Adaptive TextIndex accelerator (falls back to libripgrep).
+    // Text index is a Cox-style accelerator: posting intersect then verify with
+    // this preset's excludes. `None` means scan (index off, pattern not
+    // indexable, Unfiltered, or candidate cap).
     if let Some(accelerated) = crate::engines::text_index::try_accelerated_search(query, preset) {
         return accelerated;
     }

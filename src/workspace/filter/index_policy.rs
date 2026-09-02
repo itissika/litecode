@@ -2,13 +2,14 @@
 //!
 //! Extension / size / noise / binary gates for embedding. Directory discovery
 //! matches search corpora via [`FilterPreset::Index`] (`files`∪`search` exclude +
-//! gitignore). Only [`PRODUCT_INTERNAL_DIRS`] are extra hard-skips for index.
+//! gitignore). Only [`PRODUCT_INTERNAL_DIRS`] (`.litecode`) is an extra hard-skip
+//! for index (product runtime). Eval dirs such as `.data` follow user config.
 
 use std::path::{Path, PathBuf};
 
 use super::binary::looks_binary;
 use super::defaults::PRODUCT_INTERNAL_DIRS;
-use super::dirs::{is_product_internal_dir_name, path_has_product_internal_dir};
+use super::dirs::path_has_product_internal_dir;
 use super::exclude::path_excluded;
 use super::preset::FilterPreset;
 
@@ -94,6 +95,7 @@ pub fn should_queue_index_update(rel: &str, deleted: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::filter::is_product_internal_dir_name;
     use tempfile::TempDir;
 
     #[test]
@@ -130,5 +132,6 @@ mod tests {
         assert!(should_queue_index_update("target/foo.rs", false));
         assert!(should_queue_index_update("src/a.rs", false));
         assert!(is_product_internal_dir_name(".litecode"));
+        assert!(!is_product_internal_dir_name(".data"));
     }
 }

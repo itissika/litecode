@@ -237,11 +237,7 @@ impl CodeSearchRuntime {
         }
         tracing::info!("session_search loading session ANN index");
         let loaded = self.with_embedder(|emb| {
-            crate::engines::session_search::ensure_session_index(
-                &self.workspace_root,
-                &reader,
-                emb,
-            )
+            crate::engines::session_search::ensure_session_index(&self.workspace_root, &reader, emb)
         })?;
         let mut guard = self
             .session_index

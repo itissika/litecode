@@ -147,6 +147,7 @@ impl GlobTool {
     }
 }
 
+#[derive(Debug)]
 struct GlobListing {
     hits: Vec<String>,
     total: usize,
@@ -157,6 +158,11 @@ impl GlobListing {
         let total = hits.len();
         hits.truncate(MAX_RESULTS);
         Self { hits, total }
+    }
+
+    #[cfg(test)]
+    fn iter(&self) -> impl Iterator<Item = &String> {
+        self.hits.iter()
     }
 }
 
@@ -182,6 +188,11 @@ fn format_glob_body(
             msg.push_str(". ");
             msg.push_str(note);
         }
+        if !msg.ends_with('.') {
+            msg.push('.');
+        }
+        msg.push(' ');
+        msg.push_str(crate::workspace::filter::empty_discovery_hint());
         msg
     } else {
         let mut msg = listing.hits.join("\n");
@@ -266,14 +277,11 @@ fn glob_match(base: &std::path::Path, pattern: &str, no_ignore: bool) -> Result<
 
     let mut hits: Vec<String> = Vec::new();
 
-    let mut builder = walk_builder_with(
+    let builder = walk_builder_with(
         base,
         preset,
         WalkOptions::with_file_include(vec![glob_matcher]),
     );
-    if shallow_only(pattern) {
-        builder.max_depth(Some(1));
-    }
     let walker = builder.build();
 
     for entry in walker.flatten() {
@@ -299,12 +307,6 @@ fn discovery_preset(no_ignore: bool) -> FilterPreset {
     } else {
         FilterPreset::FileGlob
     }
-}
-
-/// Patterns without `**` or path separators only match the start directory.
-fn shallow_only(pattern: &str) -> bool {
-    let pattern = normalize_pattern(pattern);
-    !pattern.contains("**") && !pattern.contains('/')
 }
 
 #[cfg(test)]
@@ -390,6 +392,34 @@ mod tests {
                 .iter()
                 .any(|p| p == "pkg/index.js" || p.ends_with("index.js")),
             "walking path=node_modules should list contents; got {found:?}"
+        );
+    }
+
+    #[test]
+    fn glob_skips_nested_litecode_lists_when_path_set() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode/index")).unwrap();
+        std::fs::write(root.join(".litecode/index/x.rs"), "fn x() {}\n").unwrap();
+        std::fs::write(root.join("keep.rs"), "fn k() {}\n").unwrap();
+
+        let filtered = glob_match(root, "**/*.rs", false).unwrap();
+        assert!(filtered.iter().any(|p| p == "keep.rs"), "{filtered:?}");
+        assert!(
+            !filtered.iter().any(|p| p.contains(".litecode")),
+            "FileGlob must skip nested .litecode; got {filtered:?}"
+        );
+
+        let inside = glob_match(&root.join(".litecode"), "**/*", false).unwrap();
+        assert!(
+            inside.iter().any(|p| p.contains("x.rs")),
+            "path=.litecode must list; got {inside:?}"
+        );
+
+        let raw = glob_match(root, "**/*.rs", true).unwrap();
+        assert!(
+            raw.iter().any(|p| p.contains(".litecode")),
+            "no_ignore must include .litecode; got {raw:?}"
         );
     }
 
@@ -506,6 +536,37 @@ mod tests {
             "got: {body}"
         );
         assert!(!body.contains(&format!("f{:04}.txt", MAX_RESULTS + 6)));
+    }
+
+    #[test]
+    fn basename_glob_recurses() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src/nested")).unwrap();
+        std::fs::write(root.join("src/nested/deep.rs"), "fn d() {}\n").unwrap();
+        std::fs::write(root.join("root.rs"), "fn r() {}\n").unwrap();
+        std::fs::write(root.join("src/mid.rs"), "fn m() {}\n").unwrap();
+        std::fs::write(root.join("src/nested/README.md"), "# nested\n").unwrap();
+
+        let rs = glob_match(root, "*.rs", false).unwrap();
+        assert!(rs.iter().any(|p| p == "src/nested/deep.rs"), "{rs:?}");
+        assert!(rs.iter().any(|p| p == "src/mid.rs"), "{rs:?}");
+        assert!(rs.iter().any(|p| p == "root.rs"), "{rs:?}");
+
+        let md = glob_match(root, "README.md", false).unwrap();
+        assert!(
+            md.iter().any(|p| p == "src/nested/README.md"),
+            "exact basename must recurse; got {md:?}"
+        );
+    }
+
+    #[test]
+    fn empty_glob_mentions_excludes_config() {
+        let dir = TempDir::new().unwrap();
+        let body = glob_in(dir.path(), serde_json::json!({ "pattern": "**/*.nope" }));
+        assert!(body.contains("No files found"), "{body}");
+        assert!(body.contains(".litecode/excludes.json"), "{body}");
+        assert!(body.contains("no_ignore"), "{body}");
     }
 
     fn seed_session(root: &std::path::Path, text: &str) -> String {

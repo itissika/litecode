@@ -21,8 +21,8 @@ pub struct FilterLayers {
     pub hide_hidden: bool,
     /// Skip files that look binary (NUL in first 8 KiB).
     pub skip_binary: bool,
-    /// Semantic-index: product-internal dir prune + content gates at callers
-    /// (extensions / size / noise / binary). Not a second search.exclude list.
+    /// Semantic-index: caller content gates (extensions / size / noise / binary).
+    /// Directory prune of `.litecode` is [`FilterPreset::prune_product_internal_dirs`].
     pub index_content: bool,
 }
 

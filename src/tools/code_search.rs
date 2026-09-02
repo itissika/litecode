@@ -6,8 +6,8 @@ use crate::engines::code_search::{
     DEFAULT_TOP_K, IndexStatus, MAX_TOP_K, ResolvedIndexView, resolve_index_view,
 };
 use crate::engines::{
-    EngineState, RetrievalCorpus, RetrievalFilters, RetrievalHit, RetrievalModality, RetrievalQuery,
-    WorkspaceEngines,
+    EngineState, RetrievalCorpus, RetrievalFilters, RetrievalHit, RetrievalModality,
+    RetrievalQuery, WorkspaceEngines,
 };
 use crate::tool::Tool;
 use crate::types::ToolCallResult;
@@ -160,10 +160,7 @@ fn indexing_wait_message(engines: &WorkspaceEngines) -> String {
     let state = engines.state("code_search");
     if let Some(root) = root {
         let view = resolve_index_view(&root, state);
-        if matches!(
-            view.status,
-            IndexStatus::Building | IndexStatus::Refreshing
-        ) {
+        if matches!(view.status, IndexStatus::Building | IndexStatus::Refreshing) {
             return format_index_progress(&view);
         }
     }

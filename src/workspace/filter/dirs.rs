@@ -94,7 +94,9 @@ mod tests {
         assert!(is_product_internal_dir_name(".litecode"));
         assert!(path_has_product_internal_dir(".litecode/index/x"));
         assert!(is_discovery_or_product_dir_name("node_modules"));
-        assert!(is_discovery_or_product_dir_name(".data"));
+        assert!(!is_discovery_or_product_dir_name(".data"));
+        assert!(!is_product_internal_dir_name(".data"));
+        assert!(!is_product_internal_dir_name(".venv-ort"));
         assert!(!is_discovery_or_product_dir_name("target"));
     }
 }

@@ -1,7 +1,9 @@
-//! Adaptive workspace text index (Instant Grep–style accelerator).
+//! Adaptive workspace text index (Cox-style trigram accelerator).
 //!
 //! Own artifact under `.litecode/text-index/`, separate from semantic ANN/BM25.
-//! Shares serve watcher notifications only. Always falls back to libripgrep.
+//! Shares serve watcher notifications. Index narrows files; libripgrep verifies
+//! with the query's current exclude preset. Falls back to a full walk only when
+//! the index cannot be used (off, unindexable pattern, Unfiltered, candidate cap).
 
 mod literal;
 mod meta;
@@ -11,7 +13,7 @@ mod store;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -21,9 +23,14 @@ use crate::workspace::filter::FilterPreset;
 
 pub use policy::{TextIndexMode, mode_from_env};
 
-use meta::{INDEX_FORMAT, TextIndexMeta, load_meta, save_meta, text_index_dir};
-use policy::{BUILD_FILE_THRESHOLD, DROP_FILE_THRESHOLD, HARD_FILE_CAP, should_queue_text_path};
-use store::{TextIndexStore, count_agent_text_files};
+use meta::{INDEX_FORMAT, TextIndexMeta, load_meta, save_meta};
+use policy::{
+    HARD_FILE_CAP, corpus_fingerprint, is_corpus_definition_rel, should_build,
+    should_queue_text_path,
+};
+use store::{CandidateHits, TextIndexStore, count_agent_text_files};
+
+const PENDING_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Process-wide registry so LexicalLane can find the active index by workspace root
 /// without threading IdeBase through every grep call.
@@ -61,8 +68,9 @@ struct Inner {
 /// Adaptive text-search accelerator owned by [`crate::engines::WorkspaceEngines`].
 pub struct TextIndexEngine {
     inner: Mutex<Inner>,
+    cv: Condvar,
     stop: AtomicBool,
-    /// Background measure/build thread (at most one).
+    /// Background measure/build + pending apply thread (at most one).
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -85,6 +93,7 @@ impl TextIndexEngine {
                 reconcile_requested: false,
                 build_gen: 0,
             }),
+            cv: Condvar::new(),
             stop: AtomicBool::new(false),
             worker: Mutex::new(None),
         }
@@ -113,11 +122,12 @@ impl TextIndexEngine {
                 engine: Arc::clone(self),
             });
         }
-        self.spawn_measure_and_maybe_build(root);
+        self.spawn_lifecycle(root);
     }
 
     pub fn detach(&self) {
         self.stop.store(true, Ordering::SeqCst);
+        self.cv.notify_all();
         if let Ok(mut w) = self.worker.lock()
             && let Some(h) = w.take()
         {
@@ -139,19 +149,33 @@ impl TextIndexEngine {
         let Ok(mut g) = self.inner.lock() else {
             return;
         };
-        if !matches!(g.state, TextIndexState::Ready | TextIndexState::Building) {
+        if matches!(g.state, TextIndexState::Off | TextIndexState::Failed) {
             return;
         }
+        let mut wake = false;
         for p in paths {
+            if is_corpus_definition_rel(p) {
+                g.reconcile_requested = true;
+                wake = true;
+                continue;
+            }
             if should_queue_text_path(p, deleted) {
                 g.pending.insert((p.clone(), deleted));
+                wake = true;
             }
+        }
+        if wake {
+            self.cv.notify_one();
         }
     }
 
     pub fn request_reconcile(&self) {
         if let Ok(mut g) = self.inner.lock() {
+            if matches!(g.state, TextIndexState::Off | TextIndexState::Failed) {
+                return;
+            }
             g.reconcile_requested = true;
+            self.cv.notify_one();
         }
     }
 
@@ -167,6 +191,7 @@ impl TextIndexEngine {
         if mode_from_env() == TextIndexMode::Off {
             return None;
         }
+        let _ = self.flush_pending();
         let (root, store) = {
             let g = self.inner.lock().ok()?;
             if g.state != TextIndexState::Ready {
@@ -177,12 +202,15 @@ impl TextIndexEngine {
             (root, store)
         };
 
-        // Flush pending before query (best-effort).
-        let _ = self.flush_pending();
-
         match store.search_candidates(query) {
             Ok(None) => None, // pattern not indexable
-            Ok(Some(paths)) => Some(verify_candidates(&root, query, preset, &paths)),
+            Ok(Some(hits)) => {
+                if !accelerator_window_complete(&hits) {
+                    tracing::debug!("text_index candidate cap hit; falling back to ripgrep");
+                    return None;
+                }
+                Some(verify_candidates(&root, query, preset, &hits.paths))
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "text_index query failed; falling back to ripgrep");
                 None
@@ -191,11 +219,10 @@ impl TextIndexEngine {
     }
 
     fn flush_pending(&self) -> Result<()> {
-        let (root, updates, store) = {
+        let (root, updates, store, rebuild) = {
             let mut g = self.inner.lock().unwrap();
             if g.reconcile_requested {
                 g.reconcile_requested = false;
-                g.pending.clear();
                 let root = g.root.clone();
                 drop(g);
                 if let Some(root) = root {
@@ -212,26 +239,44 @@ impl TextIndexEngine {
                 .ok_or_else(|| crate::types::LitecodeError::Config("text_index: no root".into()))?;
             let updates: Vec<_> = g.pending.drain().collect();
             let store = g.store.take();
-            (root, updates, store)
+            (root, updates, store, false)
         };
+        let _ = rebuild;
         let Some(mut store) = store else {
             return Ok(());
         };
         if let Err(e) = store.apply_updates(&root, &updates) {
             tracing::warn!(error = %e, "text_index incremental update failed");
-            // Put store back if still usable
             if let Ok(mut g) = self.inner.lock() {
                 g.store = Some(store);
             }
             return Ok(());
         }
+        self.persist_meta(&root, &store);
         if let Ok(mut g) = self.inner.lock() {
             g.store = Some(store);
         }
         Ok(())
     }
 
-    fn spawn_measure_and_maybe_build(self: &Arc<Self>, root: PathBuf) {
+    fn persist_meta(&self, root: &Path, store: &TextIndexStore) {
+        let file_count = self.inner.lock().ok().map(|g| g.file_count).unwrap_or(0);
+        let mut oversized: Vec<String> = store.oversized.iter().cloned().collect();
+        oversized.sort();
+        let _ = save_meta(
+            root,
+            &TextIndexMeta {
+                format: INDEX_FORMAT,
+                workspace_root: root.to_string_lossy().into_owned(),
+                file_count,
+                built_unix_ms: unix_ms(),
+                corpus_fingerprint: corpus_fingerprint(),
+                oversized,
+            },
+        );
+    }
+
+    fn spawn_lifecycle(self: &Arc<Self>, root: PathBuf) {
         let mode = mode_from_env();
         if mode == TextIndexMode::Off {
             let mut g = self.inner.lock().unwrap();
@@ -242,80 +287,8 @@ impl TextIndexEngine {
         let handle = thread::Builder::new()
             .name("text-index".into())
             .spawn(move || {
-                if engine.stop.load(Ordering::SeqCst) {
-                    return;
-                }
-                let count = match count_agent_text_files(&root, HARD_FILE_CAP + 1) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "text_index file count failed");
-                        if let Ok(mut g) = engine.inner.lock() {
-                            g.state = TextIndexState::Failed;
-                            g.last_error = Some(e.to_string());
-                        }
-                        return;
-                    }
-                };
-                if engine.stop.load(Ordering::SeqCst) {
-                    return;
-                }
-                {
-                    let mut g = engine.inner.lock().unwrap();
-                    g.file_count = count;
-                }
-                let should_build = match mode {
-                    TextIndexMode::On => count <= HARD_FILE_CAP,
-                    TextIndexMode::Auto => (BUILD_FILE_THRESHOLD..=HARD_FILE_CAP).contains(&count),
-                    TextIndexMode::Off => false,
-                };
-                if count > HARD_FILE_CAP {
-                    tracing::warn!(
-                        count,
-                        cap = HARD_FILE_CAP,
-                        "text_index skipped: workspace exceeds hard file cap"
-                    );
-                    if let Ok(mut g) = engine.inner.lock() {
-                        g.state = TextIndexState::Off;
-                    }
-                    return;
-                }
-                if !should_build {
-                    // Drop existing on-disk index if below hysteresis while in auto.
-                    if mode == TextIndexMode::Auto && count < DROP_FILE_THRESHOLD {
-                        let dir = text_index_dir(&root);
-                        let _ = std::fs::remove_dir_all(&dir);
-                    }
-                    if let Ok(mut g) = engine.inner.lock() {
-                        g.state = TextIndexState::Off;
-                    }
-                    tracing::debug!(count, "text_index not needed for workspace size");
-                    return;
-                }
-                // Try load existing meta if compatible.
-                if let Ok(Some(meta)) = load_meta(&root)
-                    && meta.format == INDEX_FORMAT
-                    && meta.workspace_root == root.to_string_lossy()
-                    && let Ok(store) = TextIndexStore::open(&root)
-                {
-                    if let Ok(mut g) = engine.inner.lock() {
-                        g.store = Some(store);
-                        g.state = TextIndexState::Ready;
-                    }
-                    tracing::info!(count, "text_index loaded from disk");
-                    return;
-                }
-                if let Ok(mut g) = engine.inner.lock() {
-                    g.state = TextIndexState::Building;
-                    g.build_gen += 1;
-                }
-                if let Err(e) = engine.rebuild_sync(&root) {
-                    tracing::warn!(error = %e, "text_index build failed");
-                    if let Ok(mut g) = engine.inner.lock() {
-                        g.state = TextIndexState::Failed;
-                        g.last_error = Some(e.to_string());
-                        g.store = None;
-                    }
-                }
+                engine.measure_and_maybe_build(&root, mode);
+                engine.maintain_loop();
             })
             .ok();
         if let Some(h) = handle {
@@ -323,35 +296,160 @@ impl TextIndexEngine {
         }
     }
 
+    fn maintain_loop(&self) {
+        loop {
+            if self.stop.load(Ordering::SeqCst) {
+                return;
+            }
+            let mut g = match self.inner.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            while !self.stop.load(Ordering::SeqCst)
+                && !g.reconcile_requested
+                && g.pending.is_empty()
+            {
+                let (gg, _) = match self.cv.wait_timeout(g, Duration::from_millis(500)) {
+                    Ok(v) => v,
+                    Err(_) => return,
+                };
+                g = gg;
+            }
+            if self.stop.load(Ordering::SeqCst) {
+                return;
+            }
+            let has_work = g.reconcile_requested || !g.pending.is_empty();
+            drop(g);
+            if !has_work {
+                continue;
+            }
+            thread::sleep(PENDING_DEBOUNCE);
+            if self.stop.load(Ordering::SeqCst) {
+                return;
+            }
+            let _ = self.flush_pending();
+        }
+    }
+
+    fn measure_and_maybe_build(&self, root: &Path, mode: TextIndexMode) {
+        if self.stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let count = match count_agent_text_files(root, HARD_FILE_CAP + 1) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "text_index file count failed");
+                if let Ok(mut g) = self.inner.lock() {
+                    g.state = TextIndexState::Failed;
+                    g.last_error = Some(e.to_string());
+                }
+                return;
+            }
+        };
+        if self.stop.load(Ordering::SeqCst) {
+            return;
+        }
+        {
+            let mut g = self.inner.lock().unwrap();
+            g.file_count = count;
+        }
+        if count > HARD_FILE_CAP {
+            tracing::warn!(
+                count,
+                cap = HARD_FILE_CAP,
+                "text_index skipped: workspace exceeds hard file cap"
+            );
+            if let Ok(mut g) = self.inner.lock() {
+                g.state = TextIndexState::Off;
+            }
+            return;
+        }
+        if !should_build(mode, count) {
+            if let Ok(mut g) = self.inner.lock() {
+                g.state = TextIndexState::Off;
+            }
+            return;
+        }
+        let fingerprint = corpus_fingerprint();
+        if let Ok(Some(meta)) = load_meta(root)
+            && meta.format == INDEX_FORMAT
+            && meta.workspace_root == root.to_string_lossy()
+            && meta.corpus_fingerprint == fingerprint
+            && let Ok(store) = TextIndexStore::open(root, meta.oversized)
+        {
+            if let Ok(mut g) = self.inner.lock() {
+                g.store = Some(store);
+                g.state = TextIndexState::Ready;
+            }
+            tracing::info!(count, "text_index loaded from disk");
+            let _ = self.flush_pending();
+            return;
+        }
+        if let Ok(mut g) = self.inner.lock() {
+            g.state = TextIndexState::Building;
+            g.build_gen += 1;
+        }
+        if let Err(e) = self.rebuild_sync(root) {
+            tracing::warn!(error = %e, "text_index build failed");
+            if let Ok(mut g) = self.inner.lock() {
+                g.state = TextIndexState::Failed;
+                g.last_error = Some(e.to_string());
+                g.store = None;
+            }
+        }
+    }
+
     fn rebuild_sync(&self, root: &Path) -> Result<()> {
         let started = Instant::now();
         tracing::info!(path = %root.display(), "text_index build starting");
+        if let Ok(mut g) = self.inner.lock() {
+            g.state = TextIndexState::Building;
+        }
         let store = TextIndexStore::build(root, || self.stop.load(Ordering::SeqCst))?;
         if self.stop.load(Ordering::SeqCst) {
             return Ok(());
         }
-        let count = {
-            let g = self.inner.lock().unwrap();
-            g.file_count
-        };
-        save_meta(
-            root,
-            &TextIndexMeta {
-                format: INDEX_FORMAT,
-                workspace_root: root.to_string_lossy().into_owned(),
-                file_count: count,
-                built_unix_ms: unix_ms(),
-            },
-        )?;
+        self.persist_meta(root, &store);
         if let Ok(mut g) = self.inner.lock() {
             g.store = Some(store);
             g.state = TextIndexState::Ready;
-            g.pending.clear();
         }
         tracing::info!(
             elapsed_ms = started.elapsed().as_millis() as u64,
             "text_index build complete"
         );
+        // Apply events that arrived during the build (do not drop them).
+        self.apply_pending_only()
+    }
+
+    fn apply_pending_only(&self) -> Result<()> {
+        let (root, updates, store) = {
+            let mut g = self.inner.lock().unwrap();
+            if g.pending.is_empty() || g.state != TextIndexState::Ready {
+                return Ok(());
+            }
+            let root = g
+                .root
+                .clone()
+                .ok_or_else(|| crate::types::LitecodeError::Config("text_index: no root".into()))?;
+            let updates: Vec<_> = g.pending.drain().collect();
+            let store = g.store.take();
+            (root, updates, store)
+        };
+        let Some(mut store) = store else {
+            return Ok(());
+        };
+        if let Err(e) = store.apply_updates(&root, &updates) {
+            tracing::warn!(error = %e, "text_index incremental update failed");
+            if let Ok(mut g) = self.inner.lock() {
+                g.store = Some(store);
+            }
+            return Ok(());
+        }
+        self.persist_meta(&root, &store);
+        if let Ok(mut g) = self.inner.lock() {
+            g.store = Some(store);
+        }
         Ok(())
     }
 }
@@ -361,6 +459,10 @@ fn unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_millis() as u64
+}
+
+fn accelerator_window_complete(hits: &CandidateHits) -> bool {
+    !hits.truncated
 }
 
 /// Registry lookup used by LexicalLane.
@@ -378,16 +480,13 @@ pub fn try_accelerated_search(
     if qroot != reg.root {
         let rel = qroot.strip_prefix(&reg.root).ok()?.to_path_buf();
         q.root = reg.root.clone();
-        // Preserve deeper path scope if already set.
         q.path = Some(match q.path.take() {
             Some(p) if p.is_absolute() => p,
             Some(p) => rel.join(p),
             None => rel,
         });
     }
-    // Single-file grep must not go through the global TopDocs candidate window:
-    // a known file can miss the 2000-hit cap (or never have been indexed) and
-    // we'd return empty without falling back to libripgrep.
+    // Known-path file grep opens the file directly; skip the global posting set.
     if let Some(p) = q.path.as_ref() {
         let abs = if p.is_absolute() {
             p.clone()
@@ -398,12 +497,7 @@ pub fn try_accelerated_search(
             return None;
         }
     }
-    match reg.engine.try_search(&q, preset) {
-        Some(Ok(out)) if out.matches.is_empty() && out.files_searched == 0 && q.path.is_some() => {
-            None
-        }
-        other => other,
-    }
+    reg.engine.try_search(&q, preset)
 }
 
 fn verify_candidates(
@@ -412,20 +506,43 @@ fn verify_candidates(
     preset: FilterPreset,
     candidates: &[String],
 ) -> Result<LexicalSearchOutcome> {
-    // Reuse libripgrep verify on the candidate set by temporarily scoping —
-    // walk only listed files via a synthetic path list search.
     store::verify_with_ripgrep(workspace_root, query, preset, candidates)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engines::code_search::LexicalQuery;
+    use crate::engines::code_search::{LexicalQuery, lexical_search_with_preset};
     use crate::workspace::filter::FilterPreset;
     use literal::indexable_literal;
     use std::sync::Arc;
     use store::{TextIndexStore, verify_with_ripgrep};
     use tempfile::TempDir;
+
+    fn sample_query(root: &Path, pattern: &str) -> LexicalQuery {
+        LexicalQuery {
+            pattern: pattern.into(),
+            root: root.to_path_buf(),
+            path: None,
+            case_sensitive: false,
+            whole_word: false,
+            is_regex: false,
+            include: None,
+            exclude: None,
+            multiline: false,
+            max_matches: 200,
+            before_context: 0,
+            after_context: 0,
+            search_hidden: false,
+        }
+    }
+
+    fn match_paths(out: &LexicalSearchOutcome) -> Vec<String> {
+        let mut p: Vec<String> = out.matches.iter().map(|m| m.path.clone()).collect();
+        p.sort();
+        p.dedup();
+        p
+    }
 
     #[test]
     fn mode_env_defaults_auto() {
@@ -433,14 +550,13 @@ mod tests {
     }
 
     #[test]
-    fn small_workspace_stays_off_in_auto() {
+    fn small_workspace_is_eligible_in_auto() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::write(root.join("a.rs"), "fn a() { hello_world(); }\n").unwrap();
-        assert!(BUILD_FILE_THRESHOLD > 1);
         let count = count_agent_text_files(root, 100).unwrap();
         assert_eq!(count, 1);
-        assert!(count < BUILD_FILE_THRESHOLD);
+        assert!(should_build(TextIndexMode::Auto, count));
     }
 
     #[test]
@@ -450,28 +566,46 @@ mod tests {
         std::fs::write(root.join("a.rs"), "fn a() { unique_needle_xyz(); }\n").unwrap();
         std::fs::write(root.join("b.rs"), "fn b() {}\n").unwrap();
 
-        // Build synchronously without env race.
         let store = TextIndexStore::build(root, || false).unwrap();
-        let q = LexicalQuery {
-            pattern: "unique_needle_xyz".into(),
-            root: root.to_path_buf(),
-            path: None,
-            case_sensitive: false,
-            whole_word: false,
-            is_regex: false,
-            include: None,
-            exclude: None,
-            multiline: false,
-            max_matches: 10,
-            before_context: 0,
-            after_context: 0,
-            search_hidden: false,
-        };
-        let paths = store.search_candidates(&q).unwrap().expect("indexable");
-        assert!(paths.iter().any(|p| p == "a.rs"), "{paths:?}");
-        let out = verify_with_ripgrep(root, &q, FilterPreset::AgentText, &paths).unwrap();
+        let q = sample_query(root, "unique_needle_xyz");
+        let hits = store.search_candidates(&q).unwrap().expect("indexable");
+        assert!(
+            hits.paths.iter().any(|p| p == "a.rs"),
+            "{paths:?}",
+            paths = hits.paths
+        );
+        assert!(!hits.truncated);
+        let out = verify_with_ripgrep(root, &q, FilterPreset::AgentText, &hits.paths).unwrap();
         assert_eq!(out.matches.len(), 1);
         assert_eq!(out.matches[0].path, "a.rs");
+    }
+
+    fn register_ready_engine(
+        root: &Path,
+        store: TextIndexStore,
+        file_count: u64,
+    ) -> Arc<TextIndexEngine> {
+        let engine = Arc::new(TextIndexEngine::new());
+        {
+            let mut g = engine.inner.lock().unwrap();
+            g.root = Some(crate::config::path::canon_abs_lossy(root));
+            g.store = Some(store);
+            g.state = TextIndexState::Ready;
+            g.file_count = file_count;
+        }
+        {
+            let mut reg = registry().write().unwrap();
+            *reg = Some(Registered {
+                root: crate::config::path::canon_abs_lossy(root),
+                engine: Arc::clone(&engine),
+            });
+        }
+        engine
+    }
+
+    fn unregister_engine() {
+        let mut reg = registry().write().unwrap();
+        *reg = None;
     }
 
     #[test]
@@ -483,73 +617,31 @@ mod tests {
         std::fs::write(root.join("tests/ignored.rs"), "unique_needle_xyz\n").unwrap();
 
         let store = TextIndexStore::build(root, || false).unwrap();
-        let q = LexicalQuery {
-            pattern: "unique_needle_xyz".into(),
-            root: root.to_path_buf(),
-            path: None,
-            case_sensitive: false,
-            whole_word: false,
-            is_regex: false,
-            include: None,
-            exclude: Some("**/tests/**".into()),
-            multiline: false,
-            max_matches: 10,
-            before_context: 0,
-            after_context: 0,
-            search_hidden: false,
-        };
-        let paths = store.search_candidates(&q).unwrap().expect("indexable");
-        let out = verify_with_ripgrep(root, &q, FilterPreset::AgentText, &paths).unwrap();
+        let mut q = sample_query(root, "unique_needle_xyz");
+        q.exclude = Some("**/tests/**".into());
+        q.max_matches = 10;
+        let hits = store.search_candidates(&q).unwrap().expect("indexable");
+        let out = verify_with_ripgrep(root, &q, FilterPreset::AgentText, &hits.paths).unwrap();
         assert_eq!(out.matches.len(), 1, "{out:?}");
         assert_eq!(out.matches[0].path, "main.rs");
     }
 
     #[test]
     fn file_scoped_search_falls_back_when_index_does_not_contain_file() {
-        use crate::engines::code_search::lexical_search_with_preset;
-
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::write(root.join("indexed.rs"), "ApplyAppearance in index\n").unwrap();
         let store = TextIndexStore::build(root, || false).unwrap();
         std::fs::write(root.join("target.rs"), "ApplyAppearance in target\n").unwrap();
 
-        let engine = Arc::new(TextIndexEngine::new());
-        {
-            let mut g = engine.inner.lock().unwrap();
-            g.root = Some(crate::config::path::canon_abs_lossy(root));
-            g.store = Some(store);
-            g.state = TextIndexState::Ready;
-            g.file_count = 1;
-        }
-        {
-            let mut reg = registry().write().unwrap();
-            *reg = Some(Registered {
-                root: crate::config::path::canon_abs_lossy(root),
-                engine: Arc::clone(&engine),
-            });
-        }
-
-        let q = LexicalQuery {
-            pattern: "ApplyAppearance|Addressables|async|LoadAsset".into(),
-            root: root.to_path_buf(),
-            path: Some(root.join("target.rs")),
-            case_sensitive: false,
-            whole_word: false,
-            is_regex: true,
-            include: None,
-            exclude: None,
-            multiline: false,
-            max_matches: 10,
-            before_context: 0,
-            after_context: 0,
-            search_hidden: false,
-        };
+        let engine = register_ready_engine(root, store, 1);
+        let mut q = sample_query(root, "ApplyAppearance|Addressables|async|LoadAsset");
+        q.path = Some(root.join("target.rs"));
+        q.is_regex = true;
+        q.max_matches = 10;
         let out = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
-        {
-            let mut reg = registry().write().unwrap();
-            *reg = None;
-        }
+        unregister_engine();
+        drop(engine);
         assert!(
             out.matches.iter().any(|m| m.path.ends_with("target.rs")),
             "file-scoped grep must hit the file even when the text index never saw it: {out:?}"
@@ -557,25 +649,202 @@ mod tests {
     }
 
     #[test]
+    fn incremental_notify_finds_file_added_after_build() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("indexed.rs"), "shared_needle_xyz\n").unwrap();
+        let store = TextIndexStore::build(root, || false).unwrap();
+        std::fs::write(root.join("late.rs"), "shared_needle_xyz\n").unwrap();
+
+        let engine = register_ready_engine(root, store, 1);
+        engine.notify_fs_changes(&["late.rs".into()], false);
+        let q = sample_query(root, "shared_needle_xyz");
+        let out = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        unregister_engine();
+        drop(engine);
+        let paths = match_paths(&out);
+        assert!(
+            paths.iter().any(|p| p.ends_with("late.rs")),
+            "pending flush before search must index the new file: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p.ends_with("indexed.rs")),
+            "must keep the already-indexed hit: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn events_during_build_are_applied() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("indexed.rs"), "shared_needle_xyz\n").unwrap();
+        let engine = Arc::new(TextIndexEngine::new());
+        {
+            let mut g = engine.inner.lock().unwrap();
+            g.root = Some(crate::config::path::canon_abs_lossy(root));
+            g.state = TextIndexState::Measuring;
+        }
+        std::fs::write(root.join("late.rs"), "shared_needle_xyz\n").unwrap();
+        engine.notify_fs_changes(&["late.rs".into()], false);
+        engine.rebuild_sync(root).unwrap();
+        {
+            let mut reg = registry().write().unwrap();
+            *reg = Some(Registered {
+                root: crate::config::path::canon_abs_lossy(root),
+                engine: Arc::clone(&engine),
+            });
+        }
+        let q = sample_query(root, "shared_needle_xyz");
+        let out = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        unregister_engine();
+        let paths = match_paths(&out);
+        assert!(
+            paths.iter().any(|p| p.ends_with("late.rs")),
+            "files created during Measuring must survive rebuild: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn posting_intersect_returns_all_files_beyond_old_topk() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        for i in 0..80 {
+            std::fs::write(
+                root.join(format!("f{i:03}.rs")),
+                "shared_trigram_needle_abc\n",
+            )
+            .unwrap();
+        }
+        let store = TextIndexStore::build(root, || false).unwrap();
+        let q = sample_query(root, "shared_trigram_needle_abc");
+        let hits = store.search_candidates(&q).unwrap().expect("indexable");
+        assert!(!hits.truncated);
+        assert_eq!(hits.paths.len(), 80, "{:?}", hits.paths);
+        let out = verify_with_ripgrep(root, &q, FilterPreset::AgentText, &hits.paths).unwrap();
+        assert_eq!(out.matches.len(), 80);
+    }
+
+    #[test]
+    fn truncated_candidate_window_is_flagged() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        for i in 0..6 {
+            std::fs::write(root.join(format!("f{i}.rs")), "shared_trigram_needle_abc\n").unwrap();
+        }
+        let store = TextIndexStore::build(root, || false).unwrap();
+        let q = sample_query(root, "shared_trigram_needle_abc");
+        let hits = store
+            .search_candidates_with_limit(&q, 3)
+            .unwrap()
+            .expect("indexable");
+        assert!(
+            hits.truncated,
+            "limit 3 of 6 files must flag truncation: {hits:?}"
+        );
+        assert!(hits.paths.len() <= 3);
+        assert!(!accelerator_window_complete(&hits));
+    }
+
+    #[test]
+    fn accelerator_matches_scan_including_hidden_split() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("vis.rs"), "parity_needle_xyz\n").unwrap();
+        std::fs::write(root.join(".env"), "parity_needle_xyz\n").unwrap();
+        let store = TextIndexStore::build(root, || false).unwrap();
+        let engine = register_ready_engine(root, store, 2);
+        let q = sample_query(root, "parity_needle_xyz");
+
+        let agent = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        engine.detach();
+        let agent_scan = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        assert_eq!(match_paths(&agent), match_paths(&agent_scan));
+        assert!(match_paths(&agent).iter().any(|p| p.ends_with(".env")));
+
+        let store = TextIndexStore::build(root, || false).unwrap();
+        let engine = register_ready_engine(root, store, 2);
+        let ui = lexical_search_with_preset(&q, FilterPreset::TextSearch).unwrap();
+        engine.detach();
+        let ui_scan = lexical_search_with_preset(&q, FilterPreset::TextSearch).unwrap();
+        assert_eq!(match_paths(&ui), match_paths(&ui_scan));
+        assert!(
+            !match_paths(&ui).iter().any(|p| p.ends_with(".env")),
+            "TextSearch must hide .env: {:?}",
+            match_paths(&ui)
+        );
+        unregister_engine();
+    }
+
+    #[test]
+    fn oversized_file_is_still_verified() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("small.rs"), "oversize_needle_xyz in small\n").unwrap();
+        let big = "oversize_needle_xyz\n".repeat(200_000);
+        assert!(big.len() as u64 > policy::MAX_INDEX_FILE_BYTES);
+        std::fs::write(root.join("huge.rs"), &big).unwrap();
+        let store = TextIndexStore::build(root, || false).unwrap();
+        assert!(
+            store.oversized.iter().any(|p| p.ends_with("huge.rs")),
+            "oversized sidecar: {:?}",
+            store.oversized
+        );
+        let engine = register_ready_engine(root, store, 2);
+        let q = sample_query(root, "oversize_needle_xyz");
+        let out = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        unregister_engine();
+        drop(engine);
+        let paths = match_paths(&out);
+        assert!(paths.iter().any(|p| p.ends_with("huge.rs")), "{paths:?}");
+        assert!(paths.iter().any(|p| p.ends_with("small.rs")), "{paths:?}");
+    }
+
+    #[test]
     fn unfiltered_preset_skips_accelerator() {
         let engine = Arc::new(TextIndexEngine::new());
         let dir = TempDir::new().unwrap();
-        let q = LexicalQuery {
-            pattern: "abcdef".into(),
-            root: dir.path().to_path_buf(),
-            path: None,
-            case_sensitive: false,
-            whole_word: false,
-            is_regex: true,
-            include: None,
-            exclude: None,
-            multiline: false,
-            max_matches: 10,
-            before_context: 0,
-            after_context: 0,
-            search_hidden: false,
-        };
+        let mut q = sample_query(dir.path(), "abcdef");
+        q.is_regex = true;
+        q.max_matches = 10;
         assert!(engine.try_search(&q, FilterPreset::Unfiltered).is_none());
+    }
+
+    #[test]
+    fn notify_gitignore_requests_rebuild_not_file_update() {
+        let engine = Arc::new(TextIndexEngine::new());
+        {
+            let mut g = engine.inner.lock().unwrap();
+            g.state = TextIndexState::Ready;
+        }
+        engine.notify_fs_changes(&[".gitignore".into()], false);
+        let g = engine.inner.lock().unwrap();
+        assert!(g.reconcile_requested);
+        assert!(g.pending.is_empty());
+    }
+
+    #[test]
+    fn verify_honors_tightened_search_exclude() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("vendor")).unwrap();
+        std::fs::write(root.join("src.rs"), "cfg_needle_xyz\n").unwrap();
+        std::fs::write(root.join("vendor/lib.rs"), "cfg_needle_xyz\n").unwrap();
+        let store = TextIndexStore::build(root, || false).unwrap();
+        let q = sample_query(root, "cfg_needle_xyz");
+        let hits = store.search_candidates(&q).unwrap().expect("indexable");
+        assert!(hits.paths.iter().any(|p| p.contains("vendor")));
+
+        let mut file = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
+        file.search_exclude.push("**/vendor".into());
+        crate::workspace::filter::with_excludes_cache_for_test(file, || {
+            let out = verify_with_ripgrep(root, &q, FilterPreset::AgentText, &hits.paths).unwrap();
+            let paths = match_paths(&out);
+            assert!(paths.iter().any(|p| p.ends_with("src.rs")), "{paths:?}");
+            assert!(
+                !paths.iter().any(|p| p.contains("vendor")),
+                "live search_exclude must drop vendor: {paths:?}"
+            );
+        });
     }
 
     #[test]
@@ -587,7 +856,6 @@ mod tests {
     #[test]
     #[ignore]
     fn bench_litecode_workspace_text_index() {
-        use crate::engines::code_search::{LexicalQuery, lexical_search_with_preset};
         use std::time::Instant;
 
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -598,7 +866,6 @@ mod tests {
         let store = TextIndexStore::build(&root, || false).unwrap();
         eprintln!("build_ms={}", t0.elapsed().as_millis());
 
-        // Register a Ready engine so lexical_search_with_preset can hit the accelerator.
         let engine = Arc::new(TextIndexEngine::new());
         {
             let mut g = engine.inner.lock().unwrap();
@@ -615,30 +882,14 @@ mod tests {
             });
         }
 
-        let pattern = "lexical_search_with_preset"; // exists in this repo
-        let mk = || LexicalQuery {
-            pattern: pattern.into(),
-            root: root.clone(),
-            path: None,
-            case_sensitive: false,
-            whole_word: false,
-            is_regex: false,
-            include: None,
-            exclude: None,
-            multiline: false,
-            max_matches: 50,
-            before_context: 0,
-            after_context: 0,
-            search_hidden: false,
-        };
+        let pattern = "lexical_search_with_preset";
+        let mk = || sample_query(&root, pattern);
 
-        // Warm + measure ON (index path)
         let _ = lexical_search_with_preset(&mk(), FilterPreset::AgentText).unwrap();
         let t1 = Instant::now();
         let on = lexical_search_with_preset(&mk(), FilterPreset::AgentText).unwrap();
         let on_ms = t1.elapsed().as_millis();
 
-        // OFF: detach registry → pure ripgrep
         engine.detach();
         let _ = lexical_search_with_preset(&mk(), FilterPreset::AgentText).unwrap();
         let t2 = Instant::now();
@@ -655,6 +906,6 @@ mod tests {
             off.matches.len(),
             off.files_searched
         );
-        assert_eq!(on.matches.len(), off.matches.len());
+        assert_eq!(match_paths(&on), match_paths(&off));
     }
 }

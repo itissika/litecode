@@ -34,20 +34,19 @@ pub const WATCHER_EXCLUDE: &[&str] = &[
     "*/.git/objects/**",
     "*/.git/subtree-cache/**",
     "*/.hg/store/**",
-    // Product-owned trees (not VS Code). Seeded into new `excludes.json`;
-    // classify also hard-gates [`PRODUCT_INTERNAL_DIRS`] so existing workspace
-    // files still skip index/session writes (`excludes.json` itself is kept).
+    // Product / eval trees (not VS Code). Seeded into new `excludes.json`.
+    // Nested `.litecode` is also hard-gated via [`PRODUCT_INTERNAL_DIRS`].
     "**/.litecode/**",
     "**/.data/**",
     "**/.venv-ort/**",
 ];
 
-/// Product-owned directory basenames (not VS Code).
+/// Product-owned directory basenames (not VS Code, not user seed).
 ///
-/// Used for Index walk prune, index queue gates, Snapshot, and LSP shallow scan.
-/// Discovery corpus for search/Agent still uses VS Code files∪search only;
-/// these are the sole extra directory hard-skips for index/snapshot/LSP.
-pub const PRODUCT_INTERNAL_DIRS: &[&str] = &[".litecode", ".data", ".venv-ort"];
+/// `.litecode` is the workspace runtime tree: Index / snapshot / Agent discovery
+/// walks hard-skip nested copies. User eval dirs such as `.data` / `.venv-ort`
+/// belong in that repo's `.gitignore`, not this product list.
+pub const PRODUCT_INTERNAL_DIRS: &[&str] = &[".litecode"];
 
 /// Snapshot-only heavy trees (Unity / IDE / common build outputs).
 ///

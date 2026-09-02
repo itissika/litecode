@@ -203,8 +203,8 @@ fn parse_offset(v: &Value) -> std::result::Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{SessionData, WorkspaceWriteLease};
     use crate::session::transcript_file;
+    use crate::session::{SessionData, WorkspaceWriteLease};
     use crate::types::ToolSignalLevel;
     use crate::types::user_text;
 
@@ -420,11 +420,14 @@ mod tests {
         let sid = data
             .create_session(root.to_str().unwrap(), "default", None)
             .unwrap();
-        data.insert_items(&sid, &[
-            user_text("ARCHIVED_OLD_MARKER buried before compact"),
-            user_text("filler middle"),
-            user_text("LIVE_TAIL_MARKER still in window"),
-        ])
+        data.insert_items(
+            &sid,
+            &[
+                user_text("ARCHIVED_OLD_MARKER buried before compact"),
+                user_text("filler middle"),
+                user_text("LIVE_TAIL_MARKER still in window"),
+            ],
+        )
         .unwrap();
         data.compact_from(&sid, &user_text("[summary] prior archived"), Some(2), 10)
             .unwrap();

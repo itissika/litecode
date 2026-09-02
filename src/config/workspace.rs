@@ -15,6 +15,7 @@ use super::schema::{CustomToolDefinition, McpServerDefinition, ToolReadiness};
 
 const CLAUDE_MD_SHELL: &str =
     "# Litecode workspace contract\n\n<!-- Add project instructions here -->\n";
+const LITECODE_DIR_GUIDE: &str = include_str!("litecode_dir_guide.md");
 thread_local! {
     static RUNTIME_PATHS: RefCell<Option<WorkspacePaths>> = const { RefCell::new(None) };
 }
@@ -358,6 +359,9 @@ pub fn init_workspace(workspace_root: &Path) -> Result<()> {
         .map_err(|e| LitecodeError::Config(e.to_string()))?;
     std::fs::create_dir_all(litecode_dir.join("plan"))
         .map_err(|e| LitecodeError::Config(e.to_string()))?;
+    // Product-owned map of this directory; always refresh so upgrades stay accurate.
+    std::fs::write(litecode_dir.join("README.md"), LITECODE_DIR_GUIDE)
+        .map_err(|e| LitecodeError::Config(e.to_string()))?;
 
     // File-revert snapshots live under ~/.litecode/snapshots — never in-tree.
     if let Err(e) = purge_legacy_in_workspace_snapshots(workspace_root) {
@@ -591,6 +595,10 @@ mod tests {
         let litecode = root.join(".litecode");
         assert!(litecode.join("logs").is_dir());
         assert!(litecode.join("plan").is_dir());
+        let guide = std::fs::read_to_string(litecode.join("README.md")).unwrap();
+        assert!(guide.contains("excludes.json"));
+        assert!(guide.contains("sessions.db"));
+        assert!(guide.contains(".litecode/sessions/"));
         assert!(
             !litecode.join("snapshots").exists(),
             "in-workspace snapshots must be purged"
@@ -633,6 +641,20 @@ mod tests {
                 .sessions_db
                 .ends_with(std::path::Path::new(".litecode").join("sessions.db"))
         );
+    }
+
+    #[test]
+    fn init_workspace_refreshes_litecode_readme() {
+        let _home = isolate_litecode_home();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let readme = root.join(".litecode").join("README.md");
+        std::fs::create_dir_all(readme.parent().unwrap()).unwrap();
+        std::fs::write(&readme, "stale custom notes\n").unwrap();
+        init_workspace(root).unwrap();
+        let guide = std::fs::read_to_string(&readme).unwrap();
+        assert!(!guide.contains("stale custom notes"));
+        assert_eq!(guide, LITECODE_DIR_GUIDE);
     }
 
     #[test]

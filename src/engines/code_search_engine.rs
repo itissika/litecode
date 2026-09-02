@@ -357,11 +357,7 @@ impl CodeSearchEngine {
         self.flush_pending_fs(&mut client);
 
         // SessionData may have nodded during warmup (client not installed yet).
-        let inject_path = self
-            .session_db_path
-            .read()
-            .ok()
-            .and_then(|g| g.clone());
+        let inject_path = self.session_db_path.read().ok().and_then(|g| g.clone());
         if let Some(ref path) = inject_path
             && let Err(e) = client.set_session_db(path)
         {

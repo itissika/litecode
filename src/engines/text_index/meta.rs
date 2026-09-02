@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{LitecodeError, Result};
 
-pub const INDEX_FORMAT: u32 = 1;
+pub const INDEX_FORMAT: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextIndexMeta {
@@ -14,6 +14,11 @@ pub struct TextIndexMeta {
     pub workspace_root: String,
     pub file_count: u64,
     pub built_unix_ms: u64,
+    #[serde(default)]
+    pub corpus_fingerprint: String,
+    /// AgentText files too large for Tantivy; still verified on every grep.
+    #[serde(default)]
+    pub oversized: Vec<String>,
 }
 
 pub fn text_index_dir(workspace_root: &Path) -> PathBuf {

@@ -215,12 +215,7 @@ mod tests {
         std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
         let mut emb = HashEmbedder;
         let index = build_full_index(root, &mut emb).unwrap();
-        let runtime = CodeSearchRuntime::new(
-            root.to_path_buf(),
-            index,
-            None,
-            None,
-        );
+        let runtime = CodeSearchRuntime::new(root.to_path_buf(), index, None, None);
         sync_index_with_disk(&runtime);
 
         queue_reconcile_dirty(&runtime);
