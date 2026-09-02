@@ -1552,6 +1552,51 @@ mod tests {
     }
 
     #[test]
+    fn test_grep_no_ignore_survives_locked_workspace_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("app.rs"), "SlotSoldierItem\n").unwrap();
+        let litecode = root.join(".litecode");
+        std::fs::create_dir_all(&litecode).unwrap();
+
+        #[cfg(windows)]
+        let _lease = crate::session::WorkspaceLock::acquire(&litecode).unwrap();
+
+        #[cfg(unix)]
+        let _restore = {
+            struct Restore(std::path::PathBuf, std::fs::Permissions);
+            impl Drop for Restore {
+                fn drop(&mut self) {
+                    let _ = std::fs::set_permissions(&self.0, self.1.clone());
+                }
+            }
+            use std::os::unix::fs::PermissionsExt;
+            let lock = litecode.join("workspace.lock");
+            std::fs::write(&lock, "SlotSoldierItem\n").unwrap();
+            let orig = std::fs::metadata(&lock).unwrap().permissions();
+            std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o000)).unwrap();
+            Restore(lock, orig)
+        };
+
+        let result = call_in(
+            root,
+            serde_json::json!({
+                "regex": "SlotSoldierItem",
+                "output_mode": "files",
+                "no_ignore": true,
+            }),
+        );
+        assert!(
+            result.contains("app.rs"),
+            "no_ignore must keep searching after workspace.lock IO error, got: {result}"
+        );
+        assert!(
+            !result.contains("workspace.lock"),
+            "locked lock file must not abort or surface as a hit, got: {result}"
+        );
+    }
+
+    #[test]
     fn test_grep_includes_hidden_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "SECRET_TOKEN=1\n").unwrap();

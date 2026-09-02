@@ -163,7 +163,7 @@ fn lexical_search_ripgrep(
             /* include_via_walk */ false,
             query.max_matches,
             &mut matches,
-        )?;
+        );
         return Ok(LexicalSearchOutcome {
             matches,
             files_searched: usize::from(searched),
@@ -209,7 +209,7 @@ fn lexical_search_ripgrep(
             include_via_walk,
             query.max_matches,
             &mut matches,
-        )? {
+        ) {
             files_searched += 1;
         }
     }
@@ -230,15 +230,15 @@ fn search_one_file(
     include_via_walk: bool,
     max_matches: usize,
     out: &mut Vec<LexicalMatch>,
-) -> Result<bool> {
+) -> bool {
     if out.len() >= max_matches {
-        return Ok(false);
+        return false;
     }
     let Some(rel) = rel_ctx.rel(path) else {
-        return Ok(false);
+        return false;
     };
     if !path_allowed(&rel, include, exclude, include_via_walk) {
-        return Ok(false);
+        return false;
     }
     // Binary skip: walk `skip_binary` layer and/or Searcher BinaryDetection::quit.
 
@@ -249,13 +249,20 @@ fn search_one_file(
         pending_before: Vec::new(),
         current: None,
     };
-    searcher
-        .search_path(matcher, path, &mut sink)
-        .map_err(|e| LitecodeError::ToolExecution(format!("search {}: {e}", path.display())))?;
+    // Same as ripgrep: an unreadable file must not abort the walk. On Windows
+    // this process holds an exclusive lock on `.litecode/workspace.lock`.
+    if let Err(e) = searcher.search_path(matcher, path, &mut sink) {
+        tracing::debug!(
+            path = %path.display(),
+            error = %e,
+            "skip unreadable file during lexical search"
+        );
+        return false;
+    }
     // `finish` already flushes; keep an explicit flush for safety if search
     // short-circuits without calling finish.
     sink.flush_current();
-    Ok(true)
+    true
 }
 
 fn path_allowed(
@@ -627,6 +634,43 @@ mod tests {
         query.search_hidden = true;
         let hits = lexical_search(&query).unwrap();
         assert!(hits.iter().any(|h| h.path.contains(".secret")));
+    }
+
+    #[test]
+    fn unreadable_file_does_not_abort_unfiltered_search() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("ok.txt"), "alive_needle\n").unwrap();
+        let litecode = root.join(".litecode");
+        std::fs::create_dir_all(&litecode).unwrap();
+
+        #[cfg(windows)]
+        let _lease = crate::session::WorkspaceLock::acquire(&litecode).unwrap();
+
+        #[cfg(unix)]
+        let _restore = {
+            struct Restore(std::path::PathBuf, std::fs::Permissions);
+            impl Drop for Restore {
+                fn drop(&mut self) {
+                    let _ = std::fs::set_permissions(&self.0, self.1.clone());
+                }
+            }
+            use std::os::unix::fs::PermissionsExt;
+            let lock = litecode.join("workspace.lock");
+            std::fs::write(&lock, "alive_needle\n").unwrap();
+            let orig = std::fs::metadata(&lock).unwrap().permissions();
+            std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o000)).unwrap();
+            Restore(lock, orig)
+        };
+
+        let outcome =
+            lexical_search_with_preset(&q(root, "alive_needle"), FilterPreset::Unfiltered)
+                .expect("unreadable workspace.lock must not fail the search");
+        assert!(
+            outcome.matches.iter().any(|h| h.path == "ok.txt"),
+            "got {:?}",
+            outcome.matches
+        );
     }
 
     #[test]
