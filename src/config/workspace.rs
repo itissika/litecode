@@ -117,12 +117,32 @@ impl Default for WorkspaceCustomToolsFile {
     }
 }
 
+pub const WORKSPACE_MCP_REL: &str = ".litecode/mcp.json";
+pub const WORKSPACE_CUSTOM_TOOLS_REL: &str = ".litecode/custom_tools.json";
+
 pub fn workspace_mcp_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(".litecode").join("mcp.json")
 }
 
 pub fn workspace_custom_tools_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(".litecode").join("custom_tools.json")
+}
+
+fn workspace_rel_key(rel: &str) -> &str {
+    rel.trim_start_matches("./")
+}
+
+pub fn is_workspace_mcp_rel(rel: &str) -> bool {
+    workspace_rel_key(rel) == WORKSPACE_MCP_REL
+}
+
+pub fn is_workspace_custom_tools_rel(rel: &str) -> bool {
+    workspace_rel_key(rel) == WORKSPACE_CUSTOM_TOOLS_REL
+}
+
+/// Workspace MCP / custom-tool JSON (not `excludes.json`).
+pub fn is_workspace_tool_defs_rel(rel: &str) -> bool {
+    is_workspace_mcp_rel(rel) || is_workspace_custom_tools_rel(rel)
 }
 
 fn read_json_file<T: Default + serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
@@ -655,6 +675,18 @@ mod tests {
         let guide = std::fs::read_to_string(&readme).unwrap();
         assert!(!guide.contains("stale custom notes"));
         assert_eq!(guide, LITECODE_DIR_GUIDE);
+    }
+
+    #[test]
+    fn workspace_tool_defs_rel_matches_mcp_and_custom_tools() {
+        assert!(is_workspace_mcp_rel(".litecode/mcp.json"));
+        assert!(is_workspace_mcp_rel("./.litecode/mcp.json"));
+        assert!(is_workspace_custom_tools_rel(".litecode/custom_tools.json"));
+        assert!(is_workspace_tool_defs_rel(".litecode/mcp.json"));
+        assert!(is_workspace_tool_defs_rel(".litecode/custom_tools.json"));
+        assert!(!is_workspace_tool_defs_rel(".litecode/excludes.json"));
+        assert!(!is_workspace_tool_defs_rel(".litecode/engines.json"));
+        assert!(!is_workspace_mcp_rel(".litecode/mcp.json.bak"));
     }
 
     #[test]

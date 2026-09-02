@@ -100,11 +100,25 @@ pub async fn listen(
     {
         let workspace = state.workspace.clone();
         let engines = state.workspace_engines.clone();
+        let runtime = state.runtime.clone();
+        let turn_guard = state.turn_guard.clone();
         tokio::spawn(async move {
             let mut rx = workspace.subscribe_changes();
             loop {
                 match rx.recv().await {
                     Ok(change) => {
+                        // Sole ServeState reload of mcp.json / custom_tools.json.
+                        // Skip during a turn (same as Settings 409); start_turn reads disk.
+                        if !turn_guard.is_turn_in_progress()
+                            && change.paths.iter().any(|p| {
+                                crate::config::workspace::is_workspace_tool_defs_rel(p)
+                            })
+                        {
+                            runtime
+                                .write()
+                                .expect("runtime lock")
+                                .sync_workspace_tool_readiness();
+                        }
                         let deleted = change.kind == "deleted";
                         engines
                             .code_search()

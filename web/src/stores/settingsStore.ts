@@ -62,7 +62,9 @@ import {
 import {
   documentIsFresh,
   EXCLUDES_CLOCK,
+  isWorkspaceCustomToolsPath,
   isWorkspaceExcludesPath,
+  isWorkspaceMcpPath,
   mergeLayeredMcp,
   SECTION_DOCUMENTS,
   sectionNeedsSkeleton,
@@ -348,12 +350,33 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     },
 
     handleWorkspaceChange: (paths) => {
-      if (!paths.some(isWorkspaceExcludesPath)) return;
       const clock = { ...get().docClock };
-      delete clock.excludes;
+      let touched = false;
+      if (paths.some(isWorkspaceExcludesPath)) {
+        delete clock.excludes;
+        touched = true;
+      }
+      if (paths.some(isWorkspaceMcpPath)) {
+        delete clock.mcp;
+        touched = true;
+      }
+      if (paths.some(isWorkspaceCustomToolsPath)) {
+        delete clock.customTools;
+        delete clock.availableTools;
+        touched = true;
+      }
+      if (!touched) return;
       set({ docClock: clock });
-      if (get().open && get().section === "files") {
-        void get().ensureSectionLoaded("files");
+      if (!get().open) return;
+      const section = get().section;
+      const docs = SECTION_DOCUMENTS[section];
+      const reload =
+        (docs.includes("excludes") && paths.some(isWorkspaceExcludesPath)) ||
+        (docs.includes("mcp") && paths.some(isWorkspaceMcpPath)) ||
+        ((docs.includes("customTools") || docs.includes("availableTools")) &&
+          paths.some(isWorkspaceCustomToolsPath));
+      if (reload) {
+        void get().ensureSectionLoaded(section);
       }
     },
 

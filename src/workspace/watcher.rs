@@ -116,11 +116,11 @@ fn classify_event(event: &Event, root: &Path) -> Option<(Vec<String>, bool)> {
     Some((paths, deleted))
 }
 
-/// Keep `.litecode/excludes.json`; drop product-internal trees (index writes).
+/// Keep editable `.litecode/*.json`; drop product-internal trees (index writes).
 /// `watcher_exclude` does not hide a path that AgentText / Index would still
 /// ingest — those lists are search/index policy, not this gate.
 fn event_rel_is_broadcast(rel: &str) -> bool {
-    if is_workspace_excludes_rel(rel) {
+    if is_editable_litecode_json(rel) {
         return true;
     }
     if path_has_product_internal_dir(rel) {
@@ -148,7 +148,7 @@ pub fn filter_change_for_ui(mut change: WorkspaceChange) -> Option<WorkspaceChan
 }
 
 fn ui_rel_is_noteworthy(rel: &str) -> bool {
-    if is_workspace_excludes_rel(rel) {
+    if is_editable_litecode_json(rel) {
         return true;
     }
     if path_has_product_internal_dir(rel) {
@@ -198,6 +198,10 @@ fn coalesce_pending(
         });
     }
     changes
+}
+
+fn is_editable_litecode_json(rel: &str) -> bool {
+    is_workspace_excludes_rel(rel) || crate::config::workspace::is_workspace_tool_defs_rel(rel)
 }
 
 fn changes_include_workspace_excludes(changes: &[WorkspaceChange]) -> bool {
@@ -401,6 +405,29 @@ mod tests {
     }
 
     #[test]
+    fn mcp_and_custom_tools_json_are_broadcast() {
+        let _lock = crate::workspace::filter::lock_excludes_cache_for_test();
+        let prev = crate::workspace::filter::active_workspace_excludes();
+        let root = temp_root();
+        crate::workspace::filter::activate_workspace_excludes(
+            crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults(),
+        );
+        for name in ["mcp.json", "custom_tools.json"] {
+            let path = root.join(".litecode").join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"{}").unwrap();
+            let ev = make_event(
+                EventKind::Modify(ModifyKind::Any),
+                &[path.to_str().unwrap()],
+            );
+            let (paths, _) = classify_event(&ev, &root).expect(name);
+            assert_eq!(paths, vec![format!(".litecode/{name}")]);
+        }
+        crate::workspace::filter::activate_workspace_excludes(prev);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn ui_filter_drops_watcher_exclude_keeps_excludes_json() {
         let _lock = crate::workspace::filter::lock_excludes_cache_for_test();
         let prev = crate::workspace::filter::active_workspace_excludes();
@@ -413,6 +440,8 @@ mod tests {
             ".data/eval.rs",
             "src/a.rs",
             ".litecode/excludes.json",
+            ".litecode/mcp.json",
+            ".litecode/custom_tools.json",
         ]))
         .unwrap();
         let mut paths = mixed.paths;
@@ -420,7 +449,9 @@ mod tests {
         assert_eq!(
             paths,
             vec![
+                ".litecode/custom_tools.json".to_string(),
                 ".litecode/excludes.json".to_string(),
+                ".litecode/mcp.json".to_string(),
                 "src/a.rs".to_string()
             ]
         );

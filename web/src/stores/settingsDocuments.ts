@@ -141,8 +141,21 @@ export function documentIsFresh(
 }
 
 export function isWorkspaceExcludesPath(path: string): boolean {
+  return isWorkspaceLitecodeJson(path, "excludes.json");
+}
+
+export function isWorkspaceMcpPath(path: string): boolean {
+  return isWorkspaceLitecodeJson(path, "mcp.json");
+}
+
+export function isWorkspaceCustomToolsPath(path: string): boolean {
+  return isWorkspaceLitecodeJson(path, "custom_tools.json");
+}
+
+function isWorkspaceLitecodeJson(path: string, file: string): boolean {
   const n = path.replace(/\\/g, "/");
-  return n === ".litecode/excludes.json" || n.endsWith("/.litecode/excludes.json");
+  const suffix = `.litecode/${file}`;
+  return n === suffix || n.endsWith(`/${suffix}`);
 }
 
 function splitLayer(items: McpServerItem[]): {

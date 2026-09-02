@@ -220,6 +220,68 @@ describe("workspace excludes clock", () => {
       expect(useSettingsStore.getState().excludes?.git_ignore).toBe(false);
     });
   });
+
+  it("reloads MCP when .litecode/mcp.json changes", async () => {
+    useSettingsStore.setState({
+      open: true,
+      section: "mcp",
+      mcpDefs: { global: [], workspace: [] },
+      mcpRuntime: { global: {}, workspace: {} },
+      docClock: { mcp: 1 },
+    });
+    mockedMcp.mockResolvedValue({
+      global: [],
+      workspace: [
+        {
+          id: "local-fs",
+          origin: "workspace",
+          command: "npx",
+          args: [],
+          env: {},
+          transport: { type: "stdio" },
+          timeout: 60,
+          status: "stopped",
+          tools: [],
+        },
+      ],
+    });
+    useSettingsStore.getState().handleWorkspaceChange([".litecode/mcp.json"], "modified");
+    await waitFor(() => {
+      expect(useSettingsStore.getState().mcpDefs?.workspace.map((s) => s.id)).toEqual([
+        "local-fs",
+      ]);
+    });
+  });
+
+  it("reloads custom tools when .litecode/custom_tools.json changes", async () => {
+    useSettingsStore.setState({
+      open: true,
+      section: "custom-tools",
+      customTools: { global: [], workspace: [] },
+      docClock: { customTools: 1 },
+    });
+    mockedCustom.mockResolvedValue({
+      global: [],
+      workspace: [
+        {
+          name: "echo",
+          description: "",
+          schema: { type: "object", properties: {}, required: [] },
+          command: "echo",
+          args: [],
+          timeout: 120,
+        },
+      ],
+    });
+    useSettingsStore
+      .getState()
+      .handleWorkspaceChange([".litecode/custom_tools.json"], "modified");
+    await waitFor(() => {
+      expect(useSettingsStore.getState().customTools?.workspace.map((t) => t.name)).toEqual([
+        "echo",
+      ]);
+    });
+  });
 });
 
 describe("settings persist toasts", () => {

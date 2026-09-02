@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   documentIsFresh,
+  isWorkspaceCustomToolsPath,
   isWorkspaceExcludesPath,
+  isWorkspaceMcpPath,
   mergeLayeredMcp,
   SECTION_DOCUMENTS,
   sectionNeedsSkeleton,
@@ -70,6 +72,16 @@ describe("isWorkspaceExcludesPath", () => {
     expect(isWorkspaceExcludesPath(".litecode/excludes.json")).toBe(true);
     expect(isWorkspaceExcludesPath("src/.litecode/excludes.json")).toBe(true);
     expect(isWorkspaceExcludesPath(".litecode/engines.json")).toBe(false);
+  });
+});
+
+describe("workspace tool def paths", () => {
+  it("matches mcp.json and custom_tools.json under .litecode", () => {
+    expect(isWorkspaceMcpPath(".litecode/mcp.json")).toBe(true);
+    expect(isWorkspaceMcpPath("repo/.litecode/mcp.json")).toBe(true);
+    expect(isWorkspaceCustomToolsPath(".litecode/custom_tools.json")).toBe(true);
+    expect(isWorkspaceMcpPath(".litecode/excludes.json")).toBe(false);
+    expect(isWorkspaceCustomToolsPath(".litecode/mcp.json")).toBe(false);
   });
 });
 

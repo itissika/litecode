@@ -61,6 +61,10 @@ impl SessionController {
         self.runtime
             .reload_if_needed()
             .map_err(|e| StartTurnError::Runtime(anyhow::anyhow!("{e}")))?;
+        // Disk is source of truth for workspace MCP / custom-tool defs.
+        // Watcher skips reload while a turn is running; this is the apply point.
+        // Does not start or stop MCP processes.
+        self.runtime.sync_workspace_tool_readiness();
 
         let default_primary = self.runtime.desired_primary_agent();
         let primary_agent = self

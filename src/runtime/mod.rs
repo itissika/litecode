@@ -203,6 +203,9 @@ impl RuntimeHandle {
     }
 
     /// Refresh workspace-scoped engines + MCP/custom defs from `.litecode`.
+    ///
+    /// Updates in-process definitions only. Running MCP child processes are
+    /// left alone; the human restarts them from Settings if the command changed.
     pub fn sync_workspace_tool_readiness(&mut self) {
         let workspace = crate::config::workspace::workspace_with_disk_readiness(&self.workspace);
         self.workspace = workspace.clone();
