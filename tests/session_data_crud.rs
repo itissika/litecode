@@ -4,6 +4,7 @@ mod common;
 
 use common::SessionDataFixture;
 use litecode::session::SessionRevision;
+use litecode::session::WorkingRow;
 use litecode::session::data::command::{CommitKind, MutationId, SessionMutation};
 use litecode::types::user_text;
 
@@ -175,4 +176,25 @@ fn conflict_on_stale_revision() {
         }
         other => panic!("expected conflict, got {other}"),
     }
+}
+
+#[test]
+fn commit_turn_delta_receipt_carries_user_preview() {
+    let (_dir, data) = open();
+    let sid = data.create_session("/p", "default", None).unwrap();
+    let rev = data.revision_blocking(&sid).unwrap();
+    let receipt = data
+        .mutate_blocking(SessionMutation::CommitTurnDelta {
+            session_id: sid,
+            expected_revision: rev,
+            operation_id: MutationId::new(),
+            rows: vec![WorkingRow::pending(user_text("hello from user"))],
+            expected_max_seq: -1,
+            turn_id: "t1".into(),
+        })
+        .unwrap();
+    let (preview, _updated_at) = receipt
+        .preview
+        .expect("user append must return last_message preview");
+    assert_eq!(preview, "hello from user");
 }

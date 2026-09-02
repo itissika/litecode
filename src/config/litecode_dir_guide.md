@@ -26,7 +26,7 @@
 
 另两个开关：`git_ignore`（搜索与索引是否尊重 `.gitignore`，默认 `true`）；`explorer_git_ignore`（资源管理器是否尊重 `.gitignore`，默认 `false`）。检索语料 = `files_exclude` ∪ `search_exclude`，再按 `git_ignore` 决定是否套 `.gitignore`。本目录自身的硬跳不走这份列表。
 
-**怎么改。** 设置页；或按下面格式改本文件。空行、`#` 行、重复 glob 会被丢掉。删掉本文件会在下次打开时重新种子。
+**怎么改。** 设置页；或按下面格式改本文件。目录写 `dir` 或 `**/dir`，不要写 `dir/`（`.gitignore` 的尾斜杠语义这里没有；保存时会去掉尾 `/`）。空行、`#` 行、重复 glob 会被丢掉。删掉本文件会在下次打开时重新种子。
 
 **格式。** `version` 必须为 `1`。
 

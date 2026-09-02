@@ -122,6 +122,10 @@ pub fn segment_name_from_exclude_glob(glob: &str) -> Option<String> {
 fn classify_exclude_glob(glob: &str) -> ExcludeClass {
     let g = normalize_pattern(glob);
     let g = g.trim_start_matches("./");
+    let g = g.trim_end_matches('/');
+    if g.is_empty() {
+        return ExcludeClass::Complex;
+    }
 
     // `**/NAME` or `**/NAME/**`
     if let Some(rest) = g.strip_prefix("**/") {
@@ -259,6 +263,14 @@ mod tests {
         assert!(matches!(
             classify_exclude_glob("*.litecode-tmp*"),
             ExcludeClass::Complex
+        ));
+        assert!(matches!(
+            classify_exclude_glob("ArtSource/"),
+            ExcludeClass::Basename(s) if s == "ArtSource"
+        ));
+        assert!(matches!(
+            classify_exclude_glob("**/Library/"),
+            ExcludeClass::Segment(s) if s == "Library"
         ));
     }
 }

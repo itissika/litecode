@@ -1362,6 +1362,21 @@ fn commit_after_revert_discards_uncommitted_delta() {
     );
 }
 
+#[test]
+fn commit_user_message_returns_session_preview() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let ctx = test_context(dir.path());
+    let pipeline = ContextPipeline::new(10_000, ctx, dir.path().to_path_buf());
+    let mut turn = pipeline.begin_turn(&sessions, &sid).unwrap();
+    turn.push(WorkingRow::pending(user_text("hello from user")));
+    let outcome = pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    let (preview, _updated_at) = outcome
+        .preview
+        .expect("user commit must surface last_message for session list");
+    assert_eq!(preview, "hello from user");
+}
+
 struct PipelinePersistDeps {
     pipeline: ContextPipeline,
     sessions: Arc<SessionManager>,

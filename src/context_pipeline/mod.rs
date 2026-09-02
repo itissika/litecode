@@ -322,7 +322,7 @@ impl ContextPipeline {
                 turn_id.to_string()
             }
         };
-        let (kind, working) = sessions
+        let (kind, working, preview) = sessions
             .commit_turn_delta(session_id, rows.clone(), expected_max_seq, &tid)
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
         *rows = working;
@@ -350,7 +350,7 @@ impl ContextPipeline {
         Ok(CommitStepOutcome {
             committed,
             discarded,
-            preview: None,
+            preview,
             sealed_seqs,
         })
     }

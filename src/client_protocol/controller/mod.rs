@@ -1786,7 +1786,7 @@ mod compact_item_wire_tests {
             status: OutputStatus::Completed,
             phase: None,
         }));
-        let (kind, _) = sessions
+        let (kind, _, _) = sessions
             .commit_turn_delta(
                 &sid,
                 vec![

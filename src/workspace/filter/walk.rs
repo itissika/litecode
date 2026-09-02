@@ -356,4 +356,36 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn trailing_slash_search_exclude_prunes_directory_walk() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("ArtSource")).unwrap();
+        std::fs::write(root.join("ArtSource/a.txt"), "secret\n").unwrap();
+        std::fs::write(root.join("keep.rs"), "fn k() {}\n").unwrap();
+
+        use crate::workspace::filter::{WorkspaceExcludesFile, with_excludes_cache_for_test};
+
+        with_excludes_cache_for_test(
+            WorkspaceExcludesFile {
+                git_ignore: false,
+                search_exclude: vec!["ArtSource/".into()],
+                ..WorkspaceExcludesFile::builtin_defaults()
+            },
+            || {
+                let files: Vec<String> = walk_builder(root, FilterPreset::AgentText)
+                    .build()
+                    .flatten()
+                    .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+                    .filter_map(|e| cheap_rel_under(root, e.path()))
+                    .collect();
+                assert!(
+                    !files.iter().any(|f| f.contains("ArtSource")),
+                    "ArtSource/ must prune the tree after trailing-slash fold: {files:?}"
+                );
+                assert!(files.iter().any(|f| f == "keep.rs"), "{files:?}");
+            },
+        );
+    }
 }

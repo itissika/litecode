@@ -40,6 +40,10 @@ pub struct CommitReceipt {
     pub revision: u64,
     pub change_id: i64,
     pub outcome: CommitKind,
+    /// Live session-list preview when this mutation updated `last_message`.
+    /// Not part of operation identity; omitted from durable receipt JSON when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<(String, i64)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

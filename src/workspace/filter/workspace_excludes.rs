@@ -130,6 +130,12 @@ fn normalize_globs(globs: Vec<String>) -> Vec<String> {
         if t.is_empty() || t.starts_with('#') {
             continue;
         }
+        // `dir/` is gitignore-speak and matches nothing here (rels have no
+        // trailing slash). Fold it to `dir` so a copied ignore line works.
+        let t = t.trim_end_matches('/');
+        if t.is_empty() {
+            continue;
+        }
         if seen.insert(t.to_string()) {
             out.push(t.to_string());
         }
@@ -297,6 +303,24 @@ mod tests {
         assert_eq!(file.version, WORKSPACE_EXCLUDES_VERSION);
         assert!(!file.git_ignore);
         assert!(file.explorer_git_ignore);
+    }
+
+    #[test]
+    fn normalize_strips_trailing_slashes() {
+        let file = WorkspaceExcludesFile {
+            version: 1,
+            files_exclude: vec!["ArtSource/".into(), "**/vendor/".into(), "/".into()],
+            search_exclude: vec!["discard/".into()],
+            watcher_exclude: vec![],
+            git_ignore: true,
+            explorer_git_ignore: false,
+        }
+        .normalize();
+        assert_eq!(
+            file.files_exclude,
+            vec!["ArtSource".to_string(), "**/vendor".to_string()]
+        );
+        assert_eq!(file.search_exclude, vec!["discard".to_string()]);
     }
 
     #[test]

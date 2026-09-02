@@ -415,6 +415,7 @@ fn bump_receipt(
         revision: previous + 1,
         change_id: 0,
         outcome,
+        preview: None,
     };
     ops::persist_receipt(state.db.conn(), &receipt)?;
     let mut receipt = receipt;
@@ -572,16 +573,28 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                     &turn_id,
                 )?
             };
-            let kind = match outcome {
-                CommitDeltaOutcome::Discarded => CommitKind::Idempotent,
-                CommitDeltaOutcome::Applied { sealed_seqs, .. } if sealed_seqs.is_empty() => {
-                    CommitKind::MetaUpdated
-                }
-                CommitDeltaOutcome::Applied { sealed_seqs, .. } => {
-                    CommitKind::Sealed { seqs: sealed_seqs }
-                }
+            let (kind, preview) = match outcome {
+                CommitDeltaOutcome::Discarded => (CommitKind::Idempotent, None),
+                CommitDeltaOutcome::Applied {
+                    sealed_seqs,
+                    preview,
+                    ..
+                } if sealed_seqs.is_empty() => (CommitKind::MetaUpdated, preview),
+                CommitDeltaOutcome::Applied {
+                    sealed_seqs,
+                    preview,
+                    ..
+                } => (CommitKind::Sealed { seqs: sealed_seqs }, preview),
             };
-            bump_receipt(state, &session_id, &operation_id.0, expected_revision, kind)
+            let mut receipt = bump_receipt(
+                state,
+                &session_id,
+                &operation_id.0,
+                expected_revision,
+                kind,
+            )?;
+            receipt.preview = preview;
+            Ok(receipt)
         }
         SessionMutation::Compact {
             session_id,
@@ -746,6 +759,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 revision: 0,
                 change_id: 0,
                 outcome: CommitKind::MetaUpdated,
+                preview: None,
             })
         }
         SessionMutation::RebuildFts { operation_id } => {
@@ -756,6 +770,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 revision: 0,
                 change_id: 0,
                 outcome: CommitKind::MetaUpdated,
+                preview: None,
             })
         }
     }

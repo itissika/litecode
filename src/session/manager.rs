@@ -1553,6 +1553,7 @@ impl SessionManager {
     ) -> anyhow::Result<(
         crate::session::data::command::CommitKind,
         Vec<crate::session::working::WorkingRow>,
+        Option<(String, i64)>,
     )> {
         let expected = self.expected_revision(session_id);
         let receipt = self.mutate_blocking(SessionMutation::CommitTurnDelta {
@@ -1564,7 +1565,7 @@ impl SessionManager {
             turn_id: turn_id.to_string(),
         })?;
         let working = self.data.working_set_blocking(session_id)?;
-        Ok((receipt.outcome, working))
+        Ok((receipt.outcome, working, receipt.preview))
     }
 }
 
