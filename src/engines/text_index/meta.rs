@@ -19,6 +19,9 @@ pub struct TextIndexMeta {
     /// AgentText files too large for Tantivy; still verified on every grep.
     #[serde(default)]
     pub oversized: Vec<String>,
+    /// Rel paths currently in the corpus (Tantivy docs ∪ oversized sidecar).
+    #[serde(default)]
+    pub tracked: Vec<String>,
 }
 
 pub fn text_index_dir(workspace_root: &Path) -> PathBuf {

@@ -79,6 +79,8 @@ pub struct TextIndexStore {
     fields: Fields,
     /// Rel paths walked as AgentText but too large for Tantivy.
     pub(crate) oversized: HashSet<String>,
+    /// Rel paths currently in the corpus (Tantivy docs ∪ oversized).
+    pub(crate) tracked: HashSet<String>,
 }
 
 impl TextIndexStore {
@@ -97,12 +99,14 @@ impl TextIndexStore {
                 body: self.fields.body,
             },
             oversized: self.oversized.clone(),
+            tracked: self.tracked.clone(),
         })
     }
 
     pub fn open(
         workspace_root: &Path,
         oversized: impl IntoIterator<Item = String>,
+        tracked: impl IntoIterator<Item = String>,
     ) -> Result<Self> {
         let dir = tantivy_dir(workspace_root);
         if !dir.is_dir() {
@@ -133,6 +137,7 @@ impl TextIndexStore {
             reader,
             fields,
             oversized: oversized.into_iter().collect(),
+            tracked: tracked.into_iter().collect(),
         })
     }
 
@@ -155,6 +160,7 @@ impl TextIndexStore {
             .unwrap_or_else(|_| RelPathCtx::new_lossy(workspace_root));
         let mut added = 0u64;
         let mut oversized = HashSet::new();
+        let mut tracked = HashSet::new();
         for entry in walk_builder(workspace_root, FilterPreset::AgentText).build() {
             if should_stop() {
                 break;
@@ -174,17 +180,19 @@ impl TextIndexStore {
                 IndexFileKind::Body(content) => {
                     writer
                         .add_document(doc!(
-                            fields.path => rel,
+                            fields.path => rel.as_str(),
                             fields.body => content,
                         ))
                         .map_err(|e| LitecodeError::Config(format!("text_index add: {e}")))?;
+                    tracked.insert(rel);
                     added += 1;
                     if added.is_multiple_of(5000) {
                         tracing::debug!(added, "text_index build progress");
                     }
                 }
                 IndexFileKind::Oversized => {
-                    oversized.insert(rel);
+                    oversized.insert(rel.clone());
+                    tracked.insert(rel);
                 }
                 IndexFileKind::Skip => {}
             }
@@ -203,6 +211,7 @@ impl TextIndexStore {
             reader,
             fields,
             oversized,
+            tracked,
         })
     }
 
@@ -220,9 +229,11 @@ impl TextIndexStore {
             writer.delete_term(term);
             self.oversized.remove(rel);
             if *deleted {
+                self.tracked.remove(rel);
                 continue;
             }
             if path_skipped_by_preset(rel, FilterPreset::AgentText, false) {
+                self.tracked.remove(rel);
                 continue;
             }
             let abs = workspace_root.join(rel);
@@ -234,11 +245,15 @@ impl TextIndexStore {
                             self.fields.body => content,
                         ))
                         .map_err(|e| LitecodeError::Config(format!("text_index add: {e}")))?;
+                    self.tracked.insert(rel.clone());
                 }
                 IndexFileKind::Oversized => {
                     self.oversized.insert(rel.clone());
+                    self.tracked.insert(rel.clone());
                 }
-                IndexFileKind::Skip => {}
+                IndexFileKind::Skip => {
+                    self.tracked.remove(rel);
+                }
             }
         }
         writer
@@ -443,6 +458,36 @@ fn path_prefix_under(workspace_root: &Path, search_path: &Path) -> Option<String
     } else {
         Some(rel.replace('\\', "/"))
     }
+}
+
+/// AgentText file paths that belong in the corpus (skip binaries; no body read).
+pub fn list_agent_text_paths(
+    workspace_root: &Path,
+    should_stop: impl Fn() -> bool,
+) -> Result<HashSet<String>> {
+    let rel_ctx = RelPathCtx::new(workspace_root)
+        .unwrap_or_else(|_| RelPathCtx::new_lossy(workspace_root));
+    let mut out = HashSet::new();
+    for entry in walk_builder(workspace_root, FilterPreset::AgentText).build() {
+        if should_stop() {
+            break;
+        }
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        if looks_binary(path) {
+            continue;
+        }
+        let Some(rel) = cheap_rel_under(workspace_root, path).or_else(|| rel_ctx.rel(path)) else {
+            continue;
+        };
+        out.insert(rel);
+    }
+    Ok(out)
 }
 
 /// Count files under AgentText walk, stopping after `limit` (inclusive stop).

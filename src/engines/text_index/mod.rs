@@ -4,6 +4,8 @@
 //! Shares serve watcher notifications. Index narrows files; libripgrep verifies
 //! with the query's current exclude preset. Falls back to a full walk only when
 //! the index cannot be used (off, unindexable pattern, Unfiltered, candidate cap).
+//! Ignore-rule / excludes changes reconcile the tracked path set (delta add/delete);
+//! a full rebuild happens only on first build, open failure, or a huge delta.
 
 mod literal;
 mod meta;
@@ -25,10 +27,10 @@ pub use policy::{TextIndexMode, mode_from_env};
 
 use meta::{INDEX_FORMAT, TextIndexMeta, load_meta, save_meta};
 use policy::{
-    HARD_FILE_CAP, corpus_fingerprint, is_corpus_definition_rel, should_build,
-    should_queue_text_path,
+    HARD_FILE_CAP, corpus_delta, corpus_fingerprint, delta_prefers_rebuild,
+    is_corpus_definition_rel, should_build, should_queue_text_path,
 };
-use store::{CandidateHits, TextIndexStore, count_agent_text_files};
+use store::{CandidateHits, TextIndexStore, count_agent_text_files, list_agent_text_paths};
 
 const PENDING_DEBOUNCE: Duration = Duration::from_millis(300);
 
@@ -139,6 +141,7 @@ impl TextIndexEngine {
             g.state = TextIndexState::Off;
             g.root = None;
             g.pending.clear();
+            g.reconcile_requested = false;
         }
         if let Ok(mut reg) = registry().write() {
             *reg = None;
@@ -219,14 +222,14 @@ impl TextIndexEngine {
     }
 
     fn flush_pending(&self) -> Result<()> {
-        let (root, updates, store, rebuild) = {
+        let (root, updates, store) = {
             let mut g = self.inner.lock().unwrap();
             if g.reconcile_requested {
                 g.reconcile_requested = false;
                 let root = g.root.clone();
                 drop(g);
                 if let Some(root) = root {
-                    self.rebuild_sync(&root)?;
+                    self.reconcile_sync(&root)?;
                 }
                 return Ok(());
             }
@@ -239,9 +242,8 @@ impl TextIndexEngine {
                 .ok_or_else(|| crate::types::LitecodeError::Config("text_index: no root".into()))?;
             let updates: Vec<_> = g.pending.drain().collect();
             let store = g.store.take();
-            (root, updates, store, false)
+            (root, updates, store)
         };
-        let _ = rebuild;
         let Some(mut store) = store else {
             return Ok(());
         };
@@ -259,10 +261,66 @@ impl TextIndexEngine {
         Ok(())
     }
 
+    /// Walk current AgentText paths, diff against the tracked set, apply
+    /// add/delete. Rebuild only when the store is missing or the delta is huge.
+    fn reconcile_sync(&self, root: &Path) -> Result<()> {
+        let ready = self
+            .inner
+            .lock()
+            .ok()
+            .map(|g| g.state == TextIndexState::Ready && g.store.is_some())
+            .unwrap_or(false);
+        if !ready {
+            return self.rebuild_sync(root);
+        }
+        let want = list_agent_text_paths(root, || self.stop.load(Ordering::SeqCst))?;
+        if self.stop.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let Some(mut store) = self.inner.lock().ok().and_then(|mut g| g.store.take()) else {
+            return self.rebuild_sync(root);
+        };
+        let have = store.tracked.clone();
+        let updates = corpus_delta(&want, &have);
+        let adds = updates.iter().filter(|(_, deleted)| !*deleted).count();
+        if delta_prefers_rebuild(adds) {
+            tracing::info!(
+                adds,
+                deletes = updates.len() - adds,
+                tracked = have.len(),
+                "text_index path-set adds too large; rebuilding"
+            );
+            drop(store);
+            return self.rebuild_sync(root);
+        }
+        if !updates.is_empty() {
+            if let Err(e) = store.apply_updates(root, &updates) {
+                tracing::warn!(error = %e, "text_index path-set reconcile failed; rebuilding");
+                drop(store);
+                return self.rebuild_sync(root);
+            }
+            tracing::info!(
+                delta = updates.len(),
+                tracked = store.tracked.len(),
+                "text_index path set reconciled"
+            );
+        }
+        self.persist_meta(root, &store);
+        if let Ok(mut g) = self.inner.lock() {
+            g.store = Some(store);
+        }
+        self.apply_pending_only()
+    }
+
     fn persist_meta(&self, root: &Path, store: &TextIndexStore) {
-        let file_count = self.inner.lock().ok().map(|g| g.file_count).unwrap_or(0);
+        let file_count = store.tracked.len() as u64;
+        if let Ok(mut g) = self.inner.lock() {
+            g.file_count = file_count;
+        }
         let mut oversized: Vec<String> = store.oversized.iter().cloned().collect();
         oversized.sort();
+        let mut tracked: Vec<String> = store.tracked.iter().cloned().collect();
+        tracked.sort();
         let _ = save_meta(
             root,
             &TextIndexMeta {
@@ -272,6 +330,7 @@ impl TextIndexEngine {
                 built_unix_ms: unix_ms(),
                 corpus_fingerprint: corpus_fingerprint(),
                 oversized,
+                tracked,
             },
         );
     }
@@ -374,20 +433,27 @@ impl TextIndexEngine {
         if let Ok(Some(meta)) = load_meta(root)
             && meta.format == INDEX_FORMAT
             && meta.workspace_root == root.to_string_lossy()
-            && meta.corpus_fingerprint == fingerprint
-            && let Ok(store) = TextIndexStore::open(root, meta.oversized)
+            && let Ok(store) = TextIndexStore::open(root, meta.oversized, meta.tracked)
         {
+            let fingerprint_mismatch = meta.corpus_fingerprint != fingerprint;
             if let Ok(mut g) = self.inner.lock() {
+                g.file_count = store.tracked.len() as u64;
                 g.store = Some(store);
                 g.state = TextIndexState::Ready;
+                if fingerprint_mismatch {
+                    g.reconcile_requested = true;
+                }
             }
-            tracing::info!(count, "text_index loaded from disk");
+            tracing::info!(
+                count,
+                fingerprint_mismatch,
+                "text_index loaded from disk"
+            );
             let _ = self.flush_pending();
             return;
         }
         if let Ok(mut g) = self.inner.lock() {
             g.state = TextIndexState::Building;
-            g.build_gen += 1;
         }
         if let Err(e) = self.rebuild_sync(root) {
             tracing::warn!(error = %e, "text_index build failed");
@@ -404,6 +470,7 @@ impl TextIndexEngine {
         tracing::info!(path = %root.display(), "text_index build starting");
         if let Ok(mut g) = self.inner.lock() {
             g.state = TextIndexState::Building;
+            g.build_gen += 1;
         }
         let store = TextIndexStore::build(root, || self.stop.load(Ordering::SeqCst))?;
         if self.stop.load(Ordering::SeqCst) {
@@ -810,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn notify_gitignore_requests_rebuild_not_file_update() {
+    fn notify_gitignore_requests_reconcile_not_file_update() {
         let engine = Arc::new(TextIndexEngine::new());
         {
             let mut g = engine.inner.lock().unwrap();
@@ -820,6 +887,120 @@ mod tests {
         let g = engine.inner.lock().unwrap();
         assert!(g.reconcile_requested);
         assert!(g.pending.is_empty());
+    }
+
+    #[test]
+    fn list_agent_text_paths_honors_search_exclude() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("vendor")).unwrap();
+        std::fs::write(root.join("src.rs"), "x\n").unwrap();
+        std::fs::write(root.join("vendor/lib.rs"), "x\n").unwrap();
+        let all = list_agent_text_paths(root, || false).unwrap();
+        assert!(all.iter().any(|p| p.ends_with("src.rs")), "{all:?}");
+        assert!(all.iter().any(|p| p.contains("vendor")), "{all:?}");
+
+        let mut file = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
+        file.search_exclude.push("**/vendor".into());
+        crate::workspace::filter::with_excludes_cache_for_test(file, || {
+            let tight = list_agent_text_paths(root, || false).unwrap();
+            assert!(tight.iter().any(|p| p.ends_with("src.rs")), "{tight:?}");
+            assert!(
+                !tight.iter().any(|p| p.contains("vendor")),
+                "tightened search_exclude must drop vendor from path listing: {tight:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn corpus_reconcile_tightens_without_full_rebuild() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("vendor")).unwrap();
+        std::fs::write(root.join("src.rs"), "cfg_needle_xyz\n").unwrap();
+        std::fs::write(root.join("vendor/lib.rs"), "cfg_needle_xyz\n").unwrap();
+        let store = TextIndexStore::build(root, || false).unwrap();
+        assert!(store.tracked.iter().any(|p| p.contains("vendor")));
+
+        let engine = register_ready_engine(root, store, 2);
+        let gen_before = engine.inner.lock().unwrap().build_gen;
+        let mut file = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
+        file.search_exclude.push("**/vendor".into());
+        crate::workspace::filter::with_excludes_cache_for_test(file, || {
+            engine.request_reconcile();
+            let q = sample_query(root, "cfg_needle_xyz");
+            let out = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+            let paths = match_paths(&out);
+            assert!(paths.iter().any(|p| p.ends_with("src.rs")), "{paths:?}");
+            assert!(
+                !paths.iter().any(|p| p.contains("vendor")),
+                "reconcile must drop vendor from the corpus: {paths:?}"
+            );
+        });
+        {
+            let g = engine.inner.lock().unwrap();
+            assert_eq!(g.build_gen, gen_before, "small delta must not rebuild");
+            let tracked = &g.store.as_ref().unwrap().tracked;
+            assert!(tracked.iter().any(|p| p.ends_with("src.rs")), "{tracked:?}");
+            assert!(
+                !tracked.iter().any(|p| p.contains("vendor")),
+                "tracked set must drop vendor: {tracked:?}"
+            );
+        }
+        unregister_engine();
+        drop(engine);
+    }
+
+    #[test]
+    fn corpus_reconcile_loosens_adds_newly_visible_paths() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("vendor")).unwrap();
+        std::fs::write(root.join("src.rs"), "cfg_needle_xyz\n").unwrap();
+        std::fs::write(root.join("vendor/lib.rs"), "cfg_needle_xyz\n").unwrap();
+
+        let store = {
+            let mut built = None;
+            let mut tight = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
+            tight.search_exclude.push("**/vendor".into());
+            crate::workspace::filter::with_excludes_cache_for_test(tight, || {
+                built = Some(TextIndexStore::build(root, || false).unwrap());
+            });
+            built.unwrap()
+        };
+        assert!(
+            !store.tracked.iter().any(|p| p.contains("vendor")),
+            "build under tight excludes must omit vendor: {:?}",
+            store.tracked
+        );
+
+        let engine = register_ready_engine(root, store, 1);
+        let gen_before = engine.inner.lock().unwrap().build_gen;
+        crate::workspace::filter::with_excludes_cache_for_test(
+            crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults(),
+            || {
+                engine.request_reconcile();
+                let q = sample_query(root, "cfg_needle_xyz");
+                let out = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+                let paths = match_paths(&out);
+                assert!(paths.iter().any(|p| p.ends_with("src.rs")), "{paths:?}");
+                assert!(
+                    paths.iter().any(|p| p.contains("vendor")),
+                    "loosened excludes must add vendor via delta, not miss it: {paths:?}"
+                );
+            },
+        );
+        {
+            let g = engine.inner.lock().unwrap();
+            assert_eq!(g.build_gen, gen_before, "small delta must not rebuild");
+            let tracked = &g.store.as_ref().unwrap().tracked;
+            assert!(
+                tracked.iter().any(|p| p.contains("vendor")),
+                "tracked set must gain vendor: {tracked:?}"
+            );
+        }
+        unregister_engine();
+        drop(engine);
     }
 
     #[test]

@@ -39,7 +39,8 @@ pub fn should_build(mode: TextIndexMode, file_count: u64) -> bool {
     }
 }
 
-/// Fingerprint of the AgentText corpus definition. A mismatch means rebuild.
+/// Fingerprint of the AgentText corpus definition. A mismatch means the
+/// tracked path set must be reconciled (delta add/delete, or rebuild if huge).
 pub fn corpus_fingerprint() -> String {
     let cfg = active_workspace_excludes();
     let mut files = cfg.files_exclude.clone();
@@ -54,8 +55,8 @@ pub fn corpus_fingerprint() -> String {
     )
 }
 
-/// Ignore-rule / excludes files define the corpus; a change must rebuild, not
-/// incrementally reindex the file as content.
+/// Ignore-rule / excludes files define the corpus; a change must reconcile the
+/// tracked path set, not reindex the ignore file as content.
 pub fn is_corpus_definition_rel(rel: &str) -> bool {
     let rel = rel.trim_start_matches("./").replace('\\', "/");
     if is_workspace_excludes_rel(&rel) {
@@ -66,6 +67,32 @@ pub fn is_corpus_definition_rel(rel: &str) -> bool {
     }
     let name = rel.rsplit('/').next().unwrap_or(rel.as_str());
     matches!(name, ".gitignore" | ".ignore" | ".fdignore" | ".rgignore")
+}
+
+/// Rebuild instead of incremental apply when this many paths must be *added*
+/// (each add reads the file body). Deletes are cheap `delete_term`s and never
+/// prefer a rewrite — rebuild would re-read the files that are staying.
+pub const RECONCILE_ADD_ABS: usize = 1_000;
+
+/// `true` when the add side of a path-set diff is large enough that rewriting
+/// the index is the simpler bound on foreground work.
+pub fn delta_prefers_rebuild(adds: usize) -> bool {
+    adds >= RECONCILE_ADD_ABS
+}
+
+/// Paths to delete (`true`) or add (`false`) so `have` becomes `want`.
+pub fn corpus_delta(
+    want: &std::collections::HashSet<String>,
+    have: &std::collections::HashSet<String>,
+) -> Vec<(String, bool)> {
+    let mut out = Vec::with_capacity(want.len().abs_diff(have.len()).max(4));
+    for p in have.difference(want) {
+        out.push((p.clone(), true));
+    }
+    for p in want.difference(have) {
+        out.push((p.clone(), false));
+    }
+    out
 }
 
 /// Queue gate for text-index incremental updates (AgentText discovery face).
@@ -149,6 +176,31 @@ mod tests {
         assert!(should_build(TextIndexMode::Auto, HARD_FILE_CAP));
         assert!(!should_build(TextIndexMode::Auto, HARD_FILE_CAP + 1));
         assert!(!should_build(TextIndexMode::Off, 10));
+    }
+
+    #[test]
+    fn delta_rebuild_threshold() {
+        assert!(!delta_prefers_rebuild(0));
+        assert!(!delta_prefers_rebuild(50));
+        assert!(!delta_prefers_rebuild(RECONCILE_ADD_ABS - 1));
+        assert!(delta_prefers_rebuild(RECONCILE_ADD_ABS));
+        assert!(delta_prefers_rebuild(4_000));
+    }
+
+    #[test]
+    fn corpus_delta_add_and_delete() {
+        let have: std::collections::HashSet<_> = ["a.rs", "vendor/x.rs"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let want: std::collections::HashSet<_> =
+            ["a.rs", "b.rs"].into_iter().map(str::to_string).collect();
+        let mut d = corpus_delta(&want, &have);
+        d.sort();
+        assert_eq!(
+            d,
+            vec![("b.rs".into(), false), ("vendor/x.rs".into(), true)]
+        );
     }
 
     #[test]
