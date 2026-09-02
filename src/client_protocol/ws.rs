@@ -162,6 +162,9 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
         loop {
             match broadcast_rx.recv().await {
                 Ok(change) => {
+                    let Some(change) = crate::workspace::filter_change_for_ui(change) else {
+                        continue;
+                    };
                     if workspace_tx
                         .send(project::notification(
                             "workspace/changed",

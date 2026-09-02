@@ -16,8 +16,10 @@ const DEBOUNCE_MS: u64 = 300;
 
 /// Keeps the OS watcher alive for the lifetime of the server.
 ///
-/// Sole `notify` owner for the workspace (DESIGN §2.9). Events are gated by
-/// [`FilterPreset::Watcher`] before broadcast; code_search consumes via IPC.
+/// Sole `notify` owner for the workspace (DESIGN §2.9). Broadcast keeps
+/// search/index corpus paths even when `watcher_exclude` would hide them from
+/// the UI; [`filter_change_for_ui`] applies `FilterPreset::Watcher` on the
+/// way to the frontend. Engines consume the unfiltered-for-search stream.
 pub struct WorkspaceWatcher {
     // The watcher is held purely for ownership (kept alive for the server's
     // lifetime); it is never locked after creation, so a Mutex is not needed.
@@ -104,7 +106,7 @@ fn classify_event(event: &Event, root: &Path) -> Option<(Vec<String>, bool)> {
         .paths
         .iter()
         .filter_map(|p| rel_path_under(root, p))
-        .filter(|p| watcher_rel_is_noteworthy(p))
+        .filter(|p| event_rel_is_broadcast(p))
         .collect();
 
     if paths.is_empty() {
@@ -114,9 +116,38 @@ fn classify_event(event: &Event, root: &Path) -> Option<(Vec<String>, bool)> {
     Some((paths, deleted))
 }
 
-/// Keep `.litecode/excludes.json`; drop product-internal trees (index writes)
-/// even when the workspace `watcher_exclude` list has not been updated.
-fn watcher_rel_is_noteworthy(rel: &str) -> bool {
+/// Keep `.litecode/excludes.json`; drop product-internal trees (index writes).
+/// `watcher_exclude` does not hide a path that AgentText / Index would still
+/// ingest — those lists are search/index policy, not this gate.
+fn event_rel_is_broadcast(rel: &str) -> bool {
+    if is_workspace_excludes_rel(rel) {
+        return true;
+    }
+    if path_has_product_internal_dir(rel) {
+        return false;
+    }
+    if !path_excluded(rel, FilterPreset::Watcher) {
+        return true;
+    }
+    if rel.contains("litecode-tmp") {
+        return false;
+    }
+    // Search corpus still wants this path (AgentText discovery, not watcher).
+    !path_excluded(rel, FilterPreset::AgentText)
+}
+
+/// Paths the explorer / editor should hear. Search-only trees stay off this
+/// list so `watcher_exclude` still quiets the UI.
+pub fn filter_change_for_ui(mut change: WorkspaceChange) -> Option<WorkspaceChange> {
+    change.paths.retain(|rel| ui_rel_is_noteworthy(rel));
+    if change.paths.is_empty() {
+        None
+    } else {
+        Some(change)
+    }
+}
+
+fn ui_rel_is_noteworthy(rel: &str) -> bool {
     if is_workspace_excludes_rel(rel) {
         return true;
     }
@@ -344,6 +375,56 @@ mod tests {
         );
         assert!(classify_event(&ev, &root).is_none());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn search_corpus_under_watcher_exclude_is_still_broadcast() {
+        let _lock = crate::workspace::filter::lock_excludes_cache_for_test();
+        let prev = crate::workspace::filter::active_workspace_excludes();
+        crate::workspace::filter::activate_workspace_excludes(
+            crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults(),
+        );
+        let root = temp_root();
+        let path = root.join(".data").join("eval.rs");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"fn x() {}\n").unwrap();
+        assert!(path_excluded(".data/eval.rs", FilterPreset::Watcher));
+        assert!(!path_excluded(".data/eval.rs", FilterPreset::AgentText));
+        let ev = make_event(
+            EventKind::Modify(ModifyKind::Any),
+            &[path.to_str().unwrap()],
+        );
+        let (paths, _) = classify_event(&ev, &root).expect("search corpus must reach engines");
+        assert_eq!(paths, vec![".data/eval.rs".to_string()]);
+        crate::workspace::filter::activate_workspace_excludes(prev);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ui_filter_drops_watcher_exclude_keeps_excludes_json() {
+        let _lock = crate::workspace::filter::lock_excludes_cache_for_test();
+        let prev = crate::workspace::filter::active_workspace_excludes();
+        crate::workspace::filter::activate_workspace_excludes(
+            crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults(),
+        );
+        let dropped = filter_change_for_ui(changed(&[".data/eval.rs"]));
+        assert!(dropped.is_none(), "UI must stay quiet on watcher_exclude");
+        let mixed = filter_change_for_ui(changed(&[
+            ".data/eval.rs",
+            "src/a.rs",
+            ".litecode/excludes.json",
+        ]))
+        .unwrap();
+        let mut paths = mixed.paths;
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                ".litecode/excludes.json".to_string(),
+                "src/a.rs".to_string()
+            ]
+        );
+        crate::workspace::filter::activate_workspace_excludes(prev);
     }
 
     #[test]
