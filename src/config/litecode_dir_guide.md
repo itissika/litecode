@@ -49,7 +49,7 @@
 | | `files_exclude` / `search_exclude` / `watcher_exclude`：glob 字符串数组 |
 | | `git_ignore`：搜索与索引是否尊重 `.gitignore`（默认 `true`） |
 | | `explorer_git_ignore`：资源管理器是否尊重 `.gitignore`（默认 `false`） |
-| 人 / Agent | 读 · 改（设置页或按格式改 JSON）· 删文件会在下次打开时按内置默认重新种子。空行、`#` 注释、重复 glob 会被丢掉。本目录 `.litecode/` 的发现硬跳不走这份列表 |
+| 人 / Agent | 读 · 改（设置页或按格式改 JSON）· 删文件会在下次打开时按内置默认重新种子。空行、`#` 注释、重复 glob 会被丢掉。本目录 `.litecode/` 的发现硬跳不走这份列表。检索引擎开启时，改这份列表或 `.gitignore` 会刷新代码语义索引；对齐完成前 `code_search` 会提示稍后再试 |
 
 ### `sessions.db`
 

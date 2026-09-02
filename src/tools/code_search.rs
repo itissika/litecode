@@ -6,8 +6,8 @@ use crate::engines::code_search::{
     DEFAULT_TOP_K, IndexStatus, MAX_TOP_K, ResolvedIndexView, resolve_index_view,
 };
 use crate::engines::{
-    EngineState, RetrievalCorpus, RetrievalFilters, RetrievalHit, RetrievalModality,
-    RetrievalQuery, WorkspaceEngines,
+    CodeSearchCallGate, EngineState, RetrievalCorpus, RetrievalFilters, RetrievalHit,
+    RetrievalModality, RetrievalQuery, WorkspaceEngines,
 };
 use crate::tool::Tool;
 use crate::types::ToolCallResult;
@@ -106,6 +106,16 @@ impl Tool for CodeSearchTool {
             }
         }
 
+        match self.engines.code_search_call_gate() {
+            CodeSearchCallGate::Failed(detail) => {
+                return ToolCallResult::error(detail);
+            }
+            CodeSearchCallGate::Wait => {
+                return ToolCallResult::ok(indexing_wait_message(&self.engines));
+            }
+            CodeSearchCallGate::Ready => {}
+        }
+
         match self.engines.search(RetrievalQuery {
             query: query.to_string(),
             corpus: RetrievalCorpus::Code,
@@ -163,6 +173,9 @@ fn indexing_wait_message(engines: &WorkspaceEngines) -> String {
         if matches!(view.status, IndexStatus::Building | IndexStatus::Refreshing) {
             return format_index_progress(&view);
         }
+    }
+    if engines.is_refresh_busy() {
+        return "code_search index is refreshing. Try again shortly.".into();
     }
     "code_search engine is still starting. Try again shortly.".into()
 }
@@ -262,6 +275,75 @@ mod tests {
         assert_eq!(result.level, crate::types::ToolSignalLevel::Error);
         assert!(
             result.content.contains("embedder missing"),
+            "{}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn warm_refreshing_returns_wait_not_hits() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        crate::engines::code_search::init_workspace_index(root).unwrap();
+        crate::engines::code_search::begin_refreshing(root);
+
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+
+        let tool = CodeSearchTool::new(engines);
+        let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        assert!(
+            result.content.contains("refreshing"),
+            "{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("No matching code"),
+            "must not search stale corpus while refreshing: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn warm_refresh_busy_returns_wait_not_hits() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        crate::engines::code_search::init_workspace_index(root).unwrap();
+
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        engines.set_refresh_busy_for_test(true);
+
+        let tool = CodeSearchTool::new(engines);
+        let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        assert!(
+            result.content.contains("refreshing") || result.content.contains("Try again shortly"),
+            "{}",
+            result.content
+        );
+        assert!(!result.content.contains("No matching code"), "{}", result.content);
+    }
+
+    #[test]
+    fn warm_failed_index_job_returns_error_not_hits() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        crate::engines::code_search::init_workspace_index(root).unwrap();
+        crate::engines::code_search::mark_index_job_failed(root, "embed exploded");
+
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+
+        let tool = CodeSearchTool::new(engines);
+        let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Error);
+        assert!(
+            result.content.contains("embed exploded"),
             "{}",
             result.content
         );

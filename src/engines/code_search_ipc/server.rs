@@ -22,6 +22,10 @@ use crate::types::{LitecodeError, Result};
 const ERR_INVALID: i32 = -32602;
 const ERR_INTERNAL: i32 = -32000;
 
+fn reload_worker_excludes(root: &std::path::Path) {
+    let _ = crate::workspace::filter::reload_workspace_excludes_from_disk(root);
+}
+
 struct WorkerState {
     workspace_root: Option<PathBuf>,
     session_reader: Option<crate::session::SessionDataReader>,
@@ -86,6 +90,7 @@ impl WorkerState {
             .clone()
             .ok_or_else(|| LitecodeError::ToolExecution("initialize required".into()))?;
 
+        reload_worker_excludes(&root);
         init_workspace_index(&root)?;
         let mut embedder = open_production_embedder()?;
         let index = warmup_index(&root, &mut *embedder)?;
@@ -95,6 +100,7 @@ impl WorkerState {
             Some(embedder),
             self.session_reader.clone(),
         );
+        reload_worker_excludes(&root);
         sync_index_with_disk(&runtime);
         if self.session_reader.is_some()
             && let Err(e) = runtime.ensure_session_index()
@@ -156,6 +162,7 @@ impl WorkerState {
             .workspace_root
             .clone()
             .ok_or_else(|| LitecodeError::ToolExecution("initialize required".into()))?;
+        reload_worker_excludes(&root);
         let rebuild = should_full_rebuild(&root);
         let guard = self.runtime.read().unwrap();
         let runtime = guard
@@ -185,6 +192,9 @@ impl WorkerState {
         if !self.warmed {
             return;
         }
+        if let Some(root) = self.workspace_root.as_ref() {
+            reload_worker_excludes(root);
+        }
         let guard = self.runtime.read().unwrap();
         if let Some(runtime) = guard.as_ref() {
             sync_index_with_disk(runtime);
@@ -196,6 +206,9 @@ impl WorkerState {
     fn maybe_reconcile(&mut self) {
         if !self.warmed || self.last_reconcile.elapsed() < INDEX_RECONCILE_INTERVAL {
             return;
+        }
+        if let Some(root) = self.workspace_root.as_ref() {
+            reload_worker_excludes(root);
         }
         let guard = self.runtime.read().unwrap();
         if let Some(runtime) = guard.as_ref() {

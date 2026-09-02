@@ -186,3 +186,93 @@ fn protocol_search_hit_roundtrip_serde() {
     let back: SearchHit = serde_json::from_str(&json).unwrap();
     assert_eq!(hit, back);
 }
+
+#[test]
+fn warmup_and_refresh_follow_disk_excludes() {
+    force_hash_embedder();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace_index(root).unwrap();
+    std::fs::write(root.join("keep.rs"), "pub fn keep_unique_symbol() {}\n").unwrap();
+    std::fs::write(root.join("secret.rs"), "pub fn secret_unique_symbol() {}\n").unwrap();
+
+    let mut lists = litecode::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
+    lists.search_exclude.push("secret.rs".into());
+    litecode::workspace::filter::persist_workspace_excludes(root, &lists).unwrap();
+
+    let mut client = spawn_warmed(root);
+    let keep = client.search("keep_unique_symbol", None, 8).unwrap();
+    assert!(
+        keep.iter().any(|h| h.path.contains("keep.rs")),
+        "keep.rs must stay searchable: {keep:?}"
+    );
+    let secret = client.search("secret_unique_symbol", None, 8).unwrap();
+    assert!(
+        secret.iter().all(|h| !h.path.contains("secret.rs")),
+        "excluded secret.rs must not be in the corpus: {secret:?}"
+    );
+
+    lists.search_exclude.retain(|g| g != "secret.rs");
+    litecode::workspace::filter::persist_workspace_excludes(root, &lists).unwrap();
+    let incremental = client.refresh().expect("refresh after widening excludes");
+    assert_eq!(incremental.mode, RefreshMode::Incremental);
+    let secret = client.search("secret_unique_symbol", None, 8).unwrap();
+    assert!(
+        secret.iter().any(|h| h.path.contains("secret.rs")),
+        "widened excludes must admit secret.rs: {secret:?}"
+    );
+
+    lists.search_exclude.push("secret.rs".into());
+    litecode::workspace::filter::persist_workspace_excludes(root, &lists).unwrap();
+    client.refresh().expect("refresh after tightening excludes");
+    let secret = client.search("secret_unique_symbol", None, 8).unwrap();
+    assert!(
+        secret.iter().all(|h| !h.path.contains("secret.rs")),
+        "tightened excludes must drop secret.rs: {secret:?}"
+    );
+
+    shutdown(client);
+}
+
+#[test]
+fn refresh_honors_gitignore_switch_from_disk() {
+    force_hash_embedder();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace_index(root).unwrap();
+    std::fs::create_dir(root.join(".git")).unwrap();
+    std::fs::write(root.join(".gitignore"), "hidden.rs\n").unwrap();
+    std::fs::write(root.join("visible.rs"), "pub fn visible_unique_symbol() {}\n").unwrap();
+    std::fs::write(root.join("hidden.rs"), "pub fn hidden_unique_symbol() {}\n").unwrap();
+    litecode::workspace::filter::persist_workspace_excludes(
+        root,
+        &litecode::workspace::filter::WorkspaceExcludesFile::builtin_defaults(),
+    )
+    .unwrap();
+
+    let mut client = spawn_warmed(root);
+    assert!(
+        client
+            .search("visible_unique_symbol", None, 8)
+            .unwrap()
+            .iter()
+            .any(|h| h.path.contains("visible.rs"))
+    );
+    let hidden = client.search("hidden_unique_symbol", None, 8).unwrap();
+    assert!(
+        hidden.iter().all(|h| !h.path.contains("hidden.rs")),
+        "gitignored file must stay out while git_ignore=true: {hidden:?}"
+    );
+
+    let mut lists = litecode::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
+    lists.git_ignore = false;
+    litecode::workspace::filter::persist_workspace_excludes(root, &lists).unwrap();
+    client.refresh().expect("refresh after git_ignore=false");
+    let hidden = client.search("hidden_unique_symbol", None, 8).unwrap();
+    assert!(
+        hidden.iter().any(|h| h.path.contains("hidden.rs")),
+        "git_ignore=false must admit the gitignored file: {hidden:?}"
+    );
+
+    shutdown(client);
+}

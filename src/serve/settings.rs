@@ -802,7 +802,10 @@ async fn put_excludes(
         explorer_git_ignore: body.explorer_git_ignore,
     };
     match write_workspace_excludes(root, file) {
-        Ok(saved) => ok_json(WorkspaceExcludesView::from_file(&saved)),
+        Ok(saved) => {
+            state.workspace_engines.request_index_sync(root);
+            ok_json(WorkspaceExcludesView::from_file(&saved))
+        }
         Err(e) => settings_error(e),
     }
 }

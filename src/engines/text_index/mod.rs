@@ -775,20 +775,32 @@ mod tests {
     fn posting_intersect_returns_all_files_beyond_old_topk() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
-        for i in 0..80 {
+        // Old collector was TopDocs(2000); 80 files would not catch a regression.
+        const N: usize = 2_100;
+        for i in 0..N {
             std::fs::write(
-                root.join(format!("f{i:03}.rs")),
+                root.join(format!("f{i:04}.rs")),
                 "shared_trigram_needle_abc\n",
             )
             .unwrap();
         }
         let store = TextIndexStore::build(root, || false).unwrap();
         let q = sample_query(root, "shared_trigram_needle_abc");
+        let capped = store
+            .search_candidates_with_limit(&q, 2_000)
+            .unwrap()
+            .expect("indexable");
+        assert!(
+            capped.truncated,
+            "2_000 of {N} must still look like the old Top-K cap: {capped:?}"
+        );
         let hits = store.search_candidates(&q).unwrap().expect("indexable");
         assert!(!hits.truncated);
-        assert_eq!(hits.paths.len(), 80, "{:?}", hits.paths);
+        assert_eq!(hits.paths.len(), N, "{} paths", hits.paths.len());
+        let mut q = q;
+        q.max_matches = N;
         let out = verify_with_ripgrep(root, &q, FilterPreset::AgentText, &hits.paths).unwrap();
-        assert_eq!(out.matches.len(), 80);
+        assert_eq!(out.matches.len(), N);
     }
 
     #[test]
@@ -887,6 +899,105 @@ mod tests {
         let g = engine.inner.lock().unwrap();
         assert!(g.reconcile_requested);
         assert!(g.pending.is_empty());
+    }
+
+    fn git_root_with_two_needles(root: &Path) {
+        // ignore crate only honors .gitignore when a git marker exists.
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join("visible.rs"), "gitignore_needle_xyz\n").unwrap();
+        std::fs::write(root.join("skip_me.rs"), "gitignore_needle_xyz\n").unwrap();
+    }
+
+    #[test]
+    fn accelerator_gitignore_tighten_matches_scan() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        git_root_with_two_needles(root);
+        std::fs::write(root.join(".gitignore"), "\n").unwrap();
+        let store = TextIndexStore::build(root, || false).unwrap();
+        assert!(store.tracked.iter().any(|p| p.ends_with("skip_me.rs")));
+
+        let engine = register_ready_engine(root, store, 2);
+        std::fs::write(root.join(".gitignore"), "skip_me.rs\n").unwrap();
+        engine.notify_fs_changes(&[".gitignore".into()], false);
+        let q = sample_query(root, "gitignore_needle_xyz");
+        let acc = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        engine.detach();
+        let scan = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        unregister_engine();
+        assert_eq!(match_paths(&acc), match_paths(&scan));
+        let paths = match_paths(&acc);
+        assert!(paths.iter().any(|p| p.ends_with("visible.rs")), "{paths:?}");
+        assert!(
+            !paths.iter().any(|p| p.ends_with("skip_me.rs")),
+            "tightened gitignore must drop skip_me from accelerator and scan: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn accelerator_gitignore_loosen_matches_scan() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        git_root_with_two_needles(root);
+        std::fs::write(root.join(".gitignore"), "skip_me.rs\n").unwrap();
+        let store = TextIndexStore::build(root, || false).unwrap();
+        assert!(
+            !store.tracked.iter().any(|p| p.ends_with("skip_me.rs")),
+            "build must omit gitignored skip_me: {:?}",
+            store.tracked
+        );
+
+        let engine = register_ready_engine(root, store, 1);
+        std::fs::write(root.join(".gitignore"), "\n").unwrap();
+        engine.notify_fs_changes(&[".gitignore".into()], false);
+        let q = sample_query(root, "gitignore_needle_xyz");
+        let acc = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        engine.detach();
+        let scan = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        unregister_engine();
+        assert_eq!(match_paths(&acc), match_paths(&scan));
+        let paths = match_paths(&acc);
+        assert!(paths.iter().any(|p| p.ends_with("visible.rs")), "{paths:?}");
+        assert!(
+            paths.iter().any(|p| p.ends_with("skip_me.rs")),
+            "loosened gitignore must add skip_me via reconcile: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn unnotified_new_file_misses_until_notify() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("indexed.rs"), "shared_needle_xyz\n").unwrap();
+        let store = TextIndexStore::build(root, || false).unwrap();
+        std::fs::write(root.join("late.rs"), "shared_needle_xyz\n").unwrap();
+
+        let engine = register_ready_engine(root, store, 1);
+        let q = sample_query(root, "shared_needle_xyz");
+        let stale = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        let stale_paths = match_paths(&stale);
+        assert!(
+            stale_paths.iter().any(|p| p.ends_with("indexed.rs")),
+            "{stale_paths:?}"
+        );
+        assert!(
+            !stale_paths.iter().any(|p| p.ends_with("late.rs")),
+            "without notify, accelerator must not invent a scan fallback: {stale_paths:?}"
+        );
+
+        engine.notify_fs_changes(&["late.rs".into()], false);
+        let flushed = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        engine.detach();
+        let scan = lexical_search_with_preset(&q, FilterPreset::AgentText).unwrap();
+        unregister_engine();
+        assert_eq!(match_paths(&flushed), match_paths(&scan));
+        assert!(
+            match_paths(&flushed)
+                .iter()
+                .any(|p| p.ends_with("late.rs")),
+            "notify then flush must restore scan parity: {:?}",
+            match_paths(&flushed)
+        );
     }
 
     #[test]

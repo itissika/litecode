@@ -112,6 +112,11 @@ pub async fn listen(
                         engines
                             .text_index()
                             .notify_fs_changes(&change.paths, deleted);
+                        if change.paths.iter().any(|p| {
+                            crate::workspace::filter::path_triggers_code_index_sync(p)
+                        }) {
+                            engines.request_index_sync(workspace.sandbox().root());
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         // Missed discrete events — force a full disk↔index reconcile

@@ -162,6 +162,12 @@ pub fn is_workspace_excludes_rel(rel: &str) -> bool {
     rel.trim_start_matches("./") == WORKSPACE_EXCLUDES_REL
 }
 
+/// Paths whose change must rescan the semantic code index (excludes + gitignore).
+pub fn path_triggers_code_index_sync(rel: &str) -> bool {
+    let rel = rel.trim_start_matches("./").replace('\\', "/");
+    is_workspace_excludes_rel(&rel) || rel == ".gitignore" || rel.ends_with("/.gitignore")
+}
+
 /// Re-read `.litecode/excludes.json` into the process cache.
 ///
 /// Missing file or parse/IO errors leave the current cache unchanged (do not
@@ -332,6 +338,16 @@ mod tests {
                 .iter()
                 .any(|g| g == "**/vendor")
         );
+    }
+
+    #[test]
+    fn path_triggers_index_sync_for_excludes_and_gitignore() {
+        assert!(path_triggers_code_index_sync(".litecode/excludes.json"));
+        assert!(path_triggers_code_index_sync("./.litecode/excludes.json"));
+        assert!(path_triggers_code_index_sync(".gitignore"));
+        assert!(path_triggers_code_index_sync("pkg/.gitignore"));
+        assert!(!path_triggers_code_index_sync("src/main.rs"));
+        assert!(!path_triggers_code_index_sync(".litecode/index/meta.json"));
     }
 
     #[test]

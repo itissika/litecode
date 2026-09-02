@@ -51,8 +51,9 @@ pub use walk::{
 pub use workspace_excludes::{
     WORKSPACE_EXCLUDES_REL, WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView,
     activate_workspace_excludes, active_workspace_excludes, ensure_workspace_excludes,
-    is_workspace_excludes_rel, persist_workspace_excludes, read_workspace_excludes,
-    reload_workspace_excludes_from_disk, workspace_excludes_path, write_workspace_excludes,
+    is_workspace_excludes_rel, persist_workspace_excludes, path_triggers_code_index_sync,
+    read_workspace_excludes, reload_workspace_excludes_from_disk, workspace_excludes_path,
+    write_workspace_excludes,
 };
 
 #[cfg(test)]

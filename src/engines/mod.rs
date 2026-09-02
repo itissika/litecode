@@ -157,6 +157,14 @@ pub struct RefreshAccepted {
     pub mode: RefreshAcceptedMode,
 }
 
+/// Gate for Agent/human semantic calls that would occupy the code_search worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodeSearchCallGate {
+    Ready,
+    Wait,
+    Failed(String),
+}
+
 /// The single owner of workspace-scoped LSP and retrieval services.
 #[derive(Clone)]
 pub struct WorkspaceEngines {
@@ -223,6 +231,17 @@ impl WorkspaceEngines {
     pub fn search(&self, request: RetrievalQuery) -> Result<Vec<RetrievalHit>> {
         match (request.corpus, request.modality) {
             (RetrievalCorpus::Code, RetrievalModality::Semantic) => {
+                match self.code_search_call_gate() {
+                    CodeSearchCallGate::Failed(detail) => {
+                        return Err(LitecodeError::ToolExecution(detail));
+                    }
+                    CodeSearchCallGate::Wait => {
+                        return Err(LitecodeError::ToolExecution(
+                            "code_search index is updating; try again shortly".into(),
+                        ));
+                    }
+                    CodeSearchCallGate::Ready => {}
+                }
                 let hits = self.code_search.search(
                     &request.query,
                     request.filters.glob.as_deref(),
@@ -265,6 +284,17 @@ impl WorkspaceEngines {
                     return Err(LitecodeError::Config(
                         "session semantic search requires code_search engine Warm".into(),
                     ));
+                }
+                match self.code_search_call_gate() {
+                    CodeSearchCallGate::Failed(detail) => {
+                        return Err(LitecodeError::ToolExecution(detail));
+                    }
+                    CodeSearchCallGate::Wait => {
+                        return Err(LitecodeError::ToolExecution(
+                            "code_search index is updating; try again shortly".into(),
+                        ));
+                    }
+                    CodeSearchCallGate::Ready => {}
                 }
                 let top_k = request.top_k.clamp(1, session_search::SEMANTIC_WINDOW);
                 let hits = self.code_search.search_sessions(
@@ -320,7 +350,7 @@ impl WorkspaceEngines {
         };
         let lexical = session_search::search_all(&reader, &text_q)?;
 
-        let semantic = if self.is_warmed("code_search") {
+        let semantic = if matches!(self.code_search_call_gate(), CodeSearchCallGate::Ready) {
             match self.code_search.search_sessions(
                 query,
                 session_search::SEMANTIC_WINDOW,
@@ -357,7 +387,9 @@ impl WorkspaceEngines {
         let corpus = req.corpus.trim().to_ascii_lowercase();
         match corpus.as_str() {
             "" | "code" => {
-                let semantic = if req.include_semantic && self.is_warmed("code_search") {
+                let semantic = if req.include_semantic
+                    && matches!(self.code_search_call_gate(), CodeSearchCallGate::Ready)
+                {
                     let top_k = req
                         .top_k
                         .unwrap_or(crate::engines::code_search::DEFAULT_TOP_K)
@@ -476,12 +508,58 @@ impl WorkspaceEngines {
         self.state(id) == Some(EngineState::Warm)
     }
 
+    pub fn is_refresh_busy(&self) -> bool {
+        self.refresh_busy.load(Ordering::SeqCst)
+    }
+
+    /// Whether Agent semantic search may hit the worker now.
+    ///
+    /// Wait = index is building/refreshing (return "try again", do not search).
+    /// Failed = job failed; do not return hits from a possibly stale corpus.
+    pub fn code_search_call_gate(&self) -> CodeSearchCallGate {
+        if matches!(self.state("code_search"), Some(EngineState::Failed)) {
+            return CodeSearchCallGate::Failed(
+                self.last_error("code_search")
+                    .unwrap_or_else(|| "code_search engine failed".into()),
+            );
+        }
+        if self.is_refresh_busy() {
+            return CodeSearchCallGate::Wait;
+        }
+        if let Some(root) = self.code_search.workspace_root() {
+            let view = code_search::resolve_index_view(&root, self.state("code_search"));
+            match view.status {
+                code_search::IndexStatus::Building | code_search::IndexStatus::Refreshing => {
+                    return CodeSearchCallGate::Wait;
+                }
+                code_search::IndexStatus::Failed => {
+                    return CodeSearchCallGate::Failed(
+                        view.job_error
+                            .or_else(|| self.last_error("code_search"))
+                            .unwrap_or_else(|| "code_search index failed".into()),
+                    );
+                }
+                _ => {}
+            }
+        }
+        if self.is_warmed("code_search") {
+            CodeSearchCallGate::Ready
+        } else {
+            CodeSearchCallGate::Wait
+        }
+    }
+
     /// Test-only: force a workspace engine runtime state.
     #[cfg(test)]
     pub fn set_state_for_test(&self, id: &str, state: EngineState) {
         if let Ok(mut guard) = self.states.write() {
             guard.insert(id.to_string(), state);
         }
+    }
+
+    #[cfg(test)]
+    pub fn set_refresh_busy_for_test(&self, busy: bool) {
+        self.refresh_busy.store(busy, Ordering::SeqCst);
     }
 
     /// Test-only: force a workspace engine last error string.
@@ -572,8 +650,28 @@ impl WorkspaceEngines {
             });
         }
 
+        self.spawn_index_refresh(root)
+    }
+
+    /// Align the running code index to current discovery config. Does not enable retrieval.
+    ///
+    /// No-op when the engine is off, still warming, or a refresh is already in flight.
+    pub fn request_index_sync(&self, workspace_root: &Path) {
+        if !crate::config::workspace::workspace_engine_desired(workspace_root, "code_search") {
+            return;
+        }
+        let state = self.state("code_search");
+        if self.refresh_busy.load(Ordering::SeqCst)
+            || matches!(state, Some(EngineState::Warming))
+            || !matches!(state, Some(EngineState::Warm))
+        {
+            return;
+        }
+        let _ = self.spawn_index_refresh(workspace_root);
+    }
+
+    fn spawn_index_refresh(&self, root: &Path) -> Result<RefreshAccepted> {
         let mode = if code_search::should_full_rebuild(root) {
-            // Surface building immediately for detail polling.
             code_search::begin_building(root);
             RefreshAcceptedMode::Rebuild
         } else {
@@ -870,6 +968,135 @@ mod tests {
         );
     }
 
+    fn session_db_with_marker(root: &std::path::Path, marker: &str) -> (String, std::path::PathBuf) {
+        let litecode = root.join(".litecode");
+        std::fs::create_dir_all(&litecode).unwrap();
+        let db = litecode.join("sessions.db");
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(&litecode).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data
+                .create_session(root.to_str().unwrap(), "default", None)
+                .unwrap();
+            data.insert_items(&id, &[user_text(marker)]).unwrap();
+            id
+        };
+        (sid, db)
+    }
+
+    #[test]
+    fn search_sessions_lexical_survives_code_index_refresh() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let (_sid, db) = session_db_with_marker(root, "bundle REFRESH_MARKER text");
+
+        let engines = WorkspaceEngines::new();
+        engines.set_session_reader(SessionDataReader::open(&db));
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        engines.set_refresh_busy_for_test(true);
+
+        let bundle = engines
+            .search_sessions(
+                "REFRESH_MARKER",
+                0,
+                RetrievalFilters::default(),
+                Some(root.to_path_buf()),
+            )
+            .unwrap();
+        assert_eq!(bundle.ranked.len(), 1);
+        assert!(
+            bundle
+                .ranked
+                .iter()
+                .all(|h| h.lane == session_search::SessionHitLane::Text)
+        );
+        assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
+        assert!(engines.last_error("code_search").is_none());
+    }
+
+    #[test]
+    fn code_semantic_search_fails_fast_while_index_updating() {
+        let dir = TempDir::new().unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(dir.path().to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        engines.set_refresh_busy_for_test(true);
+
+        let err = engines
+            .search(RetrievalQuery {
+                query: "anything".into(),
+                corpus: RetrievalCorpus::Code,
+                modality: RetrievalModality::Semantic,
+                filters: RetrievalFilters::default(),
+                top_k: 4,
+                offset: 0,
+                workspace_root: Some(dir.path().to_path_buf()),
+            })
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("updating") || msg.contains("try again"),
+            "must fail closed without waiting on the worker: {msg}"
+        );
+        assert!(
+            !msg.contains("worker"),
+            "must not occupy IPC / report a dead worker: {msg}"
+        );
+        assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
+    }
+
+    #[test]
+    fn session_text_search_ignores_code_index_refresh() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let (_sid, db) = session_db_with_marker(root, "route me SESSION_TEXT_MARKER please");
+
+        let engines = WorkspaceEngines::new();
+        engines.set_session_reader(SessionDataReader::open(&db));
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        engines.set_refresh_busy_for_test(true);
+
+        let hits = engines
+            .search(RetrievalQuery {
+                query: "SESSION_TEXT_MARKER".into(),
+                corpus: RetrievalCorpus::Session,
+                modality: RetrievalModality::Text,
+                filters: RetrievalFilters::default(),
+                top_k: 8,
+                offset: 0,
+                workspace_root: Some(root.to_path_buf()),
+            })
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
+    }
+
+    #[test]
+    fn session_semantic_fails_fast_while_code_index_updating() {
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        engines.set_refresh_busy_for_test(true);
+        let err = engines
+            .search(RetrievalQuery {
+                query: "x".into(),
+                corpus: RetrievalCorpus::Session,
+                modality: RetrievalModality::Semantic,
+                filters: RetrievalFilters::default(),
+                top_k: 4,
+                offset: 0,
+                workspace_root: Some(PathBuf::from("/tmp")),
+            })
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("updating") || msg.contains("try again"),
+            "got: {msg}"
+        );
+        assert!(!msg.contains("worker"), "got: {msg}");
+        assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
+    }
+
     #[test]
     fn human_search_session_corpus_returns_session_column() {
         let dir = TempDir::new().unwrap();
@@ -919,5 +1146,59 @@ mod tests {
         assert_eq!(page.groups[0].hits.len(), 1);
         assert!(page.groups[0].hits[0].summary.contains("HUMAN_SESSION_HIT"));
         assert!(!page.has_more);
+    }
+
+    #[test]
+    fn request_index_sync_does_not_enable_retrieval() {
+        let dir = TempDir::new().unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.request_index_sync(dir.path());
+        assert!(!crate::config::workspace::workspace_engine_desired(
+            dir.path(),
+            "code_search"
+        ));
+        assert!(!engines.is_refresh_busy());
+        assert!(!dir.path().join(".litecode").join("engines.json").is_file());
+    }
+
+    #[test]
+    fn request_index_sync_noops_when_desired_but_not_warm() {
+        let dir = TempDir::new().unwrap();
+        crate::engines::code_search::init_workspace_index(dir.path()).unwrap();
+        crate::config::workspace::enable_code_search_engine(dir.path()).unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(dir.path().to_path_buf());
+        engines.request_index_sync(dir.path());
+        assert!(!engines.is_refresh_busy());
+        let view = crate::engines::code_search::resolve_index_view(dir.path(), None);
+        assert_ne!(
+            view.status,
+            crate::engines::code_search::IndexStatus::Refreshing
+        );
+    }
+
+    #[test]
+    fn request_index_sync_starts_refresh_when_warm_and_desired() {
+        let dir = TempDir::new().unwrap();
+        crate::engines::code_search::init_workspace_index(dir.path()).unwrap();
+        crate::config::workspace::enable_code_search_engine(dir.path()).unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(dir.path().to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        engines.request_index_sync(dir.path());
+        assert!(engines.is_refresh_busy());
+        let view = crate::engines::code_search::resolve_index_view(
+            dir.path(),
+            Some(EngineState::Warm),
+        );
+        assert!(
+            matches!(
+                view.status,
+                crate::engines::code_search::IndexStatus::Refreshing
+                    | crate::engines::code_search::IndexStatus::Building
+            ),
+            "expected in-flight index job, got {:?}",
+            view.status
+        );
     }
 }
