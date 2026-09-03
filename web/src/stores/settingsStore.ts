@@ -331,7 +331,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     docClock: {},
 
     openSettings: (section = "connection") => {
-      set({ open: true, section, loadError: null });
+      const wasOpen = get().open;
+      // Closed → open: drop clocks so Gate GET runs even if generation did not
+      // move (external `.litecode` edits). Stay-open jumps keep in-progress drafts.
+      set({
+        open: true,
+        section,
+        loadError: null,
+        ...(wasOpen ? {} : { docClock: {} }),
+      });
       void get().ensureSectionLoaded(section);
     },
 
@@ -412,6 +420,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       const requested = section;
       try {
         await loadDocuments(docs, { forceRevisioned: force, forceExcludes: false });
+        if (section === "connection") {
+          void loadDocuments(["models"], {
+            forceRevisioned: false,
+            forceExcludes: false,
+          }).catch(() => {
+            /* referenced-provider check is best-effort */
+          });
+        }
         if (section === "models") {
           void loadDocuments(["agents"], {
             forceRevisioned: false,

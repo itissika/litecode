@@ -96,6 +96,7 @@ describe("ConnectionSection persist UX", () => {
     useSettingsStore.setState({
       adapters,
       providers: {},
+      models: {},
       persistByDoc: {},
       saveProviders,
     });
@@ -147,5 +148,44 @@ describe("ConnectionSection persist UX", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     await vi.advanceTimersByTimeAsync(400);
     expect(saveProviders).toHaveBeenCalledWith({});
+  });
+
+  it("does not remove a provider that a model still references", async () => {
+    vi.useFakeTimers();
+    useSettingsStore.setState({
+      providers: {
+        saved: {
+          id: "saved",
+          adapter_id: "openai",
+          label: "Prod",
+          endpoint: "https://api.openai.com/v1",
+          api_key: "sk-…abcd",
+          auth: "bearer",
+        },
+      },
+      models: {
+        m1: {
+          id: "m1",
+          adapter_id: "openai",
+          provider_ref: "saved",
+          label: "Chat",
+          config: {
+            api_model_id: "gpt-4o",
+            context_window: 200_000,
+            max_tokens: 8192,
+            capabilities: ["text"],
+          },
+        },
+      },
+    });
+    render(<ConnectionSection />);
+    const remove = screen.getByRole("button", { name: "Remove" });
+    expect((remove as HTMLButtonElement).disabled).toBe(true);
+    expect(remove.getAttribute("title")).toBe(
+      "A model still references this provider — change its provider first",
+    );
+    fireEvent.click(remove);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(saveProviders).not.toHaveBeenCalled();
   });
 });

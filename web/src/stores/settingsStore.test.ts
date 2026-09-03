@@ -141,6 +141,9 @@ describe("ensureSectionLoaded", () => {
 
     expect(useSettingsStore.getState().open).toBe(true);
     expect(mockedProviders).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mockedModels).toHaveBeenCalled();
+    });
     expect(mockedAgent).not.toHaveBeenCalled();
     expect(mockedMcp).not.toHaveBeenCalled();
     expect(mockedCustom).not.toHaveBeenCalled();
@@ -210,6 +213,93 @@ describe("ensureSectionLoaded", () => {
     await Promise.resolve();
     expect(useSettingsStore.getState().section).toBe("files");
     expect(useSettingsStore.getState().loadError).toBeNull();
+  });
+});
+
+describe("reopen settings rereads gate docs", () => {
+  it("refetches MCP after close even when generation did not move", async () => {
+    useSettingsStore.setState({
+      open: false,
+      revision: 1,
+      mcpDefs: { global: [], workspace: [] },
+      mcpRuntime: { global: {}, workspace: {} },
+      docClock: { mcp: 1 },
+    });
+    mockedMcp.mockResolvedValue({
+      global: [],
+      workspace: [{ id: "ws", command: "uvx", origin: "workspace" }],
+    });
+    useSettingsStore.getState().openSettings("mcp");
+    await waitFor(() => {
+      expect(useSettingsStore.getState().mcpDefs?.workspace).toEqual([
+        expect.objectContaining({ id: "ws", command: "uvx" }),
+      ]);
+    });
+    expect(mockedMcp).toHaveBeenCalled();
+  });
+
+  it("refetches excludes after close even when the excludes clock is set", async () => {
+    useSettingsStore.setState({
+      open: false,
+      revision: 1,
+      excludes: emptyExcludes,
+      docClock: { excludes: 1 },
+    });
+    mockedExcludes.mockResolvedValue({
+      ...emptyExcludes,
+      git_ignore: false,
+    });
+    useSettingsStore.getState().openSettings("files");
+    await waitFor(() => {
+      expect(useSettingsStore.getState().excludes?.git_ignore).toBe(false);
+    });
+    expect(mockedExcludes).toHaveBeenCalled();
+  });
+
+  it("refetches custom tools when switching to that tab after a closed reopen", async () => {
+    useSettingsStore.setState({
+      open: false,
+      revision: 1,
+      providers: {},
+      customTools: { global: [], workspace: [] },
+      docClock: { providers: 1, customTools: 1, summary: 1, adapters: 1 },
+    });
+    mockedCustom.mockResolvedValue({
+      global: [],
+      workspace: [
+        {
+          name: "ws_tool",
+          description: "from disk",
+          schema: { type: "object", properties: {} },
+          command: "echo",
+        },
+      ],
+    });
+    useSettingsStore.getState().openSettings("connection");
+    await waitFor(() => {
+      expect(useSettingsStore.getState().open).toBe(true);
+    });
+    await useSettingsStore.getState().setSection("custom-tools");
+    await waitFor(() => {
+      expect(useSettingsStore.getState().customTools?.workspace).toEqual([
+        expect.objectContaining({ name: "ws_tool" }),
+      ]);
+    });
+    expect(mockedCustom).toHaveBeenCalled();
+  });
+
+  it("does not drop clocks when settings is already open", async () => {
+    useSettingsStore.setState({
+      open: true,
+      section: "files",
+      revision: 1,
+      excludes: emptyExcludes,
+      docClock: { excludes: 1 },
+    });
+    mockedExcludes.mockClear();
+    useSettingsStore.getState().openSettings("files");
+    await Promise.resolve();
+    expect(mockedExcludes).not.toHaveBeenCalled();
   });
 });
 

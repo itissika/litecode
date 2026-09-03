@@ -114,6 +114,7 @@ function draftsToProviders(drafts: ProviderDraft[]): Record<string, ProviderDefi
 export function ConnectionSection() {
   const adapters = useSettingsStore((s) => s.adapters);
   const providers = useSettingsStore((s) => s.providers);
+  const models = useSettingsStore((s) => s.models);
   const saveBlocked = useSettingsSaveBlocked();
   const { persistStatus, setPersistStatus } = useDocPersist("providers");
   const saveProviders = useSettingsStore((s) => s.saveProviders);
@@ -138,6 +139,18 @@ export function ConnectionSection() {
     [adapters],
   );
 
+  const referencedProviderIds = useMemo(() => {
+    const refs = new Set<string>();
+    for (const model of Object.values(models ?? {})) {
+      const ref = model.provider_ref?.trim();
+      if (ref) refs.add(ref);
+    }
+    return refs;
+  }, [models]);
+
+  const providerInUse = (id: string, maskedKey: string | null) =>
+    models === null ? Boolean(maskedKey) : referencedProviderIds.has(id);
+
   const updateDraft = (index: number, patch: Partial<ProviderDraft>) => {
     setDrafts((prev) => prev.map((row, i) => (i === index ? { ...row, ...patch } : row)));
   };
@@ -161,7 +174,11 @@ export function ConnectionSection() {
   };
 
   const removeProvider = (index: number) => {
-    setDrafts((prev) => prev.filter((_, i) => i !== index));
+    setDrafts((prev) => {
+      const row = prev[index];
+      if (row && providerInUse(row.id, row.masked_key)) return prev;
+      return prev.filter((_, i) => i !== index);
+    });
   };
 
   return (
@@ -198,7 +215,12 @@ export function ConnectionSection() {
                       removeProvider(index);
                     }}
                     onKeyDown={(e) => e.stopPropagation()}
-                    disabled={saveBlocked}
+                    disabled={saveBlocked || providerInUse(row.id, row.masked_key)}
+                    title={
+                      providerInUse(row.id, row.masked_key)
+                        ? "A model still references this provider — change its provider first"
+                        : undefined
+                    }
                     className="btn-danger btn-sm"
                   >
                     Remove
