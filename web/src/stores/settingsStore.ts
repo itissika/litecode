@@ -8,6 +8,8 @@ import {
   getAdapters,
   getLog,
   getExcludes,
+  getEnginesDoc,
+  putEnginesDoc,
   getModels,
   getProviders,
   getWebSearch,
@@ -42,6 +44,7 @@ import {
   type LogSettings,
   type WorkspaceExcludes,
   type WorkspaceExcludesLists,
+  type WorkspaceEnginesDoc,
   type ModelDefinition,
   type ProviderDefinition,
   type ProviderView,
@@ -62,15 +65,14 @@ import {
 import {
   documentIsFresh,
   EXCLUDES_CLOCK,
-  isWorkspaceCustomToolsPath,
-  isWorkspaceExcludesPath,
-  isWorkspaceMcpPath,
   mergeLayeredMcp,
   SECTION_DOCUMENTS,
   sectionNeedsSkeleton,
+  settingsDocsForEvent,
   splitMcpListing,
   type LayeredMcpRuntime,
   type McpDefItem,
+  type PersistDocKey,
   type SettingsDocClock,
   type SettingsDocument,
   type SettingsSection,
@@ -97,8 +99,9 @@ interface SettingsStoreState {
   agents: Record<string, AgentProfile>;
   log: LogSettings | null;
   excludes: WorkspaceExcludes | null;
+  engines: WorkspaceEnginesDoc | null;
   loadError: string | null;
-  persistStatus: PersistStatus;
+  persistByDoc: Partial<Record<PersistDocKey, PersistStatus>>;
   docClock: SettingsDocClock;
 }
 
@@ -106,7 +109,8 @@ interface SettingsStore extends SettingsStoreState {
   openSettings: (section?: SettingsSection) => void;
   closeSettings: () => Promise<void>;
   setSection: (section: SettingsSection) => Promise<void>;
-  setPersistStatus: (status: PersistStatus) => void;
+  setPersistStatus: (doc: PersistDocKey, status: PersistStatus) => void;
+  persistStatusFor: (doc: PersistDocKey) => PersistStatus;
   setRevision: (revision: number) => void;
   onRemoteSettingsChanged: (event: SettingsChanged) => void;
   handleWorkspaceChange: (paths: string[], kind: WorkspaceChangeKind) => void;
@@ -121,14 +125,15 @@ interface SettingsStore extends SettingsStoreState {
   removeCustomTool: (id: string, scope?: ToolScope) => Promise<void>;
   saveMcpServer: (id: string, def: McpServerDefinition, scope?: ToolScope) => Promise<void>;
   removeMcpServer: (id: string, scope?: ToolScope) => Promise<void>;
-  startMcpServer: (id: string, def: McpServerDefinition, scope?: ToolScope) => Promise<McpProbeResult>;
-  restartMcpServer: (id: string, def: McpServerDefinition, scope?: ToolScope) => Promise<McpProbeResult>;
+  startMcpServer: (id: string, scope?: ToolScope) => Promise<McpProbeResult>;
+  restartMcpServer: (id: string, scope?: ToolScope) => Promise<McpProbeResult>;
   stopMcpServer: (id: string, scope?: ToolScope) => Promise<McpProbeResult>;
   saveAgent: (id: string, profile: AgentProfile) => Promise<void>;
   createAgent: (id: string, profile: AgentProfile) => Promise<void>;
   removeAgent: (id: string) => Promise<void>;
   saveLog: (level: string | null) => Promise<void>;
   saveExcludes: (body: WorkspaceExcludesLists) => Promise<void>;
+  saveEngines: (file: WorkspaceEnginesDoc) => Promise<void>;
 }
 
 let loadFlight = 0;
@@ -199,6 +204,27 @@ function applyMcpListing(listing: LayeredList<McpServerItem>): Pick<
   return splitMcpListing(listing);
 }
 
+function patchMcpRuntime(
+  current: LayeredMcpRuntime | null,
+  id: string,
+  scope: ToolScope,
+  result: McpProbeResult,
+): LayeredMcpRuntime {
+  const layer = scope === "workspace" ? "workspace" : "global";
+  const base = current ?? { global: {}, workspace: {} };
+  return {
+    ...base,
+    [layer]: {
+      ...base[layer],
+      [id]: {
+        status: result.status,
+        tools: result.tools,
+        error: result.error,
+      },
+    },
+  };
+}
+
 export const useSettingsStore = create<SettingsStore>((set, get) => {
   async function loadDocuments(
     docs: readonly SettingsDocument[],
@@ -255,6 +281,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     run("excludes", async () => {
       patch.excludes = await getExcludes();
     });
+    run("engines", async () => {
+      patch.engines = await getEnginesDoc();
+    });
     run("agents", async () => {
       const agentIds = await loadSettingsAgentIds();
       const agents: Record<string, AgentProfile> = {};
@@ -296,37 +325,42 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     agents: {},
     log: null,
     excludes: null,
+    engines: null,
     loadError: null,
-    persistStatus: "idle",
+    persistByDoc: {},
     docClock: {},
 
     openSettings: (section = "connection") => {
-      set({ open: true, section, persistStatus: "idle", loadError: null });
+      set({ open: true, section, loadError: null });
       void get().ensureSectionLoaded(section);
     },
 
     closeSettings: async () => {
       await flushRegisteredSettings();
-      set({ open: false, persistStatus: "idle" });
+      set({ open: false, persistByDoc: {} });
     },
 
     setSection: async (section) => {
       if (get().section === section) return;
       await flushRegisteredSettings();
-      set({ section, persistStatus: "idle", loadError: null });
+      set({ section, loadError: null });
       void get().ensureSectionLoaded(section);
     },
 
-    setPersistStatus: (persistStatus) => {
-      if (get().persistStatus === persistStatus) return;
-      set({ persistStatus });
+    setPersistStatus: (doc, persistStatus) => {
+      const current = get().persistByDoc[doc] ?? "idle";
+      if (current === persistStatus) return;
+      set({ persistByDoc: { ...get().persistByDoc, [doc]: persistStatus } });
     },
 
+    persistStatusFor: (doc) => get().persistByDoc[doc] ?? "idle",
+
     setRevision: (revision) => {
-      const { revision: current, open, section } = get();
+      const { revision: current, open } = get();
       set({ revision });
       if (open && revision > current) {
-        void get().ensureSectionLoaded(section, true);
+        const docs = SECTION_DOCUMENTS[get().section];
+        void loadDocuments(docs, { forceRevisioned: true, forceExcludes: false });
       }
     },
 
@@ -344,40 +378,17 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
           .showToast("Settings changed — effective next turn", "success");
       }
       void useSessionStore.getState().refreshAvailableModels();
-      if (get().open) {
-        void get().ensureSectionLoaded(get().section, true);
-      }
+      if (!get().open) return;
+      const mapped = settingsDocsForEvent(event.docs);
+      if (mapped.length === 0) return;
+      void loadDocuments(mapped, {
+        forceRevisioned: true,
+        forceExcludes: mapped.includes("excludes"),
+      });
     },
 
-    handleWorkspaceChange: (paths) => {
-      const clock = { ...get().docClock };
-      let touched = false;
-      if (paths.some(isWorkspaceExcludesPath)) {
-        delete clock.excludes;
-        touched = true;
-      }
-      if (paths.some(isWorkspaceMcpPath)) {
-        delete clock.mcp;
-        touched = true;
-      }
-      if (paths.some(isWorkspaceCustomToolsPath)) {
-        delete clock.customTools;
-        delete clock.availableTools;
-        touched = true;
-      }
-      if (!touched) return;
-      set({ docClock: clock });
-      if (!get().open) return;
-      const section = get().section;
-      const docs = SECTION_DOCUMENTS[section];
-      const reload =
-        (docs.includes("excludes") && paths.some(isWorkspaceExcludesPath)) ||
-        (docs.includes("mcp") && paths.some(isWorkspaceMcpPath)) ||
-        ((docs.includes("customTools") || docs.includes("availableTools")) &&
-          paths.some(isWorkspaceCustomToolsPath));
-      if (reload) {
-        void get().ensureSectionLoaded(section);
-      }
+    handleWorkspaceChange: (_paths) => {
+      // Settings drafts hydrate only from gate commits (`settings/changed`).
     },
 
     notifySetupIfNeeded: async () => {
@@ -517,33 +528,21 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
         });
       }),
 
-    startMcpServer: async (id, def, scope = "global") => {
-      const result = await requestMcpStart(id, def, scope);
-      const listing = await getMcpServers();
-      set({
-        ...applyMcpListing(listing),
-        docClock: stampClock(get().docClock, ["mcp"], get().revision),
-      });
+    startMcpServer: async (id, scope = "global") => {
+      const result = await requestMcpStart(id, scope);
+      set((s) => ({ mcpRuntime: patchMcpRuntime(s.mcpRuntime, id, scope, result) }));
       return result;
     },
 
-    restartMcpServer: async (id, def, scope = "global") => {
-      const result = await requestMcpRestart(id, def, scope);
-      const listing = await getMcpServers();
-      set({
-        ...applyMcpListing(listing),
-        docClock: stampClock(get().docClock, ["mcp"], get().revision),
-      });
+    restartMcpServer: async (id, scope = "global") => {
+      const result = await requestMcpRestart(id, scope);
+      set((s) => ({ mcpRuntime: patchMcpRuntime(s.mcpRuntime, id, scope, result) }));
       return result;
     },
 
     stopMcpServer: async (id, scope = "global") => {
       const result = await requestMcpStop(id, scope);
-      const listing = await getMcpServers();
-      set({
-        ...applyMcpListing(listing),
-        docClock: stampClock(get().docClock, ["mcp"], get().revision),
-      });
+      set((s) => ({ mcpRuntime: patchMcpRuntime(s.mcpRuntime, id, scope, result) }));
       return result;
     },
 
@@ -601,6 +600,20 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
         set({
           excludes,
           docClock: stampClock(get().docClock, ["excludes"], get().revision),
+        });
+      }),
+
+    saveEngines: (file) =>
+      withTurnGuard(async () => {
+        const saved = await putEnginesDoc(file);
+        set({
+          revision: saved.revision,
+          engines: {
+            version: saved.version,
+            lsp: saved.lsp,
+            retrieval: saved.retrieval,
+          },
+          docClock: stampClock(get().docClock, ["engines"], saved.revision),
         });
       }),
   };

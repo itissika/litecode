@@ -45,7 +45,7 @@ describe("SettingsDialog", () => {
       adapters: [],
       providers: {},
       models: {},
-      persistStatus: "idle",
+      persistByDoc: {},
       loadError: null,
       docClock: { providers: 1, adapters: 1 },
     });

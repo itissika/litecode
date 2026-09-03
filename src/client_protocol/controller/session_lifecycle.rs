@@ -59,7 +59,7 @@ impl SessionController {
         self.sessions
             .set_last_permission_sink(session_id, Arc::clone(&sink));
         self.runtime
-            .reload_if_needed()
+            .apply_non_engine()
             .map_err(|e| StartTurnError::Runtime(anyhow::anyhow!("{e}")))?;
         // Disk is source of truth for workspace MCP / custom-tool defs.
         // Watcher skips reload while a turn is running; this is the apply point.
@@ -153,7 +153,7 @@ impl SessionController {
             .await
             .map_err(LitecodeError::Anyhow)?;
         self.sessions.ensure_entry(session_id).await?;
-        self.runtime.reload_if_needed()?;
+        self.runtime.apply_non_engine()?;
 
         let session_binding = self.session_binding(session_id);
         if session_binding.context_window == 0 {
@@ -377,7 +377,7 @@ impl SessionController {
             }
             return Ok(());
         }
-        self.runtime.reload_if_needed()?;
+        self.runtime.apply_non_engine()?;
         match crate::runtime::RuntimeHandle::validate_primary_agent(
             &self.runtime.resolved,
             agent_id,
@@ -426,7 +426,7 @@ impl SessionController {
             }
             return Ok(());
         }
-        self.runtime.reload_if_needed()?;
+        self.runtime.apply_non_engine()?;
         if !self.runtime.resolved.global().models.contains_key(model_id) {
             let binding = self.session_binding(session_id);
             if let Some(proj) = self.projection_mut(session_id) {

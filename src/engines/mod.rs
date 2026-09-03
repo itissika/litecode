@@ -632,7 +632,11 @@ impl WorkspaceEngines {
     /// Single index refresh: auto-starts engine if needed; Warm path rebuilds or syncs.
     pub fn request_refresh(&self, resolved: &ResolvedConfig) -> Result<RefreshAccepted> {
         let root = resolved.workspace_root();
-        crate::config::workspace::enable_code_search_engine(root)?;
+        if !crate::config::workspace::workspace_engine_desired(root, "code_search") {
+            return Err(crate::types::LitecodeError::Config(
+                "code search engine is off; enable it in Settings → Engines".into(),
+            ));
+        }
 
         let state = self.state("code_search");
         if matches!(state, Some(EngineState::Warming)) || self.refresh_busy.load(Ordering::SeqCst) {

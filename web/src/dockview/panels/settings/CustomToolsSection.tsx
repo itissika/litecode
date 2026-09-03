@@ -14,6 +14,7 @@ import {
   flushRegisteredSettings,
   isPersistBusy,
   shouldHydrateDraftFromStore,
+  useDocPersist,
   useSettingsPersist,
 } from "./persist";
 
@@ -54,8 +55,7 @@ function prettyTool(def: CustomToolDefinition): string {
 export function CustomToolsSection() {
   const customTools = useSettingsStore((s) => s.customTools);
   const saveBlocked = useSettingsSaveBlocked();
-  const persistStatus = useSettingsStore((s) => s.persistStatus);
-  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
+  const { persistStatus, setPersistStatus } = useDocPersist("customTools");
   const saveCustomTool = useSettingsStore((s) => s.saveCustomTool);
   const removeCustomTool = useSettingsStore((s) => s.removeCustomTool);
   const [selectedId, setSelectedId] = useState<string | null>(null);

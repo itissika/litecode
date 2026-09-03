@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentProfile, ModelDefinition } from "../../../api/settings";
+import type { AgentProfile, AgentToolBinding, AvailableTool, ModelDefinition } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { AgentsSection } from "./AgentsSection";
 
@@ -51,7 +51,7 @@ describe("AgentsSection persist UX", () => {
       agentIds: ["default"],
       selectedAgentId: "default",
       agents: { default: profile() },
-      persistStatus: "idle",
+      persistByDoc: {},
       saveAgent,
       createAgent,
       removeAgent,
@@ -116,5 +116,112 @@ describe("AgentsSection persist UX", () => {
     await waitFor(() => {
       expect(removeAgent).toHaveBeenCalledWith("helper");
     });
+  });
+});
+
+const lspTool: AvailableTool = { id: "lsp", kind: "engine", origin: "workspace" };
+const readTool: AvailableTool = { id: "read", kind: "core", origin: "builtin" };
+
+describe("AgentsSection LSP bind persist loop", () => {
+  const saveAgent = vi.fn(async (_id: string, _next: AgentProfile) => undefined);
+
+  beforeEach(() => {
+    saveAgent.mockReset();
+    useSettingsStore.setState({
+      models: { m1: model },
+      availableTools: [readTool, lspTool],
+      mcpDefs: { global: [], workspace: [] },
+      mcpRuntime: { global: {}, workspace: {} },
+      agentIds: ["default"],
+      selectedAgentId: "default",
+      agents: { default: profile() },
+      persistByDoc: {},
+      revision: 1,
+      saveAgent,
+      createAgent: vi.fn(async () => undefined),
+      removeAgent: vi.fn(async () => undefined),
+      refreshAgents: vi.fn(async () => undefined),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("does not keep PUT-ing after a settings_changed reload of the same bind", async () => {
+    vi.useFakeTimers();
+    saveAgent.mockImplementation(async (id: string, next: AgentProfile) => {
+      useSettingsStore.setState((s) => ({
+        revision: s.revision + 1,
+        agents: { ...s.agents, [id]: next },
+      }));
+    });
+    render(<AgentsSection />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /lsp tool binding, disabled/i,
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(400);
+    expect(saveAgent).toHaveBeenCalledTimes(1);
+
+    // Echo of PUT: WS settings_changed reloads the agent (new object, extra
+    // policy defaults the server expands). Must converge, not rev++ forever.
+    const saved = saveAgent.mock.calls[0][1] as AgentProfile;
+    useSettingsStore.setState({
+      persistByDoc: useSettingsStore.getState().persistByDoc,
+      agents: {
+        default: {
+          ...saved,
+          tools: {
+            ...saved.tools,
+            lsp: {
+              ...saved.tools.lsp,
+              enabled: true,
+              last_applied_preset: "ALL",
+              policy: { default: "allow", default_id: "default", rules: [] },
+            },
+          },
+        },
+      },
+      availableTools: [readTool, lspTool],
+      revision: useSettingsStore.getState().revision,
+    });
+    await vi.advanceTimersByTimeAsync(400);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(saveAgent.mock.calls.length).toBeLessThan(3);
+  });
+
+  it("does not storm saves when lsp availability flickers after a bind toggle", async () => {
+    vi.useFakeTimers();
+    let lspListed = true;
+    let lastLsp: AgentToolBinding = { enabled: true, last_applied_preset: "ALL" };
+    saveAgent.mockImplementation(async (id: string, next: AgentProfile) => {
+      if (next.tools.lsp) lastLsp = next.tools.lsp;
+      const merged: AgentProfile = {
+        ...next,
+        tools: { ...next.tools, lsp: lastLsp },
+      };
+      queueMicrotask(() => {
+        lspListed = !lspListed;
+        useSettingsStore.setState((s) => ({
+          revision: s.revision + 1,
+          agents: { ...s.agents, [id]: merged },
+          availableTools: lspListed ? [readTool, lspTool] : [readTool],
+        }));
+      });
+    });
+    render(<AgentsSection />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /lsp tool binding, disabled/i,
+      }),
+    );
+    for (let i = 0; i < 8; i++) {
+      await vi.advanceTimersByTimeAsync(400);
+      await Promise.resolve();
+    }
+    expect(saveAgent.mock.calls.length).toBeLessThan(4);
   });
 });

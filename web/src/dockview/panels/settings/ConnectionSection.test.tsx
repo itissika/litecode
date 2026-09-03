@@ -96,7 +96,7 @@ describe("ConnectionSection persist UX", () => {
     useSettingsStore.setState({
       adapters,
       providers: {},
-      persistStatus: "idle",
+      persistByDoc: {},
       saveProviders,
     });
   });

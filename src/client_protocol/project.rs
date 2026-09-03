@@ -489,12 +489,14 @@ pub fn server_hello(
 
 pub fn settings_changed(
     revision: u64,
+    docs: &[crate::config::DocId],
     summary: crate::config::SettingsSummary,
 ) -> serde_json::Value {
     notification(
         "settings/changed",
         serde_json::json!({
             "revision": revision,
+            "docs": docs,
             "summary": summary,
         }),
     )

@@ -218,11 +218,6 @@ export interface LspServerProbe {
   official_url?: string | null;
 }
 
-export interface LspInitFailure {
-  id: string;
-  error: string;
-}
-
 export async function probeLspServers(): Promise<LspServerProbe[]> {
   const res = await apiFetch("/api/workspace/lsp/probe");
   if (!res.ok) {
@@ -231,56 +226,6 @@ export async function probeLspServers(): Promise<LspServerProbe[]> {
   }
   const data = await parseJson<{ servers: LspServerProbe[] }>(res);
   return data.servers;
-}
-
-export async function initLspServers(
-  servers: string[],
-): Promise<{ servers: string[] }> {
-  const res = await apiFetch("/api/workspace/lsp/init", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ servers }),
-  });
-  const body = await res.json();
-  if (!res.ok) {
-    const failed = (body as { failed?: LspInitFailure[] }).failed;
-    if (failed?.length) {
-      const detail = failed.map((f) => `${f.id}: ${f.error}`).join("; ");
-      throw new Error(detail);
-    }
-    throw new Error(
-      (body as ApiErr).error || `HTTP ${res.status}`,
-    );
-  }
-  const data = body as ApiOk<{ servers: string[] }>;
-  if (!data.ok || !data.data) {
-    throw new Error("invalid LSP init response");
-  }
-  return data.data;
-}
-
-async function postEngineAction(
-  path: string,
-): Promise<{ desired: boolean }> {
-  const res = await apiFetch(path, { method: "POST" });
-  return parseJson<{ desired: boolean }>(res);
-}
-
-export function stopLsp(): Promise<{ desired: boolean }> {
-  return postEngineAction("/api/workspace/lsp/stop");
-}
-
-/** Clear enabled server list and stop. Unlike stopLsp, does not keep servers. */
-export function clearLspServers(): Promise<{ desired: boolean }> {
-  return postEngineAction("/api/workspace/lsp/clear");
-}
-
-export function initRetrieval(): Promise<{ desired: boolean }> {
-  return postEngineAction("/api/workspace/retrieval/init");
-}
-
-export function stopRetrieval(): Promise<{ desired: boolean }> {
-  return postEngineAction("/api/workspace/retrieval/stop");
 }
 
 export type IndexStatus =

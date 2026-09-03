@@ -3,7 +3,6 @@ import {
   ArrowsClockwise,
   CheckCircle,
   Info,
-  Pause,
   Play,
   Stop,
   WarningCircle,
@@ -12,27 +11,34 @@ import {
 
 import {
   getInstallStatus,
-  clearLspServers,
-  initLspServers,
-  initRetrieval,
   installServer,
   probeLspServers,
   refreshRetrieval,
-  stopLsp,
-  stopRetrieval,
   type EnginesDetail,
   type IndexStatus,
   type IndexingProgress,
   type LspServerProbe,
   type RetrievalEngineDetail,
 } from "../../../../api/workspace";
+import type { WorkspaceEnginesDoc } from "../../../../api/settings";
 import { useSettingsStore } from "../../../../stores/settingsStore";
 import { useToastStore } from "../../../../stores/toastStore";
 import {
   SETTINGS_PERSIST_ERROR_CHANNEL,
   shouldHydrateDraftFromStore,
+  useDocPersist,
   useSettingsPersist,
 } from "../persist";
+
+const DEFAULT_ENGINES: WorkspaceEnginesDoc = {
+  version: 1,
+  lsp: { desired: false, servers: [] },
+  retrieval: { desired: false },
+};
+
+function snapshotEngines(): WorkspaceEnginesDoc {
+  return useSettingsStore.getState().engines ?? DEFAULT_ENGINES;
+}
 
 /* ------------------------------------------------------------------ */
 /* Retrieval section                                                   */
@@ -57,24 +63,16 @@ function engineTag(usable: EngineUsable): {
   }
 }
 
-/** Single transport-style control driven by engine usable state. */
-function engineControl(usable: EngineUsable): {
-  icon: "play" | "pause" | "stop";
+/** Play/stop follows persisted desired, not runtime usable. Warming does not disable. */
+function intentControl(desired: boolean): {
+  icon: "play" | "stop";
   action: "start" | "stop";
   label: string;
-  disabled: boolean;
 } {
-  switch (usable) {
-    case "ready":
-      return { icon: "stop", action: "stop", label: "Stop engine", disabled: false };
-    case "warming":
-      return { icon: "pause", action: "stop", label: "Cancel warmup", disabled: false };
-    case "unavailable":
-      return { icon: "play", action: "start", label: "Start engine", disabled: false };
-    case "stopped":
-    default:
-      return { icon: "play", action: "start", label: "Start engine", disabled: false };
+  if (desired) {
+    return { icon: "stop", action: "stop", label: "Stop engine" };
   }
+  return { icon: "play", action: "start", label: "Start engine" };
 }
 
 function resolveIndexStatus(index: RetrievalEngineDetail["index"]): IndexStatus {
@@ -169,6 +167,8 @@ function RetrievalSection({
   detail: RetrievalEngineDetail;
   onChanged: () => void;
 }) {
+  const engines = useSettingsStore((s) => s.engines) ?? DEFAULT_ENGINES;
+  const saveEngines = useSettingsStore((s) => s.saveEngines);
   const [busy, setBusy] = useState(false);
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true);
@@ -181,7 +181,8 @@ function RetrievalSection({
   };
 
   const tag = engineTag(detail.usable);
-  const control = engineControl(detail.usable);
+  const desired = engines.retrieval.desired;
+  const control = intentControl(desired);
   const index = detail.index;
   const status = resolveIndexStatus(index);
   const tone = indexTone(status, detail.usable);
@@ -211,12 +212,16 @@ function RetrievalSection({
   })();
 
   const onEngineClick = () => {
-    if (control.action === "start") void run(initRetrieval);
-    else void run(stopRetrieval);
+    const nextDesired = control.action === "start";
+    void run(() =>
+      saveEngines({
+        ...snapshotEngines(),
+        retrieval: { desired: nextDesired },
+      }),
+    );
   };
 
-  const ControlIcon =
-    control.icon === "play" ? Play : control.icon === "pause" ? Pause : Stop;
+  const ControlIcon = control.icon === "play" ? Play : Stop;
 
   return (
     <section className="space-y-3">
@@ -227,7 +232,7 @@ function RetrievalSection({
         </div>
         <IconSquareButton
           label={control.label}
-          disabled={busy || control.disabled}
+          disabled={busy}
           onClick={onEngineClick}
         >
           <ControlIcon size={14} weight="fill" />
@@ -413,16 +418,15 @@ function LspServerCard({
 }
 
 function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh: () => void }) {
+  const engines = useSettingsStore((s) => s.engines) ?? DEFAULT_ENGINES;
+  const saveEngines = useSettingsStore((s) => s.saveEngines);
+  const { persistStatus, setPersistStatus } = useDocPersist("engines");
   const [probes, setProbes] = useState<LspServerProbe[]>(detail.probes);
-  const [selected, setSelected] = useState<Set<string>>(new Set(detail.configured_servers));
+  const [selected, setSelected] = useState<Set<string>>(new Set(engines.lsp.servers));
   const [installing, setInstalling] = useState<Record<string, { taskId: string; progress?: { downloaded_bytes: number; total_bytes?: number | null } | null }>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Unmount guard: the install poll loop must stop calling setState after this
-  // view is torn down (e.g. the engines panel is closed mid-install). The loop
-  // checks the flag before every await so no setState lands on an unmounted
-  // component.
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -431,22 +435,20 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
     };
   }, []);
 
-  const persistStatus = useSettingsStore((s) => s.persistStatus);
-  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
   const selectedIds = useMemo(() => [...selected].sort(), [selected]);
 
   const load = useCallback(async () => {
     const next = await probeLspServers();
     if (mountedRef.current) setProbes(next);
   }, []);
-  // Probe once when this view mounts (i.e. the user switches to the engines
-  // page). Servers rarely change, so no manual Refresh button is exposed.
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     setProbes(detail.probes);
+  }, [detail]);
+  useEffect(() => {
     if (!shouldHydrateDraftFromStore(persistStatus)) return;
-    setSelected(new Set(detail.configured_servers));
-  }, [detail, persistStatus]);
+    setSelected(new Set(engines.lsp.servers));
+  }, [engines.lsp.servers, persistStatus]);
 
   useSettingsPersist(selectedIds, {
     debounceMs: 0,
@@ -454,8 +456,14 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
     serialize: (ids) => ({ ok: ids }),
     commit: async (ids) => {
       try {
-        if (ids.length === 0) await clearLspServers();
-        else await initLspServers(ids);
+        const current = snapshotEngines();
+        await saveEngines({
+          ...current,
+          lsp: {
+            servers: ids,
+            desired: ids.length === 0 ? false : current.lsp.desired,
+          },
+        });
         refresh();
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
@@ -470,7 +478,7 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
         throw e;
       }
     },
-    revert: () => setSelected(new Set(detail.configured_servers)),
+    revert: () => setSelected(new Set(snapshotEngines().lsp.servers)),
   });
 
   const install = async (id: string) => {
@@ -525,13 +533,28 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
   const hasRunnableServer = probes.some(
     (probe) => selected.has(probe.id) && probe.status === "available",
   );
-  const control = engineControl(detail.usable);
-  const ControlIcon =
-    control.icon === "play" ? Play : control.icon === "pause" ? Pause : Stop;
+  const desired = engines.lsp.desired;
+  const control = intentControl(desired);
+  const ControlIcon = control.icon === "play" ? Play : Stop;
   const controlDisabled = busy || (control.action === "start" && !hasRunnableServer);
   const onEngineClick = () => {
-    if (control.action === "start") void run(() => initLspServers([...selected]));
-    else void run(stopLsp);
+    const current = snapshotEngines();
+    if (control.action === "start") {
+      if (current.lsp.servers.length === 0) return;
+      void run(() =>
+        saveEngines({
+          ...current,
+          lsp: { ...current.lsp, desired: true },
+        }),
+      );
+    } else {
+      void run(() =>
+        saveEngines({
+          ...current,
+          lsp: { ...current.lsp, desired: false },
+        }),
+      );
+    }
   };
 
   // Toggle a card. Gate: a not-installed (×) server cannot be enabled; it can

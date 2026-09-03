@@ -9,7 +9,7 @@ import {
   SettingsPageShell,
   useSettingsSaveBlocked,
 } from "./shared";
-import { shouldHydrateDraftFromStore, useSettingsPersist } from "./persist";
+import { shouldHydrateDraftFromStore, useDocPersist, useSettingsPersist } from "./persist";
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
 
@@ -25,22 +25,25 @@ export function AdvancedSection() {
   const log = useSettingsStore((s) => s.log);
   const websearch = useSettingsStore((s) => s.websearch);
   const saveBlocked = useSettingsSaveBlocked();
-  const persistStatus = useSettingsStore((s) => s.persistStatus);
-  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
+  const logPersist = useDocPersist("log");
+  const searchPersist = useDocPersist("websearch");
   const saveLog = useSettingsStore((s) => s.saveLog);
   const saveWebSearch = useSettingsStore((s) => s.saveWebSearch);
   const [logLevel, setLogLevel] = useState(snapshotLogLevel);
   const [searchEndpoint, setSearchEndpoint] = useState(snapshotSearchEndpoint);
 
   useEffect(() => {
-    if (!shouldHydrateDraftFromStore(persistStatus)) return;
-    setLogLevel(log?.level ?? "info");
-    setSearchEndpoint(websearch?.search_endpoint ?? "");
-  }, [log, websearch, persistStatus]);
+    if (shouldHydrateDraftFromStore(logPersist.persistStatus)) {
+      setLogLevel(log?.level ?? "info");
+    }
+    if (shouldHydrateDraftFromStore(searchPersist.persistStatus)) {
+      setSearchEndpoint(websearch?.search_endpoint ?? "");
+    }
+  }, [log, websearch, logPersist.persistStatus, searchPersist.persistStatus]);
 
   useSettingsPersist(searchEndpoint, {
     debounceMs: 400,
-    setStatus: setPersistStatus,
+    setStatus: searchPersist.setPersistStatus,
     serialize: (value) => ({ ok: value.trim() || undefined }),
     commit: (search_endpoint) => saveWebSearch({ search_endpoint }),
     revert: () => setSearchEndpoint(snapshotSearchEndpoint()),
@@ -48,7 +51,7 @@ export function AdvancedSection() {
 
   useSettingsPersist(logLevel, {
     debounceMs: 400,
-    setStatus: setPersistStatus,
+    setStatus: logPersist.setPersistStatus,
     serialize: (value) => ({ ok: value || null }),
     commit: (level) => saveLog(level),
     revert: () => setLogLevel(snapshotLogLevel()),

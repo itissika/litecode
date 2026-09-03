@@ -15,6 +15,7 @@ import type {
   ToolOrigin,
   WebSearchView,
   WorkspaceExcludes,
+  WorkspaceEnginesDoc,
 } from "../api/settings";
 
 export type SettingsSection =
@@ -39,7 +40,8 @@ export type SettingsDocument =
   | "mcp"
   | "log"
   | "websearch"
-  | "excludes";
+  | "excludes"
+  | "engines";
 
 export const SECTION_DOCUMENTS: Record<SettingsSection, readonly SettingsDocument[]> = {
   connection: ["summary", "adapters", "providers"],
@@ -49,7 +51,7 @@ export const SECTION_DOCUMENTS: Record<SettingsSection, readonly SettingsDocumen
   mcp: ["mcp"],
   files: ["excludes"],
   advanced: ["log", "websearch"],
-  engines: [],
+  engines: ["engines"],
 };
 
 export type McpDefItem = McpServerDefinition & {
@@ -68,7 +70,42 @@ export type LayeredMcpRuntime = {
   workspace: Record<string, McpRuntimeItem>;
 };
 
+export type PersistDocKey = Exclude<
+  SettingsDocument,
+  "summary" | "adapters" | "availableTools"
+>;
+
 export type SettingsDocClock = Partial<Record<SettingsDocument, number>>;
+
+export const EVENT_DOC_TO_SETTINGS: Record<string, SettingsDocument[]> = {
+  providers: ["providers"],
+  models: ["models"],
+  agents: ["agents"],
+  log: ["log"],
+  websearch: ["websearch"],
+  "custom_tools.global": ["customTools"],
+  "custom_tools.workspace": ["customTools"],
+  "mcp.global": ["mcp"],
+  "mcp.workspace": ["mcp"],
+  engines: ["engines", "availableTools"],
+  excludes: ["excludes"],
+};
+
+export function settingsDocsForEvent(docs: string[] | undefined): SettingsDocument[] {
+  if (!docs?.length) return [];
+  const out: SettingsDocument[] = [];
+  for (const id of docs) {
+    for (const mapped of EVENT_DOC_TO_SETTINGS[id] ?? []) {
+      if (!out.includes(mapped)) out.push(mapped);
+    }
+  }
+  if (
+    docs.some((d) => d.startsWith("mcp.") || d.startsWith("custom_tools."))
+  ) {
+    if (!out.includes("availableTools")) out.push("availableTools");
+  }
+  return out;
+}
 
 export const EXCLUDES_CLOCK = 1;
 
@@ -85,6 +122,7 @@ export interface SettingsDataProbe {
   log: LogSettings | null;
   websearch: WebSearchView | null;
   excludes: WorkspaceExcludes | null;
+  engines: WorkspaceEnginesDoc | null;
   docClock: SettingsDocClock;
 }
 
@@ -112,6 +150,8 @@ export function documentHasData(doc: SettingsDocument, state: SettingsDataProbe)
       return state.websearch !== null;
     case "excludes":
       return state.excludes !== null;
+    case "engines":
+      return state.engines !== null;
   }
 }
 

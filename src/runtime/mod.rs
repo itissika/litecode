@@ -139,21 +139,38 @@ impl RuntimeHandle {
             })
     }
 
-    /// Reload global settings into this handle when the writer revision advanced.
-    pub fn reload_if_needed(&mut self) -> Result<()> {
+    /// Reload named settings slices when the writer generation advanced.
+    /// Engine reconcile runs only when `docs` contains `engines`.
+    pub fn apply(&mut self, docs: &[crate::config::DocId]) -> Result<()> {
         let current = self.settings_revision.load(Ordering::Acquire);
         let loaded = self.loaded_revision.load(Ordering::Acquire);
         if current <= loaded {
             return Ok(());
         }
-        let global = ConfigManager::load_global_from(&self.global_db_path)?;
-        ConfigManager::validate(&global)?;
-        let workspace = crate::config::workspace::workspace_with_disk_readiness(&self.workspace);
-        self.resolved = ConfigManager::resolve(global, workspace.clone());
-        self.workspace = workspace;
-        log_filter::reload_from_path(&self.global_db_path);
-        self.engine_manager.reconcile(&self.resolved);
-        self.workspace_engines.reconcile(&self.resolved);
+        let plan = crate::config::DocId::apply_plan(docs);
+        if plan.reload_global || plan.reload_workspace {
+            let global = if plan.reload_global {
+                let global = ConfigManager::load_global_from(&self.global_db_path)?;
+                ConfigManager::validate(&global)?;
+                global
+            } else {
+                self.resolved.global().clone()
+            };
+            let workspace = if plan.reload_workspace {
+                crate::config::workspace::workspace_with_disk_readiness(&self.workspace)
+            } else {
+                self.workspace.clone()
+            };
+            self.resolved = ConfigManager::resolve(global, workspace.clone());
+            self.workspace = workspace;
+        }
+        if docs.contains(&crate::config::DocId::Log) {
+            log_filter::reload_from_path(&self.global_db_path);
+        }
+        if plan.reconcile_engines {
+            self.engine_manager.reconcile(&self.resolved);
+            self.workspace_engines.reconcile(&self.resolved);
+        }
         self.ensure_valid_desired_primary();
         self.provider_registry
             .lock()
@@ -161,6 +178,16 @@ impl RuntimeHandle {
             .invalidate_if_stale(current);
         self.loaded_revision.store(current, Ordering::Release);
         Ok(())
+    }
+
+    /// Reload every persist slice except engines (used when the caller only knows generation moved).
+    pub fn apply_non_engine(&mut self) -> Result<()> {
+        let docs: Vec<crate::config::DocId> = crate::config::DocId::ALL
+            .iter()
+            .copied()
+            .filter(|d| *d != crate::config::DocId::Engines)
+            .collect();
+        self.apply(&docs)
     }
 
     pub fn desired_primary_agent(&self) -> &str {

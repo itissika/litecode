@@ -6,7 +6,7 @@ import type { WorkspaceExcludesLists } from "../../../api/settings";
 import { globsFromText, textFromGlobs } from "../../../utils/excludeGlobs";
 import { FoldCard } from "../../../components/FoldCard";
 import { FieldLabel, TextArea, SectionHeader, SettingsPageShell, useSettingsSaveBlocked } from "./shared";
-import { shouldHydrateDraftFromStore, useSettingsPersist } from "./persist";
+import { shouldHydrateDraftFromStore, useDocPersist, useSettingsPersist } from "./persist";
 
 type FilesDraft = {
   filesText: string;
@@ -39,8 +39,7 @@ function snapshotFilesDraft(): FilesDraft {
 export function FilesSection() {
   const excludes = useSettingsStore((s) => s.excludes);
   const saveBlocked = useSettingsSaveBlocked();
-  const persistStatus = useSettingsStore((s) => s.persistStatus);
-  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
+  const { persistStatus, setPersistStatus } = useDocPersist("excludes");
   const saveExcludes = useSettingsStore((s) => s.saveExcludes);
   const [draft, setDraft] = useState<FilesDraft>(snapshotFilesDraft);
 

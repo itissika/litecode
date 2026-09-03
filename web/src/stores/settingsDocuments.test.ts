@@ -26,6 +26,7 @@ function emptyProbe(patch: Partial<SettingsDataProbe> = {}): SettingsDataProbe {
     log: null,
     websearch: null,
     excludes: null,
+    engines: null,
     docClock: {},
     ...patch,
   };
@@ -34,7 +35,7 @@ function emptyProbe(patch: Partial<SettingsDataProbe> = {}): SettingsDataProbe {
 describe("SECTION_DOCUMENTS", () => {
   it("does not attach engines or excludes to Provider", () => {
     expect(SECTION_DOCUMENTS.connection).toEqual(["summary", "adapters", "providers"]);
-    expect(SECTION_DOCUMENTS.engines).toEqual([]);
+    expect(SECTION_DOCUMENTS.engines).toEqual(["engines"]);
     expect(SECTION_DOCUMENTS.files).toEqual(["excludes"]);
     expect(SECTION_DOCUMENTS.models).not.toContain("agents");
   });
@@ -48,8 +49,20 @@ describe("sectionNeedsSkeleton", () => {
     ).toBe(false);
   });
 
-  it("does not skeleton Engines", () => {
-    expect(sectionNeedsSkeleton("engines", emptyProbe())).toBe(false);
+  it("skeletons Engines until the engines document is loaded", () => {
+    expect(sectionNeedsSkeleton("engines", emptyProbe())).toBe(true);
+    expect(
+      sectionNeedsSkeleton(
+        "engines",
+        emptyProbe({
+          engines: {
+            version: 1,
+            lsp: { desired: false, servers: [] },
+            retrieval: { desired: false },
+          },
+        }),
+      ),
+    ).toBe(false);
   });
 });
 

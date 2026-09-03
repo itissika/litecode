@@ -21,7 +21,7 @@ describe("McpServersSection persist UX", () => {
     useSettingsStore.setState({
       mcpDefs: { global: [], workspace: [] },
       mcpRuntime: { global: {}, workspace: {} },
-      persistStatus: "idle",
+      persistByDoc: {},
       saveMcpServer,
       removeMcpServer,
       startMcpServer: vi.fn(),
@@ -90,5 +90,38 @@ describe("McpServersSection persist UX", () => {
     await waitFor(() => {
       expect(removeMcpServer).toHaveBeenCalledWith("filesystem", "global");
     });
+  });
+
+  it("does not rewrite JSON when runtime becomes running", async () => {
+    saveMcpServer.mockImplementation(async (id, def) => {
+      useSettingsStore.setState({
+        mcpDefs: {
+          global: [{ id, ...def }],
+          workspace: [],
+        },
+      });
+    });
+    render(<McpServersSection />);
+    openNew("Global");
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => {
+      expect(saveMcpServer).toHaveBeenCalled();
+    });
+    const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+    const before = box.value;
+    expect(before).toContain('"command": "npx"');
+    expect(before).not.toContain("running");
+    useSettingsStore.setState({
+      mcpRuntime: {
+        global: {
+          filesystem: {
+            status: "running",
+            tools: [{ name: "echo", description: "" }],
+          },
+        },
+        workspace: {},
+      },
+    });
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(before);
   });
 });

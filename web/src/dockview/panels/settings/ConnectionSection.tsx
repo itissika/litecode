@@ -18,6 +18,7 @@ import {
 } from "./shared";
 import {
   shouldHydrateDraftFromStore,
+  useDocPersist,
   useSettingsPersist,
   type SerializeResult,
 } from "./persist";
@@ -114,8 +115,7 @@ export function ConnectionSection() {
   const adapters = useSettingsStore((s) => s.adapters);
   const providers = useSettingsStore((s) => s.providers);
   const saveBlocked = useSettingsSaveBlocked();
-  const persistStatus = useSettingsStore((s) => s.persistStatus);
-  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
+  const { persistStatus, setPersistStatus } = useDocPersist("providers");
   const saveProviders = useSettingsStore((s) => s.saveProviders);
   const [drafts, setDrafts] = useState<ProviderDraft[]>(snapshotProviderDrafts);
   const [justAddedProviderId, setJustAddedProviderId] = useState<string | null>(null);

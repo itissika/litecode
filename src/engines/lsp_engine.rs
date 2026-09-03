@@ -61,7 +61,7 @@ impl LspEngine {
         let server_ids = lsp_servers_from_engines(&root);
         if server_ids.is_empty() {
             return Err(LitecodeError::Config(
-                "lsp: not initialized for this workspace (use /api/workspace/lsp/init)".into(),
+                "lsp: not initialized for this workspace (enable it in Settings → Engines)".into(),
             ));
         }
         let commands = commands_for_server_ids(&root, &server_ids);

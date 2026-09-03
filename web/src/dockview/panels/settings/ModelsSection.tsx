@@ -24,6 +24,7 @@ import {
 } from "./shared";
 import {
   shouldHydrateDraftFromStore,
+  useDocPersist,
   useSettingsPersist,
   type SerializeResult,
 } from "./persist";
@@ -240,8 +241,7 @@ export function ModelsSection() {
   const models = useSettingsStore((s) => s.models);
   const agents = useSettingsStore((s) => s.agents);
   const saveBlocked = useSettingsSaveBlocked();
-  const persistStatus = useSettingsStore((s) => s.persistStatus);
-  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
+  const { persistStatus, setPersistStatus } = useDocPersist("models");
   const saveModels = useSettingsStore((s) => s.saveModels);
   const [draft, setDraft] = useState<Record<string, ModelDefinition>>(
     () => useSettingsStore.getState().models ?? {},

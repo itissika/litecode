@@ -4,6 +4,18 @@ Agent coding product. Kernel truth is OpenAI Responses `Item`. Session identity 
 
 ## Language
 
+**配置门**:
+The only durable mutation interface for settings documents (global DB and `.litecode` intent files). `commit(doc)` writes storage, advances `generation`, and broadcasts `SettingsCommitted { generation, docs }`. Reads of intent go through the gate, not `RuntimeHandle.resolved`.
+_Avoid_: `bump_revision` with no document, workspace routes writing `engines.json` / `mcp.json` / `custom_tools.json`, hydrating settings drafts from runtime listings or `workspace/changed`
+
+**配置文档**:
+A persistable intent payload with a stable `DocId` (`providers`, `models`, `agents`, `log`, `websearch`, `custom_tools.*`, `mcp.*`, `engines`, `excludes`). Catalog, MCP process status, and engine usable/instances are evaluation/projection, not documents.
+_Avoid_: PUT-filtering agent tools by live `available-tools`, mixing `status` into a persist draft
+
+**配置投影**:
+Runtime owners (`WorkspaceEngines`, `McpPool`) publish status after consuming a committed document. The settings UI may read projection for tags and controls. Projection never writes a document.
+_Avoid_: `reconcile` on non-`engines` commits, `start(mcp)` with a client-supplied definition body
+
 **门**:
 The only durable mutation interface for a session log: typed commands on `SessionData`, not a per-session SQLite connection or lock. Three log primitives: **append** (new `seq` = `MAX(seq)+1`), **seal** (same `seq`, in_progress → terminal), **truncate** (回退: delete from a user-message anchor). Compact is append with `surface_op=replace`.
 _Avoid_: a second INSERT path, `MAX(seq)+1` outside the gate, `Connection::open` beside SessionData, persist vs revert without the same writer

@@ -121,7 +121,7 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
     let conn_id = crate::terminal::ConnectionId::new();
     let terminal_hub = state.terminal_hub.clone();
     let mut runtime = state.runtime_snapshot();
-    if let Err(e) = runtime.reload_if_needed() {
+    if let Err(e) = runtime.apply(crate::config::DocId::ALL) {
         tracing::error!("runtime settings reload failed: {}", e);
         return;
     }
@@ -189,7 +189,7 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
         loop {
             match settings_rx.recv().await {
                 Ok(event) => {
-                    let msg = project::settings_changed(event.revision, event.summary);
+                    let msg = project::settings_changed(event.revision, &event.docs, event.summary);
                     if settings_tx.send(msg).is_err() {
                         break;
                     }

@@ -1,4 +1,5 @@
 pub mod bridge;
+pub mod gate;
 pub mod git_install;
 pub mod global_db;
 pub mod log_filter;
@@ -21,6 +22,7 @@ pub use path::{
     canon_abs, canon_abs_lossy, canon_join_nonexistent, is_under, os_probe_abs, strip_verbatim,
 };
 pub use resolved::{ResolvedConfig, WorkspacePaths, WorkspaceState, resolve};
+pub use gate::{ApplyPlan, CommitAck, DocId, EvalView, PersistDoc};
 pub use schema::GlobalSettings;
 pub use settings_writer::{
     ProviderView, SettingsChangedEvent, SettingsSummary, SettingsWriteError, SettingsWriter,

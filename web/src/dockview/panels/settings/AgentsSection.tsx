@@ -32,6 +32,7 @@ import {
   flushRegisteredSettings,
   isPersistBusy,
   shouldHydrateDraftFromStore,
+  useDocPersist,
   useSettingsPersist,
 } from "./persist";
 
@@ -374,6 +375,7 @@ function SubagentToolsMultiSelect({
 export function AgentToolsGrid({
   draft,
   bindableTools,
+  catalogIds,
   mcpServers,
   saveBlocked,
   onBindingChange,
@@ -381,6 +383,7 @@ export function AgentToolsGrid({
 }: {
   draft: AgentProfile;
   bindableTools: AvailableTool[];
+  catalogIds: Set<string>;
   mcpServers: { id: string; tools?: { name: string; description: string }[] }[];
   saveBlocked: boolean;
   onBindingChange: (toolId: string, patch: Partial<AgentToolBinding>) => void;
@@ -424,7 +427,7 @@ export function AgentToolsGrid({
             <div
               key={entry.id}
               data-enabled={enabled ? "true" : "false"}
-              className="tool-binding-card flex flex-col overflow-hidden"
+              className={`tool-binding-card flex flex-col overflow-hidden${!catalogIds.has(entry.id) ? " opacity-60" : ""}`}
             >
               <button
                 type="button"
@@ -441,10 +444,11 @@ export function AgentToolsGrid({
                     <p className="mt-0.5 text-dk-xs text-(--_dk-text-disabled)">
                       {entry.kind}
                       {entry.overridden ? " · workspace override" : ""}
+                      {!catalogIds.has(entry.id) ? " · unavailable" : ""}
                     </p>
                   </div>
-                  <span className={`tag ${enabled ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}>
-                    {enabled ? "On" : "Off"}
+                  <span className={`tag ${!catalogIds.has(entry.id) ? "tag-neutral" : enabled ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}>
+                    {!catalogIds.has(entry.id) ? "unavailable" : enabled ? "On" : "Off"}
                   </span>
                 </div>
 
@@ -511,28 +515,36 @@ const BUILTIN_TEMPERATURE = 0.7;
 function agentPersistPayload(
   draft: AgentProfile,
   selectedAgentId: string,
-  bindableToolsPrimary: AvailableTool[],
-  bindableToolsSubagent: AvailableTool[],
 ): AgentProfile {
   const isHidden = isHiddenSettingsAgent(selectedAgentId, draft.role);
-  const bindableTools =
-    draft.role === "subagent" ? bindableToolsSubagent : bindableToolsPrimary;
-  const bindableIds = new Set(bindableTools.map((entry) => entry.id));
-  const tools = Object.fromEntries(
-    Object.entries(draft.tools).filter(([id]) => bindableIds.has(id)),
-  );
   if (isHidden) {
     return { ...draft, tools: {}, allowed_subagents: [], temperature: BUILTIN_TEMPERATURE };
   }
   if (draft.role === "subagent") {
     return withSyncedToolSeries({
       ...draft,
-      tools,
+      tools: { ...draft.tools },
       allowed_subagents: [],
       temperature: BUILTIN_TEMPERATURE,
     });
   }
-  return withSyncedToolSeries({ ...draft, tools, temperature: BUILTIN_TEMPERATURE });
+  return withSyncedToolSeries({
+    ...draft,
+    tools: { ...draft.tools },
+    temperature: BUILTIN_TEMPERATURE,
+  });
+}
+
+function toolsForGrid(
+  catalog: AvailableTool[],
+  bound: Record<string, AgentToolBinding>,
+): AvailableTool[] {
+  const ids = new Set(catalog.map((t) => t.id));
+  const dormant: AvailableTool[] = Object.keys(bound)
+    .filter((id) => !ids.has(id))
+    .sort((a, b) => a.localeCompare(b))
+    .map((id) => ({ id, kind: "engine", origin: "workspace" }));
+  return [...catalog, ...dormant];
 }
 
 export function AgentsSection() {
@@ -548,8 +560,7 @@ export function AgentsSection() {
   const selectedAgentId = useSettingsStore((s) => s.selectedAgentId);
   const agents = useSettingsStore((s) => s.agents);
   const saveBlocked = useSettingsSaveBlocked();
-  const persistStatus = useSettingsStore((s) => s.persistStatus);
-  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
+  const { persistStatus, setPersistStatus } = useDocPersist("agents");
   const setSelectedAgentId = useSettingsStore((s) => s.setSelectedAgentId);
   const saveAgent = useSettingsStore((s) => s.saveAgent);
   const createAgent = useSettingsStore((s) => s.createAgent);
@@ -593,20 +604,12 @@ export function AgentsSection() {
   useEffect(() => {
     if (!profile || creating) return;
     if (!shouldHydrateDraftFromStore(persistStatus)) return;
-    const bindableIds = new Set(
-      (profile.role === "subagent" ? bindableToolsSubagent : bindableToolsPrimary).map(
-        (e) => e.id,
-      ),
-    );
-    const tools = Object.fromEntries(
-      Object.entries(profile.tools).filter(([id]) => bindableIds.has(id)),
-    );
     setDraft({
       ...profile,
       allowed_subagents: profile.allowed_subagents ?? [],
-      tools,
+      tools: { ...profile.tools },
     });
-  }, [profile, selectedAgentId, bindableToolsPrimary, bindableToolsSubagent, persistStatus, creating]);
+  }, [profile, selectedAgentId, persistStatus, creating]);
 
   useSettingsPersist<AgentProfile | null, AgentProfile>(draft, {
     enabled: !creating && draft != null,
@@ -615,12 +618,7 @@ export function AgentsSection() {
     serialize: (d) => {
       if (!d) return { skip: "unchanged" };
       return {
-        ok: agentPersistPayload(
-          d,
-          selectedAgentId,
-          bindableToolsPrimary,
-          bindableToolsSubagent,
-        ),
+        ok: agentPersistPayload(d, selectedAgentId),
       };
     },
     commit: (p) => saveAgent(selectedAgentId, p),
@@ -682,12 +680,7 @@ export function AgentsSection() {
 
   const onCreate = () => {
     if (!draft || !newAgentId.trim()) return;
-    const payload = agentPersistPayload(
-      draft,
-      newAgentId.trim(),
-      bindableToolsPrimary,
-      bindableToolsSubagent,
-    );
+    const payload = agentPersistPayload(draft, newAgentId.trim());
     void createAgent(newAgentId.trim(), payload)
       .then(() => {
         setCreating(false);
@@ -858,7 +851,8 @@ export function AgentsSection() {
           />
           <AgentToolsGrid
               draft={draft}
-              bindableTools={bindableToolsPrimary}
+              bindableTools={toolsForGrid(bindableToolsPrimary, draft.tools)}
+              catalogIds={new Set(bindableToolsPrimary.map((t) => t.id))}
               mcpServers={mcpList}
               saveBlocked={saveBlocked}
               onBindingChange={updateBinding}

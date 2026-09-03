@@ -14,6 +14,8 @@ use crate::config::schema::{
     AgentProfile, AvailableTool, CustomToolDefinition, LogSettings, McpServerDefinition,
     ModelDefinition, ProviderAuth, ProviderDefinition, ToolOrigin, ToolPreset,
 };
+use crate::config::workspace::WorkspaceEnginesFile;
+use crate::config::{CommitAck, DocId};
 use crate::llm::{
     chat_models_url, has_remote_model_catalog, list_adapters, parse_chat_model_catalog,
 };
@@ -23,7 +25,6 @@ use crate::tool::availability::available_tools;
 use crate::types::LitecodeError;
 use crate::workspace::filter::{
     WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView,
-    ensure_workspace_excludes, write_workspace_excludes,
 };
 
 #[derive(Serialize)]
@@ -42,11 +43,13 @@ struct ApiErr {
 #[derive(Serialize)]
 struct RevisionBody {
     revision: u64,
+    docs: Vec<DocId>,
 }
 
 #[derive(Serialize)]
 struct ProviderWriteResponse {
     revision: u64,
+    docs: Vec<DocId>,
     restart_required: bool,
 }
 
@@ -137,6 +140,7 @@ pub fn router() -> Router<ServeState> {
         .route("/mcp-servers/{id}/restart", post(restart_mcp_server))
         .route("/log", get(get_log).put(put_log))
         .route("/excludes", get(get_excludes).put(put_excludes))
+        .route("/engines", get(get_engines).put(put_engines))
 }
 
 async fn get_settings(State(state): State<ServeState>) -> Response {
@@ -162,11 +166,12 @@ async fn put_providers(
     Json(body): Json<ProvidersBody>,
 ) -> Response {
     match state.settings_writer.write_providers(body.providers) {
-        Ok(revision) => {
-            reload_runtime_after_settings_write(&state, "provider write");
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "provider write");
             ok_json(ProviderWriteResponse {
-                revision,
-                restart_required: false,
+                revision: ack.generation,
+                docs: ack.docs,
+                restart_required: ack.restart_required,
             })
         }
         Err(e) => settings_write_error(e),
@@ -265,7 +270,10 @@ async fn put_websearch(
         };
     }
     match state.settings_writer.write_websearch(current) {
-        Ok(revision) => ok_json(RevisionBody { revision }),
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "websearch write");
+            ok_json(revision_body(ack))
+        }
         Err(e) => settings_write_error(e),
     }
 }
@@ -280,12 +288,12 @@ async fn get_models(State(state): State<ServeState>) -> Response {
 async fn put_models(State(state): State<ServeState>, Json(body): Json<ModelsBody>) -> Response {
     let valid_ids: std::collections::HashSet<String> = body.models.keys().cloned().collect();
     match state.settings_writer.write_models(body.models) {
-        Ok(revision) => {
-            reload_runtime_after_settings_write(&state, "model write");
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "model write");
             if let Err(e) = state.sessions.clear_orphaned_model_ids(&valid_ids) {
                 tracing::warn!(error = %e, "failed to clear orphaned session model_id bindings");
             }
-            ok_json(RevisionBody { revision })
+            ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),
     }
@@ -343,9 +351,9 @@ async fn put_agent(
         .settings_writer
         .write_agent(&id, body.profile, &workspace)
     {
-        Ok(revision) => {
-            reload_runtime_after_settings_write(&state, "agent write");
-            ok_json(RevisionBody { revision })
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "agent write");
+            ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),
     }
@@ -371,9 +379,9 @@ async fn apply_agent_tool_preset(
         .settings_writer
         .apply_agent_tool_preset(&id, body.preset, &workspace)
     {
-        Ok(revision) => {
-            reload_runtime_after_settings_write(&state, "apply tool preset");
-            ok_json(RevisionBody { revision })
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "apply tool preset");
+            ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),
     }
@@ -381,15 +389,14 @@ async fn apply_agent_tool_preset(
 
 async fn delete_agent(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
     match state.settings_writer.delete_agent(&id) {
-        Ok(revision) => {
+        Ok(ack) => {
             let mut runtime = state.runtime.write().expect("runtime lock");
             if runtime.desired_primary_agent() == id {
                 let _ = runtime.set_desired_primary_agent("default".to_string());
             }
             drop(runtime);
-            // 2.12: reload so the runtime config takes effect immediately.
-            reload_runtime_after_settings_write(&state, "delete agent");
-            ok_json(RevisionBody { revision })
+            reload_runtime_after_settings_write(&state, &ack, "delete agent");
+            ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),
     }
@@ -402,22 +409,16 @@ async fn get_available_tools(State(state): State<ServeState>) -> Response {
 }
 
 async fn list_custom_tools(State(state): State<ServeState>) -> Response {
-    match state.settings_writer.list_custom_tools() {
-        Ok(global) => {
-            let runtime = state.runtime.read().expect("runtime lock");
-            let mut workspace: Vec<CustomToolDefinition> = runtime
-                .resolved
-                .workspace_custom_tools()
-                .values()
-                .cloned()
-                .collect();
-            workspace.sort_by(|a, b| a.name.cmp(&b.name));
-            ok_json(serde_json::json!({
-                "global": global,
-                "workspace": workspace,
-            }))
-        }
-        Err(e) => settings_error(e),
+    let root = workspace_root(&state);
+    match (
+        state.settings_writer.list_custom_tools(),
+        state.settings_writer.list_workspace_custom_tools(&root),
+    ) {
+        (Ok(global), Ok(workspace)) => ok_json(serde_json::json!({
+            "global": global,
+            "workspace": workspace,
+        })),
+        (Err(e), _) | (_, Err(e)) => settings_error(e),
     }
 }
 
@@ -427,10 +428,10 @@ async fn get_custom_tool(
     Query(query): Query<ScopeQuery>,
 ) -> Response {
     if workspace_scope(&query) {
-        let runtime = state.runtime.read().expect("runtime lock");
-        return match runtime.resolved.workspace_custom_tools().get(&id) {
-            Some(tool) => ok_json(tool.clone()),
-            None => (
+        let root = workspace_root(&state);
+        return match state.settings_writer.get_workspace_custom_tool(&root, &id) {
+            Ok(Some(tool)) => ok_json(tool),
+            Ok(None) => (
                 StatusCode::NOT_FOUND,
                 Json(ApiErr {
                     ok: false,
@@ -438,6 +439,7 @@ async fn get_custom_tool(
                 }),
             )
                 .into_response(),
+            Err(e) => settings_error(e),
         };
     }
     match state.settings_writer.get_custom_tool(&id) {
@@ -474,9 +476,9 @@ async fn put_custom_tool(
         state.settings_writer.write_custom_tool(&id, body)
     };
     match result {
-        Ok(revision) => {
-            reload_runtime_after_settings_write(&state, "custom tool write");
-            ok_json(RevisionBody { revision })
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "custom tool write");
+            ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),
     }
@@ -501,12 +503,28 @@ async fn delete_custom_tool(
         state.settings_writer.delete_custom_tool(&id, &workspace)
     };
     match result {
-        Ok(revision) => {
-            reload_runtime_after_settings_write(&state, "custom tool delete");
-            ok_json(RevisionBody { revision })
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "custom tool delete");
+            ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),
     }
+}
+
+#[derive(Serialize)]
+struct McpDefItem {
+    id: String,
+    origin: ToolOrigin,
+    #[serde(flatten)]
+    def: McpServerDefinition,
+}
+
+#[derive(Serialize)]
+struct McpRuntimeView {
+    status: McpRunState,
+    tools: Vec<McpToolSchema>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -567,45 +585,75 @@ fn mcp_cwd(state: &ServeState) -> std::path::PathBuf {
         .to_path_buf()
 }
 
-async fn list_mcp_servers(State(state): State<ServeState>) -> Response {
-    match state.settings_writer.list_mcp_servers() {
-        Ok(global) => {
-            let (pool, workspace_defs) = {
-                let runtime = state.runtime.read().expect("runtime lock");
-                (
-                    runtime.mcp_pool.clone(),
-                    runtime.resolved.workspace_mcp_servers().clone(),
-                )
-            };
-            let snaps = pool.snapshots().await;
-            let global_items: Vec<_> = global
-                .into_iter()
-                .map(|(id, def)| {
-                    let snap = snaps
-                        .get(&mcp_pool_key(false, &id))
-                        .cloned()
-                        .unwrap_or_default();
-                    mcp_item(id, ToolOrigin::Global, def, snap)
-                })
-                .collect();
-            let mut workspace: Vec<_> = workspace_defs
-                .into_iter()
-                .map(|(id, def)| {
-                    let snap = snaps
-                        .get(&mcp_pool_key(true, &id))
-                        .cloned()
-                        .unwrap_or_default();
-                    mcp_item(id, ToolOrigin::Workspace, def, snap)
-                })
-                .collect();
-            workspace.sort_by(|a, b| a.id.cmp(&b.id));
-            ok_json(serde_json::json!({
-                "global": global_items,
-                "workspace": workspace,
-            }))
-        }
-        Err(e) => settings_error(e),
+fn workspace_root(state: &ServeState) -> std::path::PathBuf {
+    state
+        .runtime
+        .read()
+        .expect("runtime lock")
+        .workspace_root()
+        .to_path_buf()
+}
+
+fn mcp_runtime_view(snap: McpServerSnapshot) -> McpRuntimeView {
+    McpRuntimeView {
+        status: snap.status,
+        tools: snap.tools,
+        error: snap.error,
     }
+}
+
+async fn list_mcp_servers(State(state): State<ServeState>) -> Response {
+    let root = workspace_root(&state);
+    let global = match state.settings_writer.list_mcp_servers() {
+        Ok(v) => v,
+        Err(e) => return settings_error(e),
+    };
+    let workspace_defs = match state.settings_writer.list_workspace_mcp_servers(&root) {
+        Ok(v) => v,
+        Err(e) => return settings_error(e),
+    };
+    let pool = mcp_pool(&state);
+    let snaps = pool.snapshots().await;
+    let mut global_runtime = HashMap::new();
+    let global_items: Vec<_> = global
+        .into_iter()
+        .map(|(id, def)| {
+            let snap = snaps
+                .get(&mcp_pool_key(false, &id))
+                .cloned()
+                .unwrap_or_default();
+            global_runtime.insert(id.clone(), mcp_runtime_view(snap));
+            McpDefItem {
+                id,
+                origin: ToolOrigin::Global,
+                def,
+            }
+        })
+        .collect();
+    let mut workspace_runtime = HashMap::new();
+    let workspace: Vec<_> = workspace_defs
+        .into_iter()
+        .map(|(id, def)| {
+            let snap = snaps
+                .get(&mcp_pool_key(true, &id))
+                .cloned()
+                .unwrap_or_default();
+            workspace_runtime.insert(id.clone(), mcp_runtime_view(snap));
+            McpDefItem {
+                id,
+                origin: ToolOrigin::Workspace,
+                def,
+            }
+        })
+        .collect();
+    ok_json(serde_json::json!({
+        "global": global_items,
+        "workspace": workspace,
+        "runtime": {
+            "global": global_runtime,
+            "workspace": workspace_runtime,
+        },
+    }))
 }
 
 async fn get_mcp_server(
@@ -616,16 +664,14 @@ async fn get_mcp_server(
     let workspace = workspace_scope(&query);
     let key = mcp_pool_key(workspace, &id);
     if workspace {
-        let (def, pool) = {
-            let runtime = state.runtime.read().expect("runtime lock");
-            (
-                runtime.resolved.workspace_mcp_servers().get(&id).cloned(),
-                runtime.mcp_pool.clone(),
-            )
+        let root = workspace_root(&state);
+        let def = match state.settings_writer.get_workspace_mcp_server(&root, &id) {
+            Ok(v) => v,
+            Err(e) => return settings_error(e),
         };
         return match def {
             Some(def) => {
-                let snap = pool.snapshot(&key).await;
+                let snap = mcp_pool(&state).snapshot(&key).await;
                 ok_json(mcp_item(id, ToolOrigin::Workspace, def, snap))
             }
             None => (
@@ -675,9 +721,9 @@ async fn put_mcp_server(
         state.settings_writer.write_mcp_server(&id, body)
     };
     match result {
-        Ok(revision) => {
-            reload_runtime_after_settings_write(&state, "MCP server write");
-            ok_json(RevisionBody { revision })
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "MCP server write");
+            ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),
     }
@@ -704,11 +750,46 @@ async fn delete_mcp_server(
         state.settings_writer.delete_mcp_server(&id, &workspace)
     };
     match result {
-        Ok(revision) => {
-            reload_runtime_after_settings_write(&state, "MCP server delete");
-            ok_json(RevisionBody { revision })
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "MCP server delete");
+            ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),
+    }
+}
+
+async fn load_mcp_definition(
+    state: &ServeState,
+    id: &str,
+    workspace: bool,
+) -> Result<McpServerDefinition, Response> {
+    if workspace {
+        let root = workspace_root(state);
+        match state.settings_writer.get_workspace_mcp_server(&root, id) {
+            Ok(Some(def)) => Ok(def),
+            Ok(None) => Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiErr {
+                    ok: false,
+                    error: format!("MCP server not found: {id}"),
+                }),
+            )
+                .into_response()),
+            Err(e) => Err(settings_error(e)),
+        }
+    } else {
+        match state.settings_writer.get_mcp_server(id) {
+            Ok(Some(def)) => Ok(def),
+            Ok(None) => Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiErr {
+                    ok: false,
+                    error: format!("MCP server not found: {id}"),
+                }),
+            )
+                .into_response()),
+            Err(e) => Err(settings_error(e)),
+        }
     }
 }
 
@@ -716,9 +797,13 @@ async fn start_mcp_server(
     State(state): State<ServeState>,
     Path(id): Path<String>,
     Query(query): Query<ScopeQuery>,
-    Json(def): Json<McpServerDefinition>,
 ) -> Response {
-    let key = mcp_pool_key(workspace_scope(&query), &id);
+    let workspace = workspace_scope(&query);
+    let def = match load_mcp_definition(&state, &id, workspace).await {
+        Ok(def) => def,
+        Err(resp) => return resp,
+    };
+    let key = mcp_pool_key(workspace, &id);
     let cwd = Some(mcp_cwd(&state));
     mcp_lifecycle_result(mcp_pool(&state).start(&key, &def, cwd).await, key, &state).await
 }
@@ -727,11 +812,20 @@ async fn restart_mcp_server(
     State(state): State<ServeState>,
     Path(id): Path<String>,
     Query(query): Query<ScopeQuery>,
-    Json(def): Json<McpServerDefinition>,
 ) -> Response {
-    let key = mcp_pool_key(workspace_scope(&query), &id);
+    let workspace = workspace_scope(&query);
+    let def = match load_mcp_definition(&state, &id, workspace).await {
+        Ok(def) => def,
+        Err(resp) => return resp,
+    };
+    let key = mcp_pool_key(workspace, &id);
     let cwd = Some(mcp_cwd(&state));
-    mcp_lifecycle_result(mcp_pool(&state).restart(&key, &def, cwd).await, key, &state).await
+    mcp_lifecycle_result(
+        mcp_pool(&state).restart(&key, &def, cwd).await,
+        key,
+        &state,
+    )
+    .await
 }
 
 async fn stop_mcp_server(
@@ -772,17 +866,24 @@ async fn mcp_lifecycle_result(
     }
 }
 
-fn reload_runtime_after_settings_write(state: &ServeState, what: &str) {
+fn revision_body(ack: CommitAck) -> RevisionBody {
+    RevisionBody {
+        revision: ack.generation,
+        docs: ack.docs,
+    }
+}
+
+fn reload_runtime_after_settings_write(state: &ServeState, ack: &CommitAck, what: &str) {
     let mut runtime = state.runtime.write().expect("runtime lock");
-    if let Err(e) = runtime.reload_if_needed() {
-        tracing::warn!(error = %e, "{what}: runtime reload failed");
+    if let Err(e) = runtime.apply(&ack.docs) {
+        tracing::warn!(error = %e, "{what}: runtime apply failed");
     }
     runtime.sync_workspace_tool_readiness();
 }
 
 async fn get_excludes(State(state): State<ServeState>) -> Response {
-    let root = state.workspace.sandbox().root();
-    match ensure_workspace_excludes(root) {
+    let root = workspace_root(&state);
+    match state.settings_writer.get_excludes(&root) {
         Ok(file) => ok_json(WorkspaceExcludesView::from_file(&file)),
         Err(e) => settings_error(e),
     }
@@ -792,7 +893,7 @@ async fn put_excludes(
     State(state): State<ServeState>,
     Json(body): Json<WorkspaceExcludesLists>,
 ) -> Response {
-    let root = state.workspace.sandbox().root();
+    let root = workspace_root(&state);
     let file = WorkspaceExcludesFile {
         version: 1,
         files_exclude: body.files_exclude,
@@ -801,12 +902,45 @@ async fn put_excludes(
         git_ignore: body.git_ignore,
         explorer_git_ignore: body.explorer_git_ignore,
     };
-    match write_workspace_excludes(root, file) {
-        Ok(saved) => {
-            state.workspace_engines.request_index_sync(root);
-            ok_json(WorkspaceExcludesView::from_file(&saved))
+    match state.settings_writer.write_excludes(&root, file) {
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "excludes write");
+            state.workspace_engines.request_index_sync(&root);
+            match state.settings_writer.get_excludes(&root) {
+                Ok(saved) => ok_json(WorkspaceExcludesView::from_file(&saved)),
+                Err(e) => settings_error(e),
+            }
         }
+        Err(e) => settings_write_error(e),
+    }
+}
+
+async fn get_engines(State(state): State<ServeState>) -> Response {
+    let root = workspace_root(&state);
+    match state.settings_writer.get_engines(&root) {
+        Ok(file) => ok_json(file),
         Err(e) => settings_error(e),
+    }
+}
+
+async fn put_engines(
+    State(state): State<ServeState>,
+    Json(body): Json<WorkspaceEnginesFile>,
+) -> Response {
+    let root = workspace_root(&state);
+    match state.settings_writer.write_engines(&root, body) {
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "engines write");
+            match state.settings_writer.get_engines(&root) {
+                Ok(file) => ok_json(serde_json::json!({
+                    "revision": ack.generation,
+                    "docs": ack.docs,
+                    "engines": file,
+                })),
+                Err(e) => settings_error(e),
+            }
+        }
+        Err(e) => settings_write_error(e),
     }
 }
 
@@ -822,7 +956,10 @@ async fn put_log(State(state): State<ServeState>, Json(body): Json<LogBody>) -> 
         .settings_writer
         .write_log(LogSettings { level: body.level })
     {
-        Ok(revision) => ok_json(RevisionBody { revision }),
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "log write");
+            ok_json(revision_body(ack))
+        }
         Err(e) => settings_write_error(e),
     }
 }

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import type { AdapterDescriptor } from "../../../api/settings";
 import { useSettingsStore, type PersistStatus } from "../../../stores/settingsStore";
+import type { PersistDocKey, SettingsSection } from "../../../stores/settingsDocuments";
 import { turnMapIsBusy, useTurnStore } from "../../../stores/turnStore";
 
 export function useSettingsSaveBlocked(): boolean {
@@ -50,8 +51,24 @@ const PERSIST_LABEL: Record<PersistStatus, string | null> = {
   error: "Could not save",
 };
 
+const SECTION_PERSIST_DOCS: Record<SettingsSection, PersistDocKey[]> = {
+  connection: ["providers"],
+  models: ["models"],
+  agents: ["agents"],
+  "custom-tools": ["customTools"],
+  mcp: ["mcp"],
+  files: ["excludes"],
+  advanced: ["log", "websearch"],
+  engines: ["engines"],
+};
+
+const RANK: PersistStatus[] = ["error", "invalid", "saving", "pending", "saved"];
+
 export function PersistStatusLabel() {
-  const status = useSettingsStore((s) => s.persistStatus);
+  const section = useSettingsStore((s) => s.section);
+  const persistByDoc = useSettingsStore((s) => s.persistByDoc);
+  const statuses = SECTION_PERSIST_DOCS[section].map((d) => persistByDoc[d] ?? "idle");
+  const status = RANK.find((s) => statuses.includes(s)) ?? "idle";
   const text = PERSIST_LABEL[status];
   if (!text) return null;
   return (

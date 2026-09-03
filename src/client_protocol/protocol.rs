@@ -136,6 +136,7 @@ pub struct PrimaryAgentInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsChanged {
     pub revision: u64,
+    pub docs: Vec<crate::config::DocId>,
     pub summary: crate::config::SettingsSummary,
 }
 

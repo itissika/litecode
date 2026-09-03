@@ -20,6 +20,7 @@ vi.mock("../api/settings", async (importOriginal) => {
     getCustomTools: vi.fn(),
     getLog: vi.fn(),
     getExcludes: vi.fn(),
+    getEnginesDoc: vi.fn(),
     getWebSearch: vi.fn(),
   };
 });
@@ -39,6 +40,7 @@ import {
   getAvailableTools,
   getCustomTools,
   getExcludes,
+  getEnginesDoc,
   getMcpServers,
   getModels,
   getProviders,
@@ -57,6 +59,7 @@ const mockedMcp = vi.mocked(getMcpServers);
 const mockedTools = vi.mocked(getAvailableTools);
 const mockedCustom = vi.mocked(getCustomTools);
 const mockedExcludes = vi.mocked(getExcludes);
+const mockedEngines = vi.mocked(getEnginesDoc);
 const mockedDetail = vi.mocked(getEnginesDetail);
 
 function summary(revision: number) {
@@ -101,9 +104,10 @@ beforeEach(() => {
     mcpDefs: null,
     mcpRuntime: null,
     loadError: null,
-    persistStatus: "idle",
+    persistByDoc: {},
     docClock: {},
     excludes: null,
+    engines: null,
   });
   useToastStore.setState({ toasts: [] });
   mockedSummary.mockReset().mockResolvedValue(summary(1));
@@ -116,6 +120,11 @@ beforeEach(() => {
   mockedTools.mockReset().mockResolvedValue([]);
   mockedCustom.mockReset().mockResolvedValue({ global: [], workspace: [] });
   mockedExcludes.mockReset().mockResolvedValue(emptyExcludes);
+  mockedEngines.mockReset().mockResolvedValue({
+    version: 1,
+    lsp: { desired: false, servers: [] },
+    retrieval: { desired: false },
+  });
   mockedDetail.mockReset();
 });
 
@@ -164,7 +173,7 @@ describe("ensureSectionLoaded", () => {
     useSettingsStore.setState({
       open: true,
       section: "connection",
-      persistStatus: "saving",
+      persistByDoc: { providers: "saving" },
       providers: {},
       docClock: { providers: 1, adapters: 1, summary: 1 },
       revision: 1,
@@ -181,6 +190,7 @@ describe("ensureSectionLoaded", () => {
     });
     useSettingsStore.getState().onRemoteSettingsChanged({
       revision: 2,
+      docs: ["providers"],
       summary: summary(2),
     });
     await waitFor(() => {
@@ -204,24 +214,21 @@ describe("ensureSectionLoaded", () => {
 });
 
 describe("workspace excludes clock", () => {
-  it("reloads Files when .litecode/excludes.json changes", async () => {
+  it("does not hydrate Files from watcher events", async () => {
     useSettingsStore.setState({
       open: true,
       section: "files",
       excludes: emptyExcludes,
       docClock: { excludes: 1 },
     });
-    mockedExcludes.mockResolvedValue({
-      ...emptyExcludes,
-      git_ignore: false,
-    });
+    mockedExcludes.mockClear();
     useSettingsStore.getState().handleWorkspaceChange([".litecode/excludes.json"], "modified");
-    await waitFor(() => {
-      expect(useSettingsStore.getState().excludes?.git_ignore).toBe(false);
-    });
+    await Promise.resolve();
+    expect(mockedExcludes).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().excludes?.git_ignore).toBe(true);
   });
 
-  it("reloads MCP when .litecode/mcp.json changes", async () => {
+  it("does not hydrate MCP from watcher events", async () => {
     useSettingsStore.setState({
       open: true,
       section: "mcp",
@@ -229,67 +236,37 @@ describe("workspace excludes clock", () => {
       mcpRuntime: { global: {}, workspace: {} },
       docClock: { mcp: 1 },
     });
-    mockedMcp.mockResolvedValue({
-      global: [],
-      workspace: [
-        {
-          id: "local-fs",
-          origin: "workspace",
-          command: "npx",
-          args: [],
-          env: {},
-          transport: { type: "stdio" },
-          timeout: 60,
-          status: "stopped",
-          tools: [],
-        },
-      ],
-    });
+    mockedMcp.mockClear();
     useSettingsStore.getState().handleWorkspaceChange([".litecode/mcp.json"], "modified");
-    await waitFor(() => {
-      expect(useSettingsStore.getState().mcpDefs?.workspace.map((s) => s.id)).toEqual([
-        "local-fs",
-      ]);
-    });
+    await Promise.resolve();
+    expect(mockedMcp).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().mcpDefs?.workspace).toEqual([]);
   });
 
-  it("reloads custom tools when .litecode/custom_tools.json changes", async () => {
+  it("does not hydrate custom tools from watcher events", async () => {
     useSettingsStore.setState({
       open: true,
       section: "custom-tools",
       customTools: { global: [], workspace: [] },
       docClock: { customTools: 1 },
     });
-    mockedCustom.mockResolvedValue({
-      global: [],
-      workspace: [
-        {
-          name: "echo",
-          description: "",
-          schema: { type: "object", properties: {}, required: [] },
-          command: "echo",
-          args: [],
-          timeout: 120,
-        },
-      ],
-    });
+    mockedCustom.mockClear();
     useSettingsStore
       .getState()
       .handleWorkspaceChange([".litecode/custom_tools.json"], "modified");
-    await waitFor(() => {
-      expect(useSettingsStore.getState().customTools?.workspace.map((t) => t.name)).toEqual([
-        "echo",
-      ]);
-    });
+    await Promise.resolve();
+    expect(mockedCustom).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().customTools?.workspace).toEqual([]);
   });
 });
 
 describe("settings persist toasts", () => {
   it("does not success-toast settings/changed while the dialog is open", () => {
     useToastStore.setState({ toasts: [] });
-    useSettingsStore.setState({ open: true, persistStatus: "saving" });
+    useSettingsStore.setState({ open: true, persistByDoc: { providers: "saving" } });
     useSettingsStore.getState().onRemoteSettingsChanged({
       revision: 99,
+      docs: [],
       summary: summary(99),
     });
     expect(useToastStore.getState().toasts.map((t) => t.message)).not.toContain(

@@ -14,7 +14,7 @@ describe("AdvancedSection persist UX", () => {
     useSettingsStore.setState({
       log: { level: "info" },
       websearch: { search_endpoint: "" },
-      persistStatus: "idle",
+      persistByDoc: {},
       saveLog,
       saveWebSearch,
     });

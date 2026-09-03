@@ -14,10 +14,7 @@ use super::WorkspaceError;
 use super::git::{self, GitError};
 use super::service::WorkspaceService;
 use super::tree::TreeEntry;
-use crate::config::workspace::{
-    clear_lsp_servers, enable_code_search_engine, set_workspace_engine_desired, write_lsp_init,
-};
-use crate::lsp::deps::{LspInitFailure, ensure_servers, probe_workspace_servers};
+use crate::lsp::deps::probe_workspace_servers;
 use crate::serve::state::ServeState;
 
 static INSTALL_TASKS: std::sync::LazyLock<Mutex<HashMap<String, InstallTask>>> =
@@ -157,11 +154,6 @@ pub fn router() -> Router<ServeState> {
         .route("/tree", get(get_tree))
         .route("/glob", get(get_glob))
         .route("/lsp/probe", get(get_lsp_probe))
-        .route("/lsp/init", post(post_lsp_init))
-        .route("/lsp/stop", post(post_lsp_stop))
-        .route("/lsp/clear", post(post_lsp_clear))
-        .route("/retrieval/init", post(post_retrieval_init))
-        .route("/retrieval/stop", post(post_retrieval_stop))
         .route("/retrieval/refresh", post(post_retrieval_refresh))
         .route("/retrieval/search", post(post_retrieval_search))
         .route("/lsp/install", post(post_lsp_install))
@@ -189,30 +181,9 @@ pub fn router() -> Router<ServeState> {
         .route("/git/push", post(post_git_push))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct LspInitBody {
-    pub servers: Vec<String>,
-}
-
 #[derive(Serialize)]
 struct LspProbeData {
     servers: Vec<crate::lsp::deps::LspServerProbe>,
-}
-
-#[derive(Serialize)]
-struct LspInitData {
-    servers: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct EngineMutationData {
-    desired: bool,
-}
-
-#[derive(Serialize)]
-struct LspInitFailureBody {
-    id: String,
-    error: String,
 }
 
 #[derive(Serialize)]
@@ -319,196 +290,6 @@ async fn get_engines_detail(State(state): State<ServeState>) -> Response {
                 .unwrap_or(serde_json::json!({})),
             lsp: detail.get("lsp").cloned().unwrap_or(serde_json::json!({})),
         },
-    })
-    .into_response()
-}
-
-async fn post_lsp_init(State(state): State<ServeState>, Json(body): Json<LspInitBody>) -> Response {
-    if state.turn_guard.is_turn_in_progress() {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiErr {
-                ok: false,
-                error: "turn_in_progress".into(),
-            }),
-        )
-            .into_response();
-    }
-
-    let root = state
-        .runtime
-        .read()
-        .expect("runtime lock")
-        .workspace_root()
-        .to_path_buf();
-
-    if body.servers.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiErr {
-                ok: false,
-                error: "select at least one language server".into(),
-            }),
-        )
-            .into_response();
-    }
-
-    let (ready_ids, failures) = ensure_servers(&body.servers, true).await;
-    if !failures.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "ok": false,
-                "error": "language server setup failed",
-                "failed": failures.into_iter().map(|LspInitFailure { id, error }| LspInitFailureBody { id, error }).collect::<Vec<_>>(),
-            })),
-        )
-            .into_response();
-    }
-
-    if let Err(e) = write_lsp_init(&root, ready_ids.clone()) {
-        return open_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
-    }
-
-    {
-        let mut runtime = state.runtime.write().expect("runtime lock");
-        runtime.sync_workspace_tool_readiness();
-        state.workspace_engines.reconcile(&runtime.resolved);
-    }
-
-    Json(ApiOk {
-        ok: true,
-        data: LspInitData { servers: ready_ids },
-    })
-    .into_response()
-}
-
-async fn post_lsp_stop(State(state): State<ServeState>) -> Response {
-    if state.turn_guard.is_turn_in_progress() {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiErr {
-                ok: false,
-                error: "turn_in_progress".into(),
-            }),
-        )
-            .into_response();
-    }
-
-    let root = state
-        .runtime
-        .read()
-        .expect("runtime lock")
-        .workspace_root()
-        .to_path_buf();
-    if let Err(error) = set_workspace_engine_desired(&root, "lsp", false) {
-        return open_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
-    }
-
-    let mut runtime = state.runtime.write().expect("runtime lock");
-    runtime.sync_workspace_tool_readiness();
-    state.workspace_engines.reconcile(&runtime.resolved);
-    Json(ApiOk {
-        ok: true,
-        data: EngineMutationData { desired: false },
-    })
-    .into_response()
-}
-
-/// Clear enabled language-server selection and stop the engine.
-/// Used when the UI turns Off the last LSP card (unlike `/stop`, which keeps servers).
-async fn post_lsp_clear(State(state): State<ServeState>) -> Response {
-    if state.turn_guard.is_turn_in_progress() {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiErr {
-                ok: false,
-                error: "turn_in_progress".into(),
-            }),
-        )
-            .into_response();
-    }
-
-    let root = state
-        .runtime
-        .read()
-        .expect("runtime lock")
-        .workspace_root()
-        .to_path_buf();
-    if let Err(error) = clear_lsp_servers(&root) {
-        return open_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
-    }
-
-    let mut runtime = state.runtime.write().expect("runtime lock");
-    runtime.sync_workspace_tool_readiness();
-    state.workspace_engines.reconcile(&runtime.resolved);
-    Json(ApiOk {
-        ok: true,
-        data: EngineMutationData { desired: false },
-    })
-    .into_response()
-}
-
-async fn post_retrieval_init(State(state): State<ServeState>) -> Response {
-    if state.turn_guard.is_turn_in_progress() {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiErr {
-                ok: false,
-                error: "turn_in_progress".into(),
-            }),
-        )
-            .into_response();
-    }
-
-    let root = state
-        .runtime
-        .read()
-        .expect("runtime lock")
-        .workspace_root()
-        .to_path_buf();
-    if let Err(error) = enable_code_search_engine(&root) {
-        return open_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
-    }
-
-    let mut runtime = state.runtime.write().expect("runtime lock");
-    runtime.sync_workspace_tool_readiness();
-    state.workspace_engines.reconcile(&runtime.resolved);
-    Json(ApiOk {
-        ok: true,
-        data: EngineMutationData { desired: true },
-    })
-    .into_response()
-}
-
-async fn post_retrieval_stop(State(state): State<ServeState>) -> Response {
-    if state.turn_guard.is_turn_in_progress() {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiErr {
-                ok: false,
-                error: "turn_in_progress".into(),
-            }),
-        )
-            .into_response();
-    }
-
-    let root = state
-        .runtime
-        .read()
-        .expect("runtime lock")
-        .workspace_root()
-        .to_path_buf();
-    if let Err(error) = set_workspace_engine_desired(&root, "code_search", false) {
-        return open_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
-    }
-
-    let mut runtime = state.runtime.write().expect("runtime lock");
-    runtime.sync_workspace_tool_readiness();
-    state.workspace_engines.reconcile(&runtime.resolved);
-    Json(ApiOk {
-        ok: true,
-        data: EngineMutationData { desired: false },
     })
     .into_response()
 }

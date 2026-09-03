@@ -49,7 +49,7 @@ describe("ModelsSection persist UX", () => {
       providers: { prov: readyProvider },
       models: {},
       agents: {},
-      persistStatus: "idle",
+      persistByDoc: {},
       saveModels,
     });
   });

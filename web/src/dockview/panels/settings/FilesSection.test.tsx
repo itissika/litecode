@@ -27,7 +27,7 @@ describe("FilesSection", () => {
     saveExcludes.mockClear();
     useSettingsStore.setState({
       excludes: { ...emptyLists, defaults: emptyLists },
-      persistStatus: "idle",
+      persistByDoc: {},
       saveExcludes,
     });
   });

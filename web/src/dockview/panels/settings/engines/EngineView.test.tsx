@@ -1,16 +1,19 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EngineView } from "./EngineView";
 import type { EnginesDetail } from "../../../../api/workspace";
+import type { WorkspaceEnginesDoc } from "../../../../api/settings";
 import * as workspace from "../../../../api/workspace";
+import { useSettingsStore } from "../../../../stores/settingsStore";
 
 const installServer = vi.spyOn(workspace, "installServer");
 const getInstallStatus = vi.spyOn(workspace, "getInstallStatus");
 const probeLspServers = vi.spyOn(workspace, "probeLspServers");
+const saveEngines = vi.fn(async (_file: WorkspaceEnginesDoc) => undefined);
 
-function detailFixture(): EnginesDetail {
+function detailFixture(patch?: Partial<EnginesDetail["lsp"]>): EnginesDetail {
   return {
     retrieval: {
       desired: false,
@@ -51,9 +54,33 @@ function detailFixture(): EnginesDetail {
           status: "missing",
         },
       ],
+      ...patch,
     },
   };
 }
+
+const availableProbe = {
+  id: "typescript",
+  command: "tsc",
+  sources: ["npx"],
+  status: "available" as const,
+};
+
+beforeEach(() => {
+  saveEngines.mockReset().mockImplementation(async (file) => {
+    useSettingsStore.setState({ engines: file });
+  });
+  useSettingsStore.setState({
+    persistByDoc: {},
+    engines: {
+      version: 1,
+      lsp: { desired: false, servers: [] },
+      retrieval: { desired: false },
+    },
+    saveEngines,
+  });
+  probeLspServers.mockReset().mockResolvedValue([]);
+});
 
 afterEach(() => {
   cleanup();
@@ -76,8 +103,6 @@ describe("EngineView LSP install poll", () => {
       status: "installing",
       progress: { downloaded_bytes: 1, total_bytes: 10 },
     });
-    // First poll returns installing again, so the loop would continue; after
-    // unmount the guard must prevent the next getInstallStatus call.
     getInstallStatus.mockResolvedValue({
       task_id: "task-1",
       server_id: "typescript",
@@ -106,10 +131,121 @@ describe("EngineView LSP install poll", () => {
     const callsBeforeUnmount = getInstallStatus.mock.calls.length;
     unmount();
 
-    // Poll loop is blocked on its 800ms sleep; advancing timers would call
-    // getInstallStatus again unless the unmount guard broke the loop. Wait past
-    // the poll interval and assert no further status poll happened.
     await new Promise((resolve) => setTimeout(resolve, 900));
     expect(getInstallStatus.mock.calls.length).toBe(callsBeforeUnmount);
+  });
+});
+
+describe("EngineView LSP persist vs stale detail", () => {
+  it("does not clear servers when persist finishes before engines/detail refreshes", async () => {
+    probeLspServers.mockResolvedValue([availableProbe]);
+    const detail = detailFixture({
+      probes: [availableProbe],
+      configured_servers: [],
+    });
+    render(<EngineView detail={detail} onChanged={() => {}} />);
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: /typescript server, disabled/i,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(saveEngines).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lsp: expect.objectContaining({ servers: ["typescript"] }),
+        }),
+      );
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(saveEngines).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole("button", { name: /typescript server, enabled/i }),
+    ).toBeTruthy();
+  });
+
+  it("does not ping-pong writes across overlapping detail snapshots", async () => {
+    probeLspServers.mockResolvedValue([availableProbe]);
+    const empty = detailFixture({
+      probes: [availableProbe],
+      configured_servers: [],
+      usable: "stopped",
+    });
+    const enabled = detailFixture({
+      probes: [availableProbe],
+      configured_servers: ["typescript"],
+      desired: true,
+      usable: "warming",
+    });
+
+    const { rerender } = render(
+      <EngineView detail={empty} onChanged={() => {}} />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: /typescript server, disabled/i,
+      }),
+    );
+    await waitFor(() => {
+      expect(saveEngines).toHaveBeenCalledTimes(1);
+    });
+
+    rerender(<EngineView detail={enabled} onChanged={() => {}} />);
+    rerender(<EngineView detail={empty} onChanged={() => {}} />);
+    rerender(<EngineView detail={enabled} onChanged={() => {}} />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(saveEngines).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole("button", { name: /typescript server, enabled/i }),
+    ).toBeTruthy();
+  });
+
+  it("shows stop while warming if desired is on, and play/stop writes engines not usable", async () => {
+    probeLspServers.mockResolvedValue([availableProbe]);
+    useSettingsStore.setState({
+      engines: {
+        version: 1,
+        lsp: { desired: true, servers: ["typescript"] },
+        retrieval: { desired: false },
+      },
+    });
+    render(
+      <EngineView
+        detail={detailFixture({
+          probes: [availableProbe],
+          configured_servers: ["typescript"],
+          desired: true,
+          usable: "warming",
+        })}
+        onChanged={() => {}}
+      />,
+    );
+    const lsp = screen.getByText("Language servers").closest("section");
+    expect(lsp).toBeTruthy();
+    const stop = within(lsp as HTMLElement).getByRole("button", { name: "Stop engine" });
+    expect(stop).toBeTruthy();
+    expect((stop as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(stop);
+    await waitFor(() => {
+      expect(saveEngines).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lsp: { desired: false, servers: ["typescript"] },
+        }),
+      );
+    });
+    fireEvent.click(within(lsp as HTMLElement).getByRole("button", { name: "Start engine" }));
+    await waitFor(() => {
+      expect(saveEngines).toHaveBeenCalledTimes(2);
+      expect(saveEngines).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          lsp: { desired: true, servers: ["typescript"] },
+        }),
+      );
+    });
   });
 });

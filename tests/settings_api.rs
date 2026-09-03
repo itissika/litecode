@@ -44,14 +44,17 @@ fn test_state(
     init_workspace(&project).expect("init workspace");
     let web_dist = ensure_test_web_dist(&project);
     let workspace_id = litecode::config::peek_workspace_id(&project).expect("workspace identity");
-    let workspace = WorkspaceState {
-        workspace_root: project.clone(),
-        workspace_id: workspace_id.clone(),
-        contract: String::new(),
-        paths: WorkspacePaths::for_workspace(&project, &workspace_id),
-        workspace_tool_readiness: Default::default(),
-        workspace_mcp_servers: Default::default(),
-        workspace_custom_tools: Default::default(),
+    let workspace = {
+        let workspace = WorkspaceState {
+            workspace_root: project.clone(),
+            workspace_id: workspace_id.clone(),
+            contract: String::new(),
+            paths: WorkspacePaths::for_workspace(&project, &workspace_id),
+            workspace_tool_readiness: Default::default(),
+            workspace_mcp_servers: Default::default(),
+            workspace_custom_tools: Default::default(),
+        };
+        litecode::config::workspace::workspace_with_disk_readiness(&workspace)
     };
     let settings = ConfigManager::load_global_from(&global_db_path).expect("load seeded global");
     let resolved = ConfigManager::resolve(settings, workspace.clone());
@@ -441,7 +444,7 @@ fn disabled_binding_changes_tools_count_after_reload() {
         .write_agent("default", profile, &runtime.workspace)
         .expect("write agent");
 
-    runtime.reload_if_needed().expect("reload");
+    runtime.apply(litecode::config::DocId::ALL).expect("reload");
 
     let count_after = rt
         .block_on(build_tool_list(
@@ -639,7 +642,12 @@ async fn settings_put_empty_catalog_gone() {
         .send()
         .await
         .expect("put");
-    assert_eq!(resp.status(), 404);
+    assert!(
+        resp.status() == reqwest::StatusCode::NOT_FOUND
+            || resp.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED,
+        "tool-catalog is not a persist document, got {}",
+        resp.status()
+    );
 }
 
 #[tokio::test]
@@ -674,7 +682,7 @@ async fn settings_put_orphan_model_ref_returns_400() {
 }
 
 #[test]
-fn reload_if_needed_rebuilds_provider_endpoint_and_refreshes_api_key() {
+fn apply_rebuilds_provider_endpoint_and_refreshes_api_key() {
     use litecode::config::schema::{ProviderConnectionConfig, ProviderDefinition};
     use litecode::runtime::RuntimeHandle;
 
@@ -753,7 +761,7 @@ fn reload_if_needed_rebuilds_provider_endpoint_and_refreshes_api_key() {
         })
         .expect("write provider");
 
-    runtime.reload_if_needed().expect("reload");
+    runtime.apply(litecode::config::DocId::ALL).expect("reload");
 
     assert!(
         runtime
@@ -844,7 +852,7 @@ fn runtime_clone_reloads_stale_provider_after_settings_write() {
         .expect("write provider");
 
     let mut active = runtime.clone();
-    active.reload_if_needed().expect("active reload");
+    active.apply(litecode::config::DocId::ALL).expect("active reload");
     assert!(
         active
             .resolved
@@ -856,7 +864,7 @@ fn runtime_clone_reloads_stale_provider_after_settings_write() {
     );
 
     let mut fresh_ws = runtime.clone();
-    fresh_ws.reload_if_needed().expect("ws clone reload");
+    fresh_ws.apply(litecode::config::DocId::ALL).expect("ws clone reload");
     assert!(
         fresh_ws
             .resolved
@@ -938,7 +946,7 @@ async fn set_session_model_reloads_stale_catalog_after_model_write() {
         revision,
         &db,
     );
-    runtime.reload_if_needed().expect("ws connect");
+    runtime.apply(litecode::config::DocId::ALL).expect("ws connect");
 
     let mut models = writer.load_settings().expect("load").models;
     models.insert(
@@ -1155,7 +1163,7 @@ async fn settings_put_agent_rejects_legacy_preset_field() {
 }
 
 #[tokio::test]
-async fn settings_put_agent_unknown_tool_is_dropped() {
+async fn settings_put_agent_unknown_tool_is_persisted() {
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");
     let db_path = db_dir.path().join("litecode.db");
@@ -1180,7 +1188,7 @@ async fn settings_put_agent_unknown_tool_is_dropped() {
     assert_eq!(resp.status(), 200);
     let loaded = ConfigManager::load_global_from(&db_path).unwrap();
     assert!(
-        !loaded
+        loaded
             .agents
             .get("default")
             .unwrap()
@@ -1213,7 +1221,6 @@ async fn settings_put_agent_keeps_dormant_mcp_bind() {
         .get("default")
         .cloned()
         .unwrap();
-    profile.tools.remove("mcp_dormant");
     profile
         .tools
         .insert("webfetch".into(), binding_all_for("webfetch"));
@@ -1623,8 +1630,21 @@ async fn settings_mcp_server_crud_catalog_and_stdio_probe() {
     let client = test_http_client();
     let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/mock_mcp_server.py");
+    let python = ["python3", "python"].into_iter().find(|cmd| {
+        std::process::Command::new(cmd)
+            .args(["-c", "print(42)"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    });
+    let Some(python) = python else {
+        eprintln!("skipping MCP stdio probe: no python on PATH");
+        return;
+    };
     let def = serde_json::json!({
-        "command": "python3",
+        "command": python,
         "args": [script.display().to_string()],
         "env": {},
         "transport": { "type": "stdio" }
@@ -1664,7 +1684,6 @@ async fn settings_mcp_server_crud_catalog_and_stdio_probe() {
         .post(format!(
             "http://{addr}/api/settings/mcp-servers/mockecho/start"
         ))
-        .json(&def)
         .send()
         .await
         .expect("start")
@@ -1674,7 +1693,12 @@ async fn settings_mcp_server_crud_catalog_and_stdio_probe() {
     assert_eq!(probe["ready"], true, "{probe}");
     assert_eq!(probe["status"], "running", "{probe}");
     let tools = probe["tools"].as_array().expect("tools");
-    assert!(tools.iter().any(|t| t == "echo"));
+    assert!(
+        tools
+            .iter()
+            .any(|t| t == "echo" || t["name"] == "echo"),
+        "{tools:?}"
+    );
 
     let listed: Value = client
         .get(format!("http://{addr}/api/settings/mcp-servers"))
@@ -1684,19 +1708,19 @@ async fn settings_mcp_server_crud_catalog_and_stdio_probe() {
         .json()
         .await
         .expect("list json");
-    let row = listed["mcp_servers"]
+    let row = listed["global"]
         .as_array()
         .unwrap()
         .iter()
         .find(|row| row["id"] == "mockecho")
         .expect("row");
-    assert_eq!(row["status"], "running");
+    assert!(row.get("status").is_none(), "definition must not carry runtime");
+    assert_eq!(listed["runtime"]["global"]["mockecho"]["status"], "running");
 
     let restarted: Value = client
         .post(format!(
             "http://{addr}/api/settings/mcp-servers/mockecho/restart"
         ))
-        .json(&def)
         .send()
         .await
         .expect("restart")
@@ -1790,21 +1814,25 @@ async fn settings_retrieval_engine_init_and_stop_use_engine_api() {
     let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
     let addr = spawn_server(state, web_dist).await;
     let client = test_http_client();
-    let init_url = format!("http://{addr}/api/workspace/retrieval/init");
-    let stop_url = format!("http://{addr}/api/workspace/retrieval/stop");
+    let engines_doc_url = format!("http://{addr}/api/settings/engines");
     let engines_url = format!("http://{addr}/api/workspace/engines");
     let available_url = format!("http://{addr}/api/settings/available-tools");
 
     let init: Value = client
-        .post(&init_url)
+        .put(&engines_doc_url)
+        .json(&serde_json::json!({
+            "version": 1,
+            "lsp": { "desired": false, "servers": [] },
+            "retrieval": { "desired": true },
+        }))
         .send()
         .await
-        .expect("retrieval init")
+        .expect("retrieval enable")
         .json()
         .await
-        .expect("init json");
+        .expect("enable json");
     assert!(init["ok"].as_bool().unwrap_or(false));
-    assert_eq!(init["data"]["desired"], true);
+    assert_eq!(init["engines"]["retrieval"]["desired"], true);
 
     let available_after_init: Value = client
         .get(&available_url)
@@ -1823,7 +1851,12 @@ async fn settings_retrieval_engine_init_and_stop_use_engine_api() {
     );
 
     let stop: Value = client
-        .post(&stop_url)
+        .put(&engines_doc_url)
+        .json(&serde_json::json!({
+            "version": 1,
+            "lsp": { "desired": false, "servers": [] },
+            "retrieval": { "desired": false },
+        }))
         .send()
         .await
         .expect("retrieval stop")
@@ -1831,7 +1864,7 @@ async fn settings_retrieval_engine_init_and_stop_use_engine_api() {
         .await
         .expect("stop json");
     assert!(stop["ok"].as_bool().unwrap_or(false));
-    assert_eq!(stop["data"]["desired"], false);
+    assert_eq!(stop["engines"]["retrieval"]["desired"], false);
 
     let engines: Value = client
         .get(&engines_url)
@@ -1870,6 +1903,20 @@ async fn settings_retrieval_refresh_endpoint_accepts_when_cold() {
     let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
     let addr = spawn_server(state, web_dist).await;
     let client = test_http_client();
+    let enable: Value = client
+        .put(format!("http://{addr}/api/settings/engines"))
+        .json(&serde_json::json!({
+            "version": 1,
+            "lsp": { "desired": false, "servers": [] },
+            "retrieval": { "desired": true },
+        }))
+        .send()
+        .await
+        .expect("enable retrieval")
+        .json()
+        .await
+        .expect("enable json");
+    assert!(enable["ok"].as_bool().unwrap_or(false));
     let refresh_url = format!("http://{addr}/api/workspace/retrieval/refresh");
 
     let refresh: Value = client
@@ -1974,11 +2021,14 @@ async fn settings_lsp_stop_preserves_servers_and_clears_desired() {
     let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
     let addr = spawn_server(state, web_dist).await;
     let client = test_http_client();
-    let stop_url = format!("http://{addr}/api/workspace/lsp/stop");
     let available_url = format!("http://{addr}/api/settings/available-tools");
-
     let stop: Value = client
-        .post(&stop_url)
+        .put(format!("http://{addr}/api/settings/engines"))
+        .json(&serde_json::json!({
+            "version": 1,
+            "lsp": { "desired": false, "servers": ["rust_analyzer", "typescript"] },
+            "retrieval": { "desired": false },
+        }))
         .send()
         .await
         .expect("lsp stop")
@@ -1986,7 +2036,7 @@ async fn settings_lsp_stop_preserves_servers_and_clears_desired() {
         .await
         .expect("stop json");
     assert!(stop["ok"].as_bool().unwrap_or(false));
-    assert_eq!(stop["data"]["desired"], false);
+    assert_eq!(stop["engines"]["lsp"]["desired"], false);
 
     assert_eq!(
         litecode::config::workspace::lsp_servers_from_engines(ws.path()),

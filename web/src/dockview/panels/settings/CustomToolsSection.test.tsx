@@ -30,7 +30,7 @@ describe("CustomToolsSection persist UX", () => {
     removeCustomTool.mockClear();
     useSettingsStore.setState({
       customTools: { global: [], workspace: [] },
-      persistStatus: "idle",
+      persistByDoc: {},
       saveCustomTool,
       removeCustomTool,
     });

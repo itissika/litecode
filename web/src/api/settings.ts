@@ -226,11 +226,19 @@ export interface WorkspaceExcludes extends WorkspaceExcludesLists {
 
 export interface RevisionResponse {
   revision: number;
+  docs: string[];
 }
 
 export interface ProviderWriteResponse {
   revision: number;
+  docs: string[];
   restart_required: boolean;
+}
+
+export interface WorkspaceEnginesDoc {
+  version: number;
+  lsp: { desired: boolean; servers: string[] };
+  retrieval: { desired: boolean };
 }
 
 interface ApiOk<T> {
@@ -453,16 +461,33 @@ export async function deleteCustomTool(
   );
 }
 
+export interface McpRuntimeSnapshot {
+  status?: McpRunState;
+  tools?: McpToolInfo[];
+  error?: string | null;
+}
+
 export async function getMcpServers(): Promise<LayeredList<McpServerItem>> {
   const data = await requestJson<{
-    global?: McpServerItem[];
-    workspace?: McpServerItem[];
-    mcp_servers?: McpServerItem[];
+    global?: Array<McpServerDefinition & { id: string; origin?: ToolOrigin }>;
+    workspace?: Array<McpServerDefinition & { id: string; origin?: ToolOrigin }>;
+    runtime?: {
+      global?: Record<string, McpRuntimeSnapshot>;
+      workspace?: Record<string, McpRuntimeSnapshot>;
+    };
   }>("/api/settings/mcp-servers");
-  if (data.global || data.workspace) {
-    return { global: data.global ?? [], workspace: data.workspace ?? [] };
-  }
-  return { global: data.mcp_servers ?? [], workspace: [] };
+  const runtime = data.runtime ?? { global: {}, workspace: {} };
+  return {
+    global: attachMcpRuntime(data.global ?? [], runtime.global ?? {}),
+    workspace: attachMcpRuntime(data.workspace ?? [], runtime.workspace ?? {}),
+  };
+}
+
+function attachMcpRuntime(
+  defs: Array<McpServerDefinition & { id: string; origin?: ToolOrigin }>,
+  runtime: Record<string, McpRuntimeSnapshot>,
+): McpServerItem[] {
+  return defs.map((def) => ({ ...def, ...(runtime[def.id] ?? {}) }));
 }
 
 export async function putMcpServer(
@@ -492,31 +517,21 @@ export async function deleteMcpServer(
 
 export async function startMcpServer(
   id: string,
-  def: McpServerDefinition,
   scope: ToolScope = "global",
 ): Promise<McpProbeResult> {
   return requestJson<McpProbeResult>(
     `/api/settings/mcp-servers/${encodeURIComponent(id)}/start${scopeQuery(scope)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(def),
-    },
+    { method: "POST" },
   );
 }
 
 export async function restartMcpServer(
   id: string,
-  def: McpServerDefinition,
   scope: ToolScope = "global",
 ): Promise<McpProbeResult> {
   return requestJson<McpProbeResult>(
     `/api/settings/mcp-servers/${encodeURIComponent(id)}/restart${scopeQuery(scope)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(def),
-    },
+    { method: "POST" },
   );
 }
 
@@ -553,6 +568,20 @@ export async function putExcludes(
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+export async function getEnginesDoc(): Promise<WorkspaceEnginesDoc> {
+  return requestJson<WorkspaceEnginesDoc>("/api/settings/engines");
+}
+
+export async function putEnginesDoc(
+  file: WorkspaceEnginesDoc,
+): Promise<WorkspaceEnginesDoc & RevisionResponse> {
+  return requestJson<WorkspaceEnginesDoc & RevisionResponse>("/api/settings/engines", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(file),
   });
 }
 

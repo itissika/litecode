@@ -3,10 +3,10 @@ import { Plus, Trash } from "@phosphor-icons/react";
 
 import {
   type McpProbeResult,
-  type McpServerItem,
   type ToolScope,
 } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
+import type { McpDefItem } from "../../../stores/settingsDocuments";
 import { mergeLayeredMcp } from "../../../stores/settingsDocuments";
 import { FoldCard } from "../../../components/FoldCard";
 import { Dropdown, dropdownItemClass } from "../../../components/ui/Dropdown";
@@ -16,6 +16,7 @@ import {
   flushRegisteredSettings,
   isPersistBusy,
   shouldHydrateDraftFromStore,
+  useDocPersist,
   useSettingsPersist,
 } from "./persist";
 
@@ -28,7 +29,7 @@ const EMPTY_MCP_JSON = `{
   "timeout": 60
 }`;
 
-function prettyServer(item: McpServerItem): string {
+function prettyServer(item: McpDefItem): string {
   return JSON.stringify(
     {
       id: item.id,
@@ -51,8 +52,7 @@ export function McpServersSection() {
     [mcpDefs, mcpRuntime],
   );
   const saveBlocked = useSettingsSaveBlocked();
-  const persistStatus = useSettingsStore((s) => s.persistStatus);
-  const setPersistStatus = useSettingsStore((s) => s.setPersistStatus);
+  const { persistStatus, setPersistStatus } = useDocPersist("mcp");
   const saveMcpServer = useSettingsStore((s) => s.saveMcpServer);
   const removeMcpServer = useSettingsStore((s) => s.removeMcpServer);
   const startMcp = useSettingsStore((s) => s.startMcpServer);
@@ -69,24 +69,27 @@ export function McpServersSection() {
 
   const globalServers = mcpServers?.global ?? [];
   const workspaceServers = mcpServers?.workspace ?? [];
-  const servers = selectedScope === "workspace" ? workspaceServers : globalServers;
+
+  const defSource =
+    selectedScope === "workspace" ? mcpDefs?.workspace : mcpDefs?.global;
 
   useEffect(() => {
     if (isNew) return;
     if (!shouldHydrateDraftFromStore(persistStatus)) return;
+    const list = defSource ?? [];
     if (selectedId) {
-      const found = servers.find((s) => s.id === selectedId);
+      const found = list.find((s) => s.id === selectedId);
       if (found) {
         setJsonText(prettyServer(found));
         setFormError(null);
         return;
       }
     }
-    if (servers.length === 0) {
+    if (list.length === 0) {
       setSelectedId(null);
       setJsonText(EMPTY_MCP_JSON);
     }
-  }, [servers, selectedId, isNew, persistStatus]);
+  }, [defSource, selectedId, isNew, persistStatus]);
 
   useSettingsPersist(jsonText, {
     enabled: !isNew && !!selectedId,
@@ -95,13 +98,10 @@ export function McpServersSection() {
     serialize: (text) => parseMcpJson(text, selectedId),
     commit: (p) => saveMcpServer(p.id, p.def, selectedScope),
     revert: () => {
-      const layered = mergeLayeredMcp(
-        useSettingsStore.getState().mcpDefs,
-        useSettingsStore.getState().mcpRuntime,
-      );
+      const defs = useSettingsStore.getState().mcpDefs;
       const found = (selectedScope === "workspace"
-        ? layered?.workspace
-        : layered?.global
+        ? defs?.workspace
+        : defs?.global
       )?.find((s) => s.id === selectedId);
       if (found) setJsonText(prettyServer(found));
     },
@@ -189,7 +189,7 @@ export function McpServersSection() {
       setFormError("Fix JSON before starting");
       return;
     }
-    runLifecycle("start", () => startMcp(parsed.ok.id, parsed.ok.def, selectedScope));
+    runLifecycle("start", () => startMcp(parsed.ok.id, selectedScope));
   };
 
   const onRestart = () => {
@@ -198,7 +198,7 @@ export function McpServersSection() {
       setFormError("Fix JSON before restarting");
       return;
     }
-    runLifecycle("restart", () => restartMcp(parsed.ok.id, parsed.ok.def, selectedScope));
+    runLifecycle("restart", () => restartMcp(parsed.ok.id, selectedScope));
   };
 
   const onStop = () => {

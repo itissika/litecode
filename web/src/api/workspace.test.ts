@@ -1,42 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  clearLspServers,
   fetchGlob,
   fetchTreeReveal,
   getEnginesDetail,
   gitStatus,
-  initRetrieval,
   refreshRetrieval,
-  stopLsp,
-  stopRetrieval,
 } from "./workspace";
 
 describe("workspace engine API", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-  });
-
-  it("uses dedicated lifecycle endpoints for workspace engines", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ ok: true, data: { desired: true } }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await initRetrieval();
-    await stopRetrieval();
-    await stopLsp();
-    await clearLspServers();
-
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "/api/workspace/retrieval/init",
-      "/api/workspace/retrieval/stop",
-      "/api/workspace/lsp/stop",
-      "/api/workspace/lsp/clear",
-    ]);
-    expect(fetchMock.mock.calls.every(([, init]) => init?.method === "POST")).toBe(true);
   });
 
   it("posts retrieval refresh and returns mode", async () => {

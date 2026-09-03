@@ -298,6 +298,7 @@ export interface ModelInfo {
 
 export interface SettingsChanged {
   revision: number;
+  docs: string[];
   summary: SettingsSummary;
 }
 

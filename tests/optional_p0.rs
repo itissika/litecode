@@ -190,7 +190,7 @@ fn settings_reload_reconciles_engine_manager() {
     writer
         .write_log(litecode::config::schema::LogSettings { level: None })
         .expect("bump");
-    runtime.reload_if_needed().expect("reload");
+    runtime.apply(litecode::config::DocId::ALL).expect("reload");
     assert!(
         runtime
             .engine_manager

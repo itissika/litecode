@@ -192,7 +192,7 @@ pub fn write_workspace_custom_tools(
     write_json_file(&workspace_custom_tools_path(workspace_root), &file)
 }
 
-pub fn upsert_workspace_mcp(
+pub(crate) fn upsert_workspace_mcp(
     workspace_root: &Path,
     id: &str,
     def: McpServerDefinition,
@@ -211,7 +211,7 @@ pub fn delete_workspace_mcp(workspace_root: &Path, id: &str) -> Result<bool> {
     Ok(removed)
 }
 
-pub fn upsert_workspace_custom_tool(
+pub(crate) fn upsert_workspace_custom_tool(
     workspace_root: &Path,
     def: CustomToolDefinition,
 ) -> Result<()> {

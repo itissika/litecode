@@ -17,12 +17,11 @@ use super::schema::{
     McpServerDefinition, McpTransport, ModelDefinition, PROTECTED_AGENT_IDS, ProviderDefinition,
     ToolPreset, WebSearchSettings,
 };
+use super::gate::{CommitAck, DocId};
 use super::turn_guard::TurnGuard;
 use super::workspace;
 use crate::optional::EngineManager;
-use crate::tool::agent_bindings::{
-    available_id_set, merge_agent_tool_bindings, normalize_agent_profile,
-};
+use crate::tool::agent_bindings::normalize_agent_profile;
 use crate::types::{LitecodeError, Result};
 
 /// One toast-ready string covering provider → model → required agent bindings.
@@ -118,6 +117,7 @@ pub struct WebSearchView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsChangedEvent {
     pub revision: u64,
+    pub docs: Vec<DocId>,
     pub summary: SettingsSummary,
 }
 
@@ -220,18 +220,19 @@ impl SettingsWriter {
         self.load()
     }
 
-    fn commit_partial<F>(&self, mutate: F) -> Result<(u64, bool)>
+    fn commit_lock() -> std::sync::MutexGuard<'static, ()> {
+        static COMMIT_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        COMMIT_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn commit_partial<F>(&self, docs: &[DocId], mutate: F) -> Result<CommitAck>
     where
         F: FnOnce(&mut GlobalSettings) -> Result<bool>,
     {
-        // REV-6: process-level mutex serializes the read-modify-write so
-        // concurrent commits cannot lose updates (single-process write surface;
-        // CAS would be over-engineering here).
-        static COMMIT_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        let _guard = COMMIT_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = Self::commit_lock();
         self.ensure_writable()
             .map_err(|e| LitecodeError::Config(e.to_string()))?;
         let mut settings = self.load()?;
@@ -239,12 +240,73 @@ impl SettingsWriter {
         ConfigManager::validate(&settings)?;
         let conn = global_db::open(&self.db_path)?;
         store::replace_all(&conn, &settings)?;
-        let revision = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
-        let summary = Self::summary_from(&settings, revision, restart_required);
-        let _ = self
-            .broadcast
-            .send(SettingsChangedEvent { revision, summary });
-        Ok((revision, restart_required))
+        let generation = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
+        let docs = docs.to_vec();
+        let summary = Self::summary_from(&settings, generation, restart_required);
+        let _ = self.broadcast.send(SettingsChangedEvent {
+            revision: generation,
+            docs: docs.clone(),
+            summary,
+        });
+        Ok(CommitAck {
+            generation,
+            docs,
+            restart_required,
+        })
+    }
+
+    /// Workspace-file commit: write file then advance generation under the same lock.
+    fn commit_workspace_file<F>(&self, doc: DocId, write: F) -> Result<CommitAck>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        let _guard = Self::commit_lock();
+        self.ensure_writable()
+            .map_err(|e| LitecodeError::Config(e.to_string()))?;
+        write()?;
+        let generation = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
+        let settings = self.load()?;
+        let docs = vec![doc];
+        let summary = Self::summary_from(&settings, generation, false);
+        let _ = self.broadcast.send(SettingsChangedEvent {
+            revision: generation,
+            docs: docs.clone(),
+            summary,
+        });
+        Ok(CommitAck {
+            generation,
+            docs,
+            restart_required: false,
+        })
+    }
+
+    fn commit_mixed<W, G>(&self, docs: &[DocId], write: W, mutate: G) -> Result<CommitAck>
+    where
+        W: FnOnce() -> Result<()>,
+        G: FnOnce(&mut GlobalSettings) -> Result<bool>,
+    {
+        let _guard = Self::commit_lock();
+        self.ensure_writable()
+            .map_err(|e| LitecodeError::Config(e.to_string()))?;
+        write()?;
+        let mut settings = self.load()?;
+        let restart_required = mutate(&mut settings)?;
+        ConfigManager::validate(&settings)?;
+        let conn = global_db::open(&self.db_path)?;
+        store::replace_all(&conn, &settings)?;
+        let generation = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
+        let docs = docs.to_vec();
+        let summary = Self::summary_from(&settings, generation, restart_required);
+        let _ = self.broadcast.send(SettingsChangedEvent {
+            revision: generation,
+            docs: docs.clone(),
+            summary,
+        });
+        Ok(CommitAck {
+            generation,
+            docs,
+            restart_required,
+        })
     }
 
     pub fn summary(&self) -> Result<SettingsSummary> {
@@ -351,8 +413,8 @@ impl SettingsWriter {
             }))
     }
 
-    pub fn write_provider(&self, provider: ProviderDefinition) -> Result<u64> {
-        self.commit_partial(|settings| {
+    pub fn write_provider(&self, provider: ProviderDefinition) -> Result<CommitAck> {
+        self.commit_partial(&[DocId::Providers], |settings| {
             let id = provider.id.clone();
             if id.is_empty() {
                 return Err(LitecodeError::Config(
@@ -366,11 +428,10 @@ impl SettingsWriter {
             });
             Ok(false)
         })
-        .map(|(rev, _)| rev)
     }
 
-    pub fn write_providers(&self, providers: HashMap<String, ProviderDefinition>) -> Result<u64> {
-        self.commit_partial(|settings| {
+    pub fn write_providers(&self, providers: HashMap<String, ProviderDefinition>) -> Result<CommitAck> {
+        self.commit_partial(&[DocId::Providers], |settings| {
             let mut merged = HashMap::new();
             for (map_key, mut def) in providers {
                 let id = if def.id.is_empty() {
@@ -396,7 +457,6 @@ impl SettingsWriter {
             settings.providers = merged;
             Ok(false)
         })
-        .map(|(rev, _)| rev)
     }
 
     pub fn websearch_view(&self) -> Result<WebSearchView> {
@@ -406,15 +466,14 @@ impl SettingsWriter {
         })
     }
 
-    pub fn write_websearch(&self, websearch: WebSearchSettings) -> Result<u64> {
-        self.commit_partial(|settings| {
+    pub fn write_websearch(&self, websearch: WebSearchSettings) -> Result<CommitAck> {
+        self.commit_partial(&[DocId::Websearch], |settings| {
             settings.websearch = websearch;
             Ok(false)
         })
-        .map(|(rev, _)| rev)
     }
 
-    pub fn write_models(&self, models: HashMap<String, ModelDefinition>) -> Result<u64> {
+    pub fn write_models(&self, models: HashMap<String, ModelDefinition>) -> Result<CommitAck> {
         if models.is_empty() {
             let settings = self.load()?;
             let agents_need_models = settings
@@ -439,48 +498,36 @@ impl SettingsWriter {
                 (id, model)
             })
             .collect();
-        self.commit_partial(|settings| {
+        self.commit_partial(&[DocId::Models], |settings| {
             // Full replace: PUT body is the desired registry (guards above + validate block orphans).
             settings.models = normalized;
             Ok(false)
         })
-        .map(|(rev, _)| rev)
     }
 
     pub fn write_agent(
         &self,
         id: &str,
         mut profile: AgentProfile,
-        workspace: &super::resolved::WorkspaceState,
-    ) -> Result<u64> {
+        _workspace: &super::resolved::WorkspaceState,
+    ) -> Result<CommitAck> {
         validate_agent_id(id)?;
-        let workspace = workspace::workspace_with_disk_readiness(workspace);
-        let settings = self.load()?;
-        let resolved = ConfigManager::resolve(settings.clone(), workspace);
-        let existing = settings
-            .agents
-            .get(id)
-            .map(|p| p.tools.clone())
-            .unwrap_or_default();
         expand_binding_presets(&mut profile.tools);
-        let available = available_id_set(&resolved);
-        profile.tools = merge_agent_tool_bindings(&existing, profile.tools, &available);
         normalize_agent_profile(id, &mut profile);
         let id = id.to_string();
-        self.commit_partial(|settings| {
+        self.commit_partial(&[DocId::Agents], |settings| {
             settings.agents.insert(id.clone(), profile);
             Ok(false)
         })
-        .map(|(rev, _)| rev)
     }
 
-    pub fn delete_agent(&self, id: &str) -> Result<u64> {
+    pub fn delete_agent(&self, id: &str) -> Result<CommitAck> {
         if PROTECTED_AGENT_IDS.contains(&id) {
             return Err(LitecodeError::Config(format!(
                 "agent '{id}' is protected and cannot be deleted"
             )));
         }
-        self.commit_partial(|settings| {
+        self.commit_partial(&[DocId::Agents], |settings| {
             if settings.agents.remove(id).is_none() {
                 return Err(LitecodeError::Config(format!("agent not found: {id}")));
             }
@@ -489,7 +536,6 @@ impl SettingsWriter {
             }
             Ok(false)
         })
-        .map(|(rev, _)| rev)
     }
 
     pub fn apply_agent_tool_preset(
@@ -497,7 +543,7 @@ impl SettingsWriter {
         agent_id: &str,
         preset: ToolPreset,
         _workspace: &super::resolved::WorkspaceState,
-    ) -> Result<u64> {
+    ) -> Result<CommitAck> {
         validate_agent_id(agent_id)?;
         if !self.load()?.agents.contains_key(agent_id) {
             return Err(LitecodeError::Config(format!(
@@ -505,7 +551,7 @@ impl SettingsWriter {
             )));
         }
         let id = agent_id.to_string();
-        self.commit_partial(move |settings| {
+        self.commit_partial(&[DocId::Agents], move |settings| {
             let profile = settings
                 .agents
                 .get_mut(&id)
@@ -521,7 +567,6 @@ impl SettingsWriter {
             }
             Ok(false)
         })
-        .map(|(rev, _)| rev)
     }
 
     pub fn list_custom_tools(&self) -> Result<Vec<CustomToolDefinition>> {
@@ -536,7 +581,7 @@ impl SettingsWriter {
         Ok(settings.custom_tools.into_iter().find(|t| t.name == id))
     }
 
-    pub fn write_custom_tool(&self, id: &str, mut def: CustomToolDefinition) -> Result<u64> {
+    pub fn write_custom_tool(&self, id: &str, mut def: CustomToolDefinition) -> Result<CommitAck> {
         validate_tool_id(id)?;
         if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
             return Err(LitecodeError::Config(format!(
@@ -565,7 +610,7 @@ impl SettingsWriter {
             def.timeout = 120;
         }
 
-        self.commit_partial(|settings| {
+        self.commit_partial(&[DocId::CustomToolsGlobal], |settings| {
             if let Some(existing) = settings.custom_tools.iter_mut().find(|t| t.name == id) {
                 *existing = def.clone();
             } else {
@@ -573,16 +618,20 @@ impl SettingsWriter {
             }
             Ok(false)
         })
-        .map(|(rev, _)| rev)
     }
 
     pub fn delete_custom_tool(
         &self,
         id: &str,
         workspace: &super::resolved::WorkspaceState,
-    ) -> Result<u64> {
+    ) -> Result<CommitAck> {
         let keep_binding = workspace.workspace_custom_tools.contains_key(id);
-        self.commit_partial(|settings| {
+        let docs = if keep_binding {
+            vec![DocId::CustomToolsGlobal]
+        } else {
+            vec![DocId::CustomToolsGlobal, DocId::Agents]
+        };
+        self.commit_partial(&docs, |settings| {
             let before = settings.custom_tools.len();
             settings.custom_tools.retain(|t| t.name != id);
             if settings.custom_tools.len() == before {
@@ -597,7 +646,6 @@ impl SettingsWriter {
             }
             Ok(false)
         })
-        .map(|(rev, _)| rev)
     }
 
     pub fn list_mcp_servers(&self) -> Result<Vec<(String, McpServerDefinition)>> {
@@ -612,52 +660,27 @@ impl SettingsWriter {
         Ok(settings.mcp_servers.get(id).cloned())
     }
 
-    pub fn write_mcp_server(&self, id: &str, mut def: McpServerDefinition) -> Result<u64> {
-        validate_tool_id(id)?;
-        if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
-            return Err(LitecodeError::Config(format!(
-                "MCP server id '{id}' conflicts with a builtin tool"
-            )));
-        }
-        def.command = def.command.trim().to_string();
-        def.timeout = def.call_timeout_secs();
-        match &def.transport {
-            McpTransport::Stdio => {
-                if def.command.is_empty() {
-                    return Err(LitecodeError::Config(
-                        "MCP stdio server command must not be empty".into(),
-                    ));
-                }
-            }
-            McpTransport::Remote { url, .. } => {
-                if cfg!(not(feature = "remote-mcp")) {
-                    return Err(LitecodeError::Config(
-                        "remote MCP transport requires a build with the remote-mcp feature".into(),
-                    ));
-                }
-                if url.trim().is_empty() {
-                    return Err(LitecodeError::Config(
-                        "MCP remote server url must not be empty".into(),
-                    ));
-                }
-            }
-        }
-
-        self.commit_partial(move |settings| {
+    pub fn write_mcp_server(&self, id: &str, mut def: McpServerDefinition) -> Result<CommitAck> {
+        validate_mcp_definition(id, &mut def)?;
+        self.commit_partial(&[DocId::McpGlobal], move |settings| {
             settings.mcp_servers.insert(id.to_string(), def.clone());
             Ok(false)
         })
-        .map(|(rev, _)| rev)
     }
 
     pub fn delete_mcp_server(
         &self,
         id: &str,
         workspace: &super::resolved::WorkspaceState,
-    ) -> Result<u64> {
+    ) -> Result<CommitAck> {
         let catalog_id = tools::mcp_catalog_id(id);
         let keep_binding = workspace.workspace_mcp_servers.contains_key(id);
-        self.commit_partial(|settings| {
+        let docs = if keep_binding {
+            vec![DocId::McpGlobal]
+        } else {
+            vec![DocId::McpGlobal, DocId::Agents]
+        };
+        self.commit_partial(&docs, |settings| {
             if settings.mcp_servers.remove(id).is_none() {
                 return Err(LitecodeError::Config(format!("MCP server not found: {id}")));
             }
@@ -668,7 +691,29 @@ impl SettingsWriter {
             }
             Ok(false)
         })
-        .map(|(rev, _)| rev)
+    }
+
+    pub fn list_workspace_custom_tools(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<Vec<CustomToolDefinition>> {
+        let mut tools: Vec<_> = workspace::read_workspace_custom_tools(workspace_root)?
+            .tools
+            .into_values()
+            .collect();
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(tools)
+    }
+
+    pub fn get_workspace_custom_tool(
+        &self,
+        workspace_root: &Path,
+        id: &str,
+    ) -> Result<Option<CustomToolDefinition>> {
+        Ok(workspace::read_workspace_custom_tools(workspace_root)?
+            .tools
+            .get(id)
+            .cloned())
     }
 
     pub fn write_workspace_custom_tool(
@@ -676,7 +721,7 @@ impl SettingsWriter {
         workspace_root: &Path,
         id: &str,
         mut def: CustomToolDefinition,
-    ) -> Result<u64> {
+    ) -> Result<CommitAck> {
         validate_tool_id(id)?;
         if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
             return Err(LitecodeError::Config(format!(
@@ -704,28 +749,65 @@ impl SettingsWriter {
         if def.timeout == 0 {
             def.timeout = 120;
         }
-        workspace::upsert_workspace_custom_tool(workspace_root, def)?;
-        self.bump_revision()
+        let root = workspace_root.to_path_buf();
+        self.commit_workspace_file(DocId::CustomToolsWorkspace, move || {
+            workspace::upsert_workspace_custom_tool(&root, def)
+        })
     }
 
-    pub fn delete_workspace_custom_tool(&self, workspace_root: &Path, id: &str) -> Result<u64> {
-        if !workspace::delete_workspace_custom_tool(workspace_root, id)? {
+    pub fn delete_workspace_custom_tool(
+        &self,
+        workspace_root: &Path,
+        id: &str,
+    ) -> Result<CommitAck> {
+        let file = workspace::read_workspace_custom_tools(workspace_root)?;
+        if !file.tools.contains_key(id) {
             return Err(LitecodeError::Config(format!(
                 "custom tool not found: {id}"
             )));
         }
         let keep_binding = self.load()?.custom_tools.iter().any(|t| t.name == id);
+        let root = workspace_root.to_path_buf();
+        let id_owned = id.to_string();
         if keep_binding {
-            return self.bump_revision();
+            return self.commit_workspace_file(DocId::CustomToolsWorkspace, move || {
+                workspace::delete_workspace_custom_tool(&root, &id_owned).map(|_| ())
+            });
         }
-        let id = id.to_string();
-        self.commit_partial(move |settings| {
-            for profile in settings.agents.values_mut() {
-                profile.tools.remove(&id);
-            }
-            Ok(false)
-        })
-        .map(|(rev, _)| rev)
+        let strip_id = id.to_string();
+        self.commit_mixed(
+            &[DocId::CustomToolsWorkspace, DocId::Agents],
+            move || workspace::delete_workspace_custom_tool(&root, &id_owned).map(|_| ()),
+            move |settings| {
+                for profile in settings.agents.values_mut() {
+                    profile.tools.remove(&strip_id);
+                }
+                Ok(false)
+            },
+        )
+    }
+
+    pub fn list_workspace_mcp_servers(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<Vec<(String, McpServerDefinition)>> {
+        let mut servers: Vec<_> = workspace::read_workspace_mcp(workspace_root)?
+            .servers
+            .into_iter()
+            .collect();
+        servers.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(servers)
+    }
+
+    pub fn get_workspace_mcp_server(
+        &self,
+        workspace_root: &Path,
+        id: &str,
+    ) -> Result<Option<McpServerDefinition>> {
+        Ok(workspace::read_workspace_mcp(workspace_root)?
+            .servers
+            .get(id)
+            .cloned())
     }
 
     pub fn write_workspace_mcp_server(
@@ -733,71 +815,90 @@ impl SettingsWriter {
         workspace_root: &Path,
         id: &str,
         mut def: McpServerDefinition,
-    ) -> Result<u64> {
-        validate_tool_id(id)?;
-        if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
-            return Err(LitecodeError::Config(format!(
-                "MCP server id '{id}' conflicts with a builtin tool"
-            )));
-        }
-        def.command = def.command.trim().to_string();
-        def.timeout = def.call_timeout_secs();
-        match &def.transport {
-            McpTransport::Stdio => {
-                if def.command.is_empty() {
-                    return Err(LitecodeError::Config(
-                        "MCP stdio server command must not be empty".into(),
-                    ));
-                }
-            }
-            McpTransport::Remote { url, .. } => {
-                if cfg!(not(feature = "remote-mcp")) {
-                    return Err(LitecodeError::Config(
-                        "remote MCP transport requires a build with the remote-mcp feature".into(),
-                    ));
-                }
-                if url.trim().is_empty() {
-                    return Err(LitecodeError::Config(
-                        "MCP remote server url must not be empty".into(),
-                    ));
-                }
-            }
-        }
-        workspace::upsert_workspace_mcp(workspace_root, id, def)?;
-        self.bump_revision()
+    ) -> Result<CommitAck> {
+        validate_mcp_definition(id, &mut def)?;
+        let root = workspace_root.to_path_buf();
+        let id_owned = id.to_string();
+        self.commit_workspace_file(DocId::McpWorkspace, move || {
+            workspace::upsert_workspace_mcp(&root, &id_owned, def)
+        })
     }
 
-    pub fn delete_workspace_mcp_server(&self, workspace_root: &Path, id: &str) -> Result<u64> {
-        if !workspace::delete_workspace_mcp(workspace_root, id)? {
+    pub fn delete_workspace_mcp_server(
+        &self,
+        workspace_root: &Path,
+        id: &str,
+    ) -> Result<CommitAck> {
+        let file = workspace::read_workspace_mcp(workspace_root)?;
+        if !file.servers.contains_key(id) {
             return Err(LitecodeError::Config(format!("MCP server not found: {id}")));
         }
         let keep_binding = self.load()?.mcp_servers.contains_key(id);
+        let root = workspace_root.to_path_buf();
+        let id_owned = id.to_string();
         if keep_binding {
-            return self.bump_revision();
+            return self.commit_workspace_file(DocId::McpWorkspace, move || {
+                workspace::delete_workspace_mcp(&root, &id_owned).map(|_| ())
+            });
         }
         let catalog_id = tools::mcp_catalog_id(id);
-        self.commit_partial(move |settings| {
-            for profile in settings.agents.values_mut() {
-                profile.tools.remove(&catalog_id);
-            }
-            Ok(false)
-        })
-        .map(|(rev, _)| rev)
-    }
-
-    fn bump_revision(&self) -> Result<u64> {
-        self.commit_partial(|_| Ok(false)).map(|(rev, _)| rev)
-    }
-
-    pub fn write_log(&self, log: LogSettings) -> Result<u64> {
-        let revision = self
-            .commit_partial(|settings| {
-                settings.log = log;
+        self.commit_mixed(
+            &[DocId::McpWorkspace, DocId::Agents],
+            move || workspace::delete_workspace_mcp(&root, &id_owned).map(|_| ()),
+            move |settings| {
+                for profile in settings.agents.values_mut() {
+                    profile.tools.remove(&catalog_id);
+                }
                 Ok(false)
-            })
-            .map(|(rev, _)| rev)?;
+            },
+        )
+    }
+
+    pub fn get_engines(&self, workspace_root: &Path) -> Result<workspace::WorkspaceEnginesFile> {
+        workspace::read_workspace_engines(workspace_root)
+    }
+
+    pub fn write_engines(
+        &self,
+        workspace_root: &Path,
+        file: workspace::WorkspaceEnginesFile,
+    ) -> Result<CommitAck> {
+        if file.lsp.desired && file.lsp.servers.is_empty() {
+            return Err(LitecodeError::Config(
+                "lsp engine requires at least one language server".into(),
+            ));
+        }
+        let root = workspace_root.to_path_buf();
+        self.commit_workspace_file(DocId::Engines, move || {
+            workspace::write_workspace_engines(&root, &file)
+        })
+    }
+
+    pub fn get_excludes(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<crate::workspace::filter::WorkspaceExcludesFile> {
+        crate::workspace::filter::ensure_workspace_excludes(workspace_root)
+    }
+
+    pub fn write_excludes(
+        &self,
+        workspace_root: &Path,
+        file: crate::workspace::filter::WorkspaceExcludesFile,
+    ) -> Result<CommitAck> {
+        let root = workspace_root.to_path_buf();
+        self.commit_workspace_file(DocId::Excludes, move || {
+            crate::workspace::filter::write_workspace_excludes(&root, file).map(|_| ())
+        })
+    }
+
+    pub fn write_log(&self, log: LogSettings) -> Result<CommitAck> {
+        let ack = self.commit_partial(&[DocId::Log], |settings| {
+            settings.log = log;
+            Ok(false)
+        })?;
         log_filter::reload_from_path(&self.db_path);
-        Ok(revision)
+        Ok(ack)
     }
 
     /// CLI `config set <key> <value>` — keys mirror REST resources.
@@ -810,12 +911,12 @@ impl SettingsWriter {
                 .write_log(LogSettings {
                     level: Some(value.to_string()),
                 })
-                .map(|rev| (rev, false)),
+                .map(|ack| (ack.generation, false)),
             "websearch.search_endpoint" => self
                 .write_websearch(WebSearchSettings {
                     search_endpoint: Some(value.to_string()),
                 })
-                .map(|rev| (rev, false)),
+                .map(|ack| (ack.generation, false)),
             "auth.token" => Err(LitecodeError::Config(
                 "auth.token removed: serve auth is host-injected via LITECODE_TOKEN only".into(),
             )),
@@ -872,6 +973,39 @@ fn apply_preset_to_binding(tool_id: &str, binding: &mut AgentToolBinding, preset
     binding.policy = policy;
     binding.path_mode = path_mode;
     binding.last_applied_preset = Some(preset);
+}
+
+fn validate_mcp_definition(id: &str, def: &mut McpServerDefinition) -> Result<()> {
+    validate_tool_id(id)?;
+    if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
+        return Err(LitecodeError::Config(format!(
+            "MCP server id '{id}' conflicts with a builtin tool"
+        )));
+    }
+    def.command = def.command.trim().to_string();
+    def.timeout = def.call_timeout_secs();
+    match &def.transport {
+        McpTransport::Stdio => {
+            if def.command.is_empty() {
+                return Err(LitecodeError::Config(
+                    "MCP stdio server command must not be empty".into(),
+                ));
+            }
+        }
+        McpTransport::Remote { url, .. } => {
+            if cfg!(not(feature = "remote-mcp")) {
+                return Err(LitecodeError::Config(
+                    "remote MCP transport requires a build with the remote-mcp feature".into(),
+                ));
+            }
+            if url.trim().is_empty() {
+                return Err(LitecodeError::Config(
+                    "MCP remote server url must not be empty".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_tool_id(id: &str) -> Result<()> {
@@ -1101,6 +1235,47 @@ mod tests {
             err,
             LitecodeError::Config(msg) if msg.contains("refusing to wipe models")
         ));
+    }
+
+    #[test]
+    fn commit_log_roundtrip_and_docs() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("litecode.db");
+        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
+        let log = LogSettings {
+            level: Some("debug".into()),
+        };
+        let ack = writer.write_log(log.clone()).unwrap();
+        assert_eq!(ack.docs, vec![DocId::Log]);
+        assert!(ack.generation >= 1);
+        let loaded = writer.load_settings().unwrap().log;
+        assert_eq!(loaded, log);
+    }
+
+    #[test]
+    fn workspace_engines_commit_file_and_event_together() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("litecode.db");
+        let ws = TempDir::new().unwrap();
+        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
+        let mut rx = writer.subscribe();
+        let file = workspace::WorkspaceEnginesFile {
+            version: 1,
+            lsp: workspace::WorkspaceLspState {
+                desired: true,
+                servers: vec!["rust-analyzer".into()],
+            },
+            retrieval: workspace::WorkspaceRetrievalState {
+                desired: false,
+            },
+        };
+        let ack = writer.write_engines(ws.path(), file.clone()).unwrap();
+        let on_disk = workspace::read_workspace_engines(ws.path()).unwrap();
+        assert_eq!(on_disk.lsp.servers, file.lsp.servers);
+        assert_eq!(ack.docs, vec![DocId::Engines]);
+        let event = rx.try_recv().expect("settings event");
+        assert_eq!(event.docs, vec![DocId::Engines]);
+        assert_eq!(event.revision, ack.generation);
     }
 
     #[test]
