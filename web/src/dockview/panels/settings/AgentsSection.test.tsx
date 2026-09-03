@@ -224,4 +224,71 @@ describe("AgentsSection LSP bind persist loop", () => {
     }
     expect(saveAgent.mock.calls.length).toBeLessThan(4);
   });
+
+  it("hides bindings that are not in this workspace catalog", () => {
+    useSettingsStore.setState({
+      availableTools: [readTool, lspTool],
+      agents: {
+        default: profile({
+          tools: {
+            lsp: { enabled: true, last_applied_preset: "ALL" },
+            mcp_other_ws: { enabled: true, last_applied_preset: null },
+          },
+        }),
+      },
+    });
+    render(<AgentsSection />);
+    expect(screen.getByText("lsp")).toBeTruthy();
+    expect(screen.queryByText("mcp_other_ws")).toBeNull();
+    expect(screen.queryByText("unavailable")).toBeNull();
+  });
+
+  it("keeps other-workspace bindings on PUT and does not loop when GET reshuffles keys", async () => {
+    vi.useFakeTimers();
+    useSettingsStore.setState({
+      availableTools: [readTool, lspTool],
+      agents: {
+        default: profile({
+          tools: {
+            mcp_other_ws: { enabled: true, last_applied_preset: null },
+          },
+        }),
+      },
+    });
+    saveAgent.mockImplementation(async (id: string, next: AgentProfile) => {
+      const keys = Object.keys(next.tools).reverse();
+      const tools: Record<string, AgentToolBinding> = {};
+      for (const key of keys) {
+        const binding = next.tools[key];
+        tools[key] = {
+          ...binding,
+          policy: binding.policy ?? { default: "allow", default_id: "default", rules: [] },
+          path_mode: binding.path_mode ?? "unrestricted",
+          last_applied_preset: binding.last_applied_preset ?? null,
+          allowed_tools: binding.allowed_tools ?? null,
+        };
+      }
+      useSettingsStore.setState((s) => ({
+        revision: s.revision + 1,
+        agents: { ...s.agents, [id]: { ...next, tools } },
+      }));
+    });
+    render(<AgentsSection />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /lsp tool binding, disabled/i,
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(400);
+    expect(saveAgent).toHaveBeenCalledTimes(1);
+    expect(saveAgent.mock.calls[0][1].tools.mcp_other_ws).toEqual({
+      enabled: true,
+      last_applied_preset: null,
+    });
+    for (let i = 0; i < 6; i++) {
+      await vi.advanceTimersByTimeAsync(400);
+      await Promise.resolve();
+    }
+    expect(saveAgent.mock.calls.length).toBeLessThan(3);
+  });
 });

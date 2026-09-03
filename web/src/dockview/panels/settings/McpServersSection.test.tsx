@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { McpServerDefinition, ToolScope } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { McpServersSection } from "./McpServersSection";
 
@@ -12,8 +13,10 @@ function openNew(scope: "Global" | "Workspace") {
 }
 
 describe("McpServersSection persist UX", () => {
-  const saveMcpServer = vi.fn(async () => undefined);
-  const removeMcpServer = vi.fn(async () => undefined);
+  const saveMcpServer = vi.fn(
+    async (_id: string, _def: McpServerDefinition, _scope?: ToolScope) => undefined,
+  );
+  const removeMcpServer = vi.fn(async (_id: string, _scope?: ToolScope) => undefined);
 
   beforeEach(() => {
     saveMcpServer.mockClear();

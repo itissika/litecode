@@ -86,7 +86,7 @@ export interface ProviderDefinition {
 }
 
 export interface WebSearchView {
-  search_endpoint: string | null;
+  api_key: string | null;
 }
 
 export interface ModelAdapterConfig {
@@ -350,7 +350,7 @@ export async function getWebSearch(): Promise<WebSearchView> {
 }
 
 export async function putWebSearch(body: {
-  search_endpoint?: string;
+  api_key?: string;
 }): Promise<RevisionResponse> {
   return requestJson<RevisionResponse>("/api/settings/websearch", {
     method: "PUT",

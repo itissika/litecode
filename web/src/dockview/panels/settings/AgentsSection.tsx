@@ -375,7 +375,6 @@ function SubagentToolsMultiSelect({
 export function AgentToolsGrid({
   draft,
   bindableTools,
-  catalogIds,
   mcpServers,
   saveBlocked,
   onBindingChange,
@@ -383,7 +382,6 @@ export function AgentToolsGrid({
 }: {
   draft: AgentProfile;
   bindableTools: AvailableTool[];
-  catalogIds: Set<string>;
   mcpServers: { id: string; tools?: { name: string; description: string }[] }[];
   saveBlocked: boolean;
   onBindingChange: (toolId: string, patch: Partial<AgentToolBinding>) => void;
@@ -427,7 +425,7 @@ export function AgentToolsGrid({
             <div
               key={entry.id}
               data-enabled={enabled ? "true" : "false"}
-              className={`tool-binding-card flex flex-col overflow-hidden${!catalogIds.has(entry.id) ? " opacity-60" : ""}`}
+              className="tool-binding-card flex flex-col overflow-hidden"
             >
               <button
                 type="button"
@@ -444,11 +442,10 @@ export function AgentToolsGrid({
                     <p className="mt-0.5 text-dk-xs text-(--_dk-text-disabled)">
                       {entry.kind}
                       {entry.overridden ? " · workspace override" : ""}
-                      {!catalogIds.has(entry.id) ? " · unavailable" : ""}
                     </p>
                   </div>
-                  <span className={`tag ${!catalogIds.has(entry.id) ? "tag-neutral" : enabled ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}>
-                    {!catalogIds.has(entry.id) ? "unavailable" : enabled ? "On" : "Off"}
+                  <span className={`tag ${enabled ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}>
+                    {enabled ? "On" : "Off"}
                   </span>
                 </div>
 
@@ -512,6 +509,8 @@ export function AgentToolsGrid({
 // and always persist a fixed default rather than a user-edited value.
 const BUILTIN_TEMPERATURE = 0.7;
 
+// Bindings for tools not in this workspace catalog stay on the profile so a PUT
+// does not wipe other-workspace MCP/custom rows. The grid only shows catalog ids.
 function agentPersistPayload(
   draft: AgentProfile,
   selectedAgentId: string,
@@ -533,18 +532,6 @@ function agentPersistPayload(
     tools: { ...draft.tools },
     temperature: BUILTIN_TEMPERATURE,
   });
-}
-
-function toolsForGrid(
-  catalog: AvailableTool[],
-  bound: Record<string, AgentToolBinding>,
-): AvailableTool[] {
-  const ids = new Set(catalog.map((t) => t.id));
-  const dormant: AvailableTool[] = Object.keys(bound)
-    .filter((id) => !ids.has(id))
-    .sort((a, b) => a.localeCompare(b))
-    .map((id) => ({ id, kind: "engine", origin: "workspace" }));
-  return [...catalog, ...dormant];
 }
 
 export function AgentsSection() {
@@ -851,8 +838,7 @@ export function AgentsSection() {
           />
           <AgentToolsGrid
               draft={draft}
-              bindableTools={toolsForGrid(bindableToolsPrimary, draft.tools)}
-              catalogIds={new Set(bindableToolsPrimary.map((t) => t.id))}
+              bindableTools={bindableToolsPrimary}
               mcpServers={mcpList}
               saveBlocked={saveBlocked}
               onBindingChange={updateBinding}

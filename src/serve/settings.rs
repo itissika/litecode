@@ -60,7 +60,7 @@ struct ProvidersBody {
 
 #[derive(Deserialize)]
 struct WebSearchBody {
-    search_endpoint: Option<String>,
+    api_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -261,14 +261,10 @@ async fn put_websearch(
         Ok(s) => s.websearch,
         Err(e) => return settings_error(e),
     };
-    if let Some(endpoint) = body.search_endpoint {
-        let trimmed = endpoint.trim();
-        current.search_endpoint = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-    }
+    current.api_key = crate::config::settings_writer::SettingsWriter::apply_api_key_patch(
+        current.api_key,
+        body.api_key.as_deref(),
+    );
     match state.settings_writer.write_websearch(current) {
         Ok(ack) => {
             reload_runtime_after_settings_write(&state, &ack, "websearch write");

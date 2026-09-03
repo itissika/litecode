@@ -39,8 +39,22 @@ export interface SettingsPersistOptions<D, P> {
   fingerprint?: (payload: P) => string;
 }
 
+/** Recursively sort object keys so HashMap-shaped GET echoes match the PUT we just sent. */
+function canonicalJson(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  const obj = value as Record<string, unknown>;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(obj).sort()) {
+    const v = obj[key];
+    if (v === undefined) continue;
+    sorted[key] = canonicalJson(v);
+  }
+  return sorted;
+}
+
 function defaultFingerprint(payload: unknown): string {
-  return JSON.stringify(payload);
+  return JSON.stringify(canonicalJson(payload));
 }
 
 /**

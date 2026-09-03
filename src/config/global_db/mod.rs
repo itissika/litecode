@@ -684,30 +684,33 @@ pub mod store {
     }
 
     fn load_websearch(conn: &Connection) -> Result<WebSearchSettings> {
-        let search_endpoint = conn
+        // `websearch.search_endpoint` may still exist in older DBs; ignore it.
+        let api_key = conn
             .query_row(
-                "SELECT value FROM meta WHERE key = 'websearch.search_endpoint'",
+                "SELECT value FROM meta WHERE key = 'websearch.api_key'",
                 [],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
         Ok(WebSearchSettings {
-            search_endpoint: search_endpoint.filter(|s| !s.is_empty()),
+            api_key: api_key.filter(|s| !s.is_empty()),
         })
     }
 
     fn save_websearch(conn: &Connection, websearch: &WebSearchSettings) -> Result<()> {
-        if let Some(endpoint) = &websearch.search_endpoint {
+        upsert_meta(conn, "websearch.api_key", websearch.api_key.as_deref())?;
+        Ok(())
+    }
+
+    fn upsert_meta(conn: &Connection, key: &str, value: Option<&str>) -> Result<()> {
+        if let Some(value) = value.filter(|s| !s.is_empty()) {
             conn.execute(
-                "INSERT INTO meta (key, value) VALUES ('websearch.search_endpoint', ?1)
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [endpoint],
+                params![key, value],
             )?;
         } else {
-            conn.execute(
-                "DELETE FROM meta WHERE key = 'websearch.search_endpoint'",
-                [],
-            )?;
+            conn.execute("DELETE FROM meta WHERE key = ?1", [key])?;
         }
         Ok(())
     }
@@ -841,5 +844,43 @@ mod open_tests {
             .query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))
             .unwrap();
         assert_eq!(agents, 1);
+    }
+
+    #[test]
+    fn leftover_websearch_endpoint_meta_is_ignored_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("litecode.db");
+        let _ = open(&db).unwrap();
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('websearch.search_endpoint', 'https://old.example/mcp')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('websearch.api_key', 'exa-secret')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let settings = load_global_from_path(&db).unwrap();
+        assert_eq!(settings.websearch.api_key.as_deref(), Some("exa-secret"));
+
+        save_global(&db, &settings).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        let leftover: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'websearch.search_endpoint'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftover, "https://old.example/mcp");
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, migrate::CURRENT_USER_VERSION);
     }
 }

@@ -17,8 +17,8 @@ function snapshotLogLevel(): string {
   return useSettingsStore.getState().log?.level ?? "info";
 }
 
-function snapshotSearchEndpoint(): string {
-  return useSettingsStore.getState().websearch?.search_endpoint ?? "";
+function snapshotApiKey(): string {
+  return useSettingsStore.getState().websearch?.api_key ?? "";
 }
 
 export function AdvancedSection() {
@@ -30,23 +30,23 @@ export function AdvancedSection() {
   const saveLog = useSettingsStore((s) => s.saveLog);
   const saveWebSearch = useSettingsStore((s) => s.saveWebSearch);
   const [logLevel, setLogLevel] = useState(snapshotLogLevel);
-  const [searchEndpoint, setSearchEndpoint] = useState(snapshotSearchEndpoint);
+  const [apiKey, setApiKey] = useState(snapshotApiKey);
 
   useEffect(() => {
     if (shouldHydrateDraftFromStore(logPersist.persistStatus)) {
       setLogLevel(log?.level ?? "info");
     }
     if (shouldHydrateDraftFromStore(searchPersist.persistStatus)) {
-      setSearchEndpoint(websearch?.search_endpoint ?? "");
+      setApiKey(websearch?.api_key ?? "");
     }
   }, [log, websearch, logPersist.persistStatus, searchPersist.persistStatus]);
 
-  useSettingsPersist(searchEndpoint, {
+  useSettingsPersist(apiKey, {
     debounceMs: 400,
     setStatus: searchPersist.setPersistStatus,
-    serialize: (value) => ({ ok: value.trim() || undefined }),
-    commit: (search_endpoint) => saveWebSearch({ search_endpoint }),
-    revert: () => setSearchEndpoint(snapshotSearchEndpoint()),
+    serialize: (value) => ({ ok: value }),
+    commit: (api_key) => saveWebSearch({ api_key }),
+    revert: () => setApiKey(snapshotApiKey()),
   });
 
   useSettingsPersist(logLevel, {
@@ -62,11 +62,18 @@ export function AdvancedSection() {
       <div className="space-y-6">
         <div className="settings-card space-y-3 p-4">
           <SectionHeader title="Web search" />
-          <FieldLabel>Exa MCP URL (optional override)</FieldLabel>
+          <p className="text-xs text-(--_dk-text-muted)">
+            Uses Exa hosted search. Paste an Exa API key for higher limits; leave empty for the
+            anonymous free tier, or set <code className="font-mono">EXA_API_KEY</code> in the
+            environment.
+          </p>
+          <FieldLabel>Exa API key</FieldLabel>
           <TextInput
-            value={searchEndpoint}
-            onChange={(e) => setSearchEndpoint(e.target.value)}
-            placeholder="https://mcp.exa.ai/mcp"
+            type="password"
+            autoComplete="off"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="optional"
             disabled={saveBlocked}
           />
         </div>

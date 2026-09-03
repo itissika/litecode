@@ -5,14 +5,21 @@ use serde_json::Value;
 
 pub const DEFAULT_MCP_URL: &str = DEFAULT_WEBSEARCH_MCP_URL;
 
-/// MCP URL with optional `EXA_API_KEY` query param (OpenCode-compatible).
-pub fn mcp_url(endpoint: &str) -> String {
-    let base = endpoint.trim().trim_end_matches('/');
-    if let Ok(key) = std::env::var("EXA_API_KEY") {
-        let key = key.trim();
-        if !key.is_empty() && !base.contains("exaApiKey=") {
-            return format!("{base}?exaApiKey={}", percent_encode(key));
-        }
+/// Hosted Exa MCP URL with optional API key query param (settings first, then `EXA_API_KEY`).
+pub fn mcp_url(api_key: Option<&str>) -> String {
+    let base = DEFAULT_MCP_URL;
+    let key = api_key
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("EXA_API_KEY")
+                .ok()
+                .map(|k| k.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+    if let Some(key) = key {
+        return format!("{base}?exaApiKey={}", percent_encode(&key));
     }
     base.to_string()
 }
@@ -125,5 +132,18 @@ mod tests {
     fn parse_json_exa_response() {
         let body = r#"{"result":{"content":[{"type":"text","text":"ok"}]}}"#;
         assert_eq!(parse_mcp_response(body).as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn mcp_url_appends_settings_key() {
+        let url = mcp_url(Some("abc+def"));
+        assert_eq!(url, "https://mcp.exa.ai/mcp?exaApiKey=abc%2Bdef");
+    }
+
+    #[test]
+    fn mcp_url_without_key_is_hosted_default() {
+        // Env may be set on the host; only assert the default prefix.
+        let url = mcp_url(None);
+        assert!(url.starts_with("https://mcp.exa.ai/mcp"), "{url}");
     }
 }

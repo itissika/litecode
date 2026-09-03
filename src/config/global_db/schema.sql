@@ -75,3 +75,5 @@ CREATE TABLE IF NOT EXISTS websearch (
     id               INTEGER PRIMARY KEY CHECK (id = 1),
     search_endpoint  TEXT
 );
+-- `search_endpoint` is leftover; live config is `meta.websearch.api_key`.
+-- Keep this table so existing DBs (user_version 6) stay loadable without a bump.

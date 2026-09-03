@@ -84,7 +84,6 @@ pub struct SettingsSummary {
     pub revision: u64,
     pub ready_provider_count: usize,
     pub provider_endpoint: Option<String>,
-    pub websearch_endpoint: Option<String>,
     pub model_count: usize,
     pub agent_count: usize,
     pub catalog_count: usize,
@@ -111,7 +110,9 @@ pub struct ProviderView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebSearchView {
-    pub search_endpoint: Option<String>,
+    /// Masked Exa API key (same shape as provider keys).
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -336,7 +337,6 @@ impl SettingsWriter {
                 .map(|p| p.config.endpoint.trim())
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
-            websearch_endpoint: settings.websearch.search_endpoint.clone(),
             model_count: settings.models.len(),
             agent_count: settings.agents.len(),
             catalog_count: 0,
@@ -462,8 +462,23 @@ impl SettingsWriter {
     pub fn websearch_view(&self) -> Result<WebSearchView> {
         let settings = self.load()?;
         Ok(WebSearchView {
-            search_endpoint: settings.websearch.search_endpoint.clone(),
+            api_key: Self::mask_api_key(settings.websearch.api_key.as_deref()),
         })
+    }
+
+    /// PUT patch for `api_key`: omit keeps current; empty clears; masked echo keeps.
+    pub fn apply_api_key_patch(current: Option<String>, incoming: Option<&str>) -> Option<String> {
+        let Some(raw) = incoming else {
+            return current;
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if Self::mask_api_key(current.as_deref()).as_deref() == Some(trimmed) {
+            return current;
+        }
+        Some(trimmed.to_string())
     }
 
     pub fn write_websearch(&self, websearch: WebSearchSettings) -> Result<CommitAck> {
@@ -912,11 +927,15 @@ impl SettingsWriter {
                     level: Some(value.to_string()),
                 })
                 .map(|ack| (ack.generation, false)),
-            "websearch.search_endpoint" => self
-                .write_websearch(WebSearchSettings {
-                    search_endpoint: Some(value.to_string()),
-                })
-                .map(|ack| (ack.generation, false)),
+            "websearch.search_endpoint" => Err(LitecodeError::Config(
+                "websearch.search_endpoint removed; set the Exa API key via Settings → Advanced or websearch.api_key".into(),
+            )),
+            "websearch.api_key" => {
+                let mut websearch = self.load()?.websearch;
+                websearch.api_key = Self::apply_api_key_patch(websearch.api_key, Some(value));
+                self.write_websearch(websearch)
+                    .map(|ack| (ack.generation, false))
+            }
             "auth.token" => Err(LitecodeError::Config(
                 "auth.token removed: serve auth is host-injected via LITECODE_TOKEN only".into(),
             )),
@@ -1068,6 +1087,23 @@ mod tests {
         assert_eq!(
             SettingsWriter::mask_api_key(Some("sk-abcdefghij")),
             Some("sk-***ghij".into())
+        );
+    }
+
+    #[test]
+    fn api_key_patch_keeps_masked_echo_and_clears_empty() {
+        let stored = Some("sk-abcdefghij".to_string());
+        assert_eq!(
+            SettingsWriter::apply_api_key_patch(stored.clone(), Some("sk-***ghij")),
+            stored
+        );
+        assert_eq!(
+            SettingsWriter::apply_api_key_patch(stored.clone(), Some("")),
+            None
+        );
+        assert_eq!(
+            SettingsWriter::apply_api_key_patch(stored, Some("new-secret-key")),
+            Some("new-secret-key".into())
         );
     }
 

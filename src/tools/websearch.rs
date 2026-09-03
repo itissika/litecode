@@ -35,7 +35,7 @@ impl WebSearchTool {
             .map_err(|e| format!("websearch endpoint lock: {e}"))?
             .clone()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| "websearch Exa MCP endpoint not configured".to_string())?;
+            .ok_or_else(|| "websearch is not configured".to_string())?;
         let query = query.to_string();
 
         std::thread::spawn(move || exa_mcp::search(&client, &endpoint, &query, MAX_RESULTS))
@@ -76,7 +76,7 @@ impl Tool for WebSearchTool {
             Ok(output) => ToolCallResult::ok(output),
             Err(e) if e.contains("not warmed") || e.contains("not configured") => {
                 ToolCallResult::error(format!(
-                    "{e}. Enable websearch in Settings → Engines (Exa endpoint) and wait until Warm"
+                    "{e}. Set an Exa API key in Settings → Advanced, or EXA_API_KEY in the environment"
                 ))
             }
             Err(e) => ToolCallResult::error(e),

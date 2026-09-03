@@ -13,7 +13,7 @@ describe("AdvancedSection persist UX", () => {
     saveWebSearch.mockClear();
     useSettingsStore.setState({
       log: { level: "info" },
-      websearch: { search_endpoint: "" },
+      websearch: { api_key: "" },
       persistByDoc: {},
       saveLog,
       saveWebSearch,
@@ -36,12 +36,12 @@ describe("AdvancedSection persist UX", () => {
   it("saves websearch independently of log", async () => {
     vi.useFakeTimers();
     render(<AdvancedSection />);
-    fireEvent.change(screen.getByPlaceholderText("https://mcp.exa.ai/mcp"), {
-      target: { value: "https://example.test/mcp" },
+    fireEvent.change(screen.getByPlaceholderText("optional"), {
+      target: { value: "exa-test-key" },
     });
     await vi.advanceTimersByTimeAsync(400);
     expect(saveWebSearch).toHaveBeenCalledWith({
-      search_endpoint: "https://example.test/mcp",
+      api_key: "exa-test-key",
     });
     expect(saveLog).not.toHaveBeenCalled();
   });

@@ -500,27 +500,15 @@ pub struct LogSettings {
     pub level: Option<String>,
 }
 
-/// Hosted Exa MCP endpoint (anonymous free tier; optional `EXA_API_KEY` for higher limits).
+/// Hosted Exa MCP endpoint (not user-configurable).
 pub const DEFAULT_WEBSEARCH_MCP_URL: &str = "https://mcp.exa.ai/mcp";
 
-/// Web search backend (global layer; Exa MCP by default).
+/// Web search backend (global layer; Exa MCP).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebSearchSettings {
-    /// Override Exa MCP URL; empty uses [`DEFAULT_WEBSEARCH_MCP_URL`].
+    /// Exa API key. Empty uses env `EXA_API_KEY` if set, else anonymous.
     #[serde(default)]
-    pub search_endpoint: Option<String>,
-}
-
-impl WebSearchSettings {
-    /// Settings override, else hosted Exa MCP default.
-    pub fn resolved_endpoint(&self) -> Option<String> {
-        self.search_endpoint
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .or_else(|| Some(DEFAULT_WEBSEARCH_MCP_URL.to_string()))
-    }
+    pub api_key: Option<String>,
 }
 
 /// Global settings — providers, models, agents, extensions, auth, log.

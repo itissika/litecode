@@ -136,6 +136,44 @@ describe("SettingsPersistController", () => {
     expect(commit.mock.calls.map((c) => c[0])).toEqual(["b", "c"]);
   });
 
+  it("treats object key order as the same payload", async () => {
+    const commit = vi.fn(async () => undefined);
+    const statuses: PersistStatus[] = [];
+    const controller = new SettingsPersistController(
+      { b: 1, a: 1 },
+      {
+        debounceMs: 0,
+        setStatus: (s) => statuses.push(s),
+        serialize: (d) => ({ ok: d }),
+        commit,
+        revert: () => undefined,
+      },
+    );
+    controller.schedule({ a: 1, b: 1 });
+    await controller.flush();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it("does not re-PUT after commit when keys are reshuffled", async () => {
+    const commit = vi.fn(async () => undefined);
+    const controller = new SettingsPersistController<Record<string, number>, Record<string, number>>(
+      { a: 1 },
+      {
+        debounceMs: 0,
+        setStatus: () => undefined,
+        serialize: (d) => ({ ok: d }),
+        commit,
+        revert: () => undefined,
+      },
+    );
+    controller.schedule({ z: 2, a: 1 });
+    await controller.flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+    controller.schedule({ a: 1, z: 2 });
+    await controller.flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
   it("does not spin a zero-debounce loop while a commit is in flight", async () => {
     vi.useFakeTimers();
     const commit = vi.fn(async () => undefined);

@@ -119,7 +119,7 @@ interface SettingsStore extends SettingsStoreState {
   refreshAgents: () => Promise<void>;
   setSelectedAgentId: (id: string) => void;
   saveProviders: (providers: Record<string, ProviderDefinition>) => Promise<void>;
-  saveWebSearch: (body: { search_endpoint?: string }) => Promise<void>;
+  saveWebSearch: (body: { api_key?: string }) => Promise<void>;
   saveModels: (models: Record<string, ModelDefinition>) => Promise<void>;
   saveCustomTool: (id: string, def: CustomToolDefinition, scope?: ToolScope) => Promise<void>;
   removeCustomTool: (id: string, scope?: ToolScope) => Promise<void>;

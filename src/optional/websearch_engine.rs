@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use crate::config::schema::{DEFAULT_WEBSEARCH_MCP_URL, WebSearchSettings};
+use crate::config::schema::WebSearchSettings;
 use crate::optional::ToolEngine;
 use crate::optional::exa_mcp;
 use crate::types::{LitecodeError, Result};
@@ -21,10 +21,7 @@ impl WebsearchEngine {
 
     pub fn configure(&self, settings: &WebSearchSettings) {
         if let Ok(mut guard) = self.endpoint.write() {
-            let base = settings
-                .resolved_endpoint()
-                .unwrap_or_else(|| DEFAULT_WEBSEARCH_MCP_URL.to_string());
-            *guard = Some(exa_mcp::mcp_url(&base));
+            *guard = Some(exa_mcp::mcp_url(settings.api_key.as_deref()));
         }
     }
 
@@ -49,7 +46,7 @@ impl ToolEngine for WebsearchEngine {
             .clone()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
-                LitecodeError::Config("websearch Exa MCP endpoint is not configured".into())
+                LitecodeError::Config("websearch is not configured".into())
             })?;
 
         let client = reqwest::blocking::Client::builder()
