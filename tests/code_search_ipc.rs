@@ -258,6 +258,40 @@ fn refresh_rebuilds_when_dirty_too_large() {
 }
 
 #[test]
+fn refresh_updates_when_dirty_is_mostly_deletes() {
+    force_hash_embedder();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace_index(root).unwrap();
+    std::fs::write(root.join("keep.rs"), "pub fn keep_symbol() {}\n").unwrap();
+    std::fs::write(root.join("gone_a.rs"), "pub fn gone_a_symbol() {}\n").unwrap();
+    std::fs::write(root.join("gone_b.rs"), "pub fn gone_b_symbol() {}\n").unwrap();
+    std::fs::write(root.join("gone_c.rs"), "pub fn gone_c_symbol() {}\n").unwrap();
+
+    let mut client = spawn_warmed(root);
+    std::fs::remove_file(root.join("gone_a.rs")).unwrap();
+    std::fs::remove_file(root.join("gone_b.rs")).unwrap();
+    std::fs::remove_file(root.join("gone_c.rs")).unwrap();
+    let incremental = client.refresh().expect("delete-heavy refresh");
+    assert_eq!(incremental.mode, RefreshMode::Incremental);
+    assert!(
+        client
+            .search("keep_symbol", None, 5)
+            .unwrap()
+            .iter()
+            .any(|h| h.path.contains("keep.rs"))
+    );
+    assert!(
+        client
+            .search("gone_a_symbol", None, 5)
+            .unwrap()
+            .iter()
+            .all(|h| !h.path.contains("gone_a.rs"))
+    );
+    shutdown(client);
+}
+
+#[test]
 fn protocol_search_hit_roundtrip_serde() {
     use litecode::engines::code_search::SearchHit;
 

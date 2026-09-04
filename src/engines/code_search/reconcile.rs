@@ -125,8 +125,7 @@ pub fn queue_reconcile_dirty(runtime: &CodeSearchRuntime) {
             pending = pending_len,
             "code_search reconcile queued dirty paths"
         );
-        drop(pending);
-        super::write_pending_hint(&runtime.workspace_root, pending_len);
+        super::write_pending_hint_from(&runtime.workspace_root, &pending);
     }
 }
 

@@ -45,8 +45,9 @@ pub use fs_notify::queue_fs_changes;
 pub use index_status::{
     IndexPhase, IndexRebuildReason, IndexStatus, IndexWork, IndexingProgress, ResolvedIndexView,
     begin_building, begin_refreshing, clear_index_job, decide_index_work, disk_index_status,
-    index_work_from_disk, mark_index_job_failed, read_pending_hint, resolve_index_view,
-    should_full_rebuild, update_build_progress, write_pending_hint,
+    index_work_from_disk, mark_index_job_failed, pending_work_counts, read_pending_hint,
+    resolve_index_view, should_full_rebuild, update_build_progress, write_pending_hint,
+    write_pending_hint_from,
 };
 pub use lexical::{
     LexicalMatch, LexicalQuery, LexicalSearchOutcome, lexical_search, lexical_search_with_preset,
@@ -655,8 +656,9 @@ pub fn rebuild_index_in_runtime(runtime: &CodeSearchRuntime) -> Result<()> {
 pub fn refresh_index_incremental(runtime: &CodeSearchRuntime) -> Result<()> {
     begin_refreshing(&runtime.workspace_root);
     sync_index_with_disk(runtime);
-    let pending = runtime.pending_updates.lock().map(|g| g.len()).unwrap_or(0);
-    write_pending_hint(&runtime.workspace_root, pending);
+    if let Ok(pending) = runtime.pending_updates.lock() {
+        write_pending_hint_from(&runtime.workspace_root, &pending);
+    }
     clear_index_job(&runtime.workspace_root);
     Ok(())
 }
@@ -777,8 +779,9 @@ pub fn flush_pending_updates(runtime: &CodeSearchRuntime) {
     }
     // Single merged pass: one index save + one BM25 resync for the whole batch.
     let _ = update_files(runtime, &pending);
-    let remaining = runtime.pending_updates.lock().map(|g| g.len()).unwrap_or(0);
-    write_pending_hint(&runtime.workspace_root, remaining);
+    if let Ok(remaining) = runtime.pending_updates.lock() {
+        write_pending_hint_from(&runtime.workspace_root, &remaining);
+    }
 }
 
 /// Semantic search entry — delegates to [`SemanticEngine`] (L2 sole owner).

@@ -3,6 +3,7 @@
 //! Progress lives under `.litecode/index/` so `GET /engines/detail` can read it
 //! without talking to the worker (warmup/refresh hold the IPC mutex).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -60,11 +61,13 @@ pub enum IndexRebuildReason {
 
 /// Pick update vs rebuild from reconcile counts. Compatible index required.
 ///
-/// Dirty ≥ 50% of `max(indexed, scannable)` upgrades to rebuild, but only when
-/// at least two files are dirty (single-file repos stay on update).
+/// Only **embed** work (new / content-changed files) can upgrade to rebuild:
+/// `embed_dirty ≥ 50%` of `max(indexed, scannable)` and at least two such files.
+/// Deletions are cheap (`remove_file` + save, no embed) and always stay on update.
 pub fn decide_index_work(
     compatible: bool,
     has_usable_index: bool,
+    embed_dirty: usize,
     dirty: usize,
     indexed_files: usize,
     scannable_files: usize,
@@ -83,12 +86,19 @@ pub fn decide_index_work(
         return IndexWork::None;
     }
     let corpus = indexed_files.max(scannable_files);
-    if dirty >= 2 && dirty.saturating_mul(2) >= corpus {
+    if embed_dirty >= 2 && embed_dirty.saturating_mul(2) >= corpus {
         return IndexWork::Rebuild {
             reason: IndexRebuildReason::DirtyTooLarge,
         };
     }
     IndexWork::Update { dirty }
+}
+
+/// `(embed_dirty, dirty)` from pending `(path, deleted)` rows.
+pub fn pending_work_counts(pending: &HashSet<(String, bool)>) -> (usize, usize) {
+    let dirty = pending.len();
+    let embed_dirty = pending.iter().filter(|(_, deleted)| !*deleted).count();
+    (embed_dirty, dirty)
 }
 
 /// Parent-process view of [`decide_index_work`] from disk hint + meta (no scannable walk).
@@ -104,12 +114,20 @@ pub fn index_work_from_disk(workspace_root: &Path) -> IndexWork {
         };
     }
     let dirty = read_pending_hint(workspace_root);
+    let embed_dirty = read_pending_embed_hint(workspace_root);
     let indexed = meta::read_meta(workspace_root)
         .ok()
         .flatten()
         .map(|m| m.indexed_files)
         .unwrap_or(0);
-    decide_index_work(true, true, dirty, indexed, indexed.max(dirty))
+    decide_index_work(
+        true,
+        true,
+        embed_dirty,
+        dirty,
+        indexed,
+        indexed.max(dirty),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +150,9 @@ struct IndexJobFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingHintFile {
     pending_updates: usize,
+    /// New / modified files that need embedding. Absent on old hints → treat as all pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    embed_dirty: Option<usize>,
 }
 
 fn job_path(workspace_root: &Path) -> PathBuf {
@@ -216,24 +237,51 @@ pub fn mark_index_job_failed(workspace_root: &Path, error: impl Into<String>) {
 }
 
 pub fn write_pending_hint(workspace_root: &Path, pending_updates: usize) {
+    write_pending_hint_counts(workspace_root, pending_updates, pending_updates);
+}
+
+/// Persist pending totals from `(path, deleted)` rows so disk work ignores deletions.
+pub fn write_pending_hint_from(
+    workspace_root: &Path,
+    pending: &HashSet<(String, bool)>,
+) {
+    let (embed_dirty, dirty) = pending_work_counts(pending);
+    write_pending_hint_counts(workspace_root, dirty, embed_dirty);
+}
+
+fn write_pending_hint_counts(
+    workspace_root: &Path,
+    pending_updates: usize,
+    embed_dirty: usize,
+) {
     if pending_updates == 0 {
         let _ = std::fs::remove_file(pending_hint_path(workspace_root));
         return;
     }
     let _ = write_json(
         &pending_hint_path(workspace_root),
-        &PendingHintFile { pending_updates },
+        &PendingHintFile {
+            pending_updates,
+            embed_dirty: Some(embed_dirty),
+        },
     );
 }
 
 pub fn read_pending_hint(workspace_root: &Path) -> usize {
-    let path = pending_hint_path(workspace_root);
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return 0;
-    };
-    serde_json::from_str::<PendingHintFile>(&content)
+    read_pending_hint_file(workspace_root)
         .map(|h| h.pending_updates)
         .unwrap_or(0)
+}
+
+pub fn read_pending_embed_hint(workspace_root: &Path) -> usize {
+    read_pending_hint_file(workspace_root)
+        .map(|h| h.embed_dirty.unwrap_or(h.pending_updates))
+        .unwrap_or(0)
+}
+
+fn read_pending_hint_file(workspace_root: &Path) -> Option<PendingHintFile> {
+    let content = std::fs::read_to_string(pending_hint_path(workspace_root)).ok()?;
+    serde_json::from_str(&content).ok()
 }
 
 /// Disk-only classification (ignores in-flight jobs and pending hints).
@@ -333,6 +381,7 @@ pub fn resolve_index_view(
 mod tests {
     use super::*;
     use crate::engines::code_search::meta::{IndexMeta, init_workspace_index, write_meta};
+    use std::collections::HashSet;
     use tempfile::TempDir;
 
     #[test]
@@ -386,13 +435,13 @@ mod tests {
     #[test]
     fn decide_index_work_first_desired_and_incompatible() {
         assert_eq!(
-            decide_index_work(true, false, 0, 0, 0),
+            decide_index_work(true, false, 0, 0, 0, 0),
             IndexWork::Rebuild {
                 reason: IndexRebuildReason::FirstDesired
             }
         );
         assert_eq!(
-            decide_index_work(false, true, 0, 10, 10),
+            decide_index_work(false, true, 0, 0, 10, 10),
             IndexWork::Rebuild {
                 reason: IndexRebuildReason::Incompatible
             }
@@ -401,21 +450,72 @@ mod tests {
 
     #[test]
     fn decide_index_work_small_dirty_updates_large_rebuilds() {
-        assert_eq!(decide_index_work(true, true, 0, 10, 10), IndexWork::None);
         assert_eq!(
-            decide_index_work(true, true, 1, 10, 10),
+            decide_index_work(true, true, 0, 0, 10, 10),
+            IndexWork::None
+        );
+        assert_eq!(
+            decide_index_work(true, true, 1, 1, 10, 10),
             IndexWork::Update { dirty: 1 }
         );
         assert_eq!(
-            decide_index_work(true, true, 5, 10, 10),
+            decide_index_work(true, true, 5, 5, 10, 10),
             IndexWork::Rebuild {
                 reason: IndexRebuildReason::DirtyTooLarge
             }
         );
         assert_eq!(
-            decide_index_work(true, true, 1, 1, 1),
+            decide_index_work(true, true, 1, 1, 1, 1),
             IndexWork::Update { dirty: 1 },
             "single-file corpus must not upgrade to rebuild"
+        );
+    }
+
+    #[test]
+    fn decide_index_work_deletions_stay_on_update() {
+        assert_eq!(
+            decide_index_work(true, true, 0, 8, 10, 2),
+            IndexWork::Update { dirty: 8 },
+            "mass delete must not rebuild remaining files"
+        );
+        assert_eq!(
+            decide_index_work(true, true, 1, 9, 10, 2),
+            IndexWork::Update { dirty: 9 },
+            "one embed + many deletes stays on update"
+        );
+        assert_eq!(
+            decide_index_work(true, true, 5, 9, 10, 6),
+            IndexWork::Rebuild {
+                reason: IndexRebuildReason::DirtyTooLarge
+            },
+            "embed share still upgrades when additions/edits are half the corpus"
+        );
+    }
+
+    #[test]
+    fn pending_hint_embed_dirty_keeps_deletes_on_update() {
+        let dir = TempDir::new().unwrap();
+        init_workspace_index(dir.path()).unwrap();
+        let mut meta = IndexMeta::shell();
+        meta.indexed_files = 10;
+        meta.indexed_chunks = 10;
+        write_meta(dir.path(), &meta).unwrap();
+        let index_dir = meta::index_dir(dir.path());
+        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
+        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
+        if !store::index_files_exist(dir.path()) {
+            return;
+        }
+        let mut pending = HashSet::new();
+        for i in 0..8 {
+            pending.insert((format!("gone{i}.rs"), true));
+        }
+        write_pending_hint_from(dir.path(), &pending);
+        assert_eq!(read_pending_hint(dir.path()), 8);
+        assert_eq!(read_pending_embed_hint(dir.path()), 0);
+        assert_eq!(
+            index_work_from_disk(dir.path()),
+            IndexWork::Update { dirty: 8 }
         );
     }
 

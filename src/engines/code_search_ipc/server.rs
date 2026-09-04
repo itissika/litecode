@@ -13,9 +13,9 @@ use super::protocol::{
 };
 use crate::engines::code_search::{
     CodeSearchRuntime, SemanticEngine, SharedRuntime, decide_index_work, init_workspace_index,
-    open_production_embedder, queue_fs_changes, queue_reconcile_dirty, rebuild_index_in_runtime,
-    refresh_index_incremental, scannable_files, should_full_rebuild, warmup_index,
-    write_pending_hint,
+    open_production_embedder, pending_work_counts, queue_fs_changes, queue_reconcile_dirty,
+    rebuild_index_in_runtime, refresh_index_incremental, scannable_files, should_full_rebuild,
+    warmup_index, write_pending_hint,
 };
 use crate::types::{LitecodeError, Result};
 
@@ -181,12 +181,16 @@ impl WorkerState {
             RefreshMode::Rebuild
         } else {
             queue_reconcile_dirty(runtime);
-            let dirty = runtime.pending_updates.lock().map(|g| g.len()).unwrap_or(0);
+            let (embed_dirty, dirty) = runtime
+                .pending_updates
+                .lock()
+                .map(|g| pending_work_counts(&g))
+                .unwrap_or((0, 0));
             let indexed = runtime
                 .with_index(|index| Ok(index.indexed_paths().len()))
                 .unwrap_or(0);
             let scannable = scannable_files(&root).map(|f| f.len()).unwrap_or(indexed);
-            match decide_index_work(true, true, dirty, indexed, scannable) {
+            match decide_index_work(true, true, embed_dirty, dirty, indexed, scannable) {
                 crate::engines::code_search::IndexWork::Rebuild { .. } => {
                     rebuild_index_in_runtime(runtime)?;
                     RefreshMode::Rebuild
