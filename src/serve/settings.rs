@@ -816,12 +816,7 @@ async fn restart_mcp_server(
     };
     let key = mcp_pool_key(workspace, &id);
     let cwd = Some(mcp_cwd(&state));
-    mcp_lifecycle_result(
-        mcp_pool(&state).restart(&key, &def, cwd).await,
-        key,
-        &state,
-    )
-    .await
+    mcp_lifecycle_result(mcp_pool(&state).restart(&key, &def, cwd).await, key, &state).await
 }
 
 async fn stop_mcp_server(

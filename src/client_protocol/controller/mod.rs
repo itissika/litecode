@@ -204,7 +204,7 @@ impl Projection {
 }
 
 impl Projection {
-    fn new(session_id: String, sessions: Arc<SessionManager>, context_window: usize) -> Self {
+    pub fn new(session_id: String, sessions: Arc<SessionManager>, context_window: usize) -> Self {
         let (_, next_seq) = sessions.entry_wire_seq_cursor(&session_id);
         let (context_tokens_estimate, context_token_breakdown) =
             Self::estimate_context_tokens(&sessions, &session_id, context_window);
@@ -421,7 +421,12 @@ impl Projection {
                 Some(child_session_id.clone()),
             ));
         }
-        if let Some(msg) = project::project(&ev, &self.snapshot(project, binding)) {
+        let msg = if project::event_needs_snapshot(&ev) {
+            project::project(&ev, &self.snapshot(project, binding))
+        } else {
+            project::project_live(&ev, &self.session_id, self.turn_id.as_deref())
+        };
+        if let Some(msg) = msg {
             self.outgoing.push(msg);
         }
     }

@@ -47,6 +47,10 @@ pub fn execute(
             to,
             data_root,
         )?)),
+        SessionRead::SeqCursor { session_id } => {
+            let (last_seq, next_seq) = session::load_wire_seq_cursor_on(conn, &session_id)?;
+            Ok(ReadValue::SeqCursor { last_seq, next_seq })
+        }
         SessionRead::ContextMeter { session_id } => Ok(ReadValue::Meter(
             session::load_context_meter_on(conn, &session_id)?,
         )),

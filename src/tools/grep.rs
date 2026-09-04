@@ -670,11 +670,7 @@ fn render_matches(
             options.offset,
             token_budget,
         )),
-        GrepOutputMode::Files => Ok(render_file_mode_page(
-            matches,
-            options.offset,
-            token_budget,
-        )),
+        GrepOutputMode::Files => Ok(render_file_mode_page(matches, options.offset, token_budget)),
     }
 }
 
@@ -891,7 +887,8 @@ fn format_file_mode_body(matches: &[LexicalMatch]) -> String {
     let mut files: Vec<_> = counts.into_iter().collect();
     files.sort_by(|(left_path, left_count), (right_path, right_count)| {
         right_count.cmp(left_count).then(
-            crate::workspace::glob_hit_key(left_path).cmp(&crate::workspace::glob_hit_key(right_path)),
+            crate::workspace::glob_hit_key(left_path)
+                .cmp(&crate::workspace::glob_hit_key(right_path)),
         )
     });
     let mut body = String::new();
@@ -1457,7 +1454,8 @@ mod tests {
             .collect();
         std::fs::write(dir.path().join("many.txt"), &content).unwrap();
 
-        let page1 = call_in_with_budget(dir.path(), serde_json::json!({ "regex": "item\\d+" }), 300);
+        let page1 =
+            call_in_with_budget(dir.path(), serde_json::json!({ "regex": "item\\d+" }), 300);
         assert!(page1.contains("output: lines"), "got: {page1}");
         assert!(
             crate::session::count_text_tokens(&page1) <= 300,
@@ -1578,7 +1576,9 @@ mod tests {
         assert!(paged.contains("view: context"), "got: {paged}");
         assert!(!paged.contains("output: lines"), "got: {paged}");
         assert!(
-            !paged.lines().any(|l| l.starts_with("      ") && l.contains(':')),
+            !paged
+                .lines()
+                .any(|l| l.starts_with("      ") && l.contains(':')),
             "content must not fall back to lines, got: {paged}"
         );
         assert!(
@@ -2045,10 +2045,7 @@ mod tests {
         };
         let d = GrepTool.description(&ctx);
         let lower = d.to_ascii_lowercase();
-        assert!(
-            d.contains("Default output is matching lines"),
-            "got: {d}"
-        );
+        assert!(d.contains("Default output is matching lines"), "got: {d}");
         assert!(
             d.contains("output_mode=files") && d.contains("content"),
             "got: {d}"
@@ -2600,10 +2597,7 @@ mod tests {
             dir.path(),
             serde_json::json!({ "regex": "needle", "path": "blob.bin", "no_ignore": true }),
         );
-        assert_eq!(
-            result,
-            "path 'blob.bin' is not searched: binary file."
-        );
+        assert_eq!(result, "path 'blob.bin' is not searched: binary file.");
     }
 
     #[test]
@@ -2620,9 +2614,6 @@ mod tests {
         let err = tool
             .validate_input(&serde_json::json!({"regex": "x", "output_mode": "matches"}))
             .unwrap_err();
-        assert!(
-            err.contains("'files', 'lines', or 'content'"),
-            "got: {err}"
-        );
+        assert!(err.contains("'files', 'lines', or 'content'"), "got: {err}");
     }
 }

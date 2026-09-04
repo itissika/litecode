@@ -512,12 +512,8 @@ impl SessionManager {
     }
 
     pub fn entry_wire_seq_cursor(&self, session_id: &str) -> (i64, u64) {
-        match self.data.events_blocking(session_id) {
-            Ok(events) => {
-                let last = events.last().map(|e| e.seq as i64).unwrap_or(-1);
-                let next = last.saturating_add(1) as u64;
-                (last, next)
-            }
+        match self.data.seq_cursor_blocking(session_id) {
+            Ok(cursor) => cursor,
             Err(_) => (-1, 0),
         }
     }

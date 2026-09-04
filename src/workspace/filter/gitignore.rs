@@ -24,10 +24,7 @@ pub fn path_gitignored(workspace_root: &Path, rel: &str, preset: FilterPreset) -
 
     if layers.git_global {
         let (global, _) = Gitignore::global();
-        if global
-            .matched_path_or_any_parents(&abs, is_dir)
-            .is_ignore()
-        {
+        if global.matched_path_or_any_parents(&abs, is_dir).is_ignore() {
             return true;
         }
     }
@@ -70,7 +67,11 @@ mod tests {
         with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
             assert!(path_gitignored(root, "target/foo.rs", FilterPreset::Search));
             assert!(!path_gitignored(root, "src.rs", FilterPreset::Search));
-            assert!(!path_gitignored(root, "target/foo.rs", FilterPreset::Watcher));
+            assert!(!path_gitignored(
+                root,
+                "target/foo.rs",
+                FilterPreset::Watcher
+            ));
         });
     }
 }

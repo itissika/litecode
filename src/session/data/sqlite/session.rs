@@ -904,6 +904,21 @@ pub(crate) fn load_events_on(
     load_events_range_on(conn, session_id, 0, i64::MAX, data_root)
 }
 
+/// `(last_seq, next_seq)` from `MAX(seq)`. Empty log → `(-1, 0)`.
+pub(crate) fn load_wire_seq_cursor_on(conn: &Connection, session_id: &str) -> Result<(i64, u64)> {
+    let last: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(seq), -1) FROM transcript_items WHERE session_id = ?1",
+        rusqlite::params![session_id],
+        |row| row.get(0),
+    )?;
+    let next = if last < 0 {
+        0
+    } else {
+        (last as u64).saturating_add(1)
+    };
+    Ok((last, next))
+}
+
 pub(crate) fn load_events_range_on(
     conn: &Connection,
     session_id: &str,
@@ -2194,13 +2209,7 @@ impl Session {
 
     /// `(last_seq, next_seq)` for wire snapshots. Empty log → `(-1, 0)`.
     pub fn wire_seq_cursor(&self) -> Result<(i64, u64)> {
-        let last = self.max_seq()?;
-        let next = if last < 0 {
-            0
-        } else {
-            (last as u64).saturating_add(1)
-        };
-        Ok((last, next))
+        load_wire_seq_cursor_on(self.conn(), &self.id)
     }
 
     /// §5.1 compact success — summary checkpoint with empty keep (summary-only view).

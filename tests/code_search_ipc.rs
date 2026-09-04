@@ -242,7 +242,11 @@ fn refresh_honors_gitignore_switch_from_disk() {
     init_workspace_index(root).unwrap();
     std::fs::create_dir(root.join(".git")).unwrap();
     std::fs::write(root.join(".gitignore"), "hidden.rs\n").unwrap();
-    std::fs::write(root.join("visible.rs"), "pub fn visible_unique_symbol() {}\n").unwrap();
+    std::fs::write(
+        root.join("visible.rs"),
+        "pub fn visible_unique_symbol() {}\n",
+    )
+    .unwrap();
     std::fs::write(root.join("hidden.rs"), "pub fn hidden_unique_symbol() {}\n").unwrap();
     litecode::workspace::filter::persist_workspace_excludes(
         root,

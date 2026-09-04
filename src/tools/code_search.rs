@@ -294,11 +294,7 @@ mod tests {
         let tool = CodeSearchTool::new(engines);
         let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
         assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
-        assert!(
-            result.content.contains("refreshing"),
-            "{}",
-            result.content
-        );
+        assert!(result.content.contains("refreshing"), "{}", result.content);
         assert!(
             !result.content.contains("No matching code"),
             "must not search stale corpus while refreshing: {}",
@@ -325,7 +321,11 @@ mod tests {
             "{}",
             result.content
         );
-        assert!(!result.content.contains("No matching code"), "{}", result.content);
+        assert!(
+            !result.content.contains("No matching code"),
+            "{}",
+            result.content
+        );
     }
 
     #[test]

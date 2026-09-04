@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
+use super::gate::{CommitAck, DocId};
 use super::global_db::{self, store, tools};
 use super::log_filter;
 use super::manager::ConfigManager;
@@ -17,7 +18,6 @@ use super::schema::{
     McpServerDefinition, McpTransport, ModelDefinition, PROTECTED_AGENT_IDS, ProviderDefinition,
     ToolPreset, WebSearchSettings,
 };
-use super::gate::{CommitAck, DocId};
 use super::turn_guard::TurnGuard;
 use super::workspace;
 use crate::optional::EngineManager;
@@ -430,7 +430,10 @@ impl SettingsWriter {
         })
     }
 
-    pub fn write_providers(&self, providers: HashMap<String, ProviderDefinition>) -> Result<CommitAck> {
+    pub fn write_providers(
+        &self,
+        providers: HashMap<String, ProviderDefinition>,
+    ) -> Result<CommitAck> {
         self.commit_partial(&[DocId::Providers], |settings| {
             let mut merged = HashMap::new();
             for (map_key, mut def) in providers {
@@ -1301,9 +1304,7 @@ mod tests {
                 desired: true,
                 servers: vec!["rust-analyzer".into()],
             },
-            retrieval: workspace::WorkspaceRetrievalState {
-                desired: false,
-            },
+            retrieval: workspace::WorkspaceRetrievalState { desired: false },
         };
         let ack = writer.write_engines(ws.path(), file.clone()).unwrap();
         let on_disk = workspace::read_workspace_engines(ws.path()).unwrap();

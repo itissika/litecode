@@ -82,10 +82,10 @@ pub fn human_search(
         include: req.include.clone(),
         exclude: req.exclude.clone(),
         multiline: false,
-            max_matches: top_k,
-            before_context: 0,
-            after_context: 0,
-        })?;
+        max_matches: top_k,
+        before_context: 0,
+        after_context: 0,
+    })?;
     let text: Vec<SearchHit> = text_matches
         .iter()
         .enumerate()

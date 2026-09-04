@@ -17,12 +17,12 @@ pub use bridge::{
     context_window_for_agent, json_output_for_agent, max_tokens_for_agent,
     reasoning_effort_for_agent, thinking_mode_for_agent, warn_bridge_fallbacks,
 };
+pub use gate::{ApplyPlan, CommitAck, DocId, EvalView, PersistDoc};
 pub use manager::ConfigManager;
 pub use path::{
     canon_abs, canon_abs_lossy, canon_join_nonexistent, is_under, os_probe_abs, strip_verbatim,
 };
 pub use resolved::{ResolvedConfig, WorkspacePaths, WorkspaceState, resolve};
-pub use gate::{ApplyPlan, CommitAck, DocId, EvalView, PersistDoc};
 pub use schema::GlobalSettings;
 pub use settings_writer::{
     ProviderView, SettingsChangedEvent, SettingsSummary, SettingsWriteError, SettingsWriter,

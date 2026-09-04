@@ -45,9 +45,7 @@ impl ToolEngine for WebsearchEngine {
             .map_err(|e| LitecodeError::Config(format!("websearch endpoint lock: {e}")))?
             .clone()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                LitecodeError::Config("websearch is not configured".into())
-            })?;
+            .ok_or_else(|| LitecodeError::Config("websearch is not configured".into()))?;
 
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(15))

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { isCompactCutRow } from "../api/adapter";
 import type { SessionInfo, SessionSnapshot } from "../api/types";
 import { useConnectionStore } from "./connectionStore";
 import { useMessageStore } from "./messageStore";
@@ -244,6 +245,35 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
     const turn = useTurnStore.getState().byId.get(sid)!;
     expect(turn.runState).toBe("running");
     expect(turn.currentTurnId).toBe("t-next");
+  });
+
+  it("keeps a compacted cut from buffer/item without a mid-turn snapshot", () => {
+    const sid = "s-compact-item";
+    const sendRpc = vi.fn();
+    useConnectionStore.setState({ sendRpc } as never);
+    useMessageStore.getState().onBufferLoaded(sid, {
+      session_id: sid,
+      from_seq: 0,
+      to_seq: 3,
+      events: [
+        { seq: 0, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "a" }] } },
+        { seq: 1, kind: "item/assistant", body: { type: "message", role: "assistant", id: "a0", status: "completed", content: [{ type: "output_text", text: "b", annotations: [] }] } },
+        { seq: 2, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "c" }] } },
+      ],
+    });
+
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      seq: 3,
+      kind: "compacted",
+      body: { summary: "first-cut", from: 0, to: 3 },
+    });
+
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages.map((row) => row.seq)).toEqual([0, 1, 2, 3]);
+    expect(isCompactCutRow(slice.messages[3]!)).toBe(true);
+    expect(slice.toSeq).toBe(4);
+    expect(sendRpc).not.toHaveBeenCalled();
   });
 
   it("truncates loaded transcript from a successful revert snapshot when buffer/reverted was missed", () => {

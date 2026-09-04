@@ -122,7 +122,11 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         assert!(!should_queue_text_path(root, "node_modules/x.js", false));
-        assert!(!should_queue_text_path(root, ".litecode/text-index/x", false));
+        assert!(!should_queue_text_path(
+            root,
+            ".litecode/text-index/x",
+            false
+        ));
         assert!(!should_queue_text_path(root, ".git/config", false));
         assert!(should_queue_text_path(root, "src/main.rs", false));
         assert!(should_queue_text_path(root, "src/main.rs", true));

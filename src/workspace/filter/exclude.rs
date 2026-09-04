@@ -36,10 +36,7 @@ impl ExcludeMatcher {
                 }
             }
         }
-        Self {
-            segments,
-            patterns,
-        }
+        Self { segments, patterns }
     }
 
     pub fn for_preset(preset: FilterPreset) -> Self {

@@ -972,7 +972,10 @@ mod tests {
         );
     }
 
-    fn session_db_with_marker(root: &std::path::Path, marker: &str) -> (String, std::path::PathBuf) {
+    fn session_db_with_marker(
+        root: &std::path::Path,
+        marker: &str,
+    ) -> (String, std::path::PathBuf) {
         let litecode = root.join(".litecode");
         std::fs::create_dir_all(&litecode).unwrap();
         let db = litecode.join("sessions.db");
@@ -1023,7 +1026,9 @@ mod tests {
     fn code_semantic_search_fails_fast_while_index_updating() {
         let dir = TempDir::new().unwrap();
         let engines = WorkspaceEngines::new();
-        engines.code_search().set_workspace(dir.path().to_path_buf());
+        engines
+            .code_search()
+            .set_workspace(dir.path().to_path_buf());
         engines.set_state_for_test("code_search", EngineState::Warm);
         engines.set_refresh_busy_for_test(true);
 
@@ -1171,7 +1176,9 @@ mod tests {
         crate::engines::code_search::init_workspace_index(dir.path()).unwrap();
         crate::config::workspace::enable_code_search_engine(dir.path()).unwrap();
         let engines = WorkspaceEngines::new();
-        engines.code_search().set_workspace(dir.path().to_path_buf());
+        engines
+            .code_search()
+            .set_workspace(dir.path().to_path_buf());
         engines.request_index_sync(dir.path());
         assert!(!engines.is_refresh_busy());
         let view = crate::engines::code_search::resolve_index_view(dir.path(), None);
@@ -1187,14 +1194,14 @@ mod tests {
         crate::engines::code_search::init_workspace_index(dir.path()).unwrap();
         crate::config::workspace::enable_code_search_engine(dir.path()).unwrap();
         let engines = WorkspaceEngines::new();
-        engines.code_search().set_workspace(dir.path().to_path_buf());
+        engines
+            .code_search()
+            .set_workspace(dir.path().to_path_buf());
         engines.set_state_for_test("code_search", EngineState::Warm);
         engines.request_index_sync(dir.path());
         assert!(engines.is_refresh_busy());
-        let view = crate::engines::code_search::resolve_index_view(
-            dir.path(),
-            Some(EngineState::Warm),
-        );
+        let view =
+            crate::engines::code_search::resolve_index_view(dir.path(), Some(EngineState::Warm));
         assert!(
             matches!(
                 view.status,

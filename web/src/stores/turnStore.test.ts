@@ -214,6 +214,76 @@ describe("turnStore convergence", () => {
     expect(msgs.turnEndNotice?.message).toBe("stream ended");
   });
 
+  it("onTurnFinished gap-fills buffer/load from local toSeq to snapshot next_seq", async () => {
+    const sessionId = "s-gap";
+    const sendRpc = vi.fn(async () => ({
+      session_id: sessionId,
+      from_seq: 2,
+      to_seq: 5,
+      events: [],
+    }));
+    useConnectionStore.setState({ sendRpc } as never);
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            runState: "running",
+            currentTurnId: "t1",
+          },
+        ],
+      ]),
+    });
+    useMessageStore.getState().onBufferLoaded(sessionId, {
+      session_id: sessionId,
+      from_seq: 0,
+      to_seq: 2,
+      events: [
+        {
+          seq: 0,
+          kind: "item/user",
+          body: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "a" }],
+          },
+        },
+        {
+          seq: 1,
+          kind: "item/assistant",
+          body: {
+            type: "message",
+            role: "assistant",
+            id: "a0",
+            status: "completed",
+            content: [{ type: "output_text", text: "b", annotations: [] }],
+          },
+        },
+      ],
+    });
+
+    useTurnStore.getState().onTurnFinished({
+      turn_id: "t1",
+      reason: "completed",
+      final_text: "done",
+      error: null,
+      snapshot: {
+        ...snapshot(sessionId),
+        buffer: { last_seq: 4, next_seq: 5, revision: 1 },
+      },
+      session_id: sessionId,
+    });
+
+    await vi.waitFor(() => {
+      expect(sendRpc).toHaveBeenCalledWith("buffer/load", {
+        from_seq: 2,
+        to_seq: 5,
+        session_id: sessionId,
+      });
+    });
+  });
+
   it("applySnapshotTurn with null forces idle", () => {
     const sessionId = "s2";
     useTurnStore.getState().applySnapshotTurn(sessionId, turnSnap("t1"));

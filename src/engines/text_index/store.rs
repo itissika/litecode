@@ -465,8 +465,8 @@ pub fn list_search_paths(
     workspace_root: &Path,
     should_stop: impl Fn() -> bool,
 ) -> Result<HashSet<String>> {
-    let rel_ctx = RelPathCtx::new(workspace_root)
-        .unwrap_or_else(|_| RelPathCtx::new_lossy(workspace_root));
+    let rel_ctx =
+        RelPathCtx::new(workspace_root).unwrap_or_else(|_| RelPathCtx::new_lossy(workspace_root));
     let mut out = HashSet::new();
     for entry in walk_builder(workspace_root, FilterPreset::Search).build() {
         if should_stop() {

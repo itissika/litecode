@@ -110,9 +110,10 @@ pub async fn listen(
                         // Sole ServeState reload of mcp.json / custom_tools.json.
                         // Skip during a turn (same as Settings 409); start_turn reads disk.
                         if !turn_guard.is_turn_in_progress()
-                            && change.paths.iter().any(|p| {
-                                crate::config::workspace::is_workspace_tool_defs_rel(p)
-                            })
+                            && change
+                                .paths
+                                .iter()
+                                .any(|p| crate::config::workspace::is_workspace_tool_defs_rel(p))
                         {
                             runtime
                                 .write()
@@ -126,9 +127,11 @@ pub async fn listen(
                         engines
                             .text_index()
                             .notify_fs_changes(&change.paths, deleted);
-                        if change.paths.iter().any(|p| {
-                            crate::workspace::filter::path_triggers_code_index_sync(p)
-                        }) {
+                        if change
+                            .paths
+                            .iter()
+                            .any(|p| crate::workspace::filter::path_triggers_code_index_sync(p))
+                        {
                             engines.request_index_sync(workspace.sandbox().root());
                         }
                     }

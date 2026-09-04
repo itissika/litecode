@@ -167,6 +167,17 @@ impl SessionData {
         }
     }
 
+    pub fn seq_cursor_blocking(&self, session_id: &str) -> Result<(i64, u64)> {
+        match self.read_blocking(SessionRead::SeqCursor {
+            session_id: session_id.to_string(),
+        })? {
+            ReadValue::SeqCursor { last_seq, next_seq } => Ok((last_seq, next_seq)),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected seq cursor".into(),
+            )),
+        }
+    }
+
     pub fn meta_blocking(&self, session_id: &str) -> Result<crate::session::model::SessionMeta> {
         match self.read_blocking(SessionRead::Meta {
             session_id: session_id.to_string(),

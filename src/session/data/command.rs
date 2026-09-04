@@ -280,6 +280,9 @@ pub enum SessionRead {
         from: i64,
         to: i64,
     },
+    SeqCursor {
+        session_id: String,
+    },
     ContextMeter {
         session_id: String,
     },
@@ -349,6 +352,7 @@ pub enum ReadValue {
     Transcript(crate::types::Transcript),
     WorkingSet(Vec<WorkingRow>),
     Events(Vec<crate::session::event::SessionEvent>),
+    SeqCursor { last_seq: i64, next_seq: u64 },
     Meter(SessionContextMeter),
     List(Vec<(String, String, i64, String, String, Option<String>)>),
     Ids(Vec<String>),

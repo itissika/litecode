@@ -448,11 +448,7 @@ impl TextIndexEngine {
                     g.reconcile_requested = true;
                 }
             }
-            tracing::info!(
-                count,
-                fingerprint_mismatch,
-                "text_index loaded from disk"
-            );
+            tracing::info!(count, fingerprint_mismatch, "text_index loaded from disk");
             let _ = self.flush_pending();
             return;
         }
@@ -994,9 +990,7 @@ mod tests {
         unregister_engine();
         assert_eq!(match_paths(&flushed), match_paths(&scan));
         assert!(
-            match_paths(&flushed)
-                .iter()
-                .any(|p| p.ends_with("late.rs")),
+            match_paths(&flushed).iter().any(|p| p.ends_with("late.rs")),
             "notify then flush must restore scan parity: {:?}",
             match_paths(&flushed)
         );

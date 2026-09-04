@@ -170,7 +170,40 @@ pub fn notification(method: &str, params: serde_json::Value) -> serde_json::Valu
     })
 }
 
+/// True when the wire payload embeds a full `SessionSnapshot`.
+pub fn event_needs_snapshot(ev: &InternalEvent) -> bool {
+    matches!(
+        ev,
+        InternalEvent::CompactionLifecycle { .. }
+            | InternalEvent::FileRevertUpdated { .. }
+            | InternalEvent::TurnCompleted { .. }
+    )
+}
+
 pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_json::Value> {
+    project_with(
+        ev,
+        &snapshot.session_id,
+        snapshot.turn.as_ref().map(|t| t.turn_id.as_str()),
+        Some(snapshot),
+    )
+}
+
+/// Live turn frames: `session_id` + `turn_id` only, no snapshot rebuild.
+pub fn project_live(
+    ev: &InternalEvent,
+    session_id: &str,
+    turn_id: Option<&str>,
+) -> Option<serde_json::Value> {
+    project_with(ev, session_id, turn_id, None)
+}
+
+fn project_with(
+    ev: &InternalEvent,
+    session_id: &str,
+    turn_id: Option<&str>,
+    snapshot: Option<&SessionSnapshot>,
+) -> Option<serde_json::Value> {
     match ev {
         InternalEvent::TurnStarted {
             turn_id,
@@ -179,36 +212,41 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
         } => Some(notification(
             "agent/turn_started",
             serde_json::json!({
-                "session_id": snapshot.session_id,
+                "session_id": session_id,
                 "turn_id": turn_id,
                 "input": input,
                 "step_max": step_max,
             }),
         )),
-        InternalEvent::PhaseChanged { phase, step } => turn_event(
-            snapshot,
+        InternalEvent::PhaseChanged { phase, step } => turn_event_ids(
+            session_id,
+            turn_id,
             WireEvent::PhaseChanged {
                 phase: wire_phase(phase),
                 step: *step,
             },
         ),
-        InternalEvent::StepStarted { step, step_max } => turn_event(
-            snapshot,
+        InternalEvent::StepStarted { step, step_max } => turn_event_ids(
+            session_id,
+            turn_id,
             WireEvent::StepStarted {
                 step: *step,
                 step_max: *step_max,
             },
         ),
-        InternalEvent::StreamEvent(ev) => {
-            turn_event(snapshot, WireEvent::StreamEvent { event: ev.clone() })
-        }
+        InternalEvent::StreamEvent(ev) => turn_event_ids(
+            session_id,
+            turn_id,
+            WireEvent::StreamEvent { event: ev.clone() },
+        ),
         InternalEvent::TodoProgress {
             pending,
             in_progress,
             completed,
             items,
-        } => turn_event(
-            snapshot,
+        } => turn_event_ids(
+            session_id,
+            turn_id,
             WireEvent::TodoProgress {
                 pending: *pending,
                 in_progress: *in_progress,
@@ -216,8 +254,9 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
                 items: items.clone(),
             },
         ),
-        InternalEvent::PlanChanged { active_plan_path } => turn_event(
-            snapshot,
+        InternalEvent::PlanChanged { active_plan_path } => turn_event_ids(
+            session_id,
+            turn_id,
             WireEvent::PlanChanged {
                 active_plan_path: active_plan_path.clone(),
             },
@@ -229,8 +268,9 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
             tools_count,
             context_window,
             token_breakdown,
-        } => turn_event(
-            snapshot,
+        } => turn_event_ids(
+            session_id,
+            turn_id,
             WireEvent::LlmRequestBuilt {
                 model: model.clone(),
                 endpoint: endpoint.clone(),
@@ -246,8 +286,9 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
             cache_hit_tokens,
             cache_miss_tokens,
             stop_reason,
-        } => turn_event(
-            snapshot,
+        } => turn_event_ids(
+            session_id,
+            turn_id,
             WireEvent::LlmCompleted {
                 prompt_tokens: *prompt_tokens,
                 completion_tokens: *completion_tokens,
@@ -256,8 +297,9 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
                 stop_reason: stop_reason.clone(),
             },
         ),
-        InternalEvent::Compaction { kind, detail } => turn_event(
-            snapshot,
+        InternalEvent::Compaction { kind, detail } => turn_event_ids(
+            session_id,
+            turn_id,
             WireEvent::Compaction {
                 kind: *kind,
                 detail: detail.clone(),
@@ -270,6 +312,7 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
             fail_kind,
             error,
         } => {
+            let snapshot = snapshot?;
             let mut started_snapshot = snapshot.clone();
             started_snapshot.compacting =
                 *trigger == CompactionTrigger::Manual && *stage == CompactionStage::Started;
@@ -297,8 +340,9 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
             tool,
             approved,
             always,
-        } => turn_event(
-            snapshot,
+        } => turn_event_ids(
+            session_id,
+            turn_id,
             WireEvent::PermissionResolved {
                 tool: tool.clone(),
                 approved: *approved,
@@ -306,16 +350,18 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
             },
         ),
         InternalEvent::PermissionAwaiting { .. } => None,
-        InternalEvent::SnapshotNotice { level, message } => turn_event(
-            snapshot,
+        InternalEvent::SnapshotNotice { level, message } => turn_event_ids(
+            session_id,
+            turn_id,
             WireEvent::SnapshotNotice {
                 level: level.clone(),
                 message: message.clone(),
             },
         ),
-        InternalEvent::FileRevertUpdated { .. } => Some(session_snapshot(snapshot.clone())),
-        InternalEvent::Error(error) => turn_event(
-            snapshot,
+        InternalEvent::FileRevertUpdated { .. } => Some(session_snapshot(snapshot?.clone())),
+        InternalEvent::Error(error) => turn_event_ids(
+            session_id,
+            turn_id,
             WireEvent::Error {
                 code: fail_reason_to_error_code(error.reason),
                 message: error.message.clone(),
@@ -345,11 +391,7 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
         InternalEvent::BufferItem {
             event,
             child_session_id,
-        } => Some(buffer_log_row(
-            &snapshot.session_id,
-            event,
-            child_session_id.clone(),
-        )),
+        } => Some(buffer_log_row(session_id, event, child_session_id.clone())),
         InternalEvent::BufferRestamp { .. } => None,
         InternalEvent::SubagentBound {
             call_id,
@@ -357,7 +399,7 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
         } => Some(notification(
             super::protocol::methods::AGENT_SUBAGENT_BOUND,
             serde_json::json!({
-                "session_id": snapshot.session_id,
+                "session_id": session_id,
                 "call_id": call_id,
                 "child_session_id": child_session_id,
             }),
@@ -369,6 +411,7 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
             turn_token_stats,
             committed_next_seq: _,
         } => {
+            let snapshot = snapshot?;
             let error = turn_error(reason, final_text);
             let mut params = serde_json::json!({
                 "session_id": snapshot.session_id,
@@ -399,7 +442,7 @@ pub fn project(ev: &InternalEvent, snapshot: &SessionSnapshot) -> Option<serde_j
         InternalEvent::BashJobs { snapshot: bash } => Some(notification(
             super::protocol::methods::BASH_JOBS,
             serde_json::json!({
-                "session_id": snapshot.session_id,
+                "session_id": session_id,
                 "jobs": bash.jobs,
                 "waits": bash.waits,
             }),
@@ -429,12 +472,16 @@ pub fn session_list(sessions: Vec<super::protocol::SessionInfo>) -> serde_json::
     notification("session/list", serde_json::json!({ "sessions": sessions }))
 }
 
-fn turn_event(snapshot: &SessionSnapshot, event: WireEvent) -> Option<serde_json::Value> {
-    let turn_id = snapshot.turn.as_ref()?.turn_id.clone();
+fn turn_event_ids(
+    session_id: &str,
+    turn_id: Option<&str>,
+    event: WireEvent,
+) -> Option<serde_json::Value> {
+    let turn_id = turn_id?;
     Some(notification(
         "agent/turn_event",
         serde_json::json!({
-            "session_id": snapshot.session_id,
+            "session_id": session_id,
             "turn_id": turn_id,
             "event": event,
         }),

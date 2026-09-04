@@ -586,13 +586,8 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                     ..
                 } => (CommitKind::Sealed { seqs: sealed_seqs }, preview),
             };
-            let mut receipt = bump_receipt(
-                state,
-                &session_id,
-                &operation_id.0,
-                expected_revision,
-                kind,
-            )?;
+            let mut receipt =
+                bump_receipt(state, &session_id, &operation_id.0, expected_revision, kind)?;
             receipt.preview = preview;
             Ok(receipt)
         }

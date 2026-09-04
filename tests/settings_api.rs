@@ -852,7 +852,9 @@ fn runtime_clone_reloads_stale_provider_after_settings_write() {
         .expect("write provider");
 
     let mut active = runtime.clone();
-    active.apply(litecode::config::DocId::ALL).expect("active reload");
+    active
+        .apply(litecode::config::DocId::ALL)
+        .expect("active reload");
     assert!(
         active
             .resolved
@@ -864,7 +866,9 @@ fn runtime_clone_reloads_stale_provider_after_settings_write() {
     );
 
     let mut fresh_ws = runtime.clone();
-    fresh_ws.apply(litecode::config::DocId::ALL).expect("ws clone reload");
+    fresh_ws
+        .apply(litecode::config::DocId::ALL)
+        .expect("ws clone reload");
     assert!(
         fresh_ws
             .resolved
@@ -946,7 +950,9 @@ async fn set_session_model_reloads_stale_catalog_after_model_write() {
         revision,
         &db,
     );
-    runtime.apply(litecode::config::DocId::ALL).expect("ws connect");
+    runtime
+        .apply(litecode::config::DocId::ALL)
+        .expect("ws connect");
 
     let mut models = writer.load_settings().expect("load").models;
     models.insert(
@@ -1694,9 +1700,7 @@ async fn settings_mcp_server_crud_catalog_and_stdio_probe() {
     assert_eq!(probe["status"], "running", "{probe}");
     let tools = probe["tools"].as_array().expect("tools");
     assert!(
-        tools
-            .iter()
-            .any(|t| t == "echo" || t["name"] == "echo"),
+        tools.iter().any(|t| t == "echo" || t["name"] == "echo"),
         "{tools:?}"
     );
 
@@ -1714,7 +1718,10 @@ async fn settings_mcp_server_crud_catalog_and_stdio_probe() {
         .iter()
         .find(|row| row["id"] == "mockecho")
         .expect("row");
-    assert!(row.get("status").is_none(), "definition must not carry runtime");
+    assert!(
+        row.get("status").is_none(),
+        "definition must not carry runtime"
+    );
     assert_eq!(listed["runtime"]["global"]["mockecho"]["status"], "running");
 
     let restarted: Value = client
