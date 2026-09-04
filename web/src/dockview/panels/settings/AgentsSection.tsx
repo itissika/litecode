@@ -517,7 +517,13 @@ function agentPersistPayload(
 ): AgentProfile {
   const isHidden = isHiddenSettingsAgent(selectedAgentId, draft.role);
   if (isHidden) {
-    return { ...draft, tools: {}, allowed_subagents: [], temperature: BUILTIN_TEMPERATURE };
+    return {
+      ...draft,
+      role: "hidden",
+      tools: {},
+      allowed_subagents: [],
+      temperature: BUILTIN_TEMPERATURE,
+    };
   }
   if (draft.role === "subagent") {
     return withSyncedToolSeries({
@@ -787,23 +793,25 @@ export function AgentsSection() {
                   disabled={saveBlocked}
                 />
               </div>
-              <div>
-                <FieldLabel>Type</FieldLabel>
-                <div className="flex gap-2">
-                  {(["primary", "subagent"] as const).map((role) => (
-                    <button
-                      key={role}
-                      type="button"
-                      disabled={saveBlocked}
-                      onClick={() => setDraft({ ...draft, role })}
-                      className={`flex items-center gap-1 ${draft.role === role ? "btn-primary btn-xs" : "btn-ghost btn-xs"}`}
-                    >
-                      <AgentTypeIcon role={role} />
-                      {role === "primary" ? "Primary" : "Subagent"}
-                    </button>
-                  ))}
+              {!isHiddenAgent ? (
+                <div>
+                  <FieldLabel>Type</FieldLabel>
+                  <div className="flex gap-2">
+                    {(["primary", "subagent"] as const).map((role) => (
+                      <button
+                        key={role}
+                        type="button"
+                        disabled={saveBlocked}
+                        onClick={() => setDraft({ ...draft, role })}
+                        className={`flex items-center gap-1 ${draft.role === role ? "btn-primary btn-xs" : "btn-ghost btn-xs"}`}
+                      >
+                        <AgentTypeIcon role={role} />
+                        {role === "primary" ? "Primary" : "Subagent"}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              ) : null}
             </div>
             {!isProtectedAgent(selectedAgentId) ? (
               <div className="flex justify-end">
@@ -820,11 +828,13 @@ export function AgentsSection() {
           </div>
         )}
 
-        <AgentProfileFields
-          draft={draft}
-          saveBlocked={saveBlocked}
-          onChange={setDraft}
-        />
+        {creating || !isHiddenAgent ? (
+          <AgentProfileFields
+            draft={draft}
+            saveBlocked={saveBlocked}
+            onChange={setDraft}
+          />
+        ) : null}
       </div>
 
       {!isHiddenAgent && draft.role === "primary" ? (
@@ -853,7 +863,7 @@ export function AgentsSection() {
         />
       ) : isHiddenAgent ? (
         <p className="text-xs text-(--_dk-text-disabled)">
-          Hidden agents have no tool list (compaction uses model and prompt only).
+          Compaction only assigns a model. Prompt, tools, and max steps are built in.
         </p>
       ) : null}
       </div>

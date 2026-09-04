@@ -133,6 +133,58 @@ impl ContextPipeline {
         self.state.borrow().surface_len
     }
 
+    /// Reattach unpersisted `turn_items` onto a persisted prefix.
+    /// Persisted length comes from the prefix, never from a fresh log fold.
+    fn merge_unpersisted_tail(persisted: Vec<WorkingRow>, turn_items: &[Item]) -> Vec<WorkingRow> {
+        let persisted_len = persisted.len();
+        let mut rows = persisted;
+        for item in turn_items.iter().skip(persisted_len).cloned() {
+            rows.push(WorkingRow::pending(item));
+        }
+        rows
+    }
+
+    /// Use the turn window when the log max seq is unchanged. Reload from fold
+    /// when the window is empty or the log was truncated (or otherwise moved).
+    fn sync_turn_working(
+        &self,
+        sessions: &SessionManager,
+        session_id: &str,
+        turn_items: &mut Transcript,
+    ) {
+        let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
+        let must_reload = {
+            let state = self.state.borrow();
+            state.working.is_empty() || max_seq != state.log_max_seq
+        };
+        if must_reload {
+            if let Ok(from_log) = sessions.data().working_set_blocking(session_id) {
+                let persisted_len = from_log.len();
+                let rows = Self::merge_unpersisted_tail(from_log, turn_items);
+                *turn_items = project_items(&rows);
+                let mut state = self.state.borrow_mut();
+                state.working = rows;
+                state.surface_len = persisted_len;
+                state.log_max_seq = max_seq;
+            }
+            return;
+        }
+        let persisted: Vec<WorkingRow> = self
+            .state
+            .borrow()
+            .working
+            .iter()
+            .filter(|row| row.log_seq.is_some())
+            .cloned()
+            .collect();
+        let persisted_len = persisted.len();
+        let rows = Self::merge_unpersisted_tail(persisted, turn_items);
+        *turn_items = project_items(&rows);
+        let mut state = self.state.borrow_mut();
+        state.working = rows;
+        state.surface_len = persisted_len;
+    }
+
     pub fn end_turn(&self) {
         let mut state = self.state.borrow_mut();
         state.turn_id = None;
@@ -171,24 +223,7 @@ impl ContextPipeline {
             return Ok(false);
         }
 
-        if let Ok(from_log) = sessions.data().working_set_blocking(session_id) {
-            let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
-            let persisted_len = from_log.len();
-            let tail: Vec<Item> = if turn_items.len() > persisted_len {
-                turn_items[persisted_len..].to_vec()
-            } else {
-                Vec::new()
-            };
-            let mut rows = from_log;
-            for item in tail {
-                rows.push(WorkingRow::pending(item));
-            }
-            *turn_items = project_items(&rows);
-            let mut state = self.state.borrow_mut();
-            state.working = rows;
-            state.surface_len = persisted_len;
-            state.log_max_seq = max_seq;
-        }
+        self.sync_turn_working(sessions, session_id, turn_items);
 
         let mut transcript = turn_items.clone();
         let committed_len = self.state.borrow().surface_len;
@@ -366,5 +401,25 @@ impl ContextPipeline {
     pub fn will_compact(&self, items: &[Item], last_prompt_tokens: u64) -> bool {
         let token_count = self.budget.token_count(items, last_prompt_tokens);
         self.budget.should_compact(token_count)
+    }
+}
+
+#[cfg(test)]
+mod turn_window_tests {
+    use super::*;
+    use crate::types::user_text;
+
+    #[test]
+    fn merge_unpersisted_tail_keys_off_persisted_prefix() {
+        let persisted = vec![
+            WorkingRow::persisted(0, user_text("a")),
+            WorkingRow::persisted(1, user_text("b")),
+        ];
+        let items = vec![user_text("a"), user_text("b"), user_text("c")];
+        let rows = ContextPipeline::merge_unpersisted_tail(persisted, &items);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].log_seq, Some(0));
+        assert_eq!(rows[1].log_seq, Some(1));
+        assert_eq!(rows[2].log_seq, None);
     }
 }

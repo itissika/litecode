@@ -577,8 +577,8 @@ export async function getEnginesDoc(): Promise<WorkspaceEnginesDoc> {
 
 export async function putEnginesDoc(
   file: WorkspaceEnginesDoc,
-): Promise<WorkspaceEnginesDoc & RevisionResponse> {
-  return requestJson<WorkspaceEnginesDoc & RevisionResponse>("/api/settings/engines", {
+): Promise<RevisionResponse> {
+  return requestJson<RevisionResponse>("/api/settings/engines", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(file),
@@ -707,7 +707,7 @@ export function isAgentVisible(role: AgentRole): boolean {
   return role === "primary" || role === "subagent" || role === "hidden";
 }
 
-/** Hidden agents configurable in settings (model/prompt only). */
+/** Hidden agents configurable in settings (model only). */
 export function isHiddenSettingsAgent(id: string, role: AgentRole): boolean {
   return role === "hidden" && id === "compaction";
 }

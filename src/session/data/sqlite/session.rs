@@ -3990,6 +3990,53 @@ mod tests {
     }
 
     #[test]
+    fn writer_working_set_matches_fold_after_append_and_keep_recent_compact() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("a"), user_text("b"), user_text("c")])
+            .unwrap();
+        let fold_ids = |session: &Session| {
+            let events = session.load_events().unwrap();
+            let surface = fold_surface(&events).unwrap();
+            project_working_pairs(&surface, |seq| {
+                events
+                    .iter()
+                    .find(|e| e.seq == seq)
+                    .ok_or_else(|| {
+                        LitecodeError::InvalidSessionEvent(format!("surface seq {seq} missing"))
+                    })
+                    .and_then(spine_agent_item)
+            })
+            .unwrap()
+            .into_iter()
+            .map(|(seq, item)| (seq, item_text_preview(&item)))
+            .collect::<Vec<_>>()
+        };
+        let writer_ids = |session: &Session| {
+            session
+                .load_working_set()
+                .unwrap()
+                .into_iter()
+                .map(|row| {
+                    (
+                        row.log_seq.expect("writer working row has seq"),
+                        item_text_preview(&row.item),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(writer_ids(&session), fold_ids(&session));
+        session
+            .apply_compact_checkpoint_from(&user_text("sum"), Some(1), 10)
+            .unwrap();
+        let writer = writer_ids(&session);
+        let folded = fold_ids(&session);
+        assert_eq!(writer, folded);
+        assert_eq!(writer[0].1, "sum");
+        assert!(writer.iter().any(|(seq, text)| *seq == 1 && text == "b"));
+    }
+
+    #[test]
     fn compact_replace_validates_endpoints_on_cached_nodes() {
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         session

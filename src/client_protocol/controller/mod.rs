@@ -454,7 +454,12 @@ impl Projection {
         let old_next = self.next_seq;
         let (_, new_next) = self.seq_cursor();
         self.next_seq = new_next;
-        self.refresh_context_estimate();
+        // Provider occupancy is ring truth while a request's usage is showing.
+        // Skip the full-log local estimate on step commits; compact clears the
+        // meter and still needs a working-set refresh.
+        if self.last_turn_token_stats.is_none() {
+            self.refresh_context_estimate();
+        }
         if self.next_seq > old_next {
             match self
                 .sessions
@@ -1414,6 +1419,42 @@ mod compact_item_wire_tests {
             .unwrap();
         let proj = Projection::new(sid.clone(), sessions.clone(), 0);
         (proj, sid, sessions)
+    }
+
+    #[test]
+    fn bump_skips_local_estimate_while_provider_usage_is_showing() {
+        let (mut proj, _sid, _sessions) = setup_with_details(&["a"]);
+        proj.last_turn_token_stats = Some(crate::client_protocol::protocol::TurnTokenStats {
+            prompt_tokens: 10,
+            completion_tokens: 1,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 10,
+        });
+        proj.context_tokens_estimate = 999_999;
+        proj.bump_buffer_revision("/p", &binding());
+        assert_eq!(
+            proj.context_tokens_estimate, 999_999,
+            "step bump must not full-fold while provider occupancy is showing"
+        );
+    }
+
+    #[test]
+    fn compact_succeeded_clears_meter_and_refreshes_local_estimate() {
+        let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
+        proj.last_turn_token_stats = Some(crate::client_protocol::protocol::TurnTokenStats {
+            prompt_tokens: 10,
+            completion_tokens: 1,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 10,
+        });
+        proj.context_tokens_estimate = 999_999;
+        apply_compact(&sessions, &sid, "first-cut");
+        proj.on_event(succeeded(CompactionTrigger::Auto), "/p", &binding());
+        assert!(proj.last_turn_token_stats.is_none());
+        assert_ne!(
+            proj.context_tokens_estimate, 999_999,
+            "compact must re-estimate the remaining working set"
+        );
     }
 
     fn apply_compact(sessions: &SessionManager, sid: &str, summary: &str) {

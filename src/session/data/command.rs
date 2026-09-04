@@ -33,7 +33,7 @@ impl From<&str> for MutationId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRevision(pub u64);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommitReceipt {
     pub session_id: String,
     pub operation_id: String,
@@ -44,6 +44,10 @@ pub struct CommitReceipt {
     /// Not part of operation identity; omitted from durable receipt JSON when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<(String, i64)>,
+    /// After `CommitTurnDelta`, the writer projection window (same skip rules
+    /// as reader fold). Never durable; ignored by receipt JSON.
+    #[serde(skip)]
+    pub working_set: Option<Vec<WorkingRow>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

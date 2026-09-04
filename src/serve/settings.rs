@@ -922,14 +922,7 @@ async fn put_engines(
     match state.settings_writer.write_engines(&root, body) {
         Ok(ack) => {
             reload_runtime_after_settings_write(&state, &ack, "engines write");
-            match state.settings_writer.get_engines(&root) {
-                Ok(file) => ok_json(serde_json::json!({
-                    "revision": ack.generation,
-                    "docs": ack.docs,
-                    "engines": file,
-                })),
-                Err(e) => settings_error(e),
-            }
+            ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),
     }

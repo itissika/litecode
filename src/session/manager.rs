@@ -1560,7 +1560,9 @@ impl SessionManager {
             expected_max_seq,
             turn_id: turn_id.to_string(),
         })?;
-        let working = self.data.working_set_blocking(session_id)?;
+        let working = receipt.working_set.ok_or_else(|| {
+            anyhow::anyhow!("CommitTurnDelta receipt missing writer working set")
+        })?;
         Ok((receipt.outcome, working, receipt.preview))
     }
 }

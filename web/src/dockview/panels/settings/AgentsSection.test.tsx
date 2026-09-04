@@ -104,6 +104,30 @@ describe("AgentsSection persist UX", () => {
     );
   });
 
+  it("hides unused fields for the hidden compaction agent", () => {
+    useSettingsStore.setState({
+      agentIds: ["default", "compaction"],
+      selectedAgentId: "compaction",
+      agents: {
+        default: profile(),
+        compaction: profile({
+          role: "hidden",
+          system_prompt: "builtin:compaction",
+          description: "",
+        }),
+      },
+    });
+    render(<AgentsSection />);
+    expect(screen.getByText("Model")).toBeTruthy();
+    expect(screen.queryByText("Type")).toBeNull();
+    expect(screen.queryByText("Description")).toBeNull();
+    expect(screen.queryByText("System prompt")).toBeNull();
+    expect(screen.queryByText("Max steps")).toBeNull();
+    expect(
+      screen.getByText("Compaction only assigns a model. Prompt, tools, and max steps are built in."),
+    ).toBeTruthy();
+  });
+
   it("deletes a non-protected agent after confirm", async () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     useSettingsStore.setState({

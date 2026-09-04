@@ -625,9 +625,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
         set({
           revision: saved.revision,
           engines: {
-            version: saved.version,
-            lsp: saved.lsp,
-            retrieval: saved.retrieval,
+            version: file.version,
+            lsp: file.lsp,
+            retrieval: file.retrieval,
           },
           docClock: stampClock(get().docClock, ["engines"], saved.revision),
         });

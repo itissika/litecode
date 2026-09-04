@@ -416,6 +416,7 @@ fn bump_receipt(
         change_id: 0,
         outcome,
         preview: None,
+        working_set: None,
     };
     ops::persist_receipt(state.db.conn(), &receipt)?;
     let mut receipt = receipt;
@@ -564,31 +565,34 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             expected_max_seq,
             turn_id,
         } => {
-            let outcome = {
+            let (kind, preview, working) = {
                 let session = ensure_live(state, &session_id)?;
-                session.commit_turn_delta_with_orphan_cleanup(
+                let outcome = session.commit_turn_delta_with_orphan_cleanup(
                     &mut rows,
                     &[],
                     expected_max_seq,
                     &turn_id,
-                )?
-            };
-            let (kind, preview) = match outcome {
-                CommitDeltaOutcome::Discarded => (CommitKind::Idempotent, None),
-                CommitDeltaOutcome::Applied {
-                    sealed_seqs,
-                    preview,
-                    ..
-                } if sealed_seqs.is_empty() => (CommitKind::MetaUpdated, preview),
-                CommitDeltaOutcome::Applied {
-                    sealed_seqs,
-                    preview,
-                    ..
-                } => (CommitKind::Sealed { seqs: sealed_seqs }, preview),
+                )?;
+                let working = session.load_working_set()?;
+                let (kind, preview) = match outcome {
+                    CommitDeltaOutcome::Discarded => (CommitKind::Idempotent, None),
+                    CommitDeltaOutcome::Applied {
+                        sealed_seqs,
+                        preview,
+                        ..
+                    } if sealed_seqs.is_empty() => (CommitKind::MetaUpdated, preview),
+                    CommitDeltaOutcome::Applied {
+                        sealed_seqs,
+                        preview,
+                        ..
+                    } => (CommitKind::Sealed { seqs: sealed_seqs }, preview),
+                };
+                (kind, preview, working)
             };
             let mut receipt =
                 bump_receipt(state, &session_id, &operation_id.0, expected_revision, kind)?;
             receipt.preview = preview;
+            receipt.working_set = Some(working);
             Ok(receipt)
         }
         SessionMutation::Compact {
@@ -755,6 +759,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 change_id: 0,
                 outcome: CommitKind::MetaUpdated,
                 preview: None,
+                working_set: None,
             })
         }
         SessionMutation::RebuildFts { operation_id } => {
@@ -766,6 +771,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 change_id: 0,
                 outcome: CommitKind::MetaUpdated,
                 preview: None,
+                working_set: None,
             })
         }
     }
