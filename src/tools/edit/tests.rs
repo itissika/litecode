@@ -99,11 +99,12 @@ fn edit_tool_rejects_partial_em_dash() {
 #[test]
 fn edit_tool_wire_view_prefixes_and_indent() {
     let (_dir, path) = write_temp("a.rs", "    foo()\n");
-    let result = call_edits(&path, one("     1:     foo()", "bar()"));
+    let prefixed = crate::tool::format_file_line(1, "    foo()");
+    let result = call_edits(&path, one(prefixed.trim_end(), "bar()"));
     assert!(result.content.starts_with("Error:"));
-    assert!(result.content.contains("line-number prefixes"));
+    assert!(result.content.contains("line-number prefix"));
     assert!(
-        result.content.contains("line 1") || result.content.contains("foo()"),
+        result.content.contains("L1") || result.content.contains("foo()"),
         "{}",
         result.content
     );
@@ -119,7 +120,7 @@ fn edit_tool_wire_multiple_matches() {
         "{}",
         result.content
     );
-    assert!(result.content.contains("lines 1, 3"), "{}", result.content);
+    assert!(result.content.contains("L1, L3"), "{}", result.content);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\nbar\nfoo\n");
 }
 

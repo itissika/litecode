@@ -144,8 +144,12 @@ impl Tool for CodeSearchTool {
                             end_line,
                             summary,
                             score,
-                        } => Some(format!(
-                            "{path}:{start_line}-{end_line} (score {score:.3}): {summary}"
+                        } => Some(format_code_hit(
+                            path,
+                            *start_line,
+                            *end_line,
+                            *score,
+                            summary,
                         )),
                         _ => None,
                     })
@@ -178,6 +182,19 @@ fn indexing_wait_message(engines: &WorkspaceEngines) -> String {
         return "code_search index is refreshing. Try again shortly.".into();
     }
     "code_search engine is still starting. Try again shortly.".into()
+}
+
+fn format_code_hit(
+    path: &str,
+    start_line: u32,
+    end_line: u32,
+    score: f64,
+    summary: &str,
+) -> String {
+    format!(
+        "{} (score {score:.3}): {summary}",
+        crate::tool::format_path_lines(path, start_line, end_line)
+    )
 }
 
 fn format_index_progress(view: &ResolvedIndexView) -> String {
@@ -346,6 +363,18 @@ mod tests {
             result.content.contains("embed exploded"),
             "{}",
             result.content
+        );
+    }
+
+    #[test]
+    fn hit_line_uses_path_l_label() {
+        assert_eq!(
+            format_code_hit("src/a.rs", 12, 20, 0.5, "fn foo"),
+            "src/a.rs:L12-20 (score 0.500): fn foo"
+        );
+        assert_eq!(
+            format_code_hit("src/a.rs", 12, 12, 0.25, "let x"),
+            "src/a.rs:L12 (score 0.250): let x"
         );
     }
 }

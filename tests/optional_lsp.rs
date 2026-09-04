@@ -1006,15 +1006,15 @@ fn agent_lsp_tool_line_text_scenarios() {
         "definition should name the landing file: {}",
         def.content
     );
-    // Mock echoes the query position; unique_sym starts at 1-based col 4 →LSP char 3.
+    // Mock echoes the query position as a 1-based file line (no column in agent view).
     assert!(
-        def.content.contains(":1:4") || def.content.contains(":1:"),
-        "definition should include path:line:col: {}",
+        def.content.contains(":L1"),
+        "definition should include path:L<line>: {}",
         def.content
     );
     assert!(
-        def.content.contains("```") || def.content.contains("|"),
-        "definition should attach landing context (fence or ±N): {}",
+        def.content.contains("```") || def.content.contains(": "),
+        "definition should attach landing context (fence or numbered lines): {}",
         def.content
     );
 
@@ -1118,7 +1118,7 @@ fn agent_lsp_tool_line_text_scenarios() {
         amb_def.content
     );
     assert!(
-        amb_def.content.contains("matched 2 times on line 2"),
+        amb_def.content.contains("matched 2 times on L2"),
         "{}",
         amb_def.content
     );
@@ -1399,7 +1399,7 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
     assert!(
         multi
             .content
-            .contains("matched 2 times on line 4 →1 unique definition"),
+            .contains("matched 2 times on L4 →1 unique definition"),
         "{}",
         multi.content
     );
@@ -1409,7 +1409,7 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
         multi.content
     );
     // Same landing collapsed —definition path should appear once in the body.
-    let landing_hits = multi.content.matches("lib.rs:1:").count();
+    let landing_hits = multi.content.matches("lib.rs:L1").count();
     assert_eq!(
         landing_hits, 1,
         "identical definition landings should merge to one expansion: {}",

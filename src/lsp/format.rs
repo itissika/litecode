@@ -24,7 +24,7 @@ fn format_locations(result: &Value) -> String {
     }
     locations
         .iter()
-        .map(|(path, line, ch)| format!("{path}:{line}:{ch}"))
+        .map(|(path, line, _ch)| crate::tool::format_path_lines(path, *line as u32, *line as u32))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -140,11 +140,15 @@ fn format_one_diagnostic(diag: &Value) -> String {
         .and_then(|s| s["line"].as_u64())
         .map(|l| l + 1)
         .unwrap_or(0);
-    let ch = start
-        .and_then(|s| s["character"].as_u64())
-        .map(|c| c + 1)
-        .unwrap_or(0);
-    format!("{sev}: {message} ({line}:{ch})")
+    let loc = if line == 0 {
+        String::new()
+    } else {
+        format!(
+            " ({})",
+            crate::tool::format_line_label(line as u32, line as u32)
+        )
+    };
+    format!("{sev}: {message}{loc}")
 }
 
 fn format_symbols(result: &Value) -> String {
@@ -176,7 +180,10 @@ fn format_symbols(result: &Value) -> String {
             .and_then(|s| s["line"].as_u64())
             .map(|l| l + 1)
             .unwrap_or(0);
-        out.push(format!("{indent}{kind} {name} (L{line})"));
+        out.push(format!(
+            "{indent}{kind} {name} ({})",
+            crate::tool::format_line_label(line as u32, line as u32)
+        ));
         if let Some(children) = val.get("children") {
             walk(children, depth + 1, out);
         }
@@ -240,9 +247,15 @@ fn format_call_hierarchy(result: &Value) -> String {
             .map(|l| l + 1)
             .unwrap_or(0);
         if path.is_empty() {
-            lines.push(format!("{name} (L{line})"));
+            lines.push(format!(
+                "{name} ({})",
+                crate::tool::format_line_label(line as u32, line as u32)
+            ));
         } else {
-            lines.push(format!("{name} — {path}:{line}"));
+            lines.push(format!(
+                "{name} — {}",
+                crate::tool::format_path_lines(&path, line as u32, line as u32)
+            ));
         }
     }
     lines.join("\n")

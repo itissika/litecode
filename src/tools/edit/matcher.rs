@@ -625,24 +625,12 @@ fn non_ws_len(s: &str) -> usize {
 }
 
 pub(super) fn format_line_range(start: usize, end: usize) -> String {
-    if start == end {
-        format!("line {start}")
-    } else {
-        format!("lines {start}-{end}")
-    }
+    crate::tool::format_line_label(start as u32, end as u32)
 }
 
 pub(super) fn format_line_list(lines: &[usize]) -> String {
-    const MAX: usize = 8;
-    if lines.len() <= MAX {
-        return lines
-            .iter()
-            .map(|n| n.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-    }
-    let shown: Vec<String> = lines[..MAX].iter().map(|n| n.to_string()).collect();
-    format!("{} (and {} more)", shown.join(", "), lines.len() - MAX)
+    let nums: Vec<u32> = lines.iter().map(|n| *n as u32).collect();
+    crate::tool::format_line_list(&nums)
 }
 
 pub(super) fn truncate_hint(s: &str, max_chars: usize) -> String {
@@ -672,7 +660,10 @@ mod tests {
     #[test]
     fn structural_prefix_and_indent_block_fuzzy() {
         let line = "fn exceptionally_long_unique_function_name_for_edit_safety() {}";
-        let prefix = diagnose_structural_miss(&format!("{line}\n"), &format!("     1: {line}"));
+        let prefix = diagnose_structural_miss(
+            &format!("{line}\n"),
+            crate::tool::format_file_line(1, line).trim_end(),
+        );
         assert!(matches!(prefix, Some(RejectReason::ReadLinePrefix { .. })));
         let indent = diagnose_structural_miss(&format!("{line}\n"), &format!("    {line}"));
         assert!(matches!(indent, Some(RejectReason::WhitespaceOnly { .. })));

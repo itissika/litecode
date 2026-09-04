@@ -33,10 +33,7 @@ fn open_with_users(texts: &[&str]) -> (Arc<SessionManager>, String) {
     (sessions, sid)
 }
 
-fn fold_visible(
-    sessions: &SessionManager,
-    sid: &str,
-) -> Vec<(u64, String)> {
+fn fold_visible(sessions: &SessionManager, sid: &str) -> Vec<(u64, String)> {
     let events = sessions.data().events_blocking(sid).unwrap();
     let surface = fold_surface(&events).unwrap();
     project_working_pairs(&surface, |seq| {
@@ -56,10 +53,7 @@ fn fold_visible(
     .collect()
 }
 
-fn reader_visible(
-    sessions: &SessionManager,
-    sid: &str,
-) -> Vec<(u64, String)> {
+fn reader_visible(sessions: &SessionManager, sid: &str) -> Vec<(u64, String)> {
     sessions
         .data()
         .working_set_blocking(sid)
@@ -87,11 +81,7 @@ fn append_rows_reader_working_set_matches_full_fold() {
     let (sessions, sid) = open_with_users(&["a", "b", "c"]);
     assert_eq!(
         fold_visible(&sessions, &sid),
-        vec![
-            (0, "a".into()),
-            (1, "b".into()),
-            (2, "c".into())
-        ]
+        vec![(0, "a".into()), (1, "b".into()), (2, "c".into())]
     );
     assert_reader_matches_fold(&sessions, &sid);
 }
@@ -133,9 +123,7 @@ fn revert_then_commit_discard_returns_fold_window_and_does_not_append() {
         WorkingRow::pending(user_text("c")),
         WorkingRow::pending(user_text("stale")),
     ];
-    let (kind, working, _) = sessions
-        .commit_turn_delta(&sid, stale, 2, "t1")
-        .unwrap();
+    let (kind, working, _) = sessions.commit_turn_delta(&sid, stale, 2, "t1").unwrap();
     assert!(
         matches!(kind, CommitKind::Idempotent),
         "truncated log must discard the delta, got {kind:?}"
@@ -219,9 +207,6 @@ fn pipeline_begin_turn_pending_tail_has_no_log_seq() {
         rows.last().is_some_and(|row| row.log_seq.is_none()),
         "unpersisted tail must not carry a seq"
     );
-    let persisted: Vec<_> = rows
-        .iter()
-        .filter_map(|row| row.log_seq)
-        .collect();
+    let persisted: Vec<_> = rows.iter().filter_map(|row| row.log_seq).collect();
     assert_eq!(persisted, vec![0, 1]);
 }

@@ -678,46 +678,26 @@ fn wrap_grep_page(body: &str, offset: usize, shown: usize, total: usize, view: G
     if shown == 0 {
         return String::new();
     }
-    if shown < total.saturating_sub(offset) {
-        format!(
-            "Showing matches {}-{} of {total} (view: {}; use offset: {} to continue):\n{body}",
-            offset + 1,
-            offset + shown,
-            view.label(),
-            offset + shown,
-        )
-    } else if offset > 0 {
-        format!(
-            "Showing matches {}-{} of {total} (view: {}):\n{body}",
-            offset + 1,
-            offset + shown,
-            view.label(),
-        )
+    let count = if offset == 0 && shown >= total {
+        shown
     } else {
-        format!("Found {shown} matches (view: {}):\n{body}", view.label())
-    }
+        total
+    };
+    let headed = format!("Found {count} matches (view: {}):\n{body}", view.label());
+    crate::tool::attach_offset_footer(&headed, offset, shown, total)
 }
 
 fn wrap_lines_page(body: &str, offset: usize, shown: usize, total: usize) -> String {
     if shown == 0 {
         return String::new();
     }
-    if shown < total.saturating_sub(offset) {
-        format!(
-            "Showing matches {}-{} of {total} (output: lines; use offset: {} to continue):\n{body}",
-            offset + 1,
-            offset + shown,
-            offset + shown,
-        )
-    } else if offset > 0 {
-        format!(
-            "Showing matches {}-{} of {total} (output: lines):\n{body}",
-            offset + 1,
-            offset + shown,
-        )
+    let count = if offset == 0 && shown >= total {
+        shown
     } else {
-        format!("Found {shown} matches (output: lines):\n{body}")
-    }
+        total
+    };
+    let headed = format!("Found {count} matches (output: lines):\n{body}");
+    crate::tool::attach_offset_footer(&headed, offset, shown, total)
 }
 
 fn render_lines_page(
@@ -828,7 +808,7 @@ fn format_compact_body(matches: &[LexicalMatch]) -> String {
             current = Some(&m.path);
         }
         let text = truncate_snippet_lines(m.line_text.trim_end_matches(['\n', '\r']));
-        body.push_str(&format!("  {:>6}:{text}\n", m.start_line));
+        body.push_str(&crate::tool::format_file_line(m.start_line, &text));
     }
     body
 }
@@ -900,22 +880,12 @@ fn format_file_mode_body(matches: &[LexicalMatch]) -> String {
 
 fn wrap_file_mode_page(body: &str, offset: usize, shown: usize, total: usize) -> String {
     let file_count = body.lines().filter(|line| !line.is_empty()).count();
-    if shown < total.saturating_sub(offset) {
-        format!(
-            "Showing matches {}-{} of {total} (output: files; use offset: {} to continue):\n{body}",
-            offset + 1,
-            offset + shown,
-            offset + shown,
-        )
-    } else if offset > 0 {
-        format!(
-            "Showing matches {}-{} of {total} (output: files):\n{body}",
-            offset + 1,
-            offset + shown,
-        )
+    let header = if offset == 0 && shown >= total {
+        format!("Found {file_count} files ({total} matches) (output: files):\n")
     } else {
-        format!("Found {file_count} files ({total} matches) (output: files):\n{body}")
-    }
+        format!("Found {total} matches (output: files):\n")
+    };
+    crate::tool::attach_offset_footer(&format!("{header}{body}"), offset, shown, total)
 }
 
 /// Zed grep-panel style: page grouped by file (`## Matches in {path}`) with
@@ -947,11 +917,7 @@ fn format_snippet_body(root: &Path, matches: &[LexicalMatch], view: GrepView) ->
 
         let ranges = merge_snippet_ranges(file_matches, source, &path, view == GrepView::Expanded);
         for range in ranges {
-            let line_label = if range.start_line == range.end_line {
-                format!("L{}", range.start_line)
-            } else {
-                format!("L{}-{}", range.start_line, range.end_line)
-            };
+            let line_label = crate::tool::format_line_label(range.start_line, range.end_line);
             let heading = match (view == GrepView::Expanded)
                 .then(|| {
                     source.and_then(|src| {
@@ -1255,7 +1221,7 @@ mod tests {
         assert!(result.contains("output: lines"), "got: {result}");
         assert!(result.contains("hello.txt"), "got: {result}");
         assert!(
-            result.contains("     1:the quick brown fox"),
+            result.contains("     1: the quick brown fox"),
             "got: {result}"
         );
         assert!(!result.contains("## Matches in"), "got: {result}");
@@ -1464,10 +1430,12 @@ mod tests {
         );
         assert!(!page1.contains("... [truncated]"), "got: {page1}");
         let next = page1
-            .split("use offset: ")
-            .nth(1)
-            .and_then(|rest| rest.split_whitespace().next())
-            .and_then(|n| n.parse::<usize>().ok())
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("(more hits; offset: ")
+                    .and_then(|rest| rest.strip_suffix(')'))
+                    .and_then(|n| n.parse::<usize>().ok())
+            })
             .expect("next offset in page footer");
         assert!(next > 0 && next < 200, "got next={next}: {page1}");
 
@@ -1477,7 +1445,8 @@ mod tests {
             300,
         );
         assert!(
-            page2.contains(&format!("Showing matches {}-", next + 1)),
+            page2.contains(&crate::tool::format_offset_done(next))
+                || page2.contains("(more hits; offset:"),
             "got: {page2}"
         );
         assert!(!page2.contains("item000"), "got: {page2}");
@@ -1585,7 +1554,7 @@ mod tests {
             crate::session::count_text_tokens(&paged) <= 400,
             "context page exceeded cap"
         );
-        assert!(paged.contains("use offset:"), "got: {paged}");
+        assert!(paged.contains("(more hits; offset:"), "got: {paged}");
     }
 
     #[test]

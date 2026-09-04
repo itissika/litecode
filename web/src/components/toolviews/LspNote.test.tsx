@@ -53,7 +53,7 @@ describe("ToolResultBlock", () => {
           type: "function_call_output",
           call_id: "c1",
           output:
-            "Edited src/a.rs (1 applied / 0 warning / 1 failed). File updated.\n\n[1] applied: exact, 1 replacement (line 1)\n\n[2] failed: no_useful_match\nNo sufficiently similar region was found.\n\nWarning: some edits were not applied",
+            "Edited src/a.rs (1 applied / 0 warning / 1 failed). File updated.\n\n[1] applied: exact, 1 replacement (L1)\n\n[2] failed: no_useful_match\nNo sufficiently similar region was found.\n\nWarning: some edits were not applied",
         }}
       />,
     );

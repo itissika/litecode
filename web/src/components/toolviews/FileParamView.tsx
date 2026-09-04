@@ -7,7 +7,7 @@ import type { ToolViewProps } from "./registry";
 /**
  * Input view for `file_path`-style tools (`read` / `write`). The `file_path` is
  * shown prominently; `write`'s `content` is rendered as a code block payload.
- * All other fields (read: offset/limit/token_budget, write: create_only) are
+ * All other fields (read: start_line/end_line/token_budget, write: create_only) are
  * tucked into the infoicon. Output is not specialized — it flows through the
  * default renderer in `ToolContentView`.
  */
