@@ -524,7 +524,7 @@ fn resolve_token_budget(input: &Value) -> (usize, Option<String>) {
 }
 
 fn format_read_line(num: usize, line: &str) -> String {
-    format!("{:6}: {}\n", num, truncate_chars(line, MAX_LINE_CHARS))
+    crate::tool::format_file_line(num as u32, &truncate_chars(line, MAX_LINE_CHARS))
 }
 
 fn truncate_chars(s: &str, max_chars: usize) -> String {
@@ -549,15 +549,13 @@ fn pagination_footer(
         return None;
     }
     let next = last_shown + 1;
-    if hit_char_cap {
-        Some(format!(
-            "[showing lines {start_1}-{last_shown} of {total} — output cap. Use start_line={next} to continue]"
-        ))
-    } else {
-        Some(format!(
-            "[showing lines {start_1}-{last_shown} of {total}. Use start_line={next} to continue]"
-        ))
-    }
+    Some(crate::tool::format_file_window_footer(
+        start_1 as u32,
+        last_shown as u32,
+        total as u32,
+        next as u32,
+        hit_char_cap,
+    ))
 }
 
 fn apply_read_warnings(result: ToolCallResult, warnings: [&Option<String>; 3]) -> ToolCallResult {

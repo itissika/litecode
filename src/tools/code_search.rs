@@ -17,14 +17,12 @@ use crate::types::ToolCallResult;
 
 /// Same budget as grep `content`: one response must leave room to reason.
 const CODE_SEARCH_TOKEN_BUDGET: usize = 6_000;
-/// Display cap per snippet line (chars). Matches grep.
-const SNIPPET_LINE_MAX_CHARS: usize = 240;
 /// Max lines shown from an indexed chunk when AST ancestor is unavailable (Expanded).
 const EXPANDED_CHUNK_LINES: u32 = 12;
 /// Max lines shown from an indexed chunk in the compact view.
 const CONTEXT_CHUNK_LINES: u32 = 6;
 
-const CODE_SEARCH_WARM_WAIT: Duration = Duration::from_secs(60);
+const CODE_SEARCH_WARM_WAIT: Duration = Duration::from_secs(30);
 const CODE_SEARCH_WARM_POLL: Duration = Duration::from_millis(50);
 
 pub struct CodeSearchTool {
@@ -34,6 +32,28 @@ pub struct CodeSearchTool {
 impl CodeSearchTool {
     pub fn new(engines: WorkspaceEngines) -> Self {
         Self { engines }
+    }
+
+    /// Start update/rebuild when the disk plan says work is due. Returns true
+    /// when this call kicked off consume (caller may wait up to the budget).
+    fn maybe_consume_index(&self) -> bool {
+        if self.engines.is_refresh_busy() || !self.engines.code_search().worker_alive() {
+            return false;
+        }
+        let Some(root) = self.engines.code_search().workspace_root() else {
+            return false;
+        };
+        let view = resolve_index_view(&root, self.engines.state("code_search"));
+        if matches!(
+            view.status,
+            IndexStatus::Building | IndexStatus::Refreshing
+        ) {
+            return false;
+        }
+        match crate::engines::engine_index_work(&root) {
+            crate::engines::code_search::IndexWork::None => false,
+            _ => self.engines.consume_index_work().is_ok(),
+        }
     }
 }
 
@@ -91,9 +111,10 @@ impl Tool for CodeSearchTool {
             _ => {}
         }
 
-        if !self.engines.is_warmed("code_search") {
-            let started = Instant::now();
-            while started.elapsed() < CODE_SEARCH_WARM_WAIT {
+        let deadline = Instant::now() + CODE_SEARCH_WARM_WAIT;
+        let started_unwarmed = !self.engines.is_warmed("code_search");
+        if started_unwarmed {
+            while Instant::now() < deadline {
                 if self.engines.is_warmed("code_search") {
                     break;
                 }
@@ -115,6 +136,17 @@ impl Tool for CodeSearchTool {
             Some(EngineState::Warm) => {}
             _ => {
                 return ToolCallResult::ok(indexing_wait_message(&self.engines));
+            }
+        }
+
+        let started_consume = self.maybe_consume_index();
+        if started_unwarmed || started_consume {
+            while Instant::now() < deadline {
+                match self.engines.code_search_call_gate() {
+                    CodeSearchCallGate::Ready => break,
+                    CodeSearchCallGate::Failed(_) => break,
+                    CodeSearchCallGate::Wait => std::thread::sleep(CODE_SEARCH_WARM_POLL),
+                }
             }
         }
 
@@ -163,7 +195,7 @@ impl Tool for CodeSearchTool {
     }
 
     fn timeout(&self) -> Option<u64> {
-        Some(60)
+        Some(30)
     }
 }
 
@@ -327,11 +359,7 @@ fn format_snippet_body(
             .as_deref();
         for hit in file_hits {
             let snippet = snippet_for_hit(path, source, hit, view);
-            let line_label = if snippet.start_line == snippet.end_line {
-                format!("L{}", snippet.start_line)
-            } else {
-                format!("L{}-{}", snippet.start_line, snippet.end_line)
-            };
+            let line_label = crate::tool::format_line_label(snippet.start_line, snippet.end_line);
             let heading = match (view == CodeSearchView::Expanded)
                 .then(|| {
                     source.and_then(|src| {
@@ -345,7 +373,7 @@ fn format_snippet_body(
             };
             body.push_str(&heading);
             body.push('\n');
-            body.push_str(&fence_block(&snippet.text));
+            body.push_str(&crate::tool::snippet::fence_block(&snippet.text));
             if snippet.remaining_lines > 0 {
                 let reason = if snippet.from_ancestor {
                     "ancestor node"
@@ -420,37 +448,6 @@ fn snippet_for_hit(
     }
 }
 
-fn fence_block(snippet: &str) -> String {
-    let snippet = truncate_snippet_lines(snippet);
-    let mut longest = 2usize;
-    let mut run = 0usize;
-    for ch in snippet.chars() {
-        if ch == '`' {
-            run += 1;
-            longest = longest.max(run);
-        } else {
-            run = 0;
-        }
-    }
-    let ticks = "`".repeat(longest + 1);
-    format!("{ticks}\n{snippet}\n{ticks}\n")
-}
-
-fn truncate_snippet_lines(snippet: &str) -> String {
-    snippet
-        .lines()
-        .map(|line| {
-            if line.chars().count() <= SNIPPET_LINE_MAX_CHARS {
-                line.to_string()
-            } else {
-                let kept: String = line.chars().take(SNIPPET_LINE_MAX_CHARS).collect();
-                format!("{kept}… (line truncated)")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn indexing_wait_message(engines: &WorkspaceEngines) -> String {
     let root = engines.code_search().workspace_root();
     let state = engines.state("code_search");
@@ -458,6 +455,12 @@ fn indexing_wait_message(engines: &WorkspaceEngines) -> String {
         let view = resolve_index_view(&root, state);
         if matches!(view.status, IndexStatus::Building | IndexStatus::Refreshing) {
             return format_index_progress(&view);
+        }
+        if matches!(
+            view.status,
+            IndexStatus::Stale | IndexStatus::NeedsRebuild | IndexStatus::Absent
+        ) {
+            return "code_search index is stale. Try again shortly.".into();
         }
     }
     if engines.is_refresh_busy() {
@@ -500,8 +503,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn waits_up_to_sixty_seconds_then_searches_not_loading() {
-        assert_eq!(CODE_SEARCH_WARM_WAIT, Duration::from_secs(60));
+    fn waits_up_to_thirty_seconds_then_searches_not_loading() {
+        assert_eq!(CODE_SEARCH_WARM_WAIT, Duration::from_secs(30));
         assert_eq!(CODE_SEARCH_WARM_POLL, Duration::from_millis(50));
     }
 
@@ -846,5 +849,43 @@ mod tests {
             "safe fence, got: {out}"
         );
         assert!(out.contains("see ```inside``` fence"), "got: {out}");
+    }
+
+    #[test]
+    fn warm_stale_returns_wait_not_empty_hits() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        crate::engines::code_search::init_workspace_index(root).unwrap();
+        let mut meta = crate::engines::code_search::IndexMeta::shell();
+        meta.indexed_files = 1;
+        meta.indexed_chunks = 1;
+        crate::engines::code_search::write_meta(root, &meta).unwrap();
+        let index_dir = crate::engines::code_search::index_dir(root);
+        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
+        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
+        crate::engines::code_search::write_pending_hint(root, 2);
+
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+
+        let started = Instant::now();
+        let tool = CodeSearchTool::new(engines);
+        let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "stale without a live worker must not wait the 30s budget"
+        );
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        assert!(
+            result.content.contains("stale") || result.content.contains("Try again shortly"),
+            "{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("No matching code"),
+            "must not return empty hits on a stale index: {}",
+            result.content
+        );
     }
 }

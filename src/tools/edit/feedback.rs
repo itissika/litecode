@@ -202,7 +202,7 @@ fn render_decision(decision: &BlockDecision, wrote: bool) -> DecisionRender {
                     .iter()
                     .map(|item| item.span.start_line)
                     .collect();
-                format!("lines {}", format_line_list(&lines))
+                format_line_list(&lines)
             };
             if let Some(notice) = &plan.notice {
                 let mut cause = format!(
@@ -287,17 +287,22 @@ fn render_reason(
         RejectReason::ReadLinePrefix { stripped_lines } => {
             let cause = if stripped_lines.len() == 1 {
                 format!(
-                    "old_string includes read line-number prefixes (`    N: `), which are not in the file. Without those prefixes it matches once at line {}.",
-                    stripped_lines[0]
+                    "old_string includes {}, which is not in the file. Without those prefixes it matches once at {}.",
+                    crate::tool::FILE_LINE_PREFIX_HINT,
+                    format_line_range(stripped_lines[0], stripped_lines[0]),
                 )
             } else if stripped_lines.len() > 1 {
                 format!(
-                    "old_string includes read line-number prefixes (`    N: `), which are not in the file. Without those prefixes it matches {} times (lines {}).",
+                    "old_string includes {}, which is not in the file. Without those prefixes it matches {} times ({}).",
+                    crate::tool::FILE_LINE_PREFIX_HINT,
                     stripped_lines.len(),
                     format_line_list(stripped_lines)
                 )
             } else {
-                "old_string includes read line-number prefixes (`    N: `), which are not in the file.".into()
+                format!(
+                    "old_string includes {}, which is not in the file.",
+                    crate::tool::FILE_LINE_PREFIX_HINT
+                )
             };
             (cause, None, (key, action_text(key)))
         }
@@ -325,7 +330,7 @@ fn render_reason(
         ),
         RejectReason::MultipleExact { lines } => (
             format!(
-                "Found {} exact matches (lines {}).",
+                "Found {} exact matches ({}).",
                 lines.len(),
                 format_line_list(lines)
             ),
@@ -396,7 +401,10 @@ fn candidate_preview(candidate: &CandidateEvidence) -> Option<String> {
         return None;
     }
     match candidate.diff_line {
-        Some(line) => Some(format!("line {line}: {preview}")),
+        Some(line) => Some(format!(
+            "{}: {preview}",
+            crate::tool::format_line_label(line as u32, line as u32)
+        )),
         None => Some(preview.to_string()),
     }
 }
@@ -601,7 +609,7 @@ mod tests {
         assert!(body.contains("applied_with_warning"), "{body}");
         assert!(!body.contains("score"), "{body}");
         assert!(
-            body.contains("greet_user_alpha") || body.contains("line 1"),
+            body.contains("greet_user_alpha") || body.contains("L1"),
             "{body}"
         );
     }

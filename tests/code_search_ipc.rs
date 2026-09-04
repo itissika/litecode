@@ -1,6 +1,8 @@
 //! IPC integration: spawn worker, warmup with hash embedder, search round-trip.
 
-use litecode::engines::code_search::{index_dir, init_workspace_index, read_meta, write_meta};
+use litecode::engines::code_search::{
+    index_dir, init_workspace_index, read_meta, read_pending_hint, write_meta,
+};
 use litecode::engines::code_search_ipc::CodeSearchWorkerClient;
 use litecode::engines::code_search_ipc::protocol::RefreshMode;
 use std::path::Path;
@@ -123,12 +125,25 @@ fn notify_fs_changes_then_search_hits_new_file() {
     client
         .notify_fs_changes(&["later.rs".into()], false)
         .expect("notify");
+    assert!(
+        read_pending_hint(root) > 0,
+        "watcher must queue dirty without consuming"
+    );
+    let queued = client
+        .search("later_unique_symbol", None, 5)
+        .expect("search after notify without consume");
+    assert!(
+        queued.iter().all(|h| !h.path.contains("later.rs")),
+        "notify must not embed; search must miss later.rs, got {queued:?}"
+    );
+    let incremental = client.refresh().expect("consume after notify");
+    assert_eq!(incremental.mode, RefreshMode::Incremental);
     let hits = client
         .search("later_unique_symbol", None, 5)
-        .expect("search after notify");
+        .expect("search after notify + refresh");
     assert!(
         hits.iter().any(|h| h.path.contains("later.rs")),
-        "silent incremental must index the notified file, got {hits:?}"
+        "notify only queues; refresh must index the file, got {hits:?}"
     );
 
     shutdown(client);
@@ -168,6 +183,111 @@ fn refresh_incremental_then_rebuild_when_meta_incompatible() {
             .any(|h| h.path.contains("seed.rs"))
     );
 
+    shutdown(client);
+}
+
+#[test]
+fn warmup_existing_index_reconciles_without_digest() {
+    force_hash_embedder();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace_index(root).unwrap();
+    std::fs::write(root.join("seed.rs"), "pub fn seed_symbol() {}\n").unwrap();
+
+    let first = spawn_warmed(root);
+    let indexed_files = read_meta(root)
+        .unwrap()
+        .expect("meta after first warmup")
+        .indexed_files;
+    assert!(indexed_files >= 1);
+    shutdown(first);
+
+    std::fs::write(root.join("later.rs"), "pub fn later_unique_symbol() {}\n").unwrap();
+    let mut client = spawn_warmed(root);
+    assert!(
+        read_pending_hint(root) > 0,
+        "second warmup must reconcile later.rs into the dirty hint"
+    );
+    let meta = read_meta(root).unwrap().expect("meta after second warmup");
+    assert_eq!(
+        meta.indexed_files, indexed_files,
+        "warmup must not digest drift into the on-disk corpus"
+    );
+    let hits = client
+        .search("later_unique_symbol", None, 5)
+        .expect("search without consume");
+    assert!(
+        hits.iter().all(|h| !h.path.contains("later.rs")),
+        "warmup must not embed later.rs, got {hits:?}"
+    );
+
+    let incremental = client.refresh().expect("consume after warmup reconcile");
+    assert_eq!(incremental.mode, RefreshMode::Incremental);
+    let hits = client
+        .search("later_unique_symbol", None, 5)
+        .expect("search after consume");
+    assert!(
+        hits.iter().any(|h| h.path.contains("later.rs")),
+        "refresh must index later.rs, got {hits:?}"
+    );
+    shutdown(client);
+}
+
+#[test]
+fn refresh_rebuilds_when_dirty_too_large() {
+    force_hash_embedder();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace_index(root).unwrap();
+    std::fs::write(root.join("a.rs"), "pub fn a_symbol() {}\n").unwrap();
+    std::fs::write(root.join("b.rs"), "pub fn b_symbol() {}\n").unwrap();
+
+    let mut client = spawn_warmed(root);
+    std::fs::write(root.join("a.rs"), "pub fn a_symbol_v2() {}\n").unwrap();
+    std::fs::write(root.join("b.rs"), "pub fn b_symbol_v2() {}\n").unwrap();
+    let rebuilt = client.refresh().expect("dirty-too-large refresh");
+    assert_eq!(rebuilt.mode, RefreshMode::Rebuild);
+    assert!(
+        client
+            .search("a_symbol_v2", None, 5)
+            .unwrap()
+            .iter()
+            .any(|h| h.path.contains("a.rs"))
+    );
+    shutdown(client);
+}
+
+#[test]
+fn refresh_updates_when_dirty_is_mostly_deletes() {
+    force_hash_embedder();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace_index(root).unwrap();
+    std::fs::write(root.join("keep.rs"), "pub fn keep_symbol() {}\n").unwrap();
+    std::fs::write(root.join("gone_a.rs"), "pub fn gone_a_symbol() {}\n").unwrap();
+    std::fs::write(root.join("gone_b.rs"), "pub fn gone_b_symbol() {}\n").unwrap();
+    std::fs::write(root.join("gone_c.rs"), "pub fn gone_c_symbol() {}\n").unwrap();
+
+    let mut client = spawn_warmed(root);
+    std::fs::remove_file(root.join("gone_a.rs")).unwrap();
+    std::fs::remove_file(root.join("gone_b.rs")).unwrap();
+    std::fs::remove_file(root.join("gone_c.rs")).unwrap();
+    let incremental = client.refresh().expect("delete-heavy refresh");
+    assert_eq!(incremental.mode, RefreshMode::Incremental);
+    assert!(
+        client
+            .search("keep_symbol", None, 5)
+            .unwrap()
+            .iter()
+            .any(|h| h.path.contains("keep.rs"))
+    );
+    assert!(
+        client
+            .search("gone_a_symbol", None, 5)
+            .unwrap()
+            .iter()
+            .all(|h| !h.path.contains("gone_a.rs"))
+    );
     shutdown(client);
 }
 
@@ -280,3 +400,61 @@ fn refresh_honors_gitignore_switch_from_disk() {
 
     shutdown(client);
 }
+
+#[test]
+fn warmup_session_index_reconciles_without_digest() {
+    force_hash_embedder();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace_index(root).unwrap();
+    std::fs::write(root.join("seed.rs"), "pub fn seed_symbol() {}\n").unwrap();
+
+    let litecode = root.join(".litecode");
+    let db = litecode.join("sessions.db");
+    std::fs::create_dir_all(&litecode).unwrap();
+    let lease = litecode::session::WorkspaceWriteLease::acquire(&litecode).unwrap();
+    let data = litecode::session::SessionData::open(&lease, &db).unwrap();
+    let sid = data
+        .create_session(root.to_str().unwrap(), "default", None)
+        .unwrap();
+    data.insert_items(&sid, &[litecode::types::user_text("first_session_marker")])
+        .unwrap();
+    let reader = litecode::session::SessionDataReader::open(&db);
+    let mut emb = litecode::engines::code_search::HashEmbedder;
+    let first = litecode::engines::session_search::ensure_session_index(root, &reader, &mut emb)
+        .unwrap();
+    assert_eq!(first.len(), 1);
+
+    data.insert_items(&sid, &[litecode::types::user_text("second_session_marker")])
+        .unwrap();
+
+    let mut client = CodeSearchWorkerClient::spawn().expect("spawn worker");
+    client.initialize(root, Some(&db)).expect("initialize");
+    client.warmup().expect("warmup");
+
+    let loaded = litecode::engines::session_search::load_session_index(root).unwrap();
+    assert_eq!(
+        loaded.len(),
+        1,
+        "warmup must load session ANN, not embed the new row"
+    );
+    assert!(
+        litecode::engines::session_search::read_session_pending_hint(root) > 0,
+        "new session row must be queued as dirty"
+    );
+
+    client.refresh().expect("consume session");
+    let loaded = litecode::engines::session_search::load_session_index(root).unwrap();
+    assert_eq!(loaded.len(), 2, "refresh must consume session drift");
+    let hits = client
+        .session_search("second_session_marker", 8, None)
+        .expect("session search after consume");
+    assert!(
+        hits.iter()
+            .any(|h| h.summary.contains("second_session_marker")),
+        "got {hits:?}"
+    );
+
+    shutdown(client);
+}
+

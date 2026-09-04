@@ -109,7 +109,10 @@ impl Tool for EditTool {
                         "properties": {
                             "old_string": {
                                 "type": "string",
-                                "description": "File text to find. Do not include read's line-number prefix (`    N: `). Must match one place unless replace_all is true; add surrounding lines if it appears more than once."
+                                "description": format!(
+                                    "File text to find. Do not include {}. Must match one place unless replace_all is true; add surrounding lines if it appears more than once.",
+                                    crate::tool::FILE_LINE_PREFIX_HINT
+                                )
                             },
                             "new_string": {
                                 "type": "string",

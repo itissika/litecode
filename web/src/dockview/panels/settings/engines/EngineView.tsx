@@ -194,7 +194,17 @@ function RetrievalSection({
     tone === "busy" ||
     detail.usable === "warming" ||
     (detail.usable === "unavailable" && !detail.model.ready);
-  const detailTip =
+  const pending = index.pending_updates ?? 0;
+  const work = index.work;
+  const workTip =
+    work?.kind === "rebuild"
+      ? "needs rebuild"
+      : work?.kind === "update"
+        ? `${work.dirty} to update`
+        : pending > 0
+          ? `${pending} pending`
+          : "";
+  const stats =
     index.indexed_files > 0 || index.indexed_chunks > 0
       ? `${index.indexed_files} files · ${index.indexed_chunks} chunks`
       : status === "building" || status === "refreshing"
@@ -202,6 +212,7 @@ function RetrievalSection({
           ? `${index.progress.files_done}/${index.progress.files_total || "?"} files · ${index.progress.chunks_done} chunks`
           : "indexing…"
         : "no index stats";
+  const detailTip = workTip ? `${stats} · ${workTip}` : stats;
   const skipTip = (() => {
     const dirs = detail.policy.product_internal_dirs ?? [];
     const globs = detail.policy.exclude_globs ?? [];

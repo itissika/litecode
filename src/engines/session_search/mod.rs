@@ -5,7 +5,11 @@
 mod lexical;
 mod semantic_index;
 
-pub use semantic_index::{SessionSemanticIndex, ensure_session_index};
+pub use semantic_index::{
+    SessionSemanticIndex, consume_session_index, ensure_session_index, load_session_index,
+    queue_session_dirty, read_session_pending_hint, session_index_status, session_should_rebuild,
+    session_work_from_disk, write_session_pending_hint,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -411,19 +415,18 @@ fn push_hit(
 
 pub fn format_agent_page(page: &SessionSearchPage) -> String {
     let mut body = format_agent_groups(&page.groups);
-    if page.has_more {
-        if !body.is_empty() {
-            body.push('\n');
-        }
-        body.push_str(&format!("(more hits; offset: {})", page.next_offset));
+    let footer = if page.has_more {
+        Some(crate::tool::format_offset_more(page.next_offset))
     } else if page.offset > 0 {
+        Some(crate::tool::format_offset_done(page.offset))
+    } else {
+        None
+    };
+    if let Some(footer) = footer {
         if !body.is_empty() {
             body.push('\n');
         }
-        body.push_str(&format!(
-            "(showing hits from offset {}; no further pages)",
-            page.offset
-        ));
+        body.push_str(&footer);
     }
     body
 }
@@ -438,7 +441,11 @@ fn format_agent_groups(groups: &[SessionSearchGroup]) -> String {
         parts.push(format!("matches: {}", group.match_count));
         parts.push(String::new());
         for hit in &group.hits {
-            parts.push(format!("L{}: {}", hit.line, hit.summary));
+            parts.push(format!(
+                "{}: {}",
+                crate::tool::format_line_label(hit.line, hit.line),
+                hit.summary
+            ));
         }
     }
     parts.join("\n")

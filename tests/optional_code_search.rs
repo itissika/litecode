@@ -9,9 +9,10 @@ use litecode::config::schema::{AgentProfile, AgentToolBinding, ToolPreset, ToolR
 use litecode::config::workspace::enable_code_search_engine;
 use litecode::config::{ConfigManager, WorkspaceState, init_workspace};
 use litecode::engines::code_search::{
-    CodeSearchRuntime, EMBEDDER_ID_HASH, HashEmbedder, IndexMeta, PIPELINE_VERSION,
+    CodeSearchRuntime, EMBEDDER_ID_HASH, HashEmbedder, IndexMeta, IndexStatus, PIPELINE_VERSION,
     build_full_index, index_dir, init_workspace_index, needs_rebuild, open_production_embedder,
-    production_embedder_id, read_meta, search, warmup_index, write_meta,
+    production_embedder_id, read_meta, read_pending_hint, resolve_index_view, search, warmup_index,
+    write_meta,
 };
 use litecode::engines::{EngineState, WorkspaceEngines};
 use litecode::llm::provider_from_definition;
@@ -452,4 +453,77 @@ async fn worker_crash_demotes_engine() {
     assert!(!engine.worker_alive());
     assert!(!engines.is_warmed("code_search"));
     assert_eq!(engines.state("code_search"), Some(EngineState::Idle));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn code_search_lifecycle_rebuild_stale_consume_stop() {
+    ensure_hash_embedder_for_worker();
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    init_workspace_index(root).unwrap();
+    std::fs::write(root.join("seed.rs"), "pub fn seed_symbol() {}\n").unwrap();
+
+    let resolved = workspace_with_code_search(root);
+    let engines = WorkspaceEngines::new();
+    engines.reconcile(&resolved);
+    assert!(
+        engines
+            .wait_until_warmed("code_search", Duration::from_secs(30))
+            .await,
+        "first desired with no index must auto-rebuild"
+    );
+    assert!(index_dir(root).join("vectors.usearch").is_file());
+    let ready = resolve_index_view(root, engines.state("code_search"));
+    assert_eq!(ready.status, IndexStatus::Ready);
+
+    std::fs::write(root.join("later.rs"), "pub fn later_unique_symbol() {}\n").unwrap();
+    engines
+        .code_search()
+        .notify_fs_changes(&["later.rs".into()], false);
+    let hint_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while read_pending_hint(root) == 0 && std::time::Instant::now() < hint_deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        read_pending_hint(root) > 0,
+        "watcher must mark the index stale without consuming"
+    );
+    let stale = resolve_index_view(root, engines.state("code_search"));
+    assert_eq!(stale.status, IndexStatus::Stale);
+    let queued = engines
+        .code_search()
+        .search("later_unique_symbol", None, 5)
+        .unwrap();
+    assert!(
+        queued.iter().all(|h| !h.path.contains("later.rs")),
+        "stale worker must not digest later.rs on search, got {queued:?}"
+    );
+
+    engines.request_refresh(&resolved).expect("consume");
+    let consume_deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if read_pending_hint(root) == 0
+            && engines
+                .code_search()
+                .search("later_unique_symbol", None, 5)
+                .unwrap()
+                .iter()
+                .any(|h| h.path.contains("later.rs"))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < consume_deadline,
+            "refresh/consume did not index later.rs in time"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    litecode::config::workspace::set_workspace_engine_desired(root, "code_search", false).unwrap();
+    let mut resolved = resolved;
+    *resolved.workspace_mut() =
+        litecode::config::workspace::workspace_with_disk_readiness(resolved.workspace());
+    engines.reconcile(&resolved);
+    assert_eq!(engines.state("code_search"), Some(EngineState::Stopped));
+    assert!(!engines.code_search().worker_alive());
 }

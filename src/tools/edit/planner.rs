@@ -584,8 +584,11 @@ mod tests {
     #[test]
     fn planner_never_auto_applies_known_prefix_or_indent_mistakes() {
         let line = "fn exceptionally_long_unique_function_name_for_edit_safety() {}";
-        let prefixed = format!("     1: {line}");
-        let prefix = plan_of(&format!("{line}\n"), &[(&prefixed, "changed", false)]);
+        let prefixed = crate::tool::format_file_line(1, line);
+        let prefix = plan_of(
+            &format!("{line}\n"),
+            &[(prefixed.trim_end(), "changed", false)],
+        );
         assert!(matches!(
             rejected(&prefix, 0).reason,
             RejectReason::ReadLinePrefix { .. }
@@ -641,9 +644,10 @@ mod tests {
     #[test]
     fn prefix_blocks_fuzzy_despite_high_score() {
         let line = "fn greet_user_alpha() { println!(\"hi\"); }";
+        let prefixed = crate::tool::format_file_line(1, line);
         let batch = plan_of(
             &format!("{line}\n"),
-            &[(&format!("     1: {line}"), "CHANGED", false)],
+            &[(prefixed.trim_end(), "CHANGED", false)],
         );
         assert!(matches!(
             rejected(&batch, 0).reason,

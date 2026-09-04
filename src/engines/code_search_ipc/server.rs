@@ -5,7 +5,6 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
 
 use super::protocol::{
     InitializeParams, JsonRpcRequest, JsonRpcResponse, NotifyFsChangesParams, RefreshMode,
@@ -13,9 +12,10 @@ use super::protocol::{
     SetSessionDbParams,
 };
 use crate::engines::code_search::{
-    CodeSearchRuntime, INDEX_RECONCILE_INTERVAL, SemanticEngine, SharedRuntime,
-    init_workspace_index, open_production_embedder, queue_fs_changes, rebuild_index_in_runtime,
-    refresh_index_incremental, should_full_rebuild, sync_index_with_disk, warmup_index,
+    CodeSearchRuntime, SemanticEngine, SharedRuntime, decide_index_work, init_workspace_index,
+    open_production_embedder, pending_work_counts, queue_fs_changes, queue_reconcile_dirty,
+    rebuild_index_in_runtime, refresh_index_incremental, scannable_files, should_full_rebuild,
+    warmup_index, write_pending_hint,
 };
 use crate::types::{LitecodeError, Result};
 
@@ -31,7 +31,7 @@ struct WorkerState {
     session_reader: Option<crate::session::SessionDataReader>,
     runtime: SharedRuntime,
     warmed: bool,
-    last_reconcile: Instant,
+    reconciling: bool,
 }
 
 impl WorkerState {
@@ -41,7 +41,7 @@ impl WorkerState {
             session_reader: None,
             runtime: Arc::new(RwLock::new(None)),
             warmed: false,
-            last_reconcile: Instant::now(),
+            reconciling: false,
         }
     }
 
@@ -92,6 +92,7 @@ impl WorkerState {
 
         reload_worker_excludes(&root);
         init_workspace_index(&root)?;
+        let rebuilt = should_full_rebuild(&root);
         let mut embedder = open_production_embedder()?;
         let index = warmup_index(&root, &mut *embedder)?;
         let runtime = CodeSearchRuntime::new(
@@ -101,16 +102,23 @@ impl WorkerState {
             self.session_reader.clone(),
         );
         reload_worker_excludes(&root);
-        sync_index_with_disk(&runtime);
-        if self.session_reader.is_some()
-            && let Err(e) = runtime.ensure_session_index()
-        {
-            tracing::warn!(error = %e, "session semantic index warmup skipped");
+        if rebuilt {
+            write_pending_hint(&root, 0);
+        } else {
+            queue_reconcile_dirty(&runtime);
+        }
+        if self.session_reader.is_some() {
+            if let Err(e) = runtime.ensure_session_index() {
+                tracing::warn!(error = %e, "session semantic index warmup load skipped");
+            } else if crate::engines::session_search::session_should_rebuild(&root) {
+                if let Err(e) = runtime.consume_session_index() {
+                    tracing::warn!(error = %e, "session semantic index first-desired rebuild skipped");
+                }
+            }
         }
         runtime.drop_embedder_for_cool();
         *self.runtime.write().unwrap() = Some(runtime);
         self.warmed = true;
-        self.last_reconcile = Instant::now();
         crate::telemetry::release_heap_to_os();
         Ok(())
     }
@@ -151,7 +159,7 @@ impl WorkerState {
         runtime.search_sessions(query, top_k, session_id)
     }
 
-    /// Refresh index: full rebuild when incompatible/absent, else incremental sync.
+    /// Refresh index: code then session. Never skip session after a code rebuild.
     fn refresh(&mut self) -> Result<RefreshResult> {
         if !self.warmed {
             return Err(LitecodeError::ToolExecution(
@@ -168,17 +176,40 @@ impl WorkerState {
         let runtime = guard
             .as_ref()
             .ok_or_else(|| LitecodeError::ToolExecution("runtime missing".into()))?;
-        if rebuild {
+        let mode = if rebuild {
             rebuild_index_in_runtime(runtime)?;
-            Ok(RefreshResult {
-                mode: RefreshMode::Rebuild,
-            })
+            RefreshMode::Rebuild
         } else {
-            refresh_index_incremental(runtime)?;
-            Ok(RefreshResult {
-                mode: RefreshMode::Incremental,
-            })
+            queue_reconcile_dirty(runtime);
+            let (embed_dirty, dirty) = runtime
+                .pending_updates
+                .lock()
+                .map(|g| pending_work_counts(&g))
+                .unwrap_or((0, 0));
+            let indexed = runtime
+                .with_index(|index| Ok(index.indexed_paths().len()))
+                .unwrap_or(0);
+            let scannable = scannable_files(&root).map(|f| f.len()).unwrap_or(indexed);
+            match decide_index_work(true, true, embed_dirty, dirty, indexed, scannable) {
+                crate::engines::code_search::IndexWork::Rebuild { .. } => {
+                    rebuild_index_in_runtime(runtime)?;
+                    RefreshMode::Rebuild
+                }
+                crate::engines::code_search::IndexWork::None => {
+                    write_pending_hint(&root, 0);
+                    RefreshMode::Incremental
+                }
+                crate::engines::code_search::IndexWork::Update { .. } => {
+                    refresh_index_incremental(runtime)?;
+                    RefreshMode::Incremental
+                }
+            }
+        };
+        if let Err(e) = runtime.consume_session_index() {
+            tracing::warn!(error = %e, "session index consume during refresh skipped");
         }
+        crate::engines::code_search::clear_index_job(&root);
+        Ok(RefreshResult { mode })
     }
 
     fn notify_fs_changes(&self, paths: Vec<String>, deleted: bool) {
@@ -189,35 +220,18 @@ impl WorkerState {
     }
 
     fn reconcile_disk(&mut self) {
-        if !self.warmed {
+        if !self.warmed || self.reconciling {
             return;
         }
+        self.reconciling = true;
         if let Some(root) = self.workspace_root.as_ref() {
             reload_worker_excludes(root);
         }
         let guard = self.runtime.read().unwrap();
         if let Some(runtime) = guard.as_ref() {
-            sync_index_with_disk(runtime);
+            queue_reconcile_dirty(runtime);
         }
-        self.last_reconcile = Instant::now();
-    }
-
-    /// Periodic disk↔index sync (dirty signals + shared flush). Best-effort.
-    fn maybe_reconcile(&mut self) {
-        if !self.warmed || self.last_reconcile.elapsed() < INDEX_RECONCILE_INTERVAL {
-            return;
-        }
-        if let Some(root) = self.workspace_root.as_ref() {
-            reload_worker_excludes(root);
-        }
-        let guard = self.runtime.read().unwrap();
-        if let Some(runtime) = guard.as_ref() {
-            sync_index_with_disk(runtime);
-        }
-        drop(guard);
-        self.last_reconcile = Instant::now();
-        // Incremental embed/flush can leave another allocator high-water; trim once.
-        crate::telemetry::release_heap_to_os();
+        self.reconciling = false;
     }
 
     /// Two-tier cool: L1 drop Session, L2 unload RAM index (disk retained).
@@ -337,7 +351,7 @@ mod poll_ffi {
     }
 }
 
-/// Polling stdin loop: periodic disk reconcile + request dispatch.
+/// Polling stdin loop: idle cool + request dispatch.
 #[cfg(target_os = "linux")]
 pub fn run_worker_loop() -> Result<()> {
     use poll_ffi::*;
@@ -349,7 +363,7 @@ pub fn run_worker_loop() -> Result<()> {
     let mut stdout = std::io::stdout().lock();
 
     loop {
-        // Poll stdin with 1s timeout so reconcile runs even without incoming requests.
+        // Poll stdin with 1s timeout so L1/L2 cool can run between requests.
         let ret = unsafe {
             let mut pfd = PollFd {
                 fd: stdin_fd,
@@ -362,9 +376,7 @@ pub fn run_worker_loop() -> Result<()> {
             break; // poll error
         }
 
-        // Dirty-signal reconcile + flush (reuses pending_updates → update_files).
-        state.maybe_reconcile();
-        // After reconcile, allow L1/L2 cool so peaks always fall back.
+        // After requests, allow L1/L2 cool so peaks always fall back.
         state.maybe_cool_memory();
 
         if ret == 0 {
@@ -434,6 +446,7 @@ pub fn run_worker_loop() -> Result<()> {
         let out = serde_json::to_string(&response)?;
         writeln!(stdout, "{out}")?;
         stdout.flush()?;
+        state.maybe_cool_memory();
     }
     Ok(())
 }

@@ -93,11 +93,15 @@ impl CodeSearchEngine {
     }
 
     fn kill_client(&self) {
-        self.set_worker_os_pid(None);
-        if let Ok(mut guard) = self.client.lock()
+        // Kill by OS pid first. Warmup holds the Child locally until the
+        // worker RPC returns, so `client` is often still None while the
+        // embedder is burning CPU. A graceful shutdown RPC also cannot run
+        // until that in-flight request finishes — wait and the process leaks.
+        let pid = self.worker_os_pid.swap(0, Ordering::AcqRel);
+        crate::serve::shutdown::kill_process(pid);
+        if let Ok(mut guard) = self.client.try_lock()
             && let Some(mut client) = guard.take()
         {
-            let _ = client.shutdown();
             client.kill();
         }
     }
@@ -406,9 +410,42 @@ impl Default for CodeSearchEngine {
 mod tests {
     use super::*;
     use crate::engines::code_search::init_workspace_index;
+    use std::process::{Command, Stdio};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tempfile::TempDir;
+
+    fn spawn_stub_child() -> std::process::Child {
+        #[cfg(windows)]
+        {
+            Command::new("ping")
+                .args(["-t", "127.0.0.1"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("ping")
+        }
+        #[cfg(unix)]
+        {
+            Command::new("sleep")
+                .arg("60")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("sleep")
+        }
+    }
+
+    fn wait_until_dead(pid: u32, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if !crate::serve::shutdown::is_process_alive(pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        !crate::serve::shutdown::is_process_alive(pid)
+    }
 
     #[test]
     fn notify_buffers_while_cold() {
@@ -416,6 +453,29 @@ mod tests {
         engine.notify_fs_changes(&["src/a.rs".into()], false);
         let pending = engine.pending_fs.lock().unwrap();
         assert!(pending.contains(&("src/a.rs".into(), false)));
+    }
+
+    #[test]
+    fn stop_kills_os_process_when_client_not_installed() {
+        // Warmup holds the Child locally until the worker RPC returns. Turning
+        // the engine off must still kill that OS process; worker_alive() is
+        // false whenever `client` is None, so it cannot catch this leak.
+        let mut child = spawn_stub_child();
+        let pid = child.id();
+        assert!(
+            crate::serve::shutdown::is_process_alive(pid),
+            "stub child {pid} should be running"
+        );
+
+        let engine = CodeSearchEngine::new();
+        engine.set_worker_os_pid(Some(pid));
+        engine.stop();
+
+        assert!(
+            wait_until_dead(pid, Duration::from_secs(2)),
+            "code-search worker pid {pid} still alive after engine stop"
+        );
+        let _ = child.try_wait();
     }
 
     #[test]

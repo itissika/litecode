@@ -213,6 +213,10 @@ impl SessionSemanticIndex {
         self.chunks.is_empty()
     }
 
+    pub fn last_change_id(&self) -> i64 {
+        self.last_change_id
+    }
+
     fn remove_id(&mut self, id: u64) {
         if let Some(chunk) = self.chunks.remove(&id) {
             self.by_key.remove(&(chunk.session_id, chunk.seq));
@@ -382,6 +386,7 @@ impl SessionSemanticIndex {
             self.embedder_id = embedder.embedder_id().into();
             self.last_change_id = latest;
             self.save(workspace_root)?;
+            write_session_pending_hint(workspace_root, 0);
             dirty = true;
         }
         Ok(dirty)
@@ -392,29 +397,148 @@ fn index_files_exist(workspace_root: &Path) -> bool {
     vectors_path(workspace_root).is_file() && chunks_path(workspace_root).is_file()
 }
 
-/// Load from disk or build empty + reconcile from sessions.db.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionPendingHintFile {
+    pending_updates: usize,
+}
+
+fn session_pending_hint_path(workspace_root: &Path) -> PathBuf {
+    session_index_dir(workspace_root).join("pending_hint.json")
+}
+
+pub fn write_session_pending_hint(workspace_root: &Path, pending_updates: usize) {
+    let path = session_pending_hint_path(workspace_root);
+    if pending_updates == 0 {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(body) = serde_json::to_string_pretty(&SessionPendingHintFile { pending_updates }) {
+        let _ = std::fs::write(&path, body);
+    }
+}
+
+pub fn read_session_pending_hint(workspace_root: &Path) -> usize {
+    let Ok(content) = std::fs::read_to_string(session_pending_hint_path(workspace_root)) else {
+        return 0;
+    };
+    serde_json::from_str::<SessionPendingHintFile>(&content)
+        .map(|h| h.pending_updates)
+        .unwrap_or(0)
+}
+
+/// Absent / unloadable / embedder mismatch — warmup auto-rebuilds this corpus only.
+pub fn session_should_rebuild(workspace_root: &Path) -> bool {
+    let meta = read_meta(workspace_root).ok().flatten();
+    let files = index_files_exist(workspace_root);
+    match meta {
+        None => true,
+        Some(m) => needs_rebuild(&m) || !files,
+    }
+}
+
+pub fn session_index_status(workspace_root: &Path) -> crate::engines::code_search::IndexStatus {
+    use crate::engines::code_search::IndexStatus;
+    if session_should_rebuild(workspace_root) {
+        return if index_files_exist(workspace_root) {
+            IndexStatus::NeedsRebuild
+        } else {
+            IndexStatus::Absent
+        };
+    }
+    if read_session_pending_hint(workspace_root) > 0 {
+        IndexStatus::Stale
+    } else {
+        IndexStatus::Ready
+    }
+}
+
+pub fn session_work_from_disk(
+    workspace_root: &Path,
+) -> crate::engines::code_search::IndexWork {
+    use crate::engines::code_search::{IndexRebuildReason, IndexWork};
+    if session_should_rebuild(workspace_root) {
+        let has_vectors = index_files_exist(workspace_root);
+        let has_db = workspace_root.join(".litecode").join("sessions.db").is_file();
+        if !has_vectors && !has_db {
+            return IndexWork::None;
+        }
+        return IndexWork::Rebuild {
+            reason: if has_vectors {
+                IndexRebuildReason::Incompatible
+            } else {
+                IndexRebuildReason::FirstDesired
+            },
+        };
+    }
+    let dirty = read_session_pending_hint(workspace_root);
+    if dirty == 0 {
+        IndexWork::None
+    } else {
+        IndexWork::Update { dirty }
+    }
+}
+
+/// Load compatible vectors; empty shell when the library is absent/unloadable.
+/// Does not embed or write the index.
+pub fn load_session_index(workspace_root: &Path) -> Result<SessionSemanticIndex> {
+    let dir = session_index_dir(workspace_root);
+    std::fs::create_dir_all(&dir).map_err(|e| LitecodeError::Config(e.to_string()))?;
+    if session_should_rebuild(workspace_root) {
+        return SessionSemanticIndex::new_empty();
+    }
+    SessionSemanticIndex::load(workspace_root)
+}
+
+/// Compare `sessions.db` watermark to the on-disk session index; write hint only.
+pub fn queue_session_dirty(workspace_root: &Path, reader: &SessionDataReader) {
+    if session_should_rebuild(workspace_root) {
+        write_session_pending_hint(workspace_root, 1);
+        return;
+    }
+    let latest = reader.latest_change_id_blocking().unwrap_or(0);
+    let indexed = read_meta(workspace_root)
+        .ok()
+        .flatten()
+        .map(|m| m.last_change_id)
+        .unwrap_or(0);
+    if latest == indexed {
+        write_session_pending_hint(workspace_root, 0);
+        return;
+    }
+    let dirty = latest.abs_diff(indexed).max(1) as usize;
+    write_session_pending_hint(workspace_root, dirty);
+}
+
+/// Embed + save session drift. Wipe first when the library must rebuild.
+pub fn consume_session_index(
+    workspace_root: &Path,
+    reader: &SessionDataReader,
+    embedder: &mut dyn Embedder,
+    index: &mut SessionSemanticIndex,
+) -> Result<bool> {
+    if session_should_rebuild(workspace_root) {
+        tracing::info!("session_search rebuilding semantic index");
+        let dir = session_index_dir(workspace_root);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| LitecodeError::Config(e.to_string()))?;
+        *index = SessionSemanticIndex::new_empty()?;
+    }
+    let dirty = index.reconcile(reader, workspace_root, embedder)?;
+    write_session_pending_hint(workspace_root, 0);
+    Ok(dirty)
+}
+
+/// Test/helper: load (or empty) then consume against `sessions.db`.
 pub fn ensure_session_index(
     workspace_root: &Path,
     reader: &SessionDataReader,
     embedder: &mut dyn Embedder,
 ) -> Result<SessionSemanticIndex> {
-    let dir = session_index_dir(workspace_root);
-    std::fs::create_dir_all(&dir).map_err(|e| LitecodeError::Config(e.to_string()))?;
-
-    let meta_on_disk = read_meta(workspace_root)?;
-    let rebuild = meta_on_disk.as_ref().map(needs_rebuild).unwrap_or(true)
-        || !index_files_exist(workspace_root);
-
-    let mut index = if rebuild {
-        tracing::info!("session_search rebuilding semantic index");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(|e| LitecodeError::Config(e.to_string()))?;
-        SessionSemanticIndex::new_empty()?
-    } else {
-        SessionSemanticIndex::load(workspace_root)?
-    };
-
-    index.reconcile(reader, workspace_root, embedder)?;
+    let mut index = load_session_index(workspace_root)?;
+    consume_session_index(workspace_root, reader, embedder, &mut index)?;
     Ok(index)
 }
 
@@ -472,7 +596,50 @@ mod tests {
         assert_eq!(index.len(), 1);
 
         data.insert_items(&id, &[user_text("second row")]).unwrap();
+        let reloaded = load_session_index(root).unwrap();
+        assert_eq!(
+            reloaded.len(),
+            1,
+            "load must not digest new session rows"
+        );
+        queue_session_dirty(root, &reader);
+        assert!(
+            read_session_pending_hint(root) > 0,
+            "watermark lag must be queued, not embedded"
+        );
         index.reconcile(&reader, root, &mut emb).unwrap();
         assert_eq!(index.len(), 2);
+        assert_eq!(read_session_pending_hint(root), 0);
+    }
+
+    #[test]
+    fn session_work_none_when_hint_cleared() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        write_session_pending_hint(root, 3);
+        assert_eq!(
+            session_work_from_disk(root),
+            crate::engines::code_search::IndexWork::None,
+            "hint without sessions.db or vectors is not engine work"
+        );
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("seed")]).unwrap();
+        let reader = crate::session::SessionDataReader::open(&db);
+        let mut emb = HashEmbedder;
+        let _ = ensure_session_index(root, &reader, &mut emb).unwrap();
+        assert_eq!(
+            session_work_from_disk(root),
+            crate::engines::code_search::IndexWork::None
+        );
+        data.insert_items(&id, &[user_text("later")]).unwrap();
+        queue_session_dirty(root, &reader);
+        assert!(matches!(
+            session_work_from_disk(root),
+            crate::engines::code_search::IndexWork::Update { .. }
+        ));
     }
 }

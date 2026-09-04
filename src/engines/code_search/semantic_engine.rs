@@ -12,7 +12,7 @@ use crate::types::Result;
 use super::lexical::{LexicalMatch, LexicalQuery};
 use super::lexical_primitive::LexicalPrimitive;
 use super::retrieve::{self, CODE_SEMANTIC_CC_ALPHA, SearchHit};
-use super::{CodeSearchRuntime, MAX_TOP_K, flush_pending_updates};
+use super::{CodeSearchRuntime, MAX_TOP_K};
 
 /// Production semantic retrieval engine for workspace Code (algorithm lives here only).
 #[derive(Debug, Default, Clone, Copy)]
@@ -27,8 +27,6 @@ impl SemanticEngine {
         glob_filter: Option<&str>,
         top_k: usize,
     ) -> Result<Vec<SearchHit>> {
-        flush_pending_updates(runtime);
-
         let top_k = top_k.clamp(1, MAX_TOP_K);
         let query_vec = runtime.with_embedder(|emb| emb.embed_one(query))?;
 

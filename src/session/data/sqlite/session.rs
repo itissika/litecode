@@ -2047,8 +2047,14 @@ impl Session {
         for item in transcript.iter() {
             match item {
                 Item::FunctionCall(fc) => {
-                    result.push(item.clone());
-                    if !answered.contains(&fc.call_id) {
+                    // An answered FunctionCall starts a later batch. Flush hanging
+                    // pads first so a recovered call keeps its pad in place — otherwise
+                    // the ephemeral pad moves and busts the prompt-cache prefix.
+                    if answered.contains(&fc.call_id) {
+                        flush(&mut pending, &mut result, &mut padded);
+                        result.push(item.clone());
+                    } else {
+                        result.push(item.clone());
                         pending.push((fc.call_id.clone(), fc.name.clone()));
                     }
                 }
@@ -3351,6 +3357,40 @@ mod tests {
         assert!(matches!(&items[2], Item::FunctionCallOutput(o) if o.call_id == "a"));
         assert!(matches!(&items[3], Item::FunctionCallOutput(o) if o.call_id == "b"));
         assert!(matches!(&items[4], Item::Message(_)));
+    }
+
+    #[test]
+    fn pad_unanswered_calls_keeps_hanging_pad_before_later_answered_batch() {
+        let hanging = Item::FunctionCall(FunctionToolCall {
+            arguments: "{}".into(),
+            call_id: "hanging".into(),
+            namespace: None,
+            name: "read".into(),
+            id: None,
+            status: None,
+        });
+        let later = Item::FunctionCall(FunctionToolCall {
+            arguments: "{}".into(),
+            call_id: "c_new".into(),
+            namespace: None,
+            name: "read".into(),
+            id: None,
+            status: None,
+        });
+        let later_out = Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: "c_new".into(),
+            output: FunctionCallOutput::Text("fresh".into()),
+            id: None,
+            status: None,
+        });
+        let mut items = vec![hanging, later, later_out];
+        let n = Session::pad_unanswered_calls(&mut items);
+        assert_eq!(n, 1);
+        assert_eq!(items.len(), 4);
+        assert!(matches!(&items[0], Item::FunctionCall(fc) if fc.call_id == "hanging"));
+        assert!(matches!(&items[1], Item::FunctionCallOutput(o) if o.call_id == "hanging"));
+        assert!(matches!(&items[2], Item::FunctionCall(fc) if fc.call_id == "c_new"));
+        assert!(matches!(&items[3], Item::FunctionCallOutput(o) if o.call_id == "c_new"));
     }
 
     #[test]

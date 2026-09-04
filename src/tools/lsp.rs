@@ -241,7 +241,8 @@ fn resolve_text_on_line(file_path: &Path, line: u64, text: &str) -> Result<TextR
     let lines: Vec<&str> = decoded.text.lines().collect();
     let Some(source_line) = lines.get((line - 1) as usize) else {
         return Err(format!(
-            "line {line} is outside the file ({} lines in {})",
+            "{} is outside the file ({} lines in {})",
+            crate::tool::format_line_label(line as u32, line as u32),
             lines.len(),
             file_path.display()
         ));
@@ -264,8 +265,9 @@ fn resolve_text_on_line(file_path: &Path, line: u64, text: &str) -> Result<TextR
 
     if hits.is_empty() {
         return Err(format!(
-            "text `{needle}` not found on line {line} of {}:\n  {source_line}\n\
+            "text `{needle}` not found on {} of {}:\n  {source_line}\n\
              Copy an exact substring from the read tool output for that line.",
+            crate::tool::format_line_label(line as u32, line as u32),
             file_path.display()
         ));
     }
@@ -322,8 +324,8 @@ fn numbered_line_window(content: &str, hit_line: u32, before: u32, after: u32) -
     let end = (idx + after as usize + 1).min(lines.len());
     let mut out = String::new();
     for (i, line) in lines[start..end].iter().enumerate() {
-        let line_no = start + i + 1;
-        out.push_str(&format!("{line_no:>4}|{line}\n"));
+        let line_no = (start + i + 1) as u32;
+        out.push_str(&crate::tool::format_file_line(line_no, line));
     }
     out
 }
@@ -350,30 +352,28 @@ fn snippet_for_landing(path: &Path, line: u32) -> String {
     numbered_line_window(&src, line, LANDING_CONTEXT_LINES, LANDING_CONTEXT_LINES)
 }
 
-fn parse_location_line(s: &str) -> Option<(PathBuf, u32, u32)> {
-    let (path_line, col_s) = s.rsplit_once(':')?;
-    let (path_s, line_s) = path_line.rsplit_once(':')?;
-    let line: u32 = line_s.parse().ok()?;
-    let col: u32 = col_s.parse().ok()?;
+fn parse_location_line(s: &str) -> Option<(PathBuf, u32)> {
+    let (path_s, label) = s.rsplit_once(":L")?;
+    let line: u32 = label.parse().ok()?;
     if line == 0 {
         return None;
     }
-    Some((PathBuf::from(path_s), line, col))
+    Some((PathBuf::from(path_s), line))
 }
 
-/// Attach grep-style context under each `path:line:col` for definition / references.
+/// Attach grep-style context under each `{path}:L{n}` for definition / references.
 fn enrich_nav_result(raw: &str) -> String {
     if raw.starts_with("No locations found") {
         return raw.to_string();
     }
-    let mut locations: Vec<(String, PathBuf, u32, u32)> = Vec::new();
+    let mut locations: Vec<(String, PathBuf, u32)> = Vec::new();
     for line in raw.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        if let Some((path, ln, col)) = parse_location_line(trimmed) {
-            locations.push((trimmed.to_string(), path, ln, col));
+        if let Some((path, ln)) = parse_location_line(trimmed) {
+            locations.push((trimmed.to_string(), path, ln));
         } else {
             // Non-location payload — leave untouched.
             return raw.to_string();
@@ -384,7 +384,7 @@ fn enrich_nav_result(raw: &str) -> String {
     }
 
     let mut out = String::new();
-    for (label, path, ln, _col) in &locations {
+    for (label, path, ln) in &locations {
         if !out.is_empty() {
             out.push('\n');
         }
@@ -449,13 +449,14 @@ fn format_multi_hit_view(
     };
 
     let unique = groups.len();
+    let loc = crate::tool::format_line_label(line as u32, line as u32);
     let mut out = if merge_identical_bodies && unique < n {
         format!(
-            "text `{needle}` matched {n} times on line {line} → {unique} unique definition{}\n",
+            "text `{needle}` matched {n} times on {loc} → {unique} unique definition{}\n",
             if unique == 1 { "" } else { "s" }
         )
     } else {
-        format!("text `{needle}` matched {n} times on line {line}\n")
+        format!("text `{needle}` matched {n} times on {loc}\n")
     };
 
     for (body_idx, hit_idxs) in groups {
@@ -524,7 +525,7 @@ impl Tool for LspTool {
                 },
                 "text": {
                     "type": "string",
-                    "description": "Exact substring on the target line identifying the symbol; tool resolves column(s). Prefer: copy the symbol token from read output (e.g. AgentDeps). Avoid: invented spellings, fuzzy abbreviations, or pasting the entire line."
+                    "description": "Exact substring on the target line identifying the symbol. Prefer: copy the symbol token from read output (e.g. AgentDeps). Avoid: invented spellings, fuzzy abbreviations, or pasting the entire line."
                 }
             },
             "required": ["action", "file_path"]
@@ -807,14 +808,14 @@ mod tests {
         let blocks = vec![
             "No locations found (language server ready; no definition/reference at this position)."
                 .into(),
-            "src/a.rs:1:1\n".into(),
+            "src/a.rs:L1\n".into(),
         ];
         let view = format_multi_hit_view(1, line, "foo", &hits, &blocks, false);
         assert!(view.contains("matched 2 times"), "got: {view}");
         assert!(view.contains("##foo foo"), "got: {view}");
         assert!(view.contains("##foo"), "got: {view}");
         assert!(view.contains("No locations found"), "got: {view}");
-        assert!(view.contains("src/a.rs:1:1"), "got: {view}");
+        assert!(view.contains("src/a.rs:L1"), "got: {view}");
         // Without merge, each block keeps its own body even if we later add identical cases.
         assert_eq!(
             view.matches("##foo").count(),
@@ -836,19 +837,19 @@ mod tests {
                 byte_start: 10,
             },
         ];
-        let landing = "src/lib.rs:1:8\n```\npub fn target() {}\n```\n".to_string();
+        let landing = "src/lib.rs:L1\n```\npub fn target() {}\n```\n".to_string();
         let blocks = vec![landing.clone(), landing];
         let view = format_multi_hit_view(4, line, "target", &hits, &blocks, true);
 
         assert!(
-            view.contains("matched 2 times on line 4 → 1 unique definition"),
+            view.contains("matched 2 times on L4 → 1 unique definition"),
             "got: {view}"
         );
         assert!(view.contains("##target(); t"), "got: {view}");
         assert!(view.contains("##target();"), "got: {view}");
         // One expansion only.
         assert_eq!(
-            view.matches("src/lib.rs:1:8").count(),
+            view.matches("src/lib.rs:L1").count(),
             1,
             "identical landings must collapse to one body: {view}"
         );
@@ -868,15 +869,15 @@ mod tests {
                 byte_start: 2,
             },
         ];
-        let blocks = vec!["src/a.rs:1:1\n".into(), "src/b.rs:2:1\n".into()];
+        let blocks = vec!["src/a.rs:L1\n".into(), "src/b.rs:L2\n".into()];
         let view = format_multi_hit_view(1, line, "a", &hits, &blocks, true);
         assert!(
-            view.contains("matched 2 times on line 1\n"),
+            view.contains("matched 2 times on L1\n"),
             "no → unique when landings differ: {view}"
         );
         assert!(!view.contains("unique definition"), "got: {view}");
-        assert!(view.contains("src/a.rs:1:1"), "got: {view}");
-        assert!(view.contains("src/b.rs:2:1"), "got: {view}");
+        assert!(view.contains("src/a.rs:L1"), "got: {view}");
+        assert!(view.contains("src/b.rs:L2"), "got: {view}");
     }
 
     #[test]
@@ -897,13 +898,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("notes.txt");
         std::fs::write(&file, "one\ntwo\nthree\nfour\nfive\n").unwrap();
-        let label = format!("{}:3:1", file.display());
+        let label = format!("{}:L3", file.display());
         let enriched = enrich_nav_result(&label);
         assert!(enriched.contains(&label), "got: {enriched}");
         // ±2 around line 3 → lines 1..5
-        assert!(enriched.contains("1|one"), "got: {enriched}");
-        assert!(enriched.contains("3|three"), "got: {enriched}");
-        assert!(enriched.contains("5|five"), "got: {enriched}");
+        assert!(enriched.contains("     1: one"), "got: {enriched}");
+        assert!(enriched.contains("     3: three"), "got: {enriched}");
+        assert!(enriched.contains("     5: five"), "got: {enriched}");
     }
 
     #[test]
@@ -911,7 +912,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("lib.rs");
         std::fs::write(&file, "fn outer() {\n    let x = 1;\n    let y = 2;\n}\n").unwrap();
-        let label = format!("{}:2:9", file.display());
+        let label = format!("{}:L2", file.display());
         let enriched = enrich_nav_result(&label);
         assert!(enriched.contains(&label), "got: {enriched}");
         // Ancestor should fence the fn body (or at least include surrounding lines).
@@ -930,12 +931,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("notes.txt");
         std::fs::write(&file, "a\nb\nc\nd\ne\n").unwrap();
-        let loc = format!("{}:3:1", file.display());
+        let loc = format!("{}:L3", file.display());
 
         let def = enrich_action_result("goToDefinition", &loc);
         assert!(def.contains(&loc), "got: {def}");
         assert!(
-            def.contains("3|c"),
+            def.contains("     3: c"),
             "definition should attach ±2 context: {def}"
         );
         assert!(
@@ -944,7 +945,10 @@ mod tests {
         );
 
         let refs = enrich_action_result("findReferences", &loc);
-        assert!(refs.contains("3|c"), "references share nav enrich: {refs}");
+        assert!(
+            refs.contains("     3: c"),
+            "references share nav enrich: {refs}"
+        );
 
         let hover = enrich_action_result("hover", "fn item\nDocs here");
         assert_eq!(
@@ -987,7 +991,7 @@ mod tests {
         let view = format_multi_hit_view(3, line, "alpha", &hits, &blocks, false);
 
         let summary = view.lines().next().unwrap();
-        assert_eq!(summary, "text `alpha` matched 2 times on line 3");
+        assert_eq!(summary, "text `alpha` matched 2 times on L3");
 
         // Headings: needle + right 5 (" alph" / end-of-line empty)
         assert!(
