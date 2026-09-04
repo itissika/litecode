@@ -165,6 +165,47 @@ pub enum CodeSearchCallGate {
     Failed(String),
 }
 
+pub fn merge_index_work(
+    code: code_search::IndexWork,
+    session: code_search::IndexWork,
+) -> code_search::IndexWork {
+    use code_search::{IndexRebuildReason, IndexWork};
+    fn rebuild_rank(reason: IndexRebuildReason) -> u8 {
+        match reason {
+            IndexRebuildReason::FirstDesired => 3,
+            IndexRebuildReason::Incompatible => 2,
+            IndexRebuildReason::DirtyTooLarge => 1,
+        }
+    }
+    match (code, session) {
+        (IndexWork::Rebuild { reason: a }, IndexWork::Rebuild { reason: b }) => {
+            IndexWork::Rebuild {
+                reason: if rebuild_rank(a) >= rebuild_rank(b) {
+                    a
+                } else {
+                    b
+                },
+            }
+        }
+        (IndexWork::Rebuild { reason }, _) | (_, IndexWork::Rebuild { reason }) => {
+            IndexWork::Rebuild { reason }
+        }
+        (IndexWork::Update { dirty: a }, IndexWork::Update { dirty: b }) => {
+            IndexWork::Update { dirty: a.saturating_add(b) }
+        }
+        (IndexWork::Update { dirty }, IndexWork::None)
+        | (IndexWork::None, IndexWork::Update { dirty }) => IndexWork::Update { dirty },
+        (IndexWork::None, IndexWork::None) => IndexWork::None,
+    }
+}
+
+pub fn engine_index_work(workspace_root: &Path) -> code_search::IndexWork {
+    merge_index_work(
+        code_search::index_work_from_disk(workspace_root),
+        session_search::session_work_from_disk(workspace_root),
+    )
+}
+
 /// The single owner of workspace-scoped LSP and retrieval services.
 #[derive(Clone)]
 pub struct WorkspaceEngines {
@@ -285,7 +326,7 @@ impl WorkspaceEngines {
                         "session semantic search requires code_search engine Warm".into(),
                     ));
                 }
-                match self.code_search_call_gate() {
+                match self.retrieval_job_gate() {
                     CodeSearchCallGate::Failed(detail) => {
                         return Err(LitecodeError::ToolExecution(detail));
                     }
@@ -350,7 +391,7 @@ impl WorkspaceEngines {
         };
         let lexical = session_search::search_all(&reader, &text_q)?;
 
-        let semantic = if matches!(self.code_search_call_gate(), CodeSearchCallGate::Ready) {
+        let semantic = if matches!(self.retrieval_job_gate(), CodeSearchCallGate::Ready) {
             match self.code_search.search_sessions(
                 query,
                 session_search::SEMANTIC_WINDOW,
@@ -512,11 +553,8 @@ impl WorkspaceEngines {
         self.refresh_busy.load(Ordering::SeqCst)
     }
 
-    /// Whether Agent semantic search may hit the worker now.
-    ///
-    /// Wait = index is building/refreshing (return "try again", do not search).
-    /// Failed = job failed; do not return hits from a possibly stale corpus.
-    pub fn code_search_call_gate(&self) -> CodeSearchCallGate {
+    /// Whether the retrieval worker is in-flight (not corpus Stale).
+    pub fn retrieval_job_gate(&self) -> CodeSearchCallGate {
         if matches!(self.state("code_search"), Some(EngineState::Failed)) {
             return CodeSearchCallGate::Failed(
                 self.last_error("code_search")
@@ -547,6 +585,30 @@ impl WorkspaceEngines {
         } else {
             CodeSearchCallGate::Wait
         }
+    }
+
+    /// Whether Agent semantic search may hit the worker now.
+    ///
+    /// Wait = index is building/refreshing (return "try again", do not search).
+    /// Code Stale/NeedsRebuild/Absent also waits so the tool can consume first.
+    /// Failed = job failed; do not return hits from a possibly stale corpus.
+    pub fn code_search_call_gate(&self) -> CodeSearchCallGate {
+        match self.retrieval_job_gate() {
+            CodeSearchCallGate::Ready => {}
+            other => return other,
+        }
+        if let Some(root) = self.code_search.workspace_root() {
+            let view = code_search::resolve_index_view(&root, self.state("code_search"));
+            match view.status {
+                code_search::IndexStatus::Stale
+                | code_search::IndexStatus::NeedsRebuild
+                | code_search::IndexStatus::Absent => {
+                    return CodeSearchCallGate::Wait;
+                }
+                _ => {}
+            }
+        }
+        CodeSearchCallGate::Ready
     }
 
     /// Test-only: force a workspace engine runtime state.
@@ -654,12 +716,47 @@ impl WorkspaceEngines {
             });
         }
 
-        self.spawn_index_refresh(root)
+        self.consume_index_work()
     }
 
-    /// Align the running code index to current discovery config. Does not enable retrieval.
+    /// Run pending index update/rebuild. No-op when the plan is `None`.
     ///
-    /// No-op when the engine is off, still warming, or a refresh is already in flight.
+    /// Does not start the engine; caller must already be Warm (or use
+    /// [`Self::request_refresh`] which reconciles first).
+    pub fn consume_index_work(&self) -> Result<RefreshAccepted> {
+        let Some(root) = self.code_search.workspace_root() else {
+            return Err(crate::types::LitecodeError::Config(
+                "code_search: workspace not set".into(),
+            ));
+        };
+        if !crate::config::workspace::workspace_engine_desired(&root, "code_search") {
+            return Err(crate::types::LitecodeError::Config(
+                "code search engine is off; enable it in Settings → Engines".into(),
+            ));
+        }
+        let state = self.state("code_search");
+        if matches!(state, Some(EngineState::Warming)) || self.refresh_busy.load(Ordering::SeqCst) {
+            return Ok(RefreshAccepted {
+                desired: true,
+                mode: RefreshAcceptedMode::InProgress,
+            });
+        }
+        if !matches!(state, Some(EngineState::Warm)) {
+            return Ok(RefreshAccepted {
+                desired: true,
+                mode: RefreshAcceptedMode::Starting,
+            });
+        }
+        match engine_index_work(&root) {
+            code_search::IndexWork::None => Ok(RefreshAccepted {
+                desired: true,
+                mode: RefreshAcceptedMode::Incremental,
+            }),
+            _ => self.spawn_index_refresh(&root),
+        }
+    }
+
+    /// Reconcile dirty paths on a Warm worker. Does not embed or enable retrieval.
     pub fn request_index_sync(&self, workspace_root: &Path) {
         if !crate::config::workspace::workspace_engine_desired(workspace_root, "code_search") {
             return;
@@ -671,16 +768,19 @@ impl WorkspaceEngines {
         {
             return;
         }
-        let _ = self.spawn_index_refresh(workspace_root);
+        self.code_search.request_reconcile();
     }
 
     fn spawn_index_refresh(&self, root: &Path) -> Result<RefreshAccepted> {
-        let mode = if code_search::should_full_rebuild(root) {
-            code_search::begin_building(root);
-            RefreshAcceptedMode::Rebuild
-        } else {
-            code_search::begin_refreshing(root);
-            RefreshAcceptedMode::Incremental
+        let mode = match engine_index_work(root) {
+            code_search::IndexWork::Rebuild { .. } => {
+                code_search::begin_building(root);
+                RefreshAcceptedMode::Rebuild
+            }
+            _ => {
+                code_search::begin_refreshing(root);
+                RefreshAcceptedMode::Incremental
+            }
         };
 
         if self
@@ -1189,7 +1289,7 @@ mod tests {
     }
 
     #[test]
-    fn request_index_sync_starts_refresh_when_warm_and_desired() {
+    fn request_index_sync_reconciles_without_starting_refresh() {
         let dir = TempDir::new().unwrap();
         crate::engines::code_search::init_workspace_index(dir.path()).unwrap();
         crate::config::workspace::enable_code_search_engine(dir.path()).unwrap();
@@ -1199,17 +1299,84 @@ mod tests {
             .set_workspace(dir.path().to_path_buf());
         engines.set_state_for_test("code_search", EngineState::Warm);
         engines.request_index_sync(dir.path());
-        assert!(engines.is_refresh_busy());
+        assert!(!engines.is_refresh_busy());
         let view =
             crate::engines::code_search::resolve_index_view(dir.path(), Some(EngineState::Warm));
-        assert!(
-            matches!(
-                view.status,
-                crate::engines::code_search::IndexStatus::Refreshing
-                    | crate::engines::code_search::IndexStatus::Building
+        assert_ne!(
+            view.status,
+            crate::engines::code_search::IndexStatus::Refreshing
+        );
+        assert_ne!(
+            view.status,
+            crate::engines::code_search::IndexStatus::Building
+        );
+    }
+
+    #[test]
+    fn code_search_call_gate_waits_when_index_is_stale() {
+        let dir = TempDir::new().unwrap();
+        crate::engines::code_search::init_workspace_index(dir.path()).unwrap();
+        let mut meta = crate::engines::code_search::IndexMeta::shell();
+        meta.indexed_files = 4;
+        meta.indexed_chunks = 4;
+        crate::engines::code_search::write_meta(dir.path(), &meta).unwrap();
+        let index_dir = crate::engines::code_search::index_dir(dir.path());
+        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
+        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
+        crate::engines::code_search::write_pending_hint(dir.path(), 3);
+
+        let engines = WorkspaceEngines::new();
+        engines
+            .code_search()
+            .set_workspace(dir.path().to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        assert_eq!(engines.code_search_call_gate(), CodeSearchCallGate::Wait);
+        assert_eq!(engines.retrieval_job_gate(), CodeSearchCallGate::Ready);
+        assert!(!engines.is_refresh_busy());
+    }
+
+    #[test]
+    fn engine_index_work_unions_session_when_code_is_clean() {
+        let dir = TempDir::new().unwrap();
+        crate::engines::code_search::init_workspace_index(dir.path()).unwrap();
+        let mut meta = crate::engines::code_search::IndexMeta::shell();
+        meta.indexed_files = 4;
+        meta.indexed_chunks = 4;
+        crate::engines::code_search::write_meta(dir.path(), &meta).unwrap();
+        let index_dir = crate::engines::code_search::index_dir(dir.path());
+        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
+        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
+
+        assert_eq!(
+            code_search::index_work_from_disk(dir.path()),
+            code_search::IndexWork::None
+        );
+        let db = dir.path().join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        std::fs::write(&db, "").unwrap();
+        assert!(matches!(
+            engine_index_work(dir.path()),
+            code_search::IndexWork::Rebuild { .. }
+        ));
+    }
+
+    #[test]
+    fn merge_index_work_prefers_rebuild() {
+        use code_search::{IndexRebuildReason, IndexWork};
+        assert_eq!(
+            merge_index_work(IndexWork::None, IndexWork::Update { dirty: 2 }),
+            IndexWork::Update { dirty: 2 }
+        );
+        assert_eq!(
+            merge_index_work(
+                IndexWork::Update { dirty: 1 },
+                IndexWork::Rebuild {
+                    reason: IndexRebuildReason::FirstDesired
+                }
             ),
-            "expected in-flight index job, got {:?}",
-            view.status
+            IndexWork::Rebuild {
+                reason: IndexRebuildReason::FirstDesired
+            }
         );
     }
 }

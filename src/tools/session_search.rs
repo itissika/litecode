@@ -50,6 +50,14 @@ impl SessionSearchTool {
             _ => None,
         };
 
+        if self.engines.code_search().worker_alive() {
+            match crate::engines::engine_index_work(workspace_root) {
+                crate::engines::code_search::IndexWork::None => {}
+                _ => {
+                    let _ = self.engines.consume_index_work();
+                }
+            }
+        }
         let bundle = match self.engines.search_sessions(
             query,
             offset,

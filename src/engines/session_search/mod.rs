@@ -5,7 +5,11 @@
 mod lexical;
 mod semantic_index;
 
-pub use semantic_index::{SessionSemanticIndex, ensure_session_index};
+pub use semantic_index::{
+    SessionSemanticIndex, consume_session_index, ensure_session_index, load_session_index,
+    queue_session_dirty, read_session_pending_hint, session_index_status, session_should_rebuild,
+    session_work_from_disk, write_session_pending_hint,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

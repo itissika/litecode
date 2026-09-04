@@ -34,6 +34,35 @@ pub fn is_process_alive(pid: u32) -> bool {
     }
 }
 
+/// Force-kill `pid`. No-op for 0 or the current process.
+pub fn kill_process(pid: u32) {
+    if pid == 0 || pid == std::process::id() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+        };
+
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if handle.is_null() {
+                return;
+            }
+            let _ = TerminateProcess(handle, 1);
+            CloseHandle(handle);
+        }
+    }
+}
+
 /// Wait until any configured shutdown signal fires.
 pub async fn wait_for_shutdown(watch: ShutdownWatch) {
     tokio::select! {

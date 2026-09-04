@@ -41,6 +41,77 @@ pub struct IndexingProgress {
     pub chunks_done: usize,
 }
 
+/// Work remaining after reconcile. Consume (refresh / agent) is the only runner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IndexWork {
+    None,
+    Update { dirty: usize },
+    Rebuild { reason: IndexRebuildReason },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexRebuildReason {
+    FirstDesired,
+    Incompatible,
+    DirtyTooLarge,
+}
+
+/// Pick update vs rebuild from reconcile counts. Compatible index required.
+///
+/// Dirty ≥ 50% of `max(indexed, scannable)` upgrades to rebuild, but only when
+/// at least two files are dirty (single-file repos stay on update).
+pub fn decide_index_work(
+    compatible: bool,
+    has_usable_index: bool,
+    dirty: usize,
+    indexed_files: usize,
+    scannable_files: usize,
+) -> IndexWork {
+    if !has_usable_index {
+        return IndexWork::Rebuild {
+            reason: IndexRebuildReason::FirstDesired,
+        };
+    }
+    if !compatible {
+        return IndexWork::Rebuild {
+            reason: IndexRebuildReason::Incompatible,
+        };
+    }
+    if dirty == 0 {
+        return IndexWork::None;
+    }
+    let corpus = indexed_files.max(scannable_files);
+    if dirty >= 2 && dirty.saturating_mul(2) >= corpus {
+        return IndexWork::Rebuild {
+            reason: IndexRebuildReason::DirtyTooLarge,
+        };
+    }
+    IndexWork::Update { dirty }
+}
+
+/// Parent-process view of [`decide_index_work`] from disk hint + meta (no scannable walk).
+pub fn index_work_from_disk(workspace_root: &Path) -> IndexWork {
+    if should_full_rebuild(workspace_root) {
+        let has = store::index_files_exist(workspace_root);
+        return IndexWork::Rebuild {
+            reason: if has {
+                IndexRebuildReason::Incompatible
+            } else {
+                IndexRebuildReason::FirstDesired
+            },
+        };
+    }
+    let dirty = read_pending_hint(workspace_root);
+    let indexed = meta::read_meta(workspace_root)
+        .ok()
+        .flatten()
+        .map(|m| m.indexed_files)
+        .unwrap_or(0);
+    decide_index_work(true, true, dirty, indexed, indexed.max(dirty))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum JobKind {
@@ -310,5 +381,56 @@ mod tests {
             let view = resolve_index_view(dir.path(), Some(EngineState::Warm));
             assert_eq!(view.status, IndexStatus::Stale);
         }
+    }
+
+    #[test]
+    fn decide_index_work_first_desired_and_incompatible() {
+        assert_eq!(
+            decide_index_work(true, false, 0, 0, 0),
+            IndexWork::Rebuild {
+                reason: IndexRebuildReason::FirstDesired
+            }
+        );
+        assert_eq!(
+            decide_index_work(false, true, 0, 10, 10),
+            IndexWork::Rebuild {
+                reason: IndexRebuildReason::Incompatible
+            }
+        );
+    }
+
+    #[test]
+    fn decide_index_work_small_dirty_updates_large_rebuilds() {
+        assert_eq!(decide_index_work(true, true, 0, 10, 10), IndexWork::None);
+        assert_eq!(
+            decide_index_work(true, true, 1, 10, 10),
+            IndexWork::Update { dirty: 1 }
+        );
+        assert_eq!(
+            decide_index_work(true, true, 5, 10, 10),
+            IndexWork::Rebuild {
+                reason: IndexRebuildReason::DirtyTooLarge
+            }
+        );
+        assert_eq!(
+            decide_index_work(true, true, 1, 1, 1),
+            IndexWork::Update { dirty: 1 },
+            "single-file corpus must not upgrade to rebuild"
+        );
+    }
+
+    #[test]
+    fn index_work_serializes_kind_tag() {
+        let none = serde_json::to_value(IndexWork::None).unwrap();
+        assert_eq!(none["kind"], "none");
+        let update = serde_json::to_value(IndexWork::Update { dirty: 4 }).unwrap();
+        assert_eq!(update["kind"], "update");
+        assert_eq!(update["dirty"], 4);
+        let rebuild = serde_json::to_value(IndexWork::Rebuild {
+            reason: IndexRebuildReason::DirtyTooLarge,
+        })
+        .unwrap();
+        assert_eq!(rebuild["kind"], "rebuild");
+        assert_eq!(rebuild["reason"], "dirty_too_large");
     }
 }

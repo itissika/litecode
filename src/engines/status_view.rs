@@ -100,6 +100,13 @@ impl WorkspaceEngines {
             .is_some_and(|m| crate::engines::code_search::needs_rebuild(m) || !vectors_ready);
         let index_view =
             crate::engines::code_search::resolve_index_view(workspace_root, retrieval_status.state);
+        let session_status =
+            crate::engines::session_search::session_index_status(workspace_root);
+        let status = merge_retrieval_status(index_view.status, session_status);
+        let code_work = crate::engines::code_search::index_work_from_disk(workspace_root);
+        let session_work =
+            crate::engines::session_search::session_work_from_disk(workspace_root);
+        let work = super::merge_index_work(code_work.clone(), session_work.clone());
         let retrieval_error = retrieval_status
             .error
             .clone()
@@ -115,12 +122,12 @@ impl WorkspaceEngines {
             |model| serde_json::to_value(model).expect("model status serializes"),
         );
         let index_json = serde_json::json!({
-            "status": index_view.status,
+            "status": status,
             "progress": index_view.progress,
             "exists": index_exists,
             "needs_rebuild": needs_rebuild
                 || matches!(
-                    index_view.status,
+                    status,
                     crate::engines::code_search::IndexStatus::NeedsRebuild
                         | crate::engines::code_search::IndexStatus::Absent
                 ),
@@ -132,6 +139,15 @@ impl WorkspaceEngines {
             "embedder_id": meta.as_ref().map(|m| m.embedder_id.clone()),
             "pipeline_version": meta.as_ref().map(|m| m.pipeline_version),
             "pending_updates": crate::engines::code_search::read_pending_hint(workspace_root),
+            "work": work,
+            "code": { "work": code_work },
+            "session": {
+                "status": session_status,
+                "work": session_work,
+                "pending_updates": crate::engines::session_search::read_session_pending_hint(
+                    workspace_root
+                ),
+            },
         });
         let policy_json = serde_json::json!({
             "product_internal_dirs": crate::workspace::filter::PRODUCT_INTERNAL_DIRS,
@@ -170,6 +186,35 @@ impl WorkspaceEngines {
             "probes": probes,
             "servers": self.lsp_hub().instance_statuses(),
         })
+    }
+}
+
+fn status_rank(status: crate::engines::code_search::IndexStatus) -> u8 {
+    use crate::engines::code_search::IndexStatus;
+    match status {
+        IndexStatus::Building => 6,
+        IndexStatus::Refreshing => 5,
+        IndexStatus::Failed => 4,
+        IndexStatus::NeedsRebuild => 3,
+        IndexStatus::Stale => 2,
+        IndexStatus::Absent => 1,
+        IndexStatus::Ready => 0,
+    }
+}
+
+fn merge_retrieval_status(
+    code: crate::engines::code_search::IndexStatus,
+    session: crate::engines::code_search::IndexStatus,
+) -> crate::engines::code_search::IndexStatus {
+    use crate::engines::code_search::IndexStatus;
+    let session = match session {
+        IndexStatus::Absent => IndexStatus::Ready,
+        other => other,
+    };
+    if status_rank(code) >= status_rank(session) {
+        code
+    } else {
+        session
     }
 }
 

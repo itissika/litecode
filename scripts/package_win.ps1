@@ -1,9 +1,11 @@
-# Build Windows portable + NSIS installers (unsigned unless CSC_* env is set).
+# Build Windows NSIS installer (and portable unless -SkipPortable).
+# Unsigned unless CSC_* env is set.
 param(
   [switch]$SkipAssemble,
   [switch]$SkipWeb,
   [switch]$SkipModel,
   [switch]$SkipLinuxBundle,
+  [switch]$SkipPortable,
   [string]$Profile = "release"
 )
 
@@ -42,6 +44,7 @@ Push-Location (Join-Path $Root "desktop")
 $builderConfig = $null
 try {
   if (-not (Test-Path "node_modules")) { npm ci }
+  $winArgs = if ($SkipPortable) { @("--win", "nsis", "--x64") } else { @("--win", "--x64") }
   if ($SkipLinuxBundle) {
     npm run build
     $pkg = Get-Content -Raw -LiteralPath "package.json" | ConvertFrom-Json
@@ -56,7 +59,10 @@ try {
     $builderConfig = Join-Path $env:TEMP ("litecode-electron-builder-slim-" + [guid]::NewGuid().ToString("N") + ".json")
     $json = $build | ConvertTo-Json -Depth 16
     [System.IO.File]::WriteAllText($builderConfig, $json)
-    npx electron-builder --win --x64 --config $builderConfig
+    npx electron-builder @winArgs --config $builderConfig
+  } elseif ($SkipPortable) {
+    npm run build
+    npx electron-builder @winArgs
   } else {
     npm run dist:win
   }

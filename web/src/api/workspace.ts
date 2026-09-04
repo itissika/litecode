@@ -246,6 +246,11 @@ export interface IndexingProgress {
   chunks_done: number;
 }
 
+export type IndexWork =
+  | { kind: "none" }
+  | { kind: "update"; dirty: number }
+  | { kind: "rebuild"; reason: "first_desired" | "incompatible" | "dirty_too_large" };
+
 export type RefreshAcceptedMode = "starting" | "in_progress" | "rebuild" | "incremental";
 
 export async function refreshRetrieval(): Promise<{ desired: boolean; mode: RefreshAcceptedMode }> {
@@ -304,6 +309,13 @@ export interface RetrievalEngineDetail {
     embedder_id?: string | null;
     pipeline_version?: number | null;
     pending_updates?: number;
+    work?: IndexWork;
+    code?: { work?: IndexWork };
+    session?: {
+      status?: IndexStatus;
+      work?: IndexWork;
+      pending_updates?: number;
+    };
   };
   policy: {
     /** Product-internal hard-skip dirs (e.g. `.litecode`). */

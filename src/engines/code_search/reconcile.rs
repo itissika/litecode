@@ -1,7 +1,7 @@
 //! Disk ↔ index reconcile: only emits dirty signals into `pending_updates`.
 //!
-//! Digestion stays on the existing watcher path: [`super::flush_pending_updates`]
-//! → [`super::update_files`].
+//! Digestion is consume-only (`refresh_index_incremental` /
+//! [`super::flush_pending_updates`] → [`super::update_files`]).
 
 use std::collections::HashSet;
 use std::fs;
@@ -19,7 +19,7 @@ use super::{CodeSearchRuntime, FileStamp};
 /// index of a file; cold stamps fall back to chunk-content comparison.
 pub fn queue_reconcile_dirty(runtime: &CodeSearchRuntime) {
     // IndexCold: do not pull the index back into RAM just for reconcile.
-    // Watcher pending remains; next search ensure_index + flush digests drift.
+    // Watcher pending remains; consume (refresh / agent) loads and flushes.
     if !runtime.index_is_loaded() {
         return;
     }

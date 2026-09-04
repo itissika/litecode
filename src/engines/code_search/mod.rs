@@ -43,9 +43,10 @@ pub use enclosing::{
 pub use facade::{HumanSearchRequest, HumanSearchResponse, human_search};
 pub use fs_notify::queue_fs_changes;
 pub use index_status::{
-    IndexPhase, IndexStatus, IndexingProgress, ResolvedIndexView, begin_building, begin_refreshing,
-    clear_index_job, disk_index_status, mark_index_job_failed, read_pending_hint,
-    resolve_index_view, should_full_rebuild, update_build_progress, write_pending_hint,
+    IndexPhase, IndexRebuildReason, IndexStatus, IndexWork, IndexingProgress, ResolvedIndexView,
+    begin_building, begin_refreshing, clear_index_job, decide_index_work, disk_index_status,
+    index_work_from_disk, mark_index_job_failed, read_pending_hint, resolve_index_view,
+    should_full_rebuild, update_build_progress, write_pending_hint,
 };
 pub use lexical::{
     LexicalMatch, LexicalQuery, LexicalSearchOutcome, lexical_search, lexical_search_with_preset,
@@ -88,8 +89,6 @@ pub const DEFAULT_TOP_K: usize = 8;
 pub const MAX_TOP_K: usize = 20;
 /// Product embedder id: ORT MatMulNBits Q8 + GatherBlockQuantized Q4 (Pareto).
 pub const EMBEDDER_ID_ORT_Q8Q4: &str = "granite97-ort-q8q4";
-/// How often the worker reconciles disk ↔ index (dirty signals + flush).
-pub const INDEX_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
 /// Default idle before dropping ORT Session (L1 OrtCold). Override: `LITECODE_EMBEDDER_COOL_SECS`.
 pub const EMBEDDER_COOL_IDLE: Duration = Duration::from_secs(30);
 /// Default idle before unloading RAM index (L2 IndexCold). Override: `LITECODE_INDEX_COOL_SECS`.
@@ -129,7 +128,7 @@ pub struct CodeSearchRuntime {
     /// Code-corpus BM25 sidecar (Tantivy). Rebuilt when the dense index mutates.
     bm25: Mutex<Option<bm25::Bm25Index>>,
     embedder: Mutex<Option<Box<dyn embed::Embedder>>>,
-    /// File changes from serve watcher via IPC; processed lazily on search / reconcile.
+    /// File changes from serve watcher via IPC; consumed on refresh / agent.
     pub pending_updates: Mutex<HashSet<(String, bool)>>, // (relative_path, deleted)
     /// mtime/len after a successful index of a path (reconcile fast path).
     pub file_stamps: Mutex<HashMap<String, FileStamp>>,
@@ -183,10 +182,15 @@ impl CodeSearchRuntime {
     }
 
     pub(crate) fn has_pending_updates(&self) -> bool {
-        self.pending_updates
+        let code_dirty = self
+            .pending_updates
             .lock()
             .map(|g| !g.is_empty())
-            .unwrap_or(true)
+            .unwrap_or(true);
+        if code_dirty {
+            return true;
+        }
+        crate::engines::session_search::read_session_pending_hint(&self.workspace_root) > 0
     }
 
     pub(crate) fn index_is_loaded(&self) -> bool {
@@ -222,7 +226,7 @@ impl CodeSearchRuntime {
             })
     }
 
-    /// Warm-time or IndexCold reload: build/load Session ANN from `sessions.db`.
+    /// Load Session ANN from disk (or empty shell). Does not embed.
     pub fn ensure_session_index(&self) -> Result<()> {
         let reader = self.session_reader()?;
         {
@@ -231,13 +235,14 @@ impl CodeSearchRuntime {
                 .lock()
                 .map_err(|e| LitecodeError::Config(format!("session_index lock: {e}")))?;
             if guard.is_some() {
+                crate::engines::session_search::queue_session_dirty(&self.workspace_root, &reader);
                 return Ok(());
             }
         }
         tracing::info!("session_search loading session ANN index");
-        let loaded = self.with_embedder(|emb| {
-            crate::engines::session_search::ensure_session_index(&self.workspace_root, &reader, emb)
-        })?;
+        let loaded =
+            crate::engines::session_search::load_session_index(&self.workspace_root)?;
+        crate::engines::session_search::queue_session_dirty(&self.workspace_root, &reader);
         let mut guard = self
             .session_index
             .lock()
@@ -247,13 +252,12 @@ impl CodeSearchRuntime {
         Ok(())
     }
 
-    /// Light reconcile of Session ANN against `sessions.db`, then ANN search.
-    pub fn search_sessions(
-        &self,
-        query: &str,
-        top_k: usize,
-        session_id: Option<&str>,
-    ) -> Result<Vec<crate::engines::session_search::SessionTextHit>> {
+    /// First-desired / refresh consume: embed session drift and save.
+    pub fn consume_session_index(&self) -> Result<()> {
+        let reader = match self.session_reader() {
+            Ok(r) => r,
+            Err(_) => return Ok(()),
+        };
         self.ensure_session_index()?;
         self.with_embedder(|emb| {
             let mut guard = self
@@ -261,10 +265,56 @@ impl CodeSearchRuntime {
                 .lock()
                 .map_err(|e| LitecodeError::Config(format!("session_index lock: {e}")))?;
             let index = guard.as_mut().ok_or_else(|| {
-                LitecodeError::Config("session_index missing after ensure".into())
+                LitecodeError::Config("session_index missing after load".into())
             })?;
-            let reader = self.session_reader()?;
-            let _ = index.reconcile(&reader, &self.workspace_root, emb)?;
+            crate::engines::session_search::consume_session_index(
+                &self.workspace_root,
+                &reader,
+                emb,
+                index,
+            )?;
+            Ok(())
+        })?;
+        self.touch_index_at();
+        Ok(())
+    }
+
+    /// ANN search only. Load from disk if cold; does not digest `sessions.db`.
+    pub fn search_sessions(
+        &self,
+        query: &str,
+        top_k: usize,
+        session_id: Option<&str>,
+    ) -> Result<Vec<crate::engines::session_search::SessionTextHit>> {
+        if self.session_reader().is_err() {
+            return Err(LitecodeError::Config(
+                "session semantic index unavailable: SessionData reader not ready".into(),
+            ));
+        }
+        {
+            let loaded = self
+                .session_index
+                .lock()
+                .map_err(|e| LitecodeError::Config(format!("session_index lock: {e}")))?
+                .is_some();
+            if !loaded {
+                let loaded_idx =
+                    crate::engines::session_search::load_session_index(&self.workspace_root)?;
+                let mut guard = self
+                    .session_index
+                    .lock()
+                    .map_err(|e| LitecodeError::Config(format!("session_index lock: {e}")))?;
+                *guard = Some(loaded_idx);
+            }
+        }
+        self.with_embedder(|emb| {
+            let guard = self
+                .session_index
+                .lock()
+                .map_err(|e| LitecodeError::Config(format!("session_index lock: {e}")))?;
+            let index = guard.as_ref().ok_or_else(|| {
+                LitecodeError::Config("session_index missing after load".into())
+            })?;
             let qv = emb.embed_one(query)?;
             let hits = index.search(&qv, top_k, session_id)?;
             self.touch_index_at();
@@ -533,8 +583,8 @@ impl CodeSearchRuntime {
 /// Load or build index for warmup. Caller owns embedder lifecycle.
 ///
 /// Compatible on-disk vectors are **loaded**. Stale/pending file drift is not a
-/// startup full rebuild (worker `sync_index_with_disk` catches up). Full build
-/// only when the library is absent, a shell with no vectors, or unloadable
+/// startup full rebuild (the worker queues dirty paths; consume flushes). Full
+/// build only when the library is absent, a shell with no vectors, or unloadable
 /// (pipeline/embedder mismatch).
 pub fn warmup_index(
     workspace_root: &Path,

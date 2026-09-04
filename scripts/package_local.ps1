@@ -101,23 +101,15 @@ $ModelDir = Join-Path $Root "models\ibm-granite\granite-embedding-97m-multilingu
 if (-not (Test-Path (Join-Path $ModelDir "artifacts\ort-lin-q8-emb-q4-bs128-a1.onnx"))) {
   throw "embed weights missing at $ModelDir — cannot build the product SKU"
 }
-& (Join-Path $Root "scripts\package_win.ps1") -SkipAssemble -Profile $Profile
+& (Join-Path $Root "scripts\package_win.ps1") -SkipAssemble -Profile $Profile -SkipPortable
 
 $outDir = Join-Path $Root "desktop\out"
-$portable = Get-ChildItem -LiteralPath $outDir -Filter "Litecode-Portable-*.exe" -ErrorAction SilentlyContinue |
-  Sort-Object LastWriteTime -Descending |
-  Select-Object -First 1
-if ($portable) {
-  Copy-Item -Force -LiteralPath $portable.FullName -Destination (Join-Path $winDist $portable.Name)
-}
-
 Write-Host @"
 
 ==> nightly artifacts (v$Version, LITECODE_CHANNEL=nightly)
   Linux tar (no embed):  $(Join-Path $winDist "litecode-server-$Version-linux-x64.tar.gz")
   Linux staged: $(Join-Path $winDist "linux\litecode-server-linux-x64.tar.gz")
-  Windows (embed + tar): $outDir
-  Portable copy: $(if ($portable) { Join-Path $winDist $portable.Name } else { "(not found)" })
+  Windows NSIS (embed + tar): $outDir
 
 Open Remote uploads embed from sidecar/models, then the slim linux tar.
 
