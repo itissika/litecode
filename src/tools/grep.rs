@@ -25,8 +25,6 @@ use crate::workspace::filter::{
 
 /// Fixed context lines around each hit when ancestor expansion is unavailable.
 const CONTEXT_LINES: usize = 2;
-/// Display cap per snippet line (chars).
-const SNIPPET_LINE_MAX_CHARS: usize = 240;
 /// One grep response must leave most of the model context available to reason.
 const GREP_TOKEN_BUDGET: usize = 6_000;
 /// A wide result needs a concise orientation before compact matching lines.
@@ -446,38 +444,23 @@ fn ignored_directory_message(workspace_root: &Path, resolved: &Path) -> Option<S
     if rel.is_empty() {
         return None;
     }
-    let (reason, hint) = ignored_directory_reason(workspace_root, &rel)?;
-    Some(format!("path '{rel}' is not searched: {reason} {hint}"))
+    let reason = ignored_directory_reason(workspace_root, &rel)?;
+    Some(format!("path '{rel}' is not searched: {reason}"))
 }
 
-fn ignored_directory_reason(
-    workspace_root: &Path,
-    rel: &str,
-) -> Option<(&'static str, &'static str)> {
+fn ignored_directory_reason(workspace_root: &Path, rel: &str) -> Option<&'static str> {
     if path_has_product_internal_dir(rel) {
-        return Some((
-            "LiteCode runtime directory.",
-            "Pass a specific file under it, or no_ignore=true.",
-        ));
+        return Some("LiteCode runtime directory.");
     }
     let cfg = active_workspace_excludes();
     if ExcludeMatcher::from_globs(&cfg.files_exclude).matches(rel) {
-        return Some((
-            "excluded by files.exclude.",
-            "Pass a specific file, or no_ignore=true.",
-        ));
+        return Some("excluded by files.exclude.");
     }
     if ExcludeMatcher::from_globs(&cfg.search_exclude).matches(rel) {
-        return Some((
-            "excluded by search.exclude.",
-            "Pass a specific file, or no_ignore=true.",
-        ));
+        return Some("excluded by search.exclude.");
     }
     if path_gitignored(workspace_root, rel, FilterPreset::Search) {
-        return Some((
-            "ignored by .gitignore.",
-            "Pass a specific file, or no_ignore=true.",
-        ));
+        return Some("ignored by .gitignore.");
     }
     None
 }
@@ -807,7 +790,9 @@ fn format_compact_body(matches: &[LexicalMatch]) -> String {
             body.push('\n');
             current = Some(&m.path);
         }
-        let text = truncate_snippet_lines(m.line_text.trim_end_matches(['\n', '\r']));
+        let text = crate::tool::snippet::truncate_snippet_lines(
+            m.line_text.trim_end_matches(['\n', '\r']),
+        );
         body.push_str(&crate::tool::format_file_line(m.start_line, &text));
     }
     body
@@ -903,12 +888,11 @@ fn format_snippet_body(root: &Path, matches: &[LexicalMatch], view: GrepView) ->
     // Per-file source cache for AST breadcrumbs + ancestor snippets.
     let mut file_sources: HashMap<String, Option<String>> = HashMap::new();
 
-    let mut body = String::new();
+    let mut sections = Vec::new();
     for path in file_order {
         let Some(file_matches) = by_file.get(&path) else {
             continue;
         };
-        body.push_str(&format!("\n## Matches in {path}\n"));
 
         let source = file_sources
             .entry(path.clone())
@@ -917,31 +901,25 @@ fn format_snippet_body(root: &Path, matches: &[LexicalMatch], view: GrepView) ->
 
         let ranges = merge_snippet_ranges(file_matches, source, &path, view == GrepView::Expanded);
         for range in ranges {
-            let line_label = crate::tool::format_line_label(range.start_line, range.end_line);
-            let heading = match (view == GrepView::Expanded)
+            let breadcrumb = (view == GrepView::Expanded)
                 .then(|| {
                     source.and_then(|src| {
                         format_breadcrumb(&enclosing_scopes(&path, src, range.hit_line))
                     })
                 })
-                .flatten()
-            {
-                Some(crumb) => format!("\n### {crumb} › {line_label}"),
-                None => format!("\n### {line_label}"),
-            };
-            body.push_str(&heading);
-            body.push('\n');
-            body.push_str(&fence_block(&range.text));
-            if range.remaining_lines > 0 {
-                body.push_str(&format!(
-                    "\n{} lines remaining in ancestor node. Read the file to see all.\n",
-                    range.remaining_lines
-                ));
-            }
+                .flatten();
+            sections.push(crate::tool::SnippetSection {
+                path: path.clone(),
+                start_line: range.start_line,
+                end_line: range.end_line,
+                breadcrumb,
+                text: range.text,
+                remaining_lines: range.remaining_lines,
+            });
         }
     }
 
-    body
+    crate::tool::format_snippet_sections(&sections)
 }
 
 struct SnippetRange {
@@ -1078,38 +1056,6 @@ fn merge_snippet_text(a: &str, b: &str) -> String {
         }
     }
     out.join("\n")
-}
-
-fn fence_block(snippet: &str) -> String {
-    let snippet = truncate_snippet_lines(snippet);
-    // Fence longer than any backtick run inside the snippet (Zed pattern).
-    let mut longest = 2usize;
-    let mut run = 0usize;
-    for ch in snippet.chars() {
-        if ch == '`' {
-            run += 1;
-            longest = longest.max(run);
-        } else {
-            run = 0;
-        }
-    }
-    let ticks = "`".repeat(longest + 1);
-    format!("{ticks}\n{snippet}\n{ticks}\n")
-}
-
-fn truncate_snippet_lines(snippet: &str) -> String {
-    snippet
-        .lines()
-        .map(|line| {
-            if line.chars().count() <= SNIPPET_LINE_MAX_CHARS {
-                line.to_string()
-            } else {
-                let kept: String = line.chars().take(SNIPPET_LINE_MAX_CHARS).collect();
-                format!("{kept}… (line truncated)")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[cfg(test)]
@@ -1616,13 +1562,9 @@ mod tests {
                 "path": ".litecode",
             }),
         );
-        assert!(
-            scoped.contains("path '.litecode' is not searched: LiteCode runtime directory."),
-            "path=.litecode must name the rule, got: {scoped}"
-        );
-        assert!(
-            scoped.contains("no_ignore=true"),
-            "filtered dir must offer no_ignore, got: {scoped}"
+        assert_eq!(
+            scoped,
+            "path '.litecode' is not searched: LiteCode runtime directory."
         );
         assert!(
             !scoped.contains("litecode_only_needle\n") && !scoped.contains("index/x.rs"),
@@ -2521,7 +2463,7 @@ mod tests {
         );
         assert_eq!(
             modules,
-            "path 'node_modules' is not searched: excluded by search.exclude. Pass a specific file, or no_ignore=true."
+            "path 'node_modules' is not searched: excluded by search.exclude."
         );
 
         let secret_dir = call_in(
@@ -2530,7 +2472,7 @@ mod tests {
         );
         assert_eq!(
             secret_dir,
-            "path 'secret' is not searched: ignored by .gitignore. Pass a specific file, or no_ignore=true."
+            "path 'secret' is not searched: ignored by .gitignore."
         );
 
         let secret_file = call_in(

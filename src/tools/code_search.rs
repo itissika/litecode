@@ -1,14 +1,18 @@
 use serde_json::Value;
+use std::collections::HashMap;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::context_pipeline::Context;
 use crate::engines::code_search::{
-    DEFAULT_TOP_K, IndexStatus, MAX_TOP_K, ResolvedIndexView, resolve_index_view,
+    DEFAULT_TOP_K, IndexStatus, MAX_TOP_K, ResolvedIndexView, enclosing_scopes, format_breadcrumb,
+    lines_slice, resolve_index_view,
 };
 use crate::engines::{
     CodeSearchCallGate, EngineState, RetrievalCorpus, RetrievalFilters, RetrievalHit,
     RetrievalModality, RetrievalQuery, WorkspaceEngines,
 };
+use crate::tool::SnippetSection;
 use crate::tool::Tool;
 use crate::types::ToolCallResult;
 
@@ -135,7 +139,7 @@ impl Tool for CodeSearchTool {
                         .unwrap_or_default();
                     return ToolCallResult::ok(format!("No matching code chunks found{scope}."));
                 }
-                let lines: Vec<String> = hits
+                let code_hits: Vec<_> = hits
                     .iter()
                     .filter_map(|h| match h {
                         RetrievalHit::Code {
@@ -143,18 +147,19 @@ impl Tool for CodeSearchTool {
                             start_line,
                             end_line,
                             summary,
-                            score,
-                        } => Some(format_code_hit(
-                            path,
-                            *start_line,
-                            *end_line,
-                            *score,
-                            summary,
-                        )),
+                            ..
+                        } => Some((path.as_str(), *start_line, *end_line, summary.as_str())),
                         _ => None,
                     })
                     .collect();
-                ToolCallResult::ok(lines.join("\n"))
+                if code_hits.is_empty() {
+                    let scope = glob
+                        .map(|p| format!(" for include_pattern '{p}'"))
+                        .unwrap_or_default();
+                    return ToolCallResult::ok(format!("No matching code chunks found{scope}."));
+                }
+                let root = self.engines.code_search().workspace_root();
+                ToolCallResult::ok(format_code_hits(root.as_deref(), &code_hits))
             }
             Err(e) => ToolCallResult::error(e.to_string()),
         }
@@ -184,17 +189,35 @@ fn indexing_wait_message(engines: &WorkspaceEngines) -> String {
     "code_search engine is still starting. Try again shortly.".into()
 }
 
-fn format_code_hit(
-    path: &str,
-    start_line: u32,
-    end_line: u32,
-    score: f64,
-    summary: &str,
-) -> String {
-    format!(
-        "{} (score {score:.3}): {summary}",
-        crate::tool::format_path_lines(path, start_line, end_line)
-    )
+fn format_code_hits(root: Option<&Path>, hits: &[(&str, u32, u32, &str)]) -> String {
+    let mut file_sources: HashMap<String, Option<String>> = HashMap::new();
+    let mut sections = Vec::with_capacity(hits.len());
+    for &(path, start_line, end_line, summary) in hits {
+        let source = root
+            .map(|root| {
+                file_sources
+                    .entry(path.to_string())
+                    .or_insert_with(|| std::fs::read_to_string(root.join(path)).ok())
+                    .as_deref()
+            })
+            .flatten();
+        let text = source
+            .map(|src| lines_slice(src, start_line, end_line))
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| summary.to_string());
+        let breadcrumb =
+            source.and_then(|src| format_breadcrumb(&enclosing_scopes(path, src, start_line)));
+        sections.push(SnippetSection {
+            path: path.to_string(),
+            start_line,
+            end_line,
+            breadcrumb,
+            text,
+            remaining_lines: 0,
+        });
+    }
+    let body = crate::tool::format_snippet_sections(&sections);
+    format!("Found {} matches (view: expanded):\n{body}", hits.len())
 }
 
 fn format_index_progress(view: &ResolvedIndexView) -> String {
@@ -367,14 +390,27 @@ mod tests {
     }
 
     #[test]
-    fn hit_line_uses_path_l_label() {
-        assert_eq!(
-            format_code_hit("src/a.rs", 12, 20, 0.5, "fn foo"),
-            "src/a.rs:L12-20 (score 0.500): fn foo"
-        );
-        assert_eq!(
-            format_code_hit("src/a.rs", 12, 12, 0.25, "let x"),
-            "src/a.rs:L12 (score 0.250): let x"
-        );
+    fn hits_render_like_grep_expanded() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "fn save() {\n    let token = 1;\n    token\n}\n",
+        )
+        .unwrap();
+        let out = format_code_hits(Some(dir.path()), &[("a.rs", 1, 4, "fn save()")]);
+        assert!(out.contains("Found 1 matches (view: expanded):"), "{out}");
+        assert!(out.contains("## Matches in a.rs"), "{out}");
+        assert!(out.contains("### fn save › L1-4"), "{out}");
+        assert!(out.contains("let token = 1"), "{out}");
+        assert!(!out.contains("score"), "{out}");
+    }
+
+    #[test]
+    fn hits_fallback_when_file_missing() {
+        let out = format_code_hits(None, &[("src/a.rs", 12, 20, "fn foo")]);
+        assert!(out.contains("Found 1 matches (view: expanded):"), "{out}");
+        assert!(out.contains("## Matches in src/a.rs"), "{out}");
+        assert!(out.contains("### L12-20"), "{out}");
+        assert!(out.contains("fn foo"), "{out}");
     }
 }

@@ -9,6 +9,7 @@ pub mod pipeline;
 pub mod registry;
 pub mod schema_validate;
 pub mod signal;
+pub mod snippet;
 pub mod trait_;
 pub mod write_lock;
 
@@ -25,5 +26,6 @@ pub use schema_validate::{
     require_nonempty_string_trimmed, require_string, require_string_value, schema_validate,
     unknown_top_level_properties,
 };
+pub use snippet::{SnippetSection, format_snippet_sections};
 pub use trait_::Tool;
 pub use write_lock::{ResourceKey, WorkspaceWriteLock};

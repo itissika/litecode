@@ -32,7 +32,7 @@ impl Tool for GlobTool {
                 },
                 "no_ignore": {
                     "type": "boolean",
-                    "description": "When true, walk without .gitignore / files.exclude / search.exclude (default: false). Use to discover ignored paths such as build outputs."
+                    "description": "When true, walk without .gitignore / files.exclude / search.exclude (default: false)."
                 }
             },
             "required": ["pattern"]
@@ -566,7 +566,10 @@ mod tests {
         let body = glob_in(dir.path(), serde_json::json!({ "pattern": "**/*.nope" }));
         assert!(body.contains("No files found"), "{body}");
         assert!(body.contains(".litecode/excludes.json"), "{body}");
-        assert!(body.contains("no_ignore"), "{body}");
+        assert!(
+            !body.contains("no_ignore"),
+            "empty glob must not advertise no_ignore, got: {body}"
+        );
     }
 
     fn seed_session(root: &std::path::Path, text: &str) -> String {

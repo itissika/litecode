@@ -44,7 +44,7 @@ pub use preset::{FilterPreset, exclude_globs, search_and_files_exclude_globs};
 
 /// Footer when grep/glob searched zero files under default filters.
 pub fn empty_discovery_hint() -> &'static str {
-    "Default filters may hide paths (.gitignore, files_exclude, search_exclude). Edit .litecode/excludes.json or Settings, or pass no_ignore=true."
+    "Default filters may hide paths (.gitignore, files_exclude, search_exclude). Workspace exclude lists are in .litecode/excludes.json."
 }
 pub use walk::{
     WalkOptions, configure_walk, configure_walk_under, configure_walk_with, walk_builder,
