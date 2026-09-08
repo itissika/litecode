@@ -317,61 +317,6 @@ function AllowedSubagentsSelect({
   );
 }
 
-function SubagentToolsMultiSelect({
-  draft,
-  bindableTools,
-  saveBlocked,
-  onChange,
-}: {
-  draft: AgentProfile;
-  bindableTools: AvailableTool[];
-  saveBlocked: boolean;
-  onChange: (profile: AgentProfile) => void;
-}) {
-  const enabledIds = new Set(
-    Object.entries(draft.tools)
-      .filter(([, b]) => b.enabled)
-      .map(([id]) => id),
-  );
-
-  const toggle = (toolId: string) => {
-    const wasEnabled = enabledIds.has(toolId);
-    onChange({
-      ...draft,
-      tools: applyToolEnabled(draft.tools, toolId, !wasEnabled),
-    });
-  };
-
-  if (bindableTools.length === 0) {
-    return (
-      <p className="text-sm text-(--_dk-amber-500)">
-        No bindable tools in this workspace. Enable engines or add Custom/MCP definitions.
-      </p>
-    );
-  }
-
-  return (
-    <div className="space-y-2">
-        <h3 className="settings-section-title">Tool bindings</h3>
-        <div className="settings-card max-h-64 space-y-1 overflow-y-auto p-3">
-        {bindableTools.map((entry) => (
-          <label key={entry.id} className="flex cursor-pointer items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={enabledIds.has(entry.id)}
-              disabled={saveBlocked}
-              onChange={() => toggle(entry.id)}
-              className="accent-(--_dk-accent-hover)"
-            />
-            <span className="font-mono text-(--_dk-text-secondary)">{entry.id}</span>
-            <span className="text-dk-xs text-(--_dk-text-disabled)">{entry.kind}</span>
-          </label>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 export function AgentToolsGrid({
   draft,
   bindableTools,
@@ -379,6 +324,7 @@ export function AgentToolsGrid({
   saveBlocked,
   onBindingChange,
   gridStyle,
+  note,
 }: {
   draft: AgentProfile;
   bindableTools: AvailableTool[];
@@ -387,11 +333,14 @@ export function AgentToolsGrid({
   onBindingChange: (toolId: string, patch: Partial<AgentToolBinding>) => void;
   /** Inline style for the card grid (e.g. force columns below sm breakpoint). */
   gridStyle?: CSSProperties;
+  /** Extra guidance rendered under the section title (e.g. subagent deny semantics). */
+  note?: ReactNode;
 }) {
   if (bindableTools.length === 0) {
     return (
       <div className="space-y-2">
         <h3 className="settings-section-title">Tool bindings</h3>
+        {note ? <p className="text-xs text-(--_dk-text-muted)">{note}</p> : null}
         <p className="text-sm text-(--_dk-amber-500)">No bindable tools in this workspace.</p>
       </div>
     );
@@ -400,6 +349,7 @@ export function AgentToolsGrid({
   return (
     <div className="space-y-2">
       <h3 className="settings-section-title">Tool bindings</h3>
+      {note ? <p className="text-xs text-(--_dk-text-muted)">{note}</p> : null}
       <div
         className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-2 xl:grid-cols-3"
         style={gridStyle}
@@ -855,11 +805,13 @@ export function AgentsSection() {
             />
         </>
       ) : !isHiddenAgent && draft.role === "subagent" ? (
-        <SubagentToolsMultiSelect
+        <AgentToolsGrid
           draft={draft}
           bindableTools={bindableToolsSubagent}
+          mcpServers={mcpList}
           saveBlocked={saveBlocked}
-          onChange={setDraft}
+          onBindingChange={updateBinding}
+          note="Subagents can't ask for approval — a binding that would prompt the user (SAFE on write/edit, web, or custom tools) is denied at runtime instead. SAFE on read/grep/glob/bash keeps them workspace-safe; use the MCP Tools picker to expose only chosen tools of a server."
         />
       ) : isHiddenAgent ? (
         <p className="text-xs text-(--_dk-text-disabled)">

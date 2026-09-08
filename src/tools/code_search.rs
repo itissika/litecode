@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crate::context_pipeline::Context;
 use crate::engines::code_search::{
     DEFAULT_TOP_K, IndexStatus, MAX_TOP_K, ResolvedIndexView, enclosing_scopes, format_breadcrumb,
-    lines_slice, resolve_index_view, syntax_ancestor_snippet,
+    lines_slice, read_pending_hint, resolve_index_view, syntax_ancestor_snippet,
 };
 use crate::engines::{
     CodeSearchCallGate, EngineState, RetrievalCorpus, RetrievalFilters, RetrievalHit,
@@ -451,7 +451,7 @@ fn indexing_wait_message(engines: &WorkspaceEngines) -> String {
     if let Some(root) = root {
         let view = resolve_index_view(&root, state);
         if matches!(view.status, IndexStatus::Building | IndexStatus::Refreshing) {
-            return format_index_progress(&view);
+            return format_index_progress(&view, read_pending_hint(&root));
         }
         if matches!(
             view.status,
@@ -466,7 +466,7 @@ fn indexing_wait_message(engines: &WorkspaceEngines) -> String {
     "code_search engine is still starting. Try again shortly.".into()
 }
 
-fn format_index_progress(view: &ResolvedIndexView) -> String {
+fn format_index_progress(view: &ResolvedIndexView, pending: usize) -> String {
     let kind = match view.status {
         IndexStatus::Building => "building",
         IndexStatus::Refreshing => "refreshing",
@@ -474,25 +474,32 @@ fn format_index_progress(view: &ResolvedIndexView) -> String {
             return format!("code_search index status is {other:?}. Try again shortly.");
         }
     };
-    if let Some(p) = &view.progress {
-        let eta = if p.files_total > 0 && p.files_done > 0 {
-            format!(
-                " (~{}% files)",
-                (p.files_done.saturating_mul(100)) / p.files_total
-            )
-        } else {
-            String::new()
-        };
+    let Some(p) = &view.progress else {
+        return format!("code_search index is {kind}. Try again shortly.");
+    };
+    let phase = format!("{:?}", p.phase).to_lowercase();
+    // Incremental refresh stamps `syncing` with 0/0 before any counts exist.
+    // Dumping that placeholder reads as "already done".
+    if p.files_total == 0 {
+        if matches!(view.status, IndexStatus::Refreshing) && pending > 0 {
+            return format!(
+                "code_search index is {kind} ({phase}): {pending} files pending. Try again shortly."
+            );
+        }
+        return format!("code_search index is {kind} ({phase}). Try again shortly.");
+    }
+    let eta = if p.files_done > 0 {
         format!(
-            "code_search index is {kind} ({}): {}/{} files, {} chunks done{eta}. Try again shortly.",
-            format!("{:?}", p.phase).to_lowercase(),
-            p.files_done,
-            p.files_total,
-            p.chunks_done,
+            " (~{}% files)",
+            (p.files_done.saturating_mul(100)) / p.files_total
         )
     } else {
-        format!("code_search index is {kind}. Try again shortly.")
-    }
+        String::new()
+    };
+    format!(
+        "code_search index is {kind} ({phase}): {}/{} files, {} chunks done{eta}. Try again shortly.",
+        p.files_done, p.files_total, p.chunks_done,
+    )
 }
 
 #[cfg(test)]
@@ -517,9 +524,34 @@ mod tests {
             }),
             job_error: None,
         };
-        let msg = format_index_progress(&view);
+        let msg = format_index_progress(&view, 0);
         assert!(msg.contains("building"), "{msg}");
         assert!(msg.contains("3/10"), "{msg}");
+    }
+
+    #[test]
+    fn indexing_wait_message_omits_placeholder_zero_counts() {
+        let view = ResolvedIndexView {
+            status: IndexStatus::Refreshing,
+            progress: Some(crate::engines::code_search::IndexingProgress {
+                phase: crate::engines::code_search::IndexPhase::Syncing,
+                files_done: 0,
+                files_total: 0,
+                chunks_done: 0,
+            }),
+            job_error: None,
+        };
+        let bare = format_index_progress(&view, 0);
+        assert!(bare.contains("refreshing"), "{bare}");
+        assert!(bare.contains("syncing"), "{bare}");
+        assert!(!bare.contains("0/0"), "{bare}");
+        assert!(!bare.contains("chunks done"), "{bare}");
+        assert!(!bare.contains("pending"), "{bare}");
+
+        let pending = format_index_progress(&view, 53);
+        assert!(pending.contains("53 files pending"), "{pending}");
+        assert!(!pending.contains("0/0"), "{pending}");
+        assert!(!pending.contains("chunks done"), "{pending}");
     }
 
     #[test]
@@ -552,6 +584,24 @@ mod tests {
     }
 
     #[test]
+    fn indexing_wait_message_uses_pending_when_refresh_counts_are_placeholder() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        crate::engines::code_search::init_workspace_index(root).unwrap();
+        crate::engines::code_search::begin_refreshing(root);
+        crate::engines::code_search::write_pending_hint(root, 53);
+
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+
+        let msg = indexing_wait_message(&engines);
+        assert!(msg.contains("refreshing"), "{msg}");
+        assert!(msg.contains("53 files pending"), "{msg}");
+        assert!(!msg.contains("0/0"), "{msg}");
+    }
+
+    #[test]
     fn failed_engine_returns_last_error() {
         let engines = WorkspaceEngines::new();
         engines.set_state_for_test("code_search", EngineState::Failed);
@@ -581,6 +631,11 @@ mod tests {
         let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
         assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
         assert!(result.content.contains("refreshing"), "{}", result.content);
+        assert!(
+            !result.content.contains("0/0"),
+            "placeholder progress must not look finished: {}",
+            result.content
+        );
         assert!(
             !result.content.contains("No matching code"),
             "must not search stale corpus while refreshing: {}",

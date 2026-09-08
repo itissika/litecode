@@ -131,9 +131,10 @@ impl RuntimeHandle {
             .agents()
             .get("compaction")
             .map(crate::config::bridge::agent_config_from_profile)
-            .map(|agent| crate::context_pipeline::build_compaction_system_prompt(&agent))
+            .map(|agent| crate::context_pipeline::build_system_prompt("compaction", &agent, None))
             .unwrap_or_else(|| {
-                crate::context_pipeline::BUILTIN_COMPACTION
+                crate::config::global_db::builtin_prompt_for("compaction")
+                    .unwrap_or("")
                     .trim()
                     .to_string()
             })
@@ -401,6 +402,7 @@ pub fn spawn_turn(
 pub struct AgentRuntime {
     pub resolved: ResolvedConfig,
     pub session_id: String,
+    pub agent_name: String,
     sessions: Arc<SessionManager>,
     pub(crate) runtime_ctx: Option<Arc<RuntimeContext>>,
     pub turn_llm: TurnLlmBinding,
@@ -549,6 +551,7 @@ impl AgentRuntime {
         let runtime = Self {
             resolved,
             session_id,
+            agent_name: agent_name.to_string(),
             sessions,
             runtime_ctx: None,
             turn_llm,

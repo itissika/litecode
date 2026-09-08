@@ -32,7 +32,8 @@ const WIDE_MATCH_THRESHOLD: usize = 50;
 /// Number of per-file counts shown in a wide-result orientation.
 const WIDE_SUMMARY_FILES: usize = 8;
 
-const CONTENT_FALLBACK_WARNING: &str = "content view did not fit; showing lines. Narrow path or glob, then retry output_mode=content.";
+const CONTENT_FALLBACK_WARNING: &str =
+    "content view did not fit; showing lines. Narrow path or glob, then retry output_mode=content.";
 
 struct GrepPage {
     body: String,

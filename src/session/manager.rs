@@ -90,8 +90,8 @@ impl Drop for SessionOperationLease {
     }
 }
 
-/// Parent-turn scoped lease: at most one in-flight `subagent_launch` per parent.
-pub const MAX_SUBAGENTS_PER_PARENT: u32 = 1;
+/// Parent-turn scoped lease: in-flight `subagent_launch` cap (tool-internal, fail-closed).
+pub const MAX_SUBAGENTS_PER_PARENT: u32 = 4;
 
 pub struct SubagentSlotLease {
     manager: Arc<SessionManager>,
@@ -259,7 +259,7 @@ impl SessionManager {
         Ok(receipt)
     }
 
-    /// Fail-closed capacity gate: one in-flight child per parent session.
+    /// Fail-closed capacity gate: bounded in-flight children per parent session.
     pub fn try_acquire_subagent_slot(
         self: &Arc<Self>,
         parent_session_id: &str,
@@ -1016,24 +1016,31 @@ impl SessionManager {
         }
     }
 
+    /// List / GC emptiness: no SessionLog rows yet. Not AgentView.
+    ///
+    /// Fold / working-set load must not hide a session that still has transcript
+    /// rows. A busy turn is treated as non-empty so a just-started session stays
+    /// listed before the first append lands.
     pub async fn is_session_empty(&self, session_id: &str) -> bool {
         {
             let records = self.records.lock().unwrap();
-            if let Some(record) = records.get(session_id) {
-                if record.activity.is_busy() {
-                    return false;
-                }
-                return self
-                    .data
-                    .working_set_blocking(session_id)
-                    .map(|rows| rows.is_empty())
-                    .unwrap_or(true);
+            if let Some(record) = records.get(session_id)
+                && record.activity.is_busy()
+            {
+                return false;
             }
         }
-        self.data
-            .working_set_blocking(session_id)
-            .map(|rows| rows.is_empty())
-            .unwrap_or(true)
+        match self.data.seq_cursor_blocking(session_id) {
+            Ok((last_seq, _)) => last_seq < 0,
+            Err(error) => {
+                tracing::warn!(
+                    session_id,
+                    error = %error,
+                    "session empty-check failed; treating as non-empty"
+                );
+                false
+            }
+        }
     }
 
     pub async fn subscriber_count(&self, session_id: &str) -> usize {
@@ -2155,20 +2162,24 @@ mod child_session_tests {
     }
 
     #[test]
-    fn subagent_slot_is_one_per_parent_fail_closed() {
+    fn subagent_slot_caps_in_flight_per_parent() {
         let mgr = Arc::new(SessionManager::ephemeral_registry());
-        let first = mgr
-            .try_acquire_subagent_slot("parent-1")
-            .expect("first slot");
-        let second = mgr.try_acquire_subagent_slot("parent-1");
+        let mut held = Vec::new();
+        for _ in 0..MAX_SUBAGENTS_PER_PARENT {
+            held.push(
+                mgr.try_acquire_subagent_slot("parent-1")
+                    .expect("slot within cap"),
+            );
+        }
+        let overflow = mgr.try_acquire_subagent_slot("parent-1");
         assert!(
-            second.is_err(),
-            "second in-flight launch for the same parent must fail-closed"
+            overflow.is_err(),
+            "in-flight launches over the cap must fail-closed"
         );
         let other = mgr
             .try_acquire_subagent_slot("parent-2")
             .expect("other parent is independent");
-        drop(first);
+        drop(held);
         let retry = mgr
             .try_acquire_subagent_slot("parent-1")
             .expect("slot frees on drop");

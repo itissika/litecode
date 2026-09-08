@@ -22,6 +22,19 @@ fn config_global_db_migration_and_seed() {
 
     assert!(settings.agents.contains_key("default"));
     assert!(settings.agents.contains_key("compaction"));
+    assert!(settings.agents.contains_key("explore"));
+    assert_eq!(
+        settings.agents.get("default").unwrap().system_prompt,
+        "builtin:general"
+    );
+    assert_eq!(
+        settings.agents.get("explore").unwrap().system_prompt,
+        "builtin:explore"
+    );
+    assert_eq!(
+        settings.agents.get("default").unwrap().allowed_subagents,
+        vec!["explore".to_string()]
+    );
     assert!(settings.agents.get("default").unwrap().model_ref.is_empty());
     assert!(
         settings

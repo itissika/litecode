@@ -1,4 +1,5 @@
-import type { ReactElement } from "react";
+import { useMemo, type ReactElement } from "react";
+import { itemFromRow, itemPlainText, isHumanUserRow, isTranscriptMarkRow } from "../api/adapter";
 import {
   rowsToNodes,
   groupNodes,
@@ -28,13 +29,35 @@ import { useEditorStore } from "../stores/editorStore";
 export function SubagentViewport({
   childSessionId,
   nested = false,
+  skipUserText,
 }: {
   childSessionId: string;
   nested?: boolean;
+  /**
+   * Launch prompt of this subagent. When present, the child session's leading
+   * user message that exactly matches it is suppressed — it duplicates the Task
+   * brief already rendered by the parent tool card. Non-matching first rows are
+   * left untouched (fail open), so real content is never hidden.
+   */
+  skipUserText?: string;
 }): ReactElement {
-  const messages = useMessageStore((s) =>
+  const storeMessages = useMessageStore((s) =>
     displayMessages(s.bySession.get(childSessionId)),
   );
+  const messages = useMemo(() => {
+    if (!skipUserText) return storeMessages;
+    let i = 0;
+    while (i < storeMessages.length && isTranscriptMarkRow(storeMessages[i]!)) {
+      i += 1;
+    }
+    const first = storeMessages[i];
+    if (!first || !isHumanUserRow(first)) return storeMessages;
+    const item = itemFromRow(first);
+    if (!item || itemPlainText(item).trim() !== skipUserText.trim()) {
+      return storeMessages;
+    }
+    return storeMessages.slice(i + 1);
+  }, [storeMessages, skipUserText]);
   const runState = useTurnStore(
     (s) => s.byId.get(childSessionId)?.runState ?? "idle",
   );

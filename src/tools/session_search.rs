@@ -145,8 +145,9 @@ impl Tool for SessionSearchTool {
     fn description(&self, _ctx: &Context) -> String {
         "Search past conversation transcripts in this workspace. \
          Returns session groups with a virtual path and L<line>: summary hits. \
+         That path is not on disk and is only reachable through built-in tools — deepen a hit with read or grep, not bash. \
          Live context-window turns of the current session are always excluded. \
-         Scope with session_id; deepen a hit with read or grep on the returned path."
+         Scope with session_id."
             .into()
     }
 

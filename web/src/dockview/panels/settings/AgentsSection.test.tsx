@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentProfile, AgentToolBinding, AvailableTool, ModelDefinition } from "../../../api/settings";
@@ -145,6 +145,69 @@ describe("AgentsSection persist UX", () => {
 
 const lspTool: AvailableTool = { id: "lsp", kind: "engine", origin: "workspace" };
 const readTool: AvailableTool = { id: "read", kind: "core", origin: "builtin" };
+const mcpDemoTool: AvailableTool = { id: "mcp_demo", kind: "mcp", origin: "workspace" };
+
+describe("AgentsSection subagent tool cards", () => {
+  const saveAgent = vi.fn(async (_id: string, _next: AgentProfile) => undefined);
+  const createAgent = vi.fn(async () => undefined);
+  const removeAgent = vi.fn(async () => undefined);
+  const refreshAgents = vi.fn(async () => undefined);
+
+  beforeEach(() => {
+    saveAgent.mockClear();
+    useSettingsStore.setState({
+      models: { m1: model },
+      availableTools: [readTool, lspTool, mcpDemoTool],
+      mcpDefs: { global: [], workspace: [] },
+      mcpRuntime: { global: {}, workspace: {} },
+      agentIds: ["helper"],
+      selectedAgentId: "helper",
+      agents: { helper: profile({ role: "subagent" }) },
+      persistByDoc: {},
+      saveAgent,
+      createAgent,
+      removeAgent,
+      refreshAgents,
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("renders per-tool preset cards with a deny-semantics note, not checkboxes", () => {
+    render(<AgentsSection />);
+    // Full card rows (clickable), one per bindable tool — not a checkbox list.
+    expect(screen.getByRole("button", { name: /read tool binding, disabled/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /lsp tool binding, disabled/i })).toBeTruthy();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    // Configurable tools expose the ALL/SAFE preset control.
+    const readPreset = screen.getByRole("group", { name: "read preset" });
+    expect(within(readPreset).getByRole("button", { name: "SAFE" })).toBeTruthy();
+    expect(within(readPreset).getByRole("button", { name: "ALL" })).toBeTruthy();
+    // MCP server bindings expose the per-server tool visibility picker.
+    expect(
+      screen.getByRole("button", { name: "Select visible tools for MCP server demo" }),
+    ).toBeTruthy();
+    // Guidance on Ask -> deny semantics for subagent turns.
+    expect(screen.getByText(/can't ask for approval/i)).toBeTruthy();
+  });
+
+  it("persists a SAFE preset picked on a subagent tool card", async () => {
+    vi.useFakeTimers();
+    render(<AgentsSection />);
+    fireEvent.click(screen.getByRole("button", { name: /read tool binding, disabled/i }));
+    const readPreset = screen.getByRole("group", { name: "read preset" });
+    fireEvent.click(within(readPreset).getByRole("button", { name: "SAFE" }));
+    await vi.advanceTimersByTimeAsync(400);
+    expect(saveAgent).toHaveBeenCalledTimes(1);
+    const payload = saveAgent.mock.calls[0][1] as AgentProfile;
+    expect(payload.tools.read).toEqual(
+      expect.objectContaining({ enabled: true, last_applied_preset: "SAFE" }),
+    );
+  });
+});
 
 describe("AgentsSection LSP bind persist loop", () => {
   const saveAgent = vi.fn(async (_id: string, _next: AgentProfile) => undefined);

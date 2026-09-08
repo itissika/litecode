@@ -3,8 +3,9 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::config::schema::{AgentRole, ToolPreset};
 use crate::types::Result;
 
+use super::builtin_prompts::EXPLORE_DESCRIPTION;
 use super::store;
-use super::tools::{core_configurable_tools, core_none_tools};
+use super::tools::{core_configurable_tools, core_none_tools, network_core_tools};
 
 pub const SEED_REVISION: &str = "10";
 
@@ -12,6 +13,7 @@ pub fn seed(conn: &Connection) -> Result<()> {
     let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);
     seed_agents(conn)?;
     seed_default_agent_bindings(conn)?;
+    seed_explore_agent_bindings(conn)?;
 
     conn.execute(
         "INSERT INTO meta (key, value) VALUES ('seed_revision', ?1)
@@ -32,7 +34,7 @@ fn seed_agents(conn: &Connection) -> Result<()> {
         0.7,
         50,
         "General-purpose coding assistant",
-        &[],
+        &["explore".into()],
     )?;
     store::upsert_agent(
         conn,
@@ -43,6 +45,17 @@ fn seed_agents(conn: &Connection) -> Result<()> {
         0.7,
         50,
         "",
+        &[],
+    )?;
+    store::upsert_agent(
+        conn,
+        "explore",
+        AgentRole::Subagent,
+        "",
+        "builtin:explore",
+        0.7,
+        30,
+        EXPLORE_DESCRIPTION,
         &[],
     )?;
     Ok(())
@@ -72,6 +85,68 @@ fn seed_default_agent_bindings(conn: &Connection) -> Result<()> {
             allowed_tools: None,
         };
         store::upsert_agent_tool(conn, "default", tool, &binding)?;
+    }
+    Ok(())
+}
+
+fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
+    use crate::config::schema::AgentToolBinding;
+    use crate::permission::presets::binding_for_tool;
+
+    for tool in ["read", "grep", "glob", "session_search"] {
+        let (policy, path_mode) = binding_for_tool(tool, ToolPreset::Safe);
+        let binding = AgentToolBinding {
+            enabled: true,
+            policy,
+            path_mode,
+            last_applied_preset: Some(ToolPreset::Safe),
+            allowed_tools: None,
+        };
+        store::upsert_agent_tool(conn, "explore", tool, &binding)?;
+    }
+
+    let (bash_policy, bash_path) = binding_for_tool("bash", ToolPreset::Safe);
+    store::upsert_agent_tool(
+        conn,
+        "explore",
+        "bash",
+        &AgentToolBinding {
+            enabled: true,
+            policy: bash_policy,
+            path_mode: bash_path,
+            last_applied_preset: Some(ToolPreset::Safe),
+            allowed_tools: None,
+        },
+    )?;
+    for tool in ["wait_shell", "kill_shell"] {
+        store::upsert_agent_tool(
+            conn,
+            "explore",
+            tool,
+            &AgentToolBinding {
+                enabled: true,
+                policy: crate::permission::ToolPolicy::allow_all(),
+                path_mode: crate::permission::BindingPathMode::default(),
+                last_applied_preset: None,
+                allowed_tools: None,
+            },
+        )?;
+    }
+
+    for tool in network_core_tools() {
+        let (policy, path_mode) = binding_for_tool(tool, ToolPreset::All);
+        store::upsert_agent_tool(
+            conn,
+            "explore",
+            tool,
+            &AgentToolBinding {
+                enabled: true,
+                policy,
+                path_mode,
+                last_applied_preset: Some(ToolPreset::All),
+                allowed_tools: None,
+            },
+        )?;
     }
     Ok(())
 }
@@ -174,5 +249,51 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, CURRENT_USER_VERSION);
+    }
+
+    #[test]
+    fn seed_plants_explore_as_readonly_subagent() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate::migrate(&conn).unwrap();
+        seed(&conn).unwrap();
+
+        let (role, prompt, allowed): (String, String, String) = conn
+            .query_row(
+                "SELECT role, system_prompt, allowed_subagents_json FROM agents WHERE id = 'default'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(role, "primary");
+        assert_eq!(prompt, "builtin:general");
+        assert!(allowed.contains("explore"));
+
+        let (explore_role, explore_prompt): (String, String) = conn
+            .query_row(
+                "SELECT role, system_prompt FROM agents WHERE id = 'explore'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(explore_role, "subagent");
+        assert_eq!(explore_prompt, "builtin:explore");
+
+        let write: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'write'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(write, 0);
+
+        let bash_preset: Option<String> = conn
+            .query_row(
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'bash'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bash_preset.as_deref(), Some("SAFE"));
     }
 }

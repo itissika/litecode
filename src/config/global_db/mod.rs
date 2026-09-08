@@ -18,8 +18,14 @@ pub mod migrate;
 pub const fn current_user_version() -> i32 {
     migrate::CURRENT_USER_VERSION
 }
+mod builtin_prompts;
 mod seed;
 pub mod tools;
+
+pub use builtin_prompts::{
+    COMPACTION_PROMPT, DEFAULT_PROMPT, EXPLORE_DESCRIPTION, EXPLORE_PROMPT, builtin_prompt_for,
+    is_builtin_prompt_marker,
+};
 
 pub fn default_db_path() -> PathBuf {
     #[cfg(windows)]

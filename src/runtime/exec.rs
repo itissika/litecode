@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::bridge::agent_config_from_profile;
@@ -9,10 +8,9 @@ use crate::runtime::llm_resolve::binding_for_agent;
 use crate::runtime::observer::{FailReason, InternalEvent, TurnError, TurnPhase, TurnTokenStats};
 use crate::runtime::provider_registry::ProviderRegistry;
 use crate::session::{apply_prompt_overhead, compute_token_breakdown, count_text_tokens};
-use crate::types::{FunctionToolCall, Item, LitecodeError, Result, Transcript};
+use crate::types::{FunctionToolCall, Item, Result, Transcript};
 
 use crate::agent::AgentDeps;
-use crate::tool::executor::{outputs_from_tool_results, run_tool};
 
 use super::AgentRuntime;
 
@@ -37,10 +35,9 @@ impl AgentDeps for AgentRuntime {
             )
         })?;
 
-        let instructions = view
-            .instructions
-            .clone()
-            .unwrap_or_else(|| build_system_prompt(&self.agent_config, &self.rctx().ctx));
+        let instructions = view.instructions.clone().unwrap_or_else(|| {
+            build_system_prompt(&self.agent_name, &self.agent_config, Some(&self.base_ctx))
+        });
         // Fail closed before request build when Items require unsupported modalities.
         crate::runtime::validate_llm_input_capabilities(&view.items, &self.turn_llm.model_def)?;
         let token_count = view.token_count;
@@ -58,65 +55,15 @@ impl AgentDeps for AgentRuntime {
         tool_uses: &[FunctionToolCall],
         transcript: &mut Transcript,
     ) -> Result<()> {
-        // `subagent_launch` is session delegation, not a concurrent ToolPipeline
-        // job. Other tools keep the existing batch path; launches take a parent
-        // capacity lease and run one at a time.
         let step = self.current_step_value();
         self.emit_phase(TurnPhase::ExecutingTools, step);
 
-        let is_cancelled = {
-            let cancel = self.cancel.clone();
-            move || cancel.is_cancelled()
-        };
-
-        let mut i = 0usize;
-        while i < tool_uses.len() {
-            if is_cancelled() || self.cancel.is_cancelled() {
-                crate::tool::executor::outputs_from_tool_results(
-                    &tool_uses[i..],
-                    std::collections::HashMap::new(),
-                    &self.rctx().data_root,
-                )
-                .into_iter()
-                .for_each(|item| transcript.push(item));
-                return Err(crate::types::LitecodeError::Canceled);
-            }
-            if tool_uses[i].name == "subagent_launch" {
-                self.execute_subagent_launch(&tool_uses[i], transcript)
-                    .await?;
-                i += 1;
-            } else {
-                let start = i;
-                while i < tool_uses.len() && tool_uses[i].name != "subagent_launch" {
-                    i += 1;
-                }
-                match self
-                    .tool_pipeline
-                    .as_ref()
-                    .expect("tool_pipeline not initialized")
-                    .execute_batch_cancellable(
-                        &tool_uses[start..i],
-                        transcript,
-                        is_cancelled.clone(),
-                    )
-                    .await
-                {
-                    Ok(()) => {}
-                    Err(LitecodeError::Canceled) => {
-                        if i < tool_uses.len() {
-                            transcript.extend(outputs_from_tool_results(
-                                &tool_uses[i..],
-                                HashMap::new(),
-                                &self.rctx().data_root,
-                            ));
-                        }
-                        return Err(LitecodeError::Canceled);
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        }
-        Ok(())
+        let cancel = self.cancel.clone();
+        self.tool_pipeline
+            .as_ref()
+            .expect("tool_pipeline not initialized")
+            .execute_batch_cancellable(tool_uses, transcript, move || cancel.is_cancelled())
+            .await
     }
 
     async fn should_stop(&self, output: &[Item]) -> Result<bool> {
@@ -134,9 +81,14 @@ impl AgentDeps for AgentRuntime {
         };
         let compaction_system = if let Some(profile) = self.resolved.agents().get("compaction") {
             let compaction_agent = agent_config_from_profile(profile);
-            crate::context_pipeline::build_compaction_system_prompt(&compaction_agent)
+            crate::context_pipeline::build_system_prompt(
+                "compaction",
+                &compaction_agent,
+                Some(&self.base_ctx),
+            )
         } else {
-            crate::context_pipeline::BUILTIN_COMPACTION
+            crate::config::global_db::builtin_prompt_for("compaction")
+                .unwrap_or("")
                 .trim()
                 .to_string()
         };
@@ -253,61 +205,6 @@ impl AgentDeps for AgentRuntime {
 }
 
 impl AgentRuntime {
-    async fn execute_subagent_launch(
-        &self,
-        tu: &FunctionToolCall,
-        transcript: &mut Transcript,
-    ) -> Result<()> {
-        let rctx = self.rctx();
-        let lease = match self.sessions.try_acquire_subagent_slot(&self.session_id) {
-            Ok(lease) => Some(lease),
-            Err(e) => {
-                let mut results = HashMap::new();
-                results.insert(
-                    tu.call_id.clone(),
-                    crate::types::ToolCallResult::error(e.to_string()),
-                );
-                transcript.extend(outputs_from_tool_results(
-                    std::slice::from_ref(tu),
-                    results,
-                    &rctx.data_root,
-                ));
-                return Ok(());
-            }
-        };
-
-        let result = run_tool(
-            tu,
-            &rctx.tools,
-            &rctx.permission,
-            &rctx.ctx,
-            &self.session_id,
-            &rctx.agent_name,
-            rctx.permission_sink.as_ref(),
-            self.cancel.clone(),
-            &rctx.data_root,
-            rctx.spill_threshold,
-            rctx.turn_anchor_k(),
-            Arc::clone(&rctx.write_lock),
-            rctx.session.clone(),
-        )
-        .await;
-        drop(lease);
-
-        let mut results = HashMap::new();
-        results.insert(tu.call_id.clone(), result);
-        transcript.extend(outputs_from_tool_results(
-            std::slice::from_ref(tu),
-            results,
-            &rctx.data_root,
-        ));
-
-        if self.cancel.is_cancelled() {
-            return Err(LitecodeError::Canceled);
-        }
-        Ok(())
-    }
-
     fn emit_llm_request_built(&self, request: &ModelRequest, token_count: usize) {
         // `token_estimate` is local budget telemetry only — never meter/ring truth.
         self.emit_internal(InternalEvent::LlmRequestBuilt {
@@ -496,7 +393,7 @@ impl AgentRuntime {
 }
 
 /// Process-local fingerprint so consecutive steps can tell whether `instructions`
-/// (AGENTS.md / CLAUDE.md splice) changed. Not a cryptographic hash.
+/// (body / CLAUDE.md splice) changed. Not a cryptographic hash.
 fn instructions_fingerprint(instructions: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

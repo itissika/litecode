@@ -9,8 +9,8 @@ pub mod system;
 pub mod tail_reminders;
 pub mod view;
 
-use std::cell::RefCell;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use tokio_util::sync::CancellationToken;
 
@@ -24,10 +24,7 @@ use crate::types::{Item, LitecodeError, Result, Transcript};
 pub use budget::{BudgetPolicy, ProviderPromptBaseline, manual_compact_eligible};
 pub use compact::CompactPolicy;
 pub use env::{Context, build_context};
-pub use system::{
-    BUILTIN_CODE_REVIEW, BUILTIN_COMPACTION, BUILTIN_IDENTITY, BUILTIN_REMINDER, BUILTIN_TONE,
-    BUILTIN_TOOLS, build_compaction_system_prompt, build_system_prompt, compose_system_prompt,
-};
+pub use system::build_system_prompt;
 pub use view::{HotView, PreparedView};
 
 /// Result of persisting a transcript delta.
@@ -56,7 +53,8 @@ pub struct ContextPipeline {
     budget: BudgetPolicy,
     compact: CompactPolicy,
     data_root: PathBuf,
-    state: RefCell<PipelineState>,
+    /// Mutex so a subagent turn can run as a `Send` tool future on the parent runtime.
+    state: Mutex<PipelineState>,
 }
 
 impl ContextPipeline {
@@ -65,7 +63,7 @@ impl ContextPipeline {
             budget: BudgetPolicy::new(context_window),
             compact: CompactPolicy,
             data_root,
-            state: RefCell::new(PipelineState {
+            state: Mutex::new(PipelineState {
                 hot: HotView::new(),
                 prepared: None,
                 working: Vec::new(),
@@ -89,16 +87,28 @@ impl ContextPipeline {
     pub fn sync_context(&self, _ctx: &Context) {}
 
     pub fn prepared_view(&self) -> Option<PreparedView> {
-        self.state.borrow().prepared.clone()
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .prepared
+            .clone()
     }
 
     pub fn take_prepared_view(&self) -> Option<PreparedView> {
-        self.state.borrow_mut().prepared.take()
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .prepared
+            .take()
     }
 
     /// Persist working set last synced from the session gate (and pending tail).
     pub fn working_set(&self) -> Vec<WorkingRow> {
-        self.state.borrow().working.clone()
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .working
+            .clone()
     }
 
     /// Load turn working set from Session DB (§5.1 turn load — sole path).
@@ -119,7 +129,7 @@ impl ContextPipeline {
         let rows = sessions.data().working_set_blocking(session_id)?;
         let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
 
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.turn_id = turn_id;
         state.surface_len = rows.len();
         state.log_max_seq = max_seq;
@@ -130,7 +140,10 @@ impl ContextPipeline {
     }
 
     pub fn persisted_prefix_len(&self) -> usize {
-        self.state.borrow().surface_len
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .surface_len
     }
 
     /// Reattach unpersisted `turn_items` onto a persisted prefix.
@@ -154,7 +167,7 @@ impl ContextPipeline {
     ) {
         let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
         let must_reload = {
-            let state = self.state.borrow();
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.working.is_empty() || max_seq != state.log_max_seq
         };
         if must_reload {
@@ -162,7 +175,7 @@ impl ContextPipeline {
                 let persisted_len = from_log.len();
                 let rows = Self::merge_unpersisted_tail(from_log, turn_items);
                 *turn_items = project_items(&rows);
-                let mut state = self.state.borrow_mut();
+                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 state.working = rows;
                 state.surface_len = persisted_len;
                 state.log_max_seq = max_seq;
@@ -171,7 +184,8 @@ impl ContextPipeline {
         }
         let persisted: Vec<WorkingRow> = self
             .state
-            .borrow()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .working
             .iter()
             .filter(|row| row.log_seq.is_some())
@@ -180,13 +194,13 @@ impl ContextPipeline {
         let persisted_len = persisted.len();
         let rows = Self::merge_unpersisted_tail(persisted, turn_items);
         *turn_items = project_items(&rows);
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.working = rows;
         state.surface_len = persisted_len;
     }
 
     pub fn end_turn(&self) {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.turn_id = None;
         state.surface_len = 0;
         state.log_max_seq = -1;
@@ -226,10 +240,15 @@ impl ContextPipeline {
         self.sync_turn_working(sessions, session_id, turn_items);
 
         let mut transcript = turn_items.clone();
-        let committed_len = self.state.borrow().surface_len;
+        let committed_len = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .surface_len;
         let persisted_seqs: Vec<crate::session::event::Seq> = self
             .state
-            .borrow()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .working
             .iter()
             .take(committed_len)
@@ -269,12 +288,17 @@ impl ContextPipeline {
             for item in transcript.iter().skip(rows.len()) {
                 rows.push(WorkingRow::pending(item.clone()));
             }
-            let mut state = self.state.borrow_mut();
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.surface_len = rows.iter().filter(|r| r.log_seq.is_some()).count();
             state.log_max_seq = max_seq;
             state.working = rows;
         } else {
-            let mut rows = self.state.borrow().working.clone();
+            let mut rows = self
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .working
+                .clone();
             let valid_call_ids: std::collections::HashSet<String> = rows
                 .iter()
                 .filter_map(|row| match &row.item {
@@ -288,14 +312,14 @@ impl ContextPipeline {
                     Item::FunctionCallOutput(out) if !valid_call_ids.contains(&out.call_id)
                 )
             });
-            self.state.borrow_mut().working = rows;
+            self.state.lock().unwrap_or_else(|e| e.into_inner()).working = rows;
         }
 
         // Crash / force-kill recovery: dangling FunctionCalls must be padded on
         // the ephemeral LLM view so Chat providers accept the request. Do not
         // persist synthetic outputs as `detail` — the disk keeps the hanging
         // FunctionCall until a real result or abort seal.
-        *turn_items = project_items(&self.state.borrow().working);
+        *turn_items = project_items(&self.state.lock().unwrap_or_else(|e| e.into_inner()).working);
 
         let mut llm_items = turn_items.clone();
         Session::pad_unanswered_calls(&mut llm_items);
@@ -304,7 +328,7 @@ impl ContextPipeline {
         let token_count = self
             .budget
             .token_count_with_baseline(&llm_items, prompt_baseline);
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.hot.replace(turn_items.clone());
         state.prepared = Some(PreparedView {
             items: llm_items,
@@ -334,7 +358,12 @@ impl ContextPipeline {
         session_id: &str,
         items: &mut Vec<Item>,
     ) -> Result<CommitStepOutcome> {
-        let mut rows = self.state.borrow().working.clone();
+        let mut rows = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .working
+            .clone();
         align_working(&mut rows, items);
         let outcome = self.commit_step(sessions, session_id, &mut rows)?;
         *items = project_items(&rows);
@@ -348,9 +377,13 @@ impl ContextPipeline {
         rows: &mut Vec<WorkingRow>,
         turn_id: &str,
     ) -> Result<CommitStepOutcome> {
-        let expected_max_seq = self.state.borrow().log_max_seq;
+        let expected_max_seq = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .log_max_seq;
         let tid = {
-            let state = self.state.borrow();
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if turn_id.is_empty() {
                 state.turn_id.clone().unwrap_or_default()
             } else {
@@ -374,7 +407,7 @@ impl ContextPipeline {
             }
             _ => (false, false, Vec::new(), false),
         };
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.working = rows.clone();
         state.surface_len = rows.len();
         state.log_max_seq = sessions.entry_wire_seq_cursor(session_id).0;
@@ -392,8 +425,15 @@ impl ContextPipeline {
 
     /// Token estimate for the last prepared view or hot items.
     pub fn current_token_estimate(&self, turn_items: &[Item]) -> usize {
-        if let Some(ref view) = self.state.borrow().prepared {
-            return view.token_count;
+        if let Some(count) = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .prepared
+            .as_ref()
+            .map(|view| view.token_count)
+        {
+            return count;
         }
         self.budget.token_count(turn_items, 0)
     }
