@@ -1,15 +1,16 @@
 //! Parent-process client: spawn worker, JSON-RPC over newline-delimited stdin/stdout.
 
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 
 use super::protocol::{
-    InitializeParams, JsonRpcRequest, JsonRpcResponse, NotifyFsChangesParams, RefreshResult,
-    SearchParams, SearchResult, SessionSearchParams, SessionSearchResult, SetSessionDbParams,
+    InitializeParams, JsonRpcRequest, JsonRpcResponse, NotifyFsChangesParams, PingResult,
+    RefreshParams, RefreshResult, RefreshScope, SearchParams, SearchResult, SessionSearchParams,
+    SessionSearchResult, SetSessionDbParams,
 };
 use crate::engines::code_search::SearchHit;
 use crate::engines::session_search::SessionTextHit;
@@ -22,7 +23,7 @@ pub struct CodeSearchWorkerClient {
     next_id: AtomicU64,
 }
 
-fn worker_binary() -> Result<PathBuf> {
+fn self_worker_binary() -> Result<PathBuf> {
     if let Ok(path) = std::env::var("CARGO_BIN_EXE_litecode") {
         return Ok(PathBuf::from(path));
     }
@@ -30,29 +31,33 @@ fn worker_binary() -> Result<PathBuf> {
         .map_err(|e| LitecodeError::ToolExecution(format!("code_search worker: current_exe: {e}")))
 }
 
+fn spawn_exe(exe: &Path) -> Result<CodeSearchWorkerClient> {
+    let mut child = Command::new(exe)
+        .arg("code-search-worker")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| {
+            LitecodeError::ToolExecution(format!(
+                "code_search worker spawn failed ({}): {e}",
+                exe.display()
+            ))
+        })?;
+
+    let stdin = child.stdin.take().expect("worker stdin piped");
+    let stdout = child.stdout.take().expect("worker stdout piped");
+    Ok(CodeSearchWorkerClient {
+        child,
+        stdin,
+        reader: BufReader::new(stdout),
+        next_id: AtomicU64::new(1),
+    })
+}
+
 impl CodeSearchWorkerClient {
     pub fn spawn() -> Result<Self> {
-        let exe = worker_binary()?;
-        let mut child = Command::new(exe)
-            .arg("code-search-worker")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| {
-                LitecodeError::ToolExecution(format!("code_search worker spawn failed: {e}"))
-            })?;
-
-        let stdin = child.stdin.take().expect("worker stdin piped");
-        let stdout = child.stdout.take().expect("worker stdout piped");
-        let reader = BufReader::new(stdout);
-
-        Ok(Self {
-            child,
-            stdin,
-            reader,
-            next_id: AtomicU64::new(1),
-        })
+        spawn_exe(&self_worker_binary()?)
     }
 
     fn next_id(&self) -> u64 {
@@ -122,9 +127,9 @@ impl CodeSearchWorkerClient {
         Ok(())
     }
 
-    pub fn ping(&mut self) -> Result<()> {
-        self.request("ping", serde_json::json!({}))?;
-        Ok(())
+    pub fn ping(&mut self) -> Result<PingResult> {
+        let result = self.request("ping", serde_json::json!({}))?;
+        Ok(serde_json::from_value(result)?)
     }
 
     pub fn search(
@@ -160,7 +165,12 @@ impl CodeSearchWorkerClient {
     }
 
     pub fn refresh(&mut self) -> Result<RefreshResult> {
-        let result = self.request("refresh", serde_json::json!({}))?;
+        self.refresh_scope(RefreshScope::All)
+    }
+
+    pub fn refresh_scope(&mut self, scope: RefreshScope) -> Result<RefreshResult> {
+        let params = serde_json::to_value(RefreshParams { scope })?;
+        let result = self.request("refresh", params)?;
         let parsed: RefreshResult = serde_json::from_value(result)?;
         Ok(parsed)
     }

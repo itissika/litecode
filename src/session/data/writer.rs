@@ -510,16 +510,21 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             operation_id,
             item,
         } => {
-            let seq = {
+            let (seq, sealed) = {
                 let session = ensure_live(state, &session_id)?;
-                session.persist_item(&item)?
+                session.persist_item_outcome(&item)?
+            };
+            let outcome = if sealed {
+                CommitKind::Sealed { seqs: vec![seq] }
+            } else {
+                CommitKind::Appended { seq }
             };
             bump_receipt(
                 state,
                 &session_id,
                 &operation_id.0,
                 expected_revision,
-                CommitKind::Appended { seq },
+                outcome,
             )
         }
         SessionMutation::AppendJobExit {

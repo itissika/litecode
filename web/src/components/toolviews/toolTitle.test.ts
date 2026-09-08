@@ -6,9 +6,9 @@ describe("toolTitle", () => {
   it("puts content search targets ahead of execution options", () => {
     expect(
       toolTitle("grep", {
-        regex: "TODO",
+        pattern: "TODO",
         path: "web/src",
-        include_pattern: "**/*.tsx",
+        glob: "**/*.tsx",
         offset: 20,
       }).summary,
     ).toBe("/TODO/ · in web/src");

@@ -23,6 +23,7 @@ pub struct OrtGraniteEmbedder {
     tokenizer: Tokenizer,
     ort_batch: usize,
     onnx_path: PathBuf,
+    pub(crate) device: &'static str,
 }
 
 impl OrtGraniteEmbedder {
@@ -47,7 +48,7 @@ impl OrtGraniteEmbedder {
             .map_err(|e| LitecodeError::Config(format!("ort with_intra_threads: {e}")))?;
 
         builder = knobs.apply_session(builder)?;
-        builder = knobs.apply_cpu_ep(builder)?;
+        let (mut builder, device) = knobs.apply_execution_providers(builder)?;
 
         let session = builder.commit_from_file(&onnx_path).map_err(|e| {
             LitecodeError::Config(format!("ort commit_from_file {}: {e}", onnx_path.display()))
@@ -71,7 +72,8 @@ impl OrtGraniteEmbedder {
             embedder = EMBEDDER_ID_ORT_Q8Q4,
             path = %onnx_path.display(),
             max_seq = EMBED_MAX_LENGTH,
-            "opening ORT CPU WOQ embedder"
+            device,
+            "opening ORT WOQ embedder"
         );
 
         Ok(Self {
@@ -79,6 +81,7 @@ impl OrtGraniteEmbedder {
             tokenizer,
             ort_batch: ort_embed_batch(),
             onnx_path,
+            device,
         })
     }
 
@@ -291,4 +294,77 @@ impl OrtSessionKnobs {
             .with_execution_providers([CPU::default().with_arena_allocator(self.cpu_arena).build()])
             .map_err(|e| LitecodeError::Config(format!("CPU EP register: {e}")))
     }
+
+    fn apply_execution_providers(
+        &self,
+        builder: ort::session::builder::SessionBuilder,
+    ) -> Result<(ort::session::builder::SessionBuilder, &'static str)> {
+        #[cfg(feature = "ort-cuda")]
+        {
+            return self.apply_cuda_or_cpu_ep(builder);
+        }
+        #[cfg(not(feature = "ort-cuda"))]
+        {
+            Ok((self.apply_cpu_ep(builder)?, "cpu-ort"))
+        }
+    }
+
+    #[cfg(feature = "ort-cuda")]
+    fn apply_cuda_or_cpu_ep(
+        &self,
+        builder: ort::session::builder::SessionBuilder,
+    ) -> Result<(ort::session::builder::SessionBuilder, &'static str)> {
+        use ort::ep::{CPU, CUDA};
+        if let Err(reason) = cuda_provider_dylib_ok() {
+            tracing::warn!(%reason, "CUDA EP skipped; using CPU EP");
+            return Ok((self.apply_cpu_ep(builder)?, "cpu-ort"));
+        }
+        let cpu = CPU::default().with_arena_allocator(self.cpu_arena);
+        match builder
+            .with_execution_providers([CUDA::default().build().error_on_failure(), cpu.build()])
+        {
+            Ok(b) => {
+                tracing::info!("CUDA EP enabled");
+                Ok((b, "cuda-ort"))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "CUDA EP unavailable; using CPU EP");
+                Ok((self.apply_cpu_ep(e.recover())?, "cpu-ort"))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "ort-cuda")]
+fn cuda_provider_dylib_ok() -> std::result::Result<(), String> {
+    #[cfg(windows)]
+    const NAME: &str = "onnxruntime_providers_cuda.dll";
+    #[cfg(not(windows))]
+    const NAME: &str = "libonnxruntime_providers_cuda.so";
+
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        candidates.push(dir.join(NAME));
+    }
+    candidates.push(PathBuf::from(NAME));
+
+    for path in &candidates {
+        if path.is_file() {
+            return Ok(());
+        }
+        if path.is_symlink() {
+            return match std::fs::canonicalize(path) {
+                Ok(resolved) if resolved.is_file() => Ok(()),
+                Ok(resolved) => Err(format!(
+                    "symlink {} resolves to non-file {}",
+                    path.display(),
+                    resolved.display()
+                )),
+                Err(e) => Err(format!("dangling CUDA EP symlink {}: {e}", path.display())),
+            };
+        }
+    }
+    Err(format!("{NAME} not found next to the worker binary"))
 }

@@ -1,4 +1,4 @@
-//! Resolve the compile-time release channel for `server/hello`.
+//! Resolve compile-time metadata for `server/hello`.
 //!
 //! `LITECODE_CHANNEL` is read here (not in source) so Cargo invalidates the build
 //! when the channel changes between dev / nightly / official artifacts.

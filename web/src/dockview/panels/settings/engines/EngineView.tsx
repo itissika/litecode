@@ -240,6 +240,9 @@ function RetrievalSection({
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-medium text-(--_dk-text-primary)">Semantic retrieval</h3>
           <span className={`tag tag-${tag.tone} tag-md`}>{tag.label}</span>
+          {detail.embed_device === "cuda-ort" ? (
+            <span className="tag tag-ok tag-soft tag-md">cuda</span>
+          ) : null}
         </div>
         <IconSquareButton
           label={control.label}

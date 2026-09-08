@@ -120,14 +120,7 @@ pub fn index_work_from_disk(workspace_root: &Path) -> IndexWork {
         .flatten()
         .map(|m| m.indexed_files)
         .unwrap_or(0);
-    decide_index_work(
-        true,
-        true,
-        embed_dirty,
-        dirty,
-        indexed,
-        indexed.max(dirty),
-    )
+    decide_index_work(true, true, embed_dirty, dirty, indexed, indexed.max(dirty))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,19 +234,12 @@ pub fn write_pending_hint(workspace_root: &Path, pending_updates: usize) {
 }
 
 /// Persist pending totals from `(path, deleted)` rows so disk work ignores deletions.
-pub fn write_pending_hint_from(
-    workspace_root: &Path,
-    pending: &HashSet<(String, bool)>,
-) {
+pub fn write_pending_hint_from(workspace_root: &Path, pending: &HashSet<(String, bool)>) {
     let (embed_dirty, dirty) = pending_work_counts(pending);
     write_pending_hint_counts(workspace_root, dirty, embed_dirty);
 }
 
-fn write_pending_hint_counts(
-    workspace_root: &Path,
-    pending_updates: usize,
-    embed_dirty: usize,
-) {
+fn write_pending_hint_counts(workspace_root: &Path, pending_updates: usize, embed_dirty: usize) {
     if pending_updates == 0 {
         let _ = std::fs::remove_file(pending_hint_path(workspace_root));
         return;
@@ -450,10 +436,7 @@ mod tests {
 
     #[test]
     fn decide_index_work_small_dirty_updates_large_rebuilds() {
-        assert_eq!(
-            decide_index_work(true, true, 0, 0, 10, 10),
-            IndexWork::None
-        );
+        assert_eq!(decide_index_work(true, true, 0, 0, 10, 10), IndexWork::None);
         assert_eq!(
             decide_index_work(true, true, 1, 1, 10, 10),
             IndexWork::Update { dirty: 1 }

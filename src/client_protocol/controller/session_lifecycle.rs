@@ -257,6 +257,13 @@ impl SessionController {
     }
 
     pub async fn delete_session(&mut self, id: &str) -> anyhow::Result<()> {
+        // List is SQLite; the exclusive lease needs an in-memory record.
+        // Hydrate this id only — do not subscribe, and do not load the rest.
+        self.sessions
+            .ensure_entry(id)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
         // Atomically reserve the idle session; a turn or compact cannot start
         // between the product gate and the destructive delete.
         let _lease = self

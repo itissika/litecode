@@ -45,6 +45,7 @@ describe("workspace engine API", () => {
               progress: null,
             },
             policy: {},
+            embed_device: "cuda-ort",
           },
           lsp: { desired: false, usable: "stopped", configured_servers: [], probes: [] },
         },
@@ -54,6 +55,7 @@ describe("workspace engine API", () => {
     expect(detail.retrieval.usable).toBe("ready");
     expect(detail.retrieval.index.status).toBe("ready");
     expect(detail.retrieval.index.indexed_chunks).toBe(2);
+    expect(detail.retrieval.embed_device).toBe("cuda-ort");
     expect(detail.lsp.usable).toBe("stopped");
   });
 

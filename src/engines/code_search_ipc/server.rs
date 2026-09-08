@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use super::protocol::{
-    InitializeParams, JsonRpcRequest, JsonRpcResponse, NotifyFsChangesParams, RefreshMode,
-    RefreshResult, SearchParams, SearchResult, SessionSearchParams, SessionSearchResult,
-    SetSessionDbParams,
+    InitializeParams, JsonRpcRequest, JsonRpcResponse, NotifyFsChangesParams, PingResult,
+    RefreshMode, RefreshParams, RefreshResult, RefreshScope, SearchParams, SearchResult,
+    SessionSearchParams, SessionSearchResult, SetSessionDbParams,
 };
 use crate::engines::code_search::{
     CodeSearchRuntime, SemanticEngine, SharedRuntime, decide_index_work, init_workspace_index,
@@ -159,8 +159,8 @@ impl WorkerState {
         runtime.search_sessions(query, top_k, session_id)
     }
 
-    /// Refresh index: code then session. Never skip session after a code rebuild.
-    fn refresh(&mut self) -> Result<RefreshResult> {
+    /// Refresh: `All` (human) does code then session; tools pass only their corpus.
+    fn refresh(&mut self, scope: RefreshScope) -> Result<RefreshResult> {
         if !self.warmed {
             return Err(LitecodeError::ToolExecution(
                 "code_search worker not warmed".into(),
@@ -171,44 +171,23 @@ impl WorkerState {
             .clone()
             .ok_or_else(|| LitecodeError::ToolExecution("initialize required".into()))?;
         reload_worker_excludes(&root);
-        let rebuild = should_full_rebuild(&root);
         let guard = self.runtime.read().unwrap();
         let runtime = guard
             .as_ref()
             .ok_or_else(|| LitecodeError::ToolExecution("runtime missing".into()))?;
-        let mode = if rebuild {
-            rebuild_index_in_runtime(runtime)?;
-            RefreshMode::Rebuild
+        let do_code = matches!(scope, RefreshScope::All | RefreshScope::Code);
+        let do_session = matches!(scope, RefreshScope::All | RefreshScope::Session);
+        let mode = if do_code {
+            refresh_code_corpus(&root, runtime)?
         } else {
-            queue_reconcile_dirty(runtime);
-            let (embed_dirty, dirty) = runtime
-                .pending_updates
-                .lock()
-                .map(|g| pending_work_counts(&g))
-                .unwrap_or((0, 0));
-            let indexed = runtime
-                .with_index(|index| Ok(index.indexed_paths().len()))
-                .unwrap_or(0);
-            let scannable = scannable_files(&root).map(|f| f.len()).unwrap_or(indexed);
-            match decide_index_work(true, true, embed_dirty, dirty, indexed, scannable) {
-                crate::engines::code_search::IndexWork::Rebuild { .. } => {
-                    rebuild_index_in_runtime(runtime)?;
-                    RefreshMode::Rebuild
-                }
-                crate::engines::code_search::IndexWork::None => {
-                    write_pending_hint(&root, 0);
-                    RefreshMode::Incremental
-                }
-                crate::engines::code_search::IndexWork::Update { .. } => {
-                    refresh_index_incremental(runtime)?;
-                    RefreshMode::Incremental
-                }
-            }
+            RefreshMode::Incremental
         };
-        if let Err(e) = runtime.consume_session_index() {
+        if do_session && let Err(e) = runtime.consume_session_index() {
             tracing::warn!(error = %e, "session index consume during refresh skipped");
         }
-        crate::engines::code_search::clear_index_job(&root);
+        if do_code {
+            crate::engines::code_search::clear_index_job(&root);
+        }
         Ok(RefreshResult { mode })
     }
 
@@ -248,6 +227,38 @@ impl WorkerState {
     fn shutdown(&mut self) {
         *self.runtime.write().unwrap() = None;
         self.warmed = false;
+    }
+}
+
+fn refresh_code_corpus(root: &std::path::Path, runtime: &CodeSearchRuntime) -> Result<RefreshMode> {
+    let rebuild = should_full_rebuild(root);
+    if rebuild {
+        rebuild_index_in_runtime(runtime)?;
+        return Ok(RefreshMode::Rebuild);
+    }
+    queue_reconcile_dirty(runtime);
+    let (embed_dirty, dirty) = runtime
+        .pending_updates
+        .lock()
+        .map(|g| pending_work_counts(&g))
+        .unwrap_or((0, 0));
+    let indexed = runtime
+        .with_index(|index| Ok(index.indexed_paths().len()))
+        .unwrap_or(0);
+    let scannable = scannable_files(root).map(|f| f.len()).unwrap_or(indexed);
+    match decide_index_work(true, true, embed_dirty, dirty, indexed, scannable) {
+        crate::engines::code_search::IndexWork::Rebuild { .. } => {
+            rebuild_index_in_runtime(runtime)?;
+            Ok(RefreshMode::Rebuild)
+        }
+        crate::engines::code_search::IndexWork::None => {
+            write_pending_hint(root, 0);
+            Ok(RefreshMode::Incremental)
+        }
+        crate::engines::code_search::IndexWork::Update { .. } => {
+            refresh_index_incremental(runtime)?;
+            Ok(RefreshMode::Incremental)
+        }
     }
 }
 
@@ -305,12 +316,15 @@ fn dispatch(state: &mut WorkerState, req: JsonRpcRequest) -> JsonRpcResponse {
             },
             Err(e) => JsonRpcResponse::err(id, ERR_INVALID, e.to_string()),
         },
-        "refresh" => match state.refresh() {
-            Ok(result) => match serde_json::to_value(result) {
-                Ok(v) => JsonRpcResponse::ok(id, v),
+        "refresh" => match serde_json::from_value::<RefreshParams>(req.params) {
+            Ok(p) => match state.refresh(p.scope) {
+                Ok(result) => match serde_json::to_value(result) {
+                    Ok(v) => JsonRpcResponse::ok(id, v),
+                    Err(e) => JsonRpcResponse::err(id, ERR_INTERNAL, e.to_string()),
+                },
                 Err(e) => JsonRpcResponse::err(id, ERR_INTERNAL, e.to_string()),
             },
-            Err(e) => JsonRpcResponse::err(id, ERR_INTERNAL, e.to_string()),
+            Err(e) => JsonRpcResponse::err(id, ERR_INVALID, e.to_string()),
         },
         "notify_fs_changes" => match serde_json::from_value::<NotifyFsChangesParams>(req.params) {
             Ok(p) => {
@@ -324,10 +338,22 @@ fn dispatch(state: &mut WorkerState, req: JsonRpcRequest) -> JsonRpcResponse {
             JsonRpcResponse::ok(id, serde_json::json!({}))
         }
         "ping" => {
-            if state.warmed {
-                JsonRpcResponse::ok(id, serde_json::json!({ "ready": true }))
+            let embed_device = if state.warmed {
+                state
+                    .runtime
+                    .read()
+                    .ok()
+                    .and_then(|g| g.as_ref().map(|r| r.embed_device()))
+                    .unwrap_or_default()
             } else {
-                JsonRpcResponse::ok(id, serde_json::json!({ "ready": false }))
+                String::new()
+            };
+            match serde_json::to_value(PingResult {
+                ready: state.warmed,
+                embed_device,
+            }) {
+                Ok(v) => JsonRpcResponse::ok(id, v),
+                Err(e) => JsonRpcResponse::err(id, ERR_INTERNAL, e.to_string()),
             }
         }
         "shutdown" => {

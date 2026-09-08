@@ -82,6 +82,11 @@ case "$host" in
 esac
 for f in "${native_libs[@]}"; do
   [[ -f "$f" ]] || continue
+  case "$(basename "$f")" in
+    *providers_cuda*|libcudnn*|libcublas*|libcudart*|libnvrtc*|libcufft*|cudnn*|cublas*|cudart*|nvrtc*|cufft*)
+      continue
+      ;;
+  esac
   cp -f "$f" "$OUT/"
 done
 shopt -u nullglob

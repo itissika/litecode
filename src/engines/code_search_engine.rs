@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::engines::code_search::SearchHit;
 use crate::engines::code_search_ipc::CodeSearchWorkerClient;
-use crate::engines::code_search_ipc::protocol::RefreshResult;
+use crate::engines::code_search_ipc::protocol::{RefreshResult, RefreshScope};
 use crate::types::{LitecodeError, Result};
 
 pub struct CodeSearchEngine {
@@ -19,6 +19,8 @@ pub struct CodeSearchEngine {
     on_worker_failed: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// FS events received before the worker is warm; flushed after warmup.
     pending_fs: Mutex<HashSet<(String, bool)>>,
+    /// Last ping-reported inference device (`cuda-ort` / `cpu-ort` / `hash`).
+    embed_device: Mutex<String>,
 }
 
 impl CodeSearchEngine {
@@ -31,6 +33,34 @@ impl CodeSearchEngine {
             worker_os_pid: AtomicU32::new(0),
             on_worker_failed: Mutex::new(None),
             pending_fs: Mutex::new(HashSet::new()),
+            embed_device: Mutex::new(String::new()),
+        }
+    }
+
+    fn set_embed_device(&self, device: &str) {
+        if let Ok(mut guard) = self.embed_device.lock() {
+            *guard = device.to_string();
+        }
+    }
+
+    fn clear_embed_device(&self) {
+        self.set_embed_device("");
+    }
+
+    fn capture_embed_device(&self, client: &mut CodeSearchWorkerClient) {
+        match client.ping() {
+            Ok(ping) => self.set_embed_device(&ping.embed_device),
+            Err(e) => tracing::debug!(error = %e, "code_search ping embed_device skipped"),
+        }
+    }
+
+    /// Live worker inference device, if the last ping reported one.
+    pub fn embed_device(&self) -> Option<String> {
+        let guard = self.embed_device.lock().ok()?;
+        if guard.is_empty() {
+            None
+        } else {
+            Some(guard.clone())
         }
     }
 
@@ -97,6 +127,7 @@ impl CodeSearchEngine {
         // worker RPC returns, so `client` is often still None while the
         // embedder is burning CPU. A graceful shutdown RPC also cannot run
         // until that in-flight request finishes — wait and the process leaks.
+        self.clear_embed_device();
         let pid = self.worker_os_pid.swap(0, Ordering::AcqRel);
         crate::serve::shutdown::kill_process(pid);
         if let Ok(mut guard) = self.client.try_lock()
@@ -199,7 +230,12 @@ impl CodeSearchEngine {
     }
 
     /// Refresh index while Warm: rebuild or incremental (worker decides).
+    /// Human Refresh: both corpora. Agent tools use [`Self::refresh_scope`].
     pub fn refresh(&self) -> Result<RefreshResult> {
+        self.refresh_scope(RefreshScope::All)
+    }
+
+    pub fn refresh_scope(&self, scope: RefreshScope) -> Result<RefreshResult> {
         if !self.worker_alive() {
             self.notify_worker_failed();
             return Err(LitecodeError::ToolExecution(
@@ -214,7 +250,7 @@ impl CodeSearchEngine {
         let client = guard
             .as_mut()
             .ok_or_else(|| LitecodeError::Config("code_search engine not warmed".into()))?;
-        match client.refresh() {
+        match client.refresh_scope(scope) {
             Ok(result) => Ok(result),
             Err(e) => {
                 tracing::warn!(tool = "code_search", error = %e, "worker refresh failed");
@@ -319,39 +355,10 @@ impl CodeSearchEngine {
             return Ok(());
         }
 
-        let mut client = CodeSearchWorkerClient::spawn()?;
-        self.set_worker_os_pid(client.pid());
-
-        if !self.warmup_still_valid(epoch) {
-            client.kill();
-            self.set_worker_os_pid(None);
+        let Some(mut client) = self.spawn_ready_worker(&root, session_db_path.as_deref(), epoch)?
+        else {
             return Ok(());
-        }
-
-        if let Err(e) = client.initialize(&root, session_db_path.as_deref()) {
-            client.kill();
-            self.set_worker_os_pid(None);
-            if !self.warmup_still_valid(epoch) {
-                return Ok(());
-            }
-            return Err(e);
-        }
-
-        if !self.warmup_still_valid(epoch) {
-            client.kill();
-            self.set_worker_os_pid(None);
-            return Ok(());
-        }
-
-        if let Err(e) = client.warmup() {
-            client.kill();
-            self.set_worker_os_pid(None);
-            if !self.warmup_still_valid(epoch) {
-                return Ok(());
-            }
-            return Err(e);
-        }
-
+        };
         if !self.warmup_still_valid(epoch) {
             client.kill();
             self.set_worker_os_pid(None);
@@ -385,6 +392,53 @@ impl CodeSearchEngine {
         }
 
         Ok(())
+    }
+
+    fn handshake_worker(
+        &self,
+        client: &mut CodeSearchWorkerClient,
+        root: &std::path::Path,
+        session_db_path: Option<&std::path::Path>,
+        epoch: u64,
+    ) -> Result<bool> {
+        client.initialize(root, session_db_path)?;
+        if !self.warmup_still_valid(epoch) {
+            return Ok(false);
+        }
+        client.warmup()?;
+        if !self.warmup_still_valid(epoch) {
+            return Ok(false);
+        }
+        self.capture_embed_device(client);
+        Ok(true)
+    }
+
+    fn spawn_ready_worker(
+        &self,
+        root: &std::path::Path,
+        session_db_path: Option<&std::path::Path>,
+        epoch: u64,
+    ) -> Result<Option<CodeSearchWorkerClient>> {
+        let mut client = CodeSearchWorkerClient::spawn()?;
+        self.set_worker_os_pid(client.pid());
+        if !self.warmup_still_valid(epoch) {
+            client.kill();
+            self.set_worker_os_pid(None);
+            return Ok(None);
+        }
+        match self.handshake_worker(&mut client, root, session_db_path, epoch) {
+            Ok(true) => Ok(Some(client)),
+            Ok(false) => {
+                client.kill();
+                self.set_worker_os_pid(None);
+                Ok(None)
+            }
+            Err(e) => {
+                client.kill();
+                self.set_worker_os_pid(None);
+                Err(e)
+            }
+        }
     }
 
     pub fn stop(&self) {

@@ -4,11 +4,15 @@
 //! `input[0..prev_len]`. If LiteCode rewrites already-sent Items (persist
 //! roundtrip, stream `persist_item` seal, job-exit overlay), the next step
 //! reports a cache miss. These tests try to turn that red.
+//!
+//! Unique provider ids (`fc_1` then `fc_2`) are the green path. Reused ids
+//! (`msg_1` / `fc_1` every round, Ark-style) must not rewrite a Final row —
+//! id is only a hint for an open InProgress shell; collisions append a new seq.
 
 mod common;
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use common::fake_deps::{assistant_text_item, function_call_item};
 use common::{build_runtime_with_provider, test_agent};
@@ -375,12 +379,7 @@ async fn prepare_snapshot(
         .await
         .expect("prepare_step");
     *turn = pipeline.working_set();
-    items_json(
-        &pipeline
-            .prepared_view()
-            .expect("prepared view")
-            .items,
-    )
+    items_json(&pipeline.prepared_view().expect("prepared view").items)
 }
 
 fn in_progress_fc(call_id: &str, name: &str, id: &str) -> Item {
@@ -392,6 +391,26 @@ fn in_progress_fc(call_id: &str, name: &str, id: &str) -> Item {
         id: Some(id.into()),
         status: Some(OutputStatus::InProgress),
     })
+}
+
+fn in_progress_assistant(text: &str, id: &str) -> Item {
+    match assistant_text_item(text, id) {
+        Item::Message(MessageItem::Output(mut msg)) => {
+            msg.status = OutputStatus::InProgress;
+            Item::Message(MessageItem::Output(msg))
+        }
+        other => panic!("expected output message, got {other:?}"),
+    }
+}
+
+fn loaded_items(sessions: &SessionManager, sid: &str) -> Vec<Item> {
+    sessions
+        .data()
+        .working_set_blocking(sid)
+        .unwrap()
+        .into_iter()
+        .map(|row| row.item)
+        .collect()
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -467,10 +486,7 @@ async fn job_exit_mid_turn_does_not_rewrite_already_sent_prefix() {
 
     let _ = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 1).await;
     turn.push(WorkingRow::pending(function_call_item(
-        "c1",
-        "read",
-        "{}",
-        "fc_1",
+        "c1", "read", "{}", "fc_1",
     )));
     turn.push(WorkingRow::pending(fco("c1", "ok")));
     pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
@@ -480,7 +496,9 @@ async fn job_exit_mid_turn_does_not_rewrite_already_sent_prefix() {
     sessions
         .append_job_exit(
             &sid,
-            &user_text("<system-reminder>\nBackground bash bg-1 exited with code 0.\n</system-reminder>"),
+            &user_text(
+                "<system-reminder>\nBackground bash bg-1 exited with code 0.\n</system-reminder>",
+            ),
         )
         .expect("append_job_exit while turn pipeline is live");
 
@@ -519,20 +537,138 @@ async fn hanging_call_pad_is_stable_across_prepare_steps() {
     let mut turn = pipeline.begin_turn(&sessions, &sid).unwrap();
     let first = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 1).await;
     assert!(
-        first.iter().any(|v| v["call_id"] == "hanging"
-            && v["type"] == "function_call_output"),
+        first
+            .iter()
+            .any(|v| v["call_id"] == "hanging" && v["type"] == "function_call_output"),
         "first LLM view must pad the hanging call: {first:?}"
     );
 
     turn.push(WorkingRow::pending(function_call_item(
-        "c_new",
-        "read",
-        "{}",
-        "fc_new",
+        "c_new", "read", "{}", "fc_new",
     )));
     turn.push(WorkingRow::pending(fco("c_new", "fresh")));
     pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
 
     let second = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 2).await;
     assert_json_prefix(&first, &second, "hanging-call pad");
+}
+
+// ── provider id reuse (Ark-style). Unique-id tests above must stay green. ──
+
+#[test]
+fn persist_item_reused_message_id_must_not_rewrite_final_row() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (sid, sessions) = setup_session(dir.path());
+    sessions
+        .insert_detail_rows(&sid, &[user_text("hi")])
+        .unwrap();
+    sessions
+        .persist_item(&sid, &assistant_text_item("first reply", "msg_1"))
+        .unwrap();
+
+    sessions
+        .persist_item(&sid, &in_progress_assistant("second reply", "msg_1"))
+        .expect("next-round stream persist");
+
+    let items = loaded_items(&sessions, &sid);
+    assert_eq!(
+        items.len(),
+        3,
+        "reused msg_1 must append, not seal the Final row; got {:?}",
+        items_json(&items)
+    );
+    assert_eq!(item_text_preview(&items[1]), "first reply");
+    assert_eq!(item_text_preview(&items[2]), "second reply");
+}
+
+#[test]
+fn persist_item_reused_function_call_id_must_not_rewrite_final_row() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (sid, sessions) = setup_session(dir.path());
+    sessions
+        .insert_detail_rows(&sid, &[user_text("hi")])
+        .unwrap();
+    sessions
+        .persist_item(
+            &sid,
+            &function_call_item("call_1", "read", r#"{"file_path":"a.rs"}"#, "fc_1"),
+        )
+        .unwrap();
+    sessions.persist_item(&sid, &fco("call_1", "ok-a")).unwrap();
+
+    sessions
+        .persist_item(&sid, &in_progress_fc("call_1", "read", "fc_1"))
+        .expect("next-round stream persist");
+
+    let items = loaded_items(&sessions, &sid);
+    let calls: Vec<_> = items
+        .iter()
+        .filter(|item| matches!(item, Item::FunctionCall(_)))
+        .cloned()
+        .collect();
+    assert_eq!(
+        calls.len(),
+        2,
+        "reused fc_1 must append a new FunctionCall; got {:?}",
+        items_json(&items)
+    );
+    assert_eq!(
+        item_json(&calls[0])["arguments"],
+        r#"{"file_path":"a.rs"}"#,
+        "already-sent FunctionCall must stay byte-identical"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn next_turn_reload_must_keep_sent_row_when_provider_reuses_id() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (sid, sessions) = setup_session(dir.path());
+    sessions
+        .insert_detail_rows(&sid, &[user_text("hist")])
+        .unwrap();
+
+    let ctx = test_context(dir.path());
+    let pipeline = ContextPipeline::new(10_000, ctx, dir.path().to_path_buf());
+    let mut turn = pipeline
+        .begin_turn_with_id(&sessions, &sid, Some("t1".into()))
+        .unwrap();
+    turn.push(WorkingRow::pending(user_text("go")));
+    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+
+    sessions
+        .persist_item(&sid, &in_progress_fc("call_1", "read", "fc_1"))
+        .expect("stream persist_item");
+    turn.push(WorkingRow::pending(function_call_item(
+        "call_1",
+        "read",
+        r#"{"file_path":"a.rs"}"#,
+        "fc_1",
+    )));
+    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    turn.push(WorkingRow::pending(fco("call_1", "ok-a")));
+    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+
+    let sent = items_json(&project_items(&turn));
+
+    // Reuse fc_1 on a pending FunctionCall (commit id lookup). A second
+    // FunctionCallOutput with call_1 would hit result:call_1 and try to seal
+    // item/tool_result, which is not sealable — a sibling collision.
+    turn.push(WorkingRow::pending(function_call_item(
+        "call_1",
+        "read",
+        r#"{"file_path":"b.rs"}"#,
+        "fc_1",
+    )));
+    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+
+    pipeline.end_turn();
+    let reloaded = pipeline
+        .begin_turn_with_id(&sessions, &sid, Some("t2".into()))
+        .unwrap();
+    let next_turn = items_json(&project_items(&reloaded));
+    assert_json_prefix(
+        &sent,
+        &next_turn,
+        "next-turn reload after reused fc_1 must not rewrite the already-sent prefix",
+    );
 }

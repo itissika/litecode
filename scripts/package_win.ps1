@@ -5,8 +5,10 @@ param(
   [switch]$SkipWeb,
   [switch]$SkipModel,
   [switch]$SkipLinuxBundle,
+  [switch]$LinuxBundleWarnOnly,
   [switch]$SkipPortable,
-  [string]$Profile = "release"
+  [string]$Profile = "release",
+  [string]$ArtifactInfix = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,6 +38,8 @@ if ($env:GITHUB_ACTIONS) {
 
 if ($SkipLinuxBundle) {
   Write-Host "==> skipping Linux bundle (slim SKU); Open Remote reads LITECODE_BUNDLE_ROOT / %LOCALAPPDATA%\litecode\bundles"
+} elseif ($LinuxBundleWarnOnly) {
+  $null = & (Join-Path $Root "scripts\ensure_linux_bundle.ps1") -Root $Root -WarnOnly
 } else {
   $null = & (Join-Path $Root "scripts\ensure_linux_bundle.ps1") -Root $Root -Require
 }
@@ -45,18 +49,27 @@ $builderConfig = $null
 try {
   if (-not (Test-Path "node_modules")) { npm ci }
   $winArgs = if ($SkipPortable) { @("--win", "nsis", "--x64") } else { @("--win", "--x64") }
-  if ($SkipLinuxBundle) {
+  $infix = $ArtifactInfix.Trim().Trim("-")
+  $needConfig = [bool]$SkipLinuxBundle -or ($infix -ne "")
+  if ($needConfig) {
     npm run build
     $pkg = Get-Content -Raw -LiteralPath "package.json" | ConvertFrom-Json
     $build = $pkg.build
-    $filtered = @()
-    foreach ($item in $build.extraResources) {
-      $from = [string]$item.from
-      if ($from -match 'dist[/\\]linux') { continue }
-      $filtered += $item
+    if ($SkipLinuxBundle) {
+      $filtered = @()
+      foreach ($item in $build.extraResources) {
+        $from = [string]$item.from
+        if ($from -match 'dist[/\\]linux') { continue }
+        $filtered += $item
+      }
+      $build.extraResources = @($filtered)
     }
-    $build.extraResources = @($filtered)
-    $builderConfig = Join-Path $env:TEMP ("litecode-electron-builder-slim-" + [guid]::NewGuid().ToString("N") + ".json")
+    if ($infix) {
+      $build.win.artifactName = "Litecode-`${version}-$infix-`${os}-`${arch}.`${ext}"
+      $build.nsis.artifactName = "Litecode-Setup-`${version}-$infix-`${arch}.`${ext}"
+      $build.portable.artifactName = "Litecode-Portable-`${version}-$infix-`${arch}.`${ext}"
+    }
+    $builderConfig = Join-Path $env:TEMP ("litecode-electron-builder-" + [guid]::NewGuid().ToString("N") + ".json")
     $json = $build | ConvertTo-Json -Depth 16
     [System.IO.File]::WriteAllText($builderConfig, $json)
     npx electron-builder @winArgs --config $builderConfig

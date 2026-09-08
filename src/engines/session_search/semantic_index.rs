@@ -455,13 +455,14 @@ pub fn session_index_status(workspace_root: &Path) -> crate::engines::code_searc
     }
 }
 
-pub fn session_work_from_disk(
-    workspace_root: &Path,
-) -> crate::engines::code_search::IndexWork {
+pub fn session_work_from_disk(workspace_root: &Path) -> crate::engines::code_search::IndexWork {
     use crate::engines::code_search::{IndexRebuildReason, IndexWork};
     if session_should_rebuild(workspace_root) {
         let has_vectors = index_files_exist(workspace_root);
-        let has_db = workspace_root.join(".litecode").join("sessions.db").is_file();
+        let has_db = workspace_root
+            .join(".litecode")
+            .join("sessions.db")
+            .is_file();
         if !has_vectors && !has_db {
             return IndexWork::None;
         }
@@ -597,11 +598,7 @@ mod tests {
 
         data.insert_items(&id, &[user_text("second row")]).unwrap();
         let reloaded = load_session_index(root).unwrap();
-        assert_eq!(
-            reloaded.len(),
-            1,
-            "load must not digest new session rows"
-        );
+        assert_eq!(reloaded.len(), 1, "load must not digest new session rows");
         queue_session_dirty(root, &reader);
         assert!(
             read_session_pending_hint(root) > 0,

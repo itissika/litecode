@@ -50,8 +50,31 @@ pub fn resolve_level_from_path(db_path: &Path) -> String {
         .unwrap_or_else(|| "info".into())
 }
 
+/// Crates that log INFO on a hot path (indexer merge/GC). Product debug never
+/// needs those lines; a bare `info`/`debug` level still mutes them. A full
+/// EnvFilter spec (`info,tantivy=trace`) is left unchanged.
+const NOISY_CRATES: &str = "tantivy=warn";
+
+/// Expand a settings/env level into an EnvFilter spec.
+pub fn compose_filter(level: &str) -> String {
+    let level = level.trim();
+    if level.is_empty() {
+        return format!("info,{NOISY_CRATES}");
+    }
+    if level.contains('=') || level.contains(',') {
+        return level.to_string();
+    }
+    format!("{level},{NOISY_CRATES}")
+}
+
 pub fn level_to_filter(level: &str) -> EnvFilter {
-    EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"))
+    let spec = compose_filter(level);
+    EnvFilter::try_new(&spec).unwrap_or_else(|_| EnvFilter::new(compose_filter("info")))
+}
+
+/// File sink stays at info even when the console is debug/trace.
+pub fn file_filter() -> EnvFilter {
+    level_to_filter("info")
 }
 
 fn env_override_active() -> bool {
@@ -80,5 +103,24 @@ pub fn reload_filter(level: &str) {
     let filter = level_to_filter(level);
     if let Some(handle) = reload_slot().lock().unwrap().as_ref() {
         let _ = handle.reload(filter);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compose_filter;
+
+    #[test]
+    fn bare_level_mutes_tantivy() {
+        assert_eq!(compose_filter("info"), "info,tantivy=warn");
+        assert_eq!(compose_filter("debug"), "debug,tantivy=warn");
+        assert_eq!(compose_filter(""), "info,tantivy=warn");
+    }
+
+    #[test]
+    fn raw_spec_is_passed_through() {
+        assert_eq!(compose_filter("info,litecode=debug"), "info,litecode=debug");
+        assert_eq!(compose_filter("tantivy=trace"), "tantivy=trace");
+        assert_eq!(compose_filter("info,tantivy=trace"), "info,tantivy=trace");
     }
 }

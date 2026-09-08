@@ -100,12 +100,10 @@ impl WorkspaceEngines {
             .is_some_and(|m| crate::engines::code_search::needs_rebuild(m) || !vectors_ready);
         let index_view =
             crate::engines::code_search::resolve_index_view(workspace_root, retrieval_status.state);
-        let session_status =
-            crate::engines::session_search::session_index_status(workspace_root);
+        let session_status = crate::engines::session_search::session_index_status(workspace_root);
         let status = merge_retrieval_status(index_view.status, session_status);
         let code_work = crate::engines::code_search::index_work_from_disk(workspace_root);
-        let session_work =
-            crate::engines::session_search::session_work_from_disk(workspace_root);
+        let session_work = crate::engines::session_search::session_work_from_disk(workspace_root);
         let work = super::merge_index_work(code_work.clone(), session_work.clone());
         let retrieval_error = retrieval_status
             .error
@@ -165,6 +163,7 @@ impl WorkspaceEngines {
             "model": model_json,
             "index": index_json,
             "policy": policy_json,
+            "embed_device": self.code_search().embed_device(),
         })
     }
 

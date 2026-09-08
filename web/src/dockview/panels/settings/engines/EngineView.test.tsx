@@ -93,6 +93,22 @@ describe("EngineView LSP install poll", () => {
     render(<EngineView detail={detailFixture()} onChanged={() => {}} />);
     expect(screen.getByText("Semantic retrieval")).toBeTruthy();
     expect(screen.getByLabelText("No skip paths")).toBeTruthy();
+    expect(screen.queryByText("cuda")).toBeNull();
+  });
+
+  it("shows a cuda tag only when the worker reports cuda-ort", () => {
+    probeLspServers.mockResolvedValue([]);
+    const detail = detailFixture();
+    detail.retrieval.embed_device = "cpu-ort";
+    const { rerender } = render(<EngineView detail={detail} onChanged={() => {}} />);
+    expect(screen.queryByText("cuda")).toBeNull();
+    rerender(
+      <EngineView
+        detail={{ ...detail, retrieval: { ...detail.retrieval, embed_device: "cuda-ort" } }}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.getByText("cuda")).toBeTruthy();
   });
 
   it("stops polling after unmount (no setState on unmounted view)", async () => {

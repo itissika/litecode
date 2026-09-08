@@ -121,10 +121,104 @@ fn apply_ark_thinking(body: &mut Value, params: &ModelRequest) {
     }
 }
 
+/// Temp wire dump: `LITECODE_DUMP_LLM_BODY=1` → `.litecode/debug/llm-body`,
+/// or set to an absolute directory. Bytes match `.json(&body)` on the wire.
+fn maybe_dump_ark_wire_body(request: &ModelRequest, body: &Value) {
+    let Ok(spec) = std::env::var("LITECODE_DUMP_LLM_BODY") else {
+        return;
+    };
+    let spec = spec.trim();
+    if spec.is_empty() || spec == "0" {
+        return;
+    }
+    let dir = if spec == "1" {
+        std::path::PathBuf::from(".litecode")
+            .join("debug")
+            .join("llm-body")
+    } else {
+        std::path::PathBuf::from(spec)
+    };
+    if let Err(e) = dump_ark_wire_body(&dir, request, body) {
+        tracing::warn!(error = %e, dir = %dir.display(), "ark wire body dump failed");
+    }
+}
+
+fn dump_ark_wire_body(
+    dir: &std::path::Path,
+    request: &ModelRequest,
+    body: &Value,
+) -> std::io::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let raw = serde_json::to_vec(body).map_err(std::io::Error::other)?;
+    let sid = request
+        .session_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("nosession");
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let stem = format!("{sid}_{ts}_n{}", request.input.len());
+    let body_path = dir.join(format!("{stem}.json"));
+    std::fs::write(&body_path, &raw)?;
+
+    let tools_raw = serde_json::to_vec(body.get("tools").unwrap_or(&Value::Null))
+        .unwrap_or_else(|_| b"null".to_vec());
+    let mut input_hashes = Vec::with_capacity(request.input.len());
+    if let Some(arr) = body.get("input").and_then(Value::as_array) {
+        for item in arr {
+            let bytes = serde_json::to_vec(item).unwrap_or_else(|_| b"null".to_vec());
+            input_hashes.push(sha256_hex(&bytes));
+        }
+    }
+    let meta = serde_json::json!({
+        "session_id": sid,
+        "input_len": request.input.len(),
+        "model": request.model,
+        "instructions_sha256": sha256_hex(request.instructions.as_bytes()),
+        "tools_sha256": sha256_hex(&tools_raw),
+        "input_item_sha256": input_hashes,
+        "body_sha256": sha256_hex(&raw),
+        "stream": body.get("stream"),
+        "temperature": body.get("temperature"),
+        "max_output_tokens": body.get("max_output_tokens"),
+        "store": body.get("store"),
+        "thinking": body.get("thinking"),
+        "reasoning": body.get("reasoning"),
+    });
+    let meta_bytes = serde_json::to_vec_pretty(&meta).map_err(std::io::Error::other)?;
+    std::fs::write(dir.join(format!("{stem}.meta.json")), meta_bytes)?;
+    tracing::info!(
+        target: "litecode.debug.llm_request",
+        path = %body_path.display(),
+        input_len = request.input.len(),
+        "ark wire body dumped"
+    );
+    Ok(body_path)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// Ark SSE omits OpenAI-required fields on early events (`output`, `status`,
 /// reasoning `summary`, function `arguments`, etc.).
 fn harden_ark_json(value: &mut Value) {
-    harden_ark_value(value, None);
+    let hint = value
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| match value.get("status").and_then(Value::as_str) {
+            Some("completed") => Some("response.completed".into()),
+            Some("incomplete") => Some("response.incomplete".into()),
+            _ => None,
+        });
+    harden_ark_value(value, hint.as_deref());
 }
 
 fn harden_ark_value(value: &mut Value, event_type: Option<&str>) {
@@ -132,7 +226,7 @@ fn harden_ark_value(value: &mut Value, event_type: Option<&str>) {
         Value::Object(map) => {
             let ty = map.get("type").and_then(Value::as_str).map(str::to_owned);
             let event = ty.as_deref().or(event_type);
-            fill_ark_typed_object(map);
+            fill_ark_typed_object(map, event_type);
             if let Some(Value::Object(resp)) = map.get_mut("response") {
                 fill_ark_response_object(resp, event);
             }
@@ -155,7 +249,7 @@ fn harden_ark_value(value: &mut Value, event_type: Option<&str>) {
     }
 }
 
-fn fill_ark_typed_object(map: &mut Map<String, Value>) {
+fn fill_ark_typed_object(map: &mut Map<String, Value>, stream_event: Option<&str>) {
     match map.get("type").and_then(Value::as_str) {
         Some("reasoning") => {
             map.entry("summary")
@@ -180,8 +274,13 @@ fn fill_ark_typed_object(map: &mut Map<String, Value>) {
                 .or_insert_with(|| Value::Array(Vec::new()));
             map.entry("role")
                 .or_insert_with(|| Value::String("assistant".into()));
+            let status = match stream_event {
+                Some("response.completed") => "completed",
+                Some("response.incomplete") => "incomplete",
+                _ => "in_progress",
+            };
             map.entry("status")
-                .or_insert_with(|| Value::String("in_progress".into()));
+                .or_insert_with(|| Value::String(status.into()));
         }
         Some("summary_text") => {
             map.entry("text")
@@ -290,6 +389,7 @@ impl LlmProvider for ArkCodingProvider {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
         Box::pin(async move {
             let body = Self::build_body(request, false)?;
+            maybe_dump_ark_wire_body(request, &body);
             let (header_name, header_value) = self.auth_header(api_key);
             let resp = apply_ark_headers(
                 self.client.post(&self.endpoint_url),
@@ -325,6 +425,7 @@ impl LlmProvider for ArkCodingProvider {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
         Box::pin(async move {
             let body = Self::build_body(request, true)?;
+            maybe_dump_ark_wire_body(request, &body);
             let (header_name, header_value) = self.auth_header(api_key);
             let resp = apply_ark_headers(
                 self.client.post(&self.endpoint_url),
@@ -403,7 +504,8 @@ impl LlmProvider for ArkCodingProvider {
 mod tests {
     use super::*;
     use crate::authority::responses::{
-        Item, MessageItem, OutputItem, OutputMessage, OutputMessageContent, ResponseStreamEvent,
+        Item, MessageItem, OutputItem, OutputMessage, OutputMessageContent, OutputStatus,
+        ResponseStreamEvent,
     };
     use crate::config::schema::ProviderAuth;
     use crate::llm::request::ModelRequest;
@@ -790,6 +892,61 @@ mod tests {
         }
     }
 
+    #[test]
+    fn harden_completed_message_defaults_status_completed() {
+        let raw = serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 2,
+            "response": {
+                "id": "resp_1",
+                "object": "response",
+                "created_at": 1,
+                "model": "doubao-seed-2.1-turbo",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "hi", "annotations": []}]
+                }]
+            }
+        });
+        let event = parse_stream_event(&raw.to_string()).expect("ark completed");
+        match event {
+            ResponseStreamEvent::ResponseCompleted(ev) => match &ev.response.output[0] {
+                OutputItem::Message(m) => {
+                    assert_eq!(m.status, OutputStatus::Completed);
+                }
+                other => panic!("expected message, got {other:?}"),
+            },
+            other => panic!("expected response.completed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn harden_added_message_defaults_status_in_progress() {
+        let raw = serde_json::json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "sequence_number": 1,
+            "item": {
+                "type": "message",
+                "id": "msg_1",
+                "role": "assistant"
+            }
+        });
+        let event = parse_stream_event(&raw.to_string()).expect("ark message added");
+        match event {
+            ResponseStreamEvent::ResponseOutputItemAdded(ev) => match ev.item {
+                OutputItem::Message(m) => {
+                    assert_eq!(m.status, OutputStatus::InProgress);
+                }
+                other => panic!("expected message, got {other:?}"),
+            },
+            other => panic!("expected output_item.added, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn stream_text_only_with_ark_created() {
         let endpoint = serve_once(sse_text_only(), "200 OK", "text/event-stream").await;
@@ -816,5 +973,27 @@ mod tests {
             })
             .collect();
         assert!(text.contains("hi"), "got {items:?}");
+    }
+
+    #[test]
+    fn dump_ark_wire_body_writes_exact_json_and_field_hashes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let req = sample_request();
+        let body = ArkCodingProvider::build_body(&req, true).unwrap();
+        let path = dump_ark_wire_body(dir.path(), &req, &body).unwrap();
+        let on_disk = std::fs::read(&path).unwrap();
+        let expected = serde_json::to_vec(&body).unwrap();
+        assert_eq!(on_disk, expected, "dump must match wire serialize");
+        let meta: Value =
+            serde_json::from_slice(&std::fs::read(path.with_extension("meta.json")).unwrap())
+                .unwrap();
+        assert_eq!(meta["session_id"], "ses_ark");
+        assert_eq!(meta["input_len"], 1);
+        assert_eq!(meta["instructions_sha256"], sha256_hex(b"sys"));
+        assert!(meta["tools_sha256"].as_str().is_some_and(|s| s.len() == 64));
+        assert_eq!(
+            meta["input_item_sha256"].as_array().map(|a| a.len()),
+            Some(1)
+        );
     }
 }

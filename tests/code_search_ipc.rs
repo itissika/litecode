@@ -4,7 +4,7 @@ use litecode::engines::code_search::{
     index_dir, init_workspace_index, read_meta, read_pending_hint, write_meta,
 };
 use litecode::engines::code_search_ipc::CodeSearchWorkerClient;
-use litecode::engines::code_search_ipc::protocol::RefreshMode;
+use litecode::engines::code_search_ipc::protocol::{RefreshMode, RefreshScope};
 use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -47,6 +47,10 @@ fn worker_ping_initialize_warmup_search_shutdown() {
 
     client.initialize(root, None).expect("initialize");
     client.warmup().expect("warmup");
+
+    let ping = client.ping().expect("ping after warmup");
+    assert!(ping.ready);
+    assert_eq!(ping.embed_device, "hash");
 
     let hits = client.search("ipc_target", None, 5).expect("search");
     assert!(!hits.is_empty());
@@ -421,8 +425,8 @@ fn warmup_session_index_reconciles_without_digest() {
         .unwrap();
     let reader = litecode::session::SessionDataReader::open(&db);
     let mut emb = litecode::engines::code_search::HashEmbedder;
-    let first = litecode::engines::session_search::ensure_session_index(root, &reader, &mut emb)
-        .unwrap();
+    let first =
+        litecode::engines::session_search::ensure_session_index(root, &reader, &mut emb).unwrap();
     assert_eq!(first.len(), 1);
 
     data.insert_items(&sid, &[litecode::types::user_text("second_session_marker")])
@@ -443,9 +447,29 @@ fn warmup_session_index_reconciles_without_digest() {
         "new session row must be queued as dirty"
     );
 
-    client.refresh().expect("consume session");
+    client
+        .refresh_scope(RefreshScope::Code)
+        .expect("code-only refresh");
     let loaded = litecode::engines::session_search::load_session_index(root).unwrap();
-    assert_eq!(loaded.len(), 2, "refresh must consume session drift");
+    assert_eq!(
+        loaded.len(),
+        1,
+        "code-only refresh must not consume session drift"
+    );
+    assert!(
+        litecode::engines::session_search::read_session_pending_hint(root) > 0,
+        "session pending must survive a code-only refresh"
+    );
+
+    client
+        .refresh_scope(RefreshScope::Session)
+        .expect("session-only refresh");
+    let loaded = litecode::engines::session_search::load_session_index(root).unwrap();
+    assert_eq!(
+        loaded.len(),
+        2,
+        "session-only refresh must consume session drift"
+    );
     let hits = client
         .session_search("second_session_marker", 8, None)
         .expect("session search after consume");
@@ -457,4 +481,3 @@ fn warmup_session_index_reconciles_without_digest() {
 
     shutdown(client);
 }
-

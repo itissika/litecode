@@ -154,7 +154,7 @@ impl BudgetPolicy {
 
     pub fn log_iteration(&self, step: u64, token_count: usize) {
         let budget = self.budget_limit();
-        tracing::info!(step, token_count, budget, "loop iteration");
+        tracing::debug!(step, token_count, budget, "loop iteration");
     }
 }
 

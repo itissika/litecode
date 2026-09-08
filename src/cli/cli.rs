@@ -134,7 +134,7 @@ fn setup_logging(
     let file_layer = tracing_subscriber::fmt::layer()
         .json()
         .with_writer(non_blocking)
-        .with_filter(tracing_subscriber::EnvFilter::new("info"));
+        .with_filter(crate::config::log_filter::file_filter());
 
     let console_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
@@ -266,7 +266,7 @@ fn print_wire_event(event: &WireEvent) {
             completed,
             items: _,
         } => {
-            tracing::info!(pending, in_progress, completed, "todo progress");
+            tracing::debug!(pending, in_progress, completed, "todo progress");
             eprintln!("[todos: ○{} ◐{} ●{}]", pending, in_progress, completed);
         }
         _ => {}

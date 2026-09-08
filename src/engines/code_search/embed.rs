@@ -37,6 +37,11 @@ pub struct EmbeddingModelStatus {
 
 pub trait Embedder: Send {
     fn embedder_id(&self) -> &'static str;
+    /// Live inference device (`cuda-ort`, `cpu-ort`, `hash`). Captured when the
+    /// ORT session (or hash stub) opens — not a compile-time feature flag.
+    fn inference_device(&self) -> &'static str {
+        "cpu-ort"
+    }
     fn embed_batch(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
     fn embed_one(&mut self, text: &str) -> Result<Vec<f32>> {
         self.embed_batch(&[text.to_string()])
@@ -50,6 +55,10 @@ pub struct HashEmbedder;
 impl Embedder for HashEmbedder {
     fn embedder_id(&self) -> &'static str {
         EMBEDDER_ID_HASH
+    }
+
+    fn inference_device(&self) -> &'static str {
+        "hash"
     }
 
     fn embed_batch(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
@@ -191,6 +200,10 @@ pub fn probe_embedding_model() -> Result<EmbeddingModelStatus> {
 impl Embedder for OrtGraniteEmbedder {
     fn embedder_id(&self) -> &'static str {
         EMBEDDER_ID_ORT_Q8Q4
+    }
+
+    fn inference_device(&self) -> &'static str {
+        self.device
     }
 
     fn embed_batch(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {

@@ -44,15 +44,12 @@ impl CodeSearchTool {
             return false;
         };
         let view = resolve_index_view(&root, self.engines.state("code_search"));
-        if matches!(
-            view.status,
-            IndexStatus::Building | IndexStatus::Refreshing
-        ) {
+        if matches!(view.status, IndexStatus::Building | IndexStatus::Refreshing) {
             return false;
         }
-        match crate::engines::engine_index_work(&root) {
+        match crate::engines::code_search::index_work_from_disk(&root) {
             crate::engines::code_search::IndexWork::None => false,
-            _ => self.engines.consume_index_work().is_ok(),
+            _ => self.engines.consume_code_index_work().is_ok(),
         }
     }
 }

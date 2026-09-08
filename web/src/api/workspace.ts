@@ -317,15 +317,17 @@ export interface RetrievalEngineDetail {
       pending_updates?: number;
     };
   };
-  policy: {
-    /** Product-internal hard-skip dirs (e.g. `.litecode`). */
-    product_internal_dirs: string[];
-    /** Index preset exclude globs (files∪search + product dirs). */
-    exclude_globs: string[];
-    max_file_bytes: number;
-    binary_files: boolean;
-  };
-}
+    policy: {
+      /** Product-internal hard-skip dirs (e.g. `.litecode`). */
+      product_internal_dirs: string[];
+      /** Index preset exclude globs (files∪search + product dirs). */
+      exclude_globs: string[];
+      max_file_bytes: number;
+      binary_files: boolean;
+    };
+    /** Live worker inference device (`cuda-ort`, `cpu-ort`, `hash`). Omitted until ping. */
+    embed_device?: string | null;
+  }
 
 export interface LspInstanceStatusView {
   command: string;

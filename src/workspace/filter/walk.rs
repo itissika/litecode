@@ -17,12 +17,15 @@ use super::preset::FilterPreset;
 pub struct WalkOptions {
     /// When non-empty, files that do not match are skipped; directories always kept.
     pub file_include: Arc<Vec<PathGlobMatcher>>,
+    /// Override [`super::layers::FilterLayers::skip_binary`]. `None` uses the preset.
+    pub skip_binary: Option<bool>,
 }
 
 impl WalkOptions {
     pub fn with_file_include(matchers: Vec<PathGlobMatcher>) -> Self {
         Self {
             file_include: Arc::new(matchers),
+            skip_binary: None,
         }
     }
 }
@@ -49,7 +52,7 @@ pub fn configure_walk_with(
 
     let matcher = Arc::new(ExcludeMatcher::for_preset(preset));
     let prune_product = preset.prune_product_internal_dirs();
-    let skip_binary = layers.skip_binary;
+    let skip_binary = options.skip_binary.unwrap_or(layers.skip_binary);
     let root = walk_root.to_path_buf();
     let ctx =
         Arc::new(RelPathCtx::new(walk_root).unwrap_or_else(|_| RelPathCtx::new_lossy(walk_root)));

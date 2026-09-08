@@ -105,8 +105,8 @@ export function toolTitle(
   }
 
   if (toolName === "grep") {
-    const regex = stringField(obj, "regex");
-    return { summary: regex ? truncate(`/${regex}/${formatScope(obj, ["path", "include_pattern"])}`) : fallbackSummary(input) };
+    const pattern = stringField(obj, "pattern");
+    return { summary: pattern ? truncate(`/${pattern}/${formatScope(obj, ["path", "glob"])}`) : fallbackSummary(input) };
   }
   if (toolName === "glob") {
     const pattern = stringField(obj, "pattern");

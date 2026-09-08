@@ -132,6 +132,15 @@ impl GlobTool {
             ));
         }
 
+        if !no_ignore
+            && let Some(message) = crate::workspace::filter::ignored_discovery_message(
+                &execution.workspace_root,
+                &search_path,
+            )
+        {
+            return ToolCallResult::ok(message);
+        }
+
         let results = match glob_match(&search_path, &effective_pattern, no_ignore) {
             Ok(r) => r,
             Err(e) => return ToolCallResult::error(e.to_string()),
@@ -277,11 +286,10 @@ fn glob_match(base: &std::path::Path, pattern: &str, no_ignore: bool) -> Result<
 
     let mut hits: Vec<String> = Vec::new();
 
-    let builder = walk_builder_with(
-        base,
-        preset,
-        WalkOptions::with_file_include(vec![glob_matcher]),
-    );
+    let mut walk_opts = WalkOptions::with_file_include(vec![glob_matcher]);
+    // Glob matches paths, not contents — do not apply the Search binary gate.
+    walk_opts.skip_binary = Some(false);
+    let builder = walk_builder_with(base, preset, walk_opts);
     let walker = builder.build();
 
     for entry in walker.flatten() {
@@ -376,22 +384,84 @@ mod tests {
         );
     }
 
+    /// PNG signature + IHDR length field (NUL bytes) so `looks_binary` is true.
+    fn write_png(path: &std::path::Path) {
+        std::fs::write(
+            path,
+            [
+                0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+                0x44, 0x52,
+            ],
+        )
+        .unwrap();
+    }
+
     #[test]
-    fn path_into_excluded_dir_still_lists() {
+    fn glob_lists_binary_png() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        write_png(&root.join("logo.png"));
+        write_png(&root.join("assets/icon.png"));
+        std::fs::write(root.join("keep.txt"), "x\n").unwrap();
+
+        let from_root = glob_in(root, serde_json::json!({ "pattern": "*.png" }));
+        assert!(
+            from_root.contains("logo.png"),
+            "glob must list binary files by path; got {from_root}"
+        );
+        assert!(
+            from_root.contains("assets/icon.png"),
+            "glob must list nested png; got {from_root}"
+        );
+
+        let scoped = glob_in(
+            root,
+            serde_json::json!({ "pattern": "*.png", "path": "assets" }),
+        );
+        assert!(
+            scoped.contains("icon.png"),
+            "path=assets must still list png; got {scoped}"
+        );
+    }
+
+    #[test]
+    fn path_into_excluded_dir_is_refused() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir(root.join(".git")).unwrap();
         std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
         std::fs::write(root.join("node_modules/pkg/index.js"), "x\n").unwrap();
 
-        let found = glob_match(&root.join("node_modules"), "**/*", false)
-            .unwrap()
-            .hits;
+        let body = glob_in(
+            root,
+            serde_json::json!({ "pattern": "**/*", "path": "node_modules" }),
+        );
+        assert_eq!(
+            body,
+            "path 'node_modules' is not searched: excluded by search.exclude."
+        );
+
+        let nested = glob_in(
+            root,
+            serde_json::json!({ "pattern": "**/*", "path": "node_modules/pkg" }),
+        );
+        assert_eq!(
+            nested,
+            "path 'node_modules/pkg' is not searched: excluded by search.exclude."
+        );
+
+        let raw = glob_in(
+            root,
+            serde_json::json!({
+                "pattern": "**/*",
+                "path": "node_modules",
+                "no_ignore": true,
+            }),
+        );
         assert!(
-            found
-                .iter()
-                .any(|p| p == "pkg/index.js" || p.ends_with("index.js")),
-            "walking path=node_modules should list contents; got {found:?}"
+            raw.contains("pkg/index.js") || raw.contains("index.js"),
+            "no_ignore must still list; got {raw}"
         );
     }
 
@@ -410,16 +480,22 @@ mod tests {
             "Search must skip nested .litecode; got {filtered:?}"
         );
 
-        let inside = glob_match(&root.join(".litecode"), "**/*", false).unwrap();
-        assert!(
-            inside.iter().any(|p| p.contains("x.rs")),
-            "path=.litecode must list; got {inside:?}"
+        let inside = glob_in(
+            root,
+            serde_json::json!({ "pattern": "**/*", "path": ".litecode" }),
+        );
+        assert_eq!(
+            inside,
+            "path '.litecode' is not searched: LiteCode runtime directory."
         );
 
-        let raw = glob_match(root, "**/*.rs", true).unwrap();
+        let raw = glob_in(
+            root,
+            serde_json::json!({ "pattern": "**/*.rs", "no_ignore": true }),
+        );
         assert!(
-            raw.iter().any(|p| p.contains(".litecode")),
-            "no_ignore must include .litecode; got {raw:?}"
+            raw.contains(".litecode"),
+            "no_ignore must include .litecode; got {raw}"
         );
     }
 

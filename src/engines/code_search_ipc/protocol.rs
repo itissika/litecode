@@ -30,6 +30,14 @@ pub struct JsonRpcError {
     pub message: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PingResult {
+    pub ready: bool,
+    /// Live worker inference device (`cuda-ort`, `cpu-ort`, `hash`). Empty before warmup.
+    #[serde(default)]
+    pub embed_device: String,
+}
+
 impl JsonRpcResponse {
     pub fn ok(id: u64, result: Value) -> Self {
         Self {
@@ -98,6 +106,25 @@ pub enum RefreshMode {
     Incremental,
 }
 
+/// Which corpus a `refresh` RPC should consume.
+///
+/// Human Refresh sends [`RefreshScope::All`]. Agent `code_search` / `session_search`
+/// send only their own corpus so they do not mark the other busy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefreshScope {
+    #[default]
+    All,
+    Code,
+    Session,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct RefreshParams {
+    #[serde(default)]
+    pub scope: RefreshScope,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RefreshResult {
     pub mode: RefreshMode,
@@ -107,4 +134,43 @@ pub struct RefreshResult {
 pub struct NotifyFsChangesParams {
     pub paths: Vec<String>,
     pub deleted: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ping_result_defaults_empty_device() {
+        let back: PingResult =
+            serde_json::from_value(serde_json::json!({ "ready": true })).unwrap();
+        assert!(back.ready);
+        assert!(back.embed_device.is_empty());
+    }
+
+    #[test]
+    fn ping_result_roundtrip_cuda() {
+        let v = serde_json::to_value(PingResult {
+            ready: true,
+            embed_device: "cuda-ort".into(),
+        })
+        .unwrap();
+        let back: PingResult = serde_json::from_value(v).unwrap();
+        assert_eq!(back.embed_device, "cuda-ort");
+    }
+
+    #[test]
+    fn refresh_params_empty_defaults_all() {
+        let back: RefreshParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(back.scope, RefreshScope::All);
+    }
+
+    #[test]
+    fn refresh_params_roundtrip_code_and_session() {
+        for scope in [RefreshScope::Code, RefreshScope::Session, RefreshScope::All] {
+            let v = serde_json::to_value(RefreshParams { scope }).unwrap();
+            let back: RefreshParams = serde_json::from_value(v).unwrap();
+            assert_eq!(back.scope, scope);
+        }
+    }
 }

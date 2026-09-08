@@ -182,6 +182,7 @@ export function SearchSection({
   empty,
   children,
   style,
+  badge,
 }: {
   title: string;
   count: number;
@@ -189,6 +190,7 @@ export function SearchSection({
   children: ReactNode;
   /** Overrides the default flex-1 sizing (e.g. a resizable split between sections). */
   style?: CSSProperties;
+  badge?: ReactNode;
 }) {
   return (
     <div
@@ -197,6 +199,7 @@ export function SearchSection({
     >
       <div className="shrink-0 px-2 py-1.5 text-dk-2xs uppercase tracking-wide text-(--_dk-text-muted)">
         {title}
+        {badge}
         <span className="ml-1 text-(--_dk-text-disabled)">({count})</span>
       </div>
       <div className="flex min-h-0 flex-1 flex-col">

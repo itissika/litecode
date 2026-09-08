@@ -51,10 +51,10 @@ impl SessionSearchTool {
         };
 
         if self.engines.code_search().worker_alive() {
-            match crate::engines::engine_index_work(workspace_root) {
+            match crate::engines::session_search::session_work_from_disk(workspace_root) {
                 crate::engines::code_search::IndexWork::None => {}
                 _ => {
-                    let _ = self.engines.consume_index_work();
+                    let _ = self.engines.consume_session_index_work();
                 }
             }
         }
@@ -366,8 +366,8 @@ mod tests {
         let next = page0
             .lines()
             .find_map(|l| {
-                l.strip_prefix("(more hits; offset: ")
-                    .and_then(|rest| rest.strip_suffix(')'))
+                l.strip_prefix("More hits: pass offset=")
+                    .and_then(|rest| rest.strip_suffix('.'))
                     .and_then(|n| n.parse::<usize>().ok())
             })
             .unwrap_or(0);
@@ -382,7 +382,7 @@ mod tests {
         );
         assert!(
             page1.contains("no further pages")
-                || page1.contains("more hits")
+                || page1.contains("More hits")
                 || page1.contains("L"),
             "{page1}"
         );

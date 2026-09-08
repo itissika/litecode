@@ -5,7 +5,10 @@ param(
   [string]$Profile = "release",
   [switch]$SkipWeb,
   [switch]$SkipModel,
-  [string]$TargetTriple = ""
+  [string]$TargetTriple = "",
+  [string]$Features = "",
+  [string]$TargetDir = "",
+  [switch]$KeepCudaDylibs
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +19,8 @@ $ProfileDir = if ($Profile -eq "debug") { "debug" } else { "release" }
 $CargoArgs = @("build")
 if ($Profile -ne "debug") { $CargoArgs += "--release" }
 if ($TargetTriple) { $CargoArgs += @("--target", $TargetTriple) }
+if ($Features) { $CargoArgs += @("--features", $Features) }
+if ($TargetDir) { $CargoArgs += @("--target-dir", $TargetDir) }
 
 Write-Host "==> product root: $OutDir (profile=$Profile)"
 if (Test-Path $OutDir) { Remove-Item -Recurse -Force $OutDir }
@@ -66,7 +71,9 @@ try {
   Pop-Location
 }
 
-$BinDir = if ($TargetTriple) {
+$BinDir = if ($TargetDir) {
+  Join-Path $TargetDir $ProfileDir
+} elseif ($TargetTriple) {
   Join-Path $Root "target\$TargetTriple\$ProfileDir"
 } else {
   Join-Path $Root "target\$ProfileDir"
@@ -77,7 +84,18 @@ if (-not (Test-Path $Exe)) { $Exe = Join-Path $BinDir "litecode" }
 if (-not (Test-Path $Exe)) { throw "missing litecode binary under $BinDir" }
 
 Copy-Item -Force $Exe $OutDir
-Get-ChildItem $BinDir -Filter *.dll -ErrorAction SilentlyContinue | Copy-Item -Force -Destination $OutDir
+$dlls = Get-ChildItem $BinDir -Filter *.dll -ErrorAction SilentlyContinue
+if (-not $KeepCudaDylibs) {
+  $dlls = $dlls | Where-Object { $_.Name -notmatch '(?i)(providers_cuda|cudnn|cublas|cudart|nvrtc|cufft)' }
+}
+$dlls | Copy-Item -Force -Destination $OutDir
+
+if ($KeepCudaDylibs) {
+  $cudaDll = Join-Path $OutDir "onnxruntime_providers_cuda.dll"
+  if (-not (Test-Path $cudaDll)) {
+    throw "CUDA EP dll missing after assemble: $cudaDll — cargo --features ort-cuda did not emit it next to the binary"
+  }
+}
 
 New-Item -ItemType Directory -Force -Path (Join-Path $OutDir "web") | Out-Null
 Copy-Item -Recurse -Force $WebDist (Join-Path $OutDir "web\dist")

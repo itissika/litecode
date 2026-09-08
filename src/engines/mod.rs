@@ -28,7 +28,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::config::resolved::ResolvedConfig;
-use crate::engines::code_search_ipc::protocol::RefreshMode;
+use crate::engines::code_search_ipc::protocol::{RefreshMode, RefreshScope};
 use crate::session::SessionDataReader;
 use crate::types::{LitecodeError, Result};
 
@@ -190,15 +190,16 @@ pub fn merge_index_work(
         (IndexWork::Rebuild { reason }, _) | (_, IndexWork::Rebuild { reason }) => {
             IndexWork::Rebuild { reason }
         }
-        (IndexWork::Update { dirty: a }, IndexWork::Update { dirty: b }) => {
-            IndexWork::Update { dirty: a.saturating_add(b) }
-        }
+        (IndexWork::Update { dirty: a }, IndexWork::Update { dirty: b }) => IndexWork::Update {
+            dirty: a.saturating_add(b),
+        },
         (IndexWork::Update { dirty }, IndexWork::None)
         | (IndexWork::None, IndexWork::Update { dirty }) => IndexWork::Update { dirty },
         (IndexWork::None, IndexWork::None) => IndexWork::None,
     }
 }
 
+/// Union plan for Human Refresh. Agent tools use corpus-specific work instead.
 pub fn engine_index_work(workspace_root: &Path) -> code_search::IndexWork {
     merge_index_work(
         code_search::index_work_from_disk(workspace_root),
@@ -215,6 +216,7 @@ pub struct WorkspaceEngines {
     lsp: Arc<LspEngine>,
     text_index: Arc<TextIndexEngine>,
     refresh_busy: Arc<AtomicBool>,
+    session_refresh_busy: Arc<AtomicBool>,
     session_reader: Arc<RwLock<Option<SessionDataReader>>>,
 }
 
@@ -244,6 +246,7 @@ impl WorkspaceEngines {
             lsp,
             text_index,
             refresh_busy: Arc::new(AtomicBool::new(false)),
+            session_refresh_busy: Arc::new(AtomicBool::new(false)),
             session_reader: Arc::new(RwLock::new(None)),
         }
     }
@@ -681,8 +684,8 @@ impl WorkspaceEngines {
                 self.stop(id);
             }
         }
-        // Adaptive text index: independent of retrieval.desired.
-        self.text_index.attach_workspace(root);
+        // Text-index accelerator is not attached: grep/LexicalLane scan disk.
+        // Keep detach so a later conservative Ready path can reuse this engine.
     }
 
     pub fn stop_all(&self) {
@@ -719,11 +722,81 @@ impl WorkspaceEngines {
         self.consume_index_work()
     }
 
-    /// Run pending index update/rebuild. No-op when the plan is `None`.
+    /// Run pending index update/rebuild for **both** corpora. Human Refresh.
     ///
-    /// Does not start the engine; caller must already be Warm (or use
-    /// [`Self::request_refresh`] which reconciles first).
+    /// No-op when the union plan is `None`. Does not start the engine; caller
+    /// must already be Warm (or use [`Self::request_refresh`] which reconciles first).
     pub fn consume_index_work(&self) -> Result<RefreshAccepted> {
+        match self.consume_preflight(&self.refresh_busy)? {
+            ConsumePreflight::ShortCircuit(accepted) => Ok(accepted),
+            ConsumePreflight::Ready(root) => match engine_index_work(&root) {
+                code_search::IndexWork::None => Ok(RefreshAccepted {
+                    desired: true,
+                    mode: RefreshAcceptedMode::Incremental,
+                }),
+                work => self.spawn_scoped_refresh(
+                    &root,
+                    work,
+                    RefreshScope::All,
+                    &self.refresh_busy,
+                    true,
+                ),
+            },
+        }
+    }
+
+    /// Code corpus only. Used by agent `code_search`. Does not consume session.
+    pub fn consume_code_index_work(&self) -> Result<RefreshAccepted> {
+        match self.consume_preflight(&self.refresh_busy)? {
+            ConsumePreflight::ShortCircuit(accepted) => Ok(accepted),
+            ConsumePreflight::Ready(root) => match code_search::index_work_from_disk(&root) {
+                code_search::IndexWork::None => Ok(RefreshAccepted {
+                    desired: true,
+                    mode: RefreshAcceptedMode::Incremental,
+                }),
+                work => self.spawn_scoped_refresh(
+                    &root,
+                    work,
+                    RefreshScope::Code,
+                    &self.refresh_busy,
+                    true,
+                ),
+            },
+        }
+    }
+
+    /// Session corpus only. Used by agent `session_search`.
+    ///
+    /// Does not write code `job.json` or set [`Self::is_refresh_busy`], so
+    /// `code_search` is not gated as refreshing.
+    pub fn consume_session_index_work(&self) -> Result<RefreshAccepted> {
+        match self.consume_preflight(&self.session_refresh_busy)? {
+            ConsumePreflight::ShortCircuit(accepted) => Ok(accepted),
+            ConsumePreflight::Ready(root) => match session_search::session_work_from_disk(&root) {
+                code_search::IndexWork::None => Ok(RefreshAccepted {
+                    desired: true,
+                    mode: RefreshAcceptedMode::Incremental,
+                }),
+                work => {
+                    if !self.code_search.worker_alive() {
+                        return Ok(RefreshAccepted {
+                            desired: true,
+                            mode: RefreshAcceptedMode::Starting,
+                        });
+                    }
+                    self.spawn_scoped_refresh(
+                        &root,
+                        work,
+                        RefreshScope::Session,
+                        &self.session_refresh_busy,
+                        false,
+                    )
+                }
+            },
+        }
+    }
+
+    fn consume_preflight(&self, busy: &AtomicBool) -> Result<ConsumePreflight> {
         let Some(root) = self.code_search.workspace_root() else {
             return Err(crate::types::LitecodeError::Config(
                 "code_search: workspace not set".into(),
@@ -735,25 +808,19 @@ impl WorkspaceEngines {
             ));
         }
         let state = self.state("code_search");
-        if matches!(state, Some(EngineState::Warming)) || self.refresh_busy.load(Ordering::SeqCst) {
-            return Ok(RefreshAccepted {
+        if matches!(state, Some(EngineState::Warming)) || busy.load(Ordering::SeqCst) {
+            return Ok(ConsumePreflight::ShortCircuit(RefreshAccepted {
                 desired: true,
                 mode: RefreshAcceptedMode::InProgress,
-            });
+            }));
         }
         if !matches!(state, Some(EngineState::Warm)) {
-            return Ok(RefreshAccepted {
+            return Ok(ConsumePreflight::ShortCircuit(RefreshAccepted {
                 desired: true,
                 mode: RefreshAcceptedMode::Starting,
-            });
+            }));
         }
-        match engine_index_work(&root) {
-            code_search::IndexWork::None => Ok(RefreshAccepted {
-                desired: true,
-                mode: RefreshAcceptedMode::Incremental,
-            }),
-            _ => self.spawn_index_refresh(&root),
-        }
+        Ok(ConsumePreflight::Ready(root))
     }
 
     /// Reconcile dirty paths on a Warm worker. Does not embed or enable retrieval.
@@ -771,20 +838,33 @@ impl WorkspaceEngines {
         self.code_search.request_reconcile();
     }
 
-    fn spawn_index_refresh(&self, root: &Path) -> Result<RefreshAccepted> {
-        let mode = match engine_index_work(root) {
-            code_search::IndexWork::Rebuild { .. } => {
-                code_search::begin_building(root);
-                RefreshAcceptedMode::Rebuild
+    fn spawn_scoped_refresh(
+        &self,
+        root: &Path,
+        work: code_search::IndexWork,
+        scope: RefreshScope,
+        busy: &Arc<AtomicBool>,
+        touch_code_job: bool,
+    ) -> Result<RefreshAccepted> {
+        let mode = if touch_code_job {
+            match work {
+                code_search::IndexWork::Rebuild { .. } => {
+                    code_search::begin_building(root);
+                    RefreshAcceptedMode::Rebuild
+                }
+                _ => {
+                    code_search::begin_refreshing(root);
+                    RefreshAcceptedMode::Incremental
+                }
             }
-            _ => {
-                code_search::begin_refreshing(root);
-                RefreshAcceptedMode::Incremental
+        } else {
+            match work {
+                code_search::IndexWork::Rebuild { .. } => RefreshAcceptedMode::Rebuild,
+                _ => RefreshAcceptedMode::Incremental,
             }
         };
 
-        if self
-            .refresh_busy
+        if busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
@@ -795,7 +875,7 @@ impl WorkspaceEngines {
         }
 
         let engine = Arc::clone(&self.code_search);
-        let busy = Arc::clone(&self.refresh_busy);
+        let busy = Arc::clone(busy);
         let errors = Arc::clone(&self.last_errors);
         let root_owned = root.to_path_buf();
 
@@ -803,14 +883,18 @@ impl WorkspaceEngines {
             busy.store(false, Ordering::SeqCst);
             match result {
                 Ok(_) => {
-                    if let Ok(mut guard) = errors.write() {
+                    if touch_code_job && let Ok(mut guard) = errors.write() {
                         guard.remove("code_search");
                     }
                 }
                 Err(error) => {
-                    code_search::mark_index_job_failed(&root_owned, error.to_string());
-                    if let Ok(mut guard) = errors.write() {
-                        guard.insert("code_search".into(), error.to_string());
+                    if touch_code_job {
+                        code_search::mark_index_job_failed(&root_owned, error.to_string());
+                        if let Ok(mut guard) = errors.write() {
+                            guard.insert("code_search".into(), error.to_string());
+                        }
+                    } else {
+                        tracing::warn!(error = %error, "session index consume failed");
                     }
                 }
             }
@@ -818,8 +902,10 @@ impl WorkspaceEngines {
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                let result =
-                    tokio::task::spawn_blocking(move || engine.refresh().map(|r| r.mode)).await;
+                let result = tokio::task::spawn_blocking(move || {
+                    engine.refresh_scope(scope).map(|r| r.mode)
+                })
+                .await;
                 finish(match result {
                     Ok(Ok(mode)) => Ok(mode),
                     Ok(Err(e)) => Err(e),
@@ -829,7 +915,7 @@ impl WorkspaceEngines {
                 });
             });
         } else {
-            std::thread::spawn(move || finish(engine.refresh().map(|r| r.mode)));
+            std::thread::spawn(move || finish(engine.refresh_scope(scope).map(|r| r.mode)));
         }
 
         Ok(RefreshAccepted {
@@ -913,6 +999,7 @@ impl WorkspaceEngines {
         match id {
             "code_search" => {
                 self.refresh_busy.store(false, Ordering::SeqCst);
+                self.session_refresh_busy.store(false, Ordering::SeqCst);
                 self.code_search.stop();
             }
             "lsp" => {
@@ -927,6 +1014,11 @@ impl WorkspaceEngines {
             errors.remove(id);
         }
     }
+}
+
+enum ConsumePreflight {
+    ShortCircuit(RefreshAccepted),
+    Ready(PathBuf),
 }
 
 enum EngineCall {
@@ -1358,6 +1450,92 @@ mod tests {
             engine_index_work(dir.path()),
             code_search::IndexWork::Rebuild { .. }
         ));
+    }
+
+    fn seed_ready_code_index(root: &Path) {
+        code_search::init_workspace_index(root).unwrap();
+        let mut meta = code_search::IndexMeta::shell();
+        meta.indexed_files = 4;
+        meta.indexed_chunks = 4;
+        code_search::write_meta(root, &meta).unwrap();
+        let index_dir = code_search::index_dir(root);
+        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
+        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
+    }
+
+    fn seed_session_first_desired(root: &Path) {
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        std::fs::write(&db, "").unwrap();
+    }
+
+    #[test]
+    fn code_search_call_gate_ready_when_only_session_pending() {
+        let dir = TempDir::new().unwrap();
+        seed_ready_code_index(dir.path());
+        seed_session_first_desired(dir.path());
+
+        let engines = WorkspaceEngines::new();
+        engines
+            .code_search()
+            .set_workspace(dir.path().to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+
+        assert_eq!(
+            code_search::index_work_from_disk(dir.path()),
+            code_search::IndexWork::None
+        );
+        assert!(matches!(
+            engine_index_work(dir.path()),
+            code_search::IndexWork::Rebuild { .. }
+        ));
+        assert_eq!(engines.code_search_call_gate(), CodeSearchCallGate::Ready);
+        assert_eq!(engines.retrieval_job_gate(), CodeSearchCallGate::Ready);
+        assert!(!engines.is_refresh_busy());
+    }
+
+    #[test]
+    fn consume_code_index_work_ignores_session_pending() {
+        let dir = TempDir::new().unwrap();
+        seed_ready_code_index(dir.path());
+        crate::config::workspace::enable_code_search_engine(dir.path()).unwrap();
+        seed_session_first_desired(dir.path());
+
+        let engines = WorkspaceEngines::new();
+        engines
+            .code_search()
+            .set_workspace(dir.path().to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+
+        let accepted = engines.consume_code_index_work().unwrap();
+        assert_eq!(accepted.mode, RefreshAcceptedMode::Incremental);
+        assert!(!engines.is_refresh_busy());
+        let view = code_search::resolve_index_view(dir.path(), Some(EngineState::Warm));
+        assert_ne!(view.status, code_search::IndexStatus::Refreshing);
+        assert_ne!(view.status, code_search::IndexStatus::Building);
+    }
+
+    #[test]
+    fn consume_session_index_work_does_not_mark_code_refreshing() {
+        let dir = TempDir::new().unwrap();
+        seed_ready_code_index(dir.path());
+        crate::config::workspace::enable_code_search_engine(dir.path()).unwrap();
+        seed_session_first_desired(dir.path());
+
+        let engines = WorkspaceEngines::new();
+        engines
+            .code_search()
+            .set_workspace(dir.path().to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+
+        let accepted = engines.consume_session_index_work().unwrap();
+        assert_eq!(accepted.mode, RefreshAcceptedMode::Starting);
+        assert!(!engines.is_refresh_busy());
+        let view = code_search::resolve_index_view(dir.path(), Some(EngineState::Warm));
+        assert_ne!(view.status, code_search::IndexStatus::Refreshing);
+        assert_ne!(view.status, code_search::IndexStatus::Building);
+        assert_eq!(engines.code_search_call_gate(), CodeSearchCallGate::Ready);
+        assert!(engines.last_error("code_search").is_none());
     }
 
     #[test]

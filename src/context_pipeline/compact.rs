@@ -139,7 +139,7 @@ impl CompactPolicy {
             let prefix_len = require_persisted_prefix(transcript.len(), persisted_prefix_len)?;
             if find_keep_recent_cut(&transcript[..prefix_len], budget.keep_recent_tokens).is_none()
             {
-                tracing::info!(
+                tracing::debug!(
                     keep_recent_tokens = budget.keep_recent_tokens,
                     transcript_len = transcript.len(),
                     persisted_prefix_len = prefix_len,
@@ -220,7 +220,7 @@ impl CompactPolicy {
         let tail = transcript.split_off(prefix_len);
 
         let Some(cut) = find_keep_recent_cut(transcript, budget.keep_recent_tokens) else {
-            tracing::info!(
+            tracing::debug!(
                 keep_recent_tokens = budget.keep_recent_tokens,
                 prefix_len,
                 "keep-recent: entire persisted prefix within keep window, skipping compact"

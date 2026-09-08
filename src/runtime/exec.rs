@@ -332,11 +332,16 @@ impl AgentRuntime {
         let model = self.turn_llm.api_model_id.clone();
         tracing::info!(
             target: "litecode.debug.llm_request",
+            session_id = %self.session_id,
+            step = self.current_step_value(),
             model = %model,
             endpoint = %self.provider().endpoint(),
             tools_count = tool_names.len(),
             tools = ?tool_names,
+            item_count = input.len(),
             token_count = token_count,
+            instructions_len = instructions.len(),
+            instructions_fp = %format!("{:016x}", instructions_fingerprint(instructions)),
             "LLM request built"
         );
 
@@ -384,6 +389,7 @@ impl AgentRuntime {
         self.emit_llm_request_built(request, token_count);
         // Split borrows so the stream closure can mutate token meters while the
         // provider call borrows the (disjoint) binding fields.
+        let step = self.current_step_value();
         let observer = std::sync::Arc::clone(&self.observer);
         let sessions = Arc::clone(&self.sessions);
         let session_id = self.session_id.clone();
@@ -402,42 +408,61 @@ impl AgentRuntime {
                         Err(e) => tracing::warn!(%e, "persist Item at output_item.added failed"),
                     }
                 }
-                if let crate::types::StreamEvents::ResponseCompleted(cev) = &ev
-                    && let Some(usage) = &cev.response.usage
-                {
-                    let prompt = usage.input_tokens as u64;
-                    let completion = usage.output_tokens as u64;
-                    let cache_hit = usage.input_tokens_details.cached_tokens as u64;
-                    let cache_miss = usage
-                        .input_tokens
-                        .saturating_sub(usage.input_tokens_details.cached_tokens)
-                        as u64;
-                    // Last request only — each LLM call sends the full context.
-                    *stats = TurnTokenStats {
-                        prompt_tokens: prompt,
-                        completion_tokens: completion,
-                        cache_hit_tokens: cache_hit,
-                        cache_miss_tokens: cache_miss,
-                    };
-                    // Turn-total Σ — every request in this tool loop (session cum_*).
-                    totals.prompt_tokens = totals.prompt_tokens.saturating_add(prompt);
-                    totals.completion_tokens = totals.completion_tokens.saturating_add(completion);
-                    totals.cache_hit_tokens = totals.cache_hit_tokens.saturating_add(cache_hit);
-                    totals.cache_miss_tokens = totals.cache_miss_tokens.saturating_add(cache_miss);
-                    // Provider truth covers this exact request prefix. The next
-                    // tool-loop step adds a local estimate only for appended Items.
-                    prompt_usage_baseline.record(prompt, request_item_count);
-                    let stop_reason = match &cev.response.incomplete_details {
-                        Some(d) => d.reason.clone(),
-                        None => format!("{:?}", cev.response.status),
-                    };
-                    observer.on_internal(InternalEvent::LlmCompleted {
-                        prompt_tokens: prompt,
-                        completion_tokens: completion,
-                        cache_hit_tokens: cache_hit,
-                        cache_miss_tokens: cache_miss,
-                        stop_reason,
-                    });
+                if let crate::types::StreamEvents::ResponseCompleted(cev) = &ev {
+                    if let Some(usage) = &cev.response.usage {
+                        let prompt = usage.input_tokens as u64;
+                        let completion = usage.output_tokens as u64;
+                        let cache_hit = usage.input_tokens_details.cached_tokens as u64;
+                        let cache_miss = usage
+                            .input_tokens
+                            .saturating_sub(usage.input_tokens_details.cached_tokens)
+                            as u64;
+                        // Last request only — each LLM call sends the full context.
+                        *stats = TurnTokenStats {
+                            prompt_tokens: prompt,
+                            completion_tokens: completion,
+                            cache_hit_tokens: cache_hit,
+                            cache_miss_tokens: cache_miss,
+                        };
+                        // Turn-total Σ — every request in this tool loop (session cum_*).
+                        totals.prompt_tokens = totals.prompt_tokens.saturating_add(prompt);
+                        totals.completion_tokens =
+                            totals.completion_tokens.saturating_add(completion);
+                        totals.cache_hit_tokens = totals.cache_hit_tokens.saturating_add(cache_hit);
+                        totals.cache_miss_tokens =
+                            totals.cache_miss_tokens.saturating_add(cache_miss);
+                        // Provider truth covers this exact request prefix. The next
+                        // tool-loop step adds a local estimate only for appended Items.
+                        prompt_usage_baseline.record(prompt, request_item_count);
+                        let stop_reason = match &cev.response.incomplete_details {
+                            Some(d) => d.reason.clone(),
+                            None => format!("{:?}", cev.response.status),
+                        };
+                        tracing::info!(
+                            target: "litecode.debug.llm_usage",
+                            session_id = %session_id,
+                            step,
+                            prompt_tokens = prompt,
+                            completion_tokens = completion,
+                            cache_hit_tokens = cache_hit,
+                            cache_miss_tokens = cache_miss,
+                            "LLM request completed"
+                        );
+                        observer.on_internal(InternalEvent::LlmCompleted {
+                            prompt_tokens: prompt,
+                            completion_tokens: completion,
+                            cache_hit_tokens: cache_hit,
+                            cache_miss_tokens: cache_miss,
+                            stop_reason,
+                        });
+                    } else {
+                        tracing::info!(
+                            target: "litecode.debug.llm_usage",
+                            session_id = %session_id,
+                            step,
+                            "LLM request completed without usage"
+                        );
+                    }
                 }
                 observer.on_internal(InternalEvent::StreamEvent(ev));
             }));
@@ -468,6 +493,15 @@ impl AgentRuntime {
             }
         }
     }
+}
+
+/// Process-local fingerprint so consecutive steps can tell whether `instructions`
+/// (AGENTS.md / CLAUDE.md splice) changed. Not a cryptographic hash.
+fn instructions_fingerprint(instructions: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    instructions.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Approximate wire body size in bytes for `request` (Items + tools JSON +

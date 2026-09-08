@@ -511,7 +511,7 @@ impl AgentRuntime {
             .map(|profile| profile.tools.values().filter(|b| b.enabled).count())
             .unwrap_or(0);
 
-        tracing::info!(
+        tracing::debug!(
             "agent init: name={} model_ref={} bindings_enabled={} provider={}",
             agent_name,
             agent_config.model_ref,
@@ -805,7 +805,7 @@ impl AgentRuntime {
             .await;
 
             let tool_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-            tracing::info!(
+            tracing::debug!(
                 target: "litecode.debug.startup",
                 tools_count = tool_names.len(),
                 tools = ?tool_names,
@@ -848,7 +848,7 @@ impl AgentRuntime {
             self.tool_pipeline = Some(tool_pipeline);
         }
 
-        tracing::info!(input = %user_prompt, "agent loop start");
+        tracing::info!(session_id = %self.session_id, input = %user_prompt, "agent loop start");
 
         // Fresh per-turn meters (defensive if a prior turn exited without finalize).
         self.turn_token_stats = TurnTokenStats::default();

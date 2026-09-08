@@ -49,7 +49,7 @@ pub fn kill_process(pid: u32) {
     {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::{
-            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
         };
 
         unsafe {

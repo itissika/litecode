@@ -48,7 +48,7 @@ pub fn format_line_list(lines: &[u32]) -> String {
 
 /// Continuation token when more hits remain. `next` is the 0-based offset to pass.
 pub fn format_offset_more(next: usize) -> String {
-    format!("(more hits; offset: {next})")
+    format!("More hits: pass offset={next}.")
 }
 
 /// Footer when this page started after offset 0 and nothing remains.
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn offset_footers_are_exact() {
-        assert_eq!(format_offset_more(10), "(more hits; offset: 10)");
+        assert_eq!(format_offset_more(10), "More hits: pass offset=10.");
         assert_eq!(
             format_offset_done(10),
             "(showing hits from offset 10; no further pages)"
@@ -156,7 +156,7 @@ mod tests {
     fn attach_offset_footer_more_and_last_page() {
         assert_eq!(
             attach_offset_footer("body", 0, 2, 5),
-            "body\n(more hits; offset: 2)"
+            "body\nMore hits: pass offset=2."
         );
         assert_eq!(
             attach_offset_footer("body\n", 2, 3, 5),

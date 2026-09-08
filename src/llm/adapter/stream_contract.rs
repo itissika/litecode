@@ -68,6 +68,9 @@ impl StreamContractGate {
         on_event: &mut Option<Box<dyn FnMut(StreamEvents) + Send + '_>>,
         hint_seq: u64,
     ) {
+        if item_id.is_empty() {
+            return;
+        }
         {
             let entry = self.tools.entry(item_id.to_string()).or_default();
             if entry.opened {
@@ -590,6 +593,19 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert!(is_added_named(&out[0], ""));
         assert!(is_delta(&out[1]));
+    }
+
+    #[test]
+    fn empty_item_id_delta_does_not_synthesize_added() {
+        let mut gate = StreamContractGate::new();
+        let out = collect_forward(&mut gate, vec![delta("", 1, "{}")]);
+        assert!(
+            !out.iter()
+                .any(|e| matches!(e, ResponseStreamEvent::ResponseOutputItemAdded(_))),
+            "empty item_id must not synthesize a function_call added, got {out:?}"
+        );
+        assert_eq!(out.len(), 1);
+        assert!(is_delta(&out[0]));
     }
 
     #[test]

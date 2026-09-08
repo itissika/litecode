@@ -1,11 +1,10 @@
 //! Adaptive workspace text index (Cox-style trigram accelerator).
 //!
 //! Own artifact under `.litecode/text-index/`, separate from semantic ANN/BM25.
-//! Shares serve watcher notifications. Index narrows files; libripgrep verifies
-//! with the query's current exclude preset. Falls back to a full walk only when
-//! the index cannot be used (off, unindexable pattern, Unfiltered, candidate cap).
-//! Ignore-rule / excludes changes reconcile the tracked path set (delta add/delete);
-//! a full rebuild happens only on first build, open failure, or a huge delta.
+//! Not wired into agent `grep` or human LexicalLane: those scan disk. This
+//! engine stays for isolated tests and a future conservative-Ready path.
+//! Index narrows files; libripgrep verifies with the query's current exclude
+//! preset. `None` from [`try_accelerated_search`] means the caller must scan.
 
 mod literal;
 mod meta;
@@ -34,8 +33,8 @@ use store::{CandidateHits, TextIndexStore, count_search_files, list_search_paths
 
 const PENDING_DEBOUNCE: Duration = Duration::from_millis(300);
 
-/// Process-wide registry so LexicalLane can find the active index by workspace root
-/// without threading IdeBase through every grep call.
+/// Process-wide registry so tests (and a future opt-in caller) can find the
+/// active index by workspace root.
 static REGISTRY: OnceLock<RwLock<Option<Registered>>> = OnceLock::new();
 
 struct Registered {
@@ -303,7 +302,7 @@ impl TextIndexEngine {
                 drop(store);
                 return self.rebuild_sync(root);
             }
-            tracing::info!(
+            tracing::debug!(
                 delta = updates.len(),
                 tracked = store.tracked.len(),
                 "text_index path set reconciled"
@@ -532,7 +531,8 @@ fn accelerator_window_complete(hits: &CandidateHits) -> bool {
     !hits.truncated
 }
 
-/// Registry lookup used by LexicalLane.
+/// Optional trigram accelerator. LexicalLane does not call this; grep scans.
+/// `None` means the caller must use libripgrep.
 pub fn try_accelerated_search(
     query: &LexicalQuery,
     preset: FilterPreset,
@@ -610,6 +610,12 @@ mod tests {
         p
     }
 
+    fn accelerated(q: &LexicalQuery) -> LexicalSearchOutcome {
+        try_accelerated_search(q, FilterPreset::Search)
+            .unwrap_or_else(|| panic!("expected accelerator"))
+            .expect("accelerator query")
+    }
+
     #[test]
     fn mode_env_defaults_auto() {
         let _ = mode_from_env();
@@ -680,6 +686,29 @@ mod tests {
         *reg = None;
     }
 
+    fn grep_files(root: &Path, regex: &str) -> String {
+        use crate::tool::Tool;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(crate::tools::grep::GrepTool.execute(
+            serde_json::json!({ "pattern": regex, "output_mode": "files" }),
+            crate::tool::trait_::ToolExecutionContext {
+                path_mode: crate::workspace::ToolPathMode::Safe,
+                workspace_root: root.to_path_buf(),
+                call_id: String::new(),
+                cancel: tokio_util::sync::CancellationToken::new(),
+                output_limit: usize::MAX,
+                session_id: String::new(),
+                session: Some(crate::session::SessionDataReader::open(
+                    &root.join(".litecode").join("sessions.db"),
+                )),
+            },
+        ))
+        .content
+    }
+
     #[test]
     fn indexed_verify_respects_exclude_pattern() {
         let dir = TempDir::new().unwrap();
@@ -731,7 +760,7 @@ mod tests {
         let (_reg, engine) = register_ready_engine(root, store, 1);
         engine.notify_fs_changes(&["late.rs".into()], false);
         let q = sample_query(root, "shared_needle_xyz");
-        let out = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+        let out = accelerated(&q);
         unregister_engine();
         drop(engine);
         let paths = match_paths(&out);
@@ -768,7 +797,7 @@ mod tests {
             });
         }
         let q = sample_query(root, "shared_needle_xyz");
-        let out = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+        let out = accelerated(&q);
         unregister_engine();
         let paths = match_paths(&out);
         assert!(
@@ -840,7 +869,7 @@ mod tests {
         let (_reg, engine) = register_ready_engine(root, store, 2);
         let q = sample_query(root, "parity_needle_xyz");
 
-        let acc = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+        let acc = accelerated(&q);
         engine.detach();
         let scan = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         assert_eq!(match_paths(&acc), match_paths(&scan));
@@ -868,7 +897,7 @@ mod tests {
         );
         let (_reg, engine) = register_ready_engine(root, store, 2);
         let q = sample_query(root, "oversize_needle_xyz");
-        let out = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+        let out = accelerated(&q);
         unregister_engine();
         drop(engine);
         let paths = match_paths(&out);
@@ -919,7 +948,7 @@ mod tests {
         std::fs::write(root.join(".gitignore"), "skip_me.rs\n").unwrap();
         engine.notify_fs_changes(&[".gitignore".into()], false);
         let q = sample_query(root, "gitignore_needle_xyz");
-        let acc = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+        let acc = accelerated(&q);
         engine.detach();
         let scan = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         unregister_engine();
@@ -949,7 +978,7 @@ mod tests {
         std::fs::write(root.join(".gitignore"), "\n").unwrap();
         engine.notify_fs_changes(&[".gitignore".into()], false);
         let q = sample_query(root, "gitignore_needle_xyz");
-        let acc = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+        let acc = accelerated(&q);
         engine.detach();
         let scan = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         unregister_engine();
@@ -972,7 +1001,7 @@ mod tests {
 
         let (_reg, engine) = register_ready_engine(root, store, 1);
         let q = sample_query(root, "shared_needle_xyz");
-        let stale = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+        let stale = accelerated(&q);
         let stale_paths = match_paths(&stale);
         assert!(
             stale_paths.iter().any(|p| p.ends_with("indexed.rs")),
@@ -982,9 +1011,15 @@ mod tests {
             !stale_paths.iter().any(|p| p.ends_with("late.rs")),
             "without notify, accelerator must not invent a scan fallback: {stale_paths:?}"
         );
+        let lane = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+        assert!(
+            match_paths(&lane).iter().any(|p| p.ends_with("late.rs")),
+            "LexicalLane must scan disk even when the index is stale: {:?}",
+            match_paths(&lane)
+        );
 
         engine.notify_fs_changes(&["late.rs".into()], false);
-        let flushed = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+        let flushed = accelerated(&q);
         engine.detach();
         let scan = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         unregister_engine();
@@ -994,6 +1029,59 @@ mod tests {
             "notify then flush must restore scan parity: {:?}",
             match_paths(&flushed)
         );
+    }
+
+    #[test]
+    fn leftover_on_disk_index_is_not_used_without_attach() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("indexed.rs"), "shared_needle_xyz\n").unwrap();
+        let _store = TextIndexStore::build(root, || false).unwrap();
+        assert!(
+            root.join(".litecode")
+                .join("text-index")
+                .join("tantivy")
+                .is_dir(),
+            "simulates a previous LiteCode session that built .litecode/text-index"
+        );
+        std::fs::write(root.join("late.rs"), "shared_needle_xyz\n").unwrap();
+
+        let q = sample_query(root, "shared_needle_xyz");
+        assert!(
+            try_accelerated_search(&q, FilterPreset::Search).is_none(),
+            "disk artifact must stay inert when attach_workspace was never called"
+        );
+        let out = grep_files(root, "shared_needle_xyz");
+        assert!(
+            out.contains("late.rs"),
+            "grep must scan disk and hit the file the leftover index never saw: {out}"
+        );
+    }
+
+    #[test]
+    fn grep_tool_ignores_ready_stale_index() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("indexed.rs"), "shared_needle_xyz\n").unwrap();
+        let store = TextIndexStore::build(root, || false).unwrap();
+        std::fs::write(root.join("late.rs"), "shared_needle_xyz\n").unwrap();
+
+        let (_reg, engine) = register_ready_engine(root, store, 1);
+        let q = sample_query(root, "shared_needle_xyz");
+        let via_index = match_paths(&accelerated(&q));
+        assert!(
+            !via_index.iter().any(|p| p.ends_with("late.rs")),
+            "control: a Ready index would miss late.rs: {via_index:?}"
+        );
+
+        let out = grep_files(root, "shared_needle_xyz");
+        unregister_engine();
+        drop(engine);
+        assert!(
+            out.contains("late.rs"),
+            "grep tool must not consult a Ready text index: {out}"
+        );
+        assert!(out.contains("indexed.rs"), "{out}");
     }
 
     #[test]
@@ -1051,7 +1139,7 @@ mod tests {
         crate::workspace::filter::with_excludes_cache_for_test(file, || {
             engine.request_reconcile();
             let q = sample_query(root, "cfg_needle_xyz");
-            let out = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+            let out = accelerated(&q);
             let paths = match_paths(&out);
             assert!(paths.iter().any(|p| p.ends_with("src.rs")), "{paths:?}");
             assert!(
@@ -1103,7 +1191,7 @@ mod tests {
             || {
                 engine.request_reconcile();
                 let q = sample_query(root, "cfg_needle_xyz");
-                let out = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+                let out = accelerated(&q);
                 let paths = match_paths(&out);
                 assert!(paths.iter().any(|p| p.ends_with("src.rs")), "{paths:?}");
                 assert!(
@@ -1188,9 +1276,9 @@ mod tests {
         let pattern = "lexical_search_with_preset";
         let mk = || sample_query(&root, pattern);
 
-        let _ = lexical_search_with_preset(&mk(), FilterPreset::Search).unwrap();
+        let _ = accelerated(&mk());
         let t1 = Instant::now();
-        let on = lexical_search_with_preset(&mk(), FilterPreset::Search).unwrap();
+        let on = accelerated(&mk());
         let on_ms = t1.elapsed().as_millis();
 
         engine.detach();

@@ -1024,7 +1024,7 @@ pub async fn run_session_loop(
                     always,
                 }) = buffered_grant
                 {
-                    tracing::info!(
+                    tracing::debug!(
                         request_id = %request_id,
                         tool = %tool,
                         approved,

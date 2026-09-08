@@ -174,6 +174,7 @@ export function SearchPanel(_props: IDockviewPanelProps) {
   const [textBusy, setTextBusy] = useState(false);
   const [semBusy, setSemBusy] = useState(false);
   const [retrievalReady, setRetrievalReady] = useState(false);
+  const [cudaOrt, setCudaOrt] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const textDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const semDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -197,8 +198,10 @@ export function SearchPanel(_props: IDockviewPanelProps) {
     try {
       const detail = await getEnginesDetail();
       setRetrievalReady(detail.retrieval.usable === "ready");
+      setCudaOrt(detail.retrieval.embed_device === "cuda-ort");
     } catch {
       setRetrievalReady(false);
+      setCudaOrt(false);
     }
   }, []);
 
@@ -536,6 +539,11 @@ export function SearchPanel(_props: IDockviewPanelProps) {
               <SearchSection
                 style={{ flex: split }}
                 title="Semantic"
+                badge={
+                  cudaOrt ? (
+                    <span className="tag tag-ok tag-soft tag-xs ml-1">cuda</span>
+                  ) : undefined
+                }
                 count={semanticHits.length}
                 empty={
                   query.trim()

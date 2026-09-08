@@ -8,6 +8,7 @@
 #   ./scripts/dev_win.ps1
 #   ./scripts/dev_win.ps1 -RebuildWeb          # force npm run build in web/
 #   ./scripts/dev_win.ps1 -Profile release
+#   ./scripts/dev_win.ps1 -Cuda                # sidecar with ORT CUDA EP (CPU fallback)
 #   ./scripts/dev_win.ps1 -SkipAssemble        # reuse existing dist/product
 #   ./scripts/dev_win.ps1 -BundleModel         # run embed model bundler if needed
 #
@@ -24,7 +25,8 @@ param(
   [switch]$SkipAssemble,
   [switch]$BundleModel,
   [switch]$SkipNpmInstall,
-  [switch]$SkipLinuxBundle
+  [switch]$SkipLinuxBundle,
+  [switch]$Cuda
 )
 
 $ErrorActionPreference = "Stop"
@@ -50,6 +52,13 @@ if (-not $SkipAssemble) {
   $assembleArgs = @{
     Profile = $Profile
     SkipModel = (-not $BundleModel)
+  }
+  if ($Cuda) {
+    if (-not $env:ORT_CUDA_VERSION) { $env:ORT_CUDA_VERSION = "12" }
+    $assembleArgs.Features = "ort-cuda"
+    $assembleArgs.TargetDir = (Join-Path $Root "target\cuda-accel")
+    $assembleArgs.KeepCudaDylibs = $true
+    Write-Host "==> CUDA sidecar (ort-cuda, KeepCudaDylibs, ORT_CUDA_VERSION=$($env:ORT_CUDA_VERSION))"
   }
   if (-not $needWeb) {
     $assembleArgs.SkipWeb = $true
@@ -93,7 +102,7 @@ try {
 
 ==> starting Electron desktop shell
     sidecar: $Product
-    profile: $Profile
+    profile: $Profile$(if ($Cuda) { "`n    cuda:    ort-cuda (tag only if CUDA EP actually opens)" } else { "" })
     (close the window to stop; sidecar exits with the host)
 
 "@

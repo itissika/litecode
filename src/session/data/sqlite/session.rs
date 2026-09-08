@@ -227,6 +227,13 @@ impl LogProjection {
             self.items_by_seq.insert(seq, item.clone());
         }
     }
+
+    /// Provider id is a hint for an open InProgress shell, not log identity.
+    fn in_progress_seq_for_id(&self, id: &str) -> Option<Seq> {
+        let seq = *self.id_to_seq.get(id)?;
+        let item = self.items_by_seq.get(&seq)?;
+        (log_state_of_item(item) == LogState::InProgress).then_some(seq)
+    }
 }
 
 pub struct Session {
@@ -1766,21 +1773,29 @@ impl Session {
 
     /// Append one Item (including `in_progress`) and return its `seq`.
     pub fn persist_item(&self, item: &Item) -> Result<Seq> {
+        Ok(self.persist_item_outcome(item)?.0)
+    }
+
+    /// `(seq, sealed)` — `sealed` means an InProgress row was 封口 in place.
+    /// Provider id only matches an open InProgress shell; a Final collision appends.
+    pub(crate) fn persist_item_outcome(&self, item: &Item) -> Result<(Seq, bool)> {
         let _gate = self.lock_write();
         if let Some(id) = item_log_id(item) {
             if self.truncated_item_ids.borrow().contains(&id) {
                 return Err(LitecodeError::Canceled);
             }
-            if let Some(&seq) = self.projection.borrow().id_to_seq.get(&id) {
+            let open = self.projection.borrow().in_progress_seq_for_id(&id);
+            if let Some(seq) = open {
                 self.seal_unlocked(seq, item)?;
-                return Ok(seq);
+                return Ok((seq, true));
             }
         }
         let mut draft =
             EventDraft::surface_item(surface_event_type_of(item), item, SurfaceOp::Append)?;
         draft.time = message_timestamp(item);
         let kind = draft.event_type.as_str().to_owned();
-        self.append_unlocked(draft, "", 0, &kind)
+        let seq = self.append_unlocked(draft, "", 0, &kind)?;
+        Ok((seq, false))
     }
 
     /// Append a job-exit reminder as a normal spine Item with kind `reminder/job_exit`.
@@ -1898,7 +1913,7 @@ impl Session {
                 if self.truncated_item_ids.borrow().contains(&id) {
                     continue;
                 }
-                if let Some(&seq) = projection.id_to_seq.get(&id) {
+                if let Some(seq) = projection.in_progress_seq_for_id(&id) {
                     row.log_seq = Some(seq);
                     let same = projection
                         .items_by_seq
@@ -3841,6 +3856,41 @@ mod tests {
             .commit_turn_delta_with_orphan_cleanup(&mut items, &[], 1, "t1")
             .unwrap();
         assert_eq!(session.load_events().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn persist_item_in_progress_then_completed_same_id_seals_same_seq() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let live = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_seal".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hel".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::InProgress,
+            phase: None,
+        }));
+        let seq = session.persist_item(&live).unwrap();
+        let sealed = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_seal".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hello".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::Completed,
+            phase: None,
+        }));
+        let (again, did_seal) = session.persist_item_outcome(&sealed).unwrap();
+        assert!(did_seal, "same-id completed must 封口 the InProgress row");
+        assert_eq!(again, seq);
+        assert_eq!(session.load_events().unwrap().len(), 1);
+        let loaded =
+            crate::session::event::item_from_event(&session.load_events().unwrap()[0]).unwrap();
+        assert_eq!(item_text_preview(&loaded), "hello");
     }
 
     #[test]

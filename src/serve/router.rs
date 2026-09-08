@@ -124,9 +124,6 @@ pub async fn listen(
                         engines
                             .code_search()
                             .notify_fs_changes(&change.paths, deleted);
-                        engines
-                            .text_index()
-                            .notify_fs_changes(&change.paths, deleted);
                         if change
                             .paths
                             .iter()
@@ -143,7 +140,6 @@ pub async fn listen(
                             "workspace change subscriber lagged; requesting index reconcile"
                         );
                         engines.code_search().request_reconcile();
-                        engines.text_index().request_reconcile();
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }

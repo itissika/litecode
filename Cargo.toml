@@ -23,6 +23,9 @@ default = []
 remote-mcp = []
 # 后台异步 Subagent (~+50KB, 独立 tokio task 调度)
 background-task = []
+# Personal CUDA drop-in worker. Not for installers — build with
+# scripts/build_cuda_accelerator.ps1 and place next to the CUDA EP dylib.
+ort-cuda = ["ort/cuda"]
 
 
 [dependencies]

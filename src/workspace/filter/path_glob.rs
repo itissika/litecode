@@ -34,6 +34,33 @@ pub fn normalize_pattern(pattern: &str) -> String {
     pattern.replace('\\', "/")
 }
 
+/// Split a grep `glob` into include and exclude lists for [`LexicalQuery`].
+///
+/// `!` prefixes become excludes (bang stripped). Other parts are includes.
+/// Does not change [`compile_include_patterns`], which still strips `!`.
+pub fn split_glob_include_exclude(raw: &str) -> (Option<String>, Option<String>) {
+    let mut include = Vec::new();
+    let mut exclude = Vec::new();
+    for part in split_pattern_list(raw) {
+        if let Some(negated) = part.strip_prefix('!') {
+            let negated = negated.trim();
+            if !negated.is_empty() {
+                exclude.push(negated);
+            }
+        } else {
+            include.push(part);
+        }
+    }
+    let join = |parts: Vec<&str>| {
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(","))
+        }
+    };
+    (join(include), join(exclude))
+}
+
 /// Compile comma- or newline-separated include patterns (e.g. `**/*.ts,**/*.tsx`).
 pub fn compile_include_patterns(raw: &str) -> Result<Vec<PathGlobMatcher>> {
     let mut out = Vec::new();
@@ -289,5 +316,21 @@ mod tests {
         let m = compile_include_pattern("*.rs").unwrap();
         assert!(m.matches("main.rs"));
         assert!(m.matches("src/main.rs"));
+    }
+
+    #[test]
+    fn split_glob_positive_and_negation() {
+        assert_eq!(
+            split_glob_include_exclude("**/*.rs,!**/tests/**"),
+            (Some("**/*.rs".into()), Some("**/tests/**".into()))
+        );
+        assert_eq!(
+            split_glob_include_exclude("!**/tests/**"),
+            (None, Some("**/tests/**".into()))
+        );
+        assert_eq!(
+            split_glob_include_exclude("**/*.{ts,tsx}"),
+            (Some("**/*.{ts,tsx}".into()), None)
+        );
     }
 }

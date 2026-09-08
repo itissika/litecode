@@ -34,7 +34,8 @@ mod store;
 pub use build::{build_full_index, scannable_files};
 pub use embed::{
     EMBEDDER_ID_GRANITE97Q, EMBEDDER_ID_HASH, EMBEDDER_ID_PASS, Embedder, EmbeddingModelStatus,
-    HashEmbedder, open_production_embedder, probe_embedding_model, production_embedder_id,
+    HashEmbedder, model_dir, open_production_embedder, probe_embedding_model,
+    production_embedder_id,
 };
 pub use enclosing::{
     AncestorSnippet, MAX_ANCESTOR_LINES, ScopeSegment, enclosing_scopes, format_breadcrumb,
@@ -129,6 +130,8 @@ pub struct CodeSearchRuntime {
     /// Code-corpus BM25 sidecar (Tantivy). Rebuilt when the dense index mutates.
     bm25: Mutex<Option<bm25::Bm25Index>>,
     embedder: Mutex<Option<Box<dyn embed::Embedder>>>,
+    /// Last live inference device (`cuda-ort` / `cpu-ort` / `hash`). Survives OrtCold.
+    embed_device: Mutex<String>,
     /// File changes from serve watcher via IPC; consumed on refresh / agent.
     pub pending_updates: Mutex<HashSet<(String, bool)>>, // (relative_path, deleted)
     /// mtime/len after a successful index of a path (reconcile fast path).
@@ -147,6 +150,10 @@ impl CodeSearchRuntime {
         session_reader: Option<crate::session::SessionDataReader>,
     ) -> Self {
         let now = Instant::now();
+        let device = embedder
+            .as_ref()
+            .map(|emb| emb.inference_device().to_string())
+            .unwrap_or_default();
         let runtime = Self {
             workspace_root,
             session_reader: Mutex::new(session_reader),
@@ -154,6 +161,7 @@ impl CodeSearchRuntime {
             session_index: Mutex::new(None),
             bm25: Mutex::new(None),
             embedder: Mutex::new(embedder),
+            embed_device: Mutex::new(device),
             pending_updates: Mutex::new(HashSet::new()),
             file_stamps: Mutex::new(HashMap::new()),
             last_embed_at: Mutex::new(now),
@@ -209,6 +217,20 @@ impl CodeSearchRuntime {
         self.embedder.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
+    fn stamp_embed_device(&self, device: &str) {
+        if let Ok(mut guard) = self.embed_device.lock() {
+            *guard = device.to_string();
+        }
+    }
+
+    /// Device captured when the ORT (or hash) session last opened.
+    pub fn embed_device(&self) -> String {
+        self.embed_device
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
     pub fn attach_session_reader(&self, reader: crate::session::SessionDataReader) {
         if let Ok(mut guard) = self.session_reader.lock() {
             *guard = Some(reader);
@@ -241,8 +263,7 @@ impl CodeSearchRuntime {
             }
         }
         tracing::info!("session_search loading session ANN index");
-        let loaded =
-            crate::engines::session_search::load_session_index(&self.workspace_root)?;
+        let loaded = crate::engines::session_search::load_session_index(&self.workspace_root)?;
         crate::engines::session_search::queue_session_dirty(&self.workspace_root, &reader);
         let mut guard = self
             .session_index
@@ -265,9 +286,9 @@ impl CodeSearchRuntime {
                 .session_index
                 .lock()
                 .map_err(|e| LitecodeError::Config(format!("session_index lock: {e}")))?;
-            let index = guard.as_mut().ok_or_else(|| {
-                LitecodeError::Config("session_index missing after load".into())
-            })?;
+            let index = guard
+                .as_mut()
+                .ok_or_else(|| LitecodeError::Config("session_index missing after load".into()))?;
             crate::engines::session_search::consume_session_index(
                 &self.workspace_root,
                 &reader,
@@ -313,9 +334,9 @@ impl CodeSearchRuntime {
                 .session_index
                 .lock()
                 .map_err(|e| LitecodeError::Config(format!("session_index lock: {e}")))?;
-            let index = guard.as_ref().ok_or_else(|| {
-                LitecodeError::Config("session_index missing after load".into())
-            })?;
+            let index = guard
+                .as_ref()
+                .ok_or_else(|| LitecodeError::Config("session_index missing after load".into()))?;
             let qv = emb.embed_one(query)?;
             let hits = index.search(&qv, top_k, session_id)?;
             self.touch_index_at();
@@ -390,7 +411,9 @@ impl CodeSearchRuntime {
             .map_err(|e| LitecodeError::Config(format!("embedder lock: {e}")))?;
         if guard.is_none() {
             // Lazy open after OrtCold (or tests that omitted a preloaded embedder).
-            *guard = Some(embed::open_production_embedder()?);
+            let emb = embed::open_production_embedder()?;
+            self.stamp_embed_device(emb.inference_device());
+            *guard = Some(emb);
         }
         let out = f(guard.as_mut().expect("embedder slot").as_mut());
         if out.is_ok() {
@@ -828,6 +851,7 @@ mod cool_tests {
 
         runtime.drop_embedder_for_cool();
         assert!(!runtime.embedder_is_loaded());
+        assert_eq!(runtime.embed_device(), "hash");
         assert!(runtime.index_is_loaded());
 
         runtime.drop_index_for_cool();
