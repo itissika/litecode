@@ -113,7 +113,7 @@ impl Tool for GrepTool {
                 "output_mode": {
                     "type": "string",
                     "enum": ["content", "files", "syntax_snippets"],
-                    "description": "content (default): matching lines. files: matching files with counts. syntax_snippets: syntax-aware code around each hit."
+                    "description": "content (default): matching lines. files: matching files with counts. syntax_snippets: syntax-aware code around each hit. Typical funnel: files to find paths, content for matching lines, syntax_snippets when few hits need enclosing code."
                 },
                 "-i": {
                     "type": "boolean",
@@ -2094,6 +2094,8 @@ mod tests {
             mode_desc.contains("content (default)")
                 && mode_desc.contains("files")
                 && mode_desc.contains("syntax_snippets")
+                && mode_desc.contains("Typical funnel: files to find paths")
+                && mode_desc.contains("syntax_snippets when few hits need enclosing code")
                 && !mode_desc.contains("'count'"),
             "output_mode must describe the funnel without advertising count, got: {mode_desc}"
         );
