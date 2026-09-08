@@ -11,8 +11,8 @@ use crate::types::{ToolCallResult, ToolOutputPart};
 
 /// Default / max line window.
 const DEFAULT_LINE_LIMIT: usize = 1500;
-/// Soft output cap so a page stays under the 32KB spill threshold.
-const DEFAULT_CHAR_BUDGET: usize = 24_000;
+/// Internal page cap in cl100k tokens. Not an agent-facing knob.
+const INTERNAL_TOKEN_CAP: usize = 8_000;
 /// Per-line display cap (chars, not bytes).
 const MAX_LINE_CHARS: usize = 1500;
 
@@ -50,10 +50,6 @@ impl Tool for ReadTool {
                 "end_line": {
                     "type": "integer",
                     "description": "Last line to read, 1-based, inclusive. Default start_line+1499 (max 1500 lines per call)."
-                },
-                "token_budget": {
-                    "type": "integer",
-                    "description": "Max output characters (default and max 24000)"
                 }
             },
             "required": ["file_path"]
@@ -301,7 +297,6 @@ fn render_projection_page(
         Ok(pair) => pair,
         Err(msg) => return ToolCallResult::error(msg),
     };
-    let (token_budget, budget_warning) = resolve_token_budget(input);
     let total_lines = file.total_lines();
     if start_line > total_lines && total_lines > 0 {
         return ToolCallResult::error(format!(
@@ -317,16 +312,15 @@ fn render_projection_page(
     if total_lines > 0 && start < end && range_hidden && !hidden_seqs.is_empty() {
         return apply_read_warnings(
             ToolCallResult::ok(crate::session::transcript_file::IN_CONTEXT_WINDOW_MSG),
-            [&start_warning, &window_warning, &budget_warning],
+            [&start_warning, &window_warning],
         );
     }
     render_line_window(
         start,
         end,
         total_lines,
-        token_budget,
         capped_window,
-        [&start_warning, &window_warning, &budget_warning],
+        [&start_warning, &window_warning],
         |i| {
             let line_no = (i + 1) as u32;
             if file
@@ -347,7 +341,6 @@ fn render_text_page(content: &str, input: &Value) -> ToolCallResult {
         Ok(pair) => pair,
         Err(msg) => return ToolCallResult::error(msg),
     };
-    let (token_budget, budget_warning) = resolve_token_budget(input);
     let total_lines = lines.len();
     if start_line > total_lines && total_lines > 0 {
         return ToolCallResult::error(format!(
@@ -360,9 +353,8 @@ fn render_text_page(content: &str, input: &Value) -> ToolCallResult {
         start,
         end,
         total_lines,
-        token_budget,
         capped_window,
-        [&start_warning, &window_warning, &budget_warning],
+        [&start_warning, &window_warning],
         |i| Some((i + 1, lines[i])),
     )
 }
@@ -371,15 +363,14 @@ fn render_line_window<'a>(
     start: usize,
     end: usize,
     total_lines: usize,
-    token_budget: usize,
     capped_window: bool,
-    warnings: [&Option<String>; 3],
+    warnings: [&Option<String>; 2],
     mut line_at: impl FnMut(usize) -> Option<(usize, &'a str)>,
 ) -> ToolCallResult {
     let mut result = String::new();
-    let mut char_count = 0usize;
+    let mut token_count = 0usize;
     let mut lines_included = 0usize;
-    let mut hit_char_cap = false;
+    let mut hit_token_cap = false;
     let mut first_shown = 0usize;
     let mut last_shown = 0usize;
 
@@ -387,23 +378,38 @@ fn render_line_window<'a>(
         let Some((line_no, line)) = line_at(i) else {
             continue;
         };
+        if crate::session::count_text_tokens(line) > INTERNAL_TOKEN_CAP {
+            return apply_read_warnings(
+                ToolCallResult::error(format!(
+                    "Line {line_no} exceeds the read output cap. Use grep to search this file, or start_line={} to skip the line.",
+                    line_no + 1
+                )),
+                warnings,
+            );
+        }
         let formatted = format_read_line(line_no, line);
-        let next = char_count + formatted.len();
-        if lines_included > 0 && next > token_budget {
-            hit_char_cap = true;
+        let line_tokens = crate::session::count_text_tokens(&formatted);
+        let next = token_count + line_tokens;
+        if next > INTERNAL_TOKEN_CAP {
+            if lines_included == 0 {
+                return apply_read_warnings(
+                    ToolCallResult::error(format!(
+                        "Line {line_no} exceeds the read output cap. Use grep to search this file, or start_line={} to skip the line.",
+                        line_no + 1
+                    )),
+                    warnings,
+                );
+            }
+            hit_token_cap = true;
             break;
         }
         result.push_str(&formatted);
-        char_count = next;
+        token_count = next;
         lines_included += 1;
         if first_shown == 0 {
             first_shown = line_no;
         }
         last_shown = line_no;
-        if char_count > token_budget {
-            hit_char_cap = true;
-            break;
-        }
     }
 
     if result.is_empty() {
@@ -414,7 +420,7 @@ fn render_line_window<'a>(
         first_shown,
         last_shown,
         total_lines,
-        hit_char_cap,
+        hit_token_cap,
         capped_window,
     ) {
         result.push('\n');
@@ -497,32 +503,6 @@ fn resolve_end_line(
     }
 }
 
-fn resolve_token_budget(input: &Value) -> (usize, Option<String>) {
-    if input.get("token_budget").is_none() {
-        return (DEFAULT_CHAR_BUDGET, None);
-    }
-    if let Some(n) = input["token_budget"].as_i64() {
-        if n < 1 {
-            return (
-                DEFAULT_CHAR_BUDGET,
-                Some(format!(
-                    "token_budget {n} is invalid (must be >= 1); using default {DEFAULT_CHAR_BUDGET}"
-                )),
-            );
-        }
-        return ((n as usize).min(DEFAULT_CHAR_BUDGET), None);
-    }
-    if let Some(n) = input["token_budget"].as_u64() {
-        return ((n as usize).min(DEFAULT_CHAR_BUDGET), None);
-    }
-    (
-        DEFAULT_CHAR_BUDGET,
-        Some(format!(
-            "token_budget must be a positive integer; using default {DEFAULT_CHAR_BUDGET}"
-        )),
-    )
-}
-
 fn format_read_line(num: usize, line: &str) -> String {
     crate::tool::format_file_line(num as u32, &truncate_chars(line, MAX_LINE_CHARS))
 }
@@ -558,7 +538,7 @@ fn pagination_footer(
     ))
 }
 
-fn apply_read_warnings(result: ToolCallResult, warnings: [&Option<String>; 3]) -> ToolCallResult {
+fn apply_read_warnings(result: ToolCallResult, warnings: [&Option<String>; 2]) -> ToolCallResult {
     let joined: Vec<&str> = warnings.iter().filter_map(|w| w.as_deref()).collect();
     if joined.is_empty() {
         result
@@ -784,25 +764,31 @@ mod tests {
     }
 
     #[test]
-    fn test_read_token_budget_truncation() {
+    fn test_read_internal_token_cap_pages() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("big.txt");
-        let content: String = (0..1000)
-            .map(|i| format!("line {} with some content\n", i))
-            .collect();
+        let line = (0..80)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let content: String = (0..200).map(|_| format!("{line}\n")).collect();
         std::fs::write(&file_path, &content).expect("write");
 
-        let tool = ReadTool::default();
-        let input = serde_json::json!({
-            "file_path": file_path.to_str().expect("path"),
-            "token_budget": 500
-        });
-
-        let result = tool.call(input).content;
+        let result = ReadTool::default()
+            .call(serde_json::json!({
+                "file_path": file_path.to_str().expect("path"),
+            }))
+            .content;
         assert!(
             result.contains("output cap") && result.contains("Use start_line="),
             "should be truncated, got: {}",
             result
+        );
+        assert!(
+            crate::session::count_text_tokens(&result) <= INTERNAL_TOKEN_CAP
+                || result.contains("output cap"),
+            "page should stay near the internal cap, got {} tokens",
+            crate::session::count_text_tokens(&result)
         );
     }
 
@@ -820,31 +806,58 @@ mod tests {
             }))
             .content;
         assert!(result.contains("     1: 1"));
-        assert!(result.contains("  1500: 1500"));
-        assert!(!result.contains("  1501: 1501"));
         assert!(
-            result.contains("[showing lines 1-1500 of 1600. Use start_line=1501 to continue]"),
-            "got: {result}"
+            result.contains("Use start_line="),
+            "1600-line file must paginate, got: {result}"
+        );
+        assert!(
+            !result.contains("  1600: 1600"),
+            "must not dump the whole file, got: {result}"
         );
     }
 
     #[test]
-    fn test_read_token_cap_footer_is_full_string() {
+    fn test_read_single_line_over_token_cap_errors() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("short.txt");
-        std::fs::write(&file_path, "one\ntwo\nthree\n").expect("write");
+        let file_path = dir.path().join("fat.txt");
+        let huge = (0..20_000)
+            .map(|i| format!("tok{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        std::fs::write(&file_path, format!("{huge}\nnext\n")).expect("write");
 
-        let result = ReadTool::default()
-            .call(serde_json::json!({
-                "file_path": file_path.to_str().expect("path"),
-                "token_budget": 12,
-            }))
-            .content;
-
-        assert_eq!(
-            result,
-            "     1: one\n\n[showing lines 1-1 of 3 — output cap. Use start_line=2 to continue]"
+        let result = ReadTool::default().call(serde_json::json!({
+            "file_path": file_path.to_str().expect("path"),
+        }));
+        assert!(
+            result.content.starts_with("Error:"),
+            "got: {}",
+            result.content
         );
+        assert!(
+            result
+                .content
+                .contains("Line 1 exceeds the read output cap"),
+            "got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("Use grep") && result.content.contains("start_line=2"),
+            "got: {}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("tok100"),
+            "must not dump the fat line"
+        );
+    }
+
+    #[test]
+    fn test_read_schema_omits_token_budget() {
+        let props = ReadTool::default().schema()["properties"].clone();
+        assert!(props.get("token_budget").is_none());
+        assert!(props.get("start_line").is_some());
+        assert!(props.get("end_line").is_some());
     }
 
     #[test]
@@ -860,8 +873,17 @@ mod tests {
             "end_line": 99999
         }));
         assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
-        assert!(!result.content.contains("  1501: 1501"));
-        assert!(result.content.contains("Use start_line=1501 to continue"));
+        assert!(
+            result.content.contains("end_line window exceeds max"),
+            "got: {}",
+            result.content
+        );
+        assert!(!result.content.contains("  1600: 1600"));
+        assert!(
+            result.content.contains("Use start_line="),
+            "got: {}",
+            result.content
+        );
     }
 
     #[test]
@@ -953,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn negative_start_line_and_token_budget_warn_and_read() {
+    fn negative_start_line_warns_and_reads() {
         let tool = ReadTool::default();
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("lines.txt");
@@ -971,18 +993,6 @@ mod tests {
             start.content
         );
         assert!(start.content.contains("line1"), "got: {}", start.content);
-
-        let budget = tool.call(serde_json::json!({
-            "file_path": path,
-            "token_budget": -1
-        }));
-        assert_eq!(budget.level, crate::types::ToolSignalLevel::Warning);
-        assert!(
-            budget.content.contains("token_budget -1 is invalid"),
-            "got: {}",
-            budget.content
-        );
-        assert!(budget.content.contains("line1"), "got: {}", budget.content);
     }
 
     #[test]

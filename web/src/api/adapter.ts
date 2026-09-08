@@ -260,6 +260,24 @@ export function itemPlainText(item: Item): string {
   return "";
 }
 
+/**
+ * Latest non-empty assistant text in a transcript (subagent live-progress
+ * summary). Skips reasoning items and streaming empty shells; returns the most
+ * recent `output_text` block so a card header can show "what the subagent is
+ * doing" in a single line.
+ */
+export function latestAssistantText(rows: HumanRow[]): string {
+  let latest = "";
+  for (const row of rows) {
+    if (row.kind !== "item/assistant") continue;
+    const item = itemFromRow(row);
+    if (!item || !isAssistantMessage(item)) continue;
+    const text = itemPlainText(item).trim();
+    if (text) latest = text;
+  }
+  return latest;
+}
+
 /** True when a live Item shell has no visible/semantic content yet. */
 export function isEmptyItemShell(item: Item): boolean {
   if (isAssistantMessage(item)) {

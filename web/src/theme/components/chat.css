@@ -267,6 +267,69 @@
   }
 }
 
+/* ── Subagent presence icon (foldcard header) ────────────────
+   The subagent_launch card's leading glyph stands in for the agent:
+   base colour is the agent's own accent (--_sa-color), held across
+   pre-run / running / ok-settle. One-shot transitions reuse the
+   tool-icon pop/fail language above:
+     idle → running : ok-style pop burst in the agent colour, then a
+                      WEAKER breathing glow + gentle glyph bob
+     running → ok   : the same pop once more, glow fades out, then
+                      settle back to the plain agent colour
+     any → failed   : generic red failure (shrink + shockwave)
+   Warning would reuse the amber variant (unreachable for subagent
+   results today — free-text prefix match only). ── */
+.sa-presence {
+  color: var(--_sa-color, var(--_dk-text-muted));
+  --_tool-icon-base: var(--_sa-color, var(--_dk-text-muted));
+  --_tool-icon-flash: var(--_sa-color, var(--_dk-text-muted));
+}
+.sa-presence.sa-failed {
+  color: var(--_dk-status-fail);
+}
+.sa-presence.sa-warn {
+  color: var(--_dk-amber-500);
+  --_tool-icon-base: var(--_dk-amber-500);
+  --_tool-icon-flash: var(--_dk-amber-500);
+}
+/* Steady breathing halo while the child turn runs. Peak opacity is kept
+   well below the pop glow burst (~0.9) so the run reads calmer than the
+   one-shot "started" moment. Blur/halo geometry matches .tool-icon-glow. */
+.sa-presence.sa-running::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  z-index: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--_sa-color, var(--_dk-text-muted)) 55%, transparent);
+  filter: blur(4px);
+  pointer-events: none;
+  animation: sa-breathe 2.4s ease-in-out infinite;
+}
+.sa-presence.sa-running .tool-icon-glyph {
+  animation: sa-bob 1.5s ease-in-out infinite;
+}
+@keyframes sa-breathe {
+  0%,
+  100% {
+    opacity: 0.16;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.42;
+    transform: scale(1.12);
+  }
+}
+@keyframes sa-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
 /* ── Send button (running state) ─────────────────────────────
    Edge glow (绕边辉光) while the agent runs, made with a blurred
    box-shadow so it hugs (贴合) the button's rounded shape. No offset —

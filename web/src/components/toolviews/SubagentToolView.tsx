@@ -1,12 +1,10 @@
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import type { ReactElement } from "react";
 import { FileTextIcon } from "@phosphor-icons/react";
 
 import type { ToolViewProps } from "./registry";
 import { AgentMarkdown } from "../AgentMarkdown";
-import { useConnectionStore } from "../../stores/connectionStore";
 import { useMessageStore } from "../../stores/messageStore";
-import { useTurnStore } from "../../stores/turnStore";
 import { FoldCard, FOLDCARD_HEADER_TONE } from "../FoldCard";
 import { SubagentViewport } from "../SubagentViewport";
 
@@ -29,10 +27,14 @@ function parseSubagentInput(input: unknown): SubagentInput {
 
 /**
  * Tool view for `subagent_launch`. Resolves the durable child session id from
- * the parent session's `subagentBindings` (keyed by call_id), subscribes to the
- * child session so the backend replays its transcript, and renders it as a
- * nested, collapsible viewport. The card itself stays a normal tool FoldCard
- * (header/collapse handled by ToolCallCard), so this view only owns the body.
+ * the parent session's `subagentBindings` (keyed by call_id) and renders its
+ * transcript as a nested, collapsible viewport. The card itself stays a normal
+ * tool FoldCard (header/collapse handled by ToolCallCard), so this view only
+ * owns the body.
+ *
+ * Child-session subscription is owned by the outer ToolCallCard (needed for
+ * the header presence icon even while the body is collapsed), so this view
+ * only READS the already-populated store slices.
  */
 export function SubagentToolView({
   input,
@@ -44,7 +46,6 @@ export function SubagentToolView({
       ? s.bySession.get(sessionId)?.subagentBindings?.[call_id]
       : undefined,
   );
-  const connState = useConnectionStore((s) => s.state);
 
   // A subagent is "nested" when the session it lives in (sessionId) is itself a
   // child session of another — i.e. sessionId appears as a bound child somewhere.
@@ -58,42 +59,13 @@ export function SubagentToolView({
     return false;
   });
 
-  // Subscribe to the child session for its lifetime. The backend replies to
-  // `session/subscribe` with a `session/snapshot` that triggers the initial
-  // `buffer/load` + turn snapshot — so no manual buffer load is needed. Cleanup
-  // unsubscribes and clears the child slice to avoid orphan subscriptions / leaks.
-  useEffect(() => {
-    if (!childId || connState !== "connected") return;
-    let cancelled = false;
-    let attempts = 0;
-    const trySubscribe = () => {
-      if (cancelled) return;
-      useConnectionStore
-        .getState()
-        .ensureSubscribe(childId)
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "";
-          if (!cancelled && /session.*not found/i.test(msg) && attempts < 5) {
-            attempts += 1;
-            window.setTimeout(trySubscribe, 400 * attempts);
-          }
-        });
-    };
-    trySubscribe();
-    return () => {
-      cancelled = true;
-      useConnectionStore.getState().unsubscribeSession(childId);
-      useMessageStore.getState().reset(childId);
-      useTurnStore.getState().resetTurn(childId);
-    };
-  }, [childId, connState]);
-
   const { prompt } = useMemo(() => parseSubagentInput(input), [input]);
   const taskLong = !!prompt && prompt.length > TASK_PREVIEW_LIMIT;
 
-  // The agent name + run-state dot live in the outer tool FoldCard header (see
-  // ToolCallCard), so the body only renders the two flat, same-level sections:
-  // the Task brief (the subagent's *input*) and the process list (its *output*).
+  // The agent presence (icon + name) lives in the outer tool FoldCard header
+  // (see ToolCallCard), so the body only renders the two flat, same-level
+  // sections: the Task brief (the subagent's *input*) and the process list
+  // (its *output*).
   return (
     <div className="flex flex-col gap-1.5">
       {prompt ? (

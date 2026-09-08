@@ -1,7 +1,8 @@
 //! Named presets: fixed compositions of [`super::layers::FilterLayers`].
 //!
 //! Three user-facing faces (VS Code): Explorer, Search, Watcher. Plus
-//! [`FilterPreset::Unfiltered`] for explicit `no_ignore`.
+//! [`FilterPreset::Unfiltered`] (tests / raw walks) and [`FilterPreset::NoIgnore`]
+//! (agent grep/glob `-u`).
 
 use super::layers::FilterLayers;
 use super::workspace_excludes::active_workspace_excludes;
@@ -13,9 +14,12 @@ use super::workspace_excludes::active_workspace_excludes;
 pub enum FilterPreset {
     /// File tree: `files.exclude`. Gitignore only when `explorer_git_ignore`.
     Explorer,
-    /// Zero walk filters — escape hatch for explicit `no_ignore` discovery.
-    /// Not the Agent default; known-path read/write never uses walk presets.
+    /// Zero walk filters. Tests and raw discovery; not the Agent `-u` hatch.
+    /// Known-path read/write never uses walk presets.
     Unfiltered,
+    /// Agent grep/glob `-u`: off gitignore / files.exclude / search.exclude,
+    /// still skip binary and prune nested `.litecode`.
+    NoIgnore,
     /// Search line (human text, Agent grep/glob, text + vector index):
     /// `files.exclude ∪ search.exclude` + `git_ignore`. Hidden files are not
     /// skipped here (VS Code ripgrep `--hidden`); gitignore decides.
@@ -38,6 +42,15 @@ impl FilterPreset {
                 skip_binary: false,
             },
             Self::Unfiltered => FilterLayers::NONE,
+            Self::NoIgnore => FilterLayers {
+                files_exclude: false,
+                search_exclude: false,
+                watcher_exclude: false,
+                git_ignore: false,
+                git_global: false,
+                git_exclude: false,
+                skip_binary: true,
+            },
             Self::Search => FilterLayers {
                 files_exclude: true,
                 search_exclude: true,
@@ -59,9 +72,9 @@ impl FilterPreset {
         };
         let cfg = active_workspace_excludes();
         // Browse-only split: explorer honors `.gitignore` independently from
-        // the search corpora switch (`git_ignore`). Watcher / Unfiltered
-        // layers already bake `git_ignore: false`; the override only ever forces
-        // layers off, never on.
+        // the search corpora switch (`git_ignore`). Watcher / Unfiltered /
+        // NoIgnore layers already bake `git_ignore: false`; the override only
+        // ever forces layers off, never on.
         let honor_git_ignore = if self == Self::Explorer {
             cfg.explorer_git_ignore
         } else {
@@ -76,8 +89,8 @@ impl FilterPreset {
     }
 
     /// Hard-skip nested `.litecode` (product runtime). Explorer stays visible;
-    /// `Unfiltered` (`no_ignore`) does not prune. Never prune the walk root so
-    /// `path=.litecode` still lists.
+    /// `Unfiltered` does not prune. `NoIgnore` (agent `-u`) still prunes nested
+    /// `.litecode`. Never prune the walk root so `path=.litecode` still lists.
     pub fn prune_product_internal_dirs(self) -> bool {
         !matches!(self, Self::Explorer | Self::Unfiltered)
     }
@@ -163,6 +176,7 @@ mod tests {
             || {
                 assert_eq!(git_layers(FilterPreset::Watcher), (false, false, false));
                 assert_eq!(git_layers(FilterPreset::Unfiltered), (false, false, false));
+                assert_eq!(git_layers(FilterPreset::NoIgnore), (false, false, false));
             },
         );
     }
@@ -171,7 +185,17 @@ mod tests {
     fn prune_product_internal_presets() {
         assert!(!FilterPreset::Explorer.prune_product_internal_dirs());
         assert!(!FilterPreset::Unfiltered.prune_product_internal_dirs());
+        assert!(FilterPreset::NoIgnore.prune_product_internal_dirs());
         assert!(FilterPreset::Search.prune_product_internal_dirs());
         assert!(FilterPreset::Watcher.prune_product_internal_dirs());
+    }
+
+    #[test]
+    fn no_ignore_skips_binary_unlike_unfiltered() {
+        let layers = FilterPreset::NoIgnore.layers();
+        assert!(layers.skip_binary);
+        assert!(!layers.files_exclude);
+        assert!(!layers.search_exclude);
+        assert!(!FilterPreset::Unfiltered.layers().skip_binary);
     }
 }

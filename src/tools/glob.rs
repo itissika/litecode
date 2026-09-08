@@ -30,9 +30,9 @@ impl Tool for GlobTool {
                     "type": "string",
                     "description": "Optional directory to search under (workspace-relative preferred; absolute paths outside the workspace only under All permission). Pattern is matched relative to this directory. Session transcripts are listed only when this is `.litecode/sessions`."
                 },
-                "no_ignore": {
+                "-u": {
                     "type": "boolean",
-                    "description": "When true, walk without .gitignore / files.exclude / search.exclude (default: false)."
+                    "description": "Also search gitignored and workspace-excluded paths (rg -u / --no-ignore). Default false."
                 }
             },
             "required": ["pattern"]
@@ -81,7 +81,7 @@ impl GlobTool {
         };
 
         let pattern_warning = parent_dir_pattern_warning(pattern);
-        let no_ignore = input["no_ignore"].as_bool().unwrap_or(false);
+        let no_ignore = input.get("-u").and_then(Value::as_bool).unwrap_or(false);
         let path_arg = input["path"]
             .as_str()
             .map(str::trim)
@@ -311,7 +311,7 @@ fn glob_match(base: &std::path::Path, pattern: &str, no_ignore: bool) -> Result<
 
 fn discovery_preset(no_ignore: bool) -> FilterPreset {
     if no_ignore {
-        FilterPreset::Unfiltered
+        FilterPreset::NoIgnore
     } else {
         FilterPreset::Search
     }
@@ -456,7 +456,7 @@ mod tests {
             serde_json::json!({
                 "pattern": "**/*",
                 "path": "node_modules",
-                "no_ignore": true,
+                "-u": true,
             }),
         );
         assert!(
@@ -491,11 +491,20 @@ mod tests {
 
         let raw = glob_in(
             root,
-            serde_json::json!({ "pattern": "**/*.rs", "no_ignore": true }),
+            serde_json::json!({ "pattern": "**/*.rs", "-u": true }),
         );
         assert!(
-            raw.contains(".litecode"),
-            "no_ignore must include .litecode; got {raw}"
+            !raw.contains(".litecode"),
+            "unscoped -u must not include nested .litecode; got {raw}"
+        );
+
+        let scoped = glob_in(
+            root,
+            serde_json::json!({ "pattern": "**/*", "path": ".litecode", "-u": true }),
+        );
+        assert!(
+            scoped.contains("index/x.rs") || scoped.contains("x.rs"),
+            "path=.litecode with -u must list; got {scoped}"
         );
     }
 
@@ -643,8 +652,8 @@ mod tests {
         assert!(body.contains("No files found"), "{body}");
         assert!(body.contains(".litecode/excludes.json"), "{body}");
         assert!(
-            !body.contains("no_ignore"),
-            "empty glob must not advertise no_ignore, got: {body}"
+            !body.contains("-u"),
+            "empty glob must not advertise -u, got: {body}"
         );
     }
 
@@ -771,7 +780,7 @@ mod tests {
 
         let unscoped_ignore = glob_in(
             root,
-            serde_json::json!({ "pattern": "**/*.md", "no_ignore": true }),
+            serde_json::json!({ "pattern": "**/*.md", "-u": true }),
         );
         assert!(
             !unscoped_ignore.contains(".litecode/sessions/"),

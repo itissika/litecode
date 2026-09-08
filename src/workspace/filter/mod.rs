@@ -53,7 +53,7 @@ const CORPUS_LIST_CAP: usize = 8;
 
 /// Live Search-corpus boundary for agent grep empty states.
 ///
-/// `None` when `no_ignore` (the walk did not apply these lists). Does not
+/// `None` when `-u` (the walk did not apply these lists). Does not
 /// search excluded trees; it only names the active config.
 pub fn search_corpus_note(no_ignore: bool) -> Option<String> {
     if no_ignore {
@@ -80,7 +80,7 @@ pub fn search_corpus_note(no_ignore: bool) -> Option<String> {
 
 /// One next step after a Search-corpus miss. Names schema fields, not bash.
 pub fn search_corpus_next_step() -> &'static str {
-    "If the text may live in an excluded tree, set path there or no_ignore=true; otherwise it is absent from this corpus."
+    "If the text may live in an excluded tree, set path there or pass \"-u\": true; otherwise it is absent from this corpus."
 }
 
 fn format_corpus_globs(globs: &[String]) -> String {
@@ -181,7 +181,7 @@ mod corpus_note_tests {
     #[test]
     fn search_corpus_next_step_names_fields() {
         let step = search_corpus_next_step();
-        assert!(step.contains("no_ignore=true"), "{step}");
+        assert!(step.contains("\"-u\": true"), "{step}");
         assert!(step.contains("path"), "{step}");
         assert!(!step.to_ascii_lowercase().contains("bash"), "{step}");
     }

@@ -169,6 +169,7 @@ pub fn configure_walk_under(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::filter::{WorkspaceExcludesFile, with_excludes_cache_for_test};
     use tempfile::TempDir;
 
     #[test]
@@ -219,38 +220,40 @@ mod tests {
 
     #[test]
     fn index_walk_excludes_discovery_and_product_not_target() {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("target")).unwrap();
-        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
-        std::fs::create_dir_all(root.join(".litecode/index")).unwrap();
-        std::fs::write(root.join("src.rs"), "fn s() {}\n").unwrap();
-        std::fs::write(root.join("target/foo.rs"), "fn t() {}\n").unwrap();
-        std::fs::write(root.join("node_modules/pkg/index.js"), "x\n").unwrap();
-        std::fs::write(root.join(".litecode/index/x.rs"), "fn l() {}\n").unwrap();
-        std::fs::create_dir_all(root.join(".data")).unwrap();
-        std::fs::write(root.join(".data/foo.rs"), "fn d() {}\n").unwrap();
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path();
+            std::fs::create_dir_all(root.join("target")).unwrap();
+            std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+            std::fs::create_dir_all(root.join(".litecode/index")).unwrap();
+            std::fs::write(root.join("src.rs"), "fn s() {}\n").unwrap();
+            std::fs::write(root.join("target/foo.rs"), "fn t() {}\n").unwrap();
+            std::fs::write(root.join("node_modules/pkg/index.js"), "x\n").unwrap();
+            std::fs::write(root.join(".litecode/index/x.rs"), "fn l() {}\n").unwrap();
+            std::fs::create_dir_all(root.join(".data")).unwrap();
+            std::fs::write(root.join(".data/foo.rs"), "fn d() {}\n").unwrap();
 
-        let files: Vec<String> = walk_builder(root, FilterPreset::Search)
-            .build()
-            .flatten()
-            .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
-            .filter_map(|e| cheap_rel_under(root, e.path()))
-            .collect();
-        assert!(files.iter().any(|f| f == "src.rs"), "{files:?}");
-        assert!(
-            files.iter().any(|f| f == "target/foo.rs"),
-            "target is not a discovery exclude; got {files:?}"
-        );
-        assert!(
-            !files.iter().any(|f| f.contains("node_modules")),
-            "{files:?}"
-        );
-        assert!(!files.iter().any(|f| f.contains(".litecode")), "{files:?}");
-        assert!(
-            files.iter().any(|f| f == ".data/foo.rs"),
-            ".data is not product-internal; got {files:?}"
-        );
+            let files: Vec<String> = walk_builder(root, FilterPreset::Search)
+                .build()
+                .flatten()
+                .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+                .filter_map(|e| cheap_rel_under(root, e.path()))
+                .collect();
+            assert!(files.iter().any(|f| f == "src.rs"), "{files:?}");
+            assert!(
+                files.iter().any(|f| f == "target/foo.rs"),
+                "target is not a discovery exclude; got {files:?}"
+            );
+            assert!(
+                !files.iter().any(|f| f.contains("node_modules")),
+                "{files:?}"
+            );
+            assert!(!files.iter().any(|f| f.contains(".litecode")), "{files:?}");
+            assert!(
+                files.iter().any(|f| f == ".data/foo.rs"),
+                ".data is not product-internal; got {files:?}"
+            );
+        });
     }
 
     fn collect_files(root: &Path, preset: FilterPreset) -> Vec<String> {
@@ -288,6 +291,13 @@ mod tests {
             raw.iter().any(|f| f.contains(".litecode")),
             "Unfiltered must not prune .litecode; got {raw:?}"
         );
+
+        let no_ignore = collect_files(root, FilterPreset::NoIgnore);
+        assert!(
+            !no_ignore.iter().any(|f| f.contains(".litecode")),
+            "NoIgnore must prune nested .litecode; got {no_ignore:?}"
+        );
+        assert!(no_ignore.iter().any(|f| f == "src.rs"), "{no_ignore:?}");
 
         let nested = collect_files(&root.join(".litecode"), FilterPreset::Search);
         assert!(

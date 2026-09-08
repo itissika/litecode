@@ -87,6 +87,17 @@ describe("SubagentViewport skipUserText", () => {
     expect(screen.getByText("done")).toBeTruthy();
   });
 
+  it("skips leading control rows (turn/start) before the matching prompt", () => {
+    seed([
+      { seq: 0, kind: "turn/start", body: { turn: "t1" } },
+      userRow(1, "do the thing"),
+      assistantRow(2, "done"),
+    ]);
+    render(<SubagentViewport childSessionId="child-a" skipUserText="do the thing" />);
+    expect(screen.queryByText("do the thing")).toBeNull();
+    expect(screen.getByText("done")).toBeTruthy();
+  });
+
   it("fails open when the leading user row does not match the prompt", () => {
     seed([userRow(0, "other message"), assistantRow(1, "done")]);
     render(<SubagentViewport childSessionId="child-a" skipUserText="do the thing" />);

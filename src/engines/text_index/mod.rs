@@ -13,7 +13,7 @@ mod store;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -73,6 +73,9 @@ pub struct TextIndexEngine {
     stop: AtomicBool,
     /// Background measure/build + pending apply thread (at most one).
     worker: Mutex<Option<JoinHandle<()>>>,
+    /// Incremented on any entry to [`try_accelerated_search`] (this engine) or
+    /// [`Self::try_search`]. Grep / LexicalLane must leave this at 0.
+    accelerator_probes: AtomicU64,
 }
 
 impl Default for TextIndexEngine {
@@ -97,7 +100,17 @@ impl TextIndexEngine {
             cv: Condvar::new(),
             stop: AtomicBool::new(false),
             worker: Mutex::new(None),
+            accelerator_probes: AtomicU64::new(0),
         }
+    }
+
+    fn note_accelerator_probe(&self) {
+        self.accelerator_probes.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn accelerator_probe_count(&self) -> u64 {
+        self.accelerator_probes.load(Ordering::SeqCst)
     }
 
     pub fn state(&self) -> TextIndexState {
@@ -191,6 +204,7 @@ impl TextIndexEngine {
         query: &LexicalQuery,
         preset: FilterPreset,
     ) -> Option<Result<LexicalSearchOutcome>> {
+        self.note_accelerator_probe();
         if preset == FilterPreset::Unfiltered {
             return None;
         }
@@ -539,6 +553,9 @@ pub fn try_accelerated_search(
 ) -> Option<Result<LexicalSearchOutcome>> {
     let reg = registry().read().ok()?;
     let reg = reg.as_ref()?;
+    // Count even when this call later returns None (file-scoped skip, not Ready,
+    // etc.). Grep must not touch this entry at all.
+    reg.engine.note_accelerator_probe();
     let qroot = crate::config::path::canon_abs_lossy(&query.root);
     if qroot != reg.root && !qroot.starts_with(&reg.root) {
         return None;
@@ -686,14 +703,14 @@ mod tests {
         *reg = None;
     }
 
-    fn grep_files(root: &Path, regex: &str) -> String {
+    fn grep_run(root: &Path, input: serde_json::Value) -> String {
         use crate::tool::Tool;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("test runtime");
         rt.block_on(crate::tools::grep::GrepTool.execute(
-            serde_json::json!({ "pattern": regex, "output_mode": "files" }),
+            input,
             crate::tool::trait_::ToolExecutionContext {
                 path_mode: crate::workspace::ToolPathMode::Safe,
                 workspace_root: root.to_path_buf(),
@@ -707,6 +724,13 @@ mod tests {
             },
         ))
         .content
+    }
+
+    fn grep_files(root: &Path, regex: &str) -> String {
+        grep_run(
+            root,
+            serde_json::json!({ "pattern": regex, "output_mode": "files" }),
+        )
     }
 
     #[test]
@@ -1059,29 +1083,92 @@ mod tests {
     }
 
     #[test]
-    fn grep_tool_ignores_ready_stale_index() {
+    fn grep_is_pure_disk_scan_when_text_index_is_ready_and_stale() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
-        std::fs::write(root.join("indexed.rs"), "shared_needle_xyz\n").unwrap();
+        // `indexed.rs` sorts before `late.rs`. Three hits stay in the Ready index.
+        std::fs::write(
+            root.join("indexed.rs"),
+            "shared_needle_xyz\nshared_needle_xyz\nshared_needle_xyz\n",
+        )
+        .unwrap();
         let store = TextIndexStore::build(root, || false).unwrap();
-        std::fs::write(root.join("late.rs"), "shared_needle_xyz\n").unwrap();
+        std::fs::write(root.join("late.rs"), "shared_needle_xyz\n".repeat(20)).unwrap();
 
         let (_reg, engine) = register_ready_engine(root, store, 1);
         let q = sample_query(root, "shared_needle_xyz");
-        let via_index = match_paths(&accelerated(&q));
+        let via_index = accelerated(&q);
+        assert_eq!(
+            via_index.matches.len(),
+            3,
+            "control: Ready index must only see indexed.rs: {:?}",
+            via_index.matches
+        );
         assert!(
-            !via_index.iter().any(|p| p.ends_with("late.rs")),
-            "control: a Ready index would miss late.rs: {via_index:?}"
+            !match_paths(&via_index)
+                .iter()
+                .any(|p| p.ends_with("late.rs")),
+            "control: a Ready index would miss late.rs: {:?}",
+            match_paths(&via_index)
         );
 
-        let out = grep_files(root, "shared_needle_xyz");
+        let probes = engine.accelerator_probe_count();
+        let files = grep_run(
+            root,
+            serde_json::json!({ "pattern": "shared_needle_xyz", "output_mode": "files" }),
+        );
+        let content = grep_run(root, serde_json::json!({ "pattern": "shared_needle_xyz" }));
+        let files_off = grep_run(
+            root,
+            serde_json::json!({
+                "pattern": "shared_needle_xyz",
+                "output_mode": "files",
+                "offset": 1
+            }),
+        );
+        let content_off = grep_run(
+            root,
+            serde_json::json!({ "pattern": "shared_needle_xyz", "offset": 10 }),
+        );
+        let lane = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
+        let probes_after = engine.accelerator_probe_count();
         unregister_engine();
         drop(engine);
+
         assert!(
-            out.contains("late.rs"),
-            "grep tool must not consult a Ready text index: {out}"
+            files.contains("late.rs") && files.contains("indexed.rs"),
+            "files mode must scan disk: {files}"
         );
-        assert!(out.contains("indexed.rs"), "{out}");
+        assert!(
+            files.contains("Found 2 files (23 matches)"),
+            "disk total is 3+20, not the 3-hit index window: {files}"
+        );
+        assert!(
+            content.contains("late.rs") && content.contains("indexed.rs"),
+            "content mode must scan disk: {content}"
+        );
+        assert!(
+            !files_off.contains("past end"),
+            "index-accelerated grep would treat offset=1 as past the single indexed file: {files_off}"
+        );
+        assert!(
+            files_off.contains("indexed.rs") && !files_off.contains("late.rs"),
+            "files offset skips ranked files (late.rs has more hits): {files_off}"
+        );
+        assert!(
+            !content_off.contains("past end") && content_off.contains("late.rs"),
+            "content offset=10 must page the disk hit list: {content_off}"
+        );
+        assert_eq!(lane.matches.len(), 23);
+        assert!(
+            match_paths(&lane).iter().any(|p| p.ends_with("late.rs")),
+            "LexicalLane must scan disk: {:?}",
+            match_paths(&lane)
+        );
+        assert_eq!(
+            probes_after, probes,
+            "grep / LexicalLane must not enter try_accelerated_search or TextIndexEngine::try_search"
+        );
     }
 
     #[test]

@@ -103,20 +103,24 @@ mod tests {
 
     #[test]
     fn queue_gate_uses_search_excludes() {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        assert!(should_queue_index_update(root, "src/a.rs", true));
-        assert!(!should_queue_index_update(root, ".litecode/index/x", true));
-        assert!(!should_queue_index_update(root, "node_modules/x.js", false));
-        // Excluded path: delete still queues so stale chunks drop.
-        assert!(should_queue_index_update(root, "node_modules/x.js", true));
-        // target is not a Search glob exclude — queues when not gitignored.
-        assert!(should_queue_index_update(root, "target/foo.rs", false));
-        assert!(should_queue_index_update(root, "src/a.rs", false));
-        assert!(should_queue_index_update(root, "Cargo.lock", false));
-        assert!(should_queue_index_update(root, "LICENSE", false));
-        assert!(is_product_internal_dir_name(".litecode"));
-        assert!(!is_product_internal_dir_name(".data"));
+        use crate::workspace::filter::{WorkspaceExcludesFile, with_excludes_cache_for_test};
+
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path();
+            assert!(should_queue_index_update(root, "src/a.rs", true));
+            assert!(!should_queue_index_update(root, ".litecode/index/x", true));
+            assert!(!should_queue_index_update(root, "node_modules/x.js", false));
+            // Excluded path: delete still queues so stale chunks drop.
+            assert!(should_queue_index_update(root, "node_modules/x.js", true));
+            // target is not a Search glob exclude — queues when not gitignored.
+            assert!(should_queue_index_update(root, "target/foo.rs", false));
+            assert!(should_queue_index_update(root, "src/a.rs", false));
+            assert!(should_queue_index_update(root, "Cargo.lock", false));
+            assert!(should_queue_index_update(root, "LICENSE", false));
+            assert!(is_product_internal_dir_name(".litecode"));
+            assert!(!is_product_internal_dir_name(".data"));
+        });
     }
 
     #[test]

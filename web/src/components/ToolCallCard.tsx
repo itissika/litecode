@@ -3,6 +3,7 @@ import { FileArrowUpIcon } from "@phosphor-icons/react";
 
 import {
   functionCallOutputText,
+  latestAssistantText,
   normalizeToolFilePath,
   parseFunctionArguments,
 } from "../api/adapter";
@@ -10,10 +11,12 @@ import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
 import { formatElapsed, matchJob } from "../lib/bashLive";
 import { bashKill } from "../lib/litecodeBash";
 import { useBashStore } from "../stores/bashStore";
-import { useMessageStore } from "../stores/messageStore";
+import { useConnectionStore } from "../stores/connectionStore";
+import { displayMessages, useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
 import { agentColor } from "./agentIdentity";
 import { FoldCard, FOLDCARD_HEADER_TONE } from "./FoldCard";
+import { SubagentStatusIcon } from "./SubagentStatusIcon";
 import { ToolContentView } from "./ToolContentView";
 import { ToolIcon } from "./ToolIcon";
 import { deriveToolStatus } from "./toolCallStatus";
@@ -80,9 +83,11 @@ export function ToolCallCard({
     };
   }, [isEdit, input]);
 
-  // subagent_launch gets a flatter header: `subagent_launch {agent}` plus a
-  // run-state dot, instead of the generic `name + inputSummary`. Its body
-  // (Task brief + process list) is rendered by SubagentToolView.
+  // subagent_launch gets an agent-led header: the leading icon is the agent's
+  // own presence glyph in its accent colour (SubagentStatusIcon — pop on
+  // running entry, breathing glow while running, settle pop on success), and
+  // the label is just the agent name. Its body (Task brief + process list) is
+  // rendered by SubagentToolView.
   const isSubagent = toolName === "subagent_launch";
   const isBash = toolName === "bash";
   const bashJob = useBashStore((s) => {
@@ -110,9 +115,59 @@ export function ToolCallCard({
   const subagentRunState = useTurnStore((s) =>
     subagentChildId ? s.byId.get(subagentChildId)?.runState ?? "idle" : "idle",
   );
-  const subagentRunning =
-    subagentRunState === "running" || subagentRunState === "cancelling";
   const subagentColor = subagentAgent ? agentColor(subagentAgent) : undefined;
+
+  // Header progress summary: while the child runs, show its latest assistant
+  // text (single line, truncating) so the user can follow what it is doing;
+  // once the card is sealed, swap to a compact status word instead of the
+  // whole result.
+  const subagentSealed = !streaming;
+  const subagentStatusText =
+    subagentSealed && status !== "unknown"
+      ? status === "failed"
+        ? "failed"
+        : "completed"
+      : null;
+  const subagentLiveText = useMessageStore((s) =>
+    isSubagent && subagentChildId
+      ? latestAssistantText(displayMessages(s.bySession.get(subagentChildId)))
+      : "",
+  );
+  const subagentSummary =
+    subagentStatusText ?? (subagentLiveText ? subagentLiveText : null);
+
+  // The card owns the child-session subscription for as long as it is mounted
+  // (NOT only while the body is expanded): the header presence icon derives
+  // running/breathing from the child turn state, so the label must stay
+  // accurate even when the FoldCard is collapsed. The body SubagentToolView
+  // only reads the same store slices. Cleanup mirrors the old body-owned
+  // lifecycle: unsubscribe and drop the child slices.
+  const connState = useConnectionStore((s) => s.state);
+  useEffect(() => {
+    if (!isSubagent || !subagentChildId || connState !== "connected") return;
+    let cancelled = false;
+    let attempts = 0;
+    const trySubscribe = () => {
+      if (cancelled) return;
+      useConnectionStore
+        .getState()
+        .ensureSubscribe(subagentChildId)
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "";
+          if (!cancelled && /session.*not found/i.test(msg) && attempts < 5) {
+            attempts += 1;
+            window.setTimeout(trySubscribe, 400 * attempts);
+          }
+        });
+    };
+    trySubscribe();
+    return () => {
+      cancelled = true;
+      useConnectionStore.getState().unsubscribeSession(subagentChildId);
+      useMessageStore.getState().reset(subagentChildId);
+      useTurnStore.getState().resetTurn(subagentChildId);
+    };
+  }, [isSubagent, subagentChildId, connState]);
 
   // Action buttons are driven by tool type (not a universal copy). Today only
   // file-editing tools expose an "Open file" action; more can be added per
@@ -150,35 +205,42 @@ export function ToolCallCard({
   return (
     <FoldCard
       id={foldCardId}
-      icon={<ToolIcon name={toolName} status={status} streaming={streaming} />}
+      icon={
+        isSubagent ? (
+          <SubagentStatusIcon
+            agent={subagentAgent}
+            live={streaming}
+            status={status}
+            runState={subagentRunState}
+          />
+        ) : (
+          <ToolIcon name={toolName} status={status} streaming={streaming} />
+        )
+      }
       label={
         isSubagent ? (
           <span className="flex min-w-0 flex-1 items-center gap-2">
-            <span className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-xs font-medium text-(--_dk-text-primary)`}>
-              {toolName}
-            </span>
-            {subagentAgent && (
-              <span
-                className={`${FOLDCARD_HEADER_TONE} truncate font-mono text-dk-2xs`}
-                style={subagentColor ? { color: subagentColor } : undefined}
-              >
-                {subagentAgent}
-              </span>
-            )}
             <span
-              className={`ml-auto inline-block h-1.5 w-1.5 rounded-full ${
-                subagentRunning || !subagentChildId
-                  ? "animate-pulse bg-(--_dk-amber-500)"
-                  : "bg-(--_dk-emerald-500)"
+              className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-2xs ${
+                subagentAgent ? "" : "text-(--_dk-text-muted)"
               }`}
-              title={
-                !subagentChildId
-                  ? "Launching"
-                  : subagentRunning
-                    ? "Running"
-                    : "Idle"
-              }
-            />
+              style={subagentColor ? { color: subagentColor } : undefined}
+            >
+              {subagentAgent ?? "subagent"}
+            </span>
+            {subagentSummary ? (
+              <span
+                className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-dk-2xs ${
+                  subagentStatusText === "failed"
+                    ? "text-(--_dk-red-500)"
+                    : subagentStatusText
+                      ? "text-(--_dk-emerald-500)"
+                      : "text-(--_dk-text-muted)"
+                }`}
+              >
+                {subagentSummary}
+              </span>
+            ) : null}
           </span>
         ) : (
           <span className="flex min-w-0 flex-1 items-center gap-2">

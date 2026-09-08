@@ -1,5 +1,11 @@
 import { useMemo, type ReactElement } from "react";
-import { itemFromRow, itemPlainText, isHumanUserRow, isTranscriptMarkRow } from "../api/adapter";
+import {
+  itemFromRow,
+  itemPlainText,
+  isHiddenHumanRow,
+  isHumanUserRow,
+  isTranscriptMarkRow,
+} from "../api/adapter";
 import {
   rowsToNodes,
   groupNodes,
@@ -47,7 +53,10 @@ export function SubagentViewport({
   const messages = useMemo(() => {
     if (!skipUserText) return storeMessages;
     let i = 0;
-    while (i < storeMessages.length && isTranscriptMarkRow(storeMessages[i]!)) {
+    while (
+      i < storeMessages.length &&
+      (isTranscriptMarkRow(storeMessages[i]!) || isHiddenHumanRow(storeMessages[i]!))
+    ) {
       i += 1;
     }
     const first = storeMessages[i];

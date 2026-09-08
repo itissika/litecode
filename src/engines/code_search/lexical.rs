@@ -77,7 +77,7 @@ pub fn lexical_search(query: &LexicalQuery) -> Result<Vec<LexicalMatch>> {
 /// Run LexicalLane with a consumer-specific workspace filter preset.
 ///
 /// Human workspace search and agent `grep` share [`FilterPreset::Search`].
-/// [`FilterPreset::Unfiltered`] is only for explicit `no_ignore` discovery.
+/// [`FilterPreset::NoIgnore`] is the agent `-u` hatch.
 ///
 /// This is always a disk walk (libripgrep). A trigram accelerator exists as a
 /// separate engine but is not on this path: a Ready-but-stale index misses
@@ -770,5 +770,22 @@ mod tests {
         assert!(hits[0].path.ends_with("ok.txt"), "got: {hits:?}");
         assert!(!hits.iter().any(|h| h.path.contains("blob.bin")));
         assert!(!hits.iter().any(|h| h.path.contains("fake.rs")));
+    }
+
+    #[test]
+    fn lexical_lane_source_never_calls_text_index_accelerator() {
+        let src = include_str!("lexical.rs");
+        let prod = src
+            .split("mod tests {")
+            .next()
+            .expect("production source before tests");
+        assert!(
+            !prod.contains("try_accelerated_search") && !prod.contains("text_index"),
+            "LexicalLane must stay a disk walk; do not wire the trigram accelerator here"
+        );
+        assert!(
+            prod.contains("lexical_search_ripgrep(query, preset)"),
+            "lexical_search_with_preset must call the ripgrep walk"
+        );
     }
 }

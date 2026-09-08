@@ -11,6 +11,7 @@ import {
   isTranscriptMarkRow,
   isWellFormedBufferRow,
   itemAuthorityId,
+  latestAssistantText,
   mergeCommittedItem,
   sealMismatchError,
   isStreamFailureEvent,
@@ -22,6 +23,28 @@ import type { HumanRow, Item, ResponseStreamEvent } from "./types";
 
 const userRow = (seq: number, text: string): HumanRow => ({
   seq, kind: "item/user", body: userTextItem(text),
+});
+
+const assistantRow = (seq: number, text: string, status = "completed"): HumanRow => ({
+  seq,
+  kind: "item/assistant",
+  body: {
+    type: "message",
+    role: "assistant",
+    id: `a${seq}`,
+    status,
+    content: [{ type: "output_text", text, annotations: [] }],
+  },
+});
+
+const reasoningRow = (seq: number, text: string): HumanRow => ({
+  seq,
+  kind: "item/assistant",
+  body: {
+    type: "reasoning",
+    id: `r${seq}`,
+    summary: [{ type: "summary_text", text }],
+  },
 });
 
 describe("kind-based HumanView rows", () => {
@@ -67,6 +90,40 @@ describe("kind-based HumanView rows", () => {
     expect(isStreamFailureEvent({ type: "response.failed", response: {} })).toBe(true);
     const next = markFunctionCallsFailed([{ type: "function_call", call_id: "call_1", name: "bash", arguments: "{}", status: "in_progress" }]);
     expect(next[0]).toMatchObject({ status: "failed" });
+  });
+});
+
+describe("latestAssistantText", () => {
+  it("returns the last non-empty assistant text in seq order", () => {
+    const rows: HumanRow[] = [
+      assistantRow(0, "first probe"),
+      assistantRow(1, "checking the tests"),
+      assistantRow(2, "wrapping up"),
+    ];
+    expect(latestAssistantText(rows)).toBe("wrapping up");
+  });
+
+  it("skips reasoning items, user rows, and streaming empty shells", () => {
+    const rows: HumanRow[] = [
+      userRow(0, "user prompt"),
+      reasoningRow(1, "thinking…"),
+      assistantRow(2, "", "in_progress"),
+      assistantRow(3, "done"),
+    ];
+    expect(latestAssistantText(rows)).toBe("done");
+  });
+
+  it("returns an empty string when there is no non-empty assistant text", () => {
+    expect(latestAssistantText([userRow(0, "hi"), reasoningRow(1, "hmm")])).toBe("");
+    expect(latestAssistantText([])).toBe("");
+  });
+
+  it("only considers trailing text when later assistant messages are empty", () => {
+    const rows: HumanRow[] = [
+      assistantRow(0, "earlier"),
+      assistantRow(1, "", "in_progress"),
+    ];
+    expect(latestAssistantText(rows)).toBe("earlier");
   });
 });
 
