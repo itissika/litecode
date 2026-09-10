@@ -79,7 +79,8 @@ pub fn closed_wire_model(adapter_id: &str) -> Option<&'static str> {
 
 /// Wire model id for the LLM request — always the Settings-saved `api_model_id`.
 ///
-/// Closed adapters pick from the adapter catalog in Settings; open adapters are free text.
+/// Closed adapters pick the id in Settings (static enum or remote `/models`);
+/// open adapters are free text.
 pub fn effective_api_model_id(model: &ModelDefinition) -> String {
     model.api_model_id().trim().to_string()
 }

@@ -45,18 +45,18 @@ function readyProviderIds(
     .sort();
 }
 
-// Closed adapters expose `api_model_id` as a fixed catalog (enum with options),
-// not free text. Deriving this from the fetched `model_fields` schema keeps the
-// front-end in lock-step with the back-end adapter registry — no duplicated,
-// hand-synced adapter-id list that can drift.
+// Closed adapters own the context budget, so their schema omits
+// `context_window`. Deriving from `model_fields` stays in lock-step with the
+// registry — no hand-synced adapter-id list. Empty / unknown adapters are
+// treated as open so a brand-new row still shows context window.
 function isClosedAdapter(
   adapters: AdapterDescriptor[],
   adapterId: string,
 ): boolean {
-  const apiField = adapters
-    .find((a) => a.id === adapterId)
-    ?.model_fields.find((f) => f.name === "api_model_id");
-  return (apiField?.options?.length ?? 0) > 0;
+  if (!adapterId) return false;
+  const fields = adapters.find((a) => a.id === adapterId)?.model_fields;
+  if (!fields || fields.length === 0) return false;
+  return !fields.some((f) => f.name === "context_window");
 }
 
 function closedApiModelOptions(
@@ -310,6 +310,7 @@ export function ModelsSection() {
     const firstReady = allReadyProviderIds[0];
     const adapter_id = firstReady ? (providers ?? {})[firstReady]?.adapter_id ?? "" : "";
     const closed = isClosedAdapter(adapters, adapter_id);
+    const remote = hasRemoteModelCatalog(adapters, adapter_id);
     const catalog = closedApiModelOptions(adapters, adapter_id);
     const id = `model_${Date.now()}`;
     setDraft((prev) => ({
@@ -320,7 +321,7 @@ export function ModelsSection() {
         provider_ref: firstReady ?? "",
         label: "New model",
         config: {
-          api_model_id: closed ? (catalog[0] ?? "") : "",
+          api_model_id: closed && !remote ? (catalog[0] ?? "") : "",
           context_window: closed ? 0 : 200_000,
           max_tokens: closed ? 0 : 8192,
           thinking_mode: null,
@@ -416,13 +417,15 @@ export function ModelsSection() {
                         const prov = (providers ?? {})[v];
                         const nextAdapter = prov?.adapter_id ?? "";
                         const nextClosed = isClosedAdapter(adapters, nextAdapter);
+                        const nextRemote = hasRemoteModelCatalog(adapters, nextAdapter);
                         const catalog = closedApiModelOptions(adapters, nextAdapter);
                         const currentApi = model.config?.api_model_id ?? "";
-                        const nextApi = nextClosed
-                          ? catalog.includes(currentApi)
-                            ? currentApi
-                            : (catalog[0] ?? "")
-                          : currentApi;
+                        const nextApi =
+                          nextClosed && !nextRemote
+                            ? catalog.includes(currentApi)
+                              ? currentApi
+                              : (catalog[0] ?? "")
+                            : currentApi;
                         setDraft((prev) => {
                           const cur = prev[model.id];
                           if (!cur) return prev;
@@ -451,7 +454,14 @@ export function ModelsSection() {
                       className="w-full"
                     />
                   </div>
-                  {closed ? (
+                  {hasRemoteModelCatalog(adapters, selectedAdapter) ? (
+                    <RemoteCatalogModelId
+                      providerId={model.provider_ref}
+                      value={model.config?.api_model_id ?? ""}
+                      disabled={saveBlocked}
+                      onChange={(v) => updateConfig(model.id, { api_model_id: v })}
+                    />
+                  ) : closed ? (
                     <div>
                       <FieldLabel required>API model id</FieldLabel>
                       <Select
@@ -462,13 +472,6 @@ export function ModelsSection() {
                         className="w-full"
                       />
                     </div>
-                  ) : hasRemoteModelCatalog(adapters, selectedAdapter) ? (
-                    <RemoteCatalogModelId
-                      providerId={model.provider_ref}
-                      value={model.config?.api_model_id ?? ""}
-                      disabled={saveBlocked}
-                      onChange={(v) => updateConfig(model.id, { api_model_id: v })}
-                    />
                   ) : (
                     <div>
                       <FieldLabel required>API model ID</FieldLabel>

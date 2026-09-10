@@ -203,6 +203,14 @@ fn catalog_url_strips_responses_suffix() {
         models_get_url("https://ark.cn-beijing.volces.com/api/coding/v3/responses"),
         "https://ark.cn-beijing.volces.com/api/coding/v3/models"
     );
+    assert_eq!(
+        models_get_url("https://api.deepseek.com"),
+        "https://api.deepseek.com/models"
+    );
+    assert_eq!(
+        models_get_url("https://api.deepseek.com/responses"),
+        "https://api.deepseek.com/models"
+    );
 }
 
 #[test]

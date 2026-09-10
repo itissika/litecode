@@ -123,9 +123,9 @@ const DEEPSEEK_MODEL_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "api_model_id",
         label: "API model id",
-        field_type: FieldType::Enum,
+        field_type: FieldType::String,
         required: true,
-        options: Some(DEEPSEEK_API_MODEL_IDS),
+        options: None,
     },
     FieldSchema {
         name: "max_tokens",
@@ -248,7 +248,8 @@ const ADAPTERS: &[AdapterDescriptor] = &[
         provider_fields: CLOSED_PROVIDER_FIELDS,
         model_fields: DEEPSEEK_MODEL_FIELDS,
         default_endpoint: Some(DEEPSEEK_DEFAULT_ENDPOINT),
-        remote_model_catalog: false,
+        // Official GET {endpoint}/models — same OpenAI list shape as OpenCode.
+        remote_model_catalog: true,
     },
     AdapterDescriptor {
         id: ADAPTER_MIMO_RESPONSES,
@@ -322,7 +323,9 @@ pub fn closed_context_windows(adapter_id: &str) -> Option<(usize, usize)> {
     }
 }
 
-/// Allowed wire `api_model_id` values for a closed adapter (Settings dropdown).
+/// Static wire ids for closed adapters that do not fetch a remote catalog.
+/// DeepSeek keeps a fallback list; Settings validation does not treat it as
+/// an allowlist because `remote_model_catalog` is on.
 pub fn closed_api_model_ids(adapter_id: &str) -> Option<&'static [&'static str]> {
     match adapter_id {
         ADAPTER_DEEPSEEK_RESPONSES => Some(DEEPSEEK_API_MODEL_IDS),
@@ -340,6 +343,8 @@ pub fn closed_api_model_ids(adapter_id: &str) -> Option<&'static [&'static str]>
 /// - `mimo-v2.5`: native full-modality — text/image/video/audio input (see
 ///   <https://mimo.mi.com/models/zh-CN/mimo-v2.5>).
 /// - `mimo-v2.5-pro`: flagship base model — text-only input.
+/// - DeepSeek ids containing `vision` (e.g. `deepseek-v4-flash-vision-exp`):
+///   text + image. `/models` does not return modalities.
 /// - Ark Coding Plan `doubao-seed-2.1-turbo`: text + image (Coding Plan `/responses` P2).
 /// - Everything else: text-only.
 pub fn adapter_default_capabilities(adapter_id: &str, api_model_id: &str) -> Vec<ModelCapability> {
@@ -350,6 +355,9 @@ pub fn adapter_default_capabilities(adapter_id: &str, api_model_id: &str) -> Vec
             ModelCapability::Video,
             ModelCapability::Audio,
         ],
+        ADAPTER_DEEPSEEK_RESPONSES if api_model_id.to_ascii_lowercase().contains("vision") => {
+            vec![ModelCapability::Text, ModelCapability::Image]
+        }
         ADAPTER_ARK_CODING if api_model_id.eq_ignore_ascii_case("doubao-seed-2.1-turbo") => {
             vec![ModelCapability::Text, ModelCapability::Image]
         }
@@ -427,11 +435,13 @@ pub fn validate_model_config(
                 "model '{model_id}' api_model_id is required"
             )));
         }
-        let allowed = closed_api_model_ids(adapter_id).unwrap_or(&[]);
-        if !allowed.contains(&api) {
-            return Err(LitecodeError::Config(format!(
-                "model '{model_id}' api_model_id '{api}' is not in adapter catalog for '{adapter_id}'"
-            )));
+        if !has_remote_model_catalog(adapter_id) {
+            let allowed = closed_api_model_ids(adapter_id).unwrap_or(&[]);
+            if !allowed.contains(&api) {
+                return Err(LitecodeError::Config(format!(
+                    "model '{model_id}' api_model_id '{api}' is not in adapter catalog for '{adapter_id}'"
+                )));
+            }
         }
         return Ok(());
     }
@@ -719,8 +729,36 @@ mod tests {
         assert_eq!(ark.default_endpoint, Some(ARK_DEFAULT_ENDPOINT));
         assert!(!ark.remote_model_catalog);
         assert!(!has_remote_model_catalog(ADAPTER_ARK_CODING));
-        assert!(!has_remote_model_catalog(ADAPTER_DEEPSEEK_RESPONSES));
+        assert!(deepseek.remote_model_catalog);
+        assert!(has_remote_model_catalog(ADAPTER_DEEPSEEK_RESPONSES));
         assert!(!has_remote_model_catalog(ADAPTER_MIMO_RESPONSES));
+        let api_field = deepseek
+            .model_fields
+            .iter()
+            .find(|f| f.name == "api_model_id")
+            .unwrap();
+        assert!(api_field.options.is_none());
+    }
+
+    #[test]
+    fn deepseek_accepts_remote_catalog_ids() {
+        let cfg = ModelAdapterConfig {
+            api_model_id: "deepseek-v4-flash-vision-exp".into(),
+            ..ModelAdapterConfig::default()
+        };
+        validate_model_config("vision", ADAPTER_DEEPSEEK_RESPONSES, &cfg).unwrap();
+        assert_eq!(
+            adapter_default_capabilities(
+                ADAPTER_DEEPSEEK_RESPONSES,
+                "deepseek-v4-flash-vision-exp"
+            ),
+            vec![ModelCapability::Text, ModelCapability::Image]
+        );
+        let mimo = ModelAdapterConfig {
+            api_model_id: "mimo-unknown".into(),
+            ..ModelAdapterConfig::default()
+        };
+        assert!(validate_model_config("x", ADAPTER_MIMO_RESPONSES, &mimo).is_err());
     }
 
     #[test]

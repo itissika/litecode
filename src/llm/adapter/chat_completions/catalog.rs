@@ -11,6 +11,9 @@ pub(crate) fn chat_post_url(base: &str) -> String {
     format!("{base}/chat/completions")
 }
 
+/// OpenAI-compatible GET `{base}/models` (OpenCode Zen, DeepSeek, and any
+/// future adapter that sets `remote_model_catalog`). Strips a trailing
+/// `/responses` so a Responses host still lists `{base}/models`.
 pub(crate) fn models_get_url(base: &str) -> String {
     let mut base = base.trim().trim_end_matches('/');
     if let Some(stripped) = base.strip_suffix("/responses") {

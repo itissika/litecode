@@ -34,7 +34,8 @@ use super::{llm_http_client, transport_error};
 pub(crate) const CONTEXT_WINDOW_DEFAULT: usize = 256_000;
 /// Vendor maximum context window — session `context_mode = max`.
 pub(crate) const CONTEXT_WINDOW_MAX: usize = 1_000_000;
-/// Selectable wire model ids for Settings dropdown.
+/// Fallback / default wire ids. Settings lists live ids from GET `/models`
+/// (<https://api-docs.deepseek.com/zh-cn/api/list-models/>).
 pub(crate) const API_MODEL_IDS: &[&str] = &["deepseek-v4-flash", "deepseek-v4-pro"];
 /// Official DeepSeek Responses host. `/responses` is appended by [`normalize_endpoint`].
 pub(crate) const DEFAULT_ENDPOINT: &str = "https://api.deepseek.com";
