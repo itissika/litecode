@@ -15,6 +15,8 @@ mod matcher;
 mod planner;
 
 #[cfg(test)]
+mod python_indent;
+#[cfg(test)]
 mod tests;
 
 use feedback::render_tool_result;

@@ -1597,12 +1597,14 @@ async fn fanout_turn(
     };
     // Dedupe discrete turn-step announces by stream item id (added + first delta).
     let mut announced_step_items = std::collections::HashSet::<String>::new();
+    let mut saw_completed = false;
 
     loop {
         match handle.rx.recv().await {
             Some(envelope) => {
                 let is_completed = matches!(&envelope.event, InternalEvent::TurnCompleted { .. });
                 if is_completed {
+                    saw_completed = true;
                     // Finish before forwarding so gates open at the same moment as end events.
                     let _ = manager.finish_turn(&session_id, &handle.turn_id);
                 }
@@ -1650,6 +1652,30 @@ async fn fanout_turn(
                 let _ = event_tx.send(envelope);
             }
             None => break,
+        }
+    }
+
+    if !saw_completed {
+        tracing::error!(
+            session_id = %session_id,
+            turn_id = %handle.turn_id,
+            "turn event channel closed without TurnCompleted"
+        );
+    }
+    if let Some(join) = handle.handle.take() {
+        match join.join() {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => tracing::error!(
+                session_id = %session_id,
+                turn_id = %handle.turn_id,
+                error = %error,
+                "agent turn thread returned error"
+            ),
+            Err(_) => tracing::error!(
+                session_id = %session_id,
+                turn_id = %handle.turn_id,
+                "agent turn thread panicked"
+            ),
         }
     }
 

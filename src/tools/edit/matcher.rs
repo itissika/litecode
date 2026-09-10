@@ -587,7 +587,7 @@ fn collapse_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn compute_similarity(a: &str, b: &str) -> u8 {
+pub(super) fn compute_similarity(a: &str, b: &str) -> u8 {
     if a == b {
         return 100;
     }

@@ -484,6 +484,45 @@ describe("MessageList reminder rows", () => {
       expect.objectContaining({ userAnchorK: 4, draft: "later ask" }),
     );
   });
+
+  it("does not open the editor for an unsealed optimistic user bubble, while earlier sealed bubbles still open", () => {
+    const onEditAnchor = vi.fn();
+    const sealed: HumanRow = {
+      seq: 12,
+      kind: "item/user",
+      body: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "earlier ask" }],
+      },
+    };
+    // Composer `start()` paints this with seq=-1 until buffer/item seals it.
+    // After a silent fail the row stays pending, so the just-sent bubble is
+    // not a revert target even though it looks like a sent user message.
+    const pending: HumanRow = {
+      seq: -1,
+      kind: "item/user",
+      body: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "just sent" }],
+      },
+    };
+    render(
+      <MessageList messages={[sealed, pending]} loadingHistory={false} canLoadMore={false}
+        onLoadMore={() => {}} userDetailBefore={4} isRunning={true}
+        scrollRef={makeScrollRef()} sessionId="session-1" onEditAnchor={onEditAnchor} />,
+    );
+
+    fireEvent.click(screen.getByText("earlier ask"));
+    expect(onEditAnchor).toHaveBeenCalledWith(
+      expect.objectContaining({ draft: "earlier ask", userAnchorK: 4 }),
+    );
+    onEditAnchor.mockClear();
+
+    fireEvent.click(screen.getByText("just sent"));
+    expect(onEditAnchor).not.toHaveBeenCalled();
+  });
 });
 
 describe("MessageList stick intent", () => {

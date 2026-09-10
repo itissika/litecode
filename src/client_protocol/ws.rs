@@ -241,7 +241,13 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                         break;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        skipped,
+                        "session lifecycle receiver lagged; turn_started/finished may be missing"
+                    );
+                    continue;
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
