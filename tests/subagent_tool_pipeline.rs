@@ -1,7 +1,4 @@
-//! Subagent as a normal tool: same-runtime execute, pipeline parallel, cancel/timeout return.
-//!
-//! These tests lock the nested-runtime / blocking-thread hazards. If launch
-//! still `block_on`s a new runtime or parks a child OS thread, they fail.
+//! Subagent as a tool series: launch detaches to an OS thread; wait/stop consume the hub.
 
 mod common;
 
@@ -23,13 +20,13 @@ use litecode::engines::WorkspaceEngines;
 use litecode::llm::{LlmProvider, ModelRequest};
 use litecode::optional::EngineManager;
 use litecode::permission::{PermissionEngine, deny_permission_sink};
-use litecode::session::manager::{MAX_SUBAGENTS_PER_PARENT, SessionManager};
+use litecode::session::manager::SessionManager;
 use litecode::tool::Tool;
 use litecode::tool::ToolPipeline;
 use litecode::tool::output::DEFAULT_SPILL_THRESHOLD;
 use litecode::tool::trait_::ToolExecutionContext;
 use litecode::tool::write_lock::process_write_lock;
-use litecode::tools::subagent::SubagentLaunchTool;
+use litecode::tools::subagent::{MAX_SUBAGENTS_PER_PARENT, SubagentHub, SubagentLaunchTool};
 use litecode::types::{
     FunctionToolCall, Item, Result, StreamEvents, ToolSignalLevel, item_text_preview,
 };
@@ -73,6 +70,8 @@ fn launch_tool(
         Arc::new(engines.clone()),
         Arc::new(litecode::terminal::TerminalHub::new()),
     );
+    let hub = Arc::new(SubagentHub::new());
+    hub.attach_sessions(Arc::clone(&sessions));
     SubagentLaunchTool::new(
         resolved,
         "default",
@@ -86,6 +85,7 @@ fn launch_tool(
         sessions,
         parent_session_id,
         Arc::new(litecode::mcp::McpConnectionPool::new()),
+        hub,
     )
 }
 
@@ -183,7 +183,7 @@ fn launch_declares_pipeline_parallel_and_cancellable() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn execute_runs_on_caller_runtime_thread() {
+async fn execute_returns_while_child_llm_runs_on_other_thread() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path();
     let resolved = reviewer_resolved(cwd);
@@ -199,7 +199,7 @@ async fn execute_runs_on_caller_runtime_thread() {
         .expect("parent");
 
     let probe = ThreadProbeProvider {
-        inner: ScriptedProvider::with_text("same-thread"),
+        inner: ScriptedProvider::with_text("other-thread"),
         thread_id: Arc::new(Mutex::new(None)),
         saw_runtime: Arc::new(AtomicBool::new(false)),
     };
@@ -218,17 +218,17 @@ async fn execute_runs_on_caller_runtime_thread() {
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
     assert!(
         saw_runtime.load(Ordering::SeqCst),
-        "child LLM call must run inside the caller's Tokio runtime (nested Runtime::block_on panics)"
+        "child LLM call must run inside a Tokio runtime"
     );
-    assert_eq!(
+    assert_ne!(
         *recorded.lock().unwrap(),
         Some(caller_thread),
-        "child loop must not hop to a dedicated OS thread"
+        "child loop must hop to a dedicated OS thread"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn cancel_returns_even_if_child_llm_ignores_cancel() {
+async fn cancel_during_foreground_wait_stops_that_child() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path();
     let resolved = reviewer_resolved(cwd);
@@ -243,7 +243,7 @@ async fn cancel_returns_even_if_child_llm_ignores_cancel() {
         .await
         .expect("parent");
 
-    let hang = HangProvider::ignore_cancel();
+    let hang = HangProvider::until_cancel();
     let dropped = Arc::clone(&hang.dropped);
     let started = Arc::clone(&hang.started);
     let tool = launch_tool(resolved, sessions, &parent_id, Box::new(hang));
@@ -257,30 +257,32 @@ async fn cancel_returns_even_if_child_llm_ignores_cancel() {
     });
 
     let result = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(8),
         tool.execute(
             serde_json::json!({"agent": "reviewer", "prompt": "hang"}),
             exec_ctx("call_cancel", cancel),
         ),
     )
     .await
-    .expect("execute must return after cancel; joining a nested OS thread will hang");
+    .expect("execute must return after cancel");
     assert!(
-        result.content.contains("cancel") || result.level == ToolSignalLevel::Error,
+        result.content.contains("cancel")
+            || result.content.contains("Stopped")
+            || result.level == ToolSignalLevel::Error,
         "expected cancelled tool result, got: {}",
         result.content
     );
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(Duration::from_secs(2), async {
         while !dropped.load(Ordering::SeqCst) {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("dropping execute must drop the child LLM future");
+    .expect("stopping the child must drop its LLM future");
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn timeout_drops_child_llm_future() {
+async fn background_launch_returns_while_child_keeps_running() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path();
     let resolved = reviewer_resolved(cwd);
@@ -298,38 +300,39 @@ async fn timeout_drops_child_llm_future() {
     let hang = HangProvider::ignore_cancel();
     let dropped = Arc::clone(&hang.dropped);
     let started = Arc::clone(&hang.started);
-    let tool = launch_tool(resolved, sessions, &parent_id, Box::new(hang));
-    {
-        let fut = tool.execute(
-            serde_json::json!({"agent": "reviewer", "prompt": "hang"}),
-            exec_ctx("call_timeout", CancellationToken::new()),
-        );
-        tokio::pin!(fut);
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if started.load(Ordering::SeqCst) {
-                    break;
-                }
-                tokio::select! {
-                    biased;
-                    _ = &mut fut => panic!("hang provider completed before timeout"),
-                    _ = tokio::task::yield_now() => {}
-                }
-            }
-        })
-        .await
-        .expect("child LLM never started");
-
-        let elapsed = tokio::time::timeout(Duration::from_millis(150), &mut fut).await;
-        assert!(elapsed.is_err(), "execute must be interruptible by timeout");
-    }
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while !dropped.load(Ordering::SeqCst) {
+    let tool = launch_tool(resolved, Arc::clone(&sessions), &parent_id, Box::new(hang));
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        tool.execute(
+            serde_json::json!({
+                "agent": "reviewer",
+                "prompt": "hang",
+                "run_in_background": true
+            }),
+            exec_ctx("call_bg", CancellationToken::new()),
+        ),
+    )
+    .await
+    .expect("background launch must return without waiting for the child");
+    assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
+    assert!(result.content.contains("status: running"), "{}", result.content);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !started.load(Ordering::SeqCst) {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("timeout must drop the child LLM future, not leave a blocking thread running");
+    .expect("child LLM must start after launch returns");
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert!(
+        !dropped.load(Ordering::SeqCst),
+        "background child must keep running after launch returns"
+    );
+    let children = sessions
+        .data()
+        .list_child_ids_blocking(&parent_id)
+        .expect("children");
+    assert_eq!(children.len(), 1);
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -148,6 +148,7 @@ fn engines_json_off_no_lsp_tool() {
             String::new(),
         )),
         Arc::new(litecode::mcp::McpConnectionPool::new()),
+        Arc::new(litecode::tools::subagent::SubagentHub::new()),
     ));
     assert!(!tools.iter().any(|t| t.name() == "lsp"));
 }

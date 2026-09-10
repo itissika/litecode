@@ -590,6 +590,8 @@ export const NONE_TOOL_IDS = new Set([
   "plan",
   "todo",
   "subagent_launch",
+  "subagent_wait",
+  "subagent_stop",
 ]);
 
 /** MCP catalog ids (`mcp_*`) have no ALL/SAFE — bind is on/off only. */
@@ -610,18 +612,23 @@ export interface AgentListItem {
 
 export const PROTECTED_AGENT_IDS = new Set(["default", "compaction"]);
 
-export const SUBAGENT_SERIES_TOOL_IDS = new Set([
+export const SUBAGENT_SERIES_TOOL_IDS = [
   "subagent_launch",
-]);
+  "subagent_wait",
+  "subagent_stop",
+] as const;
 
 export function isSubagentBindableTool(entry: AvailableTool): boolean {
-  return !SUBAGENT_SERIES_TOOL_IDS.has(entry.id);
+  return !(SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes(entry.id);
 }
 
 /** Tools that form one closed loop: enable/disable together. */
 export const BASH_SERIES_TOOL_IDS = ["bash", "wait_shell", "kill_shell"] as const;
 
-const TOOL_ENABLE_SERIES: readonly (readonly string[])[] = [BASH_SERIES_TOOL_IDS];
+const TOOL_ENABLE_SERIES: readonly (readonly string[])[] = [
+  BASH_SERIES_TOOL_IDS,
+  SUBAGENT_SERIES_TOOL_IDS,
+];
 
 export function toolEnableSeries(toolId: string): readonly string[] | null {
   for (const series of TOOL_ENABLE_SERIES) {

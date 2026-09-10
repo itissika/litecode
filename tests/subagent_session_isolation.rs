@@ -21,7 +21,7 @@ use litecode::session::live::LifecycleEvent;
 use litecode::session::manager::SessionManager;
 use litecode::tool::Tool;
 use litecode::tool::trait_::ToolExecutionContext;
-use litecode::tools::subagent::SubagentLaunchTool;
+use litecode::tools::subagent::{SubagentHub, SubagentLaunchTool};
 use tokio_util::sync::CancellationToken;
 
 fn reviewer_resolved(cwd: &std::path::Path) -> litecode::config::ResolvedConfig {
@@ -62,6 +62,8 @@ fn launch_tool(
         Arc::new(engines.clone()),
         Arc::new(litecode::terminal::TerminalHub::new()),
     );
+    let hub = Arc::new(SubagentHub::new());
+    hub.attach_sessions(Arc::clone(&sessions));
     SubagentLaunchTool::new(
         resolved,
         "default",
@@ -75,6 +77,7 @@ fn launch_tool(
         sessions,
         parent_session_id,
         Arc::new(litecode::mcp::McpConnectionPool::new()),
+        hub,
     )
 }
 

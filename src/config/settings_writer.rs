@@ -967,7 +967,7 @@ fn validate_agent_id(id: &str) -> Result<()> {
 }
 
 /// Expand `last_applied_preset` into policy/path_mode for configurable tools.
-/// NONE tools (`plan` / `todo` / `subagent_launch`) are left untouched.
+/// NONE tools (`plan` / `todo` / `subagent_launch` / `subagent_wait` / `subagent_stop`) are left untouched.
 fn expand_binding_presets(tools: &mut HashMap<String, AgentToolBinding>) {
     for (tool_id, binding) in tools.iter_mut() {
         if tools::is_mcp_catalog_id(tool_id) {

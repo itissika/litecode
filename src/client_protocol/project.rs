@@ -447,6 +447,14 @@ fn project_with(
                 "waits": bash.waits,
             }),
         )),
+        InternalEvent::SubagentJobs { snapshot } => Some(notification(
+            super::protocol::methods::SUBAGENT_JOBS,
+            serde_json::json!({
+                "session_id": session_id,
+                "jobs": snapshot.jobs,
+                "waits": snapshot.waits,
+            }),
+        )),
     }
 }
 
@@ -931,6 +939,7 @@ pub fn buffer_snapshot(
         context_mode: binding.context_mode.clone(),
         max_file_revert_k: None,
         bash: None,
+        subagent: None,
         todos: Vec::new(),
         active_plan_path: None,
     }

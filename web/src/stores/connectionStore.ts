@@ -23,9 +23,11 @@ import type {
   TurnEventEnvelope,
   TurnFinished,
   BashJobsNotification,
+  SubagentJobsNotification,
 } from "../api/types";
 import type { WorkspaceChangeKind } from "../api/workspace";
 import { useBashStore } from "./bashStore";
+import { useSubagentStore } from "./subagentStore";
 import { useToastStore } from "./toastStore";
 import { useEngineStore } from "./engineStore";
 
@@ -307,6 +309,17 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               useBashStore.getState().applySnapshot(bash.session_id, {
                 jobs: bash.jobs ?? [],
                 waits: bash.waits ?? [],
+              });
+            }
+            return;
+          }
+
+          case "subagent/jobs": {
+            const jobs = params as unknown as SubagentJobsNotification;
+            if (jobs.session_id) {
+              useSubagentStore.getState().applySnapshot(jobs.session_id, {
+                jobs: jobs.jobs ?? [],
+                waits: jobs.waits ?? [],
               });
             }
             return;

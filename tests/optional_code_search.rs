@@ -381,6 +381,7 @@ async fn build_tool_list_includes_code_search_after_warmup() {
             String::new(),
         )),
         Arc::new(litecode::mcp::McpConnectionPool::new()),
+        Arc::new(litecode::tools::subagent::SubagentHub::new()),
     )
     .await;
     assert!(tools.iter().any(|t| t.name() == "code_search"));

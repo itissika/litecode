@@ -1,6 +1,8 @@
 import { parseFunctionArguments } from "../api/adapter";
 import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
 import { KillShellToolView } from "./toolviews/KillShellToolView";
+import { SubagentStopToolView } from "./toolviews/SubagentStopToolView";
+import { SubagentWaitToolView } from "./toolviews/SubagentWaitToolView";
 import { WaitShellToolView } from "./toolviews/WaitShellToolView";
 import { deriveToolStatus } from "./toolCallStatus";
 import { ToolIcon } from "./ToolIcon";
@@ -31,6 +33,24 @@ export function InlineToolRow({
       <ToolIcon name={toolName} status={status} streaming={streaming} />
       {toolName === "wait_shell" ? (
         <WaitShellToolView
+          name={toolName}
+          status={status}
+          input={input}
+          output={output}
+          call_id={call.call_id}
+          sessionId={sessionId}
+        />
+      ) : toolName === "subagent_wait" ? (
+        <SubagentWaitToolView
+          name={toolName}
+          status={status}
+          input={input}
+          output={output}
+          call_id={call.call_id}
+          sessionId={sessionId}
+        />
+      ) : toolName === "subagent_stop" ? (
+        <SubagentStopToolView
           name={toolName}
           status={status}
           input={input}

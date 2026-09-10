@@ -6,7 +6,9 @@ import { BashToolView } from "./BashToolView";
 import { EditToolView } from "./EditToolView";
 import { FileParamView } from "./FileParamView";
 import { KillShellToolView } from "./KillShellToolView";
+import { SubagentStopToolView } from "./SubagentStopToolView";
 import { SubagentToolView } from "./SubagentToolView";
+import { SubagentWaitToolView } from "./SubagentWaitToolView";
 import { WaitShellToolView } from "./WaitShellToolView";
 import { WriteToolView } from "./WriteToolView";
 
@@ -37,6 +39,8 @@ export const TOOL_VIEWS: Record<
     wait_shell: WaitShellToolView,
     kill_shell: KillShellToolView,
     subagent_launch: SubagentToolView,
+    subagent_wait: SubagentWaitToolView,
+    subagent_stop: SubagentStopToolView,
   };
 
 /** Returns the dedicated view for a tool, or undefined for fallback rendering. */
@@ -56,6 +60,8 @@ const OUTPUT_OWNED_BY_VIEW: ReadonlySet<string> = new Set([
   "wait_shell",
   "kill_shell",
   "subagent_launch",
+  "subagent_wait",
+  "subagent_stop",
   "edit",
   "write",
 ]);

@@ -427,6 +427,7 @@ fn disabled_binding_changes_tools_count_after_reload() {
             "test-parent-session",
             common::test_sessions_manager(""),
             Arc::clone(&runtime.mcp_pool),
+            Arc::clone(&runtime.subagent_hub),
         ))
         .len();
     assert!(
@@ -460,6 +461,7 @@ fn disabled_binding_changes_tools_count_after_reload() {
             "test-parent-session",
             common::test_sessions_manager(""),
             Arc::clone(&runtime.mcp_pool),
+            Arc::clone(&runtime.subagent_hub),
         ))
         .len();
 
@@ -1446,6 +1448,7 @@ async fn settings_custom_tool_crud_enable_bind_execute_and_delete() {
             "test-parent-session",
             common::test_sessions_manager(""),
             std::sync::Arc::new(litecode::mcp::McpConnectionPool::new()),
+            std::sync::Arc::new(litecode::tools::subagent::SubagentHub::new()),
         )
         .await;
         let tool = tools.iter().find(|t| t.name() == id).expect("in tool list");

@@ -11,6 +11,8 @@ describe("processToolBucket", () => {
   it("excludes wait_shell and kill_shell from header counts", () => {
     expect(processToolBucket("wait_shell")).toBeNull();
     expect(processToolBucket("kill_shell")).toBeNull();
+    expect(processToolBucket("subagent_wait")).toBeNull();
+    expect(processToolBucket("subagent_stop")).toBeNull();
   });
 
   it("groups remaining tools under tool", () => {
@@ -23,6 +25,9 @@ describe("isInlineTool", () => {
   it("identifies auxiliary bash-series tools", () => {
     expect(isInlineTool("wait_shell")).toBe(true);
     expect(isInlineTool("kill_shell")).toBe(true);
+    expect(isInlineTool("subagent_wait")).toBe(true);
+    expect(isInlineTool("subagent_stop")).toBe(true);
     expect(isInlineTool("bash")).toBe(false);
+    expect(isInlineTool("subagent_launch")).toBe(false);
   });
 });

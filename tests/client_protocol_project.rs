@@ -308,6 +308,38 @@ fn bash_jobs_projects_to_bash_jobs_notification() {
 }
 
 #[test]
+fn subagent_jobs_projects_to_subagent_jobs_notification() {
+    let snap = sample_snapshot();
+    let msg = project::project(
+        &InternalEvent::SubagentJobs {
+            snapshot: litecode::tools::subagent::SubagentJobsSnapshot {
+                jobs: vec![litecode::tools::subagent::SubagentJobWire {
+                    id: "child-a".into(),
+                    call_id: "call_a".into(),
+                    agent_name: "reviewer".into(),
+                    prompt_preview: "review this".into(),
+                    started_at_ms: 42,
+                }],
+                waits: vec![litecode::tools::subagent::SubagentWaitWire {
+                    call_id: "wait_1".into(),
+                    watching_id: Some("child-a".into()),
+                    started_at_ms: 40,
+                    deadline_ms: Some(5000),
+                }],
+            },
+        },
+        &snap,
+    )
+    .unwrap();
+    assert!(method_is(&msg, methods::SUBAGENT_JOBS));
+    assert_eq!(msg["params"]["session_id"], "s1");
+    assert_eq!(msg["params"]["jobs"][0]["id"], "child-a");
+    assert_eq!(msg["params"]["jobs"][0]["call_id"], "call_a");
+    assert_eq!(msg["params"]["waits"][0]["call_id"], "wait_1");
+    assert!(msg["params"].get("turn_id").is_none());
+}
+
+#[test]
 fn session_snapshot_includes_bash_when_set() {
     let mut snap = sample_snapshot();
     snap.bash = Some(litecode::terminal::BashJobsSnapshot {

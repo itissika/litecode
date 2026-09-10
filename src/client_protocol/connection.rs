@@ -471,6 +471,7 @@ pub async fn handle_jsonrpc(
                 return false;
             };
             snapshot.bash = Some(terminal_hub.jobs.wire_snapshot(&sid));
+            snapshot.subagent = Some(session.runtime.subagent_hub.wire_snapshot(&sid));
             for msg in session.take_all_outgoing() {
                 emit(sink, msg);
             }

@@ -96,7 +96,9 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
                 action: PermissionAction::Allow,
             }],
         },
-        "kill_shell" | "wait_shell" | "session_search" => ToolPolicy::allow_all(),
+        "kill_shell" | "wait_shell" | "session_search" | "subagent_wait" | "subagent_stop" => {
+            ToolPolicy::allow_all()
+        }
         "webfetch" | "websearch" | "code_search" | "lsp" => ToolPolicy {
             default: PermissionAction::Ask,
             default_id: super::policy::DEFAULT_RULE_ID.into(),

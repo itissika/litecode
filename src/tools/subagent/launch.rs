@@ -1,26 +1,24 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 use crate::config::ResolvedConfig;
 use crate::config::schema::AgentRole;
-use crate::config::workspace::workspace_root_from_paths;
 use crate::context_pipeline::Context;
 use crate::engines::WorkspaceEngines;
 use crate::ide_base::IdeBaseHandle;
 use crate::llm::LlmProvider;
-use crate::runtime::ProviderRegistry;
-use crate::runtime::TurnHandle;
-use crate::runtime::llm_resolve::binding_for_agent;
-use crate::runtime::observer::{ChannelObserver, InternalEnvelope, TurnTokenStats};
 use crate::session::manager::SessionManager;
 use crate::session::store::Session;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
-use crate::types::{LitecodeError, ToolCallResult};
+use crate::types::ToolCallResult;
+
+use super::hub::{
+    FOREGROUND_WAIT, LaunchSpec, SpawnDeps, SubagentHub, WaitOutcome, clamp_wait_secs,
+};
+use super::status;
 
 pub struct SubagentLaunchTool {
     resolved: ResolvedConfig,
@@ -35,12 +33,12 @@ pub struct SubagentLaunchTool {
     sessions: Arc<SessionManager>,
     parent_session_id: String,
     mcp_pool: Arc<crate::mcp::McpConnectionPool>,
-    /// The parent tool `call_id` captured from the execution context (REV-9:
-    /// passed explicitly, never via TLS).
+    hub: Arc<SubagentHub>,
     parent_call_id: String,
 }
 
 impl SubagentLaunchTool {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         resolved: ResolvedConfig,
         parent_agent_id: impl Into<String>,
@@ -54,6 +52,7 @@ impl SubagentLaunchTool {
         sessions: Arc<SessionManager>,
         parent_session_id: impl Into<String>,
         mcp_pool: Arc<crate::mcp::McpConnectionPool>,
+        hub: Arc<SubagentHub>,
     ) -> Self {
         Self {
             resolved,
@@ -68,6 +67,7 @@ impl SubagentLaunchTool {
             sessions,
             parent_session_id: parent_session_id.into(),
             mcp_pool,
+            hub,
             parent_call_id: String::new(),
         }
     }
@@ -86,6 +86,7 @@ impl SubagentLaunchTool {
             sessions: Arc::clone(&self.sessions),
             parent_session_id: self.parent_session_id.clone(),
             mcp_pool: Arc::clone(&self.mcp_pool),
+            hub: Arc::clone(&self.hub),
             parent_call_id: self.parent_call_id.clone(),
         }
     }
@@ -98,53 +99,10 @@ impl SubagentLaunchTool {
             .unwrap_or_default()
     }
 
-    /// Allowlist catalog for the model: `id (description)` when description is set, else bare `id`.
     fn format_available_subagents(&self) -> Option<String> {
         format_available_subagents(&self.resolved, &self.allowed_subagent_ids())
     }
-}
 
-/// Format allowlisted subagent ids with their config descriptions for tool discovery.
-fn format_available_subagents(resolved: &ResolvedConfig, allowed: &[String]) -> Option<String> {
-    if allowed.is_empty() {
-        return None;
-    }
-    let catalog = allowed
-        .iter()
-        .map(|id| match resolved.agents().get(id) {
-            Some(profile) if !profile.description.trim().is_empty() => {
-                format!("{id} ({})", profile.description.trim())
-            }
-            _ => id.clone(),
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    Some(catalog)
-}
-
-struct LaunchSpec {
-    agent_name: String,
-    prompt: String,
-    model_id_override: Option<String>,
-    max_steps_override: Option<u32>,
-}
-
-/// Cancels the child turn if `execute` is dropped (pipeline timeout) or returns.
-struct ChildTurnGuard {
-    sessions: Arc<SessionManager>,
-    child_id: String,
-    turn_id: String,
-    cancel: CancellationToken,
-}
-
-impl Drop for ChildTurnGuard {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-        let _ = self.sessions.finish_turn(&self.child_id, &self.turn_id);
-    }
-}
-
-impl SubagentLaunchTool {
     fn parse_launch(&self, input: &Value) -> std::result::Result<LaunchSpec, ToolCallResult> {
         let agent_name = crate::tool::require_nonempty_string(input, "agent")
             .map_err(ToolCallResult::error)?
@@ -221,189 +179,112 @@ impl SubagentLaunchTool {
         })
     }
 
-    fn map_turn_result(
-        result: crate::types::Result<String>,
-        stats: TurnTokenStats,
-        child_session_id: &str,
-    ) -> ToolCallResult {
-        let mut meta = serde_json::to_value(stats).unwrap_or_default();
-        if let Some(obj) = meta.as_object_mut()
-            && !child_session_id.is_empty()
-        {
-            obj.insert(
-                "child_session_id".into(),
-                serde_json::Value::String(child_session_id.to_string()),
-            );
-        }
-        match result {
-            Ok(text) => ToolCallResult::ok_with_metadata(text, meta),
-            Err(LitecodeError::Canceled) => ToolCallResult::error("subagent cancelled"),
-            Err(e) => ToolCallResult::error(format!("agent error: {e}")),
-        }
-    }
-
     async fn launch(&self, input: Value) -> ToolCallResult {
         let spec = match self.parse_launch(&input) {
             Ok(spec) => spec,
             Err(e) => return e,
         };
+        let run_in_background = input["run_in_background"].as_bool().unwrap_or(false);
+        let foreground_wait = input["timeout"]
+            .as_u64()
+            .and_then(clamp_wait_secs)
+            .unwrap_or(FOREGROUND_WAIT);
 
-        let _lease = match self
-            .sessions
-            .try_acquire_subagent_slot(&self.parent_session_id)
-        {
-            Ok(lease) => lease,
-            Err(e) => return ToolCallResult::error(e.to_string()),
+        let deps = SpawnDeps {
+            resolved: self.resolved.clone(),
+            provider: self.provider.box_clone(),
+            api_key: self.api_key.clone(),
+            depth: self.depth,
+            engine_manager: self.engine_manager.clone(),
+            workspace_engines: self.workspace_engines.clone(),
+            ide: Arc::clone(&self.ide),
+            sessions: Arc::clone(&self.sessions),
+            mcp_pool: Arc::clone(&self.mcp_pool),
         };
 
-        let child_cancel = self.parent_cancel.child_token();
-        let resolved = self.resolved.clone();
-        let project = workspace_root_from_paths(resolved.paths())
-            .to_string_lossy()
-            .to_string();
-
-        let seed_model = spec.model_id_override.as_deref().or_else(|| {
-            resolved
-                .agents()
-                .get(&spec.agent_name)
-                .map(|p| p.model_ref.as_str())
-                .filter(|s| !s.is_empty())
-        });
-
-        let child_session_id = match self.sessions.open_child_session(
-            &project,
-            &spec.agent_name,
-            seed_model,
-            &self.parent_session_id,
-            &self.parent_call_id,
-        ) {
-            Ok(id) => id,
-            Err(e) => {
-                return ToolCallResult::error(format!("child session creation failed: {e}"));
-            }
-        };
-
-        let _ = self.sessions.publish_internal(
-            &self.parent_session_id,
-            crate::runtime::observer::InternalEvent::SubagentBound {
-                call_id: self.parent_call_id.clone(),
-                child_session_id: child_session_id.clone(),
-            },
-        );
-
-        let abort_child = |sessions: &SessionManager, child_id: &str| {
-            let _ = sessions.remove_session(child_id);
-        };
-
-        let mut registry = ProviderRegistry::new();
-        let turn_llm = match binding_for_agent(
-            &resolved,
-            &mut registry,
-            &spec.agent_name,
-            spec.model_id_override.as_deref(),
-            0,
-        ) {
-            Ok(mut binding) => {
-                // Same caller runtime as the parent turn — share the HTTP client.
-                binding.provider = Arc::from(self.provider.box_clone());
-                binding.api_key = self.api_key.clone();
-                binding
-            }
-            Err(e) => {
-                abort_child(&self.sessions, &child_session_id);
-                return ToolCallResult::error(format!("llm binding failed: {e}"));
-            }
-        };
-
-        let (event_tx, event_rx) = mpsc::unbounded_channel::<InternalEnvelope>();
-        let observer = ChannelObserver::new(event_tx);
-
-        let mut runtime = match crate::runtime::AgentRuntime::with_mcp_pool(
-            resolved,
-            child_session_id.clone(),
-            Arc::clone(&self.sessions),
-            turn_llm,
-            &spec.agent_name,
-            self.depth + 1,
-            crate::permission::deny_permission_sink(),
-            observer,
-            Some(child_cancel.clone()),
-            spec.max_steps_override,
-            self.engine_manager.clone(),
-            self.workspace_engines.clone(),
-            Arc::clone(&self.ide),
-            Arc::clone(&self.mcp_pool),
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                abort_child(&self.sessions, &child_session_id);
-                return ToolCallResult::error(format!("agent runtime init failed: {e}"));
-            }
-        };
-
-        let turn_id = Uuid::new_v4().to_string();
-        let step_max = runtime.agent_config.max_steps;
-        let cancel = runtime.cancel_token();
-        let turn_handle = TurnHandle {
-            handle: None,
-            rx: event_rx,
-            cancel,
-            turn_id: turn_id.clone(),
-            step_max,
-        };
-
-        if let Err(e) = self.sessions.reserve_turn(
-            &child_session_id,
-            turn_id.clone(),
-            step_max,
-            &spec.agent_name,
-            &project,
-        ) {
-            abort_child(&self.sessions, &child_session_id);
-            return ToolCallResult::error(format!("reserve_turn failed: {e}"));
-        }
-        if let Err(e) = self
-            .sessions
-            .start_turn(
-                &child_session_id,
-                turn_handle,
-                &spec.agent_name,
-                &project,
-                Arc::clone(&self.sessions),
+        let child_id = match self
+            .hub
+            .spawn(
+                &self.parent_session_id,
+                &self.parent_call_id,
+                spec,
+                deps,
             )
             .await
         {
-            abort_child(&self.sessions, &child_session_id);
-            return ToolCallResult::error(format!("start_turn failed: {e}"));
-        }
-
-        let _guard = ChildTurnGuard {
-            sessions: Arc::clone(&self.sessions),
-            child_id: child_session_id.clone(),
-            turn_id: turn_id.clone(),
-            cancel: child_cancel.clone(),
+            Ok(id) => id,
+            Err(e) => return ToolCallResult::error(e),
         };
 
-        let result = tokio::select! {
-            biased;
-            _ = child_cancel.cancelled() => {
-                Err(LitecodeError::Canceled)
-            }
-            result = runtime.run_with_turn(&spec.prompt, &turn_id, step_max) => result
-        };
-        let stats = std::mem::take(&mut runtime.turn_token_stats);
-        drop(runtime);
-        if !child_cancel.is_cancelled() && !matches!(&result, Err(LitecodeError::Canceled)) {
-            for _ in 0..200 {
-                if !self.sessions.is_turn_running(&child_session_id).await {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
+        if run_in_background {
+            let jobs = self.hub.running(&self.parent_session_id);
+            return with_child_meta(
+                ToolCallResult::ok(status::format_running_status(&child_id, &jobs)),
+                &child_id,
+            );
         }
 
-        Self::map_turn_result(result, stats, &child_session_id)
+        match self.hub.wait(
+            &self.parent_session_id,
+            Some(&child_id),
+            Some(foreground_wait),
+            &self.parent_cancel,
+            false,
+        ) {
+            WaitOutcome::Exited(notice) => {
+                let jobs = self.hub.running(&self.parent_session_id);
+                with_child_meta(
+                    ToolCallResult::ok(status::format_completed_status(&notice, &jobs)),
+                    &child_id,
+                )
+            }
+            WaitOutcome::TimedOut => {
+                let jobs = self.hub.running(&self.parent_session_id);
+                with_child_meta(
+                    ToolCallResult::ok(status::format_running_status(&child_id, &jobs)),
+                    &child_id,
+                )
+            }
+            WaitOutcome::Cancelled => {
+                let _ = self.hub.stop(&self.parent_session_id, &child_id);
+                let jobs = self.hub.running(&self.parent_session_id);
+                with_child_meta(
+                    ToolCallResult::error(status::format_stopped_status(&child_id, &jobs)),
+                    &child_id,
+                )
+            }
+            WaitOutcome::UnknownId(unknown) => {
+                let jobs = self.hub.running(&self.parent_session_id);
+                ToolCallResult::error(status::format_unknown_task(&unknown, &jobs))
+            }
+        }
     }
+}
+
+fn with_child_meta(mut result: ToolCallResult, child_id: &str) -> ToolCallResult {
+    result.metadata = Some(serde_json::json!({ "child_session_id": child_id }));
+    result
+}
+
+/// Format allowlisted subagent ids with their config descriptions for tool discovery.
+pub(crate) fn format_available_subagents(
+    resolved: &ResolvedConfig,
+    allowed: &[String],
+) -> Option<String> {
+    if allowed.is_empty() {
+        return None;
+    }
+    let catalog = allowed
+        .iter()
+        .map(|id| match resolved.agents().get(id) {
+            Some(profile) if !profile.description.trim().is_empty() => {
+                format!("{id} ({})", profile.description.trim())
+            }
+            _ => id.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(catalog)
 }
 
 impl Tool for SubagentLaunchTool {
@@ -419,6 +300,9 @@ impl Tool for SubagentLaunchTool {
         let mut tool = self.clone_for_call();
         tool.parent_call_id = execution.call_id.clone();
         tool.parent_cancel = execution.cancel.clone();
+        if !execution.session_id.is_empty() {
+            tool.parent_session_id = execution.session_id.clone();
+        }
         Box::pin(async move {
             let mut result = tool.launch(input).await.finalize_signals();
             let max = tool.max_result_size();
@@ -455,6 +339,14 @@ impl Tool for SubagentLaunchTool {
                 "max_steps": {
                     "type": "integer",
                     "description": "Optional max_steps override"
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": "Return immediately with child_session_id; the subagent keeps running."
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Seconds to wait in the foreground before detaching (1-600, default 30). Ignored when run_in_background is true."
                 }
             },
             "required": ["agent", "prompt"]
@@ -472,9 +364,11 @@ impl Tool for SubagentLaunchTool {
 
     fn description(&self, _ctx: &Context) -> String {
         match self.format_available_subagents() {
-            None => "Delegate a task to a sub-agent and wait for its final output.".into(),
+            None => {
+                "Delegate a task to a sub-agent. Launch returns after a short wait or immediately when run_in_background; use subagent_wait / subagent_stop for background workers.".into()
+            }
             Some(catalog) => format!(
-                "Delegate a task to a sub-agent and wait for its final output. Available: {catalog}."
+                "Delegate a task to a sub-agent. Launch returns after a short wait or immediately when run_in_background; use subagent_wait / subagent_stop. Available: {catalog}."
             ),
         }
     }
@@ -488,8 +382,15 @@ impl Tool for SubagentLaunchTool {
     }
 
     fn timeout(&self) -> Option<u64> {
-        // Pipeline timeout is the fallback; execute() cancels the child token on drop.
-        Some(600)
+        None
+    }
+
+    fn agent_subagents(&self) -> Option<Arc<SubagentHub>> {
+        Some(Arc::clone(&self.hub))
+    }
+
+    fn set_active_session(&self, session_id: String) {
+        let _ = session_id;
     }
 }
 

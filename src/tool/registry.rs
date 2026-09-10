@@ -15,9 +15,10 @@ use crate::tools::{
     bash::BashTool, code_search::CodeSearchTool, custom::CustomTool, edit::EditTool,
     glob::GlobTool, grep::GrepTool, kill_shell::KillShellTool, lsp::LspTool, mcp_tool::McpTool,
     plan::PlanTool, read::ReadTool, session_search::SessionSearchTool,
-    subagent::SubagentLaunchTool, todo::TodoWriteTool, wait_shell::WaitShellTool,
+    subagent::{SubagentLaunchTool, SubagentStopTool, SubagentWaitTool}, todo::TodoWriteTool, wait_shell::WaitShellTool,
     webfetch::WebFetchTool, websearch::WebSearchTool, write::WriteTool,
 };
+
 fn builtin_tool(
     id: &str,
     sessions: Arc<SessionManager>,
@@ -147,6 +148,7 @@ pub async fn build_tool_list(
     parent_session_id: &str,
     sessions: Arc<SessionManager>,
     mcp_pool: Arc<McpConnectionPool>,
+    subagent_hub: Arc<crate::tools::subagent::SubagentHub>,
 ) -> Vec<Arc<dyn Tool>> {
     let mut mcp_schemas: HashMap<String, Vec<McpToolSchema>> = HashMap::new();
     let servers = resolved.mcp_servers();
@@ -196,22 +198,33 @@ pub async fn build_tool_list(
             continue;
         }
 
-        if depth == 0 && tool_id == "subagent_launch" {
-            let subagent_tool = Arc::new(SubagentLaunchTool::new(
-                resolved.clone(),
-                agent_id,
-                provider.box_clone(),
-                api_key.to_string(),
-                depth,
-                parent_cancel.clone(),
-                engines.clone(),
-                workspace_engines.clone(),
-                Arc::clone(&ide),
-                Arc::clone(&sessions),
-                parent_session_id.to_string(),
-                Arc::clone(&mcp_pool),
-            ));
-            tools.push(subagent_tool);
+        if depth == 0 && tool_id.starts_with("subagent_") {
+            match tool_id.as_str() {
+                "subagent_launch" => {
+                    tools.push(Arc::new(SubagentLaunchTool::new(
+                        resolved.clone(),
+                        agent_id,
+                        provider.box_clone(),
+                        api_key.to_string(),
+                        depth,
+                        parent_cancel.clone(),
+                        engines.clone(),
+                        workspace_engines.clone(),
+                        Arc::clone(&ide),
+                        Arc::clone(&sessions),
+                        parent_session_id.to_string(),
+                        Arc::clone(&mcp_pool),
+                        Arc::clone(&subagent_hub),
+                    )));
+                }
+                "subagent_wait" => {
+                    tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(&subagent_hub))));
+                }
+                "subagent_stop" => {
+                    tools.push(Arc::new(SubagentStopTool::new(Arc::clone(&subagent_hub))));
+                }
+                _ => {}
+            }
             continue;
         }
 
@@ -342,6 +355,7 @@ mod tests {
             "test-parent-session",
             dummy_sessions(),
             Arc::new(McpConnectionPool::new()),
+            Arc::new(crate::tools::subagent::SubagentHub::new()),
         ))
     }
 
@@ -360,6 +374,8 @@ mod tests {
         assert!(names.contains(&"todo"));
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"subagent_launch"));
+        assert!(names.contains(&"subagent_wait"));
+        assert!(names.contains(&"subagent_stop"));
         assert!(names.contains(&"session_search"));
     }
 
@@ -442,6 +458,8 @@ mod tests {
         let tools = list_tools(&resolved, 1);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"subagent_launch"));
+        assert!(!names.contains(&"subagent_wait"));
+        assert!(!names.contains(&"subagent_stop"));
     }
 
     #[test]

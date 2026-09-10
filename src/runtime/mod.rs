@@ -5,6 +5,7 @@ pub mod llm_resolve;
 pub mod observer;
 pub(crate) mod phase;
 pub mod provider_registry;
+pub mod subagent_auto_turn;
 
 pub use context::RuntimeContext;
 pub use llm_resolve::{
@@ -61,6 +62,8 @@ pub struct RuntimeHandle {
     pub ide: Arc<IdeBaseHandle>,
     /// Process-level MCP stdio connections (start / restart / stop).
     pub mcp_pool: Arc<McpConnectionPool>,
+    /// Process-level subagent workers (launch / wait / stop).
+    pub subagent_hub: Arc<crate::tools::subagent::SubagentHub>,
     global_db_path: PathBuf,
     settings_revision: Arc<AtomicU64>,
     loaded_revision: Arc<AtomicU64>,
@@ -94,6 +97,7 @@ impl RuntimeHandle {
             workspace_engines,
             ide,
             mcp_pool: Arc::new(McpConnectionPool::new()),
+            subagent_hub: Arc::new(crate::tools::subagent::SubagentHub::new()),
             global_db_path: global_db_path.into(),
             settings_revision,
             loaded_revision: Arc::new(AtomicU64::new(loaded)),
@@ -310,6 +314,7 @@ impl RuntimeHandle {
             (*self.workspace_engines).clone(),
             Arc::clone(&self.ide),
             Arc::clone(&self.mcp_pool),
+            Arc::clone(&self.subagent_hub),
         )
     }
 }
@@ -326,6 +331,7 @@ impl Clone for RuntimeHandle {
             workspace_engines: Arc::clone(&self.workspace_engines),
             ide: Arc::clone(&self.ide),
             mcp_pool: Arc::clone(&self.mcp_pool),
+            subagent_hub: Arc::clone(&self.subagent_hub),
             global_db_path: self.global_db_path.clone(),
             settings_revision: Arc::clone(&self.settings_revision),
             loaded_revision: Arc::new(AtomicU64::new(0)),
@@ -438,6 +444,7 @@ struct BuildToolParams {
     sessions: Arc<SessionManager>,
     permission_sink: Arc<dyn PermissionSink>,
     mcp_pool: Arc<McpConnectionPool>,
+    subagent_hub: Arc<crate::tools::subagent::SubagentHub>,
 }
 
 impl AgentRuntime {
@@ -480,6 +487,7 @@ impl AgentRuntime {
             workspace_engines,
             ide,
             Arc::new(McpConnectionPool::new()),
+            Arc::new(crate::tools::subagent::SubagentHub::new()),
         )
     }
 
@@ -499,6 +507,7 @@ impl AgentRuntime {
         workspace_engines: WorkspaceEngines,
         ide: Arc<IdeBaseHandle>,
         mcp_pool: Arc<McpConnectionPool>,
+        subagent_hub: Arc<crate::tools::subagent::SubagentHub>,
     ) -> Result<Self> {
         let cancel = cancel.unwrap_or_default();
 
@@ -546,6 +555,7 @@ impl AgentRuntime {
             sessions: Arc::clone(&sessions),
             permission_sink,
             mcp_pool,
+            subagent_hub,
         });
 
         let runtime = Self {
@@ -804,6 +814,7 @@ impl AgentRuntime {
                 &params.parent_session_id,
                 Arc::clone(&params.sessions),
                 Arc::clone(&params.mcp_pool),
+                Arc::clone(&params.subagent_hub),
             )
             .await;
 

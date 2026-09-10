@@ -5,9 +5,15 @@ export function processToolBucket(name: string): ProcessToolBucket | null {
   if (name === "bash") return "bash";
   if (name === "edit") return "edit";
   if (name === "wait_shell" || name === "kill_shell") return null;
+  if (name === "subagent_wait" || name === "subagent_stop") return null;
   return "tool";
 }
 
 export function isInlineTool(name: string): boolean {
-  return name === "wait_shell" || name === "kill_shell";
+  return (
+    name === "wait_shell" ||
+    name === "kill_shell" ||
+    name === "subagent_wait" ||
+    name === "subagent_stop"
+  );
 }

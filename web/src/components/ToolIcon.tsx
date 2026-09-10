@@ -29,6 +29,8 @@ const NAME_GLYPH: Record<string, Glyph> = {
   bash: TerminalIcon,
   wait_shell: HourglassIcon,
   kill_shell: StopIcon,
+  subagent_wait: HourglassIcon,
+  subagent_stop: StopIcon,
   read: FileTextIcon,
   write: FilePlusIcon,
   edit: PencilIcon,

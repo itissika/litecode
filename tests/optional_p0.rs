@@ -222,6 +222,7 @@ fn settings_reload_reconciles_engine_manager() {
             String::new(),
         )),
         Arc::clone(&runtime.mcp_pool),
+        Arc::clone(&runtime.subagent_hub),
     ));
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     assert!(names.contains(&"webfetch"));

@@ -13,6 +13,8 @@ describe("settings helpers", () => {
     expect(isConfigurableTool("read")).toBe(true);
     expect(isConfigurableTool("plan")).toBe(false);
     expect(isConfigurableTool("subagent_launch")).toBe(false);
+    expect(isConfigurableTool("subagent_wait")).toBe(false);
+    expect(isConfigurableTool("subagent_stop")).toBe(false);
     expect(isConfigurableTool("mcp_github")).toBe(false);
     expect(isConfigurableTool("echo_py")).toBe(true);
   });
@@ -61,7 +63,9 @@ describe("settings helpers", () => {
     };
     expect(isSubagentBindableTool(webfetch)).toBe(true);
     expect(isSubagentBindableTool(launch)).toBe(false);
-    expect(SUBAGENT_SERIES_TOOL_IDS.has("subagent_launch")).toBe(true);
+    expect((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_launch")).toBe(true);
+    expect((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_wait")).toBe(true);
+    expect((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_stop")).toBe(true);
   });
 
   it("links bash wait_shell kill_shell as one enable series", async () => {
@@ -108,6 +112,42 @@ describe("settings helpers", () => {
     });
     expect(profile.tools.wait_shell?.enabled).toBe(true);
     expect(profile.tools.kill_shell?.enabled).toBe(true);
+  });
+
+  it("links subagent launch wait stop as one enable series", async () => {
+    const {
+      SUBAGENT_SERIES_TOOL_IDS,
+      applyToolEnabled,
+      syncToolEnableSeries,
+      toolEnableSeries,
+    } = await import("./settings");
+    expect([...SUBAGENT_SERIES_TOOL_IDS]).toEqual([
+      "subagent_launch",
+      "subagent_wait",
+      "subagent_stop",
+    ]);
+    expect(toolEnableSeries("subagent_wait")).toEqual([
+      "subagent_launch",
+      "subagent_wait",
+      "subagent_stop",
+    ]);
+
+    const enabled = applyToolEnabled({}, "subagent_launch", true);
+    expect(enabled.subagent_launch.enabled).toBe(true);
+    expect(enabled.subagent_wait.enabled).toBe(true);
+    expect(enabled.subagent_stop.enabled).toBe(true);
+
+    const disabled = applyToolEnabled(enabled, "subagent_stop", false);
+    expect(disabled.subagent_launch.enabled).toBe(false);
+    expect(disabled.subagent_wait.enabled).toBe(false);
+    expect(disabled.subagent_stop.enabled).toBe(false);
+
+    const mixed = syncToolEnableSeries({
+      subagent_launch: { enabled: true, last_applied_preset: null },
+    });
+    expect(mixed.subagent_launch.enabled).toBe(true);
+    expect(mixed.subagent_wait.enabled).toBe(true);
+    expect(mixed.subagent_stop.enabled).toBe(true);
   });
 
   it("identifies protected agents", async () => {

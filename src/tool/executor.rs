@@ -443,6 +443,22 @@ pub async fn run_tool(
                 ));
         }
     }
+    if tu_name != "subagent_wait"
+        && let Some(hub) = tools.iter().find_map(|t| t.agent_subagents())
+    {
+        let notices = hub.take_mailbox(session_id);
+        if !notices.is_empty() {
+            let jobs = hub.running(session_id);
+            if !output.content.ends_with('\n') {
+                output.content.push('\n');
+            }
+            output
+                .content
+                .push_str(&crate::tools::subagent::status::format_exit_reminder(
+                    &notices, &jobs,
+                ));
+        }
+    }
 
     tracing::info!(
         tool = %tu_name,

@@ -85,6 +85,14 @@ impl HangProvider {
             ignore_cancel: true,
         }
     }
+
+    pub fn until_cancel() -> Self {
+        Self {
+            started: Arc::new(AtomicBool::new(false)),
+            dropped: Arc::new(AtomicBool::new(false)),
+            ignore_cancel: false,
+        }
+    }
 }
 
 struct DropNotify(Arc<AtomicBool>);

@@ -328,6 +328,7 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
             String::new(),
         )),
         Arc::clone(&pool),
+        Arc::new(litecode::tools::subagent::SubagentHub::new()),
     )
     .await;
     let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();

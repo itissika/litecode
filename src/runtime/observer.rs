@@ -258,6 +258,10 @@ pub enum InternalEvent {
     BashJobs {
         snapshot: crate::terminal::BashJobsSnapshot,
     },
+    /// Session-scoped subagent workers (running + current waits). Projected to `subagent/jobs`.
+    SubagentJobs {
+        snapshot: crate::tools::subagent::SubagentJobsSnapshot,
+    },
     Error(TurnError),
 }
 

@@ -414,6 +414,8 @@ export interface SessionSnapshot {
   max_file_revert_k?: number | null;
   /** Running agent bash jobs + wait_shell waiters (reconnect hydrate). */
   bash?: BashJobsSnapshot | null;
+  /** Running subagent workers + subagent_wait waiters (reconnect hydrate). */
+  subagent?: SubagentJobsSnapshot | null;
   /** Session-scoped todos (reconnect hydrate; not derived from the transcript). */
   todos?: {
     id: string;
@@ -446,6 +448,30 @@ export interface BashJobsSnapshot {
 }
 
 export interface BashJobsNotification extends BashJobsSnapshot {
+  session_id: string;
+}
+
+export interface SubagentJob {
+  id: string;
+  call_id: string;
+  agent_name: string;
+  prompt_preview: string;
+  started_at_ms: number;
+}
+
+export interface SubagentWait {
+  call_id: string;
+  watching_id?: string | null;
+  started_at_ms: number;
+  deadline_ms?: number | null;
+}
+
+export interface SubagentJobsSnapshot {
+  jobs: SubagentJob[];
+  waits: SubagentWait[];
+}
+
+export interface SubagentJobsNotification extends SubagentJobsSnapshot {
   session_id: string;
 }
 

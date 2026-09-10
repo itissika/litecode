@@ -11,6 +11,7 @@ use crate::optional::EngineManager;
 use crate::runtime::RuntimeHandle;
 use crate::session::{SessionManager, WorkspaceWriteLease};
 use crate::terminal::{TerminalHub, install_hub};
+use crate::tools::subagent::SubagentHub;
 use crate::workspace::{WorkspaceService, WorkspaceWatcher};
 
 #[derive(Clone)]
@@ -22,6 +23,7 @@ pub struct ServeState {
     pub engine_manager: Arc<EngineManager>,
     pub workspace_engines: Arc<WorkspaceEngines>,
     pub terminal_hub: Arc<TerminalHub>,
+    pub subagent_hub: Arc<SubagentHub>,
     pub session_id: Option<String>,
     pub auth_token: Option<String>,
     pub workspace: Arc<WorkspaceService>,
@@ -111,13 +113,14 @@ impl ServeState {
         let workspace = WorkspaceService::new(project.clone())?;
         let terminal_hub = Arc::new(TerminalHub::new());
         install_hub(Arc::clone(&terminal_hub));
+        let subagent_hub = Arc::new(SubagentHub::new());
         let ide = IdeBaseHandle::new(
             Arc::clone(&workspace),
             Arc::clone(&workspace_engines),
             Arc::clone(&terminal_hub),
         );
         let settings_revision = settings_writer.revision_handle();
-        let runtime = RuntimeHandle::new(
+        let mut runtime = RuntimeHandle::new(
             resolved,
             agent_name,
             workspace_state,
@@ -127,12 +130,20 @@ impl ServeState {
             settings_revision,
             settings_writer.db_path().to_path_buf(),
         );
+        runtime.subagent_hub = Arc::clone(&subagent_hub);
         let runtime = Arc::new(RwLock::new(runtime));
         settings_writer.set_runtime(Arc::clone(&runtime));
         let sessions = Arc::new(SessionManager::from_data(turn_guard.clone(), session_data));
         workspace_engines.set_session_reader(sessions.reader());
+        subagent_hub.attach_sessions(Arc::clone(&sessions));
         crate::runtime::bash_auto_turn::install_idle_auto_turn(
             Arc::clone(&terminal_hub),
+            Arc::clone(&runtime),
+            Arc::clone(&sessions),
+            project.clone(),
+        );
+        crate::runtime::subagent_auto_turn::install_subagent_auto_turn(
+            Arc::clone(&subagent_hub),
             Arc::clone(&runtime),
             Arc::clone(&sessions),
             project.clone(),
@@ -150,12 +161,24 @@ impl ServeState {
                     );
                 }));
         }
+        {
+            let sessions = Arc::clone(&sessions);
+            let hub = Arc::clone(&subagent_hub);
+            subagent_hub.set_jobs_changed_handler(Arc::new(move |session_id: String| {
+                let snapshot = hub.wire_snapshot(&session_id);
+                let _ = sessions.publish_internal(
+                    &session_id,
+                    crate::runtime::observer::InternalEvent::SubagentJobs { snapshot },
+                );
+            }));
+        }
         Ok(Self {
             ide,
             runtime,
             engine_manager,
             workspace_engines,
             terminal_hub,
+            subagent_hub,
             session_id,
             auth_token,
             workspace,

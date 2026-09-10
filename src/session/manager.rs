@@ -90,20 +90,6 @@ impl Drop for SessionOperationLease {
     }
 }
 
-/// Parent-turn scoped lease: in-flight `subagent_launch` cap (tool-internal, fail-closed).
-pub const MAX_SUBAGENTS_PER_PARENT: u32 = 4;
-
-pub struct SubagentSlotLease {
-    manager: Arc<SessionManager>,
-    parent_session_id: String,
-}
-
-impl Drop for SubagentSlotLease {
-    fn drop(&mut self) {
-        self.manager.release_subagent_slot(&self.parent_session_id);
-    }
-}
-
 /// One session: exclusive activity + L2 subscription fanout + committed revision.
 pub struct SessionRecord {
     pub revision: u64,
@@ -166,8 +152,6 @@ pub struct SessionManager {
     /// Keeps a test-created lease alive for the manager's writer lifetime.
     _test_lease: Option<crate::session::WorkspaceWriteLease>,
     lifecycle_tx: broadcast::Sender<LifecycleEvent>,
-    /// In-flight subagent launches keyed by parent session id.
-    subagent_slots: std::sync::Mutex<HashMap<String, u32>>,
 }
 
 const EVENT_BUFFER_CAPACITY: usize = 1024;
@@ -200,7 +184,6 @@ impl SessionManager {
             data,
             _test_lease: test_lease,
             lifecycle_tx,
-            subagent_slots: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -212,7 +195,6 @@ impl SessionManager {
             data,
             _test_lease: None,
             lifecycle_tx,
-            subagent_slots: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -257,42 +239,6 @@ impl SessionManager {
         let receipt = self.data.mutate_blocking(mutation)?;
         self.note_receipt(&receipt);
         Ok(receipt)
-    }
-
-    /// Fail-closed capacity gate: bounded in-flight children per parent session.
-    pub fn try_acquire_subagent_slot(
-        self: &Arc<Self>,
-        parent_session_id: &str,
-    ) -> Result<SubagentSlotLease> {
-        let mut slots = self
-            .subagent_slots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let n = slots.entry(parent_session_id.to_string()).or_insert(0);
-        if *n >= MAX_SUBAGENTS_PER_PARENT {
-            return Err(LitecodeError::ToolExecution(format!(
-                "subagent capacity exceeded for parent {parent_session_id}: \
-                 at most {MAX_SUBAGENTS_PER_PARENT} in-flight launch"
-            )));
-        }
-        *n += 1;
-        Ok(SubagentSlotLease {
-            manager: Arc::clone(self),
-            parent_session_id: parent_session_id.to_string(),
-        })
-    }
-
-    fn release_subagent_slot(&self, parent_session_id: &str) {
-        let mut slots = self
-            .subagent_slots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(n) = slots.get_mut(parent_session_id) {
-            *n = n.saturating_sub(1);
-            if *n == 0 {
-                slots.remove(parent_session_id);
-            }
-        }
     }
 
     /// Private in-memory registry for tests that need an isolated manager
@@ -2185,32 +2131,6 @@ mod child_session_tests {
         assert!(mgr.release_turn_reservation(&sid, "reserved"));
         assert!(!mgr.is_session_busy_blocking(&sid));
         assert!(!guard.is_turn_in_progress());
-    }
-
-    #[test]
-    fn subagent_slot_caps_in_flight_per_parent() {
-        let mgr = Arc::new(SessionManager::ephemeral_registry());
-        let mut held = Vec::new();
-        for _ in 0..MAX_SUBAGENTS_PER_PARENT {
-            held.push(
-                mgr.try_acquire_subagent_slot("parent-1")
-                    .expect("slot within cap"),
-            );
-        }
-        let overflow = mgr.try_acquire_subagent_slot("parent-1");
-        assert!(
-            overflow.is_err(),
-            "in-flight launches over the cap must fail-closed"
-        );
-        let other = mgr
-            .try_acquire_subagent_slot("parent-2")
-            .expect("other parent is independent");
-        drop(held);
-        let retry = mgr
-            .try_acquire_subagent_slot("parent-1")
-            .expect("slot frees on drop");
-        drop(retry);
-        drop(other);
     }
 
     #[test]
