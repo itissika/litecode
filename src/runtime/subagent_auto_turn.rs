@@ -6,8 +6,8 @@ use std::sync::{Arc, RwLock};
 use crate::permission::{PermissionSink, deny_permission_sink};
 use crate::runtime::{RuntimeHandle, spawn_turn};
 use crate::session::{LifecycleEvent, SessionManager};
-use crate::tools::subagent::status;
 use crate::tools::subagent::SubagentHub;
+use crate::tools::subagent::status;
 use crate::types::LitecodeError;
 
 pub enum IdleAutoTurn {
@@ -120,34 +120,59 @@ fn spawn_prepared_idle_auto_turn(
     ) {
         Ok(h) => h,
         Err(error) => {
-            tracing::warn!(error = %error, "subagent idle auto-turn spawn failed");
+            tracing::warn!(
+                session_id = %session_id,
+                error = %error,
+                "subagent idle auto-turn spawn failed"
+            );
             sessions.release_turn_reservation(&session_id, &turn_id);
             return;
         }
     };
-    std::thread::spawn(move || {
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
-            Err(error) => {
-                tracing::warn!(error = %error, "subagent idle auto-turn runtime failed");
+    let session_id_err = session_id.clone();
+    let turn_id_err = turn_id.clone();
+    let sessions_err = Arc::clone(&sessions);
+    let spawn_result = std::thread::Builder::new()
+        .name(format!("subagent-idle-{session_id}"))
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(error) => {
+                    tracing::error!(
+                        session_id = %session_id,
+                        error = %error,
+                        "subagent idle auto-turn runtime failed"
+                    );
+                    sessions.release_turn_reservation(&session_id, &turn_id);
+                    return;
+                }
+            };
+            if let Err(error) = rt.block_on(sessions.start_turn(
+                &session_id,
+                handle,
+                &primary_agent,
+                &project,
+                Arc::clone(&sessions),
+            )) {
+                tracing::error!(
+                    session_id = %session_id,
+                    error = %error,
+                    "subagent idle auto-turn start failed"
+                );
                 sessions.release_turn_reservation(&session_id, &turn_id);
-                return;
             }
-        };
-        if let Err(error) = rt.block_on(sessions.start_turn(
-            &session_id,
-            handle,
-            &primary_agent,
-            &project,
-            Arc::clone(&sessions),
-        )) {
-            tracing::warn!(error = %error, "subagent idle auto-turn start failed");
-            sessions.release_turn_reservation(&session_id, &turn_id);
-        }
-    });
+        });
+    if let Err(error) = spawn_result {
+        tracing::error!(
+            session_id = %session_id_err,
+            error = %error,
+            "failed to spawn subagent idle auto-turn thread"
+        );
+        sessions_err.release_turn_reservation(&session_id_err, &turn_id_err);
+    }
 }
 
 fn maybe_spawn_idle_auto_turn(
@@ -187,7 +212,7 @@ pub fn install_subagent_auto_turn(
     let runtime_for_life = Arc::clone(&runtime);
     let sessions_for_life = Arc::clone(&sessions);
     let mut rx = sessions.subscribe_lifecycle();
-    let _ = std::thread::Builder::new()
+    if let Err(error) = std::thread::Builder::new()
         .name("subagent-idle-turn-flush".into())
         .spawn(move || {
             loop {
@@ -205,7 +230,13 @@ pub fn install_subagent_auto_turn(
                     Err(_) => break,
                 }
             }
-        });
+        })
+    {
+        tracing::error!(
+            error = %error,
+            "failed to spawn subagent idle-turn-flush thread"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -315,7 +346,8 @@ mod tests {
         hub.insert_running_for_test(&sid, "child-a", "reviewer", "review this");
         hub.finish("child-a", true, false, "done".into());
         let notice = hub.notice_snapshot("child-a").expect("notice");
-        let expected = status::format_exit_reminder(std::slice::from_ref(&notice), &hub.running(&sid));
+        let expected =
+            status::format_exit_reminder(std::slice::from_ref(&notice), &hub.running(&sid));
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
             IdleAutoTurn::Prepared {
                 input,

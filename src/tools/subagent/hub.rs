@@ -241,9 +241,7 @@ impl SubagentHub {
         let mut terminal: Vec<(String, i64)> = g
             .jobs
             .iter()
-            .filter(|(_, record)| {
-                !record.alive && record.parent_session_id == parent_session_id
-            })
+            .filter(|(_, record)| !record.alive && record.parent_session_id == parent_session_id)
             .map(|(id, record)| (id.clone(), record.started_at_ms))
             .collect();
         if terminal.len() <= MAX_RETAINED_TERMINAL_JOBS_PER_PARENT {
@@ -460,6 +458,15 @@ impl SubagentHub {
         }
         self.cv.notify_all();
         self.emit_jobs_changed(&notice.parent_session_id);
+        if !ok && !stopped {
+            tracing::error!(
+                parent_session_id = %notice.parent_session_id,
+                child_session_id = %notice.child_session_id,
+                agent = %notice.agent_name,
+                error = %notice.final_text,
+                "subagent worker failed"
+            );
+        }
         if let Some(handler) = self.exit_handler.lock().expect("exit handler lock").clone() {
             handler(notice);
         }
@@ -584,12 +591,21 @@ impl SubagentHub {
         deps: SpawnDeps,
     ) -> Result<String, String> {
         if call_id.is_empty() {
+            tracing::error!(parent_session_id, "subagent_launch missing tool call_id");
             return Err(
                 "subagent_launch requires an active tool call_id (missing execution context)"
                     .into(),
             );
         }
-        self.try_acquire_slot(parent_session_id)?;
+        if let Err(error) = self.try_acquire_slot(parent_session_id) {
+            tracing::warn!(
+                parent_session_id,
+                agent = %spec.agent_name,
+                error = %error,
+                "subagent spawn rejected"
+            );
+            return Err(error);
+        }
         self.attach_sessions(Arc::clone(&deps.sessions));
 
         let project = workspace_root_from_paths(deps.resolved.paths())
@@ -612,20 +628,43 @@ impl SubagentHub {
         ) {
             Ok(id) => id,
             Err(e) => {
+                tracing::error!(
+                    parent_session_id,
+                    agent = %spec.agent_name,
+                    error = %e,
+                    "subagent child session creation failed"
+                );
                 self.release_slot(parent_session_id);
                 return Err(format!("child session creation failed: {e}"));
             }
         };
 
-        let _ = deps.sessions.publish_internal(
+        if !deps.sessions.publish_internal(
             parent_session_id,
             crate::runtime::observer::InternalEvent::SubagentBound {
                 call_id: call_id.to_string(),
                 child_session_id: child_session_id.clone(),
             },
-        );
+        ) {
+            tracing::warn!(
+                parent_session_id,
+                child_session_id = %child_session_id,
+                "subagent bound event dropped (parent session missing)"
+            );
+        }
 
-        let abort = |sessions: &SessionManager, child_id: &str, hub: &SubagentHub, parent: &str| {
+        let abort = |sessions: &SessionManager,
+                     child_id: &str,
+                     hub: &SubagentHub,
+                     parent: &str,
+                     reason: &str| {
+            tracing::warn!(
+                parent_session_id = parent,
+                child_session_id = child_id,
+                agent = %spec.agent_name,
+                reason,
+                "subagent spawn aborted"
+            );
             let _ = sessions.remove_session(child_id);
             hub.release_slot(parent);
         };
@@ -644,7 +683,13 @@ impl SubagentHub {
                 binding
             }
             Err(e) => {
-                abort(&deps.sessions, &child_session_id, self, parent_session_id);
+                abort(
+                    &deps.sessions,
+                    &child_session_id,
+                    self,
+                    parent_session_id,
+                    &format!("llm binding failed: {e}"),
+                );
                 return Err(format!("llm binding failed: {e}"));
             }
         };
@@ -672,7 +717,13 @@ impl SubagentHub {
         ) {
             Ok(r) => r,
             Err(e) => {
-                abort(&deps.sessions, &child_session_id, self, parent_session_id);
+                abort(
+                    &deps.sessions,
+                    &child_session_id,
+                    self,
+                    parent_session_id,
+                    &format!("agent runtime init failed: {e}"),
+                );
                 return Err(format!("agent runtime init failed: {e}"));
             }
         };
@@ -694,7 +745,13 @@ impl SubagentHub {
             &spec.agent_name,
             &project,
         ) {
-            abort(&deps.sessions, &child_session_id, self, parent_session_id);
+            abort(
+                &deps.sessions,
+                &child_session_id,
+                self,
+                parent_session_id,
+                &format!("reserve_turn failed: {e}"),
+            );
             return Err(format!("reserve_turn failed: {e}"));
         }
         if let Err(e) = deps
@@ -708,7 +765,13 @@ impl SubagentHub {
             )
             .await
         {
-            abort(&deps.sessions, &child_session_id, self, parent_session_id);
+            abort(
+                &deps.sessions,
+                &child_session_id,
+                self,
+                parent_session_id,
+                &format!("start_turn failed: {e}"),
+            );
             return Err(format!("start_turn failed: {e}"));
         }
 
@@ -736,9 +799,17 @@ impl SubagentHub {
         let hub = Arc::clone(self);
         let sessions = Arc::clone(&deps.sessions);
         let child_id = child_session_id.clone();
+        let parent_for_thread = parent_session_id.to_string();
         let prompt = spec.prompt.clone();
         let paths = deps.resolved.paths().clone();
         let turn_id_thread = turn_id.clone();
+        tracing::info!(
+            parent_session_id,
+            child_session_id = %child_session_id,
+            agent = %spec.agent_name,
+            call_id,
+            "subagent worker starting"
+        );
         let spawn_result = std::thread::Builder::new()
             .name(format!("subagent-{child_id}"))
             .spawn(move || {
@@ -755,28 +826,38 @@ impl SubagentHub {
                 {
                     Ok(rt) => rt,
                     Err(error) => {
-                        guard.finish(
-                            false,
-                            false,
-                            format!("agent runtime failed: {error}"),
+                        tracing::error!(
+                            parent_session_id = %parent_for_thread,
+                            child_session_id = %child_id,
+                            error = %error,
+                            "subagent worker runtime failed"
                         );
+                        guard.finish(false, false, format!("agent runtime failed: {error}"));
                         return;
                     }
                 };
                 let result = rt.block_on(runtime.run_with_turn(&prompt, &turn_id_thread, step_max));
                 drop(runtime);
-                if !child_cancel.is_cancelled()
-                    && !matches!(&result, Err(LitecodeError::Canceled))
+                if !child_cancel.is_cancelled() && !matches!(&result, Err(LitecodeError::Canceled))
                 {
+                    let mut still_running = true;
                     for _ in 0..200 {
                         if !rt.block_on(sessions.is_turn_running(&child_id)) {
+                            still_running = false;
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(5));
                     }
+                    if still_running {
+                        tracing::warn!(
+                            parent_session_id = %parent_for_thread,
+                            child_session_id = %child_id,
+                            "subagent worker exiting while session turn still marked running"
+                        );
+                    }
                 }
-                let stopped = child_cancel.is_cancelled()
-                    || matches!(&result, Err(LitecodeError::Canceled));
+                let stopped =
+                    child_cancel.is_cancelled() || matches!(&result, Err(LitecodeError::Canceled));
                 let (ok, text) = match result {
                     Ok(text) => (true, text),
                     Err(LitecodeError::Canceled) => (false, "subagent cancelled".into()),
@@ -785,11 +866,20 @@ impl SubagentHub {
                 guard.finish(ok, stopped, text);
             });
         if let Err(error) = spawn_result {
-            // No JobRecord was inserted yet, so `finish` cannot release the
-            // slot. Remove the reserved child session (which also releases its
-            // turn guard) and release the slot explicitly.
+            tracing::error!(
+                parent_session_id,
+                child_session_id = %child_session_id,
+                agent = %spec.agent_name,
+                error = %error,
+                "failed to spawn subagent worker thread"
+            );
             let _ = deps.sessions.remove_session(&child_session_id);
-            self.release_slot(parent_session_id);
+            self.finish(
+                &child_session_id,
+                false,
+                false,
+                format!("failed to spawn worker thread: {error}"),
+            );
             return Err(format!("failed to spawn worker thread: {error}"));
         }
 
@@ -835,6 +925,10 @@ impl WorkerGuard {
 impl Drop for WorkerGuard {
     fn drop(&mut self) {
         if self.armed {
+            tracing::error!(
+                child_session_id = %self.child_id,
+                "subagent worker panicked"
+            );
             self.finish(false, false, "subagent worker panicked".into());
         }
     }
@@ -847,7 +941,6 @@ pub enum WaitOutcome {
     Cancelled,
     UnknownId(String),
 }
-
 
 #[cfg(test)]
 mod tests {
