@@ -6,9 +6,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::ResolvedConfig;
 use crate::config::schema::AgentRole;
 use crate::context_pipeline::Context;
-use crate::engines::WorkspaceEngines;
-use crate::ide_base::IdeBaseHandle;
-use crate::llm::LlmProvider;
+use crate::runtime::RuntimeHandle;
 use crate::session::manager::SessionManager;
 use crate::session::store::Session;
 use crate::tool::Tool;
@@ -19,55 +17,36 @@ use super::hub::{LaunchSpec, SpawnDeps, SubagentHub};
 use super::status;
 
 pub struct SubagentLaunchTool {
-    resolved: ResolvedConfig,
+    runtime: RuntimeHandle,
     parent_agent_id: String,
-    provider: Box<dyn LlmProvider>,
-    api_key: String,
     depth: u32,
     /// Retained for constructor/pipeline compatibility only. Parent turn
     /// cancellation is deliberately not propagated into a child turn;
     /// `subagent_stop` is the explicit session-level cancel path.
     parent_cancel: CancellationToken,
-    engine_manager: crate::optional::EngineManager,
-    workspace_engines: WorkspaceEngines,
-    ide: Arc<IdeBaseHandle>,
     sessions: Arc<SessionManager>,
     parent_session_id: String,
-    mcp_pool: Arc<crate::mcp::McpConnectionPool>,
     hub: Arc<SubagentHub>,
     parent_call_id: String,
 }
 
 impl SubagentLaunchTool {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        resolved: ResolvedConfig,
+        runtime: RuntimeHandle,
         parent_agent_id: impl Into<String>,
-        provider: Box<dyn LlmProvider>,
-        api_key: String,
         depth: u32,
         parent_cancel: CancellationToken,
-        engine_manager: crate::optional::EngineManager,
-        workspace_engines: WorkspaceEngines,
-        ide: Arc<IdeBaseHandle>,
         sessions: Arc<SessionManager>,
         parent_session_id: impl Into<String>,
-        mcp_pool: Arc<crate::mcp::McpConnectionPool>,
         hub: Arc<SubagentHub>,
     ) -> Self {
         Self {
-            resolved,
+            runtime,
             parent_agent_id: parent_agent_id.into(),
-            provider,
-            api_key,
             depth,
             parent_cancel,
-            engine_manager,
-            workspace_engines,
-            ide,
             sessions,
             parent_session_id: parent_session_id.into(),
-            mcp_pool,
             hub,
             parent_call_id: String::new(),
         }
@@ -75,25 +54,20 @@ impl SubagentLaunchTool {
 
     fn clone_for_call(&self) -> Self {
         Self {
-            resolved: self.resolved.clone(),
+            runtime: self.runtime.clone(),
             parent_agent_id: self.parent_agent_id.clone(),
-            provider: self.provider.box_clone(),
-            api_key: self.api_key.clone(),
             depth: self.depth,
             parent_cancel: self.parent_cancel.clone(),
-            engine_manager: self.engine_manager.clone(),
-            workspace_engines: self.workspace_engines.clone(),
-            ide: Arc::clone(&self.ide),
             sessions: Arc::clone(&self.sessions),
             parent_session_id: self.parent_session_id.clone(),
-            mcp_pool: Arc::clone(&self.mcp_pool),
             hub: Arc::clone(&self.hub),
             parent_call_id: self.parent_call_id.clone(),
         }
     }
 
     fn allowed_subagent_ids(&self) -> Vec<String> {
-        self.resolved
+        self.runtime
+            .resolved
             .agents()
             .get(&self.parent_agent_id)
             .map(|p| p.allowed_subagents.clone())
@@ -101,7 +75,7 @@ impl SubagentLaunchTool {
     }
 
     fn format_available_subagents(&self) -> Option<String> {
-        format_available_subagents(&self.resolved, &self.allowed_subagent_ids())
+        format_available_subagents(&self.runtime.resolved, &self.allowed_subagent_ids())
     }
 
     fn parse_launch(&self, input: &Value) -> std::result::Result<LaunchSpec, ToolCallResult> {
@@ -112,7 +86,7 @@ impl SubagentLaunchTool {
             .map_err(ToolCallResult::error)?
             .to_string();
 
-        let resolved = &self.resolved;
+        let resolved = &self.runtime.resolved;
         let parent = resolved
             .agents()
             .get(&self.parent_agent_id)
@@ -186,25 +160,14 @@ impl SubagentLaunchTool {
             Err(e) => return e,
         };
         let deps = SpawnDeps {
-            resolved: self.resolved.clone(),
-            provider: self.provider.box_clone(),
-            api_key: self.api_key.clone(),
+            runtime: self.runtime.clone(),
             depth: self.depth,
-            engine_manager: self.engine_manager.clone(),
-            workspace_engines: self.workspace_engines.clone(),
-            ide: Arc::clone(&self.ide),
             sessions: Arc::clone(&self.sessions),
-            mcp_pool: Arc::clone(&self.mcp_pool),
         };
 
         let child_id = match self
             .hub
-            .spawn(
-                &self.parent_session_id,
-                &self.parent_call_id,
-                spec,
-                deps,
-            )
+            .spawn(&self.parent_session_id, &self.parent_call_id, spec, deps)
             .await
         {
             Ok(id) => id,

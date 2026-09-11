@@ -70,19 +70,27 @@ fn launch_tool_on_hub(
         Arc::new(litecode::terminal::TerminalHub::new()),
     );
     hub.attach_sessions(Arc::clone(&sessions));
-    SubagentLaunchTool::new(
+    let ws_state = test_workspace(resolved.workspace_root());
+    let db_path = resolved.workspace_root().join(".litecode/global.db");
+    let runtime = RuntimeHandle::new(
         resolved,
+        "default".into(),
+        ws_state,
+        Arc::new(EngineManager::new()),
+        Arc::new(engines),
+        ide,
+        Arc::new(AtomicU64::new(0)),
+        // Dummy global DB path: never applied in these tests (revision stays 0).
+        db_path,
+    )
+    .with_test_llm_override(Arc::new(provider));
+    SubagentLaunchTool::new(
+        runtime,
         "default",
-        Box::new(provider),
-        "test-key".into(),
         0,
         CancellationToken::new(),
-        EngineManager::new(),
-        engines,
-        ide,
         sessions,
         parent_session_id,
-        Arc::new(litecode::mcp::McpConnectionPool::new()),
         hub,
     )
 }

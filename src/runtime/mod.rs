@@ -52,7 +52,8 @@ use crate::types::{LitecodeError, Result, item_text_preview, user_text};
 /// Shared runtime configuration for CLI and serve (Phase 4 R4.4).
 pub struct RuntimeHandle {
     pub resolved: ResolvedConfig,
-    provider_registry: Mutex<ProviderRegistry>,
+    /// Shared across clones: one cached provider instance per provider def.
+    provider_registry: Arc<Mutex<ProviderRegistry>>,
     pub agent_name: String,
     desired_primary_agent: String,
     pub workspace: WorkspaceState,
@@ -89,7 +90,7 @@ impl RuntimeHandle {
         let desired_primary_agent = agent_name.clone();
         Self {
             resolved,
-            provider_registry: Mutex::new(ProviderRegistry::new()),
+            provider_registry: Arc::new(Mutex::new(ProviderRegistry::new())),
             agent_name: desired_primary_agent.clone(),
             desired_primary_agent,
             workspace,
@@ -280,41 +281,48 @@ impl RuntimeHandle {
         session_id: String,
         sessions: Arc<SessionManager>,
         agent_name: &str,
-        depth: u32,
         sink: Arc<dyn PermissionSink>,
         observer: Arc<dyn RuntimeObserver>,
+        opts: TurnOptions,
     ) -> Result<AgentRuntime> {
         let revision = self.settings_revision();
         let mut binding = {
             let mut registry = self.provider_registry.lock().unwrap();
-            resolve_session_llm(
-                &self.resolved,
-                &mut registry,
-                &sessions,
-                &session_id,
-                revision,
-            )?
+            match &opts.binding {
+                BindingSource::SessionModel => resolve_session_llm(
+                    &self.resolved,
+                    &mut registry,
+                    &sessions,
+                    &session_id,
+                    revision,
+                )?,
+                BindingSource::Agent {
+                    name,
+                    model_id_override,
+                } => llm_resolve::binding_for_agent(
+                    &self.resolved,
+                    &mut registry,
+                    name,
+                    model_id_override.as_deref(),
+                    revision,
+                )?,
+            }
         };
         if let Some(provider) = &self.test_llm_override {
             binding.provider = Arc::clone(provider);
         }
 
         AgentRuntime::with_mcp_pool(
-            self.resolved.clone(),
+            self.clone(),
             session_id,
             sessions,
             binding,
             agent_name,
-            depth,
+            opts.depth,
             sink,
             observer,
             None,
-            None,
-            (*self.engine_manager).clone(),
-            (*self.workspace_engines).clone(),
-            Arc::clone(&self.ide),
-            Arc::clone(&self.mcp_pool),
-            Arc::clone(&self.subagent_hub),
+            opts.max_steps_override,
         )
     }
 }
@@ -323,7 +331,8 @@ impl Clone for RuntimeHandle {
     fn clone(&self) -> Self {
         Self {
             resolved: self.resolved.clone(),
-            provider_registry: Mutex::new(ProviderRegistry::new()),
+            // Shared: clones reuse cached provider instances.
+            provider_registry: Arc::clone(&self.provider_registry),
             agent_name: self.agent_name.clone(),
             desired_primary_agent: self.desired_primary_agent.clone(),
             workspace: self.workspace.clone(),
@@ -334,8 +343,45 @@ impl Clone for RuntimeHandle {
             subagent_hub: Arc::clone(&self.subagent_hub),
             global_db_path: self.global_db_path.clone(),
             settings_revision: Arc::clone(&self.settings_revision),
+            // Per-clone: each clone re-reads the global DB on its first apply
+            // so it never serves a stale `resolved` snapshot.
             loaded_revision: Arc::new(AtomicU64::new(0)),
             test_llm_override: self.test_llm_override.clone(),
+        }
+    }
+}
+
+/// How a turn resolves its LLM binding.
+#[derive(Clone, Debug, Default)]
+pub enum BindingSource {
+    /// Main-session turns: resolve from the session's model id.
+    #[default]
+    SessionModel,
+    /// Agent turns (subagent / compaction): resolve from the agent profile's
+    /// `model_ref`, with an optional launch-time models-registry override.
+    Agent {
+        name: String,
+        model_id_override: Option<String>,
+    },
+}
+
+/// Per-turn spawn options shared by every turn entry point (main sessions,
+/// subagents, auto-turns) — one spawn machinery, parameterized.
+#[derive(Clone, Debug, Default)]
+pub struct TurnOptions {
+    pub binding: BindingSource,
+    pub depth: u32,
+    pub max_steps_override: Option<u32>,
+}
+
+impl TurnOptions {
+    pub fn agent(name: impl Into<String>, model_id_override: Option<String>) -> Self {
+        Self {
+            binding: BindingSource::Agent {
+                name: name.into(),
+                model_id_override,
+            },
+            ..Default::default()
         }
     }
 }
@@ -367,20 +413,30 @@ pub fn spawn_turn(
     input: String,
     permission_sink: Arc<dyn PermissionSink>,
     turn_id: String,
+    opts: TurnOptions,
 ) -> anyhow::Result<TurnHandle> {
-    let default_primary = runtime.desired_primary_agent();
-    let primary_agent = sessions
-        .resolve_primary_agent(&session_id, default_primary, &runtime.resolved)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // The binding source is authoritative for the agent identity: main-session
+    // turns resolve from the session record, agent turns (subagent children)
+    // run the named agent profile directly — including Subagent-role profiles
+    // that `validate_primary_agent` would reject.
+    let primary_agent = match &opts.binding {
+        BindingSource::SessionModel => {
+            let default_primary = runtime.desired_primary_agent();
+            sessions
+                .resolve_primary_agent(&session_id, default_primary, &runtime.resolved)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+        }
+        BindingSource::Agent { name, .. } => name.clone(),
+    };
     let (tx, rx) = mpsc::unbounded_channel::<InternalEnvelope>();
     let observer = ChannelObserver::new(tx);
     let mut agent_loop = runtime.build_runtime(
         session_id,
         sessions,
         &primary_agent,
-        0,
         permission_sink,
         observer,
+        opts,
     )?;
 
     let cancel = agent_loop.cancel_token();
@@ -431,20 +487,13 @@ pub struct AgentRuntime {
 
 /// Parameters needed to call build_tool_list lazily on first turn.
 struct BuildToolParams {
-    resolved: ResolvedConfig,
+    runtime: RuntimeHandle,
     agent_name: String,
-    provider: Box<dyn LlmProvider>,
-    api_key: String,
     depth: u32,
     cancel: tokio_util::sync::CancellationToken,
-    engine_manager: EngineManager,
-    workspace_engines: WorkspaceEngines,
-    ide: Arc<IdeBaseHandle>,
     parent_session_id: String,
     sessions: Arc<SessionManager>,
     permission_sink: Arc<dyn PermissionSink>,
-    mcp_pool: Arc<McpConnectionPool>,
-    subagent_hub: Arc<crate::tools::subagent::SubagentHub>,
 }
 
 impl AgentRuntime {
@@ -457,43 +506,8 @@ impl AgentRuntime {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        resolved: ResolvedConfig,
-        session_id: String,
-        sessions: Arc<SessionManager>,
-        turn_llm: TurnLlmBinding,
-        agent_name: &str,
-        depth: u32,
-        permission_sink: Arc<dyn PermissionSink>,
-        observer: Arc<dyn RuntimeObserver>,
-        cancel: Option<tokio_util::sync::CancellationToken>,
-        max_steps_override: Option<u32>,
-        engine_manager: EngineManager,
-        workspace_engines: WorkspaceEngines,
-        ide: Arc<IdeBaseHandle>,
-    ) -> Result<Self> {
-        Self::with_mcp_pool(
-            resolved,
-            session_id,
-            sessions,
-            turn_llm,
-            agent_name,
-            depth,
-            permission_sink,
-            observer,
-            cancel,
-            max_steps_override,
-            engine_manager,
-            workspace_engines,
-            ide,
-            Arc::new(McpConnectionPool::new()),
-            Arc::new(crate::tools::subagent::SubagentHub::new()),
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
     pub fn with_mcp_pool(
-        resolved: ResolvedConfig,
+        runtime: RuntimeHandle,
         session_id: String,
         sessions: Arc<SessionManager>,
         turn_llm: TurnLlmBinding,
@@ -503,13 +517,9 @@ impl AgentRuntime {
         observer: Arc<dyn RuntimeObserver>,
         cancel: Option<tokio_util::sync::CancellationToken>,
         max_steps_override: Option<u32>,
-        engine_manager: EngineManager,
-        workspace_engines: WorkspaceEngines,
-        ide: Arc<IdeBaseHandle>,
-        mcp_pool: Arc<McpConnectionPool>,
-        subagent_hub: Arc<crate::tools::subagent::SubagentHub>,
     ) -> Result<Self> {
         let cancel = cancel.unwrap_or_default();
+        let resolved = runtime.resolved.clone();
 
         let mut agent_config = agent_config_for(&resolved, agent_name)?;
         if let Some(max_steps) = max_steps_override {
@@ -542,20 +552,13 @@ impl AgentRuntime {
             ContextPipeline::new(context_window, context.clone(), sessions.data_root_path());
 
         let build_tool_params = Arc::new(BuildToolParams {
-            resolved: resolved.clone(),
+            runtime,
             agent_name: agent_name.to_string(),
-            provider: turn_llm.provider.box_clone(),
-            api_key: turn_llm.api_key.clone(),
             depth,
             cancel: cancel.clone(),
-            engine_manager,
-            workspace_engines,
-            ide,
             parent_session_id: session_id.clone(),
             sessions: Arc::clone(&sessions),
             permission_sink,
-            mcp_pool,
-            subagent_hub,
         });
 
         let runtime = Self {
@@ -802,19 +805,12 @@ impl AgentRuntime {
         if self.tool_pipeline.is_none() {
             let params = self.build_tool_params.take().unwrap();
             let tools = build_tool_list(
-                &params.resolved,
+                &params.runtime,
                 &params.agent_name,
-                params.provider.box_clone(),
-                &params.api_key,
                 params.depth,
                 params.cancel.clone(),
-                params.engine_manager.clone(),
-                params.workspace_engines.clone(),
-                Arc::clone(&params.ide),
                 &params.parent_session_id,
                 Arc::clone(&params.sessions),
-                Arc::clone(&params.mcp_pool),
-                Arc::clone(&params.subagent_hub),
             )
             .await;
 
@@ -828,7 +824,7 @@ impl AgentRuntime {
             );
 
             let permission = PermissionEngine::resolver(
-                params.resolved.clone(),
+                params.runtime.resolved.clone(),
                 &params.agent_name,
                 params.depth,
             );

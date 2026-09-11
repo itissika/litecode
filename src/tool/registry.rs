@@ -5,19 +5,31 @@ use crate::config::global_db::tools::mcp_catalog_id;
 use crate::config::resolved::ResolvedConfig;
 use crate::engines::WorkspaceEngines;
 use crate::ide_base::IdeBaseHandle;
-use crate::llm::LlmProvider;
-use crate::mcp::{McpConnectionPool, McpToolSchema};
+use crate::mcp::McpToolSchema;
 use crate::optional::EngineManager;
+use crate::runtime::RuntimeHandle;
 use crate::session::manager::SessionManager;
 use crate::tool::availability::{available_tools, should_include_in_llm_list};
 use crate::tool::trait_::Tool;
 use crate::tools::{
-    bash::BashTool, code_search::CodeSearchTool, custom::CustomTool, edit::EditTool,
-    glob::GlobTool, grep::GrepTool, kill_shell::KillShellTool, lsp::LspTool, mcp_tool::McpTool,
-    plan::PlanTool, read::ReadTool, session_search::SessionSearchTool,
+    bash::BashTool,
+    code_search::CodeSearchTool,
+    custom::CustomTool,
+    edit::EditTool,
+    glob::GlobTool,
+    grep::GrepTool,
+    kill_shell::KillShellTool,
+    lsp::LspTool,
+    mcp_tool::McpTool,
+    plan::PlanTool,
+    read::ReadTool,
+    session_search::SessionSearchTool,
     subagent::{SubagentLaunchTool, SubagentListTool, SubagentStopTool, SubagentWaitTool},
-    todo::TodoWriteTool, wait_shell::WaitShellTool, webfetch::WebFetchTool,
-    websearch::WebSearchTool, write::WriteTool,
+    todo::TodoWriteTool,
+    wait_shell::WaitShellTool,
+    webfetch::WebFetchTool,
+    websearch::WebSearchTool,
+    write::WriteTool,
 };
 
 fn builtin_tool(
@@ -137,31 +149,23 @@ fn instantiate_tool(
 ///
 /// `parent_session_id` is the owning session id used by `subagent_launch` to open child sessions.
 pub async fn build_tool_list(
-    resolved: &ResolvedConfig,
+    runtime: &RuntimeHandle,
     agent_id: &str,
-    provider: Box<dyn LlmProvider>,
-    api_key: &str,
     depth: u32,
     parent_cancel: tokio_util::sync::CancellationToken,
-    engines: EngineManager,
-    workspace_engines: WorkspaceEngines,
-    ide: Arc<IdeBaseHandle>,
     parent_session_id: &str,
     sessions: Arc<SessionManager>,
-    mcp_pool: Arc<McpConnectionPool>,
-    subagent_hub: Arc<crate::tools::subagent::SubagentHub>,
 ) -> Vec<Arc<dyn Tool>> {
+    let resolved = &runtime.resolved;
+    let engines = &runtime.engine_manager;
+    let workspace_engines = &runtime.workspace_engines;
+    let mcp_pool = &runtime.mcp_pool;
     let mut mcp_schemas: HashMap<String, Vec<McpToolSchema>> = HashMap::new();
     let servers = resolved.mcp_servers();
     for (server_id, mcp_def) in &servers {
         let catalog_id = mcp_catalog_id(server_id);
-        if !should_include_in_llm_list(
-            resolved,
-            agent_id,
-            &catalog_id,
-            &engines,
-            &workspace_engines,
-        ) {
+        if !should_include_in_llm_list(resolved, agent_id, &catalog_id, engines, workspace_engines)
+        {
             continue;
         }
         let pool_key = resolved.mcp_pool_key(server_id);
@@ -191,7 +195,7 @@ pub async fn build_tool_list(
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
 
     for tool_id in catalog_ids {
-        if !should_include_in_llm_list(resolved, agent_id, &tool_id, &engines, &workspace_engines) {
+        if !should_include_in_llm_list(resolved, agent_id, &tool_id, engines, workspace_engines) {
             continue;
         }
 
@@ -203,26 +207,24 @@ pub async fn build_tool_list(
             match tool_id.as_str() {
                 "subagent_launch" => {
                     tools.push(Arc::new(SubagentLaunchTool::new(
-                        resolved.clone(),
+                        runtime.clone(),
                         agent_id,
-                        provider.box_clone(),
-                        api_key.to_string(),
                         depth,
                         parent_cancel.clone(),
-                        engines.clone(),
-                        workspace_engines.clone(),
-                        Arc::clone(&ide),
                         Arc::clone(&sessions),
                         parent_session_id.to_string(),
-                        Arc::clone(&mcp_pool),
-                        Arc::clone(&subagent_hub),
+                        Arc::clone(&runtime.subagent_hub),
                     )));
                 }
                 "subagent_wait" => {
-                    tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(&subagent_hub))));
+                    tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(
+                        &runtime.subagent_hub,
+                    ))));
                 }
                 "subagent_stop" => {
-                    tools.push(Arc::new(SubagentStopTool::new(Arc::clone(&subagent_hub))));
+                    tools.push(Arc::new(SubagentStopTool::new(Arc::clone(
+                        &runtime.subagent_hub,
+                    ))));
                 }
                 "subagent_list" => {
                     tools.push(Arc::new(SubagentListTool::new(Arc::clone(&sessions))));
@@ -236,12 +238,12 @@ pub async fn build_tool_list(
             resolved,
             agent_id,
             &tool_id,
-            &engines,
-            &workspace_engines,
-            Arc::clone(&ide),
+            engines,
+            workspace_engines,
+            Arc::clone(&runtime.ide),
             &sessions,
             &mcp_schemas,
-            Arc::clone(&mcp_pool),
+            Arc::clone(&runtime.mcp_pool),
         );
         tools.extend(new_tools);
     }
@@ -256,12 +258,9 @@ mod tests {
     use crate::config::global_db::tools::{core_configurable_tools, core_none_tools};
     use crate::config::resolved::{WorkspaceState, resolve};
     use crate::config::schema::{
-        ADAPTER_OPENAI_RESPONSES, AgentProfile, AgentToolBinding, GlobalSettings,
-        McpServerDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition,
-        ToolPreset,
+        AgentProfile, AgentToolBinding, GlobalSettings, McpServerDefinition, ToolPreset,
     };
     use crate::context_pipeline::Context;
-    use crate::llm::{LlmProvider, provider_from_definition};
     use crate::optional::EngineManager;
     use std::collections::HashMap;
 
@@ -272,20 +271,6 @@ mod tests {
             agents_md: None,
             claude_md: None,
         }
-    }
-
-    fn dummy_provider() -> Box<dyn LlmProvider> {
-        let def = ProviderDefinition {
-            id: "test".into(),
-            adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-            label: "test".into(),
-            config: ProviderConnectionConfig {
-                endpoint: "http://localhost:11434/v1".into(),
-                api_key: "sk-test".into(),
-                auth: ProviderAuth::Bearer,
-            },
-        };
-        provider_from_definition(&def).unwrap()
     }
 
     fn default_bindings() -> HashMap<String, AgentToolBinding> {
@@ -342,24 +327,27 @@ mod tests {
         let engines = WorkspaceEngines::new();
         let ide = IdeBaseHandle::open(resolved.workspace_root(), Arc::new(engines.clone()))
             .expect("ide base");
+        let runtime = RuntimeHandle::new(
+            resolved.clone(),
+            "default".into(),
+            WorkspaceState::new(resolved.workspace_root()),
+            Arc::new(EngineManager::new()),
+            Arc::new(engines),
+            ide,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            std::path::PathBuf::from("/tmp/litecode-test-global.db"),
+        );
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         rt.block_on(build_tool_list(
-            resolved,
+            &runtime,
             "default",
-            dummy_provider(),
-            "test",
             depth,
             tokio_util::sync::CancellationToken::new(),
-            EngineManager::new(),
-            engines,
-            ide,
             "test-parent-session",
             dummy_sessions(),
-            Arc::new(McpConnectionPool::new()),
-            Arc::new(crate::tools::subagent::SubagentHub::new()),
         ))
     }
 

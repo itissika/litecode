@@ -11,7 +11,6 @@ use litecode::config::schema::{AgentProfile, AgentToolBinding, ToolPreset};
 use litecode::config::workspace::write_lsp_init;
 use litecode::config::{ConfigManager, WorkspaceState, init_workspace};
 use litecode::engines::{EngineState, WorkspaceEngines};
-use litecode::llm::provider_from_definition;
 use litecode::lsp::deps::server_id_from_command;
 use litecode::lsp::project_root::project_root_for_file;
 use litecode::lsp::{LspDiagFeedback, LspHub, detect_needed_server_commands, file_to_uri};
@@ -127,28 +126,28 @@ fn engines_json_off_no_lsp_tool() {
         .enable_all()
         .build()
         .unwrap();
+    let ide = litecode::ide_base::IdeBaseHandle::open(root, std::sync::Arc::new(engines.clone()))
+        .expect("ide");
+    let runtime = litecode::runtime::RuntimeHandle::new(
+        resolved,
+        "default".into(),
+        WorkspaceState::new(root),
+        Arc::new(EngineManager::new()),
+        Arc::new(engines.clone()),
+        ide,
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        root.join("global.db"),
+    );
     let tools = rt.block_on(build_tool_list(
-        &resolved,
+        &runtime,
         "default",
-        provider_from_definition(&common::stub_test_provider_def(
-            "http://localhost:11434/v1",
-            "test",
-        ))
-        .unwrap(),
-        "test",
         0,
         tokio_util::sync::CancellationToken::new(),
-        EngineManager::new(),
-        engines.clone(),
-        litecode::ide_base::IdeBaseHandle::open(root, std::sync::Arc::new(engines.clone()))
-            .expect("ide"),
         "test-parent-session",
         Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             String::new(),
         )),
-        Arc::new(litecode::mcp::McpConnectionPool::new()),
-        Arc::new(litecode::tools::subagent::SubagentHub::new()),
     ));
     assert!(!tools.iter().any(|t| t.name() == "lsp"));
 }

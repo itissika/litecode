@@ -11,7 +11,7 @@ use litecode::config::{
 use litecode::engines::WorkspaceEngines;
 use litecode::ide_base::IdeBaseHandle;
 use litecode::optional::EngineManager;
-use litecode::runtime::AgentRuntime;
+use litecode::runtime::{AgentRuntime, RuntimeHandle};
 use litecode::serve::ServeState;
 use litecode::serve::router;
 use litecode::session::WorkspaceLock;
@@ -215,23 +215,32 @@ fn agent_runtime_cwd_uses_resolved_workspace_not_process_cwd() {
     clear_runtime_paths();
     std::env::set_current_dir(decoy_dir.path()).expect("chdir decoy");
 
-    let result = AgentRuntime::new(
-        resolved,
-        session_id,
-        sessions,
-        binding,
-        "default",
-        0,
-        test_auto_approve_sink(),
-        Arc::new(NoopObserver),
-        None,
-        None,
-        EngineManager::new(),
-        workspace_engines,
-        ide,
-    );
+    let result = {
+        let handle = RuntimeHandle::new(
+            resolved,
+            "default".into(),
+            workspace,
+            Arc::new(EngineManager::new()),
+            Arc::new(workspace_engines),
+            ide,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            db_path,
+        );
+        AgentRuntime::with_mcp_pool(
+            handle,
+            session_id,
+            sessions,
+            binding,
+            "default",
+            0,
+            test_auto_approve_sink(),
+            Arc::new(NoopObserver),
+            None,
+            None,
+        )
+    };
     let _ = std::env::set_current_dir(prev);
-    let runtime = result.expect("AgentRuntime::new");
+    let runtime = result.expect("AgentRuntime::with_mcp_pool");
 
     let tool_cwd = runtime.context().cwd.clone();
     let decoy = decoy_dir

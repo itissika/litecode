@@ -387,11 +387,6 @@ fn disabled_binding_changes_tools_count_after_reload() {
     let settings = writer.load_settings().expect("load");
     let workspace = WorkspaceState::new("/tmp/p5-tools-count");
     let resolved = ConfigManager::resolve(settings.clone(), workspace.clone());
-    let provider = provider_from_definition(&common::stub_test_provider_def(
-        "http://127.0.0.1:9",
-        "test-key",
-    ))
-    .expect("provider");
     let workspace_engines = Arc::new(WorkspaceEngines::new());
     let ide = litecode::ide_base::IdeBaseHandle::open(
         workspace.workspace_root.clone(),
@@ -415,19 +410,12 @@ fn disabled_binding_changes_tools_count_after_reload() {
         .unwrap();
     let count_before = rt
         .block_on(build_tool_list(
-            &runtime.resolved,
+            &runtime,
             "default",
-            provider.box_clone(),
-            "test-key",
             0,
             tokio_util::sync::CancellationToken::new(),
-            (*runtime.engine_manager).clone(),
-            (*runtime.workspace_engines).clone(),
-            Arc::clone(&runtime.ide),
             "test-parent-session",
             common::test_sessions_manager(""),
-            Arc::clone(&runtime.mcp_pool),
-            Arc::clone(&runtime.subagent_hub),
         ))
         .len();
     assert!(
@@ -449,19 +437,12 @@ fn disabled_binding_changes_tools_count_after_reload() {
 
     let count_after = rt
         .block_on(build_tool_list(
-            &runtime.resolved,
+            &runtime,
             "default",
-            provider.box_clone(),
-            "test-key",
             0,
             tokio_util::sync::CancellationToken::new(),
-            (*runtime.engine_manager).clone(),
-            (*runtime.workspace_engines).clone(),
-            Arc::clone(&runtime.ide),
             "test-parent-session",
             common::test_sessions_manager(""),
-            Arc::clone(&runtime.mcp_pool),
-            Arc::clone(&runtime.subagent_hub),
         ))
         .len();
 
@@ -1424,31 +1405,29 @@ async fn settings_custom_tool_crud_enable_bind_execute_and_delete() {
                 workspace,
             )),
         );
-        let provider = litecode::llm::provider_from_definition(&common::stub_test_provider_def(
-            "http://127.0.0.1:9",
-            "test-key",
-        ))
-        .expect("provider");
         let workspace_engines = litecode::engines::WorkspaceEngines::new();
         let ide = litecode::ide_base::IdeBaseHandle::open(
             workspace,
             std::sync::Arc::new(workspace_engines.clone()),
         )
         .expect("ide");
+        let runtime = litecode::runtime::RuntimeHandle::new(
+            resolved,
+            "default".into(),
+            WorkspaceState::new(workspace),
+            std::sync::Arc::new(litecode::optional::EngineManager::new()),
+            std::sync::Arc::new(workspace_engines),
+            ide,
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            db_path,
+        );
         let tools = build_tool_list(
-            &resolved,
+            &runtime,
             "default",
-            provider,
-            "test-key",
             0,
             tokio_util::sync::CancellationToken::new(),
-            litecode::optional::EngineManager::new(),
-            workspace_engines,
-            ide,
             "test-parent-session",
             common::test_sessions_manager(""),
-            std::sync::Arc::new(litecode::mcp::McpConnectionPool::new()),
-            std::sync::Arc::new(litecode::tools::subagent::SubagentHub::new()),
         )
         .await;
         let tool = tools.iter().find(|t| t.name() == id).expect("in tool list");

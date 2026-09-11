@@ -74,19 +74,25 @@ fn launch_tool_with_hub(
     );
     let hub = Arc::new(SubagentHub::new());
     hub.attach_sessions(Arc::clone(&sessions));
+    let runtime = litecode::runtime::RuntimeHandle::new(
+        resolved.clone(),
+        "default".into(),
+        test_workspace(resolved.workspace_root()),
+        Arc::new(EngineManager::new()),
+        Arc::new(engines),
+        ide,
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        // Dummy global DB path: never applied (revision stays 0).
+        resolved.workspace_root().join(".litecode/global.db"),
+    )
+    .with_test_llm_override(Arc::from(provider));
     let tool = SubagentLaunchTool::new(
-        resolved,
+        runtime,
         "default",
-        provider,
-        "test-key".into(),
         0,
         CancellationToken::new(),
-        EngineManager::new(),
-        engines,
-        ide,
         sessions,
         parent_session_id,
-        Arc::new(litecode::mcp::McpConnectionPool::new()),
         Arc::clone(&hub),
     );
     (tool, hub)

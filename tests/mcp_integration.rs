@@ -258,8 +258,8 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
     };
     use litecode::engines::WorkspaceEngines;
     use litecode::ide_base::IdeBaseHandle;
-    use litecode::llm::provider_from_definition;
     use litecode::optional::EngineManager;
+    use litecode::runtime::RuntimeHandle;
     use litecode::session::manager::SessionManager;
     use litecode::tool::registry::build_tool_list;
 
@@ -297,38 +297,29 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
     let ws = tempfile::TempDir::new().expect("ws");
     let resolved = resolve(global, WorkspaceState::new(ws.path()));
 
-    let pool = Arc::new(McpConnectionPool::new());
     let workspace_engines = WorkspaceEngines::new();
     let ide = IdeBaseHandle::open(ws.path(), Arc::new(workspace_engines.clone())).expect("ide");
-    let provider = provider_from_definition(&ProviderDefinition {
-        id: "test".into(),
-        adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-        label: "test".into(),
-        config: ProviderConnectionConfig {
-            endpoint: "http://127.0.0.1:9".into(),
-            api_key: "k".into(),
-            auth: ProviderAuth::Bearer,
-        },
-    })
-    .expect("provider");
+    let runtime = RuntimeHandle::new(
+        resolved,
+        "default".into(),
+        WorkspaceState::new(ws.path()),
+        Arc::new(EngineManager::new()),
+        Arc::new(workspace_engines),
+        ide,
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        ws.path().join("global.db"),
+    );
 
     let tools = build_tool_list(
-        &resolved,
+        &runtime,
         "default",
-        provider,
-        "k",
         0,
         tokio_util::sync::CancellationToken::new(),
-        EngineManager::new(),
-        workspace_engines,
-        ide,
         "test-parent-session",
         Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             String::new(),
         )),
-        Arc::clone(&pool),
-        Arc::new(litecode::tools::subagent::SubagentHub::new()),
     )
     .await;
     let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();

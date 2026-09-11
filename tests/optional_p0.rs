@@ -197,32 +197,20 @@ fn settings_reload_reconciles_engine_manager() {
             .is_warmed("webfetch", &runtime.resolved)
     );
 
-    let provider = provider_from_definition(&common::stub_test_provider_def(
-        "http://127.0.0.1:9",
-        "test-key",
-    ))
-    .expect("provider");
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     let tools = rt.block_on(build_tool_list(
-        &runtime.resolved,
+        &runtime,
         "default",
-        provider.box_clone(),
-        "test-key",
         0,
         tokio_util::sync::CancellationToken::new(),
-        (*runtime.engine_manager).clone(),
-        (*runtime.workspace_engines).clone(),
-        Arc::clone(&runtime.ide),
         "test-parent-session",
         Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             String::new(),
         )),
-        Arc::clone(&runtime.mcp_pool),
-        Arc::clone(&runtime.subagent_hub),
     ));
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     assert!(names.contains(&"webfetch"));

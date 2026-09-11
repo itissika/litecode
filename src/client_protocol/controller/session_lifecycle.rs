@@ -6,7 +6,7 @@ use crate::client_protocol::protocol::{
 };
 use crate::context_pipeline::{BudgetPolicy, CompactPolicy, manual_compact_eligible};
 use crate::permission::PermissionSink;
-use crate::runtime::spawn_turn;
+use crate::runtime::{TurnOptions, spawn_turn};
 use crate::session::estimate::compute_token_breakdown;
 use crate::session::store::Session;
 use crate::types::LitecodeError;
@@ -103,6 +103,7 @@ impl SessionController {
             input.to_string(),
             sink,
             turn_id.clone(),
+            TurnOptions::default(),
         ) {
             Ok(handle) => handle,
             Err(error) => {

@@ -359,29 +359,28 @@ async fn build_tool_list_includes_code_search_after_warmup() {
         .wait_until_warmed("code_search", Duration::from_secs(30))
         .await;
 
-    let provider = provider_from_definition(&common::stub_test_provider_def(
-        "http://localhost:11434/v1",
-        "test",
-    ))
-    .unwrap();
+    let ide = litecode::ide_base::IdeBaseHandle::open(root, std::sync::Arc::new(engines.clone()))
+        .expect("ide");
+    let runtime = litecode::runtime::RuntimeHandle::new(
+        resolved,
+        "default".into(),
+        litecode::config::WorkspaceState::new(root),
+        Arc::new(global_engines),
+        Arc::new(engines.clone()),
+        ide,
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        root.join("global.db"),
+    );
     let tools = build_tool_list(
-        &resolved,
+        &runtime,
         "default",
-        provider,
-        "test",
         0,
         tokio_util::sync::CancellationToken::new(),
-        global_engines,
-        engines.clone(),
-        litecode::ide_base::IdeBaseHandle::open(root, std::sync::Arc::new(engines.clone()))
-            .expect("ide"),
         "test-parent-session",
         Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             String::new(),
         )),
-        Arc::new(litecode::mcp::McpConnectionPool::new()),
-        Arc::new(litecode::tools::subagent::SubagentHub::new()),
     )
     .await;
     assert!(tools.iter().any(|t| t.name() == "code_search"));

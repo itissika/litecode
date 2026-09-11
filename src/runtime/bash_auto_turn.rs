@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use crate::permission::{PermissionSink, deny_permission_sink};
-use crate::runtime::{RuntimeHandle, spawn_turn};
+use crate::runtime::{RuntimeHandle, TurnOptions, spawn_turn};
 use crate::session::{LifecycleEvent, SessionManager};
 use crate::terminal::TerminalHub;
 use crate::tools::bash_status;
@@ -117,6 +117,7 @@ fn spawn_prepared_idle_auto_turn(
         input,
         sink,
         turn_id.clone(),
+        TurnOptions::default(),
     ) {
         Ok(h) => h,
         Err(error) => {

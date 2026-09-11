@@ -815,6 +815,7 @@ use litecode::engines::WorkspaceEngines;
 use litecode::ide_base::IdeBaseHandle;
 use litecode::optional::EngineManager;
 use litecode::runtime::AgentRuntime;
+use litecode::runtime::RuntimeHandle;
 use litecode::runtime::observer::RuntimeObserver;
 
 use common::runtime::{test_resolved_with_budget, test_turn_binding};
@@ -973,8 +974,18 @@ fn build_runtime_with_observer(
     let binding = test_turn_binding(&resolved, provider, "test-key", model_id);
     let workspace_engines = WorkspaceEngines::new();
     let ide = IdeBaseHandle::open(cwd, Arc::new(workspace_engines.clone())).expect("ide base");
-    let mut runtime = AgentRuntime::new(
+    let handle = RuntimeHandle::new(
         resolved,
+        "default".into(),
+        ws,
+        Arc::new(EngineManager::new()),
+        Arc::new(workspace_engines),
+        ide,
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        db_path,
+    );
+    let mut runtime = AgentRuntime::with_mcp_pool(
+        handle,
         session_id,
         sessions,
         binding,
@@ -984,11 +995,8 @@ fn build_runtime_with_observer(
         observer,
         None,
         Some(3),
-        EngineManager::new(),
-        workspace_engines,
-        ide,
     )
-    .expect("AgentRuntime::new");
+    .expect("AgentRuntime::with_mcp_pool");
     runtime.set_context_cwd(cwd.to_path_buf());
     runtime
 }

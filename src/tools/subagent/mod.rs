@@ -8,8 +8,8 @@ mod stop;
 mod wait;
 
 pub use hub::{
-    ExitNotice, MAX_SUBAGENTS_PER_PARENT, RunningJob, SpawnDeps, SubagentHub, SubagentJobWire,
-    SubagentJobsSnapshot, SubagentWaitWire, WaitOutcome,
+    ExitNotice, LaunchSpec, MAX_SUBAGENTS_PER_PARENT, RunningJob, SpawnDeps, SubagentHub,
+    SubagentJobWire, SubagentJobsSnapshot, SubagentWaitWire, WaitOutcome,
 };
 pub use launch::SubagentLaunchTool;
 pub use list::SubagentListTool;
@@ -18,3 +18,5 @@ pub use wait::SubagentWaitTool;
 
 #[cfg(test)]
 mod jobs_contract;
+#[cfg(test)]
+mod spawn_contract;

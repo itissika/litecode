@@ -14,7 +14,7 @@ use litecode::config::{AgentConfig, ResolvedConfig, TurnGuard};
 use litecode::engines::WorkspaceEngines;
 use litecode::llm::LlmProvider;
 use litecode::optional::EngineManager;
-use litecode::runtime::{AgentRuntime, TurnLlmBinding};
+use litecode::runtime::{AgentRuntime, RuntimeHandle, TurnLlmBinding};
 use litecode::session::manager::SessionManager;
 
 use super::bindings::{binding_all_for, binding_none_tool};
@@ -140,7 +140,7 @@ pub fn test_turn_binding(
 /// Build `AgentRuntime` against a live `LlmProvider` (Responses product path).
 ///
 /// `cwd` must already contain an initialized `.litecode/` (see [`test_workspace`]).
-/// `max_steps` is applied via `AgentRuntime::new`'s override (product path).
+/// `max_steps` is applied via the `with_mcp_pool` override (product path).
 pub fn build_runtime_with_provider(
     cwd: &Path,
     spec: TestAgentSpec,
@@ -183,22 +183,31 @@ pub fn build_runtime_with_provider(
     let workspace_engines = WorkspaceEngines::new();
     let ide = litecode::ide_base::IdeBaseHandle::open(cwd, Arc::new(workspace_engines.clone()))
         .expect("ide base");
-    let mut runtime = AgentRuntime::new(
-        resolved,
-        session_id,
-        sessions,
-        binding,
-        "default",
-        0,
-        test_auto_approve_sink(),
-        Arc::new(NoopObserver),
-        None,
-        Some(spec.agent.max_steps),
-        EngineManager::new(),
-        workspace_engines,
-        ide,
-    )
-    .expect("AgentRuntime::new");
+    let mut runtime = {
+        let handle = RuntimeHandle::new(
+            resolved,
+            "default".into(),
+            workspace,
+            Arc::new(EngineManager::new()),
+            Arc::new(workspace_engines),
+            ide,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            db_path,
+        );
+        AgentRuntime::with_mcp_pool(
+            handle,
+            session_id,
+            sessions,
+            binding,
+            "default",
+            0,
+            test_auto_approve_sink(),
+            Arc::new(NoopObserver),
+            None,
+            Some(spec.agent.max_steps),
+        )
+        .expect("AgentRuntime::with_mcp_pool")
+    };
     runtime.set_context_cwd(cwd.to_path_buf());
     runtime
 }

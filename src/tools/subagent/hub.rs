@@ -5,19 +5,11 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::config::ResolvedConfig;
 use crate::config::workspace::workspace_root_from_paths;
-use crate::engines::WorkspaceEngines;
-use crate::ide_base::IdeBaseHandle;
-use crate::llm::LlmProvider;
-use crate::runtime::ProviderRegistry;
-use crate::runtime::TurnHandle;
-use crate::runtime::llm_resolve::binding_for_agent;
-use crate::runtime::observer::ChannelObserver;
+use crate::runtime::{BindingSource, RuntimeHandle, TurnOptions, spawn_turn};
 use crate::session::manager::SessionManager;
 use crate::types::LitecodeError;
 
@@ -61,15 +53,13 @@ pub struct RunningJob {
 }
 
 pub struct SpawnDeps {
-    pub resolved: ResolvedConfig,
-    pub provider: Box<dyn LlmProvider>,
-    pub api_key: String,
+    /// Live runtime handle of the parent turn. The child re-applies settings
+    /// from the global DB at spawn time (same as a main-session turn) and
+    /// resolves its own LLM binding from the agent profile — never from the
+    /// parent session's provider.
+    pub runtime: RuntimeHandle,
     pub depth: u32,
-    pub engine_manager: crate::optional::EngineManager,
-    pub workspace_engines: WorkspaceEngines,
-    pub ide: Arc<IdeBaseHandle>,
     pub sessions: Arc<SessionManager>,
-    pub mcp_pool: Arc<crate::mcp::McpConnectionPool>,
 }
 
 pub struct LaunchSpec {
@@ -608,11 +598,24 @@ impl SubagentHub {
         }
         self.attach_sessions(Arc::clone(&deps.sessions));
 
-        let project = workspace_root_from_paths(deps.resolved.paths())
+        // First-class turn path: re-read live settings from the global DB
+        // (same reload a main-session turn start runs) and spawn through the
+        // unified `spawn_turn` entry. The child resolves its own LLM binding
+        // from its agent profile — never from the parent session's provider
+        // and never from the parent tool list's config snapshot.
+        let mut runtime = deps.runtime.clone();
+        if let Err(e) = runtime.apply_non_engine() {
+            tracing::error!(parent_session_id, error = %e, "subagent settings reload failed");
+            self.release_slot(parent_session_id);
+            return Err(format!("settings reload failed: {e}"));
+        }
+
+        let project = workspace_root_from_paths(runtime.resolved.paths())
             .to_string_lossy()
             .to_string();
         let seed_model = spec.model_id_override.as_deref().or_else(|| {
-            deps.resolved
+            runtime
+                .resolved
                 .agents()
                 .get(&spec.agent_name)
                 .map(|p| p.model_ref.as_str())
@@ -669,74 +672,42 @@ impl SubagentHub {
             hub.release_slot(parent);
         };
 
-        let mut registry = ProviderRegistry::new();
-        let turn_llm = match binding_for_agent(
-            &deps.resolved,
-            &mut registry,
-            &spec.agent_name,
-            spec.model_id_override.as_deref(),
-            0,
-        ) {
-            Ok(mut binding) => {
-                binding.provider = Arc::from(deps.provider.box_clone());
-                binding.api_key = deps.api_key.clone();
-                binding
-            }
-            Err(e) => {
-                abort(
-                    &deps.sessions,
-                    &child_session_id,
-                    self,
-                    parent_session_id,
-                    &format!("llm binding failed: {e}"),
-                );
-                return Err(format!("llm binding failed: {e}"));
-            }
+        let turn_id = Uuid::new_v4().to_string();
+        let opts = TurnOptions {
+            binding: BindingSource::Agent {
+                name: spec.agent_name.clone(),
+                model_id_override: spec.model_id_override.clone(),
+            },
+            depth: deps.depth + 1,
+            max_steps_override: spec.max_steps_override,
         };
-
-        let child_cancel = CancellationToken::new();
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let observer = ChannelObserver::new(event_tx);
-
-        let mut runtime = match crate::runtime::AgentRuntime::with_mcp_pool(
-            deps.resolved.clone(),
+        let mut turn_handle = match spawn_turn(
+            &runtime,
             child_session_id.clone(),
             Arc::clone(&deps.sessions),
-            turn_llm,
-            &spec.agent_name,
-            deps.depth + 1,
+            spec.prompt.clone(),
             crate::permission::deny_permission_sink(),
-            observer,
-            Some(child_cancel.clone()),
-            spec.max_steps_override,
-            deps.engine_manager,
-            deps.workspace_engines,
-            Arc::clone(&deps.ide),
-            Arc::clone(&deps.mcp_pool),
-            Arc::clone(self),
+            turn_id.clone(),
+            opts,
         ) {
-            Ok(r) => r,
+            Ok(h) => h,
             Err(e) => {
                 abort(
                     &deps.sessions,
                     &child_session_id,
                     self,
                     parent_session_id,
-                    &format!("agent runtime init failed: {e}"),
+                    &format!("turn spawn failed: {e}"),
                 );
-                return Err(format!("agent runtime init failed: {e}"));
+                return Err(format!("turn spawn failed: {e}"));
             }
         };
-
-        let turn_id = Uuid::new_v4().to_string();
-        let step_max = runtime.agent_config.max_steps;
-        let turn_handle = TurnHandle {
-            handle: None,
-            rx: event_rx,
-            cancel: child_cancel.clone(),
-            turn_id: turn_id.clone(),
-            step_max,
-        };
+        let step_max = turn_handle.step_max;
+        let child_cancel = turn_handle.cancel.clone();
+        // The hub's joiner thread owns turn finalization (exactly-once via
+        // WorkerGuard); the session-side handle keeps no join, matching the
+        // inline-drive contract of the main-session fanout path.
+        let join = turn_handle.handle.take();
 
         if let Err(e) = deps.sessions.reserve_turn(
             &child_session_id,
@@ -800,8 +771,6 @@ impl SubagentHub {
         let sessions = Arc::clone(&deps.sessions);
         let child_id = child_session_id.clone();
         let parent_for_thread = parent_session_id.to_string();
-        let prompt = spec.prompt.clone();
-        let paths = deps.resolved.paths().clone();
         let turn_id_thread = turn_id.clone();
         tracing::info!(
             parent_session_id,
@@ -813,36 +782,31 @@ impl SubagentHub {
         let spawn_result = std::thread::Builder::new()
             .name(format!("subagent-{child_id}"))
             .spawn(move || {
-                crate::config::workspace::set_runtime_paths(paths);
                 let mut guard = WorkerGuard::new(
                     Arc::clone(&hub),
                     Arc::clone(&sessions),
                     child_id.clone(),
                     turn_id_thread.clone(),
                 );
-                let rt = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(rt) => rt,
-                    Err(error) => {
-                        tracing::error!(
-                            parent_session_id = %parent_for_thread,
-                            child_session_id = %child_id,
-                            error = %error,
-                            "subagent worker runtime failed"
-                        );
-                        guard.finish(false, false, format!("agent runtime failed: {error}"));
-                        return;
-                    }
+                // The turn runs on its own thread (spawned by `spawn_turn`);
+                // this joiner owns finalization — exactly once via WorkerGuard,
+                // including panics surfaced as a join error.
+                let result = match join {
+                    Some(j) => match j.join() {
+                        Ok(r) => r,
+                        Err(_) => Err(LitecodeError::ToolExecution(
+                            "subagent worker panicked".into(),
+                        )),
+                    },
+                    None => Err(LitecodeError::ToolExecution(
+                        "subagent turn join handle missing".into(),
+                    )),
                 };
-                let result = rt.block_on(runtime.run_with_turn(&prompt, &turn_id_thread, step_max));
-                drop(runtime);
                 if !child_cancel.is_cancelled() && !matches!(&result, Err(LitecodeError::Canceled))
                 {
                     let mut still_running = true;
                     for _ in 0..200 {
-                        if !rt.block_on(sessions.is_turn_running(&child_id)) {
+                        if !sessions.is_turn_running_blocking(&child_id) {
                             still_running = false;
                             break;
                         }
