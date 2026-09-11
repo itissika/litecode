@@ -482,7 +482,13 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       // Product gate: only idle sessions can be deleted. UI also disables the
       // button; this is the sole store-side check (no pendingSessionOp lock).
       const target = get().sessions.find((s) => s.id === id);
-      if (target?.running) return;
+      if (
+        target?.running ||
+        target?.status === "running_with_subagent" ||
+        target?.status === "stopping"
+      ) {
+        return;
+      }
 
       // Optimistic: gone from list and panel immediately.
       set({ sessions: sortSessions(get().sessions.filter((s) => s.id !== id)) });

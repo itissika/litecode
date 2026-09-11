@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+﻿use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,6 +24,8 @@ pub struct LiveTurnState {
     pub turn_id: String,
     pub cancel: CancellationToken,
     pub progress: TurnProgress,
+    /// True after a cancel request while the runtime is still winding down.
+    pub stopping: bool,
 }
 
 /// Process-local exclusive activity for one session.
@@ -44,7 +46,38 @@ enum SessionActivity {
     },
 }
 
+/// Public session status. `RunningWithSubagent` is the aggregate view for an
+/// otherwise-idle parent whose subtree still has active turns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionStatus {
+    Idle,
+    Running,
+    Stopping,
+    RunningWithSubagent,
+}
+
+impl SessionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+            Self::RunningWithSubagent => "running_with_subagent",
+        }
+    }
+}
+
 impl SessionActivity {
+    fn status(&self) -> SessionStatus {
+        match self {
+            Self::Idle => SessionStatus::Idle,
+            Self::StartingTurn { .. } => SessionStatus::Running,
+            Self::RunningTurn(live) if live.stopping => SessionStatus::Stopping,
+            Self::RunningTurn(_) => SessionStatus::Running,
+            Self::Exclusive { .. } => SessionStatus::Running,
+        }
+    }
+
     fn is_turn(&self) -> bool {
         matches!(self, Self::StartingTurn { .. } | Self::RunningTurn(_))
     }
@@ -100,13 +133,13 @@ pub struct SessionRecord {
     /// Ring buffer for reconnect replay (cleared on next start_turn).
     event_buffer: VecDeque<InternalEnvelope>,
     subscriber_count: usize,
-    /// Sticky agent selection �?isomorphic with `sessions.agent_id`.
+    /// Sticky agent selection 锟?isomorphic with `sessions.agent_id`.
     pub agent_id: String,
-    /// Sticky model catalog id �?isomorphic with `sessions.model_id` (NULL = unset).
+    /// Sticky model catalog id 锟?isomorphic with `sessions.model_id` (NULL = unset).
     pub model_id: Option<String>,
-    /// Platform thinking tier �?isomorphic with `sessions.thinking_tier`.
+    /// Platform thinking tier 锟?isomorphic with `sessions.thinking_tier`.
     pub thinking_tier: crate::platform_knobs::ThinkingTier,
-    /// Platform context mode �?isomorphic with `sessions.context_mode`.
+    /// Platform context mode 锟?isomorphic with `sessions.context_mode`.
     pub context_mode: crate::platform_knobs::ContextMode,
     /// Parent session when this is a subagent child; `None` for root sessions.
     pub parent_session_id: Option<String>,
@@ -189,13 +222,18 @@ impl SessionManager {
 
     pub fn from_data(turn_guard: Arc<TurnGuard>, data: Arc<SessionData>) -> Self {
         let (lifecycle_tx, _) = broadcast::channel(256);
-        Self {
+        let manager = Self {
             records: std::sync::Mutex::new(HashMap::new()),
             turn_guard,
             data,
             _test_lease: None,
             lifecycle_tx,
+        };
+        let orphans = manager.remove_orphan_child_sessions();
+        if orphans > 0 {
+            tracing::warn!(removed = orphans, "removed orphan subagent sessions");
         }
+        manager
     }
 
     pub fn data(&self) -> &Arc<SessionData> {
@@ -685,6 +723,7 @@ impl SessionManager {
                 turn_id,
                 cancel,
                 progress: progress.clone(),
+                stopping: false,
             });
         }
 
@@ -717,7 +756,7 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Finish a turn (Running �?Idle). Sole path that clears running; emits lifecycle TurnFinished.
+    /// Finish a turn (Running 锟?Idle). Sole path that clears running; emits lifecycle TurnFinished.
     ///
     /// Idempotent when already Idle or turn_id mismatches a different live turn.
     pub fn finish_turn(&self, session_id: &str, turn_id: &str) -> Option<TurnProgress> {
@@ -784,6 +823,7 @@ impl SessionManager {
                 turn_id: turn_id.clone(),
                 cancel: cancel.clone(),
                 progress: progress.clone(),
+                stopping: false,
             });
             (record.event_tx.clone(), progress)
         };
@@ -831,14 +871,68 @@ impl SessionManager {
     /// Cancel a live `RunningTurn` without taking the exclusive lease.
     /// Returns true when a cancel token was signalled.
     pub fn cancel_turn_sync(&self, session_id: &str) -> bool {
-        let records = self.records.lock().unwrap();
-        if let Some(record) = records.get(session_id)
-            && let SessionActivity::RunningTurn(live) = &record.activity
+        let mut records = self.records.lock().unwrap();
+        if let Some(record) = records.get_mut(session_id)
+            && let SessionActivity::RunningTurn(live) = &mut record.activity
         {
+            live.stopping = true;
             live.cancel.cancel();
             return true;
         }
         false
+    }
+
+    /// Public own+descendant status for a session. Descendants only promote an
+    /// idle session; they never demote the session's own `running`/`stopping`.
+    pub fn session_status(&self, session_id: &str) -> Option<SessionStatus> {
+        let own = {
+            let records = self.records.lock().unwrap();
+            records
+                .get(session_id)
+                .map(|record| record.activity.status())?
+        };
+        if own != SessionStatus::Idle {
+            return Some(own);
+        }
+        let descendants = self.descendant_session_ids(session_id);
+        if descendants.is_empty() {
+            return Some(own);
+        }
+        let records = self.records.lock().unwrap();
+        let has_active_descendant = descendants.iter().any(|id| {
+            records
+                .get(id)
+                .is_some_and(|record| record.activity.status() != SessionStatus::Idle)
+        });
+        Some(if has_active_descendant {
+            SessionStatus::RunningWithSubagent
+        } else {
+            SessionStatus::Idle
+        })
+    }
+
+    /// Public descendant ids for session-level tooling; root excluded.
+    pub fn descendant_session_ids(&self, session_id: &str) -> Vec<String> {
+        self.collect_child_ids_blocking(session_id)
+    }
+
+    /// Signal cancel to every descendant running turn. Revert uses this before
+    /// truncating the parent log; the call is fire-and-forget and leaves child
+    /// sessions and their transcripts intact.
+    fn cancel_descendant_turns(&self, session_id: &str) -> usize {
+        let descendants = self.collect_child_ids_blocking(session_id);
+        let mut records = self.records.lock().unwrap();
+        let mut cancelled = 0usize;
+        for id in descendants {
+            if let Some(record) = records.get_mut(&id)
+                && let SessionActivity::RunningTurn(live) = &mut record.activity
+            {
+                live.stopping = true;
+                live.cancel.cancel();
+                cancelled += 1;
+            }
+        }
+        cancelled
     }
 
     /// Exclusive compact (or other exclusive ops) is the only busy reject.
@@ -848,6 +942,7 @@ impl SessionManager {
         self: &Arc<Self>,
         session_id: &str,
     ) -> Result<Option<SessionOperationLease>> {
+        self.cancel_descendant_turns(session_id);
         let mut records = self.records.lock().unwrap();
         let record = records.get_mut(session_id).ok_or_else(|| {
             LitecodeError::ToolExecution(format!("session {session_id} not found"))
@@ -925,6 +1020,9 @@ impl SessionManager {
         session_id: &str,
         kind: SessionOperationKind,
     ) -> Result<SessionOperationLease> {
+        if kind == SessionOperationKind::Delete && self.has_active_descendants(session_id) {
+            return Err(LitecodeError::AgentAlreadyRunning);
+        }
         let operation_id = uuid::Uuid::new_v4().to_string();
         let mut records = self.records.lock().unwrap();
         let record = records.get_mut(session_id).ok_or_else(|| {
@@ -1053,6 +1151,7 @@ impl SessionManager {
                 || updated_at >= cutoff
                 || self.subscriber_count(&session_id).await > 0
                 || self.is_turn_running(&session_id).await
+                || self.has_active_descendants(&session_id)
                 || !self.is_session_empty(&session_id).await
             {
                 continue;
@@ -1061,14 +1160,139 @@ impl SessionManager {
         }
     }
 
-    pub fn remove_session(&self, session_id: &str) -> Result<()> {
-        // Cancel live turns on this session and any in-memory children first.
-        let child_ids = match self.data.read_blocking(SessionRead::ListChildIds {
-            parent_session_id: session_id.to_string(),
-        }) {
+    /// True when any descendant session is not idle. Used to fence durable
+    /// subtree operations (delete) that must not run under a live child turn.
+    fn has_active_descendants(&self, session_id: &str) -> bool {
+        let children = self.collect_child_ids_blocking(session_id);
+        if children.is_empty() {
+            return false;
+        }
+        let records = self.records.lock().unwrap();
+        children
+            .iter()
+            .any(|id| records.get(id).is_some_and(|record| record.activity.is_busy()))
+    }
+    /// Delete child sessions whose durable parent row is gone. This is the
+    /// startup repair for databases written by pre-convergence builds.
+    pub fn remove_orphan_child_sessions(&self) -> usize {
+        let ids = match self
+            .data
+            .read_blocking(SessionRead::ListOrphanChildSessions)
+        {
             Ok(ReadValue::Ids(ids)) => ids,
-            _ => Vec::new(),
+            _ => return 0,
         };
+        let mut removed = 0usize;
+        for id in ids {
+            if self.remove_session(&id).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    /// Collect the durable subtree ids (children first order is not required)
+    /// plus any in-memory child records so a delete cannot leak a live turn.
+    fn collect_child_ids_blocking(&self, session_id: &str) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(session_id.to_string());
+        let mut out = Vec::new();
+        while let Some(parent) = queue.pop_front() {
+            let mut children: Vec<String> = match self.data.read_blocking(
+                SessionRead::ListChildIds {
+                    parent_session_id: parent.clone(),
+                },
+            ) {
+                Ok(ReadValue::Ids(ids)) => ids,
+                _ => Vec::new(),
+            };
+            {
+                let records = self.records.lock().unwrap();
+                for (id, record) in records.iter() {
+                    if record.parent_session_id.as_deref() == Some(parent.as_str())
+                        && !children.iter().any(|existing| existing == id)
+                    {
+                        children.push(id.clone());
+                    }
+                }
+            }
+            for child in children {
+                if child == session_id || !seen.insert(child.clone()) {
+                    continue;
+                }
+                out.push(child.clone());
+                queue.push_back(child);
+            }
+        }
+        out
+    }
+
+    /// Remove root + descendants from the in-memory registry and release exactly
+    /// one turn-guard slot for each removed turn. Must be called only after the
+    /// durable delete has been accepted (or was already gone).
+    fn take_removed_sessions(
+        &self,
+        session_id: &str,
+        known_children: &[String],
+    ) -> Vec<String> {
+        let mut records = self.records.lock().unwrap();
+        let mut remove_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        remove_ids.insert(session_id.to_string());
+        remove_ids.extend(known_children.iter().cloned());
+
+        // Close the small spawn/delete race: any in-memory child whose parent is
+        // inside the removed set is removed with it.
+        loop {
+            let mut added = false;
+            for (id, record) in records.iter() {
+                if remove_ids.contains(id) {
+                    continue;
+                }
+                if let Some(parent) = record.parent_session_id.as_deref()
+                    && remove_ids.contains(parent)
+                {
+                    remove_ids.insert(id.clone());
+                    added = true;
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+
+        let mut pending_turn_ends = 0usize;
+        for id in &remove_ids {
+            if let Some(record) = records.get_mut(id) {
+                if matches!(
+                    record.activity,
+                    SessionActivity::StartingTurn { .. } | SessionActivity::RunningTurn(_)
+                ) {
+                    pending_turn_ends += 1;
+                }
+                record.activity = SessionActivity::Idle;
+            }
+        }
+        for id in &remove_ids {
+            records.remove(id);
+        }
+        drop(records);
+
+        for _ in 0..pending_turn_ends {
+            self.turn_guard.end_turn();
+        }
+
+        let mut removed_children: Vec<String> = remove_ids
+            .into_iter()
+            .filter(|id| id != session_id)
+            .collect();
+        removed_children.sort();
+        removed_children
+    }
+
+    pub fn remove_session(&self, session_id: &str) -> Result<()> {
+        // Cancel live turns across the durable subtree before deleting rows.
+        let known_children = self.collect_child_ids_blocking(session_id);
         {
             let records = self.records.lock().unwrap();
             if let Some(record) = records.get(session_id)
@@ -1076,7 +1300,7 @@ impl SessionManager {
             {
                 live.cancel.cancel();
             }
-            for child_id in &child_ids {
+            for child_id in &known_children {
                 if let Some(record) = records.get(child_id)
                     && let SessionActivity::RunningTurn(live) = &record.activity
                 {
@@ -1093,14 +1317,8 @@ impl SessionManager {
             operation_id: MutationId::new(),
         }) {
             Ok(_) => {
-                {
-                    let mut records = self.records.lock().unwrap();
-                    for child_id in &child_ids {
-                        records.remove(child_id);
-                    }
-                    records.remove(session_id);
-                }
-                for child_id in &child_ids {
+                let removed_children = self.take_removed_sessions(session_id, &known_children);
+                for child_id in &removed_children {
                     self.emit_lifecycle(LifecycleEvent::SessionRemoved {
                         session_id: child_id.clone(),
                     });
@@ -1112,14 +1330,8 @@ impl SessionManager {
             }
             Err(LitecodeError::SessionNotFound(_)) => {
                 // Idempotent: already gone from durable store.
-                {
-                    let mut records = self.records.lock().unwrap();
-                    for child_id in &child_ids {
-                        records.remove(child_id);
-                    }
-                    records.remove(session_id);
-                }
-                for child_id in &child_ids {
+                let removed_children = self.take_removed_sessions(session_id, &known_children);
+                for child_id in &removed_children {
                     self.emit_lifecycle(LifecycleEvent::SessionRemoved {
                         session_id: child_id.clone(),
                     });
@@ -1139,7 +1351,6 @@ impl SessionManager {
             }
         }
     }
-
     /// Subscribe to a session's internal envelope broadcast (works while idle).
     pub fn subscribe(&self, session_id: &str) -> Option<broadcast::Receiver<InternalEnvelope>> {
         let records = self.records.lock().unwrap();
@@ -1224,7 +1435,7 @@ impl SessionManager {
     }
 
     /// Snapshot of the replay buffer (bounded at EVENT_BUFFER_CAPACITY). Each
-    /// subscriber gets the same recent events �?draining on first consume would
+    /// subscriber gets the same recent events 锟?draining on first consume would
     /// lose replay for every later subscriber (6a-6j).
     pub fn event_buffer_snapshot(&self, session_id: &str) -> Vec<InternalEnvelope> {
         let records = self.records.lock().unwrap();
@@ -2205,4 +2416,248 @@ mod child_session_tests {
             other => panic!("expected TurnStarted, got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn remove_session_releases_starting_reservation_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let guard = Arc::new(TurnGuard::new());
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::clone(&guard),
+            db.to_str().unwrap().to_string(),
+        ));
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.reserve_turn(&sid, "reserved".into(), 5, "default", "/proj")
+            .expect("reserve turn");
+        assert!(guard.is_turn_in_progress());
+
+        mgr.remove_session(&sid).expect("remove starting session");
+
+        assert!(
+            !guard.is_turn_in_progress(),
+            "starting reservation must release its turn guard"
+        );
+        assert!(mgr.data().meta_blocking(&sid).is_err());
+    }
+
+    #[tokio::test]
+    async fn remove_parent_releases_running_child_turn_guard_and_cancels_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let guard = Arc::new(TurnGuard::new());
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::clone(&guard),
+            db.to_str().unwrap().to_string(),
+        ));
+        let parent = mgr.open_session("/proj", "default", None).await.unwrap();
+        let child = mgr
+            .open_child_session("/proj", "reviewer", None, &parent, "call_remove")
+            .unwrap();
+        let child_cancel = CancellationToken::new();
+        mgr.begin_turn(
+            &child,
+            "t-child".into(),
+            child_cancel.clone(),
+            5,
+            "reviewer",
+            "/proj",
+        )
+        .unwrap();
+        assert!(guard.is_turn_in_progress());
+
+        mgr.remove_session(&parent)
+            .expect("remove parent with live child");
+
+        assert!(child_cancel.is_cancelled(), "child turn token must cancel");
+        assert!(
+            !guard.is_turn_in_progress(),
+            "child turn guard must release on parent delete"
+        );
+        assert!(mgr.data().meta_blocking(&parent).is_err());
+        assert!(mgr.data().meta_blocking(&child).is_err());
+        assert!(!mgr.records.lock().unwrap().contains_key(&child));
+    }
+
+    #[tokio::test]
+    async fn remove_running_session_releases_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let guard = Arc::new(TurnGuard::new());
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::clone(&guard),
+            db.to_str().unwrap().to_string(),
+        ));
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.begin_turn(
+            &sid,
+            "t-run".into(),
+            CancellationToken::new(),
+            5,
+            "default",
+            "/proj",
+        )
+        .unwrap();
+        assert!(guard.is_turn_in_progress());
+
+        mgr.remove_session(&sid).expect("remove running session");
+
+        assert!(
+            !guard.is_turn_in_progress(),
+            "running turn guard must release on remove"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_operation_is_blocked_by_active_descendant_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db.to_str().unwrap().to_string(),
+        ));
+        let parent = mgr.open_session("/proj", "default", None).await.unwrap();
+        let child = mgr
+            .open_child_session("/proj", "reviewer", None, &parent, "call_gate")
+            .unwrap();
+
+        mgr.reserve_turn(&child, "t-child-start".into(), 5, "reviewer", "/proj")
+            .expect("reserve child turn");
+        assert!(
+            matches!(
+                mgr.try_begin_operation(&parent, SessionOperationKind::Delete),
+                Err(LitecodeError::AgentAlreadyRunning)
+            ),
+            "starting descendant must fence parent delete"
+        );
+        assert!(mgr.release_turn_reservation(&child, "t-child-start"));
+
+        let cancel = CancellationToken::new();
+        mgr.begin_turn(&child, "t-child-run".into(), cancel, 5, "reviewer", "/proj")
+            .expect("begin child turn");
+        assert!(
+            matches!(
+                mgr.try_begin_operation(&parent, SessionOperationKind::Delete),
+                Err(LitecodeError::AgentAlreadyRunning)
+            ),
+            "running descendant must fence parent delete"
+        );
+        assert!(mgr.finish_turn(&child, "t-child-run").is_some());
+
+        let lease = mgr
+            .try_begin_operation(&parent, SessionOperationKind::Delete)
+            .expect("idle descendant must permit parent delete");
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn session_status_aggregates_descendant_turns_and_stopping() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db.to_str().unwrap().to_string(),
+        ));
+        let parent = mgr.open_session("/proj", "default", None).await.unwrap();
+        let child = mgr
+            .open_child_session("/proj", "reviewer", None, &parent, "call_status")
+            .unwrap();
+
+        assert_eq!(mgr.session_status(&parent), Some(SessionStatus::Idle));
+        mgr.reserve_turn(&child, "t-start".into(), 5, "reviewer", "/proj")
+            .expect("reserve child");
+        assert_eq!(mgr.session_status(&child), Some(SessionStatus::Running));
+        assert_eq!(
+            mgr.session_status(&parent),
+            Some(SessionStatus::RunningWithSubagent)
+        );
+        assert!(mgr.release_turn_reservation(&child, "t-start"));
+        assert_eq!(mgr.session_status(&parent), Some(SessionStatus::Idle));
+
+        let cancel = CancellationToken::new();
+        mgr.begin_turn(&child, "t-status".into(), cancel, 5, "reviewer", "/proj")
+            .expect("begin child");
+        assert_eq!(mgr.session_status(&child), Some(SessionStatus::Running));
+        assert_eq!(
+            mgr.session_status(&parent),
+            Some(SessionStatus::RunningWithSubagent)
+        );
+
+        assert!(mgr.cancel_turn_sync(&child));
+        assert_eq!(mgr.session_status(&child), Some(SessionStatus::Stopping));
+        assert_eq!(
+            mgr.session_status(&parent),
+            Some(SessionStatus::RunningWithSubagent)
+        );
+
+        assert!(mgr.finish_turn(&child, "t-status").is_some());
+        assert_eq!(mgr.session_status(&child), Some(SessionStatus::Idle));
+        assert_eq!(mgr.session_status(&parent), Some(SessionStatus::Idle));
+    }
+
+
+    #[tokio::test]
+    async fn revert_cancels_descendant_turn_but_keeps_child_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db.to_str().unwrap().to_string(),
+        ));
+        let parent = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.insert_detail_rows(
+            &parent,
+            &[crate::types::user_text("u0"), crate::types::user_text("u1")],
+        )
+        .unwrap();
+        let child = mgr
+            .open_child_session("/proj", "reviewer", None, &parent, "call_revert_child")
+            .unwrap();
+
+        let cancel = CancellationToken::new();
+        mgr.begin_turn(&child, "t-revert-child".into(), cancel.clone(), 5, "reviewer", "/proj")
+            .unwrap();
+
+        let lease = mgr
+            .try_begin_revert(&parent)
+            .expect("idle parent revert");
+        assert!(lease.is_some());
+        assert!(cancel.is_cancelled(), "revert must cancel child turn");
+        assert_eq!(mgr.session_status(&child), Some(SessionStatus::Stopping));
+
+        mgr.entry_revert_to_user_anchor(&parent, 1).unwrap();
+        assert!(
+            mgr.data().meta_blocking(&child).is_ok(),
+            "child session must survive parent revert"
+        );
+        drop(lease);
+        let _ = mgr.finish_turn(&child, "t-revert-child");
+    }
+
+
+    #[tokio::test]
+    async fn orphan_child_sessions_are_cleaned() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db.to_str().unwrap().to_string(),
+        ));
+        let orphan = mgr
+            .mutate_blocking(SessionMutation::Create {
+                operation_id: MutationId::new(),
+                project: "/proj".into(),
+                agent_id: "reviewer".into(),
+                model_id: None,
+                parent_session_id: Some("missing-parent".into()),
+                parent_call_id: Some("call_orphan".into()),
+            })
+            .expect("create orphan")
+            .session_id;
+        assert!(mgr.data().meta_blocking(&orphan).is_ok());
+
+        let removed = mgr.remove_orphan_child_sessions();
+        assert_eq!(removed, 1);
+        assert!(mgr.data().meta_blocking(&orphan).is_err());
+    }
+
 }

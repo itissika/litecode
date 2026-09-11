@@ -42,6 +42,7 @@ const NAME_GLYPH: Record<string, Glyph> = {
   lsp: BracketsCurlyIcon,
   subagent: UsersIcon,
   subagent_launch: UsersIcon,
+  subagent_list: UsersIcon,
   webfetch: GlobeIcon,
   custom: PuzzlePieceIcon,
 };

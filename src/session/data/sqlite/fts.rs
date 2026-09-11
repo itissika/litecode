@@ -1,4 +1,4 @@
-//! FTS5 as an external-content projection of `transcript_items.search_text`.
+﻿//! FTS5 as an external-content projection of `transcript_items.search_text`.
 //! Triggers keep it in the same SQLite transaction as the log write.
 
 use rusqlite::{Connection, OptionalExtension};
@@ -32,41 +32,102 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
         .map_err(|e| LitecodeError::SessionStorage(format!("drop legacy FTS: {e}")))?;
     }
 
+    create_fts_table(conn)?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS transcript_fts_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
+    )
+    .map_err(|e| LitecodeError::SessionStorage(format!("create transcript_fts_state: {e}")))?;
+
+    create_triggers(conn)?;
+    backfill_search_text(conn)?;
+    ensure_trigger_version(conn)
+}
+
+fn create_fts_table(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS transcript_fts USING fts5(
             search_text,
             content='transcript_items',
             content_rowid='rowid',
             tokenize = 'unicode61 remove_diacritics 2'
-        );
-        CREATE TABLE IF NOT EXISTS transcript_fts_state (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
         );",
     )
     .map_err(|e| LitecodeError::SessionStorage(format!("create transcript_fts: {e}")))?;
+    Ok(())
+}
 
+/// Keep FTS delete/update triggers in lockstep with the insert trigger.
+///
+/// The FTS index only contains rows whose `search_text` is non-empty. Deleting
+/// a row that was never indexed makes SQLite report `database disk image is
+/// malformed`, so every delete path must carry the same predicate.
+fn create_triggers(conn: &Connection) -> Result<()> {
     conn.execute_batch(
-        "CREATE TRIGGER IF NOT EXISTS transcript_items_ai AFTER INSERT ON transcript_items BEGIN
+        "DROP TRIGGER IF EXISTS transcript_items_ai;
+         DROP TRIGGER IF EXISTS transcript_items_ad;
+         DROP TRIGGER IF EXISTS transcript_items_au;
+         CREATE TRIGGER transcript_items_ai AFTER INSERT ON transcript_items BEGIN
             INSERT INTO transcript_fts(rowid, search_text)
             SELECT new.rowid, new.search_text
             WHERE new.search_text IS NOT NULL AND length(trim(new.search_text)) > 0;
          END;
-         CREATE TRIGGER IF NOT EXISTS transcript_items_ad AFTER DELETE ON transcript_items BEGIN
+         CREATE TRIGGER transcript_items_ad AFTER DELETE ON transcript_items BEGIN
             INSERT INTO transcript_fts(transcript_fts, rowid, search_text)
-            VALUES('delete', old.rowid, old.search_text);
+            SELECT 'delete', old.rowid, old.search_text
+            WHERE old.search_text IS NOT NULL AND length(trim(old.search_text)) > 0;
          END;
-         CREATE TRIGGER IF NOT EXISTS transcript_items_au AFTER UPDATE ON transcript_items BEGIN
+         CREATE TRIGGER transcript_items_au AFTER UPDATE ON transcript_items BEGIN
             INSERT INTO transcript_fts(transcript_fts, rowid, search_text)
-            VALUES('delete', old.rowid, old.search_text);
+            SELECT 'delete', old.rowid, old.search_text
+            WHERE old.search_text IS NOT NULL AND length(trim(old.search_text)) > 0;
             INSERT INTO transcript_fts(rowid, search_text)
             SELECT new.rowid, new.search_text
             WHERE new.search_text IS NOT NULL AND length(trim(new.search_text)) > 0;
          END;",
     )
     .map_err(|e| LitecodeError::SessionStorage(format!("create FTS triggers: {e}")))?;
+    Ok(())
+}
 
-    backfill_search_text(conn)?;
+const TRIGGER_VERSION: &str = "2";
+
+fn ensure_trigger_version(conn: &Connection) -> Result<()> {
+    let current: Option<String> = conn
+        .query_row(
+            "SELECT value FROM transcript_fts_state WHERE key = 'trigger_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if current.as_deref() == Some(TRIGGER_VERSION) {
+        return Ok(());
+    }
+
+    let rebuild = || -> Result<()> {
+        conn.execute("INSERT INTO transcript_fts(transcript_fts) VALUES('rebuild')", [])
+            .map_err(|e| LitecodeError::SessionStorage(format!("FTS rebuild: {e}")))?;
+        Ok(())
+    };
+
+    if let Err(error) = rebuild() {
+        tracing::warn!(
+            %error,
+            "FTS rebuild after trigger upgrade failed; recreating FTS table"
+        );
+        conn.execute_batch("DROP TABLE IF EXISTS transcript_fts;")
+            .map_err(|e| LitecodeError::SessionStorage(format!("drop FTS table: {e}")))?;
+        create_fts_table(conn)?;
+        rebuild()?;
+    }
+
+    conn.execute(
+        "INSERT OR REPLACE INTO transcript_fts_state (key, value) VALUES ('trigger_version', ?1)",
+        rusqlite::params![TRIGGER_VERSION],
+    )
+    .map_err(|e| LitecodeError::SessionStorage(format!("mark FTS trigger version: {e}")))?;
     Ok(())
 }
 
@@ -218,4 +279,131 @@ pub fn rebuild(conn: &Connection) -> Result<()> {
     .map_err(|e| LitecodeError::SessionStorage(format!("FTS rebuild: {e}")))?;
     mark_ready(conn)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn open_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::session::data::sqlite::schema::ensure_session_schema(&conn).unwrap();
+        conn
+    }
+
+    fn insert_null_search_text_row(conn: &Connection, seq: i64) {
+        conn.execute(
+            "INSERT INTO transcript_items (
+                session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref,
+                token_estimate, created_at, event_type, surface_op, source_seqs, cites,
+                state, search_text
+             ) VALUES (
+                's', ?1, 't', 0, 'control', 'control', '{}', NULL,
+                0, 0, 'turn/start', 'append', NULL, NULL, 'final', NULL
+             )",
+            rusqlite::params![seq],
+        )
+        .unwrap();
+    }
+
+    fn fts_row_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM transcript_fts", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn deleting_a_null_search_text_row_is_safe() {
+        let conn = open_db();
+        insert_null_search_text_row(&conn, 1);
+        conn.execute(
+            "DELETE FROM transcript_items WHERE session_id = 's' AND seq = 1",
+            [],
+        )
+        .expect("deleting an unindexed transcript row must not corrupt FTS");
+        assert_eq!(fts_row_count(&conn), 0);
+    }
+
+    #[test]
+    fn null_to_text_update_then_delete_keeps_fts_consistent() {
+        let conn = open_db();
+        insert_null_search_text_row(&conn, 1);
+        conn.execute(
+            "UPDATE transcript_items SET search_text = 'answer' WHERE session_id = 's' AND seq = 1",
+            [],
+        )
+        .unwrap();
+        assert_eq!(fts_row_count(&conn), 1);
+        conn.execute(
+            "DELETE FROM transcript_items WHERE session_id = 's' AND seq = 1",
+            [],
+        )
+        .expect("sealed row delete must not corrupt FTS");
+        assert_eq!(fts_row_count(&conn), 0);
+    }
+
+    #[test]
+    fn ensure_schema_repairs_inconsistent_fts_from_legacy_state() {
+        let conn = open_db();
+        insert_null_search_text_row(&conn, 1);
+        // Simulate a legacy phantom index entry: the source row was never
+        // indexable, but an old broken trigger left an FTS row behind.
+        conn.execute(
+            "INSERT INTO transcript_fts(rowid, search_text)
+             SELECT rowid, 'ghost' FROM transcript_items
+             WHERE session_id = 's' AND seq = 1",
+            [],
+        )
+        .unwrap();
+        let ghost_before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transcript_fts WHERE transcript_fts MATCH 'ghost'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ghost_before, 1);
+        conn.execute(
+            "DELETE FROM transcript_fts_state WHERE key = 'trigger_version'",
+            [],
+        )
+        .unwrap();
+
+        ensure_schema(&conn).unwrap();
+
+        let ghost_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transcript_fts WHERE transcript_fts MATCH 'ghost'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ghost_after, 0, "rebuild must drop phantom rows");
+        conn.execute(
+            "DELETE FROM transcript_items WHERE session_id = 's' AND seq = 1",
+            [],
+        )
+        .expect("delete must stay safe after repair");
+    }
+    #[test]
+    fn ensure_schema_upgrades_legacy_unguarded_delete_trigger() {
+        let conn = open_db();
+        conn.execute_batch(
+            "DROP TRIGGER transcript_items_ad;
+             CREATE TRIGGER transcript_items_ad AFTER DELETE ON transcript_items BEGIN
+                INSERT INTO transcript_fts(transcript_fts, rowid, search_text)
+                VALUES('delete', old.rowid, old.search_text);
+             END;",
+        )
+        .unwrap();
+
+        ensure_schema(&conn).unwrap();
+
+        insert_null_search_text_row(&conn, 2);
+        conn.execute(
+            "DELETE FROM transcript_items WHERE session_id = 's' AND seq = 2",
+            [],
+        )
+        .expect("ensure_schema must replace legacy unguarded delete trigger");
+        assert_eq!(fts_row_count(&conn), 0);
+    }
 }

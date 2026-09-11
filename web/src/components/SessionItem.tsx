@@ -55,9 +55,12 @@ export const SessionItem = memo(function SessionItem({
   onDelete,
 }: SessionItemProps) {
   const pending = session.turn?.awaiting_permission ?? false;
+  const subagentBusy =
+    session.status === "running_with_subagent" || session.status === "stopping";
+  const deleteBlocked = session.running || subagentBusy;
   const status: SessionStatus = pending
     ? "pending"
-    : session.running
+    : deleteBlocked
       ? "running"
       : "idle";
 
@@ -111,14 +114,22 @@ export const SessionItem = memo(function SessionItem({
         </span>
         <button
           type="button"
-          disabled={session.running}
+          disabled={deleteBlocked}
           onClick={(e) => {
             e.stopPropagation();
-            if (!session.running) onDelete(session.id);
+            if (!deleteBlocked) onDelete(session.id);
           }}
-          aria-label={session.running ? "Cannot delete while running" : "Delete session"}
+          aria-label={
+            deleteBlocked
+              ? "Cannot delete while this session chain is busy"
+              : "Delete session"
+          }
           className="pointer-events-none absolute inset-0 flex items-center justify-end text-[11px] text-(--_dk-text-muted) opacity-0 transition-opacity hover:text-(--_dk-ix-danger-fg) group-hover:pointer-events-auto group-hover:opacity-100 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-0 disabled:group-hover:opacity-40"
-          title={session.running ? "Cannot delete while running" : "Delete session"}
+          title={
+            deleteBlocked
+              ? "Cannot delete while this session chain is busy"
+              : "Delete session"
+          }
         >
           ✕
         </button>

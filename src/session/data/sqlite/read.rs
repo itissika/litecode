@@ -60,6 +60,9 @@ pub fn execute(
         SessionRead::ListChildIds { parent_session_id } => {
             Ok(ReadValue::Ids(list_child_ids(conn, &parent_session_id)?))
         }
+        SessionRead::ListOrphanChildSessions => {
+            Ok(ReadValue::Ids(list_orphan_child_ids(conn)?))
+        }
         SessionRead::ChildForCall {
             parent_session_id,
             parent_call_id,
@@ -224,6 +227,17 @@ fn list_session_ids(conn: &Connection) -> Result<Vec<String>> {
 fn list_sessions_for_gc(conn: &Connection) -> Result<Vec<(String, i64)>> {
     let mut stmt = conn.prepare("SELECT id, updated_at FROM sessions")?;
     let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn list_orphan_child_ids(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM sessions
+         WHERE parent_session_id IS NOT NULL
+           AND parent_session_id NOT IN (SELECT id FROM sessions)",
+    )?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
 }

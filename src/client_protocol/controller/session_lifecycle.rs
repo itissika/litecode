@@ -275,6 +275,7 @@ impl SessionController {
         self.sessions
             .remove_session(id)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+        self.runtime.subagent_hub.purge_parent(id);
         self.projections.remove(id);
 
         // Workspace-level outs: delete must not depend on remaining projections
@@ -316,6 +317,11 @@ impl SessionController {
                 continue;
             }
             let running = sessions_mgr.is_turn_running(&id).await;
+            let status = sessions_mgr
+                .session_status(&id)
+                .unwrap_or(crate::session::manager::SessionStatus::Idle)
+                .as_str()
+                .to_string();
             let turn = if running {
                 sessions_mgr
                     .get_cached_progress(&id)
@@ -335,6 +341,7 @@ impl SessionController {
                 updated_at,
                 preview,
                 running,
+                status,
                 turn,
                 agent_id: binding.agent_id,
                 model_id: binding.model_id,

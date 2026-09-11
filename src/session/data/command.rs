@@ -296,6 +296,7 @@ pub enum SessionRead {
     ListChildIds {
         parent_session_id: String,
     },
+    ListOrphanChildSessions,
     ChildForCall {
         parent_session_id: String,
         parent_call_id: String,

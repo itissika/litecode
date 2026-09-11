@@ -169,6 +169,9 @@ pub struct SessionInfo {
     pub updated_at: i64,
     pub preview: String,
     pub running: bool,
+    /// Raw session status (`idle` / `running` / `stopping` / `running_with_subagent`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn: Option<TurnSnapshot>,
     pub agent_id: String,

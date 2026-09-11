@@ -279,16 +279,17 @@ impl LlmProvider for DeepseekResponsesProvider {
         Box::pin(async move {
             let body = Self::build_body(request, true)?;
             let (header_name, header_value) = self.auth_header(api_key);
-            let resp = self
-                .client
-                .post(&self.endpoint_url)
-                .header(header_name, header_value)
-                .header("content-type", "application/json")
-                .header("accept", "text/event-stream")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| transport_error("opening DeepSeek event stream", &e))?;
+            let resp = super::send_cancellable(
+                self.client
+                    .post(&self.endpoint_url)
+                    .header(header_name, header_value)
+                    .header("content-type", "application/json")
+                    .header("accept", "text/event-stream")
+                    .json(&body),
+                cancel,
+                "opening DeepSeek event stream",
+            )
+            .await?;
 
             if !resp.status().is_success() {
                 let status = resp.status();

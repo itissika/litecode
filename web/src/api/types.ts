@@ -323,6 +323,7 @@ export interface SessionInfo {
   updated_at: number;
   preview: string;
   running: boolean;
+  status?: "idle" | "running" | "stopping" | "running_with_subagent";
   turn: TurnSnapshot | null;
   agent_id: string;
   model_id?: string | null;

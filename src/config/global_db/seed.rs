@@ -7,7 +7,7 @@ use super::builtin_prompts::EXPLORE_DESCRIPTION;
 use super::store;
 use super::tools::{core_configurable_tools, core_none_tools, network_core_tools};
 
-pub const SEED_REVISION: &str = "11";
+pub const SEED_REVISION: &str = "12";
 
 pub fn seed(conn: &Connection) -> Result<()> {
     let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);

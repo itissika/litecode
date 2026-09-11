@@ -22,9 +22,7 @@ use crate::session::manager::SessionManager;
 use crate::types::LitecodeError;
 
 pub const MAX_SUBAGENTS_PER_PARENT: u32 = 4;
-pub const FOREGROUND_WAIT: Duration = Duration::from_secs(30);
-const MAX_WAIT_SECS: u64 = 600;
-const STOP_JOIN: Duration = Duration::from_secs(5);
+const MAX_RETAINED_TERMINAL_JOBS_PER_PARENT: usize = 32;
 
 fn now_unix_ms() -> i64 {
     SystemTime::now()
@@ -225,6 +223,48 @@ impl SubagentHub {
         }
     }
 
+    /// Drop every job/mailbox/waiter/slot owned by a deleted parent session.
+    /// Child sessions themselves are removed by SessionManager's durable cascade.
+    pub fn purge_parent(&self, parent_session_id: &str) {
+        let mut g = self.inner.lock().expect("jobs lock");
+        g.jobs
+            .retain(|_, record| record.parent_session_id != parent_session_id);
+        g.mailbox.remove(parent_session_id);
+        g.waiters
+            .retain(|_, waiter| waiter.session_id != parent_session_id);
+        g.slots.remove(parent_session_id);
+        drop(g);
+        self.cv.notify_all();
+    }
+
+    fn prune_terminal_jobs_locked(g: &mut JobState, parent_session_id: &str) {
+        let mut terminal: Vec<(String, i64)> = g
+            .jobs
+            .iter()
+            .filter(|(_, record)| {
+                !record.alive && record.parent_session_id == parent_session_id
+            })
+            .map(|(id, record)| (id.clone(), record.started_at_ms))
+            .collect();
+        if terminal.len() <= MAX_RETAINED_TERMINAL_JOBS_PER_PARENT {
+            return;
+        }
+        terminal.sort_by_key(|(_, started_at_ms)| *started_at_ms);
+        let remove_count = terminal.len() - MAX_RETAINED_TERMINAL_JOBS_PER_PARENT;
+        for (id, _) in terminal.into_iter().take(remove_count) {
+            g.jobs.remove(&id);
+            if let Some(queue) = g.mailbox.get_mut(parent_session_id) {
+                queue.retain(|notice| notice.child_session_id != id);
+            }
+        }
+        if g.mailbox
+            .get(parent_session_id)
+            .is_some_and(|queue| queue.is_empty())
+        {
+            g.mailbox.remove(parent_session_id);
+        }
+    }
+
     pub fn running(&self, parent_session_id: &str) -> Vec<RunningJob> {
         let g = self.inner.lock().expect("jobs lock");
         let mut out: Vec<RunningJob> = g
@@ -412,6 +452,7 @@ impl SubagentHub {
                 .entry(notice.parent_session_id.clone())
                 .or_default()
                 .push_back(notice.clone());
+            Self::prune_terminal_jobs_locked(&mut g, &notice.parent_session_id);
             notice
         };
         if !parent.is_empty() {
@@ -531,22 +572,8 @@ impl SubagentHub {
         if let Some(sessions) = self.sessions.lock().expect("sessions lock").clone() {
             sessions.cancel_turn_sync(child_id);
         }
-        let outcome = self.wait(
-            parent_session_id,
-            Some(child_id),
-            Some(STOP_JOIN),
-            &CancellationToken::new(),
-            false,
-        );
-        match outcome {
-            WaitOutcome::Exited(notice) => {
-                self.take_notice(parent_session_id, child_id);
-                Ok(notice)
-            }
-            _ => self
-                .notice_snapshot(child_id)
-                .ok_or_else(|| child_id.to_string()),
-        }
+        self.notice_snapshot(child_id)
+            .ok_or_else(|| child_id.to_string())
     }
 
     pub async fn spawn(
@@ -716,19 +743,23 @@ impl SubagentHub {
             .name(format!("subagent-{child_id}"))
             .spawn(move || {
                 crate::config::workspace::set_runtime_paths(paths);
+                let mut guard = WorkerGuard::new(
+                    Arc::clone(&hub),
+                    Arc::clone(&sessions),
+                    child_id.clone(),
+                    turn_id_thread.clone(),
+                );
                 let rt = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                 {
                     Ok(rt) => rt,
                     Err(error) => {
-                        hub.finish(
-                            &child_id,
+                        guard.finish(
                             false,
                             false,
                             format!("agent runtime failed: {error}"),
                         );
-                        let _ = sessions.finish_turn(&child_id, &turn_id_thread);
                         return;
                     }
                 };
@@ -751,21 +782,61 @@ impl SubagentHub {
                     Err(LitecodeError::Canceled) => (false, "subagent cancelled".into()),
                     Err(e) => (false, format!("agent error: {e}")),
                 };
-                hub.finish(&child_id, ok, stopped, text);
-                let _ = sessions.finish_turn(&child_id, &turn_id_thread);
+                guard.finish(ok, stopped, text);
             });
         if let Err(error) = spawn_result {
-            self.finish(
-                &child_session_id,
-                false,
-                false,
-                format!("failed to spawn worker thread: {error}"),
-            );
+            // No JobRecord was inserted yet, so `finish` cannot release the
+            // slot. Remove the reserved child session (which also releases its
+            // turn guard) and release the slot explicitly.
             let _ = deps.sessions.remove_session(&child_session_id);
+            self.release_slot(parent_session_id);
             return Err(format!("failed to spawn worker thread: {error}"));
         }
 
         Ok(child_session_id)
+    }
+}
+
+/// Finalize a child worker exactly once, even if the worker unwinds.
+struct WorkerGuard {
+    hub: Arc<SubagentHub>,
+    sessions: Arc<SessionManager>,
+    child_id: String,
+    turn_id: String,
+    armed: bool,
+}
+
+impl WorkerGuard {
+    fn new(
+        hub: Arc<SubagentHub>,
+        sessions: Arc<SessionManager>,
+        child_id: String,
+        turn_id: String,
+    ) -> Self {
+        Self {
+            hub,
+            sessions,
+            child_id,
+            turn_id,
+            armed: true,
+        }
+    }
+
+    fn finish(&mut self, ok: bool, stopped: bool, final_text: String) {
+        if !self.armed {
+            return;
+        }
+        self.hub.finish(&self.child_id, ok, stopped, final_text);
+        let _ = self.sessions.finish_turn(&self.child_id, &self.turn_id);
+        self.armed = false;
+    }
+}
+
+impl Drop for WorkerGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.finish(false, false, "subagent worker panicked".into());
+        }
     }
 }
 
@@ -777,12 +848,6 @@ pub enum WaitOutcome {
     UnknownId(String),
 }
 
-pub fn clamp_wait_secs(sec: u64) -> Option<Duration> {
-    if sec == 0 {
-        return None;
-    }
-    Some(Duration::from_secs(sec.min(MAX_WAIT_SECS)))
-}
 
 #[cfg(test)]
 mod tests {
@@ -800,6 +865,42 @@ mod tests {
             hub.release_slot("parent-1");
         }
         hub.try_acquire_slot("parent-1").expect("slot frees");
+    }
+
+    #[test]
+    fn purge_parent_drops_jobs_and_mailbox() {
+        let hub = SubagentHub::new();
+        hub.insert_running_for_test("p1", "child-a", "reviewer", "go");
+        hub.finish("child-a", true, false, "done".into());
+        assert!(hub.mailbox_pending("p1"));
+        hub.purge_parent("p1");
+        assert!(!hub.mailbox_pending("p1"));
+        assert!(hub.running("p1").is_empty());
+        assert!(hub.notice_snapshot("child-a").is_none());
+        // Slot must be reusable for a replacement session id? The slot entry
+        // itself is keyed by the deleted parent, so a later launch under a new
+        // parent id starts from zero.
+        hub.try_acquire_slot("p2").expect("new parent slot");
+    }
+
+    #[test]
+    fn terminal_jobs_are_bounded_per_parent() {
+        let hub = SubagentHub::new();
+        for i in 0..(MAX_RETAINED_TERMINAL_JOBS_PER_PARENT + 5) {
+            let id = format!("child-{i}");
+            hub.insert_running_for_test("p1", &id, "reviewer", "x");
+            hub.finish(&id, true, false, "done".into());
+        }
+        let g = hub.inner.lock().expect("jobs lock");
+        let terminal = g
+            .jobs
+            .values()
+            .filter(|record| record.parent_session_id == "p1")
+            .count();
+        assert!(
+            terminal <= MAX_RETAINED_TERMINAL_JOBS_PER_PARENT,
+            "terminal records must stay bounded, got {terminal}"
+        );
     }
 
     #[test]

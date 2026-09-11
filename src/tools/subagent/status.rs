@@ -14,7 +14,7 @@ pub fn format_running_list(jobs: &[RunningJob]) -> String {
 }
 
 pub fn guidance_line() -> &'static str {
-    "Use subagent_wait to wait. subagent_stop to stop. session_search to read a child's transcript."
+    "Use subagent_list to list sessions. subagent_wait to wait. subagent_stop to cancel the current turn. session_search to read a child's transcript."
 }
 
 pub fn format_running_status(child_id: &str, jobs: &[RunningJob]) -> String {
@@ -84,6 +84,14 @@ pub fn format_waited_status(jobs: &[RunningJob]) -> String {
     out.push_str(guidance_line());
     out.push('\n');
     out
+}
+
+pub fn format_stopping_status(child_id: &str, jobs: &[RunningJob]) -> String {
+    let mut msg = format!("status: stopping\nchild_session_id: {child_id}\n");
+    msg.push_str(&format_running_list(jobs));
+    msg.push_str(guidance_line());
+    msg.push('\n');
+    msg
 }
 
 pub fn format_stopped_status(child_id: &str, jobs: &[RunningJob]) -> String {

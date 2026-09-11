@@ -28,6 +28,7 @@ mod stream_contract;
 use crate::config::schema::ProviderDefinition;
 use crate::llm::provider::LlmProvider;
 use crate::types::{LitecodeError, Result};
+use tokio_util::sync::CancellationToken;
 
 /// Build an HTTP client safe to share across short-lived agent runtimes.
 ///
@@ -38,7 +39,22 @@ use crate::types::{LitecodeError, Result};
 pub(super) fn llm_http_client() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .pool_max_idle_per_host(0)
+        .connect_timeout(std::time::Duration::from_secs(15))
         .build()?)
+}
+
+/// Send a request while remaining cancellable during connect/headers.
+/// Dropping the pending `send()` future aborts the HTTP request.
+pub(super) async fn send_cancellable(
+    request: reqwest::RequestBuilder,
+    cancel: &CancellationToken,
+    stage: &str,
+) -> Result<reqwest::Response> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(LitecodeError::Canceled),
+        result = request.send() => result.map_err(|e| transport_error(stage, &e)),
+    }
 }
 
 #[cfg(test)]
@@ -46,7 +62,21 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    use super::llm_http_client;
+    use super::*;
+
+    #[tokio::test]
+    async fn send_cancellable_returns_canceled_when_token_fires() {
+        let client = llm_http_client().unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = send_cancellable(
+            client.post("http://127.0.0.1:1/never-connected"),
+            &cancel,
+            "test send",
+        )
+        .await;
+        assert!(matches!(result, Err(LitecodeError::Canceled)));
+    }
 
     #[tokio::test]
     async fn llm_client_does_not_reuse_idle_connections() {

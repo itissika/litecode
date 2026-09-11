@@ -6,7 +6,9 @@
 mod common;
 
 use std::collections::HashMap;
+use std::sync::RwLock;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use common::bindings::binding_safe_for;
@@ -16,12 +18,16 @@ use litecode::config::schema::{AgentProfile, AgentRole};
 use litecode::config::{TurnGuard, workspace::set_runtime_paths};
 use litecode::engines::WorkspaceEngines;
 use litecode::optional::EngineManager;
+use litecode::runtime::RuntimeHandle;
 use litecode::runtime::observer::InternalEvent;
+use litecode::runtime::subagent_auto_turn::install_subagent_auto_turn;
+use litecode::session::event::EventType;
 use litecode::session::live::LifecycleEvent;
 use litecode::session::manager::SessionManager;
 use litecode::tool::Tool;
 use litecode::tool::trait_::ToolExecutionContext;
-use litecode::tools::subagent::{SubagentHub, SubagentLaunchTool};
+use litecode::session::manager::SessionStatus;
+use litecode::tools::subagent::{SubagentHub, SubagentLaunchTool, SubagentListTool};
 use tokio_util::sync::CancellationToken;
 
 fn reviewer_resolved(cwd: &std::path::Path) -> litecode::config::ResolvedConfig {
@@ -47,11 +53,12 @@ fn reviewer_resolved(cwd: &std::path::Path) -> litecode::config::ResolvedConfig 
     resolve(global, workspace)
 }
 
-fn launch_tool(
+fn launch_tool_on_hub(
     resolved: litecode::config::ResolvedConfig,
     sessions: Arc<SessionManager>,
     parent_session_id: &str,
     provider: ScriptedProvider,
+    hub: Arc<SubagentHub>,
 ) -> SubagentLaunchTool {
     let workspace =
         litecode::workspace::WorkspaceService::new(resolved.workspace_root().to_path_buf())
@@ -62,7 +69,6 @@ fn launch_tool(
         Arc::new(engines.clone()),
         Arc::new(litecode::terminal::TerminalHub::new()),
     );
-    let hub = Arc::new(SubagentHub::new());
     hub.attach_sessions(Arc::clone(&sessions));
     SubagentLaunchTool::new(
         resolved,
@@ -79,6 +85,16 @@ fn launch_tool(
         Arc::new(litecode::mcp::McpConnectionPool::new()),
         hub,
     )
+}
+
+fn launch_tool(
+    resolved: litecode::config::ResolvedConfig,
+    sessions: Arc<SessionManager>,
+    parent_session_id: &str,
+    provider: ScriptedProvider,
+) -> SubagentLaunchTool {
+    let hub = Arc::new(SubagentHub::new());
+    launch_tool_on_hub(resolved, sessions, parent_session_id, provider, hub)
 }
 
 /// Run the subagent tool through `execute` with an explicit parent call_id
@@ -98,6 +114,16 @@ async fn run_subagent(
         session: None,
     };
     tool.execute(input, ctx).await
+}
+
+fn wait_child_turn(sessions: &SessionManager, child_id: &str) {
+    for _ in 0..500 {
+        if !sessions.is_turn_running_blocking(child_id) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("child turn {child_id} did not finish");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -140,8 +166,8 @@ async fn subagent_launch_creates_durable_child_with_parent_link() {
         result.content
     );
     assert!(
-        result.content.contains("review complete"),
-        "expected subagent text, got: {}",
+        result.content.contains("status: running"),
+        "launch must detach immediately, got: {}",
         result.content
     );
 
@@ -152,6 +178,7 @@ async fn subagent_launch_creates_durable_child_with_parent_link() {
         .and_then(|v| v.as_str())
         .expect("child_session_id in metadata")
         .to_string();
+    wait_child_turn(&sessions, &child_id);
 
     let child_meta = sessions.data().meta_blocking(&child_id).expect("child row");
     assert_eq!(
@@ -169,8 +196,10 @@ async fn subagent_launch_creates_durable_child_with_parent_link() {
         .transcript_blocking(&child_id)
         .expect("child transcript");
     assert!(
-        !transcript.is_empty(),
-        "child transcript must persist after tool returns"
+        transcript
+            .iter()
+            .any(|item| litecode::types::item_text_preview(item).contains("review complete")),
+        "child transcript must contain the subagent output"
     );
 }
 
@@ -215,6 +244,14 @@ async fn parent_event_channel_does_not_receive_child_turn_events() {
         "launch failed: {}",
         result.content
     );
+    let child_id = result
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("child_session_id"))
+        .and_then(|v| v.as_str())
+        .expect("child_session_id")
+        .to_string();
+    wait_child_turn(&sessions, &child_id);
 
     // Drain any pending parent envelopes —must not include child TurnStarted.
     let mut leaked = Vec::new();
@@ -327,6 +364,7 @@ async fn subagent_bound_arrives_on_parent_before_tool_returns() {
             .as_deref(),
         Some(bound.1.as_str())
     );
+    wait_child_turn(&sessions, &bound.1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -373,6 +411,7 @@ async fn child_lifecycle_is_not_broadcast_to_workspace() {
         .unwrap()
         .to_string();
 
+    wait_child_turn(&sessions, &child_id);
     // Give fanout a moment to emit (if it incorrectly would).
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -549,4 +588,208 @@ async fn remove_parent_cascades_child() {
     sessions.remove_session(&parent_id).unwrap();
     assert!(sessions.data().meta_blocking(&parent_id).is_err());
     assert!(sessions.data().meta_blocking(&child_id).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_parent_after_child_turn_cascades_physically() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let resolved = reviewer_resolved(cwd);
+    let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
+    let project = cwd.to_string_lossy().to_string();
+
+    let sessions = Arc::new(SessionManager::new_for_test(
+        Arc::new(TurnGuard::new()),
+        db_path.clone(),
+    ));
+    let parent_id = sessions
+        .open_session(&project, "default", Some("default"))
+        .await
+        .expect("parent");
+
+    let tool = launch_tool(
+        resolved,
+        Arc::clone(&sessions),
+        &parent_id,
+        ScriptedProvider::with_text("review complete"),
+    );
+
+    let result = run_subagent(
+        &tool,
+        "call_delete_after_turn",
+        serde_json::json!({
+            "agent": "reviewer",
+            "prompt": "review this"
+        }),
+    )
+    .await;
+    assert!(
+        !result.content.starts_with("Error:"),
+        "launch failed: {}",
+        result.content
+    );
+    let child_id = result
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("child_session_id"))
+        .and_then(|v| v.as_str())
+        .expect("child_session_id")
+        .to_string();
+    assert!(sessions.data().meta_blocking(&child_id).is_ok());
+    wait_child_turn(&sessions, &child_id);
+
+    sessions
+        .remove_session(&parent_id)
+        .expect("parent delete after completed child turn must cascade");
+
+    assert!(sessions.data().meta_blocking(&parent_id).is_err());
+    assert!(sessions.data().meta_blocking(&child_id).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subagent_list_reports_raw_session_statuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let workspace = test_workspace(cwd);
+    let db_path = workspace.paths.sessions_db.to_string_lossy().to_string();
+    let project = cwd.to_string_lossy().to_string();
+
+    let sessions = Arc::new(SessionManager::new_for_test(
+        Arc::new(TurnGuard::new()),
+        db_path,
+    ));
+    let parent = sessions
+        .open_session(&project, "default", None)
+        .await
+        .unwrap();
+    let first = sessions
+        .open_child_session(&project, "reviewer", None, &parent, "call_list_1")
+        .unwrap();
+    let second = sessions
+        .open_child_session(&project, "worker", None, &parent, "call_list_2")
+        .unwrap();
+
+    let tool = SubagentListTool::new(Arc::clone(&sessions));
+    tool.set_active_session(parent.clone());
+    let idle = tool.call_inner(serde_json::json!({}));
+    assert!(idle.content.contains(&first), "{}", idle.content);
+    assert!(idle.content.contains(&second), "{}", idle.content);
+    assert!(idle.content.contains(" idle "), "{}", idle.content);
+
+    let cancel = CancellationToken::new();
+    sessions
+        .begin_turn(&first, "t-list".into(), cancel, 5, "reviewer", &project)
+        .unwrap();
+    assert_eq!(
+        sessions.session_status(&parent),
+        Some(SessionStatus::RunningWithSubagent)
+    );
+    let running = tool.call_inner(serde_json::json!({}));
+    assert!(
+        running.content.contains(&format!("{first}  running ")),
+        "{}",
+        running.content
+    );
+
+    assert!(sessions.cancel_turn_sync(&first));
+    let stopping = tool.call_inner(serde_json::json!({}));
+    assert!(
+        stopping.content.contains(&format!("{first}  stopping ")),
+        "{}",
+        stopping.content
+    );
+
+    assert!(sessions.finish_turn(&first, "t-list").is_some());
+    let settled = tool.call_inner(serde_json::json!({}));
+    assert!(
+        settled.content.contains(&format!("{first}  idle ")),
+        "{}",
+        settled.content
+    );
+    assert_eq!(sessions.session_status(&parent), Some(SessionStatus::Idle));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_exit_triggers_parent_auto_turn_reminder() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let resolved = reviewer_resolved(cwd);
+    let workspace_state = test_workspace(cwd);
+    let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
+    let project = cwd.to_string_lossy().to_string();
+
+    let sessions = Arc::new(SessionManager::new_for_test(
+        Arc::new(TurnGuard::new()),
+        db_path,
+    ));
+    let parent = sessions
+        .open_session(&project, "default", Some("default"))
+        .await
+        .expect("parent");
+    // Attach acts as the UI subscriber that makes idle completion wake real.
+    let _ = sessions.attach(&parent);
+
+    let hub = Arc::new(SubagentHub::new());
+    hub.attach_sessions(Arc::clone(&sessions));
+    let workspace = litecode::workspace::WorkspaceService::new(cwd.to_path_buf()).unwrap();
+    let engines = Arc::new(WorkspaceEngines::new());
+    let ide = litecode::ide_base::IdeBaseHandle::new(
+        workspace,
+        Arc::clone(&engines),
+        Arc::new(litecode::terminal::TerminalHub::new()),
+    );
+    let runtime = RuntimeHandle::new(
+        resolved.clone(),
+        "default".into(),
+        workspace_state,
+        Arc::new(EngineManager::new()),
+        engines,
+        ide,
+        Arc::new(AtomicU64::new(0)),
+        cwd.join("global.db"),
+    );
+    install_subagent_auto_turn(
+        Arc::clone(&hub),
+        Arc::new(RwLock::new(runtime)),
+        Arc::clone(&sessions),
+        cwd.to_path_buf(),
+    );
+
+    let tool = launch_tool_on_hub(
+        resolved,
+        Arc::clone(&sessions),
+        &parent,
+        ScriptedProvider::with_text("done"),
+        Arc::clone(&hub),
+    );
+    let result = run_subagent(
+        &tool,
+        "call_auto_turn",
+        serde_json::json!({
+            "agent": "reviewer",
+            "prompt": "go"
+        }),
+    )
+    .await;
+    assert!(
+        result.content.contains("status: running"),
+        "launch must detach: {}",
+        result.content
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    loop {
+        let events = sessions.data().events_blocking(&parent).expect("parent events");
+        if events
+            .iter()
+            .any(|event| event.event_type == EventType::ReminderJobExit)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "child exit must trigger the parent auto-turn reminder"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

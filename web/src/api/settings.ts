@@ -592,6 +592,7 @@ export const NONE_TOOL_IDS = new Set([
   "subagent_launch",
   "subagent_wait",
   "subagent_stop",
+  "subagent_list",
 ]);
 
 /** MCP catalog ids (`mcp_*`) have no ALL/SAFE — bind is on/off only. */
@@ -616,6 +617,7 @@ export const SUBAGENT_SERIES_TOOL_IDS = [
   "subagent_launch",
   "subagent_wait",
   "subagent_stop",
+  "subagent_list",
 ] as const;
 
 export function isSubagentBindableTool(entry: AvailableTool): boolean {

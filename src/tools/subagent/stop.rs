@@ -36,9 +36,13 @@ impl SubagentStopTool {
         };
         let sid = self.session_id();
         match self.hub.stop(&sid, child_id) {
-            Ok(_) => {
+            Ok(_notice) => {
                 let jobs = self.hub.running(&sid);
-                ToolCallResult::ok(status::format_stopped_status(child_id, &jobs))
+                if self.hub.is_alive(child_id) {
+                    ToolCallResult::ok(status::format_stopping_status(child_id, &jobs))
+                } else {
+                    ToolCallResult::ok(status::format_stopped_status(child_id, &jobs))
+                }
             }
             Err(unknown) => {
                 let jobs = self.hub.running(&sid);

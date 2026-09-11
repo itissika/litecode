@@ -151,18 +151,20 @@ impl LlmProvider for OpencodeProvider {
             let (header_name, header_value) = self.auth_header(api_key);
             let request_id = Uuid::new_v4().to_string();
             let zen_session = zen_session_header(request);
-            let resp = apply_opencode_headers(
-                self.client.post(self.post_url()),
-                header_name,
-                header_value,
-                &zen_session,
-                &request_id,
+            let resp = super::send_cancellable(
+                apply_opencode_headers(
+                    self.client.post(self.post_url()),
+                    header_name,
+                    header_value,
+                    &zen_session,
+                    &request_id,
+                )
+                .header("accept", "text/event-stream")
+                .json(&body),
+                cancel,
+                "opening OpenCode event stream",
             )
-            .header("accept", "text/event-stream")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| transport_error("opening OpenCode event stream", &e))?;
+            .await?;
             stream_from_response(resp, &request.model, ERROR_PREFIX, on_event, cancel).await
         })
     }

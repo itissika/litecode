@@ -125,22 +125,26 @@ describe("settings helpers", () => {
       "subagent_launch",
       "subagent_wait",
       "subagent_stop",
+      "subagent_list",
     ]);
     expect(toolEnableSeries("subagent_wait")).toEqual([
       "subagent_launch",
       "subagent_wait",
       "subagent_stop",
+      "subagent_list",
     ]);
 
     const enabled = applyToolEnabled({}, "subagent_launch", true);
     expect(enabled.subagent_launch.enabled).toBe(true);
     expect(enabled.subagent_wait.enabled).toBe(true);
     expect(enabled.subagent_stop.enabled).toBe(true);
+    expect(enabled.subagent_list.enabled).toBe(true);
 
     const disabled = applyToolEnabled(enabled, "subagent_stop", false);
     expect(disabled.subagent_launch.enabled).toBe(false);
     expect(disabled.subagent_wait.enabled).toBe(false);
     expect(disabled.subagent_stop.enabled).toBe(false);
+    expect(disabled.subagent_list.enabled).toBe(false);
 
     const mixed = syncToolEnableSeries({
       subagent_launch: { enabled: true, last_applied_preset: null },
@@ -148,6 +152,7 @@ describe("settings helpers", () => {
     expect(mixed.subagent_launch.enabled).toBe(true);
     expect(mixed.subagent_wait.enabled).toBe(true);
     expect(mixed.subagent_stop.enabled).toBe(true);
+    expect(mixed.subagent_list.enabled).toBe(true);
   });
 
   it("identifies protected agents", async () => {

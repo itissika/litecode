@@ -57,9 +57,15 @@ export function SessionStatusDot({
 
 /** Derive the display status from a session payload. */
 export function deriveSessionStatus(
-  session: Pick<SessionInfo, "running" | "turn"> | undefined,
+  session: Pick<SessionInfo, "running" | "turn" | "status"> | undefined,
 ): SessionStatus {
   if (session?.turn?.awaiting_permission) return "pending";
-  if (session?.running) return "running";
+  if (
+    session?.running ||
+    session?.status === "running_with_subagent" ||
+    session?.status === "stopping"
+  ) {
+    return "running";
+  }
   return "idle";
 }

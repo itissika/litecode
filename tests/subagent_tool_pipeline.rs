@@ -20,13 +20,15 @@ use litecode::engines::WorkspaceEngines;
 use litecode::llm::{LlmProvider, ModelRequest};
 use litecode::optional::EngineManager;
 use litecode::permission::{PermissionEngine, deny_permission_sink};
-use litecode::session::manager::SessionManager;
+use litecode::session::manager::{SessionManager, SessionStatus};
 use litecode::tool::Tool;
 use litecode::tool::ToolPipeline;
 use litecode::tool::output::DEFAULT_SPILL_THRESHOLD;
 use litecode::tool::trait_::ToolExecutionContext;
 use litecode::tool::write_lock::process_write_lock;
-use litecode::tools::subagent::{MAX_SUBAGENTS_PER_PARENT, SubagentHub, SubagentLaunchTool};
+use litecode::tools::subagent::{
+    MAX_SUBAGENTS_PER_PARENT, SubagentHub, SubagentLaunchTool, SubagentStopTool,
+};
 use litecode::types::{
     FunctionToolCall, Item, Result, StreamEvents, ToolSignalLevel, item_text_preview,
 };
@@ -55,12 +57,12 @@ fn reviewer_resolved(cwd: &std::path::Path) -> litecode::config::ResolvedConfig 
     resolve(global, workspace)
 }
 
-fn launch_tool(
+fn launch_tool_with_hub(
     resolved: litecode::config::ResolvedConfig,
     sessions: Arc<SessionManager>,
     parent_session_id: &str,
     provider: Box<dyn LlmProvider>,
-) -> SubagentLaunchTool {
+) -> (SubagentLaunchTool, Arc<SubagentHub>) {
     let workspace =
         litecode::workspace::WorkspaceService::new(resolved.workspace_root().to_path_buf())
             .expect("workspace");
@@ -72,7 +74,7 @@ fn launch_tool(
     );
     let hub = Arc::new(SubagentHub::new());
     hub.attach_sessions(Arc::clone(&sessions));
-    SubagentLaunchTool::new(
+    let tool = SubagentLaunchTool::new(
         resolved,
         "default",
         provider,
@@ -85,20 +87,38 @@ fn launch_tool(
         sessions,
         parent_session_id,
         Arc::new(litecode::mcp::McpConnectionPool::new()),
-        hub,
-    )
+        Arc::clone(&hub),
+    );
+    (tool, hub)
 }
 
-fn exec_ctx(call_id: &str, cancel: CancellationToken) -> ToolExecutionContext {
+fn launch_tool(
+    resolved: litecode::config::ResolvedConfig,
+    sessions: Arc<SessionManager>,
+    parent_session_id: &str,
+    provider: Box<dyn LlmProvider>,
+) -> SubagentLaunchTool {
+    launch_tool_with_hub(resolved, sessions, parent_session_id, provider).0
+}
+
+fn exec_ctx_for(
+    session_id: &str,
+    call_id: &str,
+    cancel: CancellationToken,
+) -> ToolExecutionContext {
     ToolExecutionContext {
         path_mode: litecode::workspace::ToolPathMode::All,
         workspace_root: std::path::PathBuf::from("."),
         call_id: call_id.to_string(),
         cancel,
         output_limit: 8_000,
-        session_id: String::new(),
+        session_id: session_id.to_string(),
         session: None,
     }
+}
+
+fn exec_ctx(call_id: &str, cancel: CancellationToken) -> ToolExecutionContext {
+    exec_ctx_for("", call_id, cancel)
 }
 
 fn function_call(call_id: &str, prompt: &str) -> FunctionToolCall {
@@ -154,6 +174,37 @@ impl LlmProvider for ThreadProbeProvider {
         );
         self.inner
             .complete_with_stream_events(request, api_key, on_event, cancel)
+    }
+}
+
+#[derive(Clone)]
+struct PanicProvider;
+
+impl LlmProvider for PanicProvider {
+    fn endpoint(&self) -> &str {
+        "panic://"
+    }
+
+    fn box_clone(&self) -> Box<dyn LlmProvider> {
+        Box::new(self.clone())
+    }
+
+    fn complete<'a>(
+        &'a self,
+        _request: &'a ModelRequest,
+        _api_key: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Item>>> + Send + 'a>> {
+        Box::pin(async { panic!("provider boom") })
+    }
+
+    fn complete_with_stream_events<'a>(
+        &'a self,
+        _request: &'a ModelRequest,
+        _api_key: &'a str,
+        _on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
+        _cancel: &'a CancellationToken,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Item>>> + Send + 'a>> {
+        Box::pin(async { panic!("provider boom") })
     }
 }
 
@@ -217,9 +268,17 @@ async fn execute_returns_while_child_llm_runs_on_other_thread() {
 
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
     assert!(
-        saw_runtime.load(Ordering::SeqCst),
-        "child LLM call must run inside a Tokio runtime"
+        result.content.contains("status: running"),
+        "launch must detach immediately, got: {}",
+        result.content
     );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !saw_runtime.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("child LLM call must run inside a Tokio runtime");
     assert_ne!(
         *recorded.lock().unwrap(),
         Some(caller_thread),
@@ -228,7 +287,7 @@ async fn execute_returns_while_child_llm_runs_on_other_thread() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn cancel_during_foreground_wait_stops_that_child() {
+async fn parent_cancel_does_not_stop_background_child_and_stop_tool_can() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path();
     let resolved = reviewer_resolved(cwd);
@@ -246,39 +305,72 @@ async fn cancel_during_foreground_wait_stops_that_child() {
     let hang = HangProvider::until_cancel();
     let dropped = Arc::clone(&hang.dropped);
     let started = Arc::clone(&hang.started);
-    let tool = launch_tool(resolved, sessions, &parent_id, Box::new(hang));
-    let cancel = CancellationToken::new();
-    let cancel_watch = cancel.clone();
-    tokio::spawn(async move {
+    let (tool, hub) = launch_tool_with_hub(
+        resolved,
+        Arc::clone(&sessions),
+        &parent_id,
+        Box::new(hang),
+    );
+    let parent_cancel = CancellationToken::new();
+    let result = tool
+        .execute(
+            serde_json::json!({"agent": "reviewer", "prompt": "hang"}),
+            exec_ctx("call_bg_cancel", parent_cancel.clone()),
+        )
+        .await;
+    assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
+    let child_id = result
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("child_session_id"))
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
         while !started.load(Ordering::SeqCst) {
             tokio::task::yield_now().await;
         }
-        cancel_watch.cancel();
-    });
-
-    let result = tokio::time::timeout(
-        Duration::from_secs(8),
-        tool.execute(
-            serde_json::json!({"agent": "reviewer", "prompt": "hang"}),
-            exec_ctx("call_cancel", cancel),
-        ),
-    )
+    })
     .await
-    .expect("execute must return after cancel");
+    .expect("child LLM must start");
+
+    // Cancelling the parent turn signal must not cancel the background child.
+    parent_cancel.cancel();
+    tokio::time::sleep(Duration::from_millis(80)).await;
     assert!(
-        result.content.contains("cancel")
-            || result.content.contains("Stopped")
-            || result.level == ToolSignalLevel::Error,
-        "expected cancelled tool result, got: {}",
-        result.content
+        hub.is_alive(&child_id),
+        "parent cancel must not stop a background subagent"
     );
+    assert!(!dropped.load(Ordering::SeqCst));
+
+    // The first-class stop operation cancels the child's current turn.
+    let stop = SubagentStopTool::new(Arc::clone(&hub));
+    let stop_result = stop
+        .execute(
+            serde_json::json!({"id": child_id}),
+            exec_ctx_for(&parent_id, "call_bg_stop", CancellationToken::new()),
+        )
+        .await;
     tokio::time::timeout(Duration::from_secs(2), async {
         while !dropped.load(Ordering::SeqCst) {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("stopping the child must drop its LLM future");
+    .expect("stop must cancel the child turn");
+    assert!(
+        stop_result.content.contains("Stopped") || stop_result.content.contains("stopping"),
+        "stop result: {}",
+        stop_result.content
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while hub.is_alive(&child_id) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("child hub record must settle after stop");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -306,8 +398,7 @@ async fn background_launch_returns_while_child_keeps_running() {
         tool.execute(
             serde_json::json!({
                 "agent": "reviewer",
-                "prompt": "hang",
-                "run_in_background": true
+                "prompt": "hang"
             }),
             exec_ctx("call_bg", CancellationToken::new()),
         ),
@@ -333,6 +424,55 @@ async fn background_launch_returns_while_child_keeps_running() {
         .list_child_ids_blocking(&parent_id)
         .expect("children");
     assert_eq!(children.len(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn child_exit_fires_hub_exit_handler() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let resolved = reviewer_resolved(cwd);
+    let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
+    let project = cwd.to_string_lossy().to_string();
+    let sessions = Arc::new(SessionManager::new_for_test(
+        Arc::new(TurnGuard::new()),
+        db_path,
+    ));
+    let parent_id = sessions
+        .open_session(&project, "default", Some("default"))
+        .await
+        .expect("parent");
+
+    let (tool, hub) = launch_tool_with_hub(
+        resolved,
+        Arc::clone(&sessions),
+        &parent_id,
+        Box::new(ScriptedProvider::with_text("done")),
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    hub.set_exit_handler(Arc::new(move |notice| {
+        let _ = tx.send(notice.child_session_id);
+    }));
+
+    let result = tool
+        .execute(
+            serde_json::json!({"agent": "reviewer", "prompt": "go"}),
+            exec_ctx("call_exit_handler", CancellationToken::new()),
+        )
+        .await;
+    assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
+    let child_id = result
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("child_session_id"))
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+
+    let notified = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(3)))
+        .await
+        .expect("join")
+        .expect("child exit notice must fire the configured exit handler");
+    assert_eq!(notified, child_id);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -417,5 +557,56 @@ async fn pipeline_runs_two_launches_concurrently() {
         children.len(),
         2,
         "parallel launches must each own a child session, got {children:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_panic_finishes_job_and_releases_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let resolved = reviewer_resolved(cwd);
+    let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
+    let project = cwd.to_string_lossy().to_string();
+    let sessions = Arc::new(SessionManager::new_for_test(
+        Arc::new(TurnGuard::new()),
+        db_path,
+    ));
+    let parent_id = sessions
+        .open_session(&project, "default", Some("default"))
+        .await
+        .expect("parent");
+
+    let (tool, hub) = launch_tool_with_hub(
+        resolved,
+        Arc::clone(&sessions),
+        &parent_id,
+        Box::new(PanicProvider),
+    );
+    let result = tool
+        .execute(
+            serde_json::json!({"agent": "reviewer", "prompt": "go"}),
+            exec_ctx("call_panic", CancellationToken::new()),
+        )
+        .await;
+    assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
+    let child_id = result
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("child_session_id"))
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while hub.is_alive(&child_id) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("panicking worker must still finalize its job");
+    assert_eq!(
+        sessions.session_status(&child_id),
+        Some(SessionStatus::Idle),
+        "panicking worker must release the child session"
     );
 }

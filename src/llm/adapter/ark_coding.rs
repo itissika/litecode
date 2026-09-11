@@ -427,16 +427,18 @@ impl LlmProvider for ArkCodingProvider {
             let body = Self::build_body(request, true)?;
             maybe_dump_ark_wire_body(request, &body);
             let (header_name, header_value) = self.auth_header(api_key);
-            let resp = apply_ark_headers(
-                self.client.post(&self.endpoint_url),
-                header_name,
-                header_value,
+            let resp = super::send_cancellable(
+                apply_ark_headers(
+                    self.client.post(&self.endpoint_url),
+                    header_name,
+                    header_value,
+                )
+                .header("accept", "text/event-stream")
+                .json(&body),
+                cancel,
+                "opening Ark Coding Plan event stream",
             )
-            .header("accept", "text/event-stream")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| transport_error("opening Ark Coding Plan event stream", &e))?;
+            .await?;
 
             if !resp.status().is_success() {
                 let status = resp.status();

@@ -15,8 +15,9 @@ use crate::tools::{
     bash::BashTool, code_search::CodeSearchTool, custom::CustomTool, edit::EditTool,
     glob::GlobTool, grep::GrepTool, kill_shell::KillShellTool, lsp::LspTool, mcp_tool::McpTool,
     plan::PlanTool, read::ReadTool, session_search::SessionSearchTool,
-    subagent::{SubagentLaunchTool, SubagentStopTool, SubagentWaitTool}, todo::TodoWriteTool, wait_shell::WaitShellTool,
-    webfetch::WebFetchTool, websearch::WebSearchTool, write::WriteTool,
+    subagent::{SubagentLaunchTool, SubagentListTool, SubagentStopTool, SubagentWaitTool},
+    todo::TodoWriteTool, wait_shell::WaitShellTool, webfetch::WebFetchTool,
+    websearch::WebSearchTool, write::WriteTool,
 };
 
 fn builtin_tool(
@@ -223,6 +224,9 @@ pub async fn build_tool_list(
                 "subagent_stop" => {
                     tools.push(Arc::new(SubagentStopTool::new(Arc::clone(&subagent_hub))));
                 }
+                "subagent_list" => {
+                    tools.push(Arc::new(SubagentListTool::new(Arc::clone(&sessions))));
+                }
                 _ => {}
             }
             continue;
@@ -376,6 +380,7 @@ mod tests {
         assert!(names.contains(&"subagent_launch"));
         assert!(names.contains(&"subagent_wait"));
         assert!(names.contains(&"subagent_stop"));
+        assert!(names.contains(&"subagent_list"));
         assert!(names.contains(&"session_search"));
     }
 
@@ -460,6 +465,7 @@ mod tests {
         assert!(!names.contains(&"subagent_launch"));
         assert!(!names.contains(&"subagent_wait"));
         assert!(!names.contains(&"subagent_stop"));
+        assert!(!names.contains(&"subagent_list"));
     }
 
     #[test]

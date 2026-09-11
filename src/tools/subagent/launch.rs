@@ -15,9 +15,7 @@ use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
 
-use super::hub::{
-    FOREGROUND_WAIT, LaunchSpec, SpawnDeps, SubagentHub, WaitOutcome, clamp_wait_secs,
-};
+use super::hub::{LaunchSpec, SpawnDeps, SubagentHub};
 use super::status;
 
 pub struct SubagentLaunchTool {
@@ -26,6 +24,9 @@ pub struct SubagentLaunchTool {
     provider: Box<dyn LlmProvider>,
     api_key: String,
     depth: u32,
+    /// Retained for constructor/pipeline compatibility only. Parent turn
+    /// cancellation is deliberately not propagated into a child turn;
+    /// `subagent_stop` is the explicit session-level cancel path.
     parent_cancel: CancellationToken,
     engine_manager: crate::optional::EngineManager,
     workspace_engines: WorkspaceEngines,
@@ -184,12 +185,6 @@ impl SubagentLaunchTool {
             Ok(spec) => spec,
             Err(e) => return e,
         };
-        let run_in_background = input["run_in_background"].as_bool().unwrap_or(false);
-        let foreground_wait = input["timeout"]
-            .as_u64()
-            .and_then(clamp_wait_secs)
-            .unwrap_or(FOREGROUND_WAIT);
-
         let deps = SpawnDeps {
             resolved: self.resolved.clone(),
             provider: self.provider.box_clone(),
@@ -216,48 +211,11 @@ impl SubagentLaunchTool {
             Err(e) => return ToolCallResult::error(e),
         };
 
-        if run_in_background {
-            let jobs = self.hub.running(&self.parent_session_id);
-            return with_child_meta(
-                ToolCallResult::ok(status::format_running_status(&child_id, &jobs)),
-                &child_id,
-            );
-        }
-
-        match self.hub.wait(
-            &self.parent_session_id,
-            Some(&child_id),
-            Some(foreground_wait),
-            &self.parent_cancel,
-            false,
-        ) {
-            WaitOutcome::Exited(notice) => {
-                let jobs = self.hub.running(&self.parent_session_id);
-                with_child_meta(
-                    ToolCallResult::ok(status::format_completed_status(&notice, &jobs)),
-                    &child_id,
-                )
-            }
-            WaitOutcome::TimedOut => {
-                let jobs = self.hub.running(&self.parent_session_id);
-                with_child_meta(
-                    ToolCallResult::ok(status::format_running_status(&child_id, &jobs)),
-                    &child_id,
-                )
-            }
-            WaitOutcome::Cancelled => {
-                let _ = self.hub.stop(&self.parent_session_id, &child_id);
-                let jobs = self.hub.running(&self.parent_session_id);
-                with_child_meta(
-                    ToolCallResult::error(status::format_stopped_status(&child_id, &jobs)),
-                    &child_id,
-                )
-            }
-            WaitOutcome::UnknownId(unknown) => {
-                let jobs = self.hub.running(&self.parent_session_id);
-                ToolCallResult::error(status::format_unknown_task(&unknown, &jobs))
-            }
-        }
+        let jobs = self.hub.running(&self.parent_session_id);
+        with_child_meta(
+            ToolCallResult::ok(status::format_running_status(&child_id, &jobs)),
+            &child_id,
+        )
     }
 }
 
@@ -340,14 +298,6 @@ impl Tool for SubagentLaunchTool {
                     "type": "integer",
                     "description": "Optional max_steps override"
                 },
-                "run_in_background": {
-                    "type": "boolean",
-                    "description": "Return immediately with child_session_id; the subagent keeps running."
-                },
-                "timeout": {
-                    "type": "integer",
-                    "description": "Seconds to wait in the foreground before detaching (1-600, default 30). Ignored when run_in_background is true."
-                }
             },
             "required": ["agent", "prompt"]
         })
@@ -365,10 +315,10 @@ impl Tool for SubagentLaunchTool {
     fn description(&self, _ctx: &Context) -> String {
         match self.format_available_subagents() {
             None => {
-                "Delegate a task to a sub-agent. Launch returns after a short wait or immediately when run_in_background; use subagent_wait / subagent_stop for background workers.".into()
+                "Delegate a task to a sub-agent. Launch returns immediately with child_session_id; the subagent runs in the background. Use subagent_list to list sessions, subagent_wait to wait, subagent_stop to cancel its current turn, and session_search to read its transcript.".into()
             }
             Some(catalog) => format!(
-                "Delegate a task to a sub-agent. Launch returns after a short wait or immediately when run_in_background; use subagent_wait / subagent_stop. Available: {catalog}."
+                "Delegate a task to a sub-agent. Launch returns immediately with child_session_id; the subagent runs in the background. Use subagent_list to list sessions, subagent_wait to wait, subagent_stop to cancel its current turn, and session_search to read its transcript. Available: {catalog}."
             ),
         }
     }
