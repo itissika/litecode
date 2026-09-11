@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use tokio_util::sync::CancellationToken;
 
 use crate::authority::responses::MessageItem;
@@ -12,6 +14,15 @@ use crate::types::{Item, LitecodeError, Result, Transcript, item_text_preview, u
 
 use super::budget::{BudgetPolicy, ProviderPromptBaseline};
 use super::summary::compact_summary_message_with_reminder;
+
+/// Wall-clock cap for the non-stream compact call.
+///
+/// [`LlmProvider::complete`] takes no cancel token and the shared HTTP client
+/// only sets `connect_timeout`, so a provider that accepts the request and then
+/// goes silent would otherwise pend forever and wedge the session. Generous on
+/// purpose: a legitimate summary is ~1-3k output tokens, while a silent peer
+/// never answers at all.
+const COMPACT_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Compaction policy and execution.
 pub struct CompactPolicy;
@@ -456,12 +467,72 @@ impl CompactPolicy {
         session_id: &str,
         cancel: &CancellationToken,
     ) -> Result<String> {
+        Self::call_llm_compact_with_timeout(
+            provider,
+            api_key,
+            model,
+            system,
+            prompt,
+            max_tokens,
+            session_id,
+            cancel,
+            COMPACT_REQUEST_TIMEOUT,
+        )
+        .await
+    }
+
+    /// Cancellable, wall-clock-capped non-stream compact call.
+    ///
+    /// Cancellation is observed *while awaiting* the provider (not only before
+    /// and after), and a silent peer fails the request instead of pending
+    /// forever. Dropping the `complete` future aborts the HTTP request.
+    async fn call_llm_compact_with_timeout(
+        provider: &dyn LlmProvider,
+        api_key: &str,
+        model: &str,
+        system: &str,
+        prompt: &str,
+        max_tokens: u32,
+        session_id: &str,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String> {
         if cancel.is_cancelled() {
             return Err(LitecodeError::Canceled);
         }
 
         let request = compact_model_request(model, system, prompt, max_tokens, session_id);
-        let items = provider.complete(&request, api_key).await?;
+        let started = Instant::now();
+        let items = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                tracing::info!(
+                    session_id,
+                    model,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "compaction request canceled while waiting for the provider"
+                );
+                return Err(LitecodeError::Canceled);
+            }
+            result = tokio::time::timeout(timeout, provider.complete(&request, api_key)) => {
+                match result {
+                    Ok(Ok(items)) => items,
+                    Ok(Err(error)) => return Err(error),
+                    Err(_) => {
+                        tracing::error!(
+                            session_id,
+                            model,
+                            timeout_secs = timeout.as_secs(),
+                            "compaction request timed out with no provider response"
+                        );
+                        return Err(LitecodeError::Llm(format!(
+                            "compaction request timed out after {}s with no response (provider silent)",
+                            timeout.as_secs()
+                        )));
+                    }
+                }
+            }
+        };
         Ok(summary_text_from_compact_output(&items))
     }
 }
@@ -535,13 +606,22 @@ fn emit_compact_failed(
     operation_id: Option<&str>,
     err: &LitecodeError,
 ) {
+    let fail_kind = compact_fail_kind(err);
+    tracing::warn!(
+        session_id,
+        trigger = ?trigger,
+        fail_kind = ?fail_kind,
+        operation_id = operation_id.unwrap_or(""),
+        error = %err,
+        "compaction failed"
+    );
     emit_compact_lifecycle(
         sessions,
         session_id,
         trigger,
         CompactionStage::Failed,
         operation_id,
-        Some(compact_fail_kind(err)),
+        Some(fail_kind),
         Some(err.to_string()),
     );
 }
@@ -562,7 +642,71 @@ mod tests {
     use crate::authority::responses::{
         OutputStatus, ReasoningItem, ReasoningItemContent, ReasoningTextContent,
     };
-    use crate::types::assistant_text;
+    use crate::types::{StreamEvents, assistant_text};
+    use std::future::Future;
+    use std::pin::Pin;
+
+    /// Non-stream fake whose `complete` never resolves — the silent-provider
+    /// failure mode that used to pend the turn forever.
+    struct PendingProvider;
+
+    impl LlmProvider for PendingProvider {
+        fn endpoint(&self) -> &str {
+            "https://compact.invalid/v1"
+        }
+
+        fn box_clone(&self) -> Box<dyn LlmProvider> {
+            Box::new(PendingProvider)
+        }
+
+        fn complete<'a>(
+            &'a self,
+            _request: &'a ModelRequest,
+            _api_key: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
+            Box::pin(std::future::pending::<Result<Vec<Item>>>())
+        }
+
+        fn complete_with_stream_events<'a>(
+            &'a self,
+            _request: &'a ModelRequest,
+            _api_key: &'a str,
+            _on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
+            _cancel: &'a CancellationToken,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
+            unimplemented!("compact only uses the non-stream path")
+        }
+    }
+
+    struct TextProvider;
+
+    impl LlmProvider for TextProvider {
+        fn endpoint(&self) -> &str {
+            "https://compact.invalid/v1"
+        }
+
+        fn box_clone(&self) -> Box<dyn LlmProvider> {
+            Box::new(TextProvider)
+        }
+
+        fn complete<'a>(
+            &'a self,
+            _request: &'a ModelRequest,
+            _api_key: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
+            Box::pin(async move { Ok::<_, LitecodeError>(vec![assistant_text("## summary\nkept")]) })
+        }
+
+        fn complete_with_stream_events<'a>(
+            &'a self,
+            _request: &'a ModelRequest,
+            _api_key: &'a str,
+            _on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
+            _cancel: &'a CancellationToken,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
+            unimplemented!("compact only uses the non-stream path")
+        }
+    }
 
     fn reasoning(text: &str) -> Item {
         Item::Reasoning(ReasoningItem {
@@ -574,6 +718,72 @@ mod tests {
             encrypted_content: None,
             status: Some(OutputStatus::Completed),
         })
+    }
+
+    #[tokio::test]
+    async fn compact_request_times_out_on_silent_provider() {
+        let cancel = CancellationToken::new();
+        let err = CompactPolicy::call_llm_compact_with_timeout(
+            &PendingProvider,
+            "sk-test",
+            "compact-model",
+            "system",
+            "prompt",
+            128,
+            "s1",
+            &cancel,
+            Duration::from_millis(50),
+        )
+        .await
+        .expect_err("a silent provider must fail, not pend forever");
+        assert!(
+            matches!(err, LitecodeError::Llm(_)),
+            "expected timeout error, got {err}"
+        );
+        assert!(err.to_string().contains("timed out"), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn compact_request_observes_cancel_while_waiting() {
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            trigger.cancel();
+        });
+        let err = CompactPolicy::call_llm_compact_with_timeout(
+            &PendingProvider,
+            "sk-test",
+            "compact-model",
+            "system",
+            "prompt",
+            128,
+            "s1",
+            &cancel,
+            Duration::from_secs(30),
+        )
+        .await
+        .expect_err("cancel must abort the pending request");
+        assert!(matches!(err, LitecodeError::Canceled), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn compact_request_returns_summary_on_provider_success() {
+        let cancel = CancellationToken::new();
+        let summary = CompactPolicy::call_llm_compact_with_timeout(
+            &TextProvider,
+            "sk-test",
+            "compact-model",
+            "system",
+            "prompt",
+            128,
+            "s1",
+            &cancel,
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("provider answered");
+        assert_eq!(summary, "## summary\nkept");
     }
 
     #[test]

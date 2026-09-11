@@ -277,6 +277,7 @@ impl SessionController {
             .remove_session(id)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         self.runtime.subagent_hub.purge_parent(id);
+        self.runtime.subagent_hub.forget_child(id);
         self.projections.remove(id);
 
         // Workspace-level outs: delete must not depend on remaining projections

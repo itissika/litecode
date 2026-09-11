@@ -293,6 +293,10 @@ pub enum SessionRead {
     ListSessions,
     ListSessionIds,
     ListSessionsForGc,
+    /// Sessions whose `updated_at` is at or after `since_ms` (activity report).
+    ListSessionActivity {
+        since_ms: i64,
+    },
     ListChildIds {
         parent_session_id: String,
     },
@@ -362,6 +366,8 @@ pub enum ReadValue {
     List(Vec<(String, String, i64, String, String, Option<String>)>),
     Ids(Vec<String>),
     GcList(Vec<(String, i64)>),
+    /// `(id, parent_session_id, updated_at, agent_id)` activity rows.
+    SessionActivity(Vec<(String, Option<String>, i64, String)>),
     OptionalId(Option<String>),
     ChildBindings(Vec<(String, String)>),
     Depth(u32),

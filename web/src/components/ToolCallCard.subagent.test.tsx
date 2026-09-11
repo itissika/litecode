@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
 import { ToolCallCard } from "./ToolCallCard";
 import { clearFoldCardOpen } from "./foldCardState";
+import { useBashStore } from "../stores/bashStore";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useMessageStore } from "../stores/messageStore";
 import { EMPTY_SLICE, useTurnStore } from "../stores/turnStore";
@@ -94,6 +95,8 @@ afterEach(() => {
   useMessageStore.getState().reset(CHILD);
   useTurnStore.getState().resetTurn(PARENT);
   useTurnStore.getState().resetTurn(CHILD);
+  useBashStore.getState().reset(PARENT);
+  useBashStore.getState().reset(CHILD);
 });
 
 describe("subagent_launch card header", () => {
@@ -176,6 +179,18 @@ describe("subagent_launch card subscription ownership", () => {
     vi.spyOn(useConnectionStore.getState(), "ensureSubscribe").mockResolvedValue(
       undefined,
     );
+    useBashStore.getState().applySnapshot(CHILD, {
+      jobs: [
+        {
+          id: "bg_x",
+          call_id: "call_b",
+          command_preview: "sleep 300",
+          output_file: ".litecode/bash/bg_x.output",
+          started_at_ms: Date.now() - 5000,
+        },
+      ],
+      waits: [],
+    });
 
     const { unmount } = renderSubagentCard();
     const unsub = vi.spyOn(useConnectionStore.getState(), "unsubscribeSession");
@@ -183,6 +198,7 @@ describe("subagent_launch card subscription ownership", () => {
 
     expect(unsub).toHaveBeenCalledWith(CHILD);
     expect(useTurnStore.getState().byId.get(CHILD)?.runState).toBe("idle");
+    expect(useBashStore.getState().bySession.get(CHILD)).toBeUndefined();
   });
 });
 

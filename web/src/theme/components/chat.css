@@ -588,6 +588,12 @@
   animation: terminal-status-bounce 0.9s ease-in-out infinite;
 }
 
+/* Composer subagent status — running worker count beside Todo. */
+.subagent-status-icon {
+  transform-origin: center;
+  animation: terminal-status-bounce 0.9s ease-in-out infinite;
+}
+
 /* Dock overlay chips (terminal status, active plan): fade + rightward expand
    on entry; retract + fade on exit. Width is driven by max-width (content-sized
    once open), so chips stay shrink-0 in the composer row while animating.

@@ -20,6 +20,7 @@ import { clearFoldCardOpen } from "../../components/foldCardState";
 import { ProgressiveBlur } from "../../components/ProgressiveBlur";
 import { TodoPanel } from "../../components/TodoPanel";
 import { TerminalStatusBar } from "../../components/TerminalStatusBar";
+import { SubagentStatusBar } from "../../components/SubagentStatusBar";
 import { ActivePlanChip } from "../../components/ActivePlanChip";
 import { composerCardClass } from "../../components/composerCard";
 
@@ -484,6 +485,7 @@ export function ComposerDock({
                 sessionId={sessionId}
                 onRevealBash={onRevealBash}
               />
+              <SubagentStatusBar sessionId={sessionId} />
               <ActivePlanChip sessionId={sessionId} />
               <div className="min-w-0 flex-1">
                 <TodoPanel sessionId={sessionId} />

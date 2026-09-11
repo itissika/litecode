@@ -57,6 +57,9 @@ pub fn execute(
         SessionRead::ListSessions => Ok(ReadValue::List(list_sessions(conn)?)),
         SessionRead::ListSessionIds => Ok(ReadValue::Ids(list_session_ids(conn)?)),
         SessionRead::ListSessionsForGc => Ok(ReadValue::GcList(list_sessions_for_gc(conn)?)),
+        SessionRead::ListSessionActivity { since_ms } => {
+            Ok(ReadValue::SessionActivity(list_session_activity(conn, since_ms)?))
+        }
         SessionRead::ListChildIds { parent_session_id } => {
             Ok(ReadValue::Ids(list_child_ids(conn, &parent_session_id)?))
         }
@@ -227,6 +230,22 @@ fn list_session_ids(conn: &Connection) -> Result<Vec<String>> {
 fn list_sessions_for_gc(conn: &Connection) -> Result<Vec<(String, i64)>> {
     let mut stmt = conn.prepare("SELECT id, updated_at FROM sessions")?;
     let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn list_session_activity(
+    conn: &Connection,
+    since_ms: i64,
+) -> Result<Vec<(String, Option<String>, i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, parent_session_id, updated_at, agent_id FROM sessions
+         WHERE updated_at >= ?1
+         ORDER BY updated_at DESC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![since_ms], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
 }

@@ -110,6 +110,42 @@ fn stop_unknown_id() {
 }
 
 #[test]
+fn stop_on_finished_reports_outcome_not_stopped() {
+    let hub = Arc::new(SubagentHub::new());
+    hub.insert_running_for_test("p1", "child-a", "reviewer", "go");
+    hub.finish("child-a", true, false, "done".into());
+    let tool = SubagentStopTool::new(Arc::clone(&hub));
+    tool.set_active_session("p1".into());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let result = rt.block_on(tool.execute(
+        serde_json::json!({"id": "child-a"}),
+        ToolExecutionContext {
+            path_mode: crate::workspace::ToolPathMode::All,
+            workspace_root: std::path::PathBuf::from("."),
+            call_id: "s".into(),
+            cancel: CancellationToken::new(),
+            output_limit: usize::MAX,
+            session_id: "p1".into(),
+            session: None,
+        },
+    ));
+    assert_eq!(result.level, ToolSignalLevel::Ok);
+    assert!(
+        result.content.contains("status: already ended"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("outcome: completed"),
+        "{}",
+        result.content
+    );
+}
+
+#[test]
 fn parent_isolation() {
     let hub = Arc::new(SubagentHub::new());
     hub.insert_running_for_test("p1", "child-a", "reviewer", "a");
@@ -132,8 +168,14 @@ fn slot_cap_fail_closed() {
     for i in 0..MAX_SUBAGENTS_PER_PARENT {
         hub.insert_running_for_test("p1", &format!("c{i}"), "reviewer", "x");
     }
-    let overflow = hub.try_acquire_slot("p1");
-    assert!(overflow.is_err());
+    let overflow = hub.try_acquire_slot("p1").unwrap_err();
+    assert!(overflow.contains("capacity exceeded"), "err: {overflow}");
+    assert!(
+        overflow.contains(&format!(
+            "running: {MAX_SUBAGENTS_PER_PARENT}/{MAX_SUBAGENTS_PER_PARENT}"
+        )),
+        "capacity error must list the running children: {overflow}"
+    );
 }
 
 #[test]

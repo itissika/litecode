@@ -1083,12 +1083,28 @@ impl Session {
         let model_id_owned = normalize_model_id(model_id);
         let parent_session_id_owned = parent_session_id.map(|s| s.to_string());
         let parent_call_id_owned = parent_call_id.map(|s| s.to_string());
+        // Delegation depth: roots are 0, children are parent + 1. Persisted so
+        // the limit survives restarts (DATA.md).
+        let subagent_depth: u32 = match parent_session_id {
+            None => 0,
+            Some(parent) => db
+                .conn()
+                .query_row(
+                    "SELECT subagent_depth FROM sessions WHERE id = ?1",
+                    [parent],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .map(|depth| depth.max(0) as u32)
+                .unwrap_or(0)
+                .saturating_add(1),
+        };
         db.conn().execute(
             "INSERT INTO sessions (
                 id, schema_version, project, last_message, agent_id, model_id, created_at, updated_at,
-                parent_session_id, parent_call_id
+                parent_session_id, parent_call_id, subagent_depth
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 id,
                 SESSION_LOG_SCHEMA_VERSION,
@@ -1100,6 +1116,7 @@ impl Session {
                 now,
                 parent_session_id_owned,
                 parent_call_id_owned,
+                subagent_depth,
             ],
         )?;
         let session = Self {

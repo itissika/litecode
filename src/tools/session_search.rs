@@ -64,6 +64,7 @@ impl SessionSearchTool {
             RetrievalFilters {
                 include_session_id: include_session,
                 exclude_context_window,
+                caller_session_id: active_session_id.map(str::to_string),
                 session: Some(reader.clone()),
                 ..Default::default()
             },
@@ -98,7 +99,7 @@ impl Tool for SessionSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What to find in past session transcripts. The current session's live context window is never searched."
+                    "description": "What to find in past session transcripts. Literal words/phrase; separate alternatives with | (any may match, e.g. 'retry|重试'); small typos are tolerated. The current session's live context window is never searched."
                 },
                 "session_id": {
                     "type": "string",
@@ -145,6 +146,8 @@ impl Tool for SessionSearchTool {
     fn description(&self, _ctx: &Context) -> String {
         "Search past conversation transcripts in this workspace. \
          Returns session groups with a virtual path and L<line>: summary hits. \
+         Alternatives: separate with | and any may match (e.g. 'retry|重试'); small typos are tolerated. \
+         Hits from this session and its subagent sessions rank first, then most recently updated sessions. \
          That path is not on disk and is only reachable through built-in tools — deepen a hit with read or grep, not bash. \
          Live context-window turns of the current session are always excluded. \
          Scope with session_id."

@@ -994,7 +994,13 @@ impl SessionController {
         }
 
         let project_str = self.project.clone();
-        proj.push_outgoing(session_snapshot(proj.snapshot(&project_str, &binding)));
+        let mut snapshot = proj.snapshot(&project_str, &binding);
+        // (Re)subscribe is the client's sync point: bash jobs and subagent
+        // workers are transient hub state whose live-only events can be missed
+        // across unmount/reconnect windows, so hydrate the pushed snapshot.
+        snapshot.bash = Some(self.runtime.ide.terminal.jobs.wire_snapshot(session_id));
+        snapshot.subagent = Some(self.runtime.subagent_hub.wire_snapshot(session_id));
+        proj.push_outgoing(session_snapshot(snapshot));
 
         let sid_owned = session_id.to_string();
         let merged_tx = self.merged_tx.clone();

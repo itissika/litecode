@@ -55,6 +55,8 @@ pub struct RetrievalFilters {
     pub project: Option<String>,
     /// Soft-exclude live model window (current surface seqs).
     pub exclude_context_window: Option<session_search::ContextWindowExclude>,
+    /// Caller session id: its own hits and its child sessions' hits rank first.
+    pub caller_session_id: Option<String>,
     /// Override sessions reader for tests; production injects via ServeState.
     pub session: Option<SessionDataReader>,
 }
@@ -415,10 +417,32 @@ impl WorkspaceEngines {
             Vec::new()
         };
 
-        Ok(SessionSearchBundle {
-            ranked: session_search::merge_session_hits(lexical, semantic),
-            offset,
-        })
+        let mut ranked = session_search::merge_session_hits(lexical, semantic);
+        if !ranked.is_empty() {
+            let mut session_ids: Vec<String> =
+                ranked.iter().map(|h| h.session_id.clone()).collect();
+            session_ids.sort();
+            session_ids.dedup();
+            let updated_at: HashMap<String, i64> =
+                session_search::load_session_meta(&reader, &session_ids)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(id, ts)| (id, ts.updated_at))
+                    .collect();
+            let mut prefer: Vec<String> = Vec::new();
+            if let Some(caller) = filters
+                .caller_session_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+            {
+                prefer.push(caller.to_string());
+                if let Ok(children) = reader.list_child_ids_blocking(caller) {
+                    prefer.extend(children);
+                }
+            }
+            session_search::sort_hits_for_agent(&mut ranked, &prefer, &updated_at);
+        }
+        Ok(SessionSearchBundle { ranked, offset })
     }
 
     /// Grouped human search. `corpus=code` (default): LexicalLane text + optional semantic.

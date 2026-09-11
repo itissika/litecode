@@ -29,6 +29,7 @@ use crate::tools::{
     wait_shell::WaitShellTool,
     webfetch::WebFetchTool,
     websearch::WebSearchTool,
+    workspace_stats::WorkspaceStatsTool,
     write::WriteTool,
 };
 
@@ -130,6 +131,10 @@ fn instantiate_tool(
 
     if tool_id == "session_search" {
         return vec![Arc::new(SessionSearchTool::new(workspace_engines.clone()))];
+    }
+
+    if tool_id == "workspace_stats" {
+        return vec![Arc::new(WorkspaceStatsTool)];
     }
 
     if tool_id == "lsp" {

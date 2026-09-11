@@ -11,6 +11,7 @@ pub fn core_configurable_tools() -> &'static [&'static str] {
         "kill_shell",
         "wait_shell",
         "session_search",
+        "workspace_stats",
     ]
 }
 

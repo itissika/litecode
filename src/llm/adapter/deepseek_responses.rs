@@ -24,6 +24,7 @@ use crate::types::{LitecodeError, Result, StreamEvents};
 use crate::llm::provider::LlmProvider;
 use crate::llm::request::ModelRequest;
 
+use super::reasoning_replay::ensure_reasoning_replay;
 use super::responses_sse::{SseLineReader, check_event_stream_content_type, sse_data_payload};
 use super::stream_contract::{
     StreamContractGate, StreamItemAccumulator, forward_stream_event, resolve_stream_outcome,
@@ -71,13 +72,7 @@ impl DeepseekResponsesProvider {
     }
 
     fn build_body(params: &ModelRequest, stream: bool) -> Result<Value> {
-        let input: Vec<Value> = params
-            .input
-            .iter()
-            .map(serde_json::to_value)
-            .collect::<std::result::Result<_, _>>()
-            .map_err(|e| LitecodeError::Llm(format!("serialize input items: {e}")))?;
-
+        let effort = resolve_deepseek_reasoning_effort(params);
         let tools: Vec<Value> = params
             .tools
             .iter()
@@ -91,7 +86,21 @@ impl DeepseekResponsesProvider {
             })
             .collect();
 
-        let effort = resolve_deepseek_reasoning_effort(params);
+        // Thinking mode + tools: every assistant turn in the input must carry its
+        // reasoning_text back, even turns that never produced any (e.g. the
+        // compaction summary). Omitting it is a hard 400
+        // ("The `reasoning_text` in the thinking mode must be passed back").
+        let input_items = ensure_reasoning_replay(
+            &params.input,
+            !tools.is_empty(),
+            effort != "none",
+        );
+        let input: Vec<Value> = input_items
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| LitecodeError::Llm(format!("serialize input items: {e}")))?;
+
         let mut body = serde_json::json!({
             "model": params.model,
             "instructions": params.instructions,
@@ -356,9 +365,10 @@ impl LlmProvider for DeepseekResponsesProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::reasoning_replay::REPLAY_REASONING_PLACEHOLDER;
     use crate::authority::responses::{
-        Item, MessageItem, OutputMessage, OutputStatus, ReasoningItem,
-        ResponseFunctionCallArgumentsDeltaEvent, ResponseReasoningTextDeltaEvent,
+        Item, MessageItem, OutputMessage, OutputStatus, ReasoningItem, ReasoningItemContent,
+        ReasoningTextContent, ResponseFunctionCallArgumentsDeltaEvent, ResponseReasoningTextDeltaEvent,
         ResponseStreamEvent, ResponseTextDeltaEvent,
     };
     use crate::config::schema::ProviderAuth;
@@ -533,6 +543,134 @@ mod tests {
         req.reasoning_effort = Some("medium".into());
         let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(body["reasoning"]["effort"], "high");
+    }
+
+    fn tools() -> Vec<ToolDef> {
+        vec![ToolDef {
+            name: "read".into(),
+            description: "read".into(),
+            input_schema: serde_json::json!({}),
+        }]
+    }
+
+    fn assistant_msg(text: &str) -> Item {
+        crate::types::assistant_text(text)
+    }
+
+    fn reasoning_with_text(text: &str) -> Item {
+        Item::Reasoning(ReasoningItem {
+            id: Some("rs_1".into()),
+            summary: vec![],
+            content: Some(vec![ReasoningItemContent::ReasoningText(
+                ReasoningTextContent { text: text.into() },
+            )]),
+            encrypted_content: None,
+            status: Some(OutputStatus::Completed),
+        })
+    }
+
+    #[test]
+    fn replay_synthesizes_reasoning_for_reasoning_less_assistant_segment() {
+        // Post-compaction shape: assistant summary message with no reasoning item.
+        let mut req = sample_request(tools());
+        req.input = vec![
+            crate::types::user_text("hi"),
+            assistant_msg("[Conversation summary]\nkept"),
+        ];
+        let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
+        let input = body["input"].as_array().expect("input array");
+        assert_eq!(input.len(), 3, "one reasoning item must be inserted");
+        assert_eq!(input[0]["type"], "message");
+        assert_eq!(input[1]["type"], "reasoning");
+        assert_eq!(input[1]["content"][0]["type"], "reasoning_text");
+        assert_eq!(
+            input[1]["content"][0]["text"],
+            REPLAY_REASONING_PLACEHOLDER
+        );
+        assert_eq!(input[2]["type"], "message");
+        assert_eq!(input[2]["role"], "assistant");
+    }
+
+    #[test]
+    fn replay_inserts_once_per_segment_not_per_item() {
+        let mut req = sample_request(tools());
+        req.input = vec![
+            crate::types::user_text("hi"),
+            assistant_msg("partial"),
+            Item::FunctionCall(crate::authority::responses::FunctionToolCall {
+                id: Some("fc_1".into()),
+                call_id: "call_1".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+                status: None,
+                namespace: None,
+            }),
+        ];
+        let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
+        let input = body["input"].as_array().expect("input array");
+        assert_eq!(input.len(), 4, "exactly one synthesized reasoning");
+        assert_eq!(input[1]["type"], "reasoning");
+        assert_eq!(input[2]["type"], "message");
+        assert_eq!(input[3]["type"], "function_call");
+    }
+
+    #[test]
+    fn replay_is_noop_when_segment_already_has_reasoning() {
+        let mut req = sample_request(tools());
+        req.input = vec![
+            crate::types::user_text("hi"),
+            reasoning_with_text("think"),
+            assistant_msg("reply"),
+        ];
+        let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
+        let input = body["input"].as_array().expect("input array");
+        assert_eq!(input.len(), 3, "no insertion when reasoning present");
+        assert_eq!(input[1]["content"][0]["text"], "think");
+    }
+
+    #[test]
+    fn replay_skipped_without_tools_or_thinking() {
+        let mut req = sample_request(vec![]);
+        req.input = vec![crate::types::user_text("hi"), assistant_msg("summary")];
+        let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
+        assert_eq!(
+            body["input"].as_array().expect("input array").len(),
+            2,
+            "no tools → vendor ignores reasoning, no insertion"
+        );
+
+        // Compact summarizer shape: thinking off (effort none), no tools.
+        let mut req = sample_request(vec![]);
+        req.reasoning_effort = Some("none".into());
+        req.input = vec![crate::types::user_text("summarize"), assistant_msg("x")];
+        let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
+        assert_eq!(
+            body["input"].as_array().expect("input array").len(),
+            2,
+            "thinking off → no insertion"
+        );
+    }
+
+    #[test]
+    fn replay_patches_empty_reasoning_text_in_place() {
+        let mut req = sample_request(tools());
+        req.input = vec![
+            crate::types::user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_empty".into()),
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent { text: String::new() },
+                )]),
+                encrypted_content: None,
+                status: Some(OutputStatus::Completed),
+            }),
+            assistant_msg("reply"),
+        ];
+        let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
+        let input = body["input"].as_array().expect("input array");
+        assert_eq!(input.len(), 3, "patched in place, not duplicated");
+        assert_eq!(input[1]["content"][0]["text"], REPLAY_REASONING_PLACEHOLDER);
     }
 
     #[test]

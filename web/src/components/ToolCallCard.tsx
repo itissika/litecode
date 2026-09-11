@@ -141,7 +141,7 @@ export function ToolCallCard({
   // running/breathing from the child turn state, so the label must stay
   // accurate even when the FoldCard is collapsed. The body SubagentToolView
   // only reads the same store slices. Cleanup mirrors the old body-owned
-  // lifecycle: unsubscribe and drop the child slices.
+  // lifecycle: unsubscribe and drop the child slices (messages, turn, bash).
   const connState = useConnectionStore((s) => s.state);
   useEffect(() => {
     if (!isSubagent || !subagentChildId || connState !== "connected") return;
@@ -166,6 +166,7 @@ export function ToolCallCard({
       useConnectionStore.getState().unsubscribeSession(subagentChildId);
       useMessageStore.getState().reset(subagentChildId);
       useTurnStore.getState().resetTurn(subagentChildId);
+      useBashStore.getState().reset(subagentChildId);
     };
   }, [isSubagent, subagentChildId, connState]);
 

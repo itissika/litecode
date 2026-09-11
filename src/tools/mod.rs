@@ -19,6 +19,7 @@ pub mod todo;
 pub mod wait_shell;
 pub mod webfetch;
 pub mod websearch;
+pub mod workspace_stats;
 pub mod write;
 
 #[cfg(test)]

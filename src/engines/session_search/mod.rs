@@ -25,8 +25,8 @@ pub(crate) use crate::session::transcript_file::{SearchableRow as RawRow, row_pl
 
 /// Semantic ANN over-fetch before gating / session filter.
 pub const SEMANTIC_WINDOW: usize = 16;
-/// Minimum normalized Levenshtein similarity for a fuzzy hit.
-pub const FUZZY_THRESHOLD: f64 = 0.72;
+/// Cap fuzzy-scan scores below FTS-confirmed hits (0.85): confirmed hits rank first.
+pub const FUZZY_SCORE_CAP: f64 = 0.72;
 /// Max characters of the hit nucleus used while locating a match span.
 pub const HIT_CORE_MAX_CHARS: usize = 200;
 /// Semantic score gate: `score = 1/(1+dist)`; below this is noise.
@@ -37,8 +37,6 @@ pub const SESSION_REF_SHORT_LEN: usize = 8;
 pub const PAGE_TOKEN_BUDGET: usize = 6_000;
 /// Per-hit summary cap (cl100k tokens).
 pub const HIT_SUMMARY_MAX_TOKENS: usize = 96;
-/// Split long transcript text before windowed fuzzy to bound cost.
-const FUZZY_BLOCK_CHARS: usize = 4096;
 
 /// Exclude the live model window of one session: drop seqs currently on `surface.nodes`.
 /// Shadowed append-origin rows remain searchable.
@@ -246,6 +244,33 @@ fn cmp_hits(a: &SessionTextHit, b: &SessionTextHit) -> std::cmp::Ordering {
         .unwrap_or(std::cmp::Ordering::Equal)
         .then_with(|| a.session_id.cmp(&b.session_id))
         .then_with(|| a.seq.cmp(&b.seq))
+}
+
+/// Agent-facing final ordering: score desc → caller family first → most
+/// recently updated session first → stable (session_id, seq) for pagination.
+pub fn sort_hits_for_agent(
+    hits: &mut [SessionTextHit],
+    prefer_session_ids: &[String],
+    updated_at: &HashMap<String, i64>,
+) {
+    let prefer: HashSet<&str> = prefer_session_ids.iter().map(String::as_str).collect();
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                let ra = usize::from(!prefer.contains(a.session_id.as_str()));
+                let rb = usize::from(!prefer.contains(b.session_id.as_str()));
+                ra.cmp(&rb)
+            })
+            .then_with(|| {
+                let ua = updated_at.get(&a.session_id).copied().unwrap_or(0);
+                let ub = updated_at.get(&b.session_id).copied().unwrap_or(0);
+                ub.cmp(&ua)
+            })
+            .then_with(|| a.session_id.cmp(&b.session_id))
+            .then_with(|| a.seq.cmp(&b.seq))
+    });
 }
 
 /// Load session created_at / updated_at for ids present in hits.
@@ -457,63 +482,158 @@ fn format_abs_time(ms: i64) -> String {
         .unwrap_or_else(|| "?".into())
 }
 
-/// Returns `(score, char_start, char_end)` when the needle matches.
-pub(crate) fn fuzzy_match_span(haystack: &str, needle: &str) -> Option<(f64, usize, usize)> {
-    let hay = haystack.to_lowercase();
-    let ned = needle.to_lowercase();
-    if ned.is_empty() {
-        return None;
+/// Match-ready view of one text: normalized chars + a map from normalized
+/// char index back to the original char index (translates spans for snippets).
+pub(crate) struct MatchHaystack {
+    normalized: String,
+    chars: Vec<char>,
+    /// Byte offset of each normalized char inside `normalized`.
+    char_bytes: Vec<usize>,
+    map: Vec<usize>,
+    orig_len: usize,
+}
+
+/// Fold a text once for all alternatives: per-char lowercase, fullwidth →
+/// halfwidth (incl. U+3000), whitespace runs collapsed to one space, while
+/// keeping a position map so spans can be translated back to the original.
+fn normalize_for_match(text: &str) -> (String, Vec<usize>) {
+    let mut out = String::with_capacity(text.len());
+    let mut map = Vec::with_capacity(text.len());
+    let mut prev_space = false;
+    for (idx, raw) in text.chars().enumerate() {
+        let ch = match raw {
+            '\u{3000}' => ' ',
+            '\u{FF01}'..='\u{FF5E}' => char::from_u32(raw as u32 - 0xFEE0).unwrap_or(raw),
+            _ => raw,
+        };
+        if ch.is_whitespace() {
+            if prev_space {
+                continue;
+            }
+            prev_space = true;
+        } else {
+            prev_space = false;
+        }
+        for lower in ch.to_lowercase() {
+            out.push(lower);
+            map.push(idx);
+        }
     }
-    let chars: Vec<char> = haystack.chars().collect();
-    let hay_chars: Vec<char> = hay.chars().collect();
+    (out, map)
+}
+
+pub(crate) fn prepare_haystack(text: &str) -> MatchHaystack {
+    let (normalized, map) = normalize_for_match(text);
+    let mut chars = Vec::with_capacity(normalized.len());
+    let mut char_bytes = Vec::with_capacity(normalized.len());
+    for (byte, ch) in normalized.char_indices() {
+        chars.push(ch);
+        char_bytes.push(byte);
+    }
+    MatchHaystack {
+        normalized,
+        chars,
+        char_bytes,
+        map,
+        orig_len: text.chars().count(),
+    }
+}
+
+/// Allowed edits by needle char length — the Elasticsearch `AUTO` ladder
+/// (0 for ≤2 chars to avoid noise, 1 for 3–5, 2 beyond, capped there).
+fn fuzzy_edit_budget(needle_chars: usize) -> usize {
+    match needle_chars {
+        0..=2 => 0,
+        3..=5 => 1,
+        _ => 2,
+    }
+}
+
+/// Returns `(score, char_start, char_end)` in original char positions when the
+/// needle matches within the length-banded edit budget.
+///
+/// Approximate pass uses the pigeonhole split: with edit budget `k`, at least
+/// one of the `2k+1` needle chunks stays untouched in any within-budget text
+/// window (a transposition touches at most two chunks), so chunk occurrences
+/// are the only alignment anchors worth probing.
+pub(crate) fn match_in_haystack(hs: &MatchHaystack, needle: &str) -> Option<(f64, usize, usize)> {
+    let ned = normalize_for_match(needle).0;
     let ned_chars: Vec<char> = ned.chars().collect();
     let n = ned_chars.len();
     if n == 0 {
         return None;
     }
-
-    if let Some(byte_start) = hay.find(&ned) {
-        let char_start = hay[..byte_start].chars().count();
-        let char_end = (char_start + n).min(chars.len());
-        return Some((1.0, char_start, char_end));
+    if let Some(byte_start) = hs.normalized.find(&ned) {
+        let char_start = hs.normalized[..byte_start].chars().count();
+        let (start, end) = map_span(hs, char_start, char_start + n);
+        return Some((1.0, start, end));
     }
-
-    let step = (n / 4).max(1);
-    let mut best = 0.0f64;
+    let budget = fuzzy_edit_budget(n);
+    if budget == 0 {
+        return None;
+    }
+    let chunk_count = 2 * budget + 1;
+    let base = n / chunk_count;
+    let rem = n % chunk_count;
+    let mut best_dist = usize::MAX;
     let mut best_start = 0usize;
-
-    for block_start in (0..hay_chars.len()).step_by(FUZZY_BLOCK_CHARS) {
-        let block_end = (block_start + FUZZY_BLOCK_CHARS).min(hay_chars.len());
-        let block = &hay_chars[block_start..block_end];
-        if block.len() < n {
-            let window: String = block.iter().collect();
-            let score = strsim::normalized_levenshtein(&ned, &window);
-            if score > best {
-                best = score;
-                best_start = block_start;
-            }
+    let mut offset = 0usize;
+    'search: for i in 0..chunk_count {
+        let len = base + usize::from(i < rem);
+        if len == 0 {
             continue;
         }
-        let mut i = 0usize;
-        while i + n <= block.len() {
-            let window: String = block[i..i + n].iter().collect();
-            let score = strsim::normalized_levenshtein(&ned, &window);
-            if score > best {
-                best = score;
-                best_start = block_start + i;
+        let chunk: String = ned_chars[offset..offset + len].iter().collect();
+        let mut from = 0usize;
+        while let Some(rel) = hs.normalized[from..].find(chunk.as_str()) {
+            let byte_pos = from + rel;
+            let occ_char = hs.char_bytes.partition_point(|&b| b < byte_pos);
+            let cand = occ_char as isize - offset as isize;
+            for delta in -(budget as isize)..=(budget as isize) {
+                let start = cand + delta;
+                if start < 0 {
+                    continue;
+                }
+                let start = start as usize;
+                if start + n > hs.chars.len() {
+                    continue;
+                }
+                let window: String = hs.chars[start..start + n].iter().collect();
+                let dist = strsim::damerau_levenshtein(&window, &ned);
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_start = start;
+                }
+                if best_dist <= 1 {
+                    break 'search;
+                }
             }
-            if best >= 0.999 {
-                return Some((1.0, best_start, best_start + n));
+            from = byte_pos + chunk.len();
+            if from >= hs.normalized.len() {
+                break;
             }
-            i += step;
         }
+        offset += len;
     }
+    if best_dist > budget {
+        return None;
+    }
+    let score = 1.0 - (best_dist as f64 / n as f64);
+    let (start, end) = map_span(hs, best_start, best_start + n);
+    Some((score, start, end))
+}
 
-    if best >= FUZZY_THRESHOLD {
-        Some((best, best_start, (best_start + n).min(chars.len())))
+fn map_span(hs: &MatchHaystack, char_start: usize, char_end: usize) -> (usize, usize) {
+    let start = hs.map.get(char_start).copied().unwrap_or(hs.orig_len);
+    let end = if char_end == 0 {
+        0
     } else {
-        None
-    }
+        hs.map
+            .get(char_end - 1)
+            .map(|i| i + 1)
+            .unwrap_or(hs.orig_len)
+    };
+    (start.min(hs.orig_len), end.min(hs.orig_len))
 }
 
 pub(crate) fn snippet_from_span(text: &str, char_start: usize, char_end: usize) -> String {
@@ -611,7 +731,7 @@ mod tests {
         .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, id_a);
-        assert!(hits[0].score >= FUZZY_THRESHOLD);
+        assert!(hits[0].score > 0.5, "fuzzy hit should score above 0.5");
         assert!(hits[0].score < 1.0);
     }
 

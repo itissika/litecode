@@ -303,6 +303,18 @@ impl SessionData {
         }
     }
 
+    pub fn list_session_activity_blocking(
+        &self,
+        since_ms: i64,
+    ) -> Result<Vec<(String, Option<String>, i64, String)>> {
+        match self.read_blocking(SessionRead::ListSessionActivity { since_ms })? {
+            ReadValue::SessionActivity(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected session activity".into(),
+            )),
+        }
+    }
+
     pub fn shutdown(&self) {
         self.writer.shutdown();
     }
@@ -445,6 +457,18 @@ impl SessionDataReader {
         })? {
             ReadValue::Ids(v) => Ok(v),
             _ => Err(LitecodeError::SessionStorage("unexpected child ids".into())),
+        }
+    }
+
+    pub fn list_session_activity_blocking(
+        &self,
+        since_ms: i64,
+    ) -> Result<Vec<(String, Option<String>, i64, String)>> {
+        match self.read_blocking(SessionRead::ListSessionActivity { since_ms })? {
+            ReadValue::SessionActivity(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected session activity".into(),
+            )),
         }
     }
 

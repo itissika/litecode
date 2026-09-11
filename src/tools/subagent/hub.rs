@@ -50,6 +50,7 @@ pub struct RunningJob {
     pub id: String,
     pub agent_name: String,
     pub prompt_preview: String,
+    pub started_at_ms: i64,
 }
 
 pub struct SpawnDeps {
@@ -194,9 +195,23 @@ impl SubagentHub {
         let mut g = self.inner.lock().expect("jobs lock");
         let n = g.slots.entry(parent_session_id.to_string()).or_insert(0);
         if *n >= MAX_SUBAGENTS_PER_PARENT {
+            let mut running: Vec<RunningJob> = g
+                .jobs
+                .iter()
+                .filter(|(_, rec)| rec.alive && rec.parent_session_id == parent_session_id)
+                .map(|(id, rec)| RunningJob {
+                    id: id.clone(),
+                    agent_name: rec.agent_name.clone(),
+                    prompt_preview: rec.prompt_preview.clone(),
+                    started_at_ms: rec.started_at_ms,
+                })
+                .collect();
+            running.sort_by(|a, b| a.id.cmp(&b.id));
             return Err(format!(
-                "subagent capacity exceeded for parent {parent_session_id}: \
-                 at most {MAX_SUBAGENTS_PER_PARENT} in-flight launch"
+                "subagent capacity exceeded: {MAX_SUBAGENTS_PER_PARENT} subagents are already \
+                 running for this session. Wait for one to finish (subagent_wait) or stop one \
+                 (subagent_stop), then retry.\n{}",
+                super::status::format_running_list(&running)
             ));
         }
         *n += 1;
@@ -225,6 +240,36 @@ impl SubagentHub {
         g.slots.remove(parent_session_id);
         drop(g);
         self.cv.notify_all();
+    }
+
+    /// Drop the job record (and any queued exit notice) for a session that was
+    /// deleted directly. `purge_parent` clears the deleted session's own
+    /// children; this clears its record under its own parent.
+    pub fn forget_child(&self, child_id: &str) {
+        let parent = {
+            let mut g = self.inner.lock().expect("jobs lock");
+            let Some(rec) = g.jobs.remove(child_id) else {
+                return;
+            };
+            if let Some(q) = g.mailbox.get_mut(&rec.parent_session_id) {
+                q.retain(|n| n.child_session_id != child_id);
+                if q.is_empty() {
+                    g.mailbox.remove(&rec.parent_session_id);
+                }
+            }
+            if rec.alive {
+                if let Some(n) = g.slots.get_mut(&rec.parent_session_id) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        g.slots.remove(&rec.parent_session_id);
+                    }
+                }
+                rec.cancel.cancel();
+            }
+            rec.parent_session_id
+        };
+        self.cv.notify_all();
+        self.emit_jobs_changed(&parent);
     }
 
     fn prune_terminal_jobs_locked(g: &mut JobState, parent_session_id: &str) {
@@ -263,6 +308,7 @@ impl SubagentHub {
                 id: id.clone(),
                 agent_name: rec.agent_name.clone(),
                 prompt_preview: rec.prompt_preview.clone(),
+                started_at_ms: rec.started_at_ms,
             })
             .collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -544,8 +590,8 @@ impl SubagentHub {
         child_id: &str,
     ) -> Result<ExitNotice, String> {
         let cancel = {
-            let g = self.inner.lock().expect("jobs lock");
-            match g.jobs.get(child_id) {
+            let mut g = self.inner.lock().expect("jobs lock");
+            match g.jobs.get_mut(child_id) {
                 None => return Err(child_id.to_string()),
                 Some(rec) if rec.parent_session_id != parent_session_id => {
                     return Err(child_id.to_string());
@@ -556,15 +602,15 @@ impl SubagentHub {
                     self.take_notice(parent_session_id, child_id);
                     return Ok(notice);
                 }
-                Some(rec) => rec.cancel.clone(),
+                Some(rec) => {
+                    // Mark under the same lock that observed `alive`: a racing
+                    // finish() can never relabel a normally completed child as
+                    // stopped, and once stop wins the outcome stays stopped.
+                    rec.stopped = true;
+                    rec.cancel.clone()
+                }
             }
         };
-        {
-            let mut g = self.inner.lock().expect("jobs lock");
-            if let Some(rec) = g.jobs.get_mut(child_id) {
-                rec.stopped = true;
-            }
-        }
         cancel.cancel();
         if let Some(sessions) = self.sessions.lock().expect("sessions lock").clone() {
             sessions.cancel_turn_sync(child_id);
@@ -609,6 +655,10 @@ impl SubagentHub {
             self.release_slot(parent_session_id);
             return Err(format!("settings reload failed: {e}"));
         }
+        // Disk is source of truth for workspace MCP / custom-tool defs (the
+        // watcher skips reload while a turn runs). Same apply point as the
+        // main-session turn start so both entries read the same disk state.
+        runtime.sync_workspace_tool_readiness();
 
         let project = workspace_root_from_paths(runtime.resolved.paths())
             .to_string_lossy()
@@ -938,6 +988,30 @@ mod tests {
         // itself is keyed by the deleted parent, so a later launch under a new
         // parent id starts from zero.
         hub.try_acquire_slot("p2").expect("new parent slot");
+    }
+
+    #[test]
+    fn forget_child_drops_record_and_notice() {
+        let hub = SubagentHub::new();
+        hub.insert_running_for_test("p1", "child-a", "reviewer", "go");
+        hub.finish("child-a", true, false, "done".into());
+        assert!(hub.mailbox_pending("p1"));
+        hub.forget_child("child-a");
+        assert!(hub.notice_snapshot("child-a").is_none());
+        assert!(!hub.mailbox_pending("p1"));
+        assert!(hub.running("p1").is_empty());
+    }
+
+    #[test]
+    fn forget_child_releases_slot_for_live_record() {
+        let hub = SubagentHub::new();
+        hub.insert_running_for_test("p1", "child-a", "reviewer", "go");
+        hub.forget_child("child-a");
+        assert!(hub.running("p1").is_empty());
+        for _ in 0..MAX_SUBAGENTS_PER_PARENT {
+            hub.try_acquire_slot("p1").expect("slot freed by forget");
+        }
+        assert!(hub.try_acquire_slot("p1").is_err());
     }
 
     #[test]

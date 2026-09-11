@@ -29,6 +29,7 @@ use crate::types::{LitecodeError, Result, StreamEvents};
 use crate::llm::provider::LlmProvider;
 use crate::llm::request::ModelRequest;
 
+use super::reasoning_replay::ensure_reasoning_replay;
 use super::responses_sse::{SseLineReader, check_event_stream_content_type, sse_data_payload};
 use super::stream_contract::{
     StreamContractGate, StreamItemAccumulator, forward_stream_event, resolve_stream_outcome,
@@ -76,13 +77,6 @@ impl MimoResponsesProvider {
     }
 
     fn build_body(params: &ModelRequest, stream: bool) -> Result<Value> {
-        let input: Vec<Value> = params
-            .input
-            .iter()
-            .map(serde_json::to_value)
-            .collect::<std::result::Result<_, _>>()
-            .map_err(|e| LitecodeError::Llm(format!("serialize input items: {e}")))?;
-
         let tools: Vec<Value> = params
             .tools
             .iter()
@@ -97,6 +91,18 @@ impl MimoResponsesProvider {
             .collect();
 
         let effort = resolve_mimo_reasoning_effort(params);
+        // Thinking mode + tools: MiMo requires every assistant turn's reasoning
+        // to be passed back, otherwise 400 (Deep Thinking docs, "Multi-turn
+        // Conversation Pass-through Requirements"). Turns without recorded
+        // reasoning (compaction summary) get a placeholder item.
+        let input_items =
+            ensure_reasoning_replay(&params.input, !tools.is_empty(), effort != "none");
+        let input: Vec<Value> = input_items
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| LitecodeError::Llm(format!("serialize input items: {e}")))?;
+
         let mut body = serde_json::json!({
             "model": params.model,
             "instructions": params.instructions,
@@ -402,6 +408,57 @@ mod tests {
         req.thinking_mode = Some("disabled".into());
         let body = MimoResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(body["reasoning"]["effort"], "none");
+    }
+
+    #[test]
+    fn replay_synthesizes_reasoning_for_reasoning_less_assistant_segment() {
+        // Post-compaction shape: assistant summary message with no reasoning item.
+        let tools = vec![ToolDef {
+            name: "read".into(),
+            description: "read".into(),
+            input_schema: serde_json::json!({}),
+        }];
+        let mut req = sample_request(tools);
+        req.input = vec![
+            crate::types::user_text("hi"),
+            crate::types::assistant_text("[Conversation summary]\nkept"),
+        ];
+        let body = MimoResponsesProvider::build_body(&req, false).unwrap();
+        let input = body["input"].as_array().expect("input array");
+        assert_eq!(input.len(), 3, "one reasoning item must be inserted");
+        assert_eq!(input[1]["type"], "reasoning");
+        assert_eq!(input[1]["content"][0]["type"], "reasoning_text");
+        assert_eq!(input[2]["type"], "message");
+        assert_eq!(input[2]["role"], "assistant");
+    }
+
+    #[test]
+    fn replay_skipped_without_tools_or_thinking() {
+        let mut req = sample_request(vec![]);
+        req.input = vec![
+            crate::types::user_text("hi"),
+            crate::types::assistant_text("summary"),
+        ];
+        let body = MimoResponsesProvider::build_body(&req, false).unwrap();
+        assert_eq!(
+            body["input"].as_array().expect("input array").len(),
+            2,
+            "no tools → vendor ignores reasoning, no insertion"
+        );
+
+        // Thinking explicitly disabled.
+        let mut req = sample_request(vec![]);
+        req.thinking_mode = Some("disabled".into());
+        req.input = vec![
+            crate::types::user_text("hi"),
+            crate::types::assistant_text("summary"),
+        ];
+        let body = MimoResponsesProvider::build_body(&req, false).unwrap();
+        assert_eq!(
+            body["input"].as_array().expect("input array").len(),
+            2,
+            "thinking off → no insertion"
+        );
     }
 
     #[test]

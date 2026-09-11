@@ -2036,6 +2036,37 @@ mod child_session_tests {
     }
 
     #[tokio::test]
+    async fn child_session_depth_is_parent_plus_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("sessions.db").to_str().unwrap().to_string();
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db_path,
+        ));
+
+        let root_id = mgr.open_session("/proj", "default", None).await.unwrap();
+        assert_eq!(
+            mgr.data().meta_blocking(&root_id).unwrap().subagent_depth,
+            0
+        );
+        let child_id = mgr
+            .open_child_session("/proj", "reviewer", None, &root_id, "call_depth")
+            .unwrap();
+        assert_eq!(
+            mgr.data().meta_blocking(&child_id).unwrap().subagent_depth,
+            1
+        );
+        // The data layer supports nesting even though the tool surface blocks it.
+        let grand_id = mgr
+            .open_child_session("/proj", "reviewer", None, &child_id, "call_depth_2")
+            .unwrap();
+        assert_eq!(
+            mgr.data().meta_blocking(&grand_id).unwrap().subagent_depth,
+            2
+        );
+    }
+
+    #[tokio::test]
     async fn child_turn_lifecycle_is_filtered() {
         use crate::runtime::observer::TurnPhase;
         use crate::session::live::TurnProgress;

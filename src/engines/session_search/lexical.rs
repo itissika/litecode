@@ -1,14 +1,15 @@
 //! Always-on lexical lane: exact substring + FTS5 + light fuzzy fallback.
 
-use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 
 use crate::session::SessionDataReader;
 use crate::session::transcript_file::{SearchableRow, row_plain_text};
 use crate::types::{LitecodeError, Result};
 
 use super::{
-    FUZZY_THRESHOLD, HIT_CORE_MAX_CHARS, SessionHitLane, SessionTextHit, SessionTextQuery,
-    filter_hits, fuzzy_match_span, snippet_from_span,
+    FUZZY_SCORE_CAP, HIT_CORE_MAX_CHARS, MatchHaystack, SessionHitLane, SessionTextHit,
+    SessionTextQuery, filter_hits, match_in_haystack, prepare_haystack, snippet_from_span,
 };
 
 /// Over-fetch FTS candidates before filters / exact boost.
@@ -17,12 +18,13 @@ const FTS_CANDIDATE_LIMIT: usize = 64;
 const FUZZY_EXTRA_CAP: usize = 24;
 
 /// Lexical search over detail rows (exact + FTS + fuzzy). Always-on.
+/// `|` separates alternatives; any alternative may match.
 pub fn search_lexical(
     reader: &SessionDataReader,
     query: &SessionTextQuery,
 ) -> Result<Vec<SessionTextHit>> {
-    let needle = query.query.trim();
-    if needle.is_empty() {
+    let patterns = split_patterns(query.query.trim());
+    if patterns.is_empty() {
         return Err(LitecodeError::Config(
             "session search query is required".into(),
         ));
@@ -31,16 +33,26 @@ pub fn search_lexical(
     let data_root = reader.data_root();
     let mut by_key: HashMap<(String, i64), SessionTextHit> = HashMap::new();
 
-    let fts_hits = reader
-        .fts_search_blocking(
-            needle,
-            query.include_session_id.as_deref(),
-            FTS_CANDIDATE_LIMIT,
-        )
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "session FTS search failed; continuing with exact/fuzzy");
-            Vec::new()
-        });
+    // FTS candidates across all alternatives (deduped, order-stable).
+    let mut candidates: Vec<(String, i64)> = Vec::new();
+    let mut seen_candidates: HashSet<(String, i64)> = HashSet::new();
+    for pattern in &patterns {
+        let fts_hits = reader
+            .fts_search_blocking(
+                pattern,
+                query.include_session_id.as_deref(),
+                FTS_CANDIDATE_LIMIT,
+            )
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "session FTS search failed; continuing with exact/fuzzy");
+                Vec::new()
+            });
+        for (session_id, seq, _text) in fts_hits {
+            if seen_candidates.insert((session_id.clone(), seq)) {
+                candidates.push((session_id, seq));
+            }
+        }
+    }
 
     let rows = match reader.searchable_rows_blocking(query.include_session_id.as_deref()) {
         Ok(rows) => rows,
@@ -51,12 +63,23 @@ pub fn search_lexical(
         row_by_key.insert((row.session_id.clone(), row.seq), row);
     }
 
-    for (session_id, seq, _text) in fts_hits {
+    for (session_id, seq) in candidates {
         let Some(row) = row_by_key.get(&(session_id, seq)) else {
             continue;
         };
-        if let Some(hit) = hit_from_searchable(row, data_root, needle, 0.85)? {
-            by_key.insert((hit.session_id.clone(), hit.seq), hit);
+        let Some(text) = row_plain_text(row, data_root)? else {
+            continue;
+        };
+        let hay = prepare_haystack(&text);
+        let mut best: Option<SessionTextHit> = None;
+        for pattern in &patterns {
+            let hit = hit_from_searchable(row, &text, &hay, pattern, 0.85);
+            if best.as_ref().map(|b| hit.score > b.score).unwrap_or(true) {
+                best = Some(hit);
+            }
+        }
+        if let Some(hit) = best {
+            insert_best(&mut by_key, hit);
         }
     }
 
@@ -70,7 +93,16 @@ pub fn search_lexical(
         let Some(text) = row_plain_text(row, data_root)? else {
             continue;
         };
-        let Some((score, char_start, char_end)) = fuzzy_match_span(&text, needle) else {
+        let hay = prepare_haystack(&text);
+        let mut best: Option<(f64, usize, usize)> = None;
+        for pattern in &patterns {
+            if let Some((score, char_start, char_end)) = match_in_haystack(&hay, pattern)
+                && best.as_ref().map(|(b, _, _)| score > *b).unwrap_or(true)
+            {
+                best = Some((score, char_start, char_end));
+            }
+        }
+        let Some((score, char_start, char_end)) = best else {
             continue;
         };
         let is_exact = (score - 1.0).abs() < 1e-9;
@@ -92,22 +124,13 @@ pub fn search_lexical(
             score: if is_exact {
                 1.0
             } else {
-                score.min(FUZZY_THRESHOLD)
+                score.min(FUZZY_SCORE_CAP)
             },
             char_start,
             char_end,
             lane: SessionHitLane::Text,
         };
-        by_key
-            .entry(key)
-            .and_modify(|existing| {
-                if hit.score > existing.score
-                    || ((hit.score - existing.score).abs() < 1e-9 && is_exact)
-                {
-                    *existing = hit.clone();
-                }
-            })
-            .or_insert(hit);
+        insert_best(&mut by_key, hit);
     }
 
     let mut ranked: Vec<SessionTextHit> = by_key.into_values().collect();
@@ -120,6 +143,33 @@ pub fn search_lexical(
             .then_with(|| a.seq.cmp(&b.seq))
     });
     Ok(ranked)
+}
+
+/// Split a query on `|` into trimmed, non-empty, deduped alternatives.
+fn split_patterns(query: &str) -> Vec<String> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut out = Vec::new();
+    for part in query.split('|') {
+        let part = part.trim();
+        if !part.is_empty() && seen.insert(part) {
+            out.push(part.to_string());
+        }
+    }
+    out
+}
+
+/// Keep the higher-scoring hit for the same `(session_id, seq)` key.
+fn insert_best(map: &mut HashMap<(String, i64), SessionTextHit>, hit: SessionTextHit) {
+    match map.entry((hit.session_id.clone(), hit.seq)) {
+        Entry::Occupied(mut existing) => {
+            if hit.score > existing.get().score + 1e-9 {
+                existing.insert(hit);
+            }
+        }
+        Entry::Vacant(slot) => {
+            slot.insert(hit);
+        }
+    }
 }
 
 fn row_allowed(row: &SearchableRow, query: &SessionTextQuery) -> bool {
@@ -141,15 +191,13 @@ fn row_allowed(row: &SearchableRow, query: &SessionTextQuery) -> bool {
 
 fn hit_from_searchable(
     row: &SearchableRow,
-    data_root: &std::path::Path,
+    text: &str,
+    hay: &MatchHaystack,
     needle: &str,
     fts_score: f64,
-) -> Result<Option<SessionTextHit>> {
-    let Some(text) = row_plain_text(row, data_root)? else {
-        return Ok(None);
-    };
+) -> SessionTextHit {
     let (score, char_start, char_end) =
-        if let Some((s, start, end)) = fuzzy_match_span(&text, needle) {
+        if let Some((s, start, end)) = match_in_haystack(hay, needle) {
             if (s - 1.0).abs() < 1e-9 {
                 (1.0, start, end)
             } else {
@@ -159,14 +207,14 @@ fn hit_from_searchable(
             let end = text.chars().count().min(HIT_CORE_MAX_CHARS);
             (fts_score, 0, end)
         };
-    Ok(Some(SessionTextHit {
+    SessionTextHit {
         session_id: row.session_id.clone(),
         seq: row.seq,
         item_type: row.item_type.clone(),
-        summary: snippet_from_span(&text, char_start, char_end),
+        summary: snippet_from_span(text, char_start, char_end),
         score,
         char_start,
         char_end,
         lane: SessionHitLane::Text,
-    }))
+    }
 }

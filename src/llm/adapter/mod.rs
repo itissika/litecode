@@ -22,6 +22,7 @@ mod mimo_responses;
 mod openai_responses;
 mod opencode;
 mod registry;
+mod reasoning_replay;
 mod responses_sse;
 mod stream_contract;
 

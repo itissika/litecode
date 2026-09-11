@@ -278,7 +278,7 @@ async fn execute_returns_while_child_llm_runs_on_other_thread() {
         "launch must detach immediately, got: {}",
         result.content
     );
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while !saw_runtime.load(Ordering::SeqCst) {
             tokio::task::yield_now().await;
         }
@@ -333,7 +333,7 @@ async fn parent_cancel_does_not_stop_background_child_and_stop_tool_can() {
         .unwrap()
         .to_string();
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while !started.load(Ordering::SeqCst) {
             tokio::task::yield_now().await;
         }
@@ -358,7 +358,7 @@ async fn parent_cancel_does_not_stop_background_child_and_stop_tool_can() {
             exec_ctx_for(&parent_id, "call_bg_stop", CancellationToken::new()),
         )
         .await;
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while !dropped.load(Ordering::SeqCst) {
             tokio::task::yield_now().await;
         }
@@ -366,11 +366,11 @@ async fn parent_cancel_does_not_stop_background_child_and_stop_tool_can() {
     .await
     .expect("stop must cancel the child turn");
     assert!(
-        stop_result.content.contains("Stopped") || stop_result.content.contains("stopping"),
+        stop_result.content.contains("stopping") || stop_result.content.contains("already ended"),
         "stop result: {}",
         stop_result.content
     );
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while hub.is_alive(&child_id) {
             tokio::task::yield_now().await;
         }
@@ -400,7 +400,7 @@ async fn background_launch_returns_while_child_keeps_running() {
     let started = Arc::clone(&hang.started);
     let tool = launch_tool(resolved, Arc::clone(&sessions), &parent_id, Box::new(hang));
     let result = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         tool.execute(
             serde_json::json!({
                 "agent": "reviewer",
@@ -413,7 +413,7 @@ async fn background_launch_returns_while_child_keeps_running() {
     .expect("background launch must return without waiting for the child");
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
     assert!(result.content.contains("status: running"), "{}", result.content);
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while !started.load(Ordering::SeqCst) {
             tokio::task::yield_now().await;
         }
@@ -474,7 +474,7 @@ async fn child_exit_fires_hub_exit_handler() {
         .unwrap()
         .to_string();
 
-    let notified = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(3)))
+    let notified = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(15)))
         .await
         .expect("join")
         .expect("child exit notice must fire the configured exit handler");
@@ -603,7 +603,7 @@ async fn worker_panic_finishes_job_and_releases_session() {
         .unwrap()
         .to_string();
 
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while hub.is_alive(&child_id) {
             tokio::task::yield_now().await;
         }

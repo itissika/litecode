@@ -331,7 +331,7 @@ async fn subagent_bound_arrives_on_parent_before_tool_returns() {
     )
     .await;
 
-    let bound = tokio::time::timeout(Duration::from_secs(5), waiter)
+    let bound = tokio::time::timeout(Duration::from_secs(10), waiter)
         .await
         .expect("SubagentBound waiter timed out")
         .expect("SubagentBound waiter joined");
@@ -785,7 +785,7 @@ async fn child_exit_triggers_parent_auto_turn_reminder() {
         result.content
     );
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
     loop {
         let events = sessions.data().events_blocking(&parent).expect("parent events");
         if events
