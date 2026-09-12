@@ -462,7 +462,10 @@ fn format_agent_groups(groups: &[SessionSearchGroup]) -> String {
         parts.push(format!("### {}", group.session_id));
         parts.push(format!("created: {}", format_abs_time(group.created_time)));
         parts.push(format!("updated: {}", format_abs_time(group.updated_time)));
-        parts.push(format!("path: {}", group.path));
+        parts.push(format!(
+            "path: {} (virtual, not on disk — open with builtin read/grep/glob only; bash cannot access it)",
+            group.path
+        ));
         parts.push(format!("matches: {}", group.match_count));
         parts.push(String::new());
         for hit in &group.hits {

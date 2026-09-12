@@ -2,6 +2,8 @@
 //!
 //! Read-only, no parameters. Reports litecode-managed sessions only: work
 //! happening outside litecode (other editors, manual edits) is not visible.
+//! Each row carries a one-line preview of the session's latest user message,
+//! so the caller can see why that session is active.
 
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,19 +41,24 @@ impl WorkspaceStatsTool {
         let excluded = self_and_family(&reader, me);
         let mut lines: Vec<String> = rows
             .into_iter()
-            .filter(|(id, _, _, _)| !excluded.contains(id))
-            .map(|(id, parent, updated_at, agent)| {
+            .filter(|(id, ..)| !excluded.contains(id))
+            .map(|(id, parent, updated_at, agent, last_message)| {
                 let who = match parent {
                     Some(parent) => {
                         format!("{agent}, subagent of {}", short_session_ref(&parent))
                     }
                     None => agent,
                 };
-                format!(
-                    "- {} ({who}) — idle {}",
+                let mut line = format!(
+                    "- {} ({who}) — last write {}",
                     short_session_ref(&id),
                     idle_label(now - updated_at)
-                )
+                );
+                let preview = one_line_preview(&last_message);
+                if !preview.is_empty() {
+                    line.push_str(&format!(" — “{preview}”"));
+                }
+                line
             })
             .collect();
         if lines.is_empty() {
@@ -128,12 +135,24 @@ fn now_ms() -> i64 {
 fn idle_label(elapsed_ms: i64) -> String {
     let secs = elapsed_ms.max(0) as u64 / 1000;
     if secs < 60 {
-        format!("{secs}s")
+        format!("{secs}s ago")
     } else if secs < 3600 {
-        format!("{}m", secs / 60)
+        format!("{}m ago", secs / 60)
     } else {
-        format!("{}h", secs / 3600)
+        format!("{}h ago", secs / 3600)
     }
+}
+
+/// Collapse the stored user-message preview onto one short line. Even
+/// truncated, it reveals why the session is active.
+fn one_line_preview(raw: &str) -> String {
+    const MAX_CHARS: usize = 120;
+    let collapsed: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out: String = collapsed.chars().take(MAX_CHARS).collect();
+    if collapsed.chars().count() > MAX_CHARS {
+        out.push('…');
+    }
+    out.trim().to_string()
 }
 
 impl Tool for WorkspaceStatsTool {
@@ -289,10 +308,43 @@ mod tests {
             r.content
         );
         assert!(
+            r.content.contains("last write") && r.content.contains("other work"),
+            "last-write label or user-message preview missing:\n{}",
+            r.content
+        );
+        assert!(
             !r.content.contains(short_session_ref(&me)),
             "self must not be listed:\n{}",
             r.content
         );
+    }
+
+    #[test]
+    fn collapses_long_user_message_to_one_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (data, _db) = open_data(root);
+        let me = create(&data, root, "mine");
+        let long_text = format!(
+            "first line about refactoring\n\n{}",
+            "padding word ".repeat(60)
+        );
+        let other = create(&data, root, &long_text);
+        drop(data);
+
+        let r = run_tool(root, &me);
+        assert_eq!(r.level, ToolSignalLevel::Ok, "{}", r.content);
+        let line = r
+            .content
+            .lines()
+            .find(|l| l.contains(short_session_ref(&other)))
+            .expect("other session listed");
+        assert!(
+            line.contains("first line about refactoring padding word"),
+            "collapsed preview missing:\n{line}"
+        );
+        assert!(line.contains('…'), "truncation marker missing:\n{line}");
+        assert!(!line.contains('\n'), "preview must be one line:\n{line}");
     }
 
     #[test]

@@ -142,7 +142,16 @@ pub fn unreferenced_blob_ids(conn: &Connection) -> Result<Vec<String>> {
 }
 
 pub fn referenced_blob_ids(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare("SELECT DISTINCT blob_id FROM session_blob_refs")?;
+    // Union the ref table with body_ref columns still present in
+    // transcript_items: any writer path that spills a body without registering
+    // a ref row must not cause GC to delete a live blob.
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT blob_id FROM session_blob_refs
+         UNION
+         SELECT DISTINCT substr(body_ref, 7, instr(body_ref, ']') - 7)
+         FROM transcript_items
+         WHERE body_ref LIKE '[blob:%]'",
+    )?;
     let rows = stmt.query_map([], |row| row.get(0))?;
     let mut ids = Vec::new();
     for row in rows {

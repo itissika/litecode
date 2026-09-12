@@ -793,6 +793,13 @@ pub(crate) fn agent_output_path(workspace_root: &Path, id: &str) -> TerminalResu
     Ok(bash_dir.join(format!("{id}.output")))
 }
 
+/// 8 hex chars for a file name under the same `.litecode/bash/` directory bash
+/// outputs use. Not an id: nothing looks a spilled file up by name.
+pub(crate) fn bash_nonce() -> String {
+    let bytes = Uuid::new_v4().into_bytes();
+    format!("{:02x}{:02x}{:02x}{:02x}", bytes[0], bytes[1], bytes[2], bytes[3])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

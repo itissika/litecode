@@ -70,6 +70,10 @@ pub fn run(
     let web_dist = web_dist::resolve_web_dist()?;
     tracing::info!("web dist: {}", web_dist.display());
 
+    // Reap language servers leaked by earlier instances that died without
+    // graceful shutdown (pre job-object builds, crashes, taskkill).
+    crate::proc_lifetime::sweep_orphan_lsp_processes();
+
     let turn_guard = Arc::new(TurnGuard::new());
     let mut settings_writer = SettingsWriter::new(turn_guard.clone());
     let engine_manager = Arc::new(EngineManager::new());

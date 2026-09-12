@@ -334,13 +334,22 @@ fn git_run_stdin(
     let mut child = cmd.spawn().map_err(|e| {
         LitecodeError::Config(format!("failed to spawn git {}: {e}", args.join(" ")))
     })?;
-    if let Some(mut input) = child.stdin.take() {
+    // Drain stdout/stderr while feeding stdin: git answers on stdout as it
+    // consumes the path list, so writing the whole list up front deadlocks once
+    // either pipe buffer (64 KiB) fills — which is the norm on large workspaces.
+    let child_stdin = child.stdin.take();
+    let stdin_owned = stdin.to_vec();
+    let writer = std::thread::spawn(move || {
         use std::io::Write;
-        let _ = input.write_all(stdin);
-    }
+        if let Some(mut pipe) = child_stdin {
+            let _ = pipe.write_all(&stdin_owned);
+            // Dropping `pipe` here closes the handle so git sees EOF.
+        }
+    });
     let output = child
         .wait_with_output()
         .map_err(|e| LitecodeError::Config(format!("git {} wait failed: {e}", args.join(" "))))?;
+    let _ = writer.join();
     let code = output.status.code().unwrap_or(1);
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

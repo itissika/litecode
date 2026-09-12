@@ -305,6 +305,10 @@ mod tests {
             out.contains(&transcript_file::virtual_path_for(&id_a)),
             "path missing:\n{out}"
         );
+        assert!(
+            out.contains("bash cannot access it"),
+            "virtual-path hint missing:\n{out}"
+        );
         assert!(out.contains("matches:"), "{out}");
         assert!(out.contains("L"), "{out}");
         assert!(out.contains("AUTH_REFACTOR_TOKEN"), "{out}");

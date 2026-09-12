@@ -143,6 +143,9 @@ impl LspServer {
             crate::lsp::install::ls_program_and_args(&binary.path, &binary.arguments);
         let mut cmd = Command::new(&program);
         cmd.args(&args)
+            // Error paths that drop the Child without `shutdown()` must not
+            // leak the process.
+            .kill_on_drop(true)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -160,6 +163,9 @@ impl LspServer {
                 binary.path.display()
             ))
         })?;
+        // Kernel-level tie: if this process dies without graceful shutdown,
+        // the child is killed anyway (Windows Job Object; no-op elsewhere).
+        crate::proc_lifetime::bind_child_to_parent(child.id().unwrap_or(0));
 
         let stderr_buf: Arc<tokio::sync::Mutex<Vec<u8>>> =
             Arc::new(tokio::sync::Mutex::new(Vec::new()));

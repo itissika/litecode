@@ -44,6 +44,9 @@ fn spawn_exe(exe: &Path) -> Result<CodeSearchWorkerClient> {
                 exe.display()
             ))
         })?;
+    // Kernel-level tie so the worker cannot outlive this process (Windows
+    // Job Object; no-op elsewhere).
+    crate::proc_lifetime::bind_child_to_parent(child.id());
 
     let stdin = child.stdin.take().expect("worker stdin piped");
     let stdout = child.stdout.take().expect("worker stdout piped");

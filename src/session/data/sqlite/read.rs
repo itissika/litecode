@@ -237,14 +237,14 @@ fn list_sessions_for_gc(conn: &Connection) -> Result<Vec<(String, i64)>> {
 fn list_session_activity(
     conn: &Connection,
     since_ms: i64,
-) -> Result<Vec<(String, Option<String>, i64, String)>> {
+) -> Result<Vec<(String, Option<String>, i64, String, String)>> {
     let mut stmt = conn.prepare(
-        "SELECT id, parent_session_id, updated_at, agent_id FROM sessions
+        "SELECT id, parent_session_id, updated_at, agent_id, last_message FROM sessions
          WHERE updated_at >= ?1
          ORDER BY updated_at DESC",
     )?;
     let rows = stmt.query_map(rusqlite::params![since_ms], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)

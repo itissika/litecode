@@ -1,5 +1,6 @@
 # Ignore build artifacts
 target
+target-pl-verify/
 .litecode/
 .fastembed_cache
 .vscode

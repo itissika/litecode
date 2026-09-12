@@ -366,8 +366,8 @@ pub enum ReadValue {
     List(Vec<(String, String, i64, String, String, Option<String>)>),
     Ids(Vec<String>),
     GcList(Vec<(String, i64)>),
-    /// `(id, parent_session_id, updated_at, agent_id)` activity rows.
-    SessionActivity(Vec<(String, Option<String>, i64, String)>),
+    /// `(id, parent_session_id, updated_at, agent_id, last_message)` activity rows.
+    SessionActivity(Vec<(String, Option<String>, i64, String, String)>),
     OptionalId(Option<String>),
     ChildBindings(Vec<(String, String)>),
     Depth(u32),

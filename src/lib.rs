@@ -11,6 +11,7 @@ pub mod lsp;
 pub mod mcp;
 pub mod optional;
 pub mod permission;
+pub mod proc_lifetime;
 pub mod platform_knobs;
 pub mod runtime;
 pub mod serve;

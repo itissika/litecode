@@ -491,6 +491,19 @@ fn seal_event_row(
             seq_i,
         ],
     )?;
+    // Re-sealing re-encodes the row: the blob ref for this seq must track the
+    // new body_ref, otherwise startup GC treats the spilled blob as orphaned
+    // and deletes a body the transcript still references.
+    tx.execute(
+        "DELETE FROM session_blob_refs WHERE session_id = ?1 AND seq = ?2",
+        rusqlite::params![session_id, seq_i],
+    )?;
+    if let Some(body_ref) = &body_ref
+        && let Some(blob_id) = blob_id_from_ref(body_ref)
+    {
+        let rel = crate::session::data::blob::rel_path_for(&blob_id);
+        super::ops::register_blob_ref(tx, &blob_id, session_id, seq_i, 0, &rel.to_string_lossy())?;
+    }
     Ok(())
 }
 

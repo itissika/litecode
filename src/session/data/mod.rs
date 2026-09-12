@@ -306,7 +306,7 @@ impl SessionData {
     pub fn list_session_activity_blocking(
         &self,
         since_ms: i64,
-    ) -> Result<Vec<(String, Option<String>, i64, String)>> {
+    ) -> Result<Vec<(String, Option<String>, i64, String, String)>> {
         match self.read_blocking(SessionRead::ListSessionActivity { since_ms })? {
             ReadValue::SessionActivity(v) => Ok(v),
             _ => Err(LitecodeError::SessionStorage(
@@ -463,7 +463,7 @@ impl SessionDataReader {
     pub fn list_session_activity_blocking(
         &self,
         since_ms: i64,
-    ) -> Result<Vec<(String, Option<String>, i64, String)>> {
+    ) -> Result<Vec<(String, Option<String>, i64, String, String)>> {
         match self.read_blocking(SessionRead::ListSessionActivity { since_ms })? {
             ReadValue::SessionActivity(v) => Ok(v),
             _ => Err(LitecodeError::SessionStorage(
