@@ -1,18 +1,31 @@
-//! Subagent tool series: launch / wait / stop / list, consuming a process-scoped hub.
+//! Subagent tool series: launch / send / wait / stop / list.
+//!
+//! Tools call the same session primitives humans use (`reserve_turn` →
+//! `spawn_turn` → `start_turn` / `cancel_turn_sync`). The hub is a client of
+//! those facts (job board + watcher), not a second runtime.
+
+/// Product lock: subagent tools bind only on primary turns (`depth == 0`).
+/// Children cannot nest another subagent series.
+pub const SUBAGENT_MAX_DEPTH: u32 = 1;
 
 mod hub;
+mod jobs;
 mod launch;
 mod list;
+mod send;
 pub mod status;
 mod stop;
+mod turn;
 mod wait;
 
-pub use hub::{
-    ExitNotice, LaunchSpec, MAX_SUBAGENTS_PER_PARENT, RunningJob, SpawnDeps, SubagentHub,
-    SubagentJobWire, SubagentJobsSnapshot, SubagentWaitWire, WaitOutcome,
+pub use hub::SubagentHub;
+pub use jobs::{
+    ExitNotice, RunningJob, StopMark, SubagentJobBoard, SubagentJobWire, SubagentJobsSnapshot,
+    SubagentWaitWire, WaitOutcome, format_exit_reminder, format_running_list, prompt_preview,
 };
-pub use launch::SubagentLaunchTool;
+pub use launch::{LaunchSpec, SpawnDeps, SubagentLaunchTool, spawn_child_job};
 pub use list::SubagentListTool;
+pub use send::SubagentSendTool;
 pub use stop::SubagentStopTool;
 pub use wait::SubagentWaitTool;
 

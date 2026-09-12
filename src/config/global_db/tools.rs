@@ -20,7 +20,15 @@ pub fn network_core_tools() -> &'static [&'static str] {
 }
 
 pub fn core_none_tools() -> &'static [&'static str] {
-    &["plan", "todo", "subagent_launch", "subagent_wait", "subagent_stop", "subagent_list"]
+    &[
+        "plan",
+        "todo",
+        "subagent_launch",
+        "subagent_wait",
+        "subagent_stop",
+        "subagent_list",
+        "subagent_send",
+    ]
 }
 
 pub fn core_tool_ids() -> Vec<String> {

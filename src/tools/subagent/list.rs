@@ -44,7 +44,7 @@ impl SubagentListTool {
                 .unwrap_or(SessionStatus::Idle);
             let (preview, updated_at) = self
                 .sessions
-                .data()
+                .reader()
                 .meta_blocking(&id)
                 .map(|meta| (meta.preview, meta.updated_at))
                 .unwrap_or_default();
@@ -91,8 +91,7 @@ impl Tool for SubagentListTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "List all subagent sessions of the active session with their raw session status."
-            .to_string()
+        "List this session's child sessions and each one's raw session status.".to_string()
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {

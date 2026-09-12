@@ -8,12 +8,8 @@ vi.mock("../../components/AgentChatInput", () => ({
   AgentChatInput: () => <div data-testid="chat-input" />,
 }));
 
-vi.mock("../../components/TodoPanel", () => ({
-  TodoPanel: () => <div data-testid="todo-panel" />,
-}));
-
-vi.mock("../../components/TerminalStatusBar", () => ({
-  TerminalStatusBar: () => <div data-testid="terminal-status" />,
+vi.mock("../../components/SessionStatusLine", () => ({
+  SessionStatusLine: () => <div data-testid="session-status-line" />,
 }));
 
 vi.mock("../../stores/turnStore", () => ({

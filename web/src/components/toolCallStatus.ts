@@ -1,5 +1,6 @@
 import { functionCallOutputText } from "../api/adapter";
 import type { FunctionCallOutputItem } from "../api/types";
+import { headExitCode } from "../lib/bashLive";
 import type { ToolStatus } from "./ToolIcon";
 
 function callWillNotProduceOutput(status?: string): boolean {
@@ -57,6 +58,11 @@ export function deriveToolStatus(
     ) {
       return "warning";
     }
+    // A completed bash/terminal document leads with `exit_code: N`. Only a
+    // NON-zero code is a signal: the tool call itself succeeded, the command did
+    // not — amber, matching the exit-code footer on the card.
+    const exitCode = resultText !== undefined ? headExitCode(resultText) : null;
+    if (exitCode !== null && exitCode !== 0) return "warning";
     return "ok";
   }
   if (streaming) return "running";

@@ -2177,3 +2177,41 @@ async fn settings_put_subagent_strips_subagent_launch_binding() {
             .contains_key("subagent_launch")
     );
 }
+
+#[tokio::test]
+async fn settings_put_subagent_strips_plan_and_todo_bindings() {
+    use litecode::config::schema::{AgentProfile, AgentRole};
+
+    let ws = TempDir::new().expect("ws");
+    let db_dir = TempDir::new().expect("db");
+    let db_path = db_dir.path().join("litecode.db");
+    seed_global_db(&db_path);
+
+    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path.clone());
+    let addr = spawn_server(state, web_dist).await;
+    let client = test_http_client();
+
+    let profile = AgentProfile {
+        role: AgentRole::Subagent,
+        model_ref: "default".into(),
+        tools: HashMap::from([
+            ("plan".into(), binding_none_tool()),
+            ("todo".into(), binding_none_tool()),
+            ("read".into(), binding_none_tool()),
+        ]),
+        ..Default::default()
+    };
+
+    let resp = client
+        .put(format!("http://{addr}/api/settings/agents/worker"))
+        .json(&profile)
+        .send()
+        .await
+        .expect("put");
+    assert_eq!(resp.status(), 200);
+
+    let loaded = ConfigManager::load_global_from(&db_path).unwrap();
+    assert!(!loaded.agents["worker"].tools.contains_key("plan"));
+    assert!(!loaded.agents["worker"].tools.contains_key("todo"));
+    assert!(loaded.agents["worker"].tools.contains_key("read"));
+}

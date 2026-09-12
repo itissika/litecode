@@ -95,11 +95,7 @@ export function SubagentToolView({
       )}
 
       {childId ? (
-        <SubagentViewport
-          childSessionId={childId}
-          nested={isNested}
-          skipUserText={prompt}
-        />
+        <SubagentViewport childSessionId={childId} nested={isNested} />
       ) : (
         <p className="px-1 py-1 text-dk-2xs italic text-(--_dk-text-disabled)">
           Launching subagent…

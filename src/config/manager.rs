@@ -6,7 +6,7 @@ use crate::types::{LitecodeError, Result};
 
 use super::global_db;
 use super::resolved::{ResolvedConfig, WorkspaceState, resolve};
-use super::schema::{AgentRole, GlobalSettings, SUBAGENT_SERIES_TOOL_IDS};
+use super::schema::{AgentRole, GlobalSettings, PLAN_TODO_TOOL_IDS, SUBAGENT_SERIES_TOOL_IDS};
 use super::workspace::{self, init_workspace, load_workspace_state};
 
 /// Single configuration entry point (L1).
@@ -54,7 +54,7 @@ impl ConfigManager {
             }
 
             if profile.role == AgentRole::Subagent {
-                for tool_id in SUBAGENT_SERIES_TOOL_IDS {
+                for tool_id in PLAN_TODO_TOOL_IDS.iter().chain(SUBAGENT_SERIES_TOOL_IDS) {
                     if profile.tools.contains_key(*tool_id) {
                         return Err(LitecodeError::Config(format!(
                             "agent '{agent_id}' (subagent) must not bind '{tool_id}'"
@@ -449,6 +449,31 @@ mod tests {
         );
         let err = ConfigManager::validate(&global).unwrap_err();
         assert!(err.to_string().contains("subagent_launch"));
+    }
+
+    #[test]
+    fn validate_subagent_cannot_bind_plan_or_todo() {
+        let mut global = minimal_global();
+        global.agents.insert(
+            "worker".into(),
+            AgentProfile {
+                role: AgentRole::Subagent,
+                model_ref: "default".into(),
+                tools: HashMap::from([(
+                    "plan".into(),
+                    AgentToolBinding {
+                        enabled: true,
+                        policy: crate::permission::ToolPolicy::allow_all(),
+                        path_mode: crate::permission::BindingPathMode::default(),
+                        last_applied_preset: None,
+                        allowed_tools: None,
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+        let err = ConfigManager::validate(&global).unwrap_err();
+        assert!(err.to_string().contains("plan"));
     }
 
     #[test]

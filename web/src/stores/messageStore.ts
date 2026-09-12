@@ -297,13 +297,20 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       const state = get();
       const slice = getSlice(state.bySession, sessionId);
       const next = upsertEvents(slice, loaded.events);
-      next.fromSeq = loaded.from_seq;
+      // A tail append (the P6 gap catch-up) starts at/after the current window
+      // end. Keep the existing window start and user-detail count: the older
+      // rows are still held, and `userDetailBefore` counts from the window start,
+      // not from the appended tail.
+      const tailAppend = slice.toSeq > 0 && loaded.from_seq >= slice.toSeq;
+      next.fromSeq = tailAppend ? slice.fromSeq : loaded.from_seq;
       next.toSeq = Math.max(next.toSeq, loaded.to_seq);
-      next.userDetailBefore = hydrateUserDetailBefore(
-        loaded.from_seq,
-        loaded.user_detail_before,
-        slice.userDetailBefore,
-      );
+      next.userDetailBefore = tailAppend
+        ? slice.userDetailBefore
+        : hydrateUserDetailBefore(
+            loaded.from_seq,
+            loaded.user_detail_before,
+            slice.userDetailBefore,
+          );
       next.loadingHistory = false;
       next.hydrated = true;
       next.subagentBindings = {

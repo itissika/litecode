@@ -24,7 +24,10 @@ use crate::tools::{
     plan::PlanTool,
     read::ReadTool,
     session_search::SessionSearchTool,
-    subagent::{SubagentLaunchTool, SubagentListTool, SubagentStopTool, SubagentWaitTool},
+    subagent::{
+        SUBAGENT_MAX_DEPTH, SubagentLaunchTool, SubagentListTool, SubagentSendTool,
+        SubagentStopTool, SubagentWaitTool,
+    },
     todo::TodoWriteTool,
     wait_shell::WaitShellTool,
     webfetch::WebFetchTool,
@@ -204,7 +207,12 @@ pub async fn build_tool_list(
             continue;
         }
 
-        if depth > 0 && tool_id.starts_with("subagent_") {
+        // Product lock: subagent tools are primary-turn only (depth lock = 1).
+        if depth >= SUBAGENT_MAX_DEPTH && tool_id.starts_with("subagent_") {
+            continue;
+        }
+        // Tool-set gate: plan/todo are primary-only.
+        if depth >= SUBAGENT_MAX_DEPTH && matches!(tool_id.as_str(), "plan" | "todo") {
             continue;
         }
 
@@ -218,18 +226,25 @@ pub async fn build_tool_list(
                         parent_cancel.clone(),
                         Arc::clone(&sessions),
                         parent_session_id.to_string(),
-                        Arc::clone(&runtime.subagent_hub),
                     )));
                 }
                 "subagent_wait" => {
                     tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(
-                        &runtime.subagent_hub,
+                        &runtime.subagent_hub.jobs,
                     ))));
                 }
                 "subagent_stop" => {
-                    tools.push(Arc::new(SubagentStopTool::new(Arc::clone(
-                        &runtime.subagent_hub,
-                    ))));
+                    tools.push(Arc::new(SubagentStopTool::new(
+                        Arc::clone(&sessions),
+                        Arc::clone(&runtime.subagent_hub.jobs),
+                    )));
+                }
+                "subagent_send" => {
+                    tools.push(Arc::new(SubagentSendTool::new(
+                        runtime.clone(),
+                        Arc::clone(&sessions),
+                        depth,
+                    )));
                 }
                 "subagent_list" => {
                     tools.push(Arc::new(SubagentListTool::new(Arc::clone(&sessions))));
@@ -371,6 +386,7 @@ mod tests {
         assert!(names.contains(&"todo"));
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"subagent_launch"));
+        assert!(names.contains(&"subagent_send"));
         assert!(names.contains(&"subagent_wait"));
         assert!(names.contains(&"subagent_stop"));
         assert!(names.contains(&"subagent_list"));
@@ -456,9 +472,12 @@ mod tests {
         let tools = list_tools(&resolved, 1);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"subagent_launch"));
+        assert!(!names.contains(&"subagent_send"));
         assert!(!names.contains(&"subagent_wait"));
         assert!(!names.contains(&"subagent_stop"));
         assert!(!names.contains(&"subagent_list"));
+        assert!(!names.contains(&"plan"));
+        assert!(!names.contains(&"todo"));
     }
 
     #[test]

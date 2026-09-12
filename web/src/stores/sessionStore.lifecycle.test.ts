@@ -213,7 +213,7 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
     });
   });
 
-  it("does not reload last-40 after compact when a window already exists", () => {
+  it("appends only the missing tail after compact, not a fresh last-40", () => {
     const sid = "s-compact-snap";
     const sendRpc = vi.fn();
     useConnectionStore.setState({ sendRpc } as never);
@@ -241,10 +241,45 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
       last_turn_token_stats: null,
     });
 
-    expect(sendRpc).not.toHaveBeenCalled();
+    // Only the gap is fetched — never the cold last-40 window (0..4 here).
+    expect(sendRpc).toHaveBeenCalledWith("buffer/load", {
+      from_seq: 3,
+      to_seq: 4,
+      session_id: sid,
+    });
+    expect(sendRpc).not.toHaveBeenCalledWith("buffer/load", {
+      from_seq: 0,
+      to_seq: 4,
+      session_id: sid,
+    });
     const turn = useTurnStore.getState().byId.get(sid)!;
     expect(turn.runState).toBe("running");
     expect(turn.currentTurnId).toBe("t-next");
+  });
+
+  it("does not pull a reverted tail back from a stale snapshot", () => {
+    const sid = "s-revert-snap";
+    const sendRpc = vi.fn();
+    useConnectionStore.setState({ sendRpc } as never);
+    useMessageStore.getState().onBufferLoaded(sid, {
+      session_id: sid,
+      from_seq: 0,
+      to_seq: 3,
+      events: [
+        { seq: 0, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "a" }] } },
+        { seq: 1, kind: "item/assistant", body: { type: "message", role: "assistant", id: "a0", status: "completed", content: [{ type: "output_text", text: "b", annotations: [] }] } },
+        { seq: 2, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "c" }] } },
+      ],
+    });
+    // Revert to seq 2: the rows at 2.. are gone and growth is blocked.
+    useMessageStore
+      .getState()
+      .onBufferReverted(sid, { session_id: sid, last_seq: 1, next_seq: 2 });
+
+    // A stale in-flight snapshot still advertises the pre-revert next_seq.
+    useSessionStore.getState().applySnapshot(snap(sid, 3));
+
+    expect(sendRpc).not.toHaveBeenCalled();
   });
 
   it("keeps a compacted cut from buffer/item without a mid-turn snapshot", () => {

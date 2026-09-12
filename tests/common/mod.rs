@@ -6,6 +6,7 @@ pub mod runtime;
 pub mod scripted_provider;
 pub mod seed;
 pub mod session_data_fixture;
+pub mod subagent_fixture;
 pub mod workspace_fixture;
 
 pub use session_data_fixture::SessionDataFixture;

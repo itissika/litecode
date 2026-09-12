@@ -26,9 +26,7 @@ use litecode::tool::ToolPipeline;
 use litecode::tool::output::DEFAULT_SPILL_THRESHOLD;
 use litecode::tool::trait_::ToolExecutionContext;
 use litecode::tool::write_lock::process_write_lock;
-use litecode::tools::subagent::{
-    MAX_SUBAGENTS_PER_PARENT, SubagentHub, SubagentLaunchTool, SubagentStopTool,
-};
+use litecode::tools::subagent::{SubagentJobBoard, SubagentLaunchTool, SubagentStopTool};
 use litecode::types::{
     FunctionToolCall, Item, Result, StreamEvents, ToolSignalLevel, item_text_preview,
 };
@@ -62,7 +60,7 @@ fn launch_tool_with_hub(
     sessions: Arc<SessionManager>,
     parent_session_id: &str,
     provider: Box<dyn LlmProvider>,
-) -> (SubagentLaunchTool, Arc<SubagentHub>) {
+) -> (SubagentLaunchTool, Arc<SubagentJobBoard>) {
     let workspace =
         litecode::workspace::WorkspaceService::new(resolved.workspace_root().to_path_buf())
             .expect("workspace");
@@ -72,8 +70,6 @@ fn launch_tool_with_hub(
         Arc::new(engines.clone()),
         Arc::new(litecode::terminal::TerminalHub::new()),
     );
-    let hub = Arc::new(SubagentHub::new());
-    hub.attach_sessions(Arc::clone(&sessions));
     let runtime = litecode::runtime::RuntimeHandle::new(
         resolved.clone(),
         "default".into(),
@@ -86,14 +82,15 @@ fn launch_tool_with_hub(
         resolved.workspace_root().join(".litecode/global.db"),
     )
     .with_test_llm_override(Arc::from(provider));
+    runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
+    let hub = Arc::clone(&runtime.subagent_hub.jobs);
     let tool = SubagentLaunchTool::new(
         runtime,
         "default",
         0,
         CancellationToken::new(),
-        sessions,
+        Arc::clone(&sessions),
         parent_session_id,
-        Arc::clone(&hub),
     );
     (tool, hub)
 }
@@ -351,7 +348,7 @@ async fn parent_cancel_does_not_stop_background_child_and_stop_tool_can() {
     assert!(!dropped.load(Ordering::SeqCst));
 
     // The first-class stop operation cancels the child's current turn.
-    let stop = SubagentStopTool::new(Arc::clone(&hub));
+    let stop = SubagentStopTool::new(Arc::clone(&sessions), Arc::clone(&hub));
     let stop_result = stop
         .execute(
             serde_json::json!({"id": child_id}),
@@ -496,11 +493,6 @@ async fn pipeline_runs_two_launches_concurrently() {
         .open_session(&project, "default", Some("default"))
         .await
         .expect("parent");
-
-    assert!(
-        MAX_SUBAGENTS_PER_PARENT >= 2,
-        "parent slot cap must allow parallel launches"
-    );
 
     let tool = Arc::new(launch_tool(
         resolved.clone(),

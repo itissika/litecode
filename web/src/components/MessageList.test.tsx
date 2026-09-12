@@ -2,7 +2,7 @@ import React from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MessageList, ProcessGroup, rowsToNodes } from "./MessageList";
+import { MessageList, NodeView, ProcessGroup, rowsToNodes } from "./MessageList";
 import type { HumanRow } from "../api/types";
 import { userTextItem } from "../api/adapter";
 import { useBashStore } from "../stores/bashStore";
@@ -602,5 +602,173 @@ describe("MessageList compacting now marker", () => {
       />,
     );
     expect(screen.queryByTestId("compacting-now")).toBeNull();
+  });
+});
+
+function bashRows(output: string): HumanRow[] {
+  return [
+    {
+      seq: 1,
+      kind: "item/tool_call",
+      streaming: false,
+      body: {
+        type: "function_call",
+        id: "fc_bash",
+        call_id: "call_bash",
+        name: "bash",
+        arguments: JSON.stringify({ command: "sleep 8" }),
+        status: "completed",
+      },
+    },
+    {
+      seq: 2,
+      kind: "item/tool_result",
+      streaming: false,
+      body: {
+        type: "function_call_output",
+        call_id: "call_bash",
+        output,
+      },
+    },
+  ];
+}
+
+const RUNNING_DOC = `status: running
+bash_id: bg_a
+output_file: .litecode/bash/bg_a.output
+`;
+
+function seedBashJob(): void {
+  useBashStore.getState().applySnapshot("session-1", {
+    jobs: [
+      {
+        id: "bg_a",
+        call_id: "call_bash",
+        command_preview: "sleep 8",
+        output_file: ".litecode/bash/bg_a.output",
+        started_at_ms: Date.now(),
+      },
+    ],
+    waits: [],
+  });
+}
+
+describe("MessageList tool routing (inline row vs rich card)", () => {
+  it("keeps a FOREGROUND bash on its rich card", () => {
+    const node = rowsToNodes(bashRows(`exit_code: 0
+all good
+`))[0]!;
+    const { container } = render(
+      <NodeView node={node} projectRoot={null} sessionId="session-1" />,
+    );
+
+    // Still a collapsible tool card, not a single-line row. (The card body is
+    // unmounted while collapsed — it is exercised directly in
+    // BashToolView.test.tsx.)
+    expect(container.querySelector(".foldcard-header")).toBeTruthy();
+    expect(screen.queryByTestId("inline-bash-command")).toBeNull();
+    expect(screen.queryByTestId("bash-console")).toBeNull();
+  });
+
+  it("routes a BACKGROUND bash to the single-line row", () => {
+    seedBashJob();
+    const node = rowsToNodes(bashRows(RUNNING_DOC))[0]!;
+    const { container } = render(
+      <NodeView node={node} projectRoot={null} sessionId="session-1" />,
+    );
+
+    expect(screen.getByTestId("inline-bash-command").textContent).toBe("sleep 8");
+    expect(container.querySelector(".foldcard-header")).toBeNull();
+    expect(screen.queryByTestId("bash-console")).toBeNull();
+  });
+});
+
+describe("MessageList session-mount capsules route to single-line rows", () => {
+  const capsule = (name: string, output: string): HumanRow[] => [
+    {
+      seq: 1,
+      kind: "item/tool_call",
+      streaming: false,
+      body: {
+        type: "function_call",
+        id: "fc_cap",
+        call_id: "call_cap",
+        name,
+        arguments: JSON.stringify({ action: "create" }),
+        status: "completed",
+      },
+    },
+    {
+      seq: 2,
+      kind: "item/tool_result",
+      streaming: false,
+      body: { type: "function_call_output", call_id: "call_cap", output },
+    },
+  ];
+
+  it("renders todo as a summary row, never a card", () => {
+    const node = rowsToNodes(
+      capsule("todo", "OK. Status — pending: 2, in_progress: 1, completed: 3"),
+    )[0]!;
+    const { container } = render(<NodeView node={node} sessionId="session-1" />);
+
+    expect(screen.getByTestId("inline-todo-summary").textContent).toBe(
+      "1 active · 2 pending · 3 done",
+    );
+    expect(container.querySelector(".foldcard-header")).toBeNull();
+  });
+
+  it("renders plan as a summary row, never a card", () => {
+    const node = rowsToNodes(
+      capsule("plan", "Created plan at .litecode/plan/calm-river.md\nsaved."),
+    )[0]!;
+    const { container } = render(<NodeView node={node} sessionId="session-1" />);
+
+    expect(screen.getByTestId("inline-plan-summary").textContent).toBe(
+      ".litecode/plan/calm-river.md",
+    );
+    expect(container.querySelector(".foldcard-header")).toBeNull();
+  });
+});
+
+describe("MessageList job_exit mark", () => {
+  const exitRow: HumanRow = {
+    seq: 9,
+    kind: "reminder/job_exit",
+    streaming: false,
+    body: {
+      type: "message",
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: `<system-reminder>
+Background bash bg_a exited with code 3.
+output_file: .litecode/bash/bg_a.output
+command: sleep 8
+</system-reminder>`,
+        },
+      ],
+    },
+  };
+
+  it("carries the exit detail from the reminder body into the mark", () => {
+    const node = rowsToNodes([exitRow])[0]!;
+    expect(node).toMatchObject({ kind: "job_exit", detail: "bg_a · exit code 3" });
+
+    render(<NodeView node={node} />);
+    expect(
+      screen.getByText("background terminal exited · bg_a · exit code 3"),
+    ).toBeTruthy();
+  });
+
+  it("falls back to the plain label when the body has no exit line", () => {
+    const node = rowsToNodes([
+      { ...exitRow, body: { type: "message", role: "user", content: [{ type: "input_text", text: "no detail" }] } } as HumanRow,
+    ])[0]!;
+    expect(node.kind === "job_exit" && node.detail).toBeFalsy();
+
+    render(<NodeView node={node} />);
+    expect(screen.getByText("background terminal exited")).toBeTruthy();
   });
 });

@@ -12,16 +12,12 @@ import {
   getPendingReveal,
   subscribePendingReveal,
 } from "../../lib/sessionPanelNav";
-import { useNotificationStore } from "../../stores/notificationStore";
 import { AgentChatInput } from "../../components/AgentChatInput";
 import { MessageList, type EditingUserAnchor } from "../../components/MessageList";
 import { PermissionCard } from "../../components/PermissionModal";
-import { clearFoldCardOpen } from "../../components/foldCardState";
 import { ProgressiveBlur } from "../../components/ProgressiveBlur";
-import { TodoPanel } from "../../components/TodoPanel";
-import { TerminalStatusBar } from "../../components/TerminalStatusBar";
-import { SubagentStatusBar } from "../../components/SubagentStatusBar";
-import { ActivePlanChip } from "../../components/ActivePlanChip";
+import { SessionStatusLine } from "../../components/SessionStatusLine";
+import { releaseSessionTab } from "../../components/sessionTeardown";
 import { composerCardClass } from "../../components/composerCard";
 
 class AgentErrorBoundary extends Component<
@@ -93,15 +89,12 @@ export function AgentPanel(props: IDockviewPanelProps) {
     };
   }, [props.api, sessionId, connState]);
 
-  // Tear down the subscription and local projection only on real unmount.
+  // Tear down the subscription and local projection only on real unmount — and
+  // not at all while an expanded roster card still holds the session.
   useEffect(() => {
     if (!sessionId) return;
     return () => {
-      useConnectionStore.getState().unsubscribeSession(sessionId);
-      useMessageStore.getState().reset(sessionId);
-      useTurnStore.getState().resetTurn(sessionId);
-      useNotificationStore.getState().reset(sessionId);
-      clearFoldCardOpen(sessionId);
+      releaseSessionTab(sessionId);
     };
   }, [sessionId]);
 
@@ -480,17 +473,10 @@ export function ComposerDock({
                 }}
               />
             )}
-            <div className="flex items-end gap-2">
-              <TerminalStatusBar
-                sessionId={sessionId}
-                onRevealBash={onRevealBash}
-              />
-              <SubagentStatusBar sessionId={sessionId} />
-              <ActivePlanChip sessionId={sessionId} />
-              <div className="min-w-0 flex-1">
-                <TodoPanel sessionId={sessionId} />
-              </div>
-            </div>
+            <SessionStatusLine
+              sessionId={sessionId}
+              onRevealBash={onRevealBash}
+            />
             <AgentChatInput key={sessionId} sessionId={sessionId} />
           </div>
         </div>

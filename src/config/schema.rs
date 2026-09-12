@@ -267,7 +267,10 @@ pub const PROTECTED_AGENT_IDS: &[&str] = &["default", "compaction"];
 
 /// Built-in subagent orchestration tools (primary-only bindings).
 pub const SUBAGENT_SERIES_TOOL_IDS: &[&str] =
-    &["subagent_launch", "subagent_wait", "subagent_stop", "subagent_list"];
+    &["subagent_launch", "subagent_wait", "subagent_stop", "subagent_list", "subagent_send"];
+
+/// Task-board tools. Subagent role does not bind these (tool-set gate).
+pub const PLAN_TODO_TOOL_IDS: &[&str] = &["plan", "todo"];
 
 fn default_temperature() -> f64 {
     0.7

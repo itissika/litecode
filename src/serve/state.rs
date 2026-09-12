@@ -11,7 +11,6 @@ use crate::optional::EngineManager;
 use crate::runtime::RuntimeHandle;
 use crate::session::{SessionManager, WorkspaceWriteLease};
 use crate::terminal::{TerminalHub, install_hub};
-use crate::tools::subagent::SubagentHub;
 use crate::workspace::{WorkspaceService, WorkspaceWatcher};
 
 #[derive(Clone)]
@@ -23,7 +22,6 @@ pub struct ServeState {
     pub engine_manager: Arc<EngineManager>,
     pub workspace_engines: Arc<WorkspaceEngines>,
     pub terminal_hub: Arc<TerminalHub>,
-    pub subagent_hub: Arc<SubagentHub>,
     pub session_id: Option<String>,
     pub auth_token: Option<String>,
     pub workspace: Arc<WorkspaceService>,
@@ -113,7 +111,6 @@ impl ServeState {
         let workspace = WorkspaceService::new(project.clone())?;
         let terminal_hub = Arc::new(TerminalHub::new());
         install_hub(Arc::clone(&terminal_hub));
-        let subagent_hub = Arc::new(SubagentHub::new());
         let ide = IdeBaseHandle::new(
             Arc::clone(&workspace),
             Arc::clone(&workspace_engines),
@@ -130,7 +127,7 @@ impl ServeState {
             settings_revision,
             settings_writer.db_path().to_path_buf(),
         );
-        runtime.subagent_hub = Arc::clone(&subagent_hub);
+        let subagent_hub = Arc::clone(&runtime.subagent_hub);
         let runtime = Arc::new(RwLock::new(runtime));
         settings_writer.set_runtime(Arc::clone(&runtime));
         let sessions = Arc::new(SessionManager::from_data(turn_guard.clone(), session_data));
@@ -178,7 +175,6 @@ impl ServeState {
             engine_manager,
             workspace_engines,
             terminal_hub,
-            subagent_hub,
             session_id,
             auth_token,
             workspace,

@@ -1,43 +1,41 @@
 //! Agent-facing subagent job status text (running list + reminders).
+//!
+//! Stored facts are raw `turn/end.reason` values. Labels here are the agent
+//! client's rendering of those facts (same mapping humans get from `turn_error`).
 
-use super::hub::{ExitNotice, MAX_SUBAGENTS_PER_PARENT, RunningJob};
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-/// Compact elapsed label for the running list: "45s", "3m12s", "1h02m".
-fn elapsed_label(started_at_ms: i64, now_ms: i64) -> String {
-    let secs = now_ms.saturating_sub(started_at_ms).max(0) as u64 / 1000;
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m{:02}s", secs / 60, secs % 60)
-    } else {
-        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
-    }
-}
-
-pub fn format_running_list(jobs: &[RunningJob]) -> String {
-    let mut out = format!("running: {}/{}\n", jobs.len(), MAX_SUBAGENTS_PER_PARENT);
-    let now = now_ms();
-    for j in jobs {
-        out.push_str(&format!(
-            "- {}  {}  {}  {}\n",
-            j.id,
-            j.agent_name,
-            elapsed_label(j.started_at_ms, now),
-            j.prompt_preview
-        ));
-    }
-    out
-}
+pub use super::jobs::{format_exit_reminder, format_running_list};
+use super::jobs::{ExitNotice, RunningJob};
 
 pub fn guidance_line() -> &'static str {
     "Use subagent_list to list sessions. subagent_wait to wait. subagent_stop to cancel the current turn. session_search to read a child's transcript."
+}
+
+fn reason_output(notice: &ExitNotice) -> String {
+    match notice.reason.as_str() {
+        "max_steps" => {
+            const MSG: &str = "max steps reached";
+            if notice.final_text.is_empty() {
+                MSG.to_string()
+            } else if notice.final_text.contains(MSG) {
+                notice.final_text.clone()
+            } else {
+                format!("{}\n{MSG}", notice.final_text)
+            }
+        }
+        _ => notice.final_text.clone(),
+    }
+}
+
+fn append_output(out: &mut String, notice: &ExitNotice) {
+    let text = reason_output(notice);
+    if text.is_empty() {
+        return;
+    }
+    out.push_str("output:\n");
+    out.push_str(&text);
+    if !text.ends_with('\n') {
+        out.push('\n');
+    }
 }
 
 pub fn format_running_status(child_id: &str, jobs: &[RunningJob]) -> String {
@@ -50,24 +48,28 @@ pub fn format_running_status(child_id: &str, jobs: &[RunningJob]) -> String {
     out
 }
 
+pub fn format_sent_status(child_id: &str, turn_id: &str, jobs: &[RunningJob]) -> String {
+    let mut out = String::new();
+    out.push_str("status: running\n");
+    out.push_str(&format!("child_session_id: {child_id}\n"));
+    out.push_str(&format!("turn_id: {turn_id}\n"));
+    out.push_str(&format_running_list(jobs));
+    out.push_str(guidance_line());
+    out.push('\n');
+    out
+}
+
 pub fn format_completed_status(notice: &ExitNotice, jobs: &[RunningJob]) -> String {
     let mut out = String::new();
-    if notice.stopped {
-        out.push_str("status: cancelled\n");
-    } else if notice.ok {
-        out.push_str("status: completed\n");
-    } else {
-        out.push_str("status: failed\n");
+    match notice.reason.as_str() {
+        "cancelled" => out.push_str("status: cancelled\n"),
+        "completed" => out.push_str("status: completed\n"),
+        "unknown" => out.push_str("status: unknown\n"),
+        _ => out.push_str("status: failed\n"),
     }
     out.push_str(&format!("child_session_id: {}\n", notice.child_session_id));
     out.push_str(&format!("agent: {}\n", notice.agent_name));
-    if !notice.final_text.is_empty() {
-        out.push_str("output:\n");
-        out.push_str(&notice.final_text);
-        if !notice.final_text.ends_with('\n') {
-            out.push('\n');
-        }
-    }
+    append_output(&mut out, notice);
     out.push_str(&format_running_list(jobs));
     out.push_str(guidance_line());
     out.push('\n');
@@ -82,19 +84,15 @@ pub fn format_exited_status(notice: &ExitNotice, jobs: &[RunningJob]) -> String 
     if notice.stopped {
         out.push_str("stopped: true\n");
     }
-    if !notice.ok && !notice.stopped {
+    if notice.reason == "unknown" {
+        out.push_str("reason: unknown\n");
+    } else if !notice.ok && !notice.stopped {
         out.push_str("ok: false\n");
     }
     if !notice.prompt_preview.is_empty() {
         out.push_str(&format!("task: {}\n", notice.prompt_preview));
     }
-    if !notice.final_text.is_empty() {
-        out.push_str("output:\n");
-        out.push_str(&notice.final_text);
-        if !notice.final_text.ends_with('\n') {
-            out.push('\n');
-        }
-    }
+    append_output(&mut out, notice);
     out.push_str(&format_running_list(jobs));
     out.push_str(guidance_line());
     out.push('\n');
@@ -121,20 +119,22 @@ pub fn format_already_ended_status(notice: &ExitNotice, jobs: &[RunningJob]) -> 
     let mut out = String::from("status: already ended\n");
     out.push_str(&format!("child_session_id: {}\n", notice.child_session_id));
     out.push_str(&format!("agent: {}\n", notice.agent_name));
-    let outcome = if notice.stopped {
-        "cancelled"
-    } else if notice.ok {
-        "completed"
-    } else {
-        "failed"
+    let outcome = match notice.reason.as_str() {
+        "cancelled" => "cancelled",
+        "completed" => "completed",
+        "unknown" => "unknown",
+        _ => "failed",
     };
     out.push_str(&format!("outcome: {outcome}\n"));
     if !notice.prompt_preview.is_empty() {
         out.push_str(&format!("task: {}\n", notice.prompt_preview));
     }
-    if !notice.ok && !notice.stopped && !notice.final_text.is_empty() {
-        let reason: String = notice.final_text.chars().take(200).collect();
-        out.push_str(&format!("reason: {reason}\n"));
+    if outcome == "failed" {
+        let text = reason_output(notice);
+        if !text.is_empty() {
+            let reason: String = text.chars().take(200).collect();
+            out.push_str(&format!("reason: {reason}\n"));
+        }
     }
     out.push_str("hint: use subagent_wait to fetch the result.\n");
     out.push_str(&format_running_list(jobs));
@@ -151,41 +151,29 @@ pub fn format_unknown_task(child_id: &str, jobs: &[RunningJob]) -> String {
     msg
 }
 
-pub fn format_exit_reminder(notices: &[ExitNotice], jobs: &[RunningJob]) -> String {
-    let mut inner = String::new();
-    for n in notices {
-        if n.stopped {
-            inner.push_str(&format!(
-                "Subagent {} ({}) was stopped.\ntask: {}\n",
-                n.child_session_id, n.agent_name, n.prompt_preview
-            ));
-        } else if n.ok {
-            inner.push_str(&format!(
-                "Subagent {} ({}) finished.\ntask: {}\n",
-                n.child_session_id, n.agent_name, n.prompt_preview
-            ));
-        } else {
-            inner.push_str(&format!(
-                "Subagent {} ({}) failed.\ntask: {}\n",
-                n.child_session_id, n.agent_name, n.prompt_preview
-            ));
-        }
-        if !n.final_text.is_empty() {
-            let preview: String = n.final_text.chars().take(240).collect();
-            inner.push_str(&format!("output_preview: {preview}\n"));
-        }
-    }
-    inner.push_str(&format_running_list(jobs));
-    inner.push_str(
-        "Use session_search to read the child transcript. subagent_wait / subagent_stop for remaining workers.\n",
-    );
-    format!("<system-reminder>\n{}</system-reminder>", inner.trim_end())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::subagent::hub::RunningJob;
+
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
+    fn notice(reason: &str, text: &str) -> ExitNotice {
+        ExitNotice {
+            child_session_id: "child-a".into(),
+            parent_session_id: "p1".into(),
+            agent_name: "reviewer".into(),
+            prompt_preview: "review this".into(),
+            reason: reason.into(),
+            ok: reason == "completed",
+            stopped: reason == "cancelled",
+            final_text: text.into(),
+        }
+    }
 
     #[test]
     fn running_status_includes_id_and_guidance() {
@@ -200,13 +188,23 @@ mod tests {
         assert!(got.contains("- child-a  reviewer  "), "got: {got}");
         assert!(got.contains("  review this\n"), "got: {got}");
         assert!(got.contains(guidance_line()));
+        assert!(got.contains("running: 1\n"), "got: {got}");
+        assert!(!got.contains("running: 1/"), "got: {got}");
     }
 
     #[test]
-    fn elapsed_label_is_compact() {
-        assert_eq!(elapsed_label(0, 0), "0s");
-        assert_eq!(elapsed_label(0, 45_000), "45s");
-        assert_eq!(elapsed_label(0, 192_000), "3m12s");
-        assert_eq!(elapsed_label(0, 3_720_000), "1h02m");
+    fn max_steps_renders_human_reason() {
+        let got = format_exited_status(&notice("max_steps", ""), &[]);
+        assert!(got.contains("ok: false"), "{got}");
+        assert!(got.contains("max steps reached"), "{got}");
+        assert!(!got.contains("stopped: true"), "{got}");
+    }
+
+    #[test]
+    fn unknown_does_not_render_as_failed() {
+        let got = format_exited_status(&notice("unknown", ""), &[]);
+        assert!(got.contains("reason: unknown"), "{got}");
+        assert!(!got.contains("ok: false"), "{got}");
+        assert!(!got.contains("status: failed"), "{got}");
     }
 }

@@ -9,11 +9,24 @@ use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tools::subagent::status;
 use crate::tools::subagent::{
-    MAX_SUBAGENTS_PER_PARENT, SubagentHub, SubagentStopTool, SubagentWaitTool, WaitOutcome,
+    SubagentJobBoard, SubagentStopTool, SubagentWaitTool, WaitOutcome,
 };
 use crate::types::ToolSignalLevel;
 
-fn exec_wait(hub: &Arc<SubagentHub>, sid: &str, input: serde_json::Value) -> String {
+/// A live session manager: the stop tool cancels through the session, and the
+/// job registry is a standalone board (same type the hub holds).
+fn test_sessions() -> Arc<crate::session::manager::SessionManager> {
+    Arc::new(crate::session::manager::SessionManager::new_for_test(
+        Arc::new(crate::config::TurnGuard::new()),
+        String::new(),
+    ))
+}
+
+fn test_jobs() -> Arc<SubagentJobBoard> {
+    Arc::new(SubagentJobBoard::new())
+}
+
+fn exec_wait(hub: &Arc<SubagentJobBoard>, sid: &str, input: serde_json::Value) -> String {
     let tool = SubagentWaitTool::new(Arc::clone(hub));
     tool.set_active_session(sid.to_string());
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -37,7 +50,7 @@ fn exec_wait(hub: &Arc<SubagentHub>, sid: &str, input: serde_json::Value) -> Str
 
 #[test]
 fn wait_timeout_lists_running() {
-    let hub = Arc::new(SubagentHub::new());
+    let hub = Arc::new(SubagentJobBoard::new());
     hub.insert_running_for_test("p1", "child-a", "reviewer", "review this");
     let text = exec_wait(&hub, "p1", serde_json::json!({"id": "child-a", "sec": 1}));
     let jobs = hub.running("p1");
@@ -47,7 +60,7 @@ fn wait_timeout_lists_running() {
 
 #[test]
 fn wait_sees_finish() {
-    let hub = Arc::new(SubagentHub::new());
+    let hub = Arc::new(SubagentJobBoard::new());
     hub.insert_running_for_test("p1", "child-a", "reviewer", "go");
     hub.finish("child-a", true, false, "done".into());
     let text = exec_wait(&hub, "p1", serde_json::json!({"id": "child-a", "sec": 5}));
@@ -58,7 +71,7 @@ fn wait_sees_finish() {
 
 #[test]
 fn wait_cancel_does_not_stop() {
-    let hub = Arc::new(SubagentHub::new());
+    let hub = Arc::new(SubagentJobBoard::new());
     hub.insert_running_for_test("p1", "child-a", "reviewer", "go");
     let tool = SubagentWaitTool::new(Arc::clone(&hub));
     let cancel = CancellationToken::new();
@@ -86,8 +99,9 @@ fn wait_cancel_does_not_stop() {
 
 #[test]
 fn stop_unknown_id() {
-    let hub = Arc::new(SubagentHub::new());
-    let tool = SubagentStopTool::new(Arc::clone(&hub));
+    let sessions = test_sessions();
+    let hub = test_jobs();
+    let tool = SubagentStopTool::new(Arc::clone(&sessions), Arc::clone(&hub));
     tool.set_active_session("p1".into());
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -111,10 +125,11 @@ fn stop_unknown_id() {
 
 #[test]
 fn stop_on_finished_reports_outcome_not_stopped() {
-    let hub = Arc::new(SubagentHub::new());
+    let sessions = test_sessions();
+    let hub = test_jobs();
     hub.insert_running_for_test("p1", "child-a", "reviewer", "go");
     hub.finish("child-a", true, false, "done".into());
-    let tool = SubagentStopTool::new(Arc::clone(&hub));
+    let tool = SubagentStopTool::new(Arc::clone(&sessions), Arc::clone(&hub));
     tool.set_active_session("p1".into());
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -147,7 +162,7 @@ fn stop_on_finished_reports_outcome_not_stopped() {
 
 #[test]
 fn parent_isolation() {
-    let hub = Arc::new(SubagentHub::new());
+    let hub = Arc::new(SubagentJobBoard::new());
     hub.insert_running_for_test("p1", "child-a", "reviewer", "a");
     hub.insert_running_for_test("p2", "child-b", "reviewer", "b");
     let out = hub.wait(
@@ -163,32 +178,34 @@ fn parent_isolation() {
 }
 
 #[test]
-fn slot_cap_fail_closed() {
-    let hub = SubagentHub::new();
-    for i in 0..MAX_SUBAGENTS_PER_PARENT {
-        hub.insert_running_for_test("p1", &format!("c{i}"), "reviewer", "x");
-    }
-    let overflow = hub.try_acquire_slot("p1").unwrap_err();
-    assert!(overflow.contains("capacity exceeded"), "err: {overflow}");
-    assert!(
-        overflow.contains(&format!(
-            "running: {MAX_SUBAGENTS_PER_PARENT}/{MAX_SUBAGENTS_PER_PARENT}"
-        )),
-        "capacity error must list the running children: {overflow}"
-    );
-}
-
-#[test]
 fn stop_then_wait_sees_exited() {
-    let hub = Arc::new(SubagentHub::new());
+    let sessions = test_sessions();
+    let hub = test_jobs();
     hub.insert_running_for_test("p1", "child-a", "reviewer", "go");
     let hub_finish = Arc::clone(&hub);
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(30));
         hub_finish.finish("child-a", false, true, "stopped".into());
     });
-    let notice = hub.stop("p1", "child-a").expect("stop");
-    assert_eq!(notice.child_session_id, "child-a");
+    let tool = SubagentStopTool::new(Arc::clone(&sessions), Arc::clone(&hub));
+    tool.set_active_session("p1".into());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let result = rt.block_on(tool.execute(
+        serde_json::json!({"id": "child-a"}),
+        ToolExecutionContext {
+            path_mode: crate::workspace::ToolPathMode::All,
+            workspace_root: std::path::PathBuf::from("."),
+            call_id: "s".into(),
+            cancel: CancellationToken::new(),
+            output_limit: usize::MAX,
+            session_id: "p1".into(),
+            session: None,
+        },
+    ));
+    assert!(result.content.contains("stopping"), "{}", result.content);
     let text = exec_wait(&hub, "p1", serde_json::json!({"id": "child-a", "sec": 1}));
     assert!(text.contains("status: exited") || text.contains("not found"));
 }

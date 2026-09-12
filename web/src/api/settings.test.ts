@@ -61,8 +61,14 @@ describe("settings helpers", () => {
       kind: "core",
       origin: "builtin",
     };
+    const plan: AvailableTool = {
+      id: "plan",
+      kind: "core",
+      origin: "builtin",
+    };
     expect(isSubagentBindableTool(webfetch)).toBe(true);
     expect(isSubagentBindableTool(launch)).toBe(false);
+    expect(isSubagentBindableTool(plan)).toBe(false);
     expect((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_launch")).toBe(true);
     expect((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_wait")).toBe(true);
     expect((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_stop")).toBe(true);

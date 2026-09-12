@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::config::schema::{AgentToolBinding, SUBAGENT_SERIES_TOOL_IDS};
+use crate::config::schema::{AgentToolBinding, PLAN_TODO_TOOL_IDS, SUBAGENT_SERIES_TOOL_IDS};
 
 pub fn normalize_agent_profile(agent_id: &str, profile: &mut crate::config::schema::AgentProfile) {
     use crate::config::schema::AgentRole;
@@ -18,7 +18,14 @@ pub fn normalize_agent_profile(agent_id: &str, profile: &mut crate::config::sche
     }
 
     if profile.role == AgentRole::Subagent {
+        strip_plan_todo_bindings(&mut profile.tools);
         strip_subagent_series_bindings(&mut profile.tools);
+    }
+}
+
+pub fn strip_plan_todo_bindings(tools: &mut HashMap<String, AgentToolBinding>) {
+    for tool_id in PLAN_TODO_TOOL_IDS {
+        tools.remove(*tool_id);
     }
 }
 

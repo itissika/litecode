@@ -22,7 +22,7 @@ use crate::ide_base::IdeBaseHandle;
 use crate::optional::EngineManager;
 use crate::runtime::RuntimeHandle;
 use crate::session::manager::SessionManager;
-use crate::tools::subagent::{LaunchSpec, SpawnDeps, SubagentHub, WaitOutcome};
+use crate::tools::subagent::{LaunchSpec, SpawnDeps, WaitOutcome, spawn_child_job};
 
 /// Provider on a closed local port: any LLM call fails fast, and the error
 /// text names the port — which lets tests assert WHICH provider was called.
@@ -102,7 +102,6 @@ fn settings_with_explore_model(explore_model: &str) -> GlobalSettings {
 struct SpawnEnv {
     _dir: tempfile::TempDir,
     sessions: Arc<SessionManager>,
-    hub: Arc<SubagentHub>,
     parent: String,
     writer: SettingsWriter,
     revision: Arc<AtomicU64>,
@@ -158,11 +157,11 @@ async fn spawn_env(explore_model: &str) -> SpawnEnv {
         Arc::clone(&revision),
         db_path,
     );
+    runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
 
     SpawnEnv {
         _dir: dir,
         sessions,
-        hub: Arc::new(SubagentHub::new()),
         parent,
         writer,
         revision,
@@ -189,12 +188,10 @@ async fn spawn_and_wait(
         model_id_override: model_id.map(str::to_string),
         max_steps_override: Some(3),
     };
-    let child = env
-        .hub
-        .spawn(&env.parent, "call-contract", spec, deps)
+    let child = spawn_child_job(&deps, &env.parent, "call-contract", spec)
         .await
         .expect("spawn");
-    let outcome = env.hub.wait(
+    let outcome = env.runtime.subagent_hub.jobs.wait(
         &env.parent,
         Some(&child),
         Some(Duration::from_secs(30)),

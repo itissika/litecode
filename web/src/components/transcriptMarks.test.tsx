@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readableCompactSummary } from "./transcriptMarks";
+import { jobExitDetail, readableCompactSummary } from "./transcriptMarks";
 
 describe("readableCompactSummary", () => {
   it("strips the conversation summary label prefix", () => {
@@ -17,5 +17,28 @@ describe("readableCompactSummary", () => {
 
   it("returns clean text untouched", () => {
     expect(readableCompactSummary("Plain summary")).toBe("Plain summary");
+  });
+});
+
+describe("jobExitDetail", () => {
+  it("reads the exit line of the background-exit reminder", () => {
+    expect(
+      jobExitDetail(
+        "<system-reminder>\nBackground bash bg_a exited with code 3.\noutput_file: .litecode/bash/bg_a.output\ncommand: sleep 8\n</system-reminder>",
+      ),
+    ).toBe("bg_a · exit code 3");
+  });
+
+  it("reads the user-Kill variant", () => {
+    expect(
+      jobExitDetail(
+        "<system-reminder>\nThe user stopped background bash bg_b (Kill).\nexit_code: 137\noutput_file: .litecode/bash/bg_b.output\n</system-reminder>",
+      ),
+    ).toBe("bg_b · stopped by user (Kill)");
+  });
+
+  it("returns undefined when the body carries no exit line", () => {
+    expect(jobExitDetail("plain reminder body")).toBeUndefined();
+    expect(jobExitDetail("")).toBeUndefined();
   });
 });

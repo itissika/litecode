@@ -3,7 +3,6 @@ import { FileArrowUpIcon } from "@phosphor-icons/react";
 
 import {
   functionCallOutputText,
-  latestAssistantText,
   normalizeToolFilePath,
   parseFunctionArguments,
 } from "../api/adapter";
@@ -11,12 +10,8 @@ import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
 import { formatElapsed, matchJob } from "../lib/bashLive";
 import { bashKill } from "../lib/litecodeBash";
 import { useBashStore } from "../stores/bashStore";
-import { useConnectionStore } from "../stores/connectionStore";
-import { displayMessages, useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
-import { agentColor } from "./agentIdentity";
 import { FoldCard, FOLDCARD_HEADER_TONE } from "./FoldCard";
-import { SubagentStatusIcon } from "./SubagentStatusIcon";
 import { ToolContentView } from "./ToolContentView";
 import { ToolIcon } from "./ToolIcon";
 import { deriveToolStatus } from "./toolCallStatus";
@@ -30,7 +25,7 @@ interface ToolCallCardProps {
   streaming?: boolean;
   projectRoot?: string | null;
   onOpenFile: (path: string) => void;
-  /** Owning session id — needed by per-tool views (e.g. subagent) to resolve nested state. */
+  /** Owning session id — passed through to per-tool views and bash-job lookups. */
   sessionId?: string;
   /** Stable FoldCard id for virtual-list remount persistence. */
   foldCardId?: string;
@@ -83,12 +78,9 @@ export function ToolCallCard({
     };
   }, [isEdit, input]);
 
-  // subagent_launch gets an agent-led header: the leading icon is the agent's
-  // own presence glyph in its accent colour (SubagentStatusIcon — pop on
-  // running entry, breathing glow while running, settle pop on success), and
-  // the label is just the agent name. Its body (Task brief + process list) is
-  // rendered by SubagentToolView.
-  const isSubagent = toolName === "subagent_launch";
+  // subagent_launch is rendered as a single-line inline row (InlineToolRow); it
+  // never reaches this card, so there is no agent-led header / child-session
+  // coupling here any more.
   const isBash = toolName === "bash";
   const bashJob = useBashStore((s) => {
     if (!isBash || !sessionId) return undefined;
@@ -101,74 +93,6 @@ export function ToolCallCard({
     const t = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(t);
   }, [bashJob]);
-  const subagentAgent =
-    isSubagent && input && typeof input === "object" && !Array.isArray(input)
-      ? typeof (input as Record<string, unknown>).agent === "string"
-        ? ((input as Record<string, unknown>).agent as string)
-        : undefined
-      : undefined;
-  const subagentChildId = useMessageStore((s) =>
-    isSubagent && call.call_id && sessionId
-      ? s.bySession.get(sessionId)?.subagentBindings?.[call.call_id]
-      : undefined,
-  );
-  const subagentRunState = useTurnStore((s) =>
-    subagentChildId ? s.byId.get(subagentChildId)?.runState ?? "idle" : "idle",
-  );
-  const subagentColor = subagentAgent ? agentColor(subagentAgent) : undefined;
-
-  // Header progress summary: while the child runs, show its latest assistant
-  // text (single line, truncating) so the user can follow what it is doing;
-  // once the card is sealed, swap to a compact status word instead of the
-  // whole result.
-  const subagentSealed = !streaming;
-  const subagentStatusText =
-    subagentSealed && status !== "unknown"
-      ? status === "failed"
-        ? "failed"
-        : "completed"
-      : null;
-  const subagentLiveText = useMessageStore((s) =>
-    isSubagent && subagentChildId
-      ? latestAssistantText(displayMessages(s.bySession.get(subagentChildId)))
-      : "",
-  );
-  const subagentSummary =
-    subagentStatusText ?? (subagentLiveText ? subagentLiveText : null);
-
-  // The card owns the child-session subscription for as long as it is mounted
-  // (NOT only while the body is expanded): the header presence icon derives
-  // running/breathing from the child turn state, so the label must stay
-  // accurate even when the FoldCard is collapsed. The body SubagentToolView
-  // only reads the same store slices. Cleanup mirrors the old body-owned
-  // lifecycle: unsubscribe and drop the child slices (messages, turn, bash).
-  const connState = useConnectionStore((s) => s.state);
-  useEffect(() => {
-    if (!isSubagent || !subagentChildId || connState !== "connected") return;
-    let cancelled = false;
-    let attempts = 0;
-    const trySubscribe = () => {
-      if (cancelled) return;
-      useConnectionStore
-        .getState()
-        .ensureSubscribe(subagentChildId)
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "";
-          if (!cancelled && /session.*not found/i.test(msg) && attempts < 5) {
-            attempts += 1;
-            window.setTimeout(trySubscribe, 400 * attempts);
-          }
-        });
-    };
-    trySubscribe();
-    return () => {
-      cancelled = true;
-      useConnectionStore.getState().unsubscribeSession(subagentChildId);
-      useMessageStore.getState().reset(subagentChildId);
-      useTurnStore.getState().resetTurn(subagentChildId);
-      useBashStore.getState().reset(subagentChildId);
-    };
-  }, [isSubagent, subagentChildId, connState]);
 
   // Action buttons are driven by tool type (not a universal copy). Today only
   // file-editing tools expose an "Open file" action; more can be added per
@@ -206,106 +130,69 @@ export function ToolCallCard({
   return (
     <FoldCard
       id={foldCardId}
-      icon={
-        isSubagent ? (
-          <SubagentStatusIcon
-            agent={subagentAgent}
-            live={streaming}
-            status={status}
-            runState={subagentRunState}
-          />
-        ) : (
-          <ToolIcon name={toolName} status={status} streaming={streaming} />
-        )
-      }
+      icon={<ToolIcon name={toolName} status={status} streaming={streaming} />}
       label={
-        isSubagent ? (
-          <span className="flex min-w-0 flex-1 items-center gap-2">
-            <span
-              className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-2xs ${
-                subagentAgent ? "" : "text-(--_dk-text-muted)"
-              }`}
-              style={subagentColor ? { color: subagentColor } : undefined}
-            >
-              {subagentAgent ?? "subagent"}
-            </span>
-            {subagentSummary ? (
-              <span
-                className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-dk-2xs ${
-                  subagentStatusText === "failed"
-                    ? "text-(--_dk-red-500)"
-                    : subagentStatusText
-                      ? "text-(--_dk-emerald-500)"
-                      : "text-(--_dk-text-muted)"
-                }`}
-              >
-                {subagentSummary}
-              </span>
-            ) : null}
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          <span className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-xs font-medium text-(--_dk-text-primary)`}>
+            {toolName}
           </span>
-        ) : (
-          <span className="flex min-w-0 flex-1 items-center gap-2">
-            <span className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-xs font-medium text-(--_dk-text-primary)`}>
-              {toolName}
-            </span>
-            {isEdit && editDiff ? (
-              <>
-                <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}>
-                  {editDiff.filePath ?? "(unknown file)"}
-                </span>
-                <span className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-2xs`}>
-                  <span className="text-(--_dk-emerald-500)">+{editDiff.added}</span>
-                  <span className="text-(--_dk-red-500)">−{editDiff.removed}</span>
-                </span>
-              </>
-            ) : (
-              inputSummary && (
-                <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}>
-                  {inputSummary}
-                </span>
-              )
-            )}
-            {actions.length > 0 && (
-              <span className="ml-auto flex shrink-0 items-center gap-1">
-                {actions.map((action) => (
-                  <button
-                    key={action.id}
-                    type="button"
-                    onClick={(e) => {
-                      // The FoldCard header is a single clickable region that
-                      // toggles the card; stop the click here so the action
-                      // (e.g. Open file) doesn't bubble up and collapse/expand
-                      // the card instead of firing.
-                      e.stopPropagation();
-                      handleAction(action);
-                    }}
-                    className="inline-flex items-center gap-1 text-dk-xs text-(--_dk-text-muted) hover:brightness-110 active:brightness-90"
-                  >
-                    <FileArrowUpIcon size={12} aria-hidden />
-                    {action.label}
-                  </button>
-                ))}
+          {isEdit && editDiff ? (
+            <>
+              <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}>
+                {editDiff.filePath ?? "(unknown file)"}
               </span>
-            )}
-            {bashJob && (
-              <span className="ml-auto flex shrink-0 items-center gap-2">
-                <span className={`${FOLDCARD_HEADER_TONE} font-mono text-dk-2xs text-(--_dk-text-muted)`}>
-                  {formatElapsed(now - bashJob.started_at_ms)}
-                </span>
+              <span className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-2xs`}>
+                <span className="text-(--_dk-emerald-500)">+{editDiff.added}</span>
+                <span className="text-(--_dk-red-500)">−{editDiff.removed}</span>
+              </span>
+            </>
+          ) : (
+            inputSummary && (
+              <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}>
+                {inputSummary}
+              </span>
+            )
+          )}
+          {actions.length > 0 && (
+            <span className="ml-auto flex shrink-0 items-center gap-1">
+              {actions.map((action) => (
                 <button
+                  key={action.id}
                   type="button"
                   onClick={(e) => {
+                    // The FoldCard header is a single clickable region that
+                    // toggles the card; stop the click here so the action
+                    // (e.g. Open file) doesn't bubble up and collapse/expand
+                    // the card instead of firing.
                     e.stopPropagation();
-                    void bashKill(bashJob.id);
+                    handleAction(action);
                   }}
-                  className="btn-danger btn-xs"
+                  className="inline-flex items-center gap-1 text-dk-xs text-(--_dk-text-muted) hover:brightness-110 active:brightness-90"
                 >
-                  Kill
+                  <FileArrowUpIcon size={12} aria-hidden />
+                  {action.label}
                 </button>
+              ))}
+            </span>
+          )}
+          {bashJob && (
+            <span className="ml-auto flex shrink-0 items-center gap-2">
+              <span className={`${FOLDCARD_HEADER_TONE} font-mono text-dk-2xs text-(--_dk-text-muted)`}>
+                {formatElapsed(now - bashJob.started_at_ms)}
               </span>
-            )}
-          </span>
-        )
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void bashKill(bashJob.id);
+                }}
+                className="btn-danger btn-xs"
+              >
+                Kill
+              </button>
+            </span>
+          )}
+        </span>
       }
       defaultOpen={false}
       streaming={streaming}

@@ -3,52 +3,124 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { functionCallOutputText } from "../../api/adapter";
 import { bashTail } from "../../lib/litecodeBash";
-import { isRunningStatusText, matchJob } from "../../lib/bashLive";
+import { matchJob, parseBashId } from "../../lib/bashLive";
 import { useBashStore } from "../../stores/bashStore";
 import type { ToolViewProps } from "./registry";
 
-interface ParsedBashOutput {
-  stdout: string;
-  stderr: string;
-  exitCode: string | null;
-}
+/**
 
 /**
- * Backend serializes bash output as a single string:
- *   <stdout>\nstderr:\n<stderr>\nexit_code: N
- * Split it back apart for per-stream coloring. The stderr block and exit_code
- * line are optional.
+ * The REAL backend shapes (see `src/tools/bash_status.rs`):
+ *
+ *  - running view   — `status: running` / `bash_id: …` / `output_file: …` /
+ *                     the running list / guidance. NO captured output.
+ *  - completed view — `exit_code: N` (or `status: cancelled`) FIRST, then either
+ *                     the output itself (small capture) or a frozen window:
+ *                     `bytes: N`, `output_file: …`, `truncated_on_disk: true`,
+ *                     a `[head … + tail … of N bytes]` note, then
+ *                     `--- head ---` <head> `--- tail ---` <tail>.
+ *
+ * There is no `stderr:` section anywhere in the format: the backend tees the
+ * merged stdout+stderr stream, so per-stream colouring cannot be derived from
+ * the text. The two-tone design is kept for the real sections instead — the
+ * pinned head window, an amber trailing window, and the exit-code footer.
  */
+interface ParsedBashOutput {
+  /** `status: running` — a live background job; the text carries no output. */
+  running: boolean;
+  /** `status: cancelled`. */
+  cancelled: boolean;
+  /** Leading `exit_code: N` of a completed view. */
+  exitCode: string | null;
+  /** Head window — the whole captured output when it was never frozen. */
+  head: string;
+  /** Trailing window; only present when the capture froze into head+tail. */
+  tail: string | null;
+  /** `bytes: N` of a frozen capture. */
+  bytes: number | null;
+  /** `output_file:` pointer into the workspace. */
+  outputFile: string | null;
+  truncatedOnDisk: boolean;
+}
+
+const HEAD_MARK = "--- head ---";
+const TAIL_MARK = "--- tail ---";
+
+function emptyParsed(): ParsedBashOutput {
+  return {
+    running: false,
+    cancelled: false,
+    exitCode: null,
+    head: "",
+    tail: null,
+    bytes: null,
+    outputFile: null,
+    truncatedOnDisk: false,
+  };
+}
+
+/** Line-based parse of the backend's bash result document. */
 function parseBashOutput(raw: string): ParsedBashOutput {
-  let body = raw;
-  let exitCode: string | null = null;
+  const out = emptyParsed();
+  const lines = raw.split("\n");
+  let i = 0;
 
-  const exitMatch = /\nexit_code:\s*(-?\d+)\s*$/.exec(body);
-  if (exitMatch) {
-    exitCode = exitMatch[1];
-    body = body.slice(0, exitMatch.index);
+  const status = /^status:\s*(\S+)/.exec(lines[i] ?? "");
+  if (status) {
+    out.running = status[1] === "running";
+    out.cancelled = status[1] === "cancelled";
+    i += 1;
+  }
+  const code = /^exit_code:\s*(-?\d+)/.exec(lines[i] ?? "");
+  if (code) {
+    out.exitCode = code[1]!;
+    i += 1;
   }
 
-  const marker = "\nstderr:\n";
-  const idx = body.indexOf(marker);
-  if (idx >= 0) {
-    return {
-      stdout: body.slice(0, idx),
-      stderr: body.slice(idx + marker.length),
-      exitCode,
-    };
+  if (out.running) {
+    // Status document only: keep the durable pointer to the full log.
+    for (; i < lines.length; i += 1) {
+      const file = /^output_file:\s*(\S+)/.exec(lines[i]!);
+      if (file) out.outputFile = file[1]!;
+    }
+    return out;
   }
-  return { stdout: body, stderr: "", exitCode };
+
+  const headAt = lines.indexOf(HEAD_MARK, i);
+  if (headAt >= 0) {
+    for (; i < headAt; i += 1) {
+      const line = lines[i]!;
+      const bytes = /^bytes:\s*(\d+)/.exec(line);
+      if (bytes) out.bytes = Number(bytes[1]);
+      const file = /^output_file:\s*(\S+)/.exec(line);
+      if (file) out.outputFile = file[1]!;
+      if (line.startsWith("truncated_on_disk:")) out.truncatedOnDisk = true;
+    }
+    const tailAt = lines.indexOf(TAIL_MARK, headAt + 1);
+    out.head = stripTrailingNewline(
+      lines.slice(headAt + 1, tailAt < 0 ? undefined : tailAt).join("\n"),
+    );
+    out.tail = stripTrailingNewline(
+      tailAt < 0 ? "" : lines.slice(tailAt + 1).join("\n"),
+    );
+    return out;
+  }
+
+  // Small capture: everything after the leading line(s) is the output.
+  out.head = stripTrailingNewline(lines.slice(i).join("\n"));
+  return out;
+}
+
+function stripTrailingNewline(text: string): string {
+  return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
 function PinnedOutput({
   text,
   failed,
-  footer,
 }: {
   text: string;
   failed: boolean;
-  footer?: string;
 }) {
   const preRef = useRef<HTMLPreElement>(null);
   // Bash output is a fixed tail window by design (no scroll-up): always pin to
@@ -59,23 +131,16 @@ function PinnedOutput({
   }, [text]);
 
   return (
-    <>
-      <div className="h-36 overflow-hidden">
-        <pre
-          ref={preRef}
-          className={`h-full overflow-hidden whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-dk-sm leading-relaxed ${
-            failed ? "text-(--_dk-red-500)" : "text-(--_dk-text-secondary)"
-          }`}
-        >
-          {text}
-        </pre>
-      </div>
-      {footer !== undefined && (
-        <span className="block border-t border-(--_dk-line-visible) px-2 py-1 text-dk-xs text-(--_dk-text-muted)">
-          {footer}
-        </span>
-      )}
-    </>
+    <div className="h-36 overflow-hidden">
+      <pre
+        ref={preRef}
+        className={`h-full overflow-hidden whitespace-pre-wrap break-words px-2 py-1.5 font-mono text-dk-sm leading-relaxed ${
+          failed ? "text-(--_dk-red-500)" : "text-(--_dk-text-secondary)"
+        }`}
+      >
+        {text}
+      </pre>
+    </div>
   );
 }
 
@@ -129,8 +194,8 @@ function CommandHeader({ command }: { command: string }) {
 }
 
 /**
- * Bash tool body: command + stdout/stderr in one container, or a live tee tail
- * overlay while the process is still running after the tool result sealed.
+ * Bash tool body: command + the captured output, or a live tee tail overlay
+ * while the process is still running after the tool result sealed.
  */
 export function BashToolView({ status, input, output, call_id, sessionId }: ToolViewProps) {
   const obj =
@@ -149,6 +214,11 @@ export function BashToolView({ status, input, output, call_id, sessionId }: Tool
     return matchJob(jobs, call_id, rawOutput);
   });
 
+  // The tee window is polled per BASH ID, not per job object: the id survives the
+  // job leaving the `/bash/jobs` snapshot, so the poll keeps running to the real
+  // process exit instead of freezing on the last sample taken before it vanished.
+  const bashId = job?.id ?? parseBashId(rawOutput);
+
   const [tail, setTail] = useState<string | null>(null);
   const [tailMeta, setTailMeta] = useState<{
     alive: boolean;
@@ -156,15 +226,17 @@ export function BashToolView({ status, input, output, call_id, sessionId }: Tool
   }>({ alive: true, exitCode: null });
 
   useEffect(() => {
-    if (!job) return;
+    if (!bashId) return;
     let cancelled = false;
     let interval = 0;
     const poll = async (): Promise<boolean> => {
       try {
-        const r = await bashTail(job.id);
+        const r = await bashTail(bashId);
         if (cancelled) return false;
-        setTail((prev) => (prev === r.text ? prev : r.text));
         setTailMeta({ alive: r.alive, exitCode: r.exit_code });
+        // Exit: drop the overlay so the card settles on the sealed document
+        // (which points at the full log) plus the real exit code below.
+        setTail(r.alive ? r.text : null);
         return r.alive;
       } catch {
         return true;
@@ -182,20 +254,44 @@ export function BashToolView({ status, input, output, call_id, sessionId }: Tool
       cancelled = true;
       if (interval) window.clearInterval(interval);
     };
-  }, [job?.id]);
+  }, [bashId]);
 
-  const runningSealed = isRunningStatusText(rawOutput);
-  const showLive = tail !== null && (Boolean(job) || runningSealed);
-  const liveFooter =
-    job || tailMeta.alive
-      ? undefined
-      : tailMeta.exitCode !== null
-        ? `exited  exit_code: ${tailMeta.exitCode}`
-        : "exited";
+  // Live overlay is bounded by the PROCESS, not by the job snapshot: `tail` is
+  // null until the first sample and is cleared the moment the poll reports exit.
+  const showLive = tail !== null && tailMeta.alive;
 
   const hasSealedOutput =
-    parsed &&
-    (parsed.stdout || parsed.stderr || parsed.exitCode !== null);
+    parsed !== null &&
+    (parsed.head !== "" ||
+      parsed.tail !== null ||
+      parsed.exitCode !== null ||
+      parsed.cancelled ||
+      parsed.outputFile !== null);
+
+  // Settled footer: the sealed document's own verdict first, then whatever the
+  // poll learned before the overlay ended (a background job's sealed text has
+  // no exit code — the poll is the only source of the real outcome).
+  let footer: string | undefined;
+  let footerTone = "text-(--_dk-text-muted)";
+  if (parsed?.cancelled) {
+    footer = "status: cancelled";
+    footerTone = "text-(--_dk-amber-500)";
+  } else if (parsed && parsed.exitCode !== null) {
+    footer = `exit_code: ${parsed.exitCode}`;
+    footerTone =
+      parsed.exitCode === "0"
+        ? "text-(--_dk-text-muted)"
+        : "text-(--_dk-amber-500)";
+  } else if (tailMeta.alive === false) {
+    footer =
+      tailMeta.exitCode === null
+        ? "exited"
+        : `exited  exit_code: ${tailMeta.exitCode}`;
+    footerTone =
+      tailMeta.exitCode === 0
+        ? "text-(--_dk-text-muted)"
+        : "text-(--_dk-amber-500)";
+  }
 
   if (command === undefined && !showLive && !hasSealedOutput) {
     return null;
@@ -210,27 +306,48 @@ export function BashToolView({ status, input, output, call_id, sessionId }: Tool
       {command !== undefined && <CommandHeader command={command} />}
 
       {showLive ? (
-        <PinnedOutput text={tail ?? ""} failed={failed} footer={liveFooter} />
+        <PinnedOutput text={tail ?? ""} failed={failed} />
       ) : (
         hasSealedOutput && (
           <>
-            {parsed.stdout && (
-              <PinnedOutput text={parsed.stdout} failed={failed} />
+            {parsed!.head && (
+              <PinnedOutput text={parsed!.head} failed={failed} />
             )}
-            {parsed.stderr && (
-              <pre className="whitespace-pre-wrap break-words border-t border-(--_dk-line-visible) bg-(--_dk-amber-500)/5 px-2 py-1.5 text-(--_dk-amber-500)">
-                {parsed.stderr}
-              </pre>
+            {parsed!.tail !== null && (
+              <>
+                <span
+                  className="block border-t border-(--_dk-line-visible) px-2 py-1 text-dk-xs text-(--_dk-text-muted)"
+                  data-testid="bash-window-note"
+                >
+                  windowed head + tail
+                  {parsed!.bytes !== null ? ` · ${parsed!.bytes} bytes` : ""}
+                  {parsed!.outputFile ? ` · ${parsed!.outputFile}` : ""}
+                  {parsed!.truncatedOnDisk ? " · truncated on disk" : ""}
+                </span>
+                {parsed!.tail && (
+                  <pre
+                    className="max-h-36 overflow-hidden whitespace-pre-wrap break-words border-t border-(--_dk-line-visible) bg-(--_dk-amber-500)/5 px-2 py-1.5 text-(--_dk-amber-500)"
+                    data-testid="bash-tail"
+                  >
+                    {parsed!.tail}
+                  </pre>
+                )}
+              </>
             )}
-            {parsed.exitCode !== null && (
+            {!parsed!.head && parsed!.outputFile && (
               <span
-                className={`block border-t border-(--_dk-line-visible) px-2 py-1 text-dk-xs ${
-                  parsed.exitCode === "0"
-                    ? "text-(--_dk-text-muted)"
-                    : "text-(--_dk-amber-500)"
-                }`}
+                className="block px-2 py-1.5 text-dk-xs text-(--_dk-text-muted)"
+                data-testid="bash-output-file"
               >
-                exit_code: {parsed.exitCode}
+                {parsed!.outputFile}
+              </span>
+            )}
+            {footer !== undefined && (
+              <span
+                className={`block border-t border-(--_dk-line-visible) px-2 py-1 text-dk-xs ${footerTone}`}
+                data-testid="bash-footer"
+              >
+                {footer}
               </span>
             )}
           </>

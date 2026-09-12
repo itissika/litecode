@@ -71,3 +71,6 @@ dev/
 
 # Stray debug / scratch artifacts (never commit)
 .tmp_*
+
+# Orchestrator scratch board (session-local, never commit)
+FRONTEND_REWORK_BOARD.md

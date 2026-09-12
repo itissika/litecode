@@ -5,16 +5,144 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::ResolvedConfig;
 use crate::config::schema::AgentRole;
+use crate::config::workspace::workspace_root_from_paths;
 use crate::context_pipeline::Context;
-use crate::runtime::RuntimeHandle;
+use crate::runtime::{RuntimeHandle, TurnOptions};
 use crate::session::manager::SessionManager;
 use crate::session::store::Session;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
 
-use super::hub::{LaunchSpec, SpawnDeps, SubagentHub};
+use super::jobs::prompt_preview;
 use super::status;
+use super::turn::start_turn_like_human;
+
+/// Spawn dependencies shared by the launch tool and its contract tests.
+pub struct SpawnDeps {
+    /// Live runtime handle of the parent turn. The child re-applies settings
+    /// from the global DB at spawn time (same as a main-session turn) and
+    /// resolves its own LLM binding from the agent profile — never from the
+    /// parent session's provider.
+    pub runtime: RuntimeHandle,
+    pub depth: u32,
+    pub sessions: Arc<SessionManager>,
+}
+
+pub struct LaunchSpec {
+    pub agent_name: String,
+    pub prompt: String,
+    pub model_id_override: Option<String>,
+    pub max_steps_override: Option<u32>,
+}
+
+/// Open a child session and start its first turn the same way a human turn
+/// starts: reserve → spawn_turn → start_turn. Hub only registers the job.
+pub async fn spawn_child_job(
+    deps: &SpawnDeps,
+    parent_session_id: &str,
+    call_id: &str,
+    spec: LaunchSpec,
+) -> Result<String, String> {
+    if call_id.is_empty() {
+        tracing::error!(parent_session_id, "subagent_launch missing tool call_id");
+        return Err(
+            "subagent_launch requires an active tool call_id (missing execution context)".into(),
+        );
+    }
+    let hub = &deps.runtime.subagent_hub;
+    let mut runtime = deps.runtime.clone();
+    runtime
+        .apply_non_engine()
+        .map_err(|error| format!("child turn start failed: {error}"))?;
+    runtime.sync_workspace_tool_readiness();
+
+    let preview = prompt_preview(&spec.prompt);
+    let project = deps.sessions.project(parent_session_id).unwrap_or_else(|| {
+        workspace_root_from_paths(runtime.resolved.paths())
+            .to_string_lossy()
+            .to_string()
+    });
+    let seed_model = spec.model_id_override.clone().or_else(|| {
+        runtime
+            .resolved
+            .agents()
+            .get(&spec.agent_name)
+            .map(|profile| profile.model_ref.clone())
+            .filter(|model| !model.is_empty())
+    });
+    let child_session_id = deps
+        .sessions
+        .open_child_session(
+            &project,
+            &spec.agent_name,
+            seed_model.as_deref(),
+            parent_session_id,
+            call_id,
+        )
+        .map_err(|error| format!("child turn start failed: {error}"))?;
+
+    if !deps.sessions.publish_internal(
+        parent_session_id,
+        crate::runtime::observer::InternalEvent::SubagentBound {
+            call_id: call_id.to_string(),
+            child_session_id: child_session_id.clone(),
+        },
+    ) {
+        tracing::warn!(
+            parent_session_id,
+            child_session_id = %child_session_id,
+            "subagent bound event dropped (parent session missing)"
+        );
+    }
+
+    let Some(rx) = deps.sessions.subscribe(&child_session_id) else {
+        let _ = deps.sessions.remove_session(&child_session_id);
+        return Err("child turn start failed: child session has no event channel".into());
+    };
+
+    let mut opts = TurnOptions::agent(spec.agent_name.clone(), spec.model_id_override.clone());
+    opts.depth = deps.depth + 1;
+    opts.max_steps_override = spec.max_steps_override;
+    if let Err(error) = start_turn_like_human(
+        &runtime,
+        &deps.sessions,
+        &child_session_id,
+        spec.prompt.clone(),
+        &spec.agent_name,
+        &project,
+        opts,
+    )
+    .await
+    {
+        tracing::error!(
+            parent_session_id,
+            agent = %spec.agent_name,
+            error = %error,
+            "subagent child turn failed to start"
+        );
+        hub.forget_child(&child_session_id);
+        let _ = deps.sessions.remove_session(&child_session_id);
+        return Err(format!("child turn start failed: {error}"));
+    }
+
+    hub.jobs.register_child(
+        &child_session_id,
+        parent_session_id,
+        call_id,
+        &spec.agent_name,
+        preview,
+    );
+    hub.watch_child_exit(&child_session_id, call_id, rx);
+    tracing::info!(
+        parent_session_id,
+        child_session_id = %child_session_id,
+        agent = %spec.agent_name,
+        call_id,
+        "subagent worker registered"
+    );
+    Ok(child_session_id)
+}
 
 pub struct SubagentLaunchTool {
     runtime: RuntimeHandle,
@@ -26,7 +154,6 @@ pub struct SubagentLaunchTool {
     parent_cancel: CancellationToken,
     sessions: Arc<SessionManager>,
     parent_session_id: String,
-    hub: Arc<SubagentHub>,
     parent_call_id: String,
 }
 
@@ -38,7 +165,6 @@ impl SubagentLaunchTool {
         parent_cancel: CancellationToken,
         sessions: Arc<SessionManager>,
         parent_session_id: impl Into<String>,
-        hub: Arc<SubagentHub>,
     ) -> Self {
         Self {
             runtime,
@@ -47,7 +173,6 @@ impl SubagentLaunchTool {
             parent_cancel,
             sessions,
             parent_session_id: parent_session_id.into(),
-            hub,
             parent_call_id: String::new(),
         }
     }
@@ -60,7 +185,6 @@ impl SubagentLaunchTool {
             parent_cancel: self.parent_cancel.clone(),
             sessions: Arc::clone(&self.sessions),
             parent_session_id: self.parent_session_id.clone(),
-            hub: Arc::clone(&self.hub),
             parent_call_id: self.parent_call_id.clone(),
         }
     }
@@ -165,16 +289,14 @@ impl SubagentLaunchTool {
             sessions: Arc::clone(&self.sessions),
         };
 
-        let child_id = match self
-            .hub
-            .spawn(&self.parent_session_id, &self.parent_call_id, spec, deps)
+        let child_id = match spawn_child_job(&deps, &self.parent_session_id, &self.parent_call_id, spec)
             .await
         {
             Ok(id) => id,
             Err(e) => return ToolCallResult::error(e),
         };
 
-        let jobs = self.hub.running(&self.parent_session_id);
+        let jobs = self.runtime.subagent_hub.jobs.running(&self.parent_session_id);
         with_child_meta(
             ToolCallResult::ok(status::format_running_status(&child_id, &jobs)),
             &child_id,
@@ -251,7 +373,7 @@ impl Tool for SubagentLaunchTool {
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "The task prompt for the sub-agent"
+                    "description": "Assignment for the new child session"
                 },
                 "model": {
                     "type": "string",
@@ -278,10 +400,10 @@ impl Tool for SubagentLaunchTool {
     fn description(&self, _ctx: &Context) -> String {
         match self.format_available_subagents() {
             None => {
-                "Delegate a task to a sub-agent. Launch returns immediately with child_session_id; the subagent runs in the background. Use subagent_list to list sessions, subagent_wait to wait, subagent_stop to cancel its current turn, and session_search to read its transcript.".into()
+                "Start a new child session. Returns child_session_id immediately; the child runs in the background.".into()
             }
             Some(catalog) => format!(
-                "Delegate a task to a sub-agent. Launch returns immediately with child_session_id; the subagent runs in the background. Use subagent_list to list sessions, subagent_wait to wait, subagent_stop to cancel its current turn, and session_search to read its transcript. Available: {catalog}."
+                "Start a new child session. Returns child_session_id immediately; the child runs in the background. Available: {catalog}."
             ),
         }
     }
@@ -294,12 +416,12 @@ impl Tool for SubagentLaunchTool {
         true
     }
 
-    fn timeout(&self) -> Option<u64> {
-        None
+    fn agent_subagents(&self) -> Option<std::sync::Arc<crate::tools::subagent::SubagentHub>> {
+        Some(Arc::clone(&self.runtime.subagent_hub))
     }
 
-    fn agent_subagents(&self) -> Option<Arc<SubagentHub>> {
-        Some(Arc::clone(&self.hub))
+    fn timeout(&self) -> Option<u64> {
+        None
     }
 
     fn set_active_session(&self, session_id: String) {

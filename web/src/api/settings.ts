@@ -621,7 +621,10 @@ export const SUBAGENT_SERIES_TOOL_IDS = [
 ] as const;
 
 export function isSubagentBindableTool(entry: AvailableTool): boolean {
-  return !(SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes(entry.id);
+  if ((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes(entry.id)) {
+    return false;
+  }
+  return entry.id !== "plan" && entry.id !== "todo";
 }
 
 /** Tools that form one closed loop: enable/disable together. */

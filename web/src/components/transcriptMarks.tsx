@@ -1,7 +1,12 @@
 import type { ReactNode } from "react";
 import { X } from "@phosphor-icons/react";
 import type { HumanRow } from "../api/types";
-import { transcriptMarkKind, type TranscriptMarkKind } from "../api/adapter";
+import {
+  isMessageItem,
+  itemPlainText,
+  transcriptMarkKind,
+  type TranscriptMarkKind,
+} from "../api/adapter";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { WaveText } from "./WaveText";
 import { Popover } from "./ui/Popover";
@@ -95,12 +100,28 @@ export function CompactCutMark({ summary }: { summary?: string }) {
   );
 }
 
-export function JobExitMark() {
+export function JobExitMark({ detail }: { detail?: string }) {
   return (
     <MarkLine role="status" label="Background terminal exited">
-      <span className="text-dk-2xs text-(--_dk-text-disabled)">background terminal exited</span>
+      <span className="text-dk-2xs text-(--_dk-text-disabled)">
+        {detail ? `background terminal exited · ${detail}` : "background terminal exited"}
+      </span>
     </MarkLine>
   );
+}
+
+/**
+ * Exit detail carried by a background-terminal reminder body, e.g.
+ * `Background bash bg_a exited with code 3.` → `bg_a · exit code 3`, or the
+ * user-Kill variant → `bg_a · stopped by user (Kill)`. `undefined` when the
+ * body carries no recognizable exit line (nothing extra to show).
+ */
+export function jobExitDetail(text: string): string | undefined {
+  const exited = /^Background bash (\S+) exited with code (-?\d+)\.$/m.exec(text);
+  if (exited) return `${exited[1]} · exit code ${exited[2]}`;
+  const stopped = /^The user stopped background bash (\S+) \(Kill\)\.$/m.exec(text);
+  if (stopped) return `${stopped[1]} · stopped by user (Kill)`;
+  return undefined;
 }
 
 /** Transient line while a compaction runs; replaced by CompactCutMark when the row lands. */
@@ -112,12 +133,20 @@ export function CompactingMark() {
   );
 }
 
-export function TranscriptMark({ kind, summary }: { kind: TranscriptMarkKind; summary?: string }) {
+export function TranscriptMark({
+  kind,
+  summary,
+  detail,
+}: {
+  kind: TranscriptMarkKind;
+  summary?: string;
+  detail?: string;
+}) {
   switch (kind) {
     case "compact_cut":
       return <CompactCutMark summary={summary} />;
     case "job_exit":
-      return <JobExitMark />;
+      return <JobExitMark detail={detail} />;
   }
 }
 
@@ -128,6 +157,11 @@ export function TranscriptMarkForRow({ row }: { row: HumanRow }) {
     <TranscriptMark
       kind={kind}
       summary={kind === "compact_cut" && "summary" in row.body ? String(row.body.summary) : undefined}
+      detail={
+        kind === "job_exit" && row.kind === "reminder/job_exit" && isMessageItem(row.body)
+          ? jobExitDetail(itemPlainText(row.body))
+          : undefined
+      }
     />
   );
 }

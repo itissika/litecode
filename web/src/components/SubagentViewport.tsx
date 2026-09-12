@@ -1,11 +1,4 @@
-import { useMemo, type ReactElement } from "react";
-import {
-  itemFromRow,
-  itemPlainText,
-  isHiddenHumanRow,
-  isHumanUserRow,
-  isTranscriptMarkRow,
-} from "../api/adapter";
+import { type ReactElement } from "react";
 import {
   rowsToNodes,
   groupNodes,
@@ -21,11 +14,18 @@ import { useEditorStore } from "../stores/editorStore";
 
 /**
  * Lightweight, NON-virtualized transcript viewport for a child (subagent)
- * session. Reuses the exact same row primitives as the main MessageList so the
- * visual language is identical, but renders as a plain flex column that the
- * parent FoldCard scrolls — never a nested virtualizer (which would break
- * measure). A subagent that itself launches a subagent recurses through the
- * same NodeView → ToolCallCard → SubagentToolView path, so nesting is free.
+ * transcript. Reuses the exact same row
+ * primitives as the main MessageList so the visual language is close, but
+ * renders as a plain flex column that the parent FoldCard scrolls — never a
+ * nested virtualizer (which would break measure). A subagent that itself
+ * launches a subagent recurses through the same NodeView → ToolCallCard →
+ * SubagentLaunchToolView path, so nesting is free.
+ *
+ * NOTE: this is the legacy nesting view. The dock "Workers" roster renders a
+ * child session with the real MessageList (bubbles + virtualizer) instead; this
+ * component stays for the (currently unreachable) transcript-embedded
+ * SubagentToolView path. It renders EVERY row of the child session — no
+ * suppression of the child's own user messages.
  *
  * `nested` indents the process list (left border + padding) to show depth. The
  * top-level subagent passes `nested={false}` so its process aligns flush with
@@ -35,38 +35,13 @@ import { useEditorStore } from "../stores/editorStore";
 export function SubagentViewport({
   childSessionId,
   nested = false,
-  skipUserText,
 }: {
   childSessionId: string;
   nested?: boolean;
-  /**
-   * Launch prompt of this subagent. When present, the child session's leading
-   * user message that exactly matches it is suppressed — it duplicates the Task
-   * brief already rendered by the parent tool card. Non-matching first rows are
-   * left untouched (fail open), so real content is never hidden.
-   */
-  skipUserText?: string;
 }): ReactElement {
-  const storeMessages = useMessageStore((s) =>
+  const messages = useMessageStore((s) =>
     displayMessages(s.bySession.get(childSessionId)),
   );
-  const messages = useMemo(() => {
-    if (!skipUserText) return storeMessages;
-    let i = 0;
-    while (
-      i < storeMessages.length &&
-      (isTranscriptMarkRow(storeMessages[i]!) || isHiddenHumanRow(storeMessages[i]!))
-    ) {
-      i += 1;
-    }
-    const first = storeMessages[i];
-    if (!first || !isHumanUserRow(first)) return storeMessages;
-    const item = itemFromRow(first);
-    if (!item || itemPlainText(item).trim() !== skipUserText.trim()) {
-      return storeMessages;
-    }
-    return storeMessages.slice(i + 1);
-  }, [storeMessages, skipUserText]);
   const runState = useTurnStore(
     (s) => s.byId.get(childSessionId)?.runState ?? "idle",
   );

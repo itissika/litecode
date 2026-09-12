@@ -27,7 +27,7 @@ use litecode::session::manager::SessionManager;
 use litecode::tool::Tool;
 use litecode::tool::trait_::ToolExecutionContext;
 use litecode::session::manager::SessionStatus;
-use litecode::tools::subagent::{SubagentHub, SubagentLaunchTool, SubagentListTool};
+use litecode::tools::subagent::{SubagentLaunchTool, SubagentListTool};
 use tokio_util::sync::CancellationToken;
 
 fn reviewer_resolved(cwd: &std::path::Path) -> litecode::config::ResolvedConfig {
@@ -53,12 +53,11 @@ fn reviewer_resolved(cwd: &std::path::Path) -> litecode::config::ResolvedConfig 
     resolve(global, workspace)
 }
 
-fn launch_tool_on_hub(
+fn launch_tool_on_sessions(
     resolved: litecode::config::ResolvedConfig,
     sessions: Arc<SessionManager>,
     parent_session_id: &str,
     provider: ScriptedProvider,
-    hub: Arc<SubagentHub>,
 ) -> SubagentLaunchTool {
     let workspace =
         litecode::workspace::WorkspaceService::new(resolved.workspace_root().to_path_buf())
@@ -69,7 +68,6 @@ fn launch_tool_on_hub(
         Arc::new(engines.clone()),
         Arc::new(litecode::terminal::TerminalHub::new()),
     );
-    hub.attach_sessions(Arc::clone(&sessions));
     let ws_state = test_workspace(resolved.workspace_root());
     let db_path = resolved.workspace_root().join(".litecode/global.db");
     let runtime = RuntimeHandle::new(
@@ -84,6 +82,7 @@ fn launch_tool_on_hub(
         db_path,
     )
     .with_test_llm_override(Arc::new(provider));
+    runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
     SubagentLaunchTool::new(
         runtime,
         "default",
@@ -91,7 +90,6 @@ fn launch_tool_on_hub(
         CancellationToken::new(),
         sessions,
         parent_session_id,
-        hub,
     )
 }
 
@@ -101,8 +99,7 @@ fn launch_tool(
     parent_session_id: &str,
     provider: ScriptedProvider,
 ) -> SubagentLaunchTool {
-    let hub = Arc::new(SubagentHub::new());
-    launch_tool_on_hub(resolved, sessions, parent_session_id, provider, hub)
+    launch_tool_on_sessions(resolved, sessions, parent_session_id, provider)
 }
 
 /// Run the subagent tool through `execute` with an explicit parent call_id
@@ -737,8 +734,6 @@ async fn child_exit_triggers_parent_auto_turn_reminder() {
     // Attach acts as the UI subscriber that makes idle completion wake real.
     let _ = sessions.attach(&parent);
 
-    let hub = Arc::new(SubagentHub::new());
-    hub.attach_sessions(Arc::clone(&sessions));
     let workspace = litecode::workspace::WorkspaceService::new(cwd.to_path_buf()).unwrap();
     let engines = Arc::new(WorkspaceEngines::new());
     let ide = litecode::ide_base::IdeBaseHandle::new(
@@ -755,20 +750,24 @@ async fn child_exit_triggers_parent_auto_turn_reminder() {
         ide,
         Arc::new(AtomicU64::new(0)),
         cwd.join("global.db"),
-    );
+    )
+    .with_test_llm_override(Arc::new(ScriptedProvider::with_text("done")));
+    runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
+    let hub = Arc::clone(&runtime.subagent_hub);
     install_subagent_auto_turn(
-        Arc::clone(&hub),
-        Arc::new(RwLock::new(runtime)),
+        hub,
+        Arc::new(RwLock::new(runtime.clone())),
         Arc::clone(&sessions),
         cwd.to_path_buf(),
     );
 
-    let tool = launch_tool_on_hub(
-        resolved,
+    let tool = SubagentLaunchTool::new(
+        runtime,
+        "default",
+        0,
+        CancellationToken::new(),
         Arc::clone(&sessions),
-        &parent,
-        ScriptedProvider::with_text("done"),
-        Arc::clone(&hub),
+        parent.clone(),
     );
     let result = run_subagent(
         &tool,

@@ -6,11 +6,17 @@ import { createElement } from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 
 import { deriveUserAnchorK, isCompactCutRow, itemPlainText } from "../api/adapter";
-import type { BufferLoaded, Item, WireBufferEvent } from "../api/types";
+import type {
+  BufferLoaded,
+  Item,
+  SessionSnapshot,
+  WireBufferEvent,
+} from "../api/types";
 import { displayMessages, useMessageStore } from "./messageStore";
 import { EMPTY_SLICE as EMPTY_TURN, useTurnStore } from "./turnStore";
 import { useToastStore } from "./toastStore";
 import { useConnectionStore } from "./connectionStore";
+import { useSessionStore } from "./sessionStore";
 
 function assistantMsg(id: string, text: string, status: "in_progress" | "completed" = "completed"): Item {
   return {
@@ -366,5 +372,111 @@ describe("messageStore seq map", () => {
     load(sid, [ev(0, userMsg("keep"))], 0, 1);
     useConnectionStore.setState({ sendRpc: vi.fn() } as never);
     await expect(useMessageStore.getState().ensureSeqLoaded(sid, 4)).resolves.toBe(false);
+  });
+});
+
+describe("messageStore buffer window — tail append (P6 catch-up)", () => {
+  const sid = "s-window";
+
+  beforeEach(() => {
+    useMessageStore.setState({ bySession: new Map() });
+  });
+
+  it("keeps the window start and user-detail count when a load only appends the tail", () => {
+    load(sid, [ev(0, userMsg("ask")), ev(1, assistantMsg("a", "first"))], 0, 2, 0);
+
+    // Gap catch-up: the retained window [0,2) is topped up with [2,3).
+    load(sid, [ev(2, assistantMsg("b", "second"))], 2, 3, 7);
+
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages.map((r) => r.seq)).toEqual([0, 1, 2]);
+    expect(slice.toSeq).toBe(3);
+    // The older rows are still held: the start must not jump to the appended tail.
+    expect(slice.fromSeq).toBe(0);
+    // `userDetailBefore` counts from the window start, not from the tail base.
+    expect(slice.userDetailBefore).toBe(0);
+  });
+
+  it("still moves the window start for a history page loaded below the window", () => {
+    load(sid, [ev(10, userMsg("ask")), ev(11, assistantMsg("a", "first"))], 10, 12, 3);
+
+    load(sid, [ev(8, userMsg("older"))], 8, 10, 1);
+
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages.map((r) => r.seq)).toEqual([8, 10, 11]);
+    expect(slice.fromSeq).toBe(8);
+    expect(slice.userDetailBefore).toBe(1);
+    expect(slice.toSeq).toBe(12);
+  });
+});
+
+describe("sessionStore.applySnapshot — retained window catch-up (P6)", () => {
+  const sid = "child-a";
+
+  function snapshot(nextSeq: number): SessionSnapshot {
+    return {
+      session_id: sid,
+      project: "/p",
+      agent_id: "default",
+      api_model_id: "m",
+      buffer: { last_seq: nextSeq, next_seq: nextSeq, revision: 0 },
+      turn: null,
+    };
+  }
+
+  function seedRpc(events: WireBufferEvent[] = []): ReturnType<typeof vi.fn> {
+    const sendRpc = vi.fn(async (method: string, params: never) => {
+      if (method !== "buffer/load") return {};
+      const p = params as unknown as { from_seq: number; to_seq: number };
+      const inside = events.filter((e) => e.seq >= p.from_seq && e.seq < p.to_seq);
+      return {
+        session_id: sid,
+        from_seq: p.from_seq,
+        to_seq: p.to_seq,
+        events: inside,
+      } satisfies BufferLoaded;
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+    return sendRpc;
+  }
+
+  beforeEach(() => {
+    useMessageStore.setState({ bySession: new Map() });
+    useTurnStore.setState({ byId: new Map() });
+  });
+
+  it("appends the gap when a retained window lags the snapshot next_seq", () => {
+    const sendRpc = seedRpc([ev(5, assistantMsg("e", "appended"))]);
+    // Retained window from an earlier expand: [0,5), server is at 8.
+    load(sid, [ev(0, userMsg("ask"))], 0, 5, 0);
+
+    useSessionStore.getState().applySnapshot(snapshot(8));
+
+    expect(sendRpc).toHaveBeenCalledWith("buffer/load", {
+      from_seq: 5,
+      to_seq: 8,
+      session_id: sid,
+    });
+  });
+
+  it("cold-starts when there is no retained window at all", () => {
+    const sendRpc = seedRpc();
+
+    useSessionStore.getState().applySnapshot(snapshot(8));
+
+    expect(sendRpc).toHaveBeenCalledWith("buffer/load", {
+      from_seq: 0,
+      to_seq: 8,
+      session_id: sid,
+    });
+  });
+
+  it("does not re-fetch when the retained window already covers next_seq", () => {
+    const sendRpc = seedRpc();
+    load(sid, [ev(0, userMsg("ask"))], 0, 8, 0);
+
+    useSessionStore.getState().applySnapshot(snapshot(8));
+
+    expect(sendRpc).not.toHaveBeenCalled();
   });
 });

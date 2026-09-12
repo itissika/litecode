@@ -220,6 +220,21 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         .catch(() => {
           set({ statusMessage: "Failed to load transcript buffer" });
         });
+    } else if (
+      msgSlice &&
+      !msgSlice.blockLogGrowth &&
+      msgSlice.toSeq < snap.buffer.next_seq
+    ) {
+      // Retained window that lags the server: a collapsed roster card keeps the
+      // child's slices (P6) and a reconnect keeps every slice. Append the missing
+      // tail — `[toSeq, next_seq)` is exactly the gap — instead of cold-starting.
+      // Repeated snapshots may re-fetch an already-covered range; `upsertEvents`
+      // keys by seq, so that is idempotent. A reverted window blocks growth, so a
+      // stale snapshot cannot pull the discarded rows back.
+      useMessageStore
+        .getState()
+        .loadRange(sessionId, msgSlice.toSeq, snap.buffer.next_seq)
+        .catch(() => {});
     }
 
     set({ pendingSessionOp: null });

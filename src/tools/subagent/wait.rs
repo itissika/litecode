@@ -11,22 +11,22 @@ use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
 
-use super::hub::{SubagentHub, WaitOutcome};
+use super::jobs::{SubagentJobBoard, WaitOutcome};
 use super::status;
 
 const MAX_WAIT_SECS: u64 = 600;
 
 pub struct SubagentWaitTool {
-    pub hub: Arc<SubagentHub>,
+    pub jobs: Arc<SubagentJobBoard>,
     cancel: CancellationToken,
     session_id: Mutex<String>,
     call_id: Mutex<String>,
 }
 
 impl SubagentWaitTool {
-    pub fn new(hub: Arc<SubagentHub>) -> Self {
+    pub fn new(jobs: Arc<SubagentJobBoard>) -> Self {
         Self {
-            hub,
+            jobs,
             cancel: CancellationToken::new(),
             session_id: Mutex::new(String::new()),
             call_id: Mutex::new(String::new()),
@@ -47,21 +47,21 @@ impl SubagentWaitTool {
         let sid = self.session_id();
         let call_id = self.call_id();
         let timeout = sec.map(Duration::from_secs);
-        self.hub.begin_wait(&sid, &call_id, id, timeout);
-        let outcome = self.hub.wait(&sid, id, timeout, &self.cancel, true);
-        self.hub.end_wait(&call_id);
+        self.jobs.begin_wait(&sid, &call_id, id, timeout);
+        let outcome = self.jobs.wait(&sid, id, timeout, &self.cancel, true);
+        self.jobs.end_wait(&call_id);
         match outcome {
             WaitOutcome::Exited(notice) => {
-                let jobs = self.hub.running(&sid);
+                let jobs = self.jobs.running(&sid);
                 ToolCallResult::ok(status::format_exited_status(&notice, &jobs))
             }
             WaitOutcome::TimedOut => {
-                let jobs = self.hub.running(&sid);
+                let jobs = self.jobs.running(&sid);
                 ToolCallResult::ok(status::format_waited_status(&jobs))
             }
             WaitOutcome::Cancelled => ToolCallResult::error("subagent_wait cancelled"),
             WaitOutcome::UnknownId(unknown) => {
-                let jobs = self.hub.running(&sid);
+                let jobs = self.jobs.running(&sid);
                 ToolCallResult::error(status::format_unknown_task(&unknown, &jobs))
             }
         }
@@ -79,7 +79,7 @@ impl Tool for SubagentWaitTool {
             "properties": {
                 "id": {
                     "type": "string",
-                    "description": "child_session_id to wait for. Omit to wait only on sec, or until any child of this session exits."
+                    "description": "child_session_id to wait for. Omit to wait on sec, or until any child of this session exits."
                 },
                 "sec": {
                     "type": "integer",
@@ -95,7 +95,7 @@ impl Tool for SubagentWaitTool {
         execution: ToolExecutionContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let tool = SubagentWaitTool {
-            hub: Arc::clone(&self.hub),
+            jobs: Arc::clone(&self.jobs),
             cancel: execution.cancel.clone(),
             session_id: Mutex::new(execution.session_id.clone()),
             call_id: Mutex::new(execution.call_id.clone()),
@@ -108,7 +108,7 @@ impl Tool for SubagentWaitTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Wait for a background subagent. Pass id (one child), sec (pure wait), or both. Any other child from this session exiting also returns. Does not stop the subagent.".into()
+        "Wait until a given child exits, until any child of this session exits, or until sec elapses. Does not stop the child.".into()
     }
 
     fn timeout(&self) -> Option<u64> {
@@ -125,10 +125,6 @@ impl Tool for SubagentWaitTool {
 
     fn set_active_session(&self, session_id: String) {
         *self.session_id.lock().unwrap() = session_id;
-    }
-
-    fn agent_subagents(&self) -> Option<Arc<SubagentHub>> {
-        Some(Arc::clone(&self.hub))
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
@@ -158,7 +154,7 @@ mod tests {
 
     #[test]
     fn validate_requires_id_or_sec() {
-        let tool = SubagentWaitTool::new(Arc::new(SubagentHub::new()));
+        let tool = SubagentWaitTool::new(Arc::new(SubagentJobBoard::new()));
         assert!(tool.validate_input(&serde_json::json!({})).is_err());
         assert!(
             tool.validate_input(&serde_json::json!({"id": "child-a"}))

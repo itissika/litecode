@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { formatElapsed, isRunningStatusText, matchJob, parseBashId } from "./bashLive";
+import {
+  formatElapsed,
+  headExitCode,
+  isBackgroundBashResult,
+  isBashJobLive,
+  isRunningStatusText,
+  matchJob,
+  parseBashId,
+} from "./bashLive";
 
 describe("formatElapsed", () => {
   it("formats seconds and minutes", () => {
@@ -42,5 +50,59 @@ describe("parseBashId / matchJob", () => {
     expect(parseBashId("status: running\nbash_id: bg_z\n")).toBe("bg_z");
     expect(isRunningStatusText("status: running\nbash_id: bg_z\n")).toBe(true);
     expect(isRunningStatusText("exit_code: 0\nhello\n")).toBe(false);
+  });
+});
+
+describe("isBackgroundBashResult / headExitCode", () => {
+  const RUNNING = `status: running
+bash_id: bg_a
+output_file: .litecode/bash/bg_a.output
+`;
+
+  it("recognizes a sealed background-bash result from its text alone", () => {
+    expect(isBackgroundBashResult(RUNNING)).toBe(true);
+    // bash_id without the status word (e.g. a status document) is still a job.
+    expect(isBackgroundBashResult(`bash_id: bg_a
+running: 1
+`)).toBe(true);
+    expect(isBackgroundBashResult(`exit_code: 0
+hello
+`)).toBe(false);
+  });
+
+  it("reads a leading exit_code line only", () => {
+    expect(headExitCode(`exit_code: 3
+boom
+`)).toBe(3);
+    expect(headExitCode(`exit_code: 0
+`)).toBe(0);
+    expect(headExitCode(`note: see exit_code: 1
+`)).toBeNull();
+    expect(headExitCode(RUNNING)).toBeNull();
+  });
+});
+
+describe("isBashJobLive", () => {
+  const RUNNING = `status: running
+bash_id: bg_a
+`;
+  const job = {
+    id: "bg_a",
+    call_id: "call_a",
+    command_preview: "sleep",
+    output_file: ".litecode/bash/bg_a.output",
+    started_at_ms: 1,
+  };
+
+  it("is live only while a matching job is still in the snapshot", () => {
+    expect(isBashJobLive(RUNNING, job)).toBe(true);
+    // The seal is one-way: a vanished job means the process ended.
+    expect(isBashJobLive(RUNNING, undefined)).toBe(false);
+  });
+
+  it("is never live for a completed document", () => {
+    expect(isBashJobLive(`exit_code: 0
+ok
+`, job)).toBe(false);
   });
 });

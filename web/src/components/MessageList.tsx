@@ -4,6 +4,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 
 import {
   deriveUserAnchorK,
+  functionCallOutputText,
   isFunctionCall,
   isFunctionCallOutput,
   isHumanUserRow,
@@ -30,18 +31,19 @@ import { requestFoldCardOpen } from "./foldCardState";
 import { useSessionStore } from "../stores/sessionStore";
 import { useEditorStore } from "../stores/editorStore";
 import { useTurnStore } from "../stores/turnStore";
-import { isInlineTool, processToolBucket } from "../lib/toolCategory";
+import { isInlineCall, processToolBucket } from "../lib/toolCategory";
+import { isBackgroundBashResult } from "../lib/bashLive";
 import { useStickToBottom } from "../lib/scrollStick";
 import { ToolCallCard } from "./ToolCallCard";
 import { isToolCallLive, processGroupAutoOpen } from "./toolCallStatus";
 import { MiniChatInput, type MiniChatInputSettings } from "./MiniChatInput";
-import { CompactingMark, TranscriptMark, TranscriptMarkForRow } from "./transcriptMarks";
+import { CompactingMark, TranscriptMark, TranscriptMarkForRow, jobExitDetail } from "./transcriptMarks";
 
 type RenderNode =
   | { kind: "text"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
   | { kind: "reasoning"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
   | { kind: "compact_cut"; summary?: string; key: string; streaming: boolean; live: false }
-  | { kind: "job_exit"; key: string; streaming: boolean; live: false }
+  | { kind: "job_exit"; detail?: string; key: string; streaming: boolean; live: false }
   | {
       kind: "tool";
       call: FunctionCallItem;
@@ -92,6 +94,10 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
     const key = projectionRowKey(row);
     const mark = transcriptMarkKind(row);
     if (mark) {
+      const markDetail =
+        mark === "job_exit" && row.kind === "reminder/job_exit" && isMessageItem(row.body)
+          ? jobExitDetail(itemPlainText(row.body))
+          : undefined;
       nodes.push({
         kind: mark,
         key,
@@ -100,6 +106,7 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
         ...(mark === "compact_cut" && row.kind === "compacted"
           ? { summary: row.body.summary }
           : {}),
+        ...(markDetail ? { detail: markDetail } : {}),
       });
       continue;
     }
@@ -228,8 +235,15 @@ export function NodeView({
           ) : null}
         </div>
       );
-    case "tool":
-      if (isInlineTool(node.call.name)) {
+    case "tool": {
+      // Background bash is the one call that goes inline on its RESULT rather
+      // than its name; foreground bash keeps the rich card.
+      const backgroundBash =
+        node.call.name === "bash" &&
+        isBackgroundBashResult(
+          node.output ? functionCallOutputText(node.output) : "",
+        );
+      if (isInlineCall(node.call.name, backgroundBash)) {
         return (
           <InlineToolRow
             call={node.call}
@@ -254,10 +268,11 @@ export function NodeView({
           }
         />
       );
+    }
     case "compact_cut":
       return <TranscriptMark kind={node.kind} summary={node.summary} />;
     case "job_exit":
-      return <TranscriptMark kind={node.kind} />;
+      return <TranscriptMark kind={node.kind} detail={node.detail} />;
   }
 }
 
