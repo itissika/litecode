@@ -205,9 +205,10 @@ pub enum InternalEvent {
     },
     /// Step delta persisted to DB; L2 bumps `buffer.revision` / `next_seq`.
     StepCommitted,
-    /// Durable session preview (`last_message`) changed — fanout → lifecycle.
+    /// Durable session preview (`last_message` / `last_assistant`) changed — fanout → lifecycle.
     SessionPreviewUpdated {
-        preview: String,
+        preview: Option<String>,
+        assistant_preview: Option<String>,
         updated_at: i64,
     },
     /// One durable SessionLog row. Live `buffer/item` uses this same envelope

@@ -322,6 +322,8 @@ export interface SessionInfo {
   project: string;
   updated_at: number;
   preview: string;
+  /** Latest completed assistant text. Omitted by the server when empty. */
+  assistant_preview?: string;
   running: boolean;
   status?: "idle" | "running" | "stopping" | "running_with_subagent";
   turn: TurnSnapshot | null;
@@ -342,6 +344,7 @@ export interface SessionList {
 }
 
 export type SessionLifecycleEvent =
+  | "created"
   | "deleted"
   | "turn_started"
   | "turn_updated"
@@ -356,6 +359,14 @@ export interface SessionLifecycle {
   event: SessionLifecycleEvent;
   turn: TurnSnapshot | null;
   preview?: string;
+  /** Latest assistant text; only sent with `preview_updated`. */
+  assistant_preview?: string;
+  /** Sent with `created`. Set when the session is a subagent child. */
+  parent_session_id?: string | null;
+  parent_call_id?: string | null;
+  /** Sent with `created`. */
+  project?: string;
+  agent_id?: string;
   updated_at?: number;
   step_kind?: TurnStepKind;
 }

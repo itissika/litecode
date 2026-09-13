@@ -300,6 +300,10 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
           case "agent/subagent_bound": {
             const bound = params as unknown as SubagentBound;
             message?.onSubagentBound(bound.session_id, bound);
+            // The child session now exists server-side, but `session/list` is
+            // only pushed on create/delete — re-pull so the roster and the
+            // subagent tool rows can label it without waiting for a subscribe.
+            session?.listSessions();
             return;
           }
 

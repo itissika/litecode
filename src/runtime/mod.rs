@@ -930,11 +930,12 @@ impl AgentRuntime {
                     seqs: commit_outcome.sealed_seqs,
                 });
             }
-            if let Some((preview, updated_at)) = commit_outcome.preview {
+            if let Some(patch) = commit_outcome.preview {
                 self.emit_internal(
                     crate::runtime::observer::InternalEvent::SessionPreviewUpdated {
-                        preview,
-                        updated_at,
+                        preview: patch.user,
+                        assistant_preview: patch.assistant,
+                        updated_at: patch.updated_at,
                     },
                 );
             }
@@ -1012,11 +1013,12 @@ impl AgentRuntime {
                         seqs: commit_outcome.sealed_seqs,
                     });
                 }
-                if let Some((preview, updated_at)) = commit_outcome.preview {
+                if let Some(patch) = commit_outcome.preview {
                     self.emit_internal(
                         crate::runtime::observer::InternalEvent::SessionPreviewUpdated {
-                            preview,
-                            updated_at,
+                            preview: patch.user,
+                            assistant_preview: patch.assistant,
+                            updated_at: patch.updated_at,
                         },
                     );
                 }

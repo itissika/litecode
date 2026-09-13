@@ -124,7 +124,9 @@ export function SubagentStatusIcon({
   const title = sealed
     ? status === "failed"
       ? "Failed"
-      : "Completed"
+      : status === "ok" || status === "warning"
+        ? "Completed"
+        : "Finished"
     : running
       ? "Running"
       : "Launching";

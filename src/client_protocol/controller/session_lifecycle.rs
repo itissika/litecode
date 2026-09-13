@@ -312,36 +312,37 @@ impl SessionController {
     pub async fn list_sessions(&mut self) -> anyhow::Result<Vec<SessionInfo>> {
         let sessions_mgr = self.sessions.clone();
         let db_sessions = sessions_mgr.data().list_sessions_blocking()?;
-        let default_primary = self.runtime.desired_primary_agent();
         let mut result = Vec::with_capacity(db_sessions.len());
-        for (id, project, updated_at, preview, _agent_id, _model_id) in db_sessions {
-            if sessions_mgr.is_session_empty(&id).await {
+        for row in db_sessions {
+            if sessions_mgr.is_session_empty(&row.id).await {
                 continue;
             }
-            let running = sessions_mgr.is_turn_running(&id).await;
+            let running = sessions_mgr.is_turn_running(&row.id).await;
             let status = sessions_mgr
-                .session_status(&id)
+                .session_status(&row.id)
                 .unwrap_or(crate::session::manager::SessionStatus::Idle)
                 .as_str()
                 .to_string();
             let turn = if running {
                 sessions_mgr
-                    .get_cached_progress(&id)
+                    .get_cached_progress(&row.id)
                     .map(|p| project::turn_progress_to_snapshot(&p))
             } else {
                 None
             };
-            let binding = project::binding_projection(
+            let binding = project::list_binding_projection(
                 &sessions_mgr,
-                &id,
+                &row.id,
                 &self.runtime.resolved,
-                default_primary,
+                row.agent_id,
+                row.model_id,
             );
             result.push(SessionInfo {
-                id: id.clone(),
-                project,
-                updated_at,
-                preview,
+                id: row.id,
+                project: row.project,
+                updated_at: row.updated_at,
+                preview: row.preview,
+                assistant_preview: row.assistant_preview,
                 running,
                 status,
                 turn,
@@ -349,8 +350,8 @@ impl SessionController {
                 model_id: binding.model_id,
                 api_model_id: binding.api_model_id,
                 label: binding.label,
-                parent_session_id: None,
-                parent_call_id: None,
+                parent_session_id: row.parent_session_id,
+                parent_call_id: row.parent_call_id,
             });
         }
         Ok(result)

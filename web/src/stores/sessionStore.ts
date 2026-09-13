@@ -3,12 +3,12 @@ import type {
   WireServerHello,
   SessionSnapshot,
   SessionInfo,
+  SessionLifecycle,
   OperationResult,
   OperationKind,
   PrimaryAgentInfo,
   ModelInfo,
   BufferLoaded,
-  TurnStepKind,
   ThinkingTier,
   ContextMode,
 } from "../api/types";
@@ -115,20 +115,7 @@ interface SessionStore extends SessionState {
   onHello: (hello: WireServerHello) => void;
   applySnapshot: (snap: SessionSnapshot) => void;
   onSessionList: (sessions: SessionInfo[]) => void;
-  onSessionLifecycle: (params: {
-    session_id: string;
-    event:
-      | "deleted"
-      | "turn_started"
-      | "turn_updated"
-      | "turn_finished"
-      | "preview_updated"
-      | "turn_step";
-    turn: any;
-    preview?: string;
-    updated_at?: number;
-    step_kind?: TurnStepKind;
-  }) => void;
+  onSessionLifecycle: (params: SessionLifecycle) => void;
   onSessionAttached: (params: { session_id: string; turn: any }) => void;
   onOperationResult: (op: OperationResult) => void;
 
@@ -362,7 +349,19 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     },
 
     onSessionLifecycle: (params) => {
-      const { session_id, event, turn, preview, updated_at, step_kind } = params;
+      const {
+        session_id,
+        event,
+        turn,
+        preview,
+        assistant_preview,
+        updated_at,
+        step_kind,
+        project,
+        agent_id,
+        parent_session_id,
+        parent_call_id,
+      } = params;
       set((state) => {
         const exists = state.sessions.some((s) => s.id === session_id);
         if (event === "deleted") {
@@ -384,15 +383,21 @@ export const useSessionStore = create<SessionStore>((set, get) => {
           }
           const fresh: SessionInfo = {
             id: session_id,
-            project: "",
+            project: project ?? "",
             updated_at: updated_at ?? Date.now(),
             preview: preview ?? "",
+            assistant_preview: assistant_preview ?? undefined,
             running: event !== "turn_finished",
             turn: turn ?? null,
-            agent_id: "",
+            agent_id: agent_id ?? "",
             model_id: null,
             api_model_id: "",
             step_kinds: step_kind ? [step_kind] : [],
+            // A subagent child arrives on the lifecycle feed too (the broadcast
+            // is unfiltered), and the sidebar must not list it as a root — so
+            // carry the parent ids the `created` event carries.
+            parent_session_id: parent_session_id ?? null,
+            parent_call_id: parent_call_id ?? null,
           };
           return { sessions: sortSessions([...state.sessions, fresh]) };
         }
@@ -403,6 +408,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
                 ? {
                     ...s,
                     preview: preview ?? s.preview,
+                    assistant_preview: assistant_preview ?? s.assistant_preview,
                     updated_at: updated_at ?? s.updated_at,
                   }
                 : s,

@@ -147,10 +147,11 @@ impl AgentDeps for AgentRuntime {
                 seqs: outcome.sealed_seqs,
             });
         }
-        if let Some((preview, updated_at)) = outcome.preview {
+        if let Some(patch) = outcome.preview {
             self.emit_internal(InternalEvent::SessionPreviewUpdated {
-                preview,
-                updated_at,
+                preview: patch.user,
+                assistant_preview: patch.assistant,
+                updated_at: patch.updated_at,
             });
         }
         Ok(false)

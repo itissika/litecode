@@ -354,3 +354,80 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
     expect(useTurnStore.getState().byId.get(sid)!.currentTurnId).toBeNull();
   });
 });
+
+describe("sessionStore lifecycle — subagent child metadata (P7)", () => {
+  beforeEach(() => {
+    useSessionStore.setState({ sessions: [], byId: new Map() } as never);
+  });
+
+  it("keeps the parent ids when a subagent `created` event upserts the child", () => {
+    useSessionStore.getState().onSessionLifecycle({
+      session_id: "child-1",
+      event: "created",
+      project: "/p",
+      agent_id: "researcher",
+      parent_session_id: "parent-1",
+      parent_call_id: "call_a",
+      updated_at: 123,
+      turn: null,
+    });
+
+    const entry = useSessionStore
+      .getState()
+      .sessions.find((s) => s.id === "child-1");
+    expect(entry?.parent_session_id).toBe("parent-1");
+    expect(entry?.parent_call_id).toBe("call_a");
+    // The label must be usable without a subscribe — this is the only source
+    // that knows the child's agent before its first snapshot.
+    expect(entry?.agent_id).toBe("researcher");
+  });
+
+  it("leaves a root's parent ids empty so the sidebar keeps listing it", () => {
+    useSessionStore.getState().onSessionLifecycle({
+      session_id: "root-1",
+      event: "created",
+      project: "/p",
+      agent_id: "default",
+      updated_at: 1,
+      turn: null,
+    });
+
+    const entry = useSessionStore
+      .getState()
+      .sessions.find((s) => s.id === "root-1");
+    expect(entry?.parent_session_id).toBeNull();
+  });
+
+  it("patches assistant_preview on preview_updated", () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: "child-1",
+          project: "/p",
+          updated_at: 0,
+          preview: "user prompt",
+          running: false,
+          turn: null,
+          agent_id: "researcher",
+          api_model_id: "m",
+          parent_session_id: "parent-1",
+        },
+      ],
+    } as never);
+
+    useSessionStore.getState().onSessionLifecycle({
+      session_id: "child-1",
+      event: "preview_updated",
+      preview: "user prompt",
+      assistant_preview: "read the panel wiring",
+      updated_at: 5,
+      turn: null,
+    });
+
+    const entry = useSessionStore
+      .getState()
+      .sessions.find((s) => s.id === "child-1");
+    expect(entry?.assistant_preview).toBe("read the panel wiring");
+    expect(entry?.updated_at).toBe(5);
+  });
+});

@@ -106,8 +106,38 @@ function seedSession(agentId: string, preview: string, running = false): void {
         turn: null,
         agent_id: agentId,
         api_model_id: "m",
+        parent_session_id: PARENT,
+        parent_call_id: "call_a",
       },
     ],
+  });
+}
+
+/**
+ * A real P7 child row from `session/list`: parent ids set, its own agent_id,
+ * and the two preview flavours the header has to choose between.
+ */
+function seedListSession(patch: {
+  assistant_preview?: string;
+  preview?: string;
+}): void {
+  useSessionStore.setState({
+    sessions: [
+      {
+        id: CHILD,
+        project: "/p",
+        updated_at: 0,
+        running: false,
+        turn: null,
+        agent_id: "researcher",
+        api_model_id: "m",
+        parent_session_id: PARENT,
+        parent_call_id: "call_a",
+        ...patch,
+        preview: patch.preview ?? "user prompt",
+      },
+    ],
+    byId: new Map(),
   });
 }
 
@@ -151,10 +181,22 @@ describe("SubagentRosterPanel — card header", () => {
     ).toBeTruthy();
   });
 
-  it("labels the child from byId.activePrimary when the session list has no child entry", () => {
-    // The production path: session/list excludes children
-    // (`parent_session_id IS NULL`), so `sessions` never carries a child —
-    // `byId` is hydrated from the child's own snapshot push on subscribe.
+  it("says finished (not unknown) for an old launch whose row left the window", () => {
+    // Durable binding + session/list entry, but the parent's launch/output rows
+    // are outside the loaded window: the child terminated, the ok/error detail
+    // is simply not reachable — that reads as "finished", never "unknown".
+    seedListSession({});
+    const roster = renderPanel();
+
+    expect(
+      within(roster).getByTestId("subagent-roster-finished").textContent,
+    ).toBe("finished");
+  });
+
+  it("labels the child from byId.activePrimary when the list has no entry yet", () => {
+    // Fallback path: the list RPC has not landed (or the child is not in the
+    // snapshot), so `byId` — hydrated from the child's own snapshot push on
+    // subscribe — is all the panel has.
     useSessionStore.getState().applySnapshot({
       session_id: CHILD,
       project: "/p",
@@ -175,7 +217,7 @@ describe("SubagentRosterPanel — card header", () => {
     ).toBeTruthy();
   });
 
-  it("shows the child's latest-message preview while collapsed", () => {
+  it("shows the child's last-message preview when the server sent no assistant text", () => {
     seedSession("researcher", "reading the panel wiring");
     const roster = renderPanel();
 
@@ -184,6 +226,34 @@ describe("SubagentRosterPanel — card header", () => {
     ).toBe("reading the panel wiring");
     // Collapsed: no transcript mounted yet.
     expect(screen.queryByTestId("message-list")).toBeNull();
+  });
+
+  it("labels a never-subscribed child from the list alone (never 'subagent')", () => {
+    // The P7 list payload: a real child row carrying its parent ids, its own
+    // agent_id and the assistant preview. No subscription, no `byId`, no live
+    // job and no parent launch row are available here.
+    seedListSession({ assistant_preview: "read the panel wiring" });
+
+    const roster = renderPanel();
+
+    const label = within(roster).getByTestId("subagent-roster-agent").textContent;
+    expect(label).toBe("researcher");
+    expect(label).not.toBe("subagent");
+    // Assistant text wins over the raw last-message preview.
+    expect(
+      within(roster).getByTestId("subagent-roster-preview").textContent,
+    ).toBe("read the panel wiring");
+  });
+
+  it("falls back to `preview` when the child has no assistant text", () => {
+    // The server omits `assistant_preview` when empty; here it sends "".
+    seedListSession({ assistant_preview: "" });
+
+    const roster = renderPanel();
+
+    expect(
+      within(roster).getByTestId("subagent-roster-preview").textContent,
+    ).toBe("user prompt");
   });
 
   it("uses the session's running flag when no live job is present", () => {
@@ -346,5 +416,28 @@ describe("SubagentRosterPanel — expanded card is the full child transcript", (
     expect(
       useMessageStore.getState().bySession.get(CHILD)?.messages.length ?? 0,
     ).toBe(1);
+  });
+});
+
+describe("SubagentRosterPanel — session list refresh (P7)", () => {
+  it("re-pulls session/list when the panel opens", () => {
+    const listSessions = vi
+      .spyOn(useSessionStore.getState(), "listSessions")
+      .mockImplementation(() => {});
+
+    renderPanel();
+
+    expect(listSessions).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not race the socket handshake while disconnected", () => {
+    useConnectionStore.setState({ state: "disconnected" });
+    const listSessions = vi
+      .spyOn(useSessionStore.getState(), "listSessions")
+      .mockImplementation(() => {});
+
+    renderPanel();
+
+    expect(listSessions).not.toHaveBeenCalled();
   });
 });

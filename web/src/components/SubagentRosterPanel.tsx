@@ -40,7 +40,7 @@ const EMPTY_ROWS: HumanRow[] = [];
  */
 const CARD_BODY_H = 280;
 
-type FinishedStatus = "completed" | "failed" | "unknown";
+type FinishedStatus = "completed" | "failed" | "unknown" | "finished";
 
 interface RosterEntry {
   childId: string;
@@ -114,16 +114,18 @@ function iconStatus(entry: RosterEntry): ToolStatus {
  * as an expandable card. The roster is sourced from the durable
  * `subagentBindings` (call_id → child session id), deduped by child id, and
  * enriched per child by:
- *   1. the session itself — `sessionStore.sessions` (agent_id / preview /
- *      running) plus the child slice in `sessionStore.byId` (hydrated from the
- *      child's snapshot once it is subscribed). Primary: works with no window.
+ *   1. the session itself — `sessionStore.sessions` (agent_id / assistant_preview /
+ *      preview / running). PRIMARY: the server lists child sessions too, so this
+ *      labels a child that was never subscribed (P7). `sessionStore.byId` (the
+ *      child slice, hydrated once subscribed) backs it up.
  *   2. the live `subagentStore.jobs` entry (agent_name + start time → timer).
  *   3. the parent transcript's `subagent_launch` row (agent name / outcome).
  *
  * Expanding a card subscribes the child session and renders its FULL transcript
  * with the same stack as the main panel (MessageList virtualizer + a top
- * ProgressiveBlur); collapsing unsubscribes and drops the child slices — unless
- * the child still has its own dock tab open, which owns that subscription.
+ * ProgressiveBlur); collapsing releases the subscription and keeps the child's
+ * slices (P6) — unless the child still has its own dock tab open, which owns
+ * that subscription.
  */
 export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
   const bindings = useMessageStore(
@@ -138,7 +140,18 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
   );
   const sessions = useSessionStore((s) => s.sessions);
   const sessionsById = useSessionStore((s) => s.byId);
+  const listSessions = useSessionStore((s) => s.listSessions);
+  const connState = useConnectionStore((s) => s.state);
   const [open, setOpen] = useState<Set<string>>(() => new Set());
+
+  // `session/list` is only PUSHED on session create/delete — never on turn
+  // start/finish or a preview update — so the list would go stale while the
+  // panel is closed. Re-pull it on open (same gating as SessionList, so the
+  // request never races the socket handshake).
+  useEffect(() => {
+    if (connState !== "connected") return;
+    listSessions();
+  }, [connState, listSessions]);
 
   const roster = useMemo(() => {
     const meta = subagentRowMeta(rows ?? EMPTY_ROWS);
@@ -148,6 +161,8 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
       const job = jobs.find((j) => j.call_id === callId);
       const info = meta.get(callId);
       const session = sessions.find((s) => s.id === childId);
+      // Priority: the session row is the primary source (it is the only one that
+      // knows a child before its first subscription); the rest are fallbacks.
       const agent =
         session?.agent_id ||
         sessionsById.get(childId)?.activePrimary ||
@@ -162,8 +177,15 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
           session?.running === true ||
           session?.status === "running_with_subagent",
         startedAt: job?.started_at_ms,
-        finished: info?.finished ?? "unknown",
-        preview: session?.preview || undefined,
+        // No launch row in the loaded window: an old launch (the binding is
+        // durable, the row scrolled away). The child is not running, so it did
+        // terminate — "finished". The ok/error detail lives only in the parent's
+        // sealed launch output, outside the window; "unknown" stays reserved for
+        // a row that IS loaded but whose output never sealed.
+        finished: info ? info.finished : "finished",
+        // Assistant text reads as a far better summary of a worker than the
+        // last message (which is often the user's prompt).
+        preview: session?.assistant_preview || session?.preview || undefined,
       };
       // Dedupe by child id — prefer the entry that is still running.
       const prev = byChild.get(childId);
@@ -296,7 +318,9 @@ function SubagentStatus({ entry }: { entry: RosterEntry }) {
       ? "failed"
       : entry.finished === "completed"
         ? "completed"
-        : "unknown";
+        : entry.finished === "finished"
+          ? "finished"
+          : "unknown";
   return (
     <span
       className={`ml-auto shrink-0 ${

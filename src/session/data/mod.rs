@@ -14,8 +14,8 @@ use crate::types::{LitecodeError, Result};
 
 pub use blob::{gc_unreferenced, put_bytes, put_text, read_bytes};
 pub use command::{
-    CommitKind, CommitReceipt, MutationId, ReadValue, SessionChange, SessionMutation, SessionRead,
-    SessionRevision,
+    CommitKind, CommitReceipt, MutationId, ReadValue, SessionChange, SessionListPreview,
+    SessionListRow, SessionMutation, SessionRead, SessionRevision,
 };
 pub use reader::SessionReadPool;
 pub use sqlite::fts;
@@ -210,9 +210,7 @@ impl SessionData {
         }
     }
 
-    pub fn list_sessions_blocking(
-        &self,
-    ) -> Result<Vec<(String, String, i64, String, String, Option<String>)>> {
+    pub fn list_sessions_blocking(&self) -> Result<Vec<crate::session::data::command::SessionListRow>> {
         match self.read_blocking(SessionRead::ListSessions)? {
             ReadValue::List(v) => Ok(v),
             _ => Err(LitecodeError::SessionStorage("unexpected list".into())),
@@ -368,9 +366,7 @@ impl SessionDataReader {
         }
     }
 
-    pub fn list_sessions_blocking(
-        &self,
-    ) -> Result<Vec<(String, String, i64, String, String, Option<String>)>> {
+    pub fn list_sessions_blocking(&self) -> Result<Vec<crate::session::data::command::SessionListRow>> {
         match self.read_blocking(SessionRead::ListSessions)? {
             ReadValue::List(v) => Ok(v),
             _ => Err(LitecodeError::SessionStorage("unexpected list".into())),

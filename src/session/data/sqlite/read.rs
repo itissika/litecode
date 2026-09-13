@@ -10,7 +10,7 @@ use crate::session::transcript_file::SearchableRow;
 use crate::session::working::WorkingRow;
 use crate::types::{LitecodeError, Result};
 
-use super::super::command::{ReadValue, SessionChange, SessionRead};
+use super::super::command::{ReadValue, SessionChange, SessionListRow, SessionRead};
 use super::fts;
 use super::session::{self, TranscriptRow};
 
@@ -197,27 +197,54 @@ fn load_working_set(
         .collect())
 }
 
-fn list_sessions(
-    conn: &Connection,
-) -> Result<Vec<(String, String, i64, String, String, Option<String>)>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, project, updated_at, last_message, agent_id, model_id
+fn list_sessions(conn: &Connection) -> Result<Vec<SessionListRow>> {
+    let mut roots = query_session_list(
+        conn,
+        "SELECT id, project, updated_at, last_message, last_assistant, agent_id, model_id,
+                parent_session_id, parent_call_id
          FROM sessions
          WHERE parent_session_id IS NULL
          ORDER BY updated_at DESC LIMIT 50",
+        [],
     )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get(0)?,
-            row.get(1)?,
-            row.get(2)?,
-            row.get(3)?,
-            row.get(4)?,
-            row.get(5)?,
-        ))
+    let mut children = query_session_list(
+        conn,
+        "SELECT id, project, updated_at, last_message, last_assistant, agent_id, model_id,
+                parent_session_id, parent_call_id
+         FROM sessions
+         WHERE parent_session_id IS NOT NULL
+         ORDER BY updated_at DESC",
+        [],
+    )?;
+    roots.append(&mut children);
+    Ok(roots)
+}
+
+fn query_session_list(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<SessionListRow>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params, |row| {
+        Ok(SessionListRow {
+            id: row.get(0)?,
+            project: row.get(1)?,
+            updated_at: row.get(2)?,
+            preview: row.get(3)?,
+            assistant_preview: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            agent_id: row.get(5)?,
+            model_id: row.get(6)?,
+            parent_session_id: nonempty_id(row.get(7)?),
+            parent_call_id: nonempty_id(row.get(8)?),
+        })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+fn nonempty_id(value: Option<String>) -> Option<String> {
+    value.filter(|s| !s.is_empty())
 }
 
 fn list_session_ids(conn: &Connection) -> Result<Vec<String>> {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { SessionItem } from "./SessionItem";
@@ -6,6 +6,12 @@ import { openSessionPanel } from "../lib/sessionPanelNav";
 
 export function SessionList() {
   const sessions = useSessionStore((s) => s.sessions);
+  // The server also lists subagent CHILD sessions (the roster needs them to
+  // label a child that was never subscribed), so filter the sidebar to roots.
+  const roots = useMemo(
+    () => sessions.filter((s) => !s.parent_session_id),
+    [sessions],
+  );
   const loading = useSessionStore((s) => s.sessionsLoading);
   const error = useSessionStore((s) => s.sessionListError);
   const deleteSession = useSessionStore((s) => s.deleteSession);
@@ -42,7 +48,7 @@ export function SessionList() {
   };
 
   const renderBody = () => {
-    if (sessions.length === 0) {
+    if (roots.length === 0) {
       // While the socket is establishing or recovering, show a connecting
       // state rather than a misleading error/retry.
       if (connecting && !error) {
@@ -70,7 +76,7 @@ export function SessionList() {
     }
     return (
       <div>
-        {sessions.map((s) => (
+        {roots.map((s) => (
           <SessionItem
             key={s.id}
             session={s}
@@ -107,7 +113,7 @@ export function SessionList() {
             />
           )}
           <span className="min-w-0 truncate text-[10px] text-(--_dk-text-disabled)">
-            {sessions.length} session{sessions.length !== 1 ? "s" : ""}
+            {roots.length} session{roots.length !== 1 ? "s" : ""}
           </span>
         </div>
       </div>

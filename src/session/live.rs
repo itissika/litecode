@@ -55,10 +55,20 @@ pub enum LifecycleEvent {
         session_id: String,
         progress: TurnProgress,
     },
-    /// `sessions.last_message` changed — session list preview patch.
+    /// `sessions.last_message` / `last_assistant` changed — session list preview patch.
     SessionPreviewUpdated {
         session_id: String,
-        preview: String,
+        preview: Option<String>,
+        assistant_preview: Option<String>,
+        updated_at: i64,
+    },
+    /// A durable session row was created (including subagent children).
+    SessionAdded {
+        session_id: String,
+        project: String,
+        agent_id: String,
+        parent_session_id: Option<String>,
+        parent_call_id: Option<String>,
         updated_at: i64,
     },
     /// Discrete turn-step start (reasoning / toolcall / text). Not merged.

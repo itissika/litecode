@@ -193,8 +193,20 @@ async fn subagent_launch_creates_durable_child_with_parent_link() {
     assert_eq!(child_meta.parent_call_id.as_deref(), Some("call_launch_1"));
 
     let listed = sessions.data().list_sessions_blocking().unwrap();
-    assert_eq!(listed.len(), 1, "child must not appear in top-level list");
-    assert_eq!(listed[0].0, parent_id);
+    assert!(
+        listed.iter().any(|row| row.id == parent_id),
+        "parent remains in session/list"
+    );
+    let child_row = listed
+        .iter()
+        .find(|row| row.id == child_id)
+        .expect("child belongs in session/list");
+    assert_eq!(
+        child_row.parent_session_id.as_deref(),
+        Some(parent_id.as_str())
+    );
+    assert_eq!(child_row.parent_call_id.as_deref(), Some("call_launch_1"));
+    assert_eq!(child_row.agent_id, "reviewer");
 
     let transcript = sessions
         .data()
@@ -373,7 +385,7 @@ async fn subagent_bound_arrives_on_parent_before_tool_returns() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn child_lifecycle_is_not_broadcast_to_workspace() {
+async fn child_lifecycle_is_broadcast_to_workspace() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path();
     let resolved = reviewer_resolved(cwd);
@@ -427,16 +439,17 @@ async fn child_lifecycle_is_not_broadcast_to_workspace() {
             | LifecycleEvent::TurnProgress { session_id, .. }
             | LifecycleEvent::TurnFinished { session_id, .. }
             | LifecycleEvent::TurnStep { session_id, .. }
-            | LifecycleEvent::SessionPreviewUpdated { session_id, .. } => session_id.as_str(),
+            | LifecycleEvent::SessionPreviewUpdated { session_id, .. }
+            | LifecycleEvent::SessionAdded { session_id, .. } => session_id.as_str(),
             LifecycleEvent::SessionRemoved { .. } => continue,
         };
         if sid == child_id {
             child_turn_events += 1;
         }
     }
-    assert_eq!(
-        child_turn_events, 0,
-        "workspace lifecycle must not carry child turn events"
+    assert!(
+        child_turn_events > 0,
+        "workspace lifecycle must carry child turn events"
     );
 }
 

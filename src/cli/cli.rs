@@ -457,13 +457,13 @@ pub fn run() -> anyhow::Result<()> {
         let data = crate::session::SessionData::open(&lease, &db_path)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let sessions = data.reader().list_sessions_blocking()?;
-        for (id, project, updated, preview, _agent_id, _model_id) in sessions {
-            let preview_str = if preview.is_empty() {
+        for row in sessions {
+            let preview_str = if row.preview.is_empty() {
                 ""
             } else {
-                &format!("  |  {}", preview)
+                &format!("  |  {}", row.preview)
             };
-            println!("{}  {}  {}{}", id, project, updated, preview_str);
+            println!("{}  {}  {}{}", row.id, row.project, row.updated_at, preview_str);
         }
         data.shutdown();
         return Ok(());

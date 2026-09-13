@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { shouldIgnoreForwardedSubagentEvent } from "./connectionStore";
+import { useConnectionStore, shouldIgnoreForwardedSubagentEvent } from "./connectionStore";
+import { useMessageStore } from "./messageStore";
+import { useSessionStore } from "./sessionStore";
 
 describe("shouldIgnoreForwardedSubagentEvent", () => {
   it("ignores turn/buffer/permission when parent_session_id is set", () => {
@@ -38,5 +40,42 @@ describe("shouldIgnoreForwardedSubagentEvent", () => {
         child_session_id: "child-1",
       }),
     ).toBe(false);
+  });
+});
+
+describe("agent/subagent_bound → session/list refresh", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useMessageStore.setState({ bySession: new Map() });
+  });
+
+  it("re-pulls the list so a newborn child is known without a subscribe", () => {
+    const listSessions = vi
+      .spyOn(useSessionStore.getState(), "listSessions")
+      .mockImplementation(() => {});
+
+    useConnectionStore.getState().dispatchEnvelope({
+      method: "agent/subagent_bound",
+      params: {
+        session_id: "parent-1",
+        call_id: "call_a",
+        child_session_id: "child-1",
+      },
+    });
+
+    expect(listSessions).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the list alone for unrelated notifications", () => {
+    const listSessions = vi
+      .spyOn(useSessionStore.getState(), "listSessions")
+      .mockImplementation(() => {});
+
+    useConnectionStore.getState().dispatchEnvelope({
+      method: "agent/turn_started",
+      params: { session_id: "parent-1" },
+    });
+
+    expect(listSessions).not.toHaveBeenCalled();
   });
 });

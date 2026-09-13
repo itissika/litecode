@@ -33,6 +33,30 @@ impl From<&str> for MutationId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRevision(pub u64);
 
+/// Session-list preview patch written with a mutation (`last_message` / `last_assistant`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionListPreview {
+    pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant: Option<String>,
+}
+
+/// One `session/list` SQL row (roots and children).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionListRow {
+    pub id: String,
+    pub project: String,
+    pub updated_at: i64,
+    pub preview: String,
+    pub assistant_preview: String,
+    pub agent_id: String,
+    pub model_id: Option<String>,
+    pub parent_session_id: Option<String>,
+    pub parent_call_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommitReceipt {
     pub session_id: String,
@@ -44,6 +68,9 @@ pub struct CommitReceipt {
     /// Not part of operation identity; omitted from durable receipt JSON when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<(String, i64)>,
+    /// Live session-list assistant preview when this mutation updated `last_assistant`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant_preview: Option<(String, i64)>,
     /// After `CommitTurnDelta`, the writer projection window (same skip rules
     /// as reader fold). Never durable; ignored by receipt JSON.
     #[serde(skip)]
@@ -363,7 +390,7 @@ pub enum ReadValue {
     Events(Vec<crate::session::event::SessionEvent>),
     SeqCursor { last_seq: i64, next_seq: u64 },
     Meter(SessionContextMeter),
-    List(Vec<(String, String, i64, String, String, Option<String>)>),
+    List(Vec<SessionListRow>),
     Ids(Vec<String>),
     GcList(Vec<(String, i64)>),
     /// `(id, parent_session_id, updated_at, agent_id, last_message)` activity rows.

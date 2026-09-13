@@ -334,25 +334,7 @@ impl SessionManager {
             .unwrap_or(false)
     }
 
-    /// Workspace-list lifecycle: child turn noise must not reach the session list.
-    /// `SessionRemoved` is always broadcast so clients can drop stale rows.
     fn emit_lifecycle(&self, event: LifecycleEvent) {
-        let session_id = match &event {
-            LifecycleEvent::SessionRemoved { session_id } => {
-                let _ = self.lifecycle_tx.send(LifecycleEvent::SessionRemoved {
-                    session_id: session_id.clone(),
-                });
-                return;
-            }
-            LifecycleEvent::TurnStarted { session_id, .. }
-            | LifecycleEvent::TurnProgress { session_id, .. }
-            | LifecycleEvent::TurnFinished { session_id, .. }
-            | LifecycleEvent::SessionPreviewUpdated { session_id, .. }
-            | LifecycleEvent::TurnStep { session_id, .. } => session_id.as_str(),
-        };
-        if self.is_child_session(session_id) {
-            return;
-        }
         let _ = self.lifecycle_tx.send(event);
     }
 
@@ -442,6 +424,14 @@ impl SessionManager {
         let mut record = SessionRecord::from_meta(&meta, task_state, receipt.revision);
         record.project = Some(project.to_string());
         self.records.lock().unwrap().insert(sid.clone(), record);
+        self.emit_lifecycle(LifecycleEvent::SessionAdded {
+            session_id: sid.clone(),
+            project: project.to_string(),
+            agent_id: agent_id.to_string(),
+            parent_session_id: Some(parent_session_id.to_string()),
+            parent_call_id: Some(parent_call_id.to_string()),
+            updated_at: meta.updated_at,
+        });
         Ok(sid)
     }
 
@@ -1713,7 +1703,7 @@ impl SessionManager {
     ) -> anyhow::Result<(
         crate::session::data::command::CommitKind,
         Vec<crate::session::working::WorkingRow>,
-        Option<(String, i64)>,
+        Option<crate::session::data::command::SessionListPreview>,
     )> {
         let expected = self.expected_revision(session_id);
         let receipt = self.mutate_blocking(SessionMutation::CommitTurnDelta {
@@ -1727,7 +1717,22 @@ impl SessionManager {
         let working = receipt
             .working_set
             .ok_or_else(|| anyhow::anyhow!("CommitTurnDelta receipt missing writer working set"))?;
-        Ok((receipt.outcome, working, receipt.preview))
+        let preview = match (receipt.preview, receipt.assistant_preview) {
+            (None, None) => None,
+            (user, assistant) => {
+                let updated_at = user
+                    .as_ref()
+                    .map(|(_, ts)| *ts)
+                    .or_else(|| assistant.as_ref().map(|(_, ts)| *ts))
+                    .unwrap_or(0);
+                Some(crate::session::data::command::SessionListPreview {
+                    updated_at,
+                    user: user.map(|(text, _)| text),
+                    assistant: assistant.map(|(text, _)| text),
+                })
+            }
+        };
+        Ok((receipt.outcome, working, preview))
     }
 }
 
@@ -1774,11 +1779,13 @@ async fn fanout_turn(
                 match &envelope.event {
                     InternalEvent::SessionPreviewUpdated {
                         preview,
+                        assistant_preview,
                         updated_at,
                     } => {
                         manager.emit_lifecycle(LifecycleEvent::SessionPreviewUpdated {
                             session_id: session_id.clone(),
                             preview: preview.clone(),
+                            assistant_preview: assistant_preview.clone(),
                             updated_at: *updated_at,
                         });
                     }
@@ -2067,7 +2074,7 @@ mod child_session_tests {
     }
 
     #[tokio::test]
-    async fn child_turn_lifecycle_is_filtered() {
+    async fn child_turn_lifecycle_is_broadcast() {
         use crate::runtime::observer::TurnPhase;
         use crate::session::live::TurnProgress;
 
@@ -2125,7 +2132,7 @@ mod child_session_tests {
             }
         }
         assert!(got_parent, "parent turn_started must broadcast");
-        assert!(!got_child, "child turn_started must be filtered");
+        assert!(got_child, "child turn_started must broadcast");
     }
 
     #[test]

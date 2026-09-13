@@ -71,9 +71,9 @@ async fn listed(data: Arc<SessionData>) -> Vec<String> {
     let mgr = SessionManager::from_data(Arc::new(TurnGuard::new()), data);
     let rows = mgr.data().list_sessions_blocking().expect("sql list");
     let mut ids = Vec::new();
-    for (id, ..) in rows {
-        if !mgr.is_session_empty(&id).await {
-            ids.push(id);
+    for row in rows {
+        if !mgr.is_session_empty(&row.id).await {
+            ids.push(row.id);
         }
     }
     ids
@@ -415,10 +415,10 @@ async fn busy_empty_session_is_listed_until_cold_start() {
     assert_hidden_after_reopen(&env, &sid, "busy empty after cold start").await;
 }
 
-// ── SQL parent filter (not empty-filter; exclusion) ───────────────────────
+// ── SQL parent filter (children are listed with parent ids) ───────────────
 
 #[tokio::test(flavor = "multi_thread")]
-async fn child_session_is_omitted_from_root_list() {
+async fn child_session_is_listed_with_parent_id() {
     let env = Env::new();
     let sid = {
         let data = env.open();
@@ -428,20 +428,19 @@ async fn child_session_is_omitted_from_root_list() {
     };
     env.poke(|conn| {
         conn.execute(
-            "UPDATE sessions SET parent_session_id = 'parent-1' WHERE id = ?1",
+            "UPDATE sessions SET parent_session_id = 'parent-1', parent_call_id = 'call-1' WHERE id = ?1",
             rusqlite::params![sid],
         )
         .unwrap();
     });
     let data = env.open();
-    let sql_ids: Vec<String> = data
+    let row = data
         .list_sessions_blocking()
         .unwrap()
         .into_iter()
-        .map(|(id, ..)| id)
-        .collect();
-    assert!(
-        !sql_ids.contains(&sid),
-        "child sessions are filtered by parent_session_id IS NULL, not is_session_empty"
-    );
+        .find(|row| row.id == sid)
+        .expect("child sessions belong in session/list");
+    assert_eq!(row.parent_session_id.as_deref(), Some("parent-1"));
+    assert_eq!(row.parent_call_id.as_deref(), Some("call-1"));
+    assert_eq!(row.preview, "child work");
 }

@@ -9,8 +9,11 @@ use rusqlite::{Connection, OptionalExtension};
 
 use super::conn::SharedDb;
 
-use crate::authority::responses::{InputMessage, InputRole, MessageItem};
+use crate::authority::responses::{
+    AssistantRole, InputMessage, InputRole, MessageItem, OutputStatus,
+};
 use crate::platform_knobs::{ContextMode, ThinkingTier};
+use crate::session::data::command::SessionListPreview;
 use crate::session::estimate::compute_token_estimate;
 use crate::session::event::{
     EventDraft, EventType, Seq, SessionEvent, finalize_draft, item_from_event, log_state_of_item,
@@ -141,7 +144,7 @@ pub enum CommitDeltaOutcome {
     /// Not a projection-length check and not by itself a user 取消.
     Discarded,
     Applied {
-        preview: Option<(String, i64)>,
+        preview: Option<SessionListPreview>,
         /// Existing rows changed in place and must be re-sent to live clients.
         sealed_seqs: Vec<Seq>,
         /// True when this commit sealed or appended at least one row.
@@ -768,17 +771,64 @@ fn event_from_disk_row(
     })
 }
 
-fn preview_from_item_json(body: &str) -> String {
-    let content = match serde_json::from_str::<Item>(body) {
-        Ok(item) => item_text_preview(&item),
-        Err(_) => return String::new(),
-    };
+fn clip_preview(content: &str) -> String {
     let preview: String = content.chars().take(200).collect();
     if content.chars().count() > 200 {
         format!("{preview}…")
     } else {
         preview
     }
+}
+
+fn preview_from_item_json(body: &str) -> String {
+    match serde_json::from_str::<Item>(body) {
+        Ok(item) => clip_preview(&item_text_preview(&item)),
+        Err(_) => String::new(),
+    }
+}
+
+fn write_session_list_previews(
+    tx: &Connection,
+    session_id: &str,
+    items: &[Item],
+) -> Result<Option<SessionListPreview>> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let user = Session::last_user_message_preview(items);
+    let assistant = Session::last_assistant_message_preview(items);
+    let user = (!user.is_empty()).then_some(user);
+    let assistant = (!assistant.is_empty()).then_some(assistant);
+    match (&user, &assistant) {
+        (Some(user), Some(assistant)) => {
+            tx.execute(
+                "UPDATE sessions SET updated_at = ?1, last_message = ?2, last_assistant = ?3 WHERE id = ?4",
+                rusqlite::params![now, user, assistant, session_id],
+            )?;
+        }
+        (Some(user), None) => {
+            tx.execute(
+                "UPDATE sessions SET updated_at = ?1, last_message = ?2 WHERE id = ?3",
+                rusqlite::params![now, user, session_id],
+            )?;
+        }
+        (None, Some(assistant)) => {
+            tx.execute(
+                "UPDATE sessions SET updated_at = ?1, last_assistant = ?2 WHERE id = ?3",
+                rusqlite::params![now, assistant, session_id],
+            )?;
+        }
+        (None, None) => {
+            tx.execute(
+                "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, session_id],
+            )?;
+            return Ok(None);
+        }
+    }
+    Ok(Some(SessionListPreview {
+        updated_at: now,
+        user,
+        assistant,
+    }))
 }
 
 pub(crate) fn load_meta_on(
@@ -1379,12 +1429,30 @@ impl Session {
                 }))
             ) {
                 let content = item_text_preview(item);
-                let preview: String = content.chars().take(200).collect();
-                if content.chars().count() > 200 {
-                    return format!("{preview}…");
+                if content.is_empty() {
+                    continue;
                 }
-                return preview;
+                return clip_preview(&content);
             }
+        }
+        String::new()
+    }
+
+    pub(crate) fn last_assistant_message_preview(items: &[Item]) -> String {
+        for item in items.iter().rev() {
+            let Item::Message(MessageItem::Output(message)) = item else {
+                continue;
+            };
+            if message.role != AssistantRole::Assistant
+                || message.status != OutputStatus::Completed
+            {
+                continue;
+            }
+            let content = item_text_preview(item);
+            if content.is_empty() {
+                continue;
+            }
+            return clip_preview(&content);
         }
         String::new()
     }
@@ -1624,21 +1692,10 @@ impl Session {
         let tx = self.conn();
         let (seq, item) =
             self.admit_draft_in_tx(&tx, draft, turn_id, turn_seq, kind, 0, &mut projection)?;
-        let now = chrono::Utc::now().timestamp_millis();
         if let Some(item) = item.as_ref() {
-            let preview = Self::last_user_message_preview(std::slice::from_ref(item));
-            if !preview.is_empty() {
-                tx.execute(
-                    "UPDATE sessions SET updated_at = ?1, last_message = ?2 WHERE id = ?3",
-                    rusqlite::params![now, preview, self.id],
-                )?;
-            } else {
-                tx.execute(
-                    "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
-                    rusqlite::params![now, self.id],
-                )?;
-            }
+            let _ = write_session_list_previews(&tx, &self.id, std::slice::from_ref(item))?;
         } else {
+            let now = chrono::Utc::now().timestamp_millis();
             tx.execute(
                 "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
                 rusqlite::params![now, self.id],
@@ -1652,6 +1709,11 @@ impl Session {
         let tx = self.conn();
         seal_event_row(&tx, &self.id, &self.data_root, seq, item)?;
         self.projection.borrow_mut().seal_item(seq, item);
+        let user = Self::last_user_message_preview(std::slice::from_ref(item));
+        let assistant = Self::last_assistant_message_preview(std::slice::from_ref(item));
+        if !user.is_empty() || !assistant.is_empty() {
+            let _ = write_session_list_previews(&tx, &self.id, std::slice::from_ref(item))?;
+        }
         Ok(())
     }
 
@@ -1724,13 +1786,30 @@ impl Session {
             .flatten()
             .map(|body| preview_from_item_json(&body))
             .unwrap_or_default();
+        let assistant: String = tx
+            .query_row(
+                "SELECT body FROM transcript_items
+                 WHERE session_id = ?1
+                   AND kind = 'item/assistant'
+                   AND body IS NOT NULL
+                   AND state = 'final'
+                 ORDER BY seq DESC LIMIT 1",
+                rusqlite::params![self.id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+            .and_then(|body| serde_json::from_str::<Item>(&body).ok())
+            .map(|item| Self::last_assistant_message_preview(std::slice::from_ref(&item)))
+            .unwrap_or_default();
 
         tx.execute(
             "UPDATE sessions
              SET updated_at = ?1,
-                 last_message = ?2
-             WHERE id = ?3",
-            rusqlite::params![now, preview, self.id],
+                 last_message = ?2,
+                 last_assistant = ?3
+             WHERE id = ?4",
+            rusqlite::params![now, preview, assistant, self.id],
         )?;
         refresh_compact_pointers_from_log(&tx, &self.id)?;
 
@@ -1745,22 +1824,8 @@ impl Session {
         &self,
         tx: &Connection,
         items: &[Item],
-    ) -> Result<Option<(String, i64)>> {
-        let now = chrono::Utc::now().timestamp_millis();
-        let preview = Self::last_user_message_preview(items);
-        if !preview.is_empty() {
-            tx.execute(
-                "UPDATE sessions SET updated_at = ?1, last_message = ?2 WHERE id = ?3",
-                rusqlite::params![now, preview, self.id],
-            )?;
-            Ok(Some((preview, now)))
-        } else {
-            tx.execute(
-                "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
-                rusqlite::params![now, self.id],
-            )?;
-            Ok(None)
-        }
+    ) -> Result<Option<SessionListPreview>> {
+        write_session_list_previews(tx, &self.id, items)
     }
 
     /// §5.1 step INSERT — append `delta` detail rows with consecutive seq allocation.
@@ -1798,7 +1863,7 @@ impl Session {
         }
         let preview_updated = self.bump_session_updated(&tx, delta)?;
         self.commit_projection(projection);
-        Ok(preview_updated)
+        Ok(preview_updated.and_then(|patch| patch.user.map(|user| (user, patch.updated_at))))
     }
 
     /// Append one Item (including `in_progress`) and return its `seq`.
@@ -1921,6 +1986,7 @@ impl Session {
         };
         let mut mutated = false;
         let mut sealed_seqs = Vec::new();
+        let mut sealed_items = Vec::new();
         let mut appended: Vec<Item> = Vec::new();
         let mut next_turn_seq = 0i64;
         for row in kept.iter_mut() {
@@ -1935,6 +2001,7 @@ impl Session {
                     seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
                     projection.seal_item(seq, msg);
                     sealed_seqs.push(seq);
+                    sealed_items.push(msg.clone());
                     mutated = true;
                 }
                 continue;
@@ -1954,6 +2021,7 @@ impl Session {
                         seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
                         projection.seal_item(seq, msg);
                         sealed_seqs.push(seq);
+                        sealed_items.push(msg.clone());
                         mutated = true;
                     }
                     continue;
@@ -1971,7 +2039,9 @@ impl Session {
             appended.push(msg.clone());
         }
 
-        let preview_updated = self.bump_session_updated(&tx, &appended)?;
+        let mut preview_items = appended.clone();
+        preview_items.extend(sealed_items);
+        let preview_updated = self.bump_session_updated(&tx, &preview_items)?;
         *rows = kept;
         self.commit_projection(projection);
         Ok(CommitDeltaOutcome::Applied {
@@ -2627,7 +2697,7 @@ mod tests {
         .unwrap();
 
         let listed = data.list_sessions_blocking().unwrap();
-        let models: Vec<_> = listed.into_iter().map(|r| r.5).collect();
+        let models: Vec<_> = listed.into_iter().map(|r| r.model_id).collect();
         assert!(models.contains(&Some("keep-me".into())));
         assert!(models.contains(&None));
     }
@@ -3312,6 +3382,44 @@ mod tests {
             )
             .unwrap();
         assert_eq!(preview, "hello user");
+        let assistant_preview: String = session
+            .conn()
+            .query_row(
+                "SELECT last_assistant FROM sessions WHERE id = ?1",
+                rusqlite::params![session.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(assistant_preview, "assistant reply");
+    }
+
+    #[test]
+    fn in_progress_assistant_does_not_fill_last_assistant() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("hello user")])
+            .unwrap();
+        let streaming = Item::Message(MessageItem::Output(OutputMessage {
+            id: "msg_stream".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "partial".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::InProgress,
+            phase: None,
+        }));
+        session.insert_detail_rows(&[streaming]).unwrap();
+        let assistant_preview: String = session
+            .conn()
+            .query_row(
+                "SELECT last_assistant FROM sessions WHERE id = ?1",
+                rusqlite::params![session.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(assistant_preview, "");
     }
 
     #[test]
@@ -3332,6 +3440,15 @@ mod tests {
             .unwrap();
         assert_eq!(preview, "keep me");
         assert!(!preview.starts_with('{'));
+        let assistant_preview: String = session
+            .conn()
+            .query_row(
+                "SELECT last_assistant FROM sessions WHERE id = ?1",
+                rusqlite::params![session.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(assistant_preview, "");
     }
 
     #[test]

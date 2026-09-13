@@ -1,0 +1,1031 @@
+[
+ {
+  "jsonrpc": "2.0",
+  "method": "server/hello",
+  "params": {
+   "active_primary": "default",
+   "llm_ecosystem": "openai",
+   "models": [
+    {
+     "adapter_id": "ark_coding",
+     "api_model_id": "glm-5.3",
+     "context_window": 990000,
+     "id": "model_1787147776896",
+     "label": "glm-5.3-ark"
+    },
+    {
+     "adapter_id": "deepseek_responses",
+     "api_model_id": "deepseek-flash",
+     "context_window": 0,
+     "id": "model_1785174368763",
+     "label": "ds-flash"
+    },
+    {
+     "adapter_id": "ark_coding",
+     "api_model_id": "doubao-seed-2.1-turbo",
+     "context_window": 256000,
+     "id": "model_1787147748007",
+     "label": "doubao-seed-2.1-turbo-ark"
+    },
+    {
+     "adapter_id": "mimo_responses",
+     "api_model_id": "mimo-v2.5",
+     "context_window": 0,
+     "id": "model_1785576637392",
+     "label": "mimo2.5"
+    },
+    {
+     "adapter_id": "opencode",
+     "api_model_id": "deepseek-v4-flash-free",
+     "context_window": 256000,
+     "id": "model_1787339137468",
+     "label": "ds-flash-opencode"
+    },
+    {
+     "adapter_id": "ark_coding",
+     "api_model_id": "glm-5.3-flash",
+     "context_window": 990000,
+     "id": "model_1788200102403",
+     "label": "glm-5.3-flash-ark"
+    },
+    {
+     "adapter_id": "ark_coding",
+     "api_model_id": "deepseek-v4-flash",
+     "context_window": 990000,
+     "id": "model_1787147797063",
+     "label": "deepseek-v4-flash-ark"
+    }
+   ],
+   "primary_agents": [
+    {
+     "description": "General-purpose coding assistant",
+     "id": "default"
+    },
+    {
+     "description": "Orchestrator. Manages a team of subagents and owns the user's goal.",
+     "id": "orchestrator"
+    }
+   ],
+   "project": "E:\\litecode",
+   "session_id": "",
+   "settings_revision": 0,
+   "version": "0.1.8",
+   "version_channel": "dev",
+   "workspace_id": "litecode_51198dfb70413fdc"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "server/stats",
+  "params": {
+   "core_rss_kb": 66028,
+   "embed_rss_kb": 0,
+   "lsp_rss_kb": 1061716,
+   "rss_kb": 1127744,
+   "ts_ms": 1789266426079
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "真实",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 309,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "完整",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 310,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "帧",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 311,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": " →",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 312,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": " vit",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 313,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "est",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 314,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": " 重",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 315,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "放",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 316,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": " →",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 317,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": " ",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 318,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "断",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 319,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "言",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 320,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": " store",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 321,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": " 结果",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 322,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "。",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 323,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "改",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 324,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "探",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 325,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "针",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 326,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "存",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 327,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "帧",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 328,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "delta": "：",
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "sequence_number": 329,
+     "type": "response.output_text.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "logprobs": null,
+     "output_index": 1,
+     "sequence_number": 330,
+     "text": "链路源码全通。上决定性测试：抓真实完整帧 → vitest 重放 → 断言 store 结果。改探针存帧：",
+     "type": "response.output_text.done"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "content_index": 0,
+     "item_id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+     "output_index": 1,
+     "part": {
+      "annotations": [],
+      "logprobs": null,
+      "text": "链路源码全通。上决定性测试：抓真实完整帧 → vitest 重放 → 断言 store 结果。改探针存帧：",
+      "type": "output_text"
+     },
+     "sequence_number": 331,
+     "type": "response.content_part.done"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "item": {
+      "content": [
+       {
+        "annotations": [],
+        "logprobs": null,
+        "text": "链路源码全通。上决定性测试：抓真实完整帧 → vitest 重放 → 断言 store 结果。改探针存帧：",
+        "type": "output_text"
+       }
+      ],
+      "id": "msg_02178926641701800000000000000000000ffffac1829b0b7c03f",
+      "role": "assistant",
+      "status": "completed",
+      "type": "message"
+     },
+     "output_index": 1,
+     "sequence_number": 332,
+     "type": "response.output_item.done"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "item": {
+      "arguments": "",
+      "call_id": "call_69155434d63b45f3bde3a5e6",
+      "id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+      "name": "edit",
+      "status": "in_progress",
+      "type": "function_call"
+     },
+     "output_index": 2,
+     "sequence_number": 333,
+     "type": "response.output_item.added"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "delta": "{\"",
+     "item_id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+     "output_index": 2,
+     "sequence_number": 334,
+     "type": "response.function_call_arguments.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "delta": "ed",
+     "item_id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+     "output_index": 2,
+     "sequence_number": 335,
+     "type": "response.function_call_arguments.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "delta": "its",
+     "item_id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+     "output_index": 2,
+     "sequence_number": 336,
+     "type": "response.function_call_arguments.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "delta": "\":",
+     "item_id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+     "output_index": 2,
+     "sequence_number": 337,
+     "type": "response.function_call_arguments.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "delta": "[",
+     "item_id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+     "output_index": 2,
+     "sequence_number": 338,
+     "type": "response.function_call_arguments.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "delta": "{\"",
+     "item_id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+     "output_index": 2,
+     "sequence_number": 339,
+     "type": "response.function_call_arguments.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "delta": "new",
+     "item_id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+     "output_index": 2,
+     "sequence_number": 340,
+     "type": "response.function_call_arguments.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "delta": "_string",
+     "item_id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+     "output_index": 2,
+     "sequence_number": 341,
+     "type": "response.function_call_arguments.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "delta": "\":",
+     "item_id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+     "output_index": 2,
+     "sequence_number": 342,
+     "type": "response.function_call_arguments.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "delta": " \"",
+     "item_id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+     "output_index": 2,
+     "sequence_number": 343,
+     "type": "response.function_call_arguments.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "delta": " ",
+     "item_id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+     "output_index": 2,
+     "sequence_number": 344,
+     "type": "response.function_call_arguments.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "agent/turn_event",
+  "params": {
+   "event": {
+    "event": {
+     "delta": " if",
+     "item_id": "fc_02178926641749800000000000000000000ffffac1829b0afda28",
+     "output_index": 2,
+     "sequence_number": 345,
+     "type": "response.function_call_arguments.delta"
+    },
+    "type": "stream_event"
+   },
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/attached",
+  "params": {
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "turn": {
+    "awaiting_permission": false,
+    "phase": "executing_tools",
+    "started_at_ms": 1789266279008,
+    "step": 18,
+    "step_max": 200,
+    "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/snapshot",
+  "params": {
+   "agent_id": "default",
+   "api_model_id": "glm-5.3",
+   "bash": {
+    "jobs": [
+     {
+      "call_id": "call_29bf112159314e649f0a93fa",
+      "command_preview": "cd /e/litecode/web && curl -s -m 3 http://127.0.0.1:7483/health; echo; node -e \"…",
+      "id": "bg_a49a887d",
+      "output_file": ".litecode/bash/bg_a49a887d.output",
+      "started_at_ms": 1789265940771
+     },
+     {
+      "call_id": "call_b7065582b1bb41f5b0dafeee",
+      "command_preview": "cd /e/litecode/web && node probe.mjs 2>&1 | tail -12",
+      "id": "bg_d45777a5",
+      "output_file": ".litecode/bash/bg_d45777a5.output",
+      "started_at_ms": 1789266425946
+     }
+    ],
+    "waits": []
+   },
+   "buffer": {
+    "last_seq": 1153,
+    "next_seq": 1154,
+    "revision": 8
+   },
+   "compact_eligible": false,
+   "compacting": false,
+   "context_mode": "standard",
+   "context_token_breakdown": {
+    "conversation": 22207,
+    "per_tool": [
+     {
+      "call": 1628,
+      "name": "bash",
+      "output": 12742,
+      "schema": 300
+     },
+     {
+      "call": 58,
+      "name": "read",
+      "output": 3312,
+      "schema": 165
+     },
+     {
+      "call": 1014,
+      "name": "edit",
+      "output": 121,
+      "schema": 447
+     },
+     {
+      "call": 0,
+      "name": "glob",
+      "output": 0,
+      "schema": 175
+     },
+     {
+      "call": 0,
+      "name": "grep",
+      "output": 0,
+      "schema": 269
+     },
+     {
+      "call": 0,
+      "name": "kill_shell",
+      "output": 0,
+      "schema": 75
+     },
+     {
+      "call": 0,
+      "name": "plan",
+      "output": 0,
+      "schema": 159
+     },
+     {
+      "call": 0,
+      "name": "session_search",
+      "output": 0,
+      "schema": 256
+     },
+     {
+      "call": 0,
+      "name": "subagent_launch",
+      "output": 0,
+      "schema": 259
+     },
+     {
+      "call": 0,
+      "name": "subagent_list",
+      "output": 0,
+      "schema": 37
+     },
+     {
+      "call": 0,
+      "name": "subagent_send",
+      "output": 0,
+      "schema": 82
+     },
+     {
+      "call": 0,
+      "name": "subagent_stop",
+      "output": 0,
+      "schema": 51
+     },
+     {
+      "call": 0,
+      "name": "subagent_wait",
+      "output": 0,
+      "schema": 122
+     },
+     {
+      "call": 0,
+      "name": "todo",
+      "output": 0,
+      "schema": 235
+     },
+     {
+      "call": 0,
+      "name": "wait_shell",
+      "output": 0,
+      "schema": 138
+     },
+     {
+      "call": 0,
+      "name": "webfetch",
+      "output": 0,
+      "schema": 71
+     },
+     {
+      "call": 0,
+      "name": "websearch",
+      "output": 0,
+      "schema": 49
+     },
+     {
+      "call": 0,
+      "name": "workspace_stats",
+      "output": 0,
+      "schema": 65
+     },
+     {
+      "call": 0,
+      "name": "write",
+      "output": 0,
+      "schema": 122
+     }
+    ],
+    "system": 2261,
+    "tool_call": 2700,
+    "tool_output": 16175,
+    "tool_schema": 3077
+   },
+   "context_tokens_estimate": 41111,
+   "context_window": 200000,
+   "cumulative_token_stats": {
+    "cache_hit_tokens": 28421568,
+    "cache_miss_tokens": 654701,
+    "completion_tokens": 231749,
+    "prompt_tokens": 29076269
+   },
+   "label": "glm-5.3-ark",
+   "last_turn_token_stats": {
+    "cache_hit_tokens": 45120,
+    "cache_miss_tokens": 891,
+    "completion_tokens": 36,
+    "prompt_tokens": 46011
+   },
+   "live": {
+    "awaiting_permission": false,
+    "phase": "executing_tools",
+    "started_at_ms": 1789266279008,
+    "step": 18,
+    "step_max": 200,
+    "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+   },
+   "max_file_revert_k": 928,
+   "meta": {
+    "agent_id": "default",
+    "compacted_seq": 1103,
+    "context_mode": "standard",
+    "created_at": 1789235811794,
+    "id": "01M2BC7NEJV5HVWHK84F7BRW75",
+    "model_id": "model_1787147776896",
+    "parent_call_id": null,
+    "parent_session_id": null,
+    "plan_slug": null,
+    "preview": "dev模式下，http://127.0.0.1:5179/走的这个端点",
+    "project": "E:\\litecode",
+    "spine_from": 1103,
+    "subagent_depth": 0,
+    "thinking_tier": "high",
+    "updated_at": 1789266425923
+   },
+   "model_id": "model_1787147776896",
+   "project": "E:\\litecode",
+   "session_id": "01M2BC7NEJV5HVWHK84F7BRW75",
+   "subagent": {
+    "jobs": [],
+    "waits": []
+   },
+   "thinking_tier": "high",
+   "turn": {
+    "awaiting_permission": false,
+    "phase": "executing_tools",
+    "started_at_ms": 1789266279008,
+    "step": 18,
+    "step_max": 200,
+    "turn_id": "91d306fe-47cd-413b-bcb5-e96281926acd"
+   }
+  }
+ }
+]

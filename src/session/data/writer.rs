@@ -416,6 +416,7 @@ fn bump_receipt(
         change_id: 0,
         outcome,
         preview: None,
+        assistant_preview: None,
         working_set: None,
     };
     ops::persist_receipt(state.db.conn(), &receipt)?;
@@ -596,7 +597,18 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             };
             let mut receipt =
                 bump_receipt(state, &session_id, &operation_id.0, expected_revision, kind)?;
-            receipt.preview = preview;
+            receipt.preview = preview.as_ref().and_then(|patch| {
+                patch
+                    .user
+                    .clone()
+                    .map(|user| (user, patch.updated_at))
+            });
+            receipt.assistant_preview = preview.as_ref().and_then(|patch| {
+                patch
+                    .assistant
+                    .clone()
+                    .map(|assistant| (assistant, patch.updated_at))
+            });
             receipt.working_set = Some(working);
             Ok(receipt)
         }
@@ -764,6 +776,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 change_id: 0,
                 outcome: CommitKind::MetaUpdated,
                 preview: None,
+                assistant_preview: None,
                 working_set: None,
             })
         }
@@ -776,6 +789,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 change_id: 0,
                 outcome: CommitKind::MetaUpdated,
                 preview: None,
+                assistant_preview: None,
                 working_set: None,
             })
         }

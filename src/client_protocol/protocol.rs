@@ -168,6 +168,9 @@ pub struct SessionInfo {
     pub project: String,
     pub updated_at: i64,
     pub preview: String,
+    /// Latest completed assistant text for the session list. Empty when none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub assistant_preview: String,
     pub running: bool,
     /// Raw session status (`idle` / `running` / `stopping` / `running_with_subagent`).
     #[serde(default, skip_serializing_if = "String::is_empty")]

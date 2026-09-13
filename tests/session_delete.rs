@@ -4,7 +4,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::SessionDataFixture;
+use common::{SessionDataFixture, assistant_text_item};
 use litecode::client_protocol::controller::SessionController;
 use litecode::config::global_db;
 use litecode::config::{ConfigManager, SettingsWriter, TurnGuard, WorkspaceState};
@@ -77,4 +77,44 @@ async fn delete_listed_idle_session_after_cold_start_without_subscribe() {
         "deleted session must leave the list"
     );
     assert!(sessions.data().meta_blocking(&sid).is_err());
+}
+
+#[tokio::test]
+async fn list_sessions_includes_child_parent_ids_and_assistant_preview() {
+    let fixture = SessionDataFixture::new();
+    let parent = fixture.create("/proj", "default", None);
+    fixture.insert_items(&parent, &[user_text("parent prompt")]);
+
+    let sessions = Arc::new(fixture.manager());
+    let child = sessions
+        .open_child_session("/proj", "reviewer", None, &parent, "call-1")
+        .expect("child");
+    fixture.insert_items(
+        &child,
+        &[
+            user_text("child prompt"),
+            assistant_text_item("child done", "asst_1"),
+        ],
+    );
+
+    let mut ctrl = controller(sessions, fixture.dir.path());
+    let listed = ctrl.list_sessions().await.expect("list");
+
+    let parent_row = listed
+        .iter()
+        .find(|row| row.id == parent)
+        .expect("parent listed");
+    assert!(parent_row.parent_session_id.is_none());
+    assert!(parent_row.parent_call_id.is_none());
+    assert_eq!(parent_row.preview, "parent prompt");
+
+    let child_row = listed
+        .iter()
+        .find(|row| row.id == child)
+        .expect("child listed");
+    assert_eq!(child_row.parent_session_id.as_deref(), Some(parent.as_str()));
+    assert_eq!(child_row.parent_call_id.as_deref(), Some("call-1"));
+    assert_eq!(child_row.agent_id, "reviewer");
+    assert_eq!(child_row.preview, "child prompt");
+    assert_eq!(child_row.assistant_preview, "child done");
 }

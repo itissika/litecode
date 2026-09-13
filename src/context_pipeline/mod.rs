@@ -32,7 +32,7 @@ pub use view::{HotView, PreparedView};
 pub struct CommitStepOutcome {
     pub committed: bool,
     pub discarded: bool,
-    pub preview: Option<(String, i64)>,
+    pub preview: Option<crate::session::data::command::SessionListPreview>,
     /// Existing log rows sealed by this commit and requiring live re-stamps.
     pub sealed_seqs: Vec<crate::session::event::Seq>,
 }

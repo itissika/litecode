@@ -83,6 +83,55 @@ pub fn binding_projection(
     }
 }
 
+/// List-row binding: live sticky ids when the session is loaded, else SQL.
+pub fn list_binding_projection(
+    sessions: &SessionManager,
+    session_id: &str,
+    resolved: &ResolvedConfig,
+    fallback_agent: String,
+    fallback_model: Option<String>,
+) -> SessionBindingProjection {
+    let agent_id = sessions
+        .agent_id(session_id)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(fallback_agent);
+    let model_id = sessions
+        .session_model_id(session_id)
+        .filter(|id| !id.is_empty())
+        .or_else(|| fallback_model.filter(|id| !id.is_empty()));
+    let thinking_tier = sessions
+        .thinking_tier(session_id)
+        .unwrap_or_default()
+        .as_str()
+        .to_string();
+    let context_mode = sessions
+        .context_mode(session_id)
+        .unwrap_or_default()
+        .as_str()
+        .to_string();
+    let context_mode_enum = ContextMode::parse(&context_mode).unwrap_or_default();
+    let (api_model_id, label, context_window) = match model_id.as_deref() {
+        Some(id) => match resolved.models().get(id) {
+            Some(m) => (
+                effective_api_model_id(m),
+                m.label.clone(),
+                effective_context_window(m, context_mode_enum),
+            ),
+            None => (String::new(), String::new(), 0),
+        },
+        None => (String::new(), String::new(), 0),
+    };
+    SessionBindingProjection {
+        agent_id,
+        model_id,
+        api_model_id,
+        label,
+        context_window,
+        thinking_tier,
+        context_mode,
+    }
+}
+
 pub fn fail_reason_to_error_code(reason: FailReason) -> ErrorCode {
     match reason {
         FailReason::LlmHttp => ErrorCode::LlmHttp,
@@ -639,19 +688,48 @@ pub fn session_lifecycle_turn_finished(session_id: &str, turn: &TurnSnapshot) ->
 
 pub fn session_lifecycle_preview_updated(
     session_id: &str,
-    preview: &str,
+    preview: Option<&str>,
+    assistant_preview: Option<&str>,
     updated_at: i64,
 ) -> Value {
-    notification(
-        "session/lifecycle",
-        json!({
-            "session_id": session_id,
-            "event": "preview_updated",
-            "preview": preview,
-            "updated_at": updated_at,
-            "turn": null,
-        }),
-    )
+    let mut params = json!({
+        "session_id": session_id,
+        "event": "preview_updated",
+        "updated_at": updated_at,
+        "turn": null,
+    });
+    if let Some(preview) = preview {
+        params["preview"] = json!(preview);
+    }
+    if let Some(assistant_preview) = assistant_preview {
+        params["assistant_preview"] = json!(assistant_preview);
+    }
+    notification("session/lifecycle", params)
+}
+
+pub fn session_lifecycle_created(
+    session_id: &str,
+    project: &str,
+    agent_id: &str,
+    parent_session_id: Option<&str>,
+    parent_call_id: Option<&str>,
+    updated_at: i64,
+) -> Value {
+    let mut params = json!({
+        "session_id": session_id,
+        "event": "created",
+        "project": project,
+        "agent_id": agent_id,
+        "updated_at": updated_at,
+        "turn": null,
+    });
+    if let Some(parent_session_id) = parent_session_id {
+        params["parent_session_id"] = json!(parent_session_id);
+    }
+    if let Some(parent_call_id) = parent_call_id {
+        params["parent_call_id"] = json!(parent_call_id);
+    }
+    notification("session/lifecycle", params)
 }
 
 pub fn session_lifecycle_turn_step(
@@ -719,8 +797,29 @@ pub fn lifecycle_event_to_wire(ev: &LifecycleEvent) -> Value {
         LifecycleEvent::SessionPreviewUpdated {
             session_id,
             preview,
+            assistant_preview,
             updated_at,
-        } => session_lifecycle_preview_updated(session_id, preview, *updated_at),
+        } => session_lifecycle_preview_updated(
+            session_id,
+            preview.as_deref(),
+            assistant_preview.as_deref(),
+            *updated_at,
+        ),
+        LifecycleEvent::SessionAdded {
+            session_id,
+            project,
+            agent_id,
+            parent_session_id,
+            parent_call_id,
+            updated_at,
+        } => session_lifecycle_created(
+            session_id,
+            project,
+            agent_id,
+            parent_session_id.as_deref(),
+            parent_call_id.as_deref(),
+            *updated_at,
+        ),
         LifecycleEvent::TurnStep {
             session_id,
             kind,

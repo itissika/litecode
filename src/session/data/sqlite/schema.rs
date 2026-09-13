@@ -9,7 +9,7 @@ use crate::types::{LitecodeError, Result};
 use super::conn::BUSY_TIMEOUT;
 use super::fts;
 
-pub const USER_VERSION: i32 = 4;
+pub const USER_VERSION: i32 = 5;
 
 const SESSIONS_REQUIRED_COLS: &[&str] = &[
     "schema_version",
@@ -149,6 +149,7 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             schema_version    INTEGER NOT NULL DEFAULT 3,
             project           TEXT NOT NULL,
             last_message      TEXT NOT NULL DEFAULT '',
+            last_assistant    TEXT NOT NULL DEFAULT '',
             agent_id          TEXT NOT NULL,
             model_id          TEXT,
             thinking_tier     TEXT NOT NULL DEFAULT 'medium',
@@ -256,6 +257,12 @@ fn migrate_optional_columns(conn: &Connection) -> Result<()> {
         if !cols.iter().any(|c| c == "revision") {
             conn.execute(
                 "ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !cols.iter().any(|c| c == "last_assistant") {
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN last_assistant TEXT NOT NULL DEFAULT ''",
                 [],
             )?;
         }
