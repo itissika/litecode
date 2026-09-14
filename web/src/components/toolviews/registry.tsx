@@ -8,7 +8,6 @@ import { FileParamView } from "./FileParamView";
 import { KillShellToolView } from "./KillShellToolView";
 import { SubagentSendToolView } from "./SubagentSendToolView";
 import { SubagentStopToolView } from "./SubagentStopToolView";
-import { SubagentToolView } from "./SubagentToolView";
 import { SubagentWaitToolView } from "./SubagentWaitToolView";
 import { WaitShellToolView } from "./WaitShellToolView";
 import { WriteToolView } from "./WriteToolView";
@@ -39,7 +38,6 @@ export const TOOL_VIEWS: Record<
     bash: BashToolView,
     wait_shell: WaitShellToolView,
     kill_shell: KillShellToolView,
-    subagent_launch: SubagentToolView,
     subagent_wait: SubagentWaitToolView,
     subagent_stop: SubagentStopToolView,
     subagent_send: SubagentSendToolView,

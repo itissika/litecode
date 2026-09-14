@@ -193,30 +193,6 @@ describe("SubagentRosterPanel — card header", () => {
     ).toBe("finished");
   });
 
-  it("labels the child from byId.activePrimary when the list has no entry yet", () => {
-    // Fallback path: the list RPC has not landed (or the child is not in the
-    // snapshot), so `byId` — hydrated from the child's own snapshot push on
-    // subscribe — is all the panel has.
-    useSessionStore.getState().applySnapshot({
-      session_id: CHILD,
-      project: "/p",
-      agent_id: "researcher",
-      api_model_id: "m",
-      buffer: { last_seq: 0, next_seq: 0, revision: 0 },
-      turn: null,
-    });
-    expect(useSessionStore.getState().sessions).toHaveLength(0);
-
-    const roster = renderPanel();
-
-    expect(
-      within(roster).getByTestId("subagent-roster-agent").textContent,
-    ).toBe("researcher");
-    expect(
-      within(roster).getByRole("button", { name: "Subagent researcher" }),
-    ).toBeTruthy();
-  });
-
   it("shows the child's last-message preview when the server sent no assistant text", () => {
     seedSession("researcher", "reading the panel wiring");
     const roster = renderPanel();
@@ -254,6 +230,27 @@ describe("SubagentRosterPanel — card header", () => {
     expect(
       within(roster).getByTestId("subagent-roster-preview").textContent,
     ).toBe("user prompt");
+  });
+
+  it("survives a reload: lists children from the session list alone (no bindings)", () => {
+    // `agent/subagent_bound` is a live event that never replays, so after a
+    // page reload bindings are empty — but the child row in `session/list`
+    // (pushed on create, re-pulled on open) is durable. The roster's lifecycle
+    // is the session's, not the binding event's.
+    useMessageStore.getState().reset(PARENT);
+    seedListSession({ assistant_preview: "worker summary" });
+
+    const roster = renderPanel();
+
+    expect(
+      within(roster).getByRole("button", { name: "Subagent researcher" }),
+    ).toBeTruthy();
+    expect(
+      within(roster).getByTestId("subagent-roster-preview").textContent,
+    ).toBe("worker summary");
+    expect(
+      useMessageStore.getState().bySession.get(PARENT)?.subagentBindings,
+    ).toEqual({});
   });
 
   it("uses the session's running flag when no live job is present", () => {

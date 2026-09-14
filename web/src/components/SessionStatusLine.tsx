@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   CSSProperties,
   PointerEvent as ReactPointerEvent,
@@ -8,17 +14,25 @@ import { StrategyIcon, TerminalIcon, UsersIcon } from "@phosphor-icons/react";
 
 import { normalizeToolFilePath } from "../api/adapter";
 import type { BashJob, SubagentJob } from "../api/types";
+import { readFile } from "../api/workspace";
 import { useBashStore } from "../stores/bashStore";
 import { useEditorStore } from "../stores/editorStore";
+import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useSubagentStore } from "../stores/subagentStore";
 import { useTurnStore } from "../stores/turnStore";
 import { composerCardClass } from "./composerCard";
+import { AgentMarkdown } from "./AgentMarkdown";
 import { SubagentRosterPanel } from "./SubagentRosterPanel";
 import { WaveText } from "./WaveText";
 
 type TodoItemStatus = "pending" | "in_progress" | "completed";
 type TodoItem = { id: string; content: string; status: TodoItemStatus };
+
+/** Gap between capsules (matches `gap-2` on the row). */
+const ROW_GAP_PX = 8;
+/** Fallback collapsed width until the row can be measured (icon + padding). */
+const COLLAPSED_FALLBACK_PX = 36;
 
 /** The four session-mount status families the line surfaces. */
 export type CapsuleId = "terminal" | "subagent" | "plan" | "todo";
@@ -26,6 +40,8 @@ export type CapsuleId = "terminal" | "subagent" | "plan" | "todo";
 /** Fixed initial height of a vertically-expanded capsule panel (px). */
 export const PANEL_INITIAL_H = 160;
 export const PANEL_MIN_H = 80;
+/** Exit-animation duration (ms) — matches `status-panel-exit` in chat.css. */
+export const PANEL_EXIT_MS = 160;
 // Known limitation (F2): this is a static ceiling, not clamped to the dockview
 // pane's rect, so on a very short pane a panel dragged to PANEL_MAX_H could have
 // its top clipped by the pane's overflow:hidden. Deliberately left as a plain
@@ -43,16 +59,22 @@ const EMPTY_TODO_ITEMS: TodoItem[] = [];
  * plan / todo). All four capsules are always present — no appear/disappear —
  * and keep the same glass at every state (empty capsules are NOT dimmed).
  *
- * Interaction contract (user-fixed):
- *  1. Resident: four capsules never unmount.
- *  2. Collapsed: one row of icon-only capsules.
- *  3. Hover a capsule → it expands inline to icon + short label + count.
- *  4. Click a capsule → vertically expands that capsule's panel above the row:
+ * Two-level expansion (user-fixed):
+ *  1. Resident: four capsules never unmount; widths are adaptive with only
+ *     per-state min-widths (collapsed = icon floor, expanded = label floor).
+ *  2. Level 1 — horizontal: exactly one capsule is inline-expanded at any
+ *     time. The expanded capsule stretches to fill the row (width animated
+ *     from its collapsed icon-only size, content cross-fading) and shows
+ *     icon + label + rich detail + count (todo: current task + progress,
+ *     plan: active path, subagent: running count, bash: latest command). The
+ *     slot is public mutable state: hovering a capsule claims it (sticky — it
+ *     stays after the mouse leaves), and while idle (no hover, no panel open)
+ *     a data change in any capsule's domain claims the slot for that capsule
+ *     (attention cue). Todo owns the slot by default.
+ *  3. Level 2 — vertical: clicking a capsule expands its panel above the row:
  *     fixed initial height, drag handle top-right (drag up to grow, same
  *     pointer-capture pattern as AgentChatInput). Only one panel open at a
  *     time; clicking the same capsule again or clicking outside closes it.
- *  5. The expanded panel hosts the migrated content of the replaced chips
- *     (feature parity): bash reveal, subagent list, plan open, todo list.
  */
 export function SessionStatusLine({
   sessionId,
@@ -66,6 +88,32 @@ export function SessionStatusLine({
   );
   const subagentJobs = useSubagentStore(
     (s) => s.bySession.get(sessionId)?.jobs ?? EMPTY_SUBAGENT_JOBS,
+  );
+  // Minimal worker summary: total children and the live running count.
+  // Children are counted from the session list (durable — the roster panel
+  // and the capsule share the same lifecycle: children appear there exactly
+  // as their parent does, surviving a reload), with bindings/jobs covering
+  // the transient window right after `agent/subagent_bound`.
+  const subagentBindings = useMessageStore(
+    (s) => s.bySession.get(sessionId)?.subagentBindings,
+  );
+  const sessions = useSessionStore((s) => s.sessions);
+  const childSessions = useMemo(
+    () => sessions.filter((sess) => sess.parent_session_id === sessionId),
+    [sessions, sessionId],
+  );
+  const subagentTotal = Math.max(
+    subagentJobs.length,
+    childSessions.length,
+    subagentBindings
+      ? new Set(Object.values(subagentBindings).filter(Boolean)).size
+      : 0,
+  );
+  const subagentRunning = Math.max(
+    subagentJobs.length,
+    childSessions.filter(
+      (s) => s.running === true || s.status === "running_with_subagent",
+    ).length,
   );
   const todoItems = useTurnStore(
     (s) => s.byId.get(sessionId)?.todoItems ?? EMPTY_TODO_ITEMS,
@@ -84,11 +132,62 @@ export function SessionStatusLine({
   const openFile = useEditorStore((s) => s.openFile);
 
   const [openId, setOpenId] = useState<CapsuleId | null>(null);
+  // Level-1 horizontal expansion: exactly one capsule owns the slot at any
+  // time. Public mutable — claimed by hover (sticky) or, while idle, by a data
+  // change in that capsule's domain. Todo owns the slot by default.
+  const [expandedId, setExpandedId] = useState<CapsuleId>("todo");
+  // Closing keeps the panel mounted so its shrink-back animation can play:
+  // `openId` is nulled immediately and the mount is torn down on animationend.
+  const [closingId, setClosingId] = useState<CapsuleId | null>(null);
+  // Teardown safety net for the closing mount (below): onAnimationEnd is the
+  // primary path, but if the browser suppresses the animation (reduced-motion,
+  // backgrounded tab) the timer guarantees the mount never lingers.
+  const closeTimerRef = useRef<number | null>(null);
+  const finishClose = () => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    setClosingId(null);
+  };
+  // Which capsule the pointer currently rests on (ref: the data-change watcher
+  // reads it without needing hover to be render state).
+  const hoverRef = useRef<CapsuleId | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const heightRef = useRef(PANEL_INITIAL_H);
   const draggingRef = useRef(false);
   const dragStartRef = useRef({ y: 0, h: PANEL_INITIAL_H });
+
+  // Animated width plumbing: the expanded capsule animates between its
+  // collapsed (icon-only) width and the remaining row width. Measured so the
+  // animation is a plain CSS width transition (flex reflow cannot animate).
+  // jsdom has no layout and no ResizeObserver, so both measurements fall back
+  // safely when they report nothing.
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [rowWidth, setRowWidth] = useState(0);
+  const [collapsedWidth, setCollapsedWidth] = useState(COLLAPSED_FALLBACK_PX);
+  useLayoutEffect(() => {
+    const el = rowRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      setRowWidth(el.clientWidth);
+      const collapsed = el.querySelector<HTMLElement>(
+        '[data-expanded="false"]',
+      );
+      if (collapsed && collapsed.offsetWidth > 0) {
+        setCollapsedWidth(collapsed.offsetWidth);
+      }
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const expandedWidth = Math.max(
+    rowWidth - 3 * collapsedWidth - 3 * ROW_GAP_PX,
+    collapsedWidth,
+  );
 
   // Every freshly-opened panel starts at the fixed initial height. The panel is
   // keyed by `openId`, so switching capsules remounts it; this resets the ref
@@ -111,10 +210,10 @@ export function SessionStatusLine({
   useEffect(() => {
     if (!openId) return;
     const onDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpenId(null);
+      if (!rootRef.current?.contains(e.target as Node)) requestClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpenId(null);
+      if (e.key === "Escape") requestClose();
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -124,7 +223,65 @@ export function SessionStatusLine({
     };
   }, [openId]);
 
-  const toggle = (id: CapsuleId) => setOpenId((cur) => (cur === id ? null : id));
+  // A close keeps the panel mounted for its exit animation. `openId` drops to
+  // null immediately (outside/Escape handlers are keyed on it), while the
+  // mount lives on as `closingId` until `animationend`/timer tears it down.
+  const requestClose = () => {
+    if (openId && !closingId) {
+      setClosingId(openId);
+      closeTimerRef.current = window.setTimeout(finishClose, PANEL_EXIT_MS);
+    }
+    setOpenId(null);
+  };
+
+  const toggle = (id: CapsuleId) => {
+    // Clicking also claims the horizontal slot so the labelled capsule stays
+    // attached to the panel it owns.
+    setExpandedId(id);
+    if (openId === id) {
+      requestClose();
+    } else {
+      // A switch tears down any closing mount and mounts the new panel
+      // directly (no exit/enter overlap — the subagent panel must not double-
+      // mount its subscription + virtualized list).
+      finishClose();
+      setOpenId(id);
+    }
+  };
+
+  const onHoverStart = (id: CapsuleId) => {
+    hoverRef.current = id;
+    setExpandedId(id);
+    // While a panel is already open, hover follows: the panel tracks the
+    // hovered capsule. A closed panel still waits for a click (level-1 vs
+    // level-2 remain distinct gestures).
+    setOpenId((cur) => (cur ? id : cur));
+  };
+  const onHoverEnd = (id: CapsuleId) => {
+    if (hoverRef.current === id) hoverRef.current = null;
+  };
+
+  // Level-1 attention trigger: while idle (no hover, no panel open), a value
+  // change in any capsule's domain claims the horizontal slot for that
+  // capsule. Signatures are compared by value, not array identity — snapshot
+  // replays must not fire the trigger. Changes observed while busy are
+  // consumed, not queued.
+  const sigRef = useRef<{ bash: string; sub: string; plan: string; todo: string } | null>(null);
+  useEffect(() => {
+    const cur = {
+      bash: bashJobs.map((j) => j.id).join(","),
+      sub: `${subagentJobs.map((j) => j.id).join(",")}|${subagentTotal}`,
+      plan: activePlanPath ?? "",
+      todo: todoItems.map((i) => `${i.id}:${i.status}:${i.content}`).join("|"),
+    };
+    const prev = sigRef.current;
+    sigRef.current = cur;
+    if (!prev || hoverRef.current !== null || openId !== null) return;
+    if (prev.todo !== cur.todo) setExpandedId("todo");
+    else if (prev.plan !== cur.plan) setExpandedId("plan");
+    else if (prev.sub !== cur.sub) setExpandedId("subagent");
+    else if (prev.bash !== cur.bash) setExpandedId("terminal");
+  }, [bashJobs, subagentJobs, subagentTotal, activePlanPath, todoItems, openId]);
 
   // Drag handle: dragging up grows the panel (delta = start.y - clientY), same
   // math as AgentChatInput's textarea resize. The new height is written straight
@@ -168,16 +325,21 @@ export function SessionStatusLine({
     if (resolved) void openFile(resolved);
   };
 
+  const todoCurrent = todoItems.find((item) => item.status === "in_progress");
   const todoTotal = todoPending + todoInProgress + todoCompleted;
 
   const panelBody =
-    openId === "terminal" ? (
+    (openId ?? closingId) === "terminal" ? (
       <TerminalPanel jobs={bashJobs} onRevealBash={onRevealBash} />
-    ) : openId === "subagent" ? (
+    ) : (openId ?? closingId) === "subagent" ? (
       <SubagentRosterPanel sessionId={sessionId} />
-    ) : openId === "plan" ? (
-      <PlanPanel path={activePlanPath} onOpen={openPlan} />
-    ) : openId === "todo" ? (
+    ) : (openId ?? closingId) === "plan" ? (
+      <PlanPanel
+        path={activePlanPath}
+        projectRoot={projectRoot}
+        onOpen={openPlan}
+      />
+    ) : (openId ?? closingId) === "todo" ? (
       <TodoPanelBody
         items={todoItems}
         pending={todoPending}
@@ -186,20 +348,49 @@ export function SessionStatusLine({
       />
     ) : null;
 
+  // The panel morphs from the owning capsule: transform-origin x is the
+  // capsule's collapsed-pill center within the row (the capsule's left edge is
+  // stable whether it is expanded or not), y is the panel's bottom edge, which
+  // sits right above the row — so growth reads as coming out of the button.
+  // jsdom reports zero rects; the origin then collapses to the row's left.
+  const panelId = openId ?? closingId;
+  let originX = COLLAPSED_FALLBACK_PX / 2;
+  const rowEl = rowRef.current;
+  if (panelId && rowEl) {
+    const capsuleEl = rowEl.querySelector<HTMLElement>(
+      `[data-testid="capsule-${panelId}"]`,
+    );
+    if (capsuleEl) {
+      const er = capsuleEl.getBoundingClientRect();
+      const rr = rowEl.getBoundingClientRect();
+      originX = er.left - rr.left + COLLAPSED_FALLBACK_PX / 2;
+    }
+  }
+
   return (
     <div
       ref={rootRef}
       className="flex min-w-0 flex-col gap-2"
       data-testid="session-status-line"
     >
-      {openId && (
+      {panelId && (
         <div
-          key={openId}
+          key={panelId}
           ref={panelRef}
           data-testid="status-capsule-panel"
-          data-capsule={openId}
-          style={{ height: PANEL_INITIAL_H }}
-          className={`${composerCardClass} relative overflow-hidden`}
+          data-capsule={panelId}
+          style={{
+            // A fresh open starts at the fixed initial height; the closing
+            // mount keeps the dragged height it was shut at.
+            height: openId ? PANEL_INITIAL_H : heightRef.current,
+            transformOrigin: `${originX}px 100%`,
+          }}
+          className={`${composerCardClass} relative overflow-hidden ${
+            openId ? "status-panel-enter" : "status-panel-exit"
+          }`}
+          onAnimationEnd={
+            !openId ? finishClose : undefined
+          }
         >
           <button
             type="button"
@@ -218,53 +409,18 @@ export function SessionStatusLine({
       )}
 
       <div
+        ref={rowRef}
         className="flex min-w-0 items-center gap-2"
         data-testid="session-status-capsules"
       >
         <Capsule
-          id="terminal"
-          open={openId === "terminal"}
-          onToggle={toggle}
-          icon={
-            <TerminalIcon
-              size={14}
-              weight="fill"
-              aria-hidden
-              className={bashJobs.length > 0 ? "terminal-status-icon" : ""}
-            />
-          }
-          label="Terminals"
-          count={bashJobs.length}
-          ariaLabel={`Terminal status, ${bashJobs.length} active`}
-        />
-        <Capsule
-          id="subagent"
-          open={openId === "subagent"}
-          onToggle={toggle}
-          icon={
-            <UsersIcon
-              size={14}
-              weight="fill"
-              aria-hidden
-              className={subagentJobs.length > 0 ? "subagent-status-icon" : ""}
-            />
-          }
-          label="Workers"
-          count={subagentJobs.length}
-          ariaLabel={`Subagent status, ${subagentJobs.length} running`}
-        />
-        <Capsule
-          id="plan"
-          open={openId === "plan"}
-          onToggle={toggle}
-          icon={<StrategyIcon size={14} weight="fill" aria-hidden />}
-          label="Plan"
-          ariaLabel="Session plan"
-        />
-        <Capsule
           id="todo"
           open={openId === "todo"}
+          expanded={expandedId === "todo"}
+          width={expandedId === "todo" ? expandedWidth : collapsedWidth}
           onToggle={toggle}
+          onHoverStart={onHoverStart}
+          onHoverEnd={onHoverEnd}
           icon={
             <ProgressRing
               pct={
@@ -275,42 +431,145 @@ export function SessionStatusLine({
             />
           }
           label="Tasks"
-          count={todoTotal}
+          detail={
+            todoCurrent ? (
+              <WaveText
+                text={todoCurrent.content}
+                className="todo-wave-text"
+                charClass="todo-wave-char"
+              />
+            ) : (
+              <span className="italic text-(--_dk-text-disabled)">
+                No active task
+              </span>
+            )
+          }
+          count={`${todoCompleted}/${todoTotal}`}
           ariaLabel={`Task status, ${todoTotal} ${
             todoTotal === 1 ? "task" : "tasks"
           }`}
+        />
+        <Capsule
+          id="plan"
+          open={openId === "plan"}
+          expanded={expandedId === "plan"}
+          width={expandedId === "plan" ? expandedWidth : collapsedWidth}
+          onToggle={toggle}
+          onHoverStart={onHoverStart}
+          onHoverEnd={onHoverEnd}
+          icon={<StrategyIcon size={14} weight="fill" aria-hidden />}
+          label="Plan"
+          detail={
+            activePlanPath ? (
+              <span className="truncate">{activePlanPath}</span>
+            ) : (
+              <span className="italic text-(--_dk-text-disabled)">
+                No active plan
+              </span>
+            )
+          }
+          ariaLabel="Session plan"
+        />
+        <Capsule
+          id="subagent"
+          open={openId === "subagent"}
+          expanded={expandedId === "subagent"}
+          width={expandedId === "subagent" ? expandedWidth : collapsedWidth}
+          onToggle={toggle}
+          onHoverStart={onHoverStart}
+          onHoverEnd={onHoverEnd}
+          icon={
+            <UsersIcon
+              size={14}
+              weight="fill"
+              aria-hidden
+              className={subagentJobs.length > 0 ? "subagent-status-icon" : ""}
+            />
+          }
+          label="Workers"
+          detail={
+            subagentTotal > 0 ? (
+              <span>
+                {subagentRunning}/{subagentTotal} running
+              </span>
+            ) : (
+              <span className="italic text-(--_dk-text-disabled)">
+                No subagents
+              </span>
+            )
+          }
+          ariaLabel={`Subagent status, ${subagentRunning} running`}
+        />
+        <Capsule
+          id="terminal"
+          open={openId === "terminal"}
+          expanded={expandedId === "terminal"}
+          width={expandedId === "terminal" ? expandedWidth : collapsedWidth}
+          onToggle={toggle}
+          onHoverStart={onHoverStart}
+          onHoverEnd={onHoverEnd}
+          icon={
+            <TerminalIcon
+              size={14}
+              weight="fill"
+              aria-hidden
+              className={bashJobs.length > 0 ? "terminal-status-icon" : ""}
+            />
+          }
+          label="Terminals"
+          detail={
+            bashJobs.length > 0 ? (
+              <span className="truncate">
+                {bashJobs[bashJobs.length - 1]?.command_preview}
+              </span>
+            ) : (
+              <span className="italic text-(--_dk-text-disabled)">
+                No active terminals
+              </span>
+            )
+          }
+          count={`×${bashJobs.length}`}
+          ariaLabel={`Terminal status, ${bashJobs.length} active`}
         />
       </div>
     </div>
   );
 }
 
-/** A single resident capsule. Collapsed it shows only its glyph; hovering it
- *  (or having its own vertical panel open) expands it inline to glyph + label +
- *  count. The expansion is in-flow, so the resident row simply grows rightward
- *  into the free trailing space rather than overlaying anything. */
+/** A single resident capsule. Collapsed it shows only its glyph; expanded —
+ * the row-level public slot — it stretches to fill the row (animated width)
+ * and shows glyph + label + rich detail + count. Fully controlled: hover and
+ * expansion state live in the parent row. The content wrapper stays mounted
+ * so collapsing is a pure width+opacity animation (flex reflow cannot
+ * transition), hidden with `visibility` when collapsed. */
 function Capsule({
   id,
   open,
+  expanded,
+  width,
   onToggle,
+  onHoverStart,
+  onHoverEnd,
   icon,
   label,
+  detail,
   count,
   ariaLabel,
 }: {
   id: CapsuleId;
   open: boolean;
+  expanded: boolean;
+  width: number;
   onToggle: (id: CapsuleId) => void;
+  onHoverStart: (id: CapsuleId) => void;
+  onHoverEnd: (id: CapsuleId) => void;
   icon: ReactNode;
   label: string;
-  count?: number;
+  /** Rich detail shown only in the expanded (full-row) state. */
+  detail: ReactNode;
+  count?: ReactNode;
   ariaLabel: string;
 }) {
-  const [hovered, setHovered] = useState(false);
-  // Expanded while hovered, and pinned expanded while this capsule's own panel
-  // is open, so the labelled capsule stays attached to the panel it owns.
-  const expanded = hovered || open;
-
   return (
     <button
       type="button"
@@ -320,25 +579,41 @@ function Capsule({
       aria-expanded={open}
       aria-label={ariaLabel}
       onClick={() => onToggle(id)}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      className={`${composerCardClass} flex h-[30px] shrink-0 cursor-pointer items-center gap-1.5 px-2.5 text-xs text-(--_dk-text-secondary) transition-colors duration-100 active:brightness-90 ${
+      onMouseEnter={() => onHoverStart(id)}
+      onMouseLeave={() => onHoverEnd(id)}
+      style={{
+        width,
+        // Inline: composerCardClass ships its own `transition-shadow`, which
+        // beats same-specificity transition-* classes in the cascade and would
+        // otherwise drop `width` from the animated properties entirely.
+        transitionProperty:
+          "width, color, background-color, border-color, box-shadow",
+        transitionDuration: "200ms",
+        transitionTimingFunction: "ease-out",
+      }}
+      className={`${composerCardClass} flex h-[30px] shrink-0 cursor-pointer items-center gap-1.5 overflow-hidden px-2.5 text-left text-xs text-(--_dk-text-secondary) active:brightness-90 ${
         open
           ? "border-(--_dk-line-visible) text-(--_dk-text-primary)"
           : "hover:text-(--_dk-text-primary)"
       }`}
     >
       <span className="flex shrink-0 items-center">{icon}</span>
-      {expanded && (
-        <>
-          <span className="shrink-0 whitespace-nowrap">{label}</span>
-          {count != null && (
-            <span className="shrink-0 font-mono text-dk-xs tabular-nums text-(--_dk-text-muted)">
-              ×{count}
-            </span>
-          )}
-        </>
-      )}
+      <span
+        data-content-hidden={!expanded}
+        className={`flex min-w-0 flex-1 items-center gap-1.5 transition-[opacity,visibility] ${
+          expanded
+            ? "visible opacity-100 duration-150 delay-150"
+            : "invisible opacity-0 duration-100"
+        }`}
+      >
+        <span className="shrink-0 whitespace-nowrap">{label}</span>
+        <span className="min-w-0 flex-1 truncate">{detail}</span>
+        {count != null && (
+          <span className="shrink-0 font-mono text-dk-xs tabular-nums text-(--_dk-text-muted)">
+            {count}
+          </span>
+        )}
+      </span>
     </button>
   );
 }
@@ -387,29 +662,73 @@ function TerminalPanel({
   );
 }
 
-/** Migrated plan chip content: the active plan path + an Open affordance that
- *  resolves the workspace path exactly like the old chip did. */
+/** Plan panel: renders the active plan file's markdown from the workspace.
+ *  The file row ends with the Open affordance; a missing/unreadable file
+ *  collapses to a "lost" state instead of dead content. */
+type PlanDoc =
+  | { status: "loading" }
+  | { status: "ok"; md: string }
+  | { status: "lost" };
+
 function PlanPanel({
   path,
+  projectRoot,
   onOpen,
 }: {
   path: string | null;
+  projectRoot: string | null;
   onOpen: (path: string) => void;
 }) {
+  const [doc, setDoc] = useState<PlanDoc>({ status: "loading" });
+
+  useEffect(() => {
+    if (!path) return;
+    let cancelled = false;
+    setDoc({ status: "loading" });
+    const resolved = normalizeToolFilePath(path, projectRoot);
+    if (!resolved) {
+      setDoc({ status: "lost" });
+      return;
+    }
+    void readFile(resolved)
+      .then((md) => {
+        if (!cancelled) setDoc({ status: "ok", md });
+      })
+      .catch(() => {
+        if (!cancelled) setDoc({ status: "lost" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, projectRoot]);
+
   if (!path) return <PanelEmpty>No active plan</PanelEmpty>;
   return (
     <div className="flex flex-col gap-2 px-3 py-1">
-      <div className="truncate font-mono text-xs text-(--_dk-text-secondary)">
-        {path}
+      <div className="flex items-center gap-2" data-testid="plan-file-row">
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--_dk-text-secondary)">
+          {path}
+        </span>
+        <button
+          type="button"
+          onClick={() => onOpen(path)}
+          className="flex shrink-0 items-center gap-1.5 rounded border border-(--_dk-line) px-2 py-1 text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary)"
+        >
+          <StrategyIcon size={13} weight="fill" aria-hidden />
+          Open plan
+        </button>
       </div>
-      <button
-        type="button"
-        onClick={() => onOpen(path)}
-        className="flex w-fit items-center gap-1.5 rounded border border-(--_dk-line) px-2 py-1 text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary)"
-      >
-        <StrategyIcon size={13} weight="fill" aria-hidden />
-        Open plan
-      </button>
+      {doc.status === "loading" && (
+        <div className="text-xs text-(--_dk-text-disabled)">Loading…</div>
+      )}
+      {doc.status === "lost" && (
+        <div className="text-xs italic text-(--_dk-text-disabled)">lost</div>
+      )}
+      {doc.status === "ok" && (
+        <div className="text-dk-base">
+          <AgentMarkdown text={doc.md} />
+        </div>
+      )}
     </div>
   );
 }
@@ -456,7 +775,11 @@ function TodoPanelBody({
         </div>
       ) : (
         <div className="space-y-1 py-1">
-          {items.map((item) => (
+          {items
+            // The header above already shows the current in_progress task, so
+            // the list skips it — no duplicated first row.
+            .filter((item) => item.status !== "in_progress")
+            .map((item) => (
             <div key={item.id} className="flex items-start gap-2">
               <TodoStatusIcon status={item.status} />
               <span

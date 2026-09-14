@@ -20,7 +20,6 @@ import { useSessionStore } from "../stores/sessionStore";
 import { useSubagentStore } from "../stores/subagentStore";
 import { useTurnStore } from "../stores/turnStore";
 import { MessageList } from "./MessageList";
-import { ProgressiveBlur } from "./ProgressiveBlur";
 import { releaseSubagentCard } from "./sessionTeardown";
 import {
   holdSubagentRoster,
@@ -41,10 +40,10 @@ const EMPTY_ROWS: HumanRow[] = [];
 const CARD_BODY_H = 280;
 
 type FinishedStatus = "completed" | "failed" | "unknown" | "finished";
-
 interface RosterEntry {
   childId: string;
-  callId: string;
+  /** May be unknown until the session row (or a live job) names it. */
+  callId?: string;
   /** Resolved agent type; undefined until some source knows it. */
   agent?: string;
   running: boolean;
@@ -122,8 +121,8 @@ function iconStatus(entry: RosterEntry): ToolStatus {
  *   3. the parent transcript's `subagent_launch` row (agent name / outcome).
  *
  * Expanding a card subscribes the child session and renders its FULL transcript
- * with the same stack as the main panel (MessageList virtualizer + a top
- * ProgressiveBlur); collapsing releases the subscription and keeps the child's
+ * with the same stack as the main panel (MessageList virtualizer); collapsing
+ * releases the subscription and keeps the child's
  * slices (P6) — unless the child still has its own dock tab open, which owns
  * that subscription.
  */
@@ -139,7 +138,6 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
     (s) => s.bySession.get(sessionId)?.waits ?? EMPTY_WAITS,
   );
   const sessions = useSessionStore((s) => s.sessions);
-  const sessionsById = useSessionStore((s) => s.byId);
   const listSessions = useSessionStore((s) => s.listSessions);
   const connState = useConnectionStore((s) => s.state);
   const [open, setOpen] = useState<Set<string>>(() => new Set());
@@ -156,43 +154,52 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
   const roster = useMemo(() => {
     const meta = subagentRowMeta(rows ?? EMPTY_ROWS);
     const byChild = new Map<string, RosterEntry>();
+
+    // PRIMARY — the session list is the lifecycle-matched source: a subagent
+    // child exists in it exactly as its parent does (pushed on create/delete,
+    // re-pulled on open and after `agent/subagent_bound`), so the roster
+    // survives a reload instead of dying with the ephemeral bindings map.
+    for (const s of sessions) {
+      if (s.parent_session_id !== sessionId) continue;
+      const callId = s.parent_call_id ?? undefined;
+      const job = callId ? jobs.find((j) => j.call_id === callId) : undefined;
+      const info = callId ? meta.get(callId) : undefined;
+      byChild.set(s.id, {
+        childId: s.id,
+        callId,
+        agent: s.agent_id || job?.agent_name || info?.agent || undefined,
+        running:
+          s.running === true ||
+          s.status === "running_with_subagent" ||
+          !!job,
+        startedAt: job?.started_at_ms,
+        finished: info ? info.finished : "finished",
+        preview: s.assistant_preview || s.preview || undefined,
+      });
+    }
+
+    // TRANSIENT — a child whose binding/job landed before its session row has
+    // arrived in a (re)pulled list (the async gap right after subagent_bound).
     for (const [callId, childId] of Object.entries(bindings ?? {})) {
-      if (!childId) continue;
+      if (!childId || byChild.has(childId)) continue;
       const job = jobs.find((j) => j.call_id === callId);
       const info = meta.get(callId);
       const session = sessions.find((s) => s.id === childId);
-      // Priority: the session row is the primary source (it is the only one that
-      // knows a child before its first subscription); the rest are fallbacks.
-      const agent =
-        session?.agent_id ||
-        sessionsById.get(childId)?.activePrimary ||
-        job?.agent_name ||
-        info?.agent;
-      const entry: RosterEntry = {
+      byChild.set(childId, {
         childId,
         callId,
-        agent: agent || undefined,
+        agent: session?.agent_id || job?.agent_name || info?.agent || undefined,
         running:
           !!job ||
           session?.running === true ||
           session?.status === "running_with_subagent",
         startedAt: job?.started_at_ms,
-        // No launch row in the loaded window: an old launch (the binding is
-        // durable, the row scrolled away). The child is not running, so it did
-        // terminate — "finished". The ok/error detail lives only in the parent's
-        // sealed launch output, outside the window; "unknown" stays reserved for
-        // a row that IS loaded but whose output never sealed.
         finished: info ? info.finished : "finished",
-        // Assistant text reads as a far better summary of a worker than the
-        // last message (which is often the user's prompt).
         preview: session?.assistant_preview || session?.preview || undefined,
-      };
-      // Dedupe by child id — prefer the entry that is still running.
-      const prev = byChild.get(childId);
-      if (!prev || (entry.running && !prev.running)) byChild.set(childId, entry);
+      });
     }
     return [...byChild.values()];
-  }, [bindings, rows, jobs, sessions, sessionsById]);
+  }, [bindings, rows, jobs, sessions, sessionId]);
 
   const toggle = (childId: string) =>
     setOpen((cur) => {
@@ -339,8 +346,7 @@ function SubagentStatus({ entry }: { entry: RosterEntry }) {
  * Subscribes `childSessionId` while the roster card is expanded, then renders
  * the child's FULL transcript with the main-panel stack: a non-scrolling frame
  * carrying the persistent inset, one scroll container (the element the
- * virtualizer measures) and a centered reading-measure column inside it, plus a
- * top ProgressiveBlur tied to the container's scrollTop.
+ * virtualizer measures) and a centered reading-measure column inside it.
  *
  * On collapse it releases the subscription — but never when the child still has
  * its own `agent-<childId>` dock panel open, since `ensureSubscribe` /
@@ -393,12 +399,6 @@ function SubagentCardBody({ childSessionId }: { childSessionId: string }) {
   }, [loadMoreHistoryAction, childSessionId]);
 
   const listRef = useRef<HTMLDivElement>(null);
-  const [blurOpacity, setBlurOpacity] = useState(0);
-  const onScroll = () => {
-    const el = listRef.current;
-    if (!el) return;
-    setBlurOpacity(Math.min(el.scrollTop / 72, 1));
-  };
 
   const isRunning = runState === "running" || runState === "cancelling";
   const canLoadMore = fromSeq > 0;
@@ -409,7 +409,7 @@ function SubagentCardBody({ childSessionId }: { childSessionId: string }) {
   // anchor), so a child bubble click is inert instead of opening a rewrite box.
   return (
     <div
-      className="relative border-t border-(--_dk-line)"
+      className="relative [--_dk-foldcard-frame:transparent]"
       style={{ height: CARD_BODY_H }}
       data-testid="subagent-card-body"
     >
@@ -419,16 +419,18 @@ function SubagentCardBody({ childSessionId }: { childSessionId: string }) {
         </p>
       ) : (
         <>
-          {/* 1. Non-scrolling frame: carries the persistent inset. */}
-          <div className="flex h-full min-h-0 flex-col bg-(--_dk-editor) px-3 pt-2">
+          {/* 1. Non-scrolling frame: carries the persistent inset. Transparent
+              so the panel's own glass shows through — the old solid
+              --_dk-editor fill was only there to let the blur strip's tint
+              blend, and it killed the glassmorphism. */}
+          <div className="flex h-full min-h-0 flex-col px-3 pt-2">
             {/* 2. Scroll container: the element the virtualizer measures. */}
             <div
               ref={listRef}
-              onScroll={onScroll}
-              className="min-h-0 flex-1 overflow-y-auto bg-(--_dk-editor)"
+              className="min-h-0 flex-1 overflow-y-auto"
             >
               {/* 3. Content column: centered reading measure only. */}
-              <div className="mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col bg-(--_dk-editor)">
+              <div className="mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col">
                 <MessageList
                   key={childSessionId}
                   messages={messages}
@@ -443,15 +445,6 @@ function SubagentCardBody({ childSessionId }: { childSessionId: string }) {
               </div>
             </div>
           </div>
-          <ProgressiveBlur
-            side="top"
-            opacity={blurOpacity}
-            tintColor="var(--_dk-editor)"
-            tint={1}
-            height={40}
-            strength={4}
-            tintCurve={1}
-          />
         </>
       )}
     </div>

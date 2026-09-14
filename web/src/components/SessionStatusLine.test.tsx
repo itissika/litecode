@@ -1,7 +1,17 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../api/workspace", () => ({ readFile: vi.fn() }));
+
 import type { BashJob, SubagentJob } from "../api/types";
+import { readFile } from "../api/workspace";
 import { useBashStore } from "../stores/bashStore";
 import { setDockviewApi, useConnectionStore } from "../stores/connectionStore";
 import { useEditorStore } from "../stores/editorStore";
@@ -10,6 +20,7 @@ import { useSessionStore } from "../stores/sessionStore";
 import { useSubagentStore } from "../stores/subagentStore";
 import { emptySlice, useTurnStore, type TurnSlice } from "../stores/turnStore";
 import {
+  PANEL_EXIT_MS,
   PANEL_INITIAL_H,
   PANEL_MAX_H,
   SessionStatusLine,
@@ -52,17 +63,19 @@ beforeEach(() => {
   useSubagentStore.getState().reset();
   useMessageStore.setState({ bySession: new Map() });
   useTurnStore.setState({ byId: new Map() });
-  useSessionStore.setState({ project: null } as never);
+  useSessionStore.setState({ project: null, sessions: [], byId: new Map() } as never);
   useEditorStore.setState({ openFile: originalOpenFile } as never);
+  vi.mocked(readFile).mockReset().mockResolvedValue("# plan");
 });
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   useBashStore.getState().reset();
   useSubagentStore.getState().reset();
   useMessageStore.setState({ bySession: new Map() });
   useTurnStore.setState({ byId: new Map() });
-  useSessionStore.setState({ project: null } as never);
+  useSessionStore.setState({ project: null, sessions: [], byId: new Map() } as never);
   useEditorStore.setState({ openFile: originalOpenFile } as never);
 });
 
@@ -111,36 +124,199 @@ describe("SessionStatusLine — resident capsules", () => {
       screen.getByRole("button", { name: "Task status, 1 task" }),
     ).toBeTruthy();
 
-    // The count is hidden while collapsed and revealed on hover.
-    const terminal = screen.getByTestId("capsule-terminal");
-    expect(within(terminal).queryByText("×2")).toBeNull();
-    fireEvent.mouseEnter(terminal);
-    expect(within(terminal).getByText("×2")).toBeTruthy();
+    // Todo owns the horizontal slot by default, so its count is already
+    // visible; hovering another capsule collapses it (exactly one expanded).
+    const todo = screen.getByTestId("capsule-todo");
+    expect(within(todo).getByText("Tasks")).toBeTruthy();
+    expect(within(todo).getByText("0/1")).toBeTruthy();
+    fireEvent.mouseEnter(screen.getByTestId("capsule-terminal"));
+    expect(
+      screen
+        .getByTestId("capsule-todo")
+        .querySelector('[data-content-hidden="true"]'),
+    ).toBeTruthy();
+    expect(
+      within(screen.getByTestId("capsule-terminal")).getByText("×2"),
+    ).toBeTruthy();
+  });
+
+  it("counts subagent children from the session list after a reload (no bindings)", () => {
+    // bindings live only in memory (bound events never replay); the child rows
+    // in `session/list` are durable, so the capsule total must come from there.
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: "ch1",
+          project: "E:\\p",
+          updated_at: 0,
+          preview: "p",
+          running: true,
+          turn: null,
+          agent_id: "researcher",
+          api_model_id: "m",
+          parent_session_id: "s1",
+          parent_call_id: "c1",
+        },
+        {
+          id: "ch2",
+          project: "E:\\p",
+          updated_at: 0,
+          preview: "p",
+          running: false,
+          turn: null,
+          agent_id: "explorer",
+          api_model_id: "m",
+          parent_session_id: "s1",
+          parent_call_id: "c2",
+        },
+      ],
+    });
+
+    render(<SessionStatusLine sessionId="s1" />);
+    expect(
+      screen.getByRole("button", { name: "Subagent status, 1 running" }),
+    ).toBeTruthy();
+    expect(
+      within(screen.getByTestId("capsule-subagent")).getByText("1/2 running"),
+    ).toBeTruthy();
   });
 });
 
-describe("SessionStatusLine — hover expands the capsule inline", () => {
-  it("collapses to icon-only and expands to label + count on hover, then restores", () => {
+describe("SessionStatusLine — level 1 horizontal expansion", () => {
+  it("keeps exactly one capsule expanded, defaulting to the first", () => {
+    render(<SessionStatusLine sessionId="s1" />);
+
+    // Todo owns the slot by default; the other three are icon-only.
+    expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("true");
+    expect(
+      within(screen.getByTestId("capsule-todo")).getByText("Tasks"),
+    ).toBeTruthy();
+    for (const id of ["plan", "subagent", "terminal"] as const) {
+      expect(screen.getByTestId(`capsule-${id}`).dataset.expanded).toBe("false");
+    }
+    const plan = screen.getByTestId("capsule-plan");
+    expect(
+      plan.querySelector('[data-content-hidden="true"]'),
+    ).toBeTruthy();
+  });
+
+  it("hover claims the slot and mouse-leave keeps it (sticky)", () => {
+    render(<SessionStatusLine sessionId="s1" />);
+    const plan = screen.getByTestId("capsule-plan");
+
+    fireEvent.mouseEnter(plan);
+    expect(plan.dataset.expanded).toBe("true");
+    expect(within(plan).getByText("Plan")).toBeTruthy();
+    // Exactly one: the previous owner collapses immediately.
+    expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("false");
+
+    fireEvent.mouseLeave(plan);
+    // Sticky — the slot does not snap back.
+    expect(plan.dataset.expanded).toBe("true");
+    expect(within(plan).getByText("Plan")).toBeTruthy();
+  });
+
+  it("an idle data change claims the slot for that capsule's domain", () => {
+    render(<SessionStatusLine sessionId="s1" />);
+    // Move the slot off todo first; hover claims are sticky.
+    const plan = screen.getByTestId("capsule-plan");
+    fireEvent.mouseEnter(plan);
+    fireEvent.mouseLeave(plan);
+    expect(plan.dataset.expanded).toBe("true");
+
+    // Idle (no hover, no panel): a bash change claims terminal.
+    act(() => {
+      useBashStore
+        .getState()
+        .applySnapshot("s1", { jobs: [bashJob], waits: [] });
+    });
+    expect(screen.getByTestId("capsule-terminal").dataset.expanded).toBe("true");
+    expect(screen.getByTestId("capsule-plan").dataset.expanded).toBe("false");
+  });
+
+  it("claims the slot for a plan change too", () => {
+    render(<SessionStatusLine sessionId="s1" />);
+    expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("true");
+
+    act(() => {
+      seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+    });
+    expect(screen.getByTestId("capsule-plan").dataset.expanded).toBe("true");
+    expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("false");
+  });
+
+  it("consumes data changes seen while hovered instead of queueing them", () => {
+    render(<SessionStatusLine sessionId="s1" />);
+    const plan = screen.getByTestId("capsule-plan");
+    fireEvent.mouseEnter(plan);
+
+    // Lands while hovering: the slot must not be stolen.
+    act(() => {
+      seedTurn("s1", {
+        todoItems: [{ id: "t1", content: "do a", status: "pending" }],
+        todoPending: 1,
+      });
+    });
+    expect(plan.dataset.expanded).toBe("true");
+
+    // Leaving the hover does not replay the consumed change either.
+    fireEvent.mouseLeave(plan);
+    expect(plan.dataset.expanded).toBe("true");
+    expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("false");
+  });
+
+  it("renders rich detail in the full-row expanded capsule", () => {
     useBashStore
       .getState()
       .applySnapshot("s1", { jobs: [bashJob, bashJob2], waits: [] });
+    useSubagentStore.getState().applySnapshot("s1", { jobs: [subJob], waits: [] });
+    seedTurn("s1", {
+      todoItems: [
+        { id: "t1", content: "first", status: "in_progress" },
+        { id: "t2", content: "second", status: "pending" },
+      ],
+      todoPending: 1,
+      todoInProgress: 1,
+    });
+
     render(<SessionStatusLine sessionId="s1" />);
 
-    const capsule = screen.getByTestId("capsule-terminal");
-    // Collapsed: icon-only — no label, no count text in the DOM.
-    expect(capsule.dataset.expanded).toBe("false");
-    expect(within(capsule).queryByText("Terminals")).toBeNull();
-    expect(within(capsule).queryByText("×2")).toBeNull();
+    // Todo owns the slot by default: current task + progress count, and the
+    // expanded capsule stretches to fill the row (flex-1).
+    const todo = screen.getByTestId("capsule-todo");
+    // WaveText fragments the current task into char spans, so match textContent.
+    expect(todo.textContent).toContain("first");
+    expect(within(todo).getByText("0/2")).toBeTruthy();
+    // The expanded capsule's width is set inline (animated px, flex reflow
+    // cannot transition) rather than a flex-1 class.
+    expect(todo.style.width).toMatch(/^\d+px$/);
 
-    fireEvent.mouseEnter(capsule);
-    expect(capsule.dataset.expanded).toBe("true");
-    expect(within(capsule).getByText("Terminals")).toBeTruthy();
-    expect(within(capsule).getByText("×2")).toBeTruthy();
+    // Hover plan: full-row with its own detail (empty state here).
+    fireEvent.mouseEnter(screen.getByTestId("capsule-plan"));
+    const plan = screen.getByTestId("capsule-plan");
+    expect(within(plan).getByText("No active plan")).toBeTruthy();
+    expect(
+      screen
+        .getByTestId("capsule-todo")
+        .querySelector('[data-content-hidden="true"]'),
+    ).toBeTruthy();
 
-    fireEvent.mouseLeave(capsule);
-    expect(capsule.dataset.expanded).toBe("false");
-    expect(within(capsule).queryByText("Terminals")).toBeNull();
-    expect(within(capsule).queryByText("×2")).toBeNull();
+    // Hover subagent: worker summary (running / total, no badge).
+    fireEvent.mouseEnter(screen.getByTestId("capsule-subagent"));
+    const sub = screen.getByTestId("capsule-subagent");
+    expect(within(sub).getByText("1/1 running")).toBeTruthy();
+
+    // Hover terminal: latest command preview + count.
+    fireEvent.mouseEnter(screen.getByTestId("capsule-terminal"));
+    const term = screen.getByTestId("capsule-terminal");
+    expect(within(term).getByText("sleep 2")).toBeTruthy();
+    expect(within(term).getByText("×2")).toBeTruthy();
+
+    // Collapsed capsules keep the icon-only floor (shrink-0, no flex-1).
+    expect(screen.getByTestId("capsule-todo").className).toContain("shrink-0");
+    // Capsule is a <button>: UA styles center text, so the detail must be
+    // explicitly left-aligned.
+    expect(screen.getByTestId("capsule-todo").className).toContain("text-left");
   });
 
   it("expands only the hovered capsule (per-capsule state)", () => {
@@ -150,8 +326,40 @@ describe("SessionStatusLine — hover expands the capsule inline", () => {
       within(screen.getByTestId("capsule-plan")).getByText("Plan"),
     ).toBeTruthy();
     expect(
-      within(screen.getByTestId("capsule-todo")).queryByText("Tasks"),
-    ).toBeNull();
+      screen
+        .getByTestId("capsule-todo")
+        .querySelector('[data-content-hidden="true"]'),
+    ).toBeTruthy();
+  });
+
+  it("counts bound subagents into the worker summary", () => {
+    // A live job plus two more durable bindings → 1 running of 3 total.
+    useSubagentStore
+      .getState()
+      .applySnapshot("s1", { jobs: [subJob], waits: [] });
+
+    render(<SessionStatusLine sessionId="s1" />);
+    // Landing the bindings after mount claims the worker slot while idle.
+    act(() => {
+      const onSubagentBound = useMessageStore.getState().onSubagentBound;
+      for (const [callId, childId] of [
+        ["c1", "ch1"],
+        ["c2", "ch2"],
+        ["c3", "ch3"],
+      ] as const) {
+        onSubagentBound("s1", {
+          session_id: "s1",
+          call_id: callId,
+          child_session_id: childId,
+        });
+      }
+    });
+    expect(screen.getByTestId("capsule-subagent").dataset.expanded).toBe(
+      "true",
+    );
+    expect(
+      within(screen.getByTestId("capsule-subagent")).getByText("1/3 running"),
+    ).toBeTruthy();
   });
 
   it("pins the capsule expanded while its vertical panel is open", () => {
@@ -162,6 +370,30 @@ describe("SessionStatusLine — hover expands the capsule inline", () => {
     // Panel open keeps it labelled without hover.
     expect(capsule.dataset.expanded).toBe("true");
     expect(within(capsule).getByText("Plan")).toBeTruthy();
+  });
+
+  it("hover alone never opens a panel; an open panel follows hover", () => {
+    render(<SessionStatusLine sessionId="s1" />);
+    // Level-1 hover without a panel: horizontal slot only, no panel.
+    fireEvent.mouseEnter(screen.getByTestId("capsule-plan"));
+    expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
+    fireEvent.mouseLeave(screen.getByTestId("capsule-plan"));
+
+    // Click opens the panel…
+    fireEvent.click(screen.getByTestId("capsule-terminal"));
+    expect(screen.getByTestId("status-capsule-panel").dataset.capsule).toBe(
+      "terminal",
+    );
+    // …then hovering another capsule follows it onto the panel.
+    fireEvent.mouseEnter(screen.getByTestId("capsule-plan"));
+    expect(screen.getByTestId("status-capsule-panel").dataset.capsule).toBe(
+      "plan",
+    );
+    // Pointer leaving the capsule keeps the panel on the last hovered one.
+    fireEvent.mouseLeave(screen.getByTestId("capsule-plan"));
+    expect(screen.getByTestId("status-capsule-panel").dataset.capsule).toBe(
+      "plan",
+    );
   });
 });
 
@@ -183,10 +415,18 @@ describe("SessionStatusLine — vertical expand", () => {
   });
 
   it("closes the panel when its capsule is clicked again", () => {
+    vi.useFakeTimers();
     render(<SessionStatusLine sessionId="s1" />);
     fireEvent.click(screen.getByTestId("capsule-plan"));
     expect(screen.getByTestId("status-capsule-panel")).toBeTruthy();
     fireEvent.click(screen.getByTestId("capsule-plan"));
+    // The close keeps the mount for its shrink-back animation…
+    const panel = screen.getByTestId("status-capsule-panel");
+    expect(panel.dataset.capsule).toBe("plan");
+    // …which tears it down when the exit animation completes.
+    act(() => {
+      vi.advanceTimersByTime(PANEL_EXIT_MS + 100);
+    });
     expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
   });
 
@@ -217,19 +457,85 @@ describe("SessionStatusLine — vertical expand", () => {
   });
 
   it("closes the panel on an outside mousedown", () => {
+    vi.useFakeTimers();
     render(<SessionStatusLine sessionId="s1" />);
     fireEvent.click(screen.getByTestId("capsule-todo"));
     expect(screen.getByTestId("status-capsule-panel")).toBeTruthy();
     fireEvent.mouseDown(document.body);
+    // Close keeps the mount for the shrink-back animation…
+    const panel = screen.getByTestId("status-capsule-panel");
+    expect(panel.dataset.capsule).toBe("todo");
+    // …and the exit completion tears it down.
+    act(() => {
+      vi.advanceTimersByTime(PANEL_EXIT_MS + 100);
+    });
     expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
   });
 
   it("closes the panel on Escape", () => {
+    vi.useFakeTimers();
     render(<SessionStatusLine sessionId="s1" />);
     fireEvent.click(screen.getByTestId("capsule-todo"));
     expect(screen.getByTestId("status-capsule-panel")).toBeTruthy();
     fireEvent.keyDown(document, { key: "Escape" });
+    const panel = screen.getByTestId("status-capsule-panel");
+    expect(panel.dataset.capsule).toBe("todo");
+    act(() => {
+      vi.advanceTimersByTime(PANEL_EXIT_MS + 100);
+    });
     expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
+  });
+
+  it("animates the panel in on open and out on close", () => {
+    vi.useFakeTimers();
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-terminal"));
+    const opened = screen.getByTestId("status-capsule-panel");
+    expect(opened.className).toContain("status-panel-enter");
+    expect(opened.className).not.toContain("status-panel-exit");
+    // Origin tracks the owning capsule's slot (jsdom rects are zero, so it
+    // falls back to the row's left edge + half a collapsed pill).
+    expect(opened.style.transformOrigin).toBe("18px 100%");
+
+    fireEvent.click(screen.getByTestId("capsule-terminal"));
+    const closing = screen.getByTestId("status-capsule-panel");
+    expect(closing.className).toContain("status-panel-exit");
+    act(() => {
+      vi.advanceTimersByTime(PANEL_EXIT_MS + 100);
+    });
+    expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
+  });
+
+  it("switching capsules mounts the new panel directly (no exit overlap)", () => {
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-terminal"));
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+    const panel = screen.getByTestId("status-capsule-panel");
+    expect(panel.dataset.capsule).toBe("plan");
+    // The previous mount is torn down instantly — one panel, entering only.
+    expect(screen.getAllByTestId("status-capsule-panel")).toHaveLength(1);
+    expect(panel.className).toContain("status-panel-enter");
+    expect(panel.className).not.toContain("status-panel-exit");
+  });
+
+  it("reopens during the exit animation instead of queueing a close", () => {
+    vi.useFakeTimers();
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-todo"));
+    fireEvent.click(screen.getByTestId("capsule-todo")); // closing…
+    const closing = screen.getByTestId("status-capsule-panel");
+    expect(closing.className).toContain("status-panel-exit");
+    fireEvent.click(screen.getByTestId("capsule-terminal")); // reopen another
+    const reopened = screen.getByTestId("status-capsule-panel");
+    expect(reopened.dataset.capsule).toBe("terminal");
+    expect(reopened.className).toContain("status-panel-enter");
+    // The reopen cancels the stale closing timer — the new panel stays.
+    act(() => {
+      vi.advanceTimersByTime(PANEL_EXIT_MS + 100);
+    });
+    expect(screen.getByTestId("status-capsule-panel").dataset.capsule).toBe(
+      "terminal",
+    );
   });
 });
 
@@ -309,6 +615,7 @@ describe("SessionStatusLine — drag handle", () => {
   });
 
   it("releases the body drag lock when the panel closes mid-drag (Esc)", () => {
+    vi.useFakeTimers();
     render(<SessionStatusLine sessionId="s1" />);
     fireEvent.click(screen.getByTestId("capsule-todo"));
     const handle = screen.getByTestId("status-panel-resize");
@@ -316,11 +623,16 @@ describe("SessionStatusLine — drag handle", () => {
     fireEvent.pointerDown(handle, { pointerId: 1, clientY: 400 });
     expect(document.body.style.cursor).toBe("ns-resize");
 
-    // Esc closes the panel and unmounts the handle before any pointerup.
+    // Esc closes the panel; the drag lock is released immediately even though
+    // the closing mount (with its handle) lingers for the exit animation.
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
+    expect(screen.getByTestId("status-capsule-panel")).toBeTruthy();
     expect(document.body.style.cursor).toBe("");
     expect(document.body.style.userSelect).toBe("");
+    act(() => {
+      vi.advanceTimersByTime(PANEL_EXIT_MS + 100);
+    });
+    expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
   });
 
   it("releases the body drag lock when the component unmounts mid-drag", () => {
@@ -370,14 +682,15 @@ describe("SessionStatusLine — migrated chip content", () => {
 
   it("shows an empty state in each panel when its family has no data", () => {
     render(<SessionStatusLine sessionId="s1" />);
+    const panel = () => screen.getByTestId("status-capsule-panel");
     fireEvent.click(screen.getByTestId("capsule-terminal"));
-    expect(screen.getByText("No active terminals")).toBeTruthy();
+    expect(within(panel()).getByText("No active terminals")).toBeTruthy();
     fireEvent.click(screen.getByTestId("capsule-subagent"));
-    expect(screen.getByText("No subagents")).toBeTruthy();
+    expect(within(panel()).getByText("No subagents")).toBeTruthy();
     fireEvent.click(screen.getByTestId("capsule-todo"));
-    expect(screen.getByText("No tasks yet")).toBeTruthy();
+    expect(within(panel()).getByText("No tasks yet")).toBeTruthy();
     fireEvent.click(screen.getByTestId("capsule-plan"));
-    expect(screen.getByText("No active plan")).toBeTruthy();
+    expect(within(panel()).getByText("No active plan")).toBeTruthy();
   });
 
   it("opens the workspace-relative active plan from the plan panel", () => {
@@ -390,6 +703,40 @@ describe("SessionStatusLine — migrated chip content", () => {
     fireEvent.click(screen.getByTestId("capsule-plan"));
     fireEvent.click(screen.getByRole("button", { name: "Open plan" }));
     expect(openFile).toHaveBeenCalledWith(".litecode/plan/calm.md");
+  });
+
+  it("renders the plan file's markdown in the plan panel", async () => {
+    useSessionStore.setState({ project: "E:\\project" } as never);
+    vi.mocked(readFile).mockResolvedValue("# Title\n\nbody text");
+    seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+
+    expect(vi.mocked(readFile)).toHaveBeenCalledWith(".litecode/plan/calm.md");
+    expect(await screen.findByRole("heading", { name: "Title" })).toBeTruthy();
+    expect(screen.getByText("body text")).toBeTruthy();
+  });
+
+  it("shows lost when the plan file cannot be read", async () => {
+    vi.mocked(readFile).mockRejectedValue(new Error("ENOENT"));
+    seedTurn("s1", { activePlanPath: ".litecode/plan/gone.md" });
+
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+
+    expect(await screen.findByText("lost")).toBeTruthy();
+  });
+
+  it("sits the Open affordance at the end of the plan file row", async () => {
+    seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+
+    const row = await screen.findByTestId("plan-file-row");
+    expect(within(row).getByText(".litecode/plan/calm.md")).toBeTruthy();
+    const open = within(row).getByRole("button", { name: "Open plan" });
+    expect(row.lastElementChild).toBe(open);
   });
 
   it("renders the todo list content in the todo panel", () => {
@@ -406,9 +753,31 @@ describe("SessionStatusLine — migrated chip content", () => {
     render(<SessionStatusLine sessionId="s1" />);
 
     fireEvent.click(screen.getByTestId("capsule-todo"));
-    expect(screen.getByText("first")).toBeTruthy();
-    expect(screen.getByText("third")).toBeTruthy();
-    expect(screen.getByText("1/3")).toBeTruthy();
+    const panel = screen.getByTestId("status-capsule-panel");
+    expect(within(panel).getByText("first")).toBeTruthy();
+    expect(within(panel).getByText("third")).toBeTruthy();
+    expect(within(panel).getByText("1/3")).toBeTruthy();
+  });
+
+  it("shows the in_progress task only in the panel header, not the list", () => {
+    seedTurn("s1", {
+      todoItems: [
+        { id: "t1", content: "do a", status: "in_progress" },
+        { id: "t2", content: "do b", status: "pending" },
+      ],
+      todoPending: 1,
+      todoInProgress: 1,
+    });
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-todo"));
+    const panel = screen.getByTestId("status-capsule-panel");
+    // Header: current task WaveText (char-fragmented, spaces as \u00a0) +
+    // progress count.
+    expect(panel.textContent).toContain("do\u00a0a");
+    expect(within(panel).getByText("0/2")).toBeTruthy();
+    // List rows: only the non-in_progress items — no plain "do a" row.
+    expect(within(panel).queryByText("do a")).toBeNull();
+    expect(within(panel).getByText("do b")).toBeTruthy();
   });
 });
 

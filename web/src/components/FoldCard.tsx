@@ -318,7 +318,7 @@ export function FoldCard({
                   strength={topStrength}
                   tint={1}
                   tintCurve={1}
-                  tintColor="var(--_dk-editor)"
+                  tintColor="var(--_dk-foldcard-frame, var(--_dk-editor))"
                 />
               )}
               {edgeBlur && bottomStrength > 0.5 && (
@@ -328,7 +328,7 @@ export function FoldCard({
                   strength={bottomStrength}
                   tint={1}
                   tintCurve={1}
-                  tintColor="var(--_dk-editor)"
+                  tintColor="var(--_dk-foldcard-frame, var(--_dk-editor))"
                 />
               )}
             </div>

@@ -483,7 +483,12 @@
 .foldcard-scroll-frame {
   position: relative;
   overflow: clip;
-  background: var(--_dk-editor);
+  /* Frame backdrop. Defaults to the opaque editor fill (the main transcript
+     sits on it, so the frame is invisible there). Glass/embedded containers
+     (e.g. the Workers roster card) override `--_dk-foldcard-frame` to
+     `transparent` once — the custom property inherits down the DOM, so every
+     nested FoldCard at any depth follows without prop drilling. */
+  background: var(--_dk-foldcard-frame, var(--_dk-editor));
   padding-bottom: 1px;
 }
 
@@ -601,6 +606,45 @@
   }
   50% {
     transform: translateY(-2.5px);
+  }
+}
+
+/* Status-line panel morph: grows from the owning capsule (transform-origin is
+   set inline to the capsule's position) with a nonlinear overshoot; closing
+   shrinks back into it. `transform`, not width/height, so the virtualized
+   transcript inside never reflows frame-by-frame. `both` keeps the first
+   keyframe visible on the mount frame (the exit panel is unmounted on
+   animationend, so it must not flash back to scale(1)). */
+.status-panel-enter {
+  animation: status-panel-enter 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.status-panel-exit {
+  animation: status-panel-exit 160ms cubic-bezier(0.4, 0, 0.6, 1) both;
+}
+@keyframes status-panel-enter {
+  from {
+    transform: scale(0.2, 0.18);
+    opacity: 0;
+    /* Glass focus: the backdrop blur ramps in with the panel, matching the
+       composer card's 12px value so the settled state is identical. */
+    backdrop-filter: blur(0);
+  }
+  to {
+    transform: scale(1, 1);
+    opacity: 1;
+    backdrop-filter: blur(12px);
+  }
+}
+@keyframes status-panel-exit {
+  from {
+    transform: scale(1, 1);
+    opacity: 1;
+    backdrop-filter: blur(12px);
+  }
+  to {
+    transform: scale(0.2, 0.18);
+    opacity: 0;
+    backdrop-filter: blur(0);
   }
 }
 
