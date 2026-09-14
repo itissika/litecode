@@ -132,12 +132,14 @@ describe("settings helpers", () => {
       "subagent_wait",
       "subagent_stop",
       "subagent_list",
+      "subagent_send",
     ]);
     expect(toolEnableSeries("subagent_wait")).toEqual([
       "subagent_launch",
       "subagent_wait",
       "subagent_stop",
       "subagent_list",
+      "subagent_send",
     ]);
 
     const enabled = applyToolEnabled({}, "subagent_launch", true);
@@ -145,12 +147,14 @@ describe("settings helpers", () => {
     expect(enabled.subagent_wait.enabled).toBe(true);
     expect(enabled.subagent_stop.enabled).toBe(true);
     expect(enabled.subagent_list.enabled).toBe(true);
+    expect(enabled.subagent_send.enabled).toBe(true);
 
     const disabled = applyToolEnabled(enabled, "subagent_stop", false);
     expect(disabled.subagent_launch.enabled).toBe(false);
     expect(disabled.subagent_wait.enabled).toBe(false);
     expect(disabled.subagent_stop.enabled).toBe(false);
     expect(disabled.subagent_list.enabled).toBe(false);
+    expect(disabled.subagent_send.enabled).toBe(false);
 
     const mixed = syncToolEnableSeries({
       subagent_launch: { enabled: true, last_applied_preset: null },

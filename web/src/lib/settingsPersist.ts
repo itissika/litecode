@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 
+import { turnMapIsBusy, useTurnStore } from "../stores/turnStore";
+
 export type PersistStatus = "idle" | "pending" | "saving" | "saved" | "invalid" | "error";
 
 export type SerializeResult<P> = { ok: P } | { skip: "unchanged" | "invalid" };
@@ -70,6 +72,7 @@ export class SettingsPersistController<D, P> {
   private pendingFp: string | null = null;
   private everCommitted = false;
   private disposed = false;
+  private blocked = false;
   private savedTimer: ReturnType<typeof setTimeout> | null = null;
   private fingerprint: (payload: P) => string;
 
@@ -86,6 +89,9 @@ export class SettingsPersistController<D, P> {
   schedule(draft: D, immediate = false): void {
     if (this.disposed) return;
     this.latest = draft;
+    // Blocked (a turn is running — the backend rejects settings writes):
+    // hold the draft without arming a doomed PUT. Unblocking re-schedules it.
+    if (this.blocked) return;
     const result = this.opts.serialize(draft);
     if ("skip" in result) {
       this.clearTimer();
@@ -116,8 +122,19 @@ export class SettingsPersistController<D, P> {
     }, delay);
   }
 
+  /** Cancel the pending debounce while blocked; re-schedule the held draft on release. */
+  setBlocked(blocked: boolean): void {
+    if (this.blocked === blocked) return;
+    this.blocked = blocked;
+    if (blocked) {
+      this.clearTimer();
+    } else {
+      this.schedule(this.latest);
+    }
+  }
+
   async flush(): Promise<void> {
-    if (this.disposed) return;
+    if (this.disposed || this.blocked) return;
     this.clearTimer();
     const result = this.opts.serialize(this.latest);
     if ("skip" in result && result.skip === "invalid") {
@@ -200,6 +217,12 @@ export function useSettingsPersist<D, P>(
   draft: D,
   opts: SettingsPersistOptions<D, P> & { enabled?: boolean },
 ): void {
+  // The backend rejects settings writes while any turn is running. Gate the
+  // controller on turn-busy centrally: while blocked nothing is scheduled or
+  // flushed (no doomed PUT + error/revert); when the turn ends the held draft
+  // saves itself. The controller is NOT disposed for this — a fresh one would
+  // treat the dirty draft as its committed baseline and swallow the edit.
+  const turnBusy = useTurnStore((s) => turnMapIsBusy(s.byId));
   const enabled = opts.enabled ?? true;
   const controllerRef = useRef<SettingsPersistController<D, P> | null>(null);
   const optsRef = useRef(opts);
@@ -233,6 +256,9 @@ export function useSettingsPersist<D, P>(
 
   useEffect(() => {
     if (!enabled) return;
-    controllerRef.current?.schedule(draft);
-  }, [draft, enabled]);
+    const controller = controllerRef.current;
+    if (!controller) return;
+    controller.setBlocked(turnBusy);
+    controller.schedule(draft);
+  }, [draft, enabled, turnBusy]);
 }

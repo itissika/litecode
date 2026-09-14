@@ -618,6 +618,7 @@ export const SUBAGENT_SERIES_TOOL_IDS = [
   "subagent_wait",
   "subagent_stop",
   "subagent_list",
+  "subagent_send",
 ] as const;
 
 export function isSubagentBindableTool(entry: AvailableTool): boolean {

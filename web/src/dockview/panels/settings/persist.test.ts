@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook } from "@testing-library/react";
 
 import {
   SettingsPersistController,
   flushRegisteredSettings,
   registerSettingsFlush,
   shouldHydrateDraftFromStore,
+  useSettingsPersist,
   type PersistStatus,
 } from "../../../lib/settingsPersist";
+import { useTurnStore } from "../../../stores/turnStore";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -207,5 +210,48 @@ describe("flushRegisteredSettings", () => {
     expect(b).toHaveBeenCalledTimes(1);
     ua();
     ub();
+  });
+});
+
+describe("useSettingsPersist — turn-busy gate", () => {
+  it("does not commit while a turn runs, then saves the pending draft when it ends", async () => {
+    vi.useFakeTimers();
+    const commit = vi.fn(async () => undefined);
+    const statuses: PersistStatus[] = [];
+
+    const { rerender } = renderHook((d: string) =>
+      useSettingsPersist(d, {
+        debounceMs: 400,
+        serialize: (d) => ({ ok: d }),
+        commit,
+        revert: () => {},
+        setStatus: (s) => statuses.push(s),
+      }),
+    );
+
+    // A turn is running: the edit must not produce a doomed PUT (the backend
+    // rejects settings writes mid-turn).
+    await act(async () => {
+      useTurnStore.setState({
+        byId: new Map([["s1", { runState: "running" } as never]]),
+      });
+      rerender("b");
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(commit).not.toHaveBeenCalled();
+
+    // The turn ends: the controller is recreated with the latest draft and
+    // the pending edit saves itself.
+    await act(async () => {
+      useTurnStore.setState({ byId: new Map() });
+      rerender("b");
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledWith("b");
   });
 });
