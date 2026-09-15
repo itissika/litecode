@@ -50,8 +50,7 @@ impl CodeSearchIndex {
         let ann_path = vectors_path(workspace_root);
         let chunks_path = chunks_path(workspace_root);
         let ann = new_ann_index()?;
-        ann.load(ann_path.to_str().unwrap_or("vectors.usearch"))
-            .map_err(|e| LitecodeError::Config(format!("load usearch: {e}")))?;
+        restore_usearch(&ann, &ann_path)?;
 
         let meta_on_disk = meta::read_meta(workspace_root)?;
         let embedder_id = meta_on_disk
@@ -93,10 +92,7 @@ impl CodeSearchIndex {
         let dir = index_dir(workspace_root);
         std::fs::create_dir_all(&dir).map_err(|e| LitecodeError::Config(e.to_string()))?;
 
-        let ann_path = vectors_path(workspace_root);
-        self.ann
-            .save(ann_path.to_str().unwrap_or("vectors.usearch"))
-            .map_err(|e| LitecodeError::Config(format!("save usearch: {e}")))?;
+        persist_usearch(&self.ann, &vectors_path(workspace_root))?;
 
         let chunks_path = chunks_path(workspace_root);
         let mut file =
@@ -268,6 +264,26 @@ fn new_ann_index() -> Result<Index> {
     Index::new(&options).map_err(|e| LitecodeError::Config(format!("usearch new: {e}")))
 }
 
+/// Write ANN bytes with `std::fs` instead of usearch's `Index::save(path)`.
+///
+/// The C++ binding opens the path with libc `fopen` / `CreateFileA` (ANSI on
+/// Windows) and stores a temporary `c_str()`. New-workspace warmup then fails
+/// with `No such file or directory` for Unicode roots or a dangling path.
+pub(crate) fn persist_usearch(ann: &Index, path: &Path) -> Result<()> {
+    let mut buf = vec![0u8; ann.serialized_length()];
+    ann.save_to_buffer(&mut buf)
+        .map_err(|e| LitecodeError::Config(format!("save usearch: {e}")))?;
+    std::fs::write(path, buf).map_err(|e| LitecodeError::Config(format!("save usearch: {e}")))
+}
+
+/// Read ANN bytes with `std::fs` instead of usearch's `Index::load(path)`.
+pub(crate) fn restore_usearch(ann: &Index, path: &Path) -> Result<()> {
+    let buf =
+        std::fs::read(path).map_err(|e| LitecodeError::Config(format!("load usearch: {e}")))?;
+    ann.load_from_buffer(&buf)
+        .map_err(|e| LitecodeError::Config(format!("load usearch: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +303,30 @@ mod tests {
 
         assert!(vectors_path(root).is_file());
         let loaded = CodeSearchIndex::load(root).unwrap();
+        assert_eq!(loaded.chunks().len(), 1);
+    }
+
+    #[test]
+    fn save_empty_index_creates_vectors_file() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        CodeSearchIndex::new_empty().unwrap().save(root).unwrap();
+        assert!(vectors_path(root).is_file());
+        let loaded = CodeSearchIndex::load(root).unwrap();
+        assert!(loaded.chunks().is_empty());
+    }
+
+    #[test]
+    fn save_load_unicode_workspace_path() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("新工作区");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut index = CodeSearchIndex::new_empty().unwrap();
+        let (chunks, _) = chunk_file("main.rs", "fn main() {}\n", 1);
+        let mut emb = HashEmbedder;
+        index.embed_and_add(chunks, &mut emb).unwrap();
+        index.save(&root).unwrap();
+        let loaded = CodeSearchIndex::load(&root).unwrap();
         assert_eq!(loaded.chunks().len(), 1);
     }
 }

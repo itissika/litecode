@@ -66,6 +66,7 @@ pub use scan_policy::{
 };
 pub use semantic_engine::SemanticEngine;
 pub use store::{CodeSearchIndex, index_files_exist};
+pub(crate) use store::{persist_usearch, restore_usearch};
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

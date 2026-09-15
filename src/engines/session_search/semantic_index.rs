@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
 use crate::engines::code_search::{
-    EMBED_DIM, Embedder, MODEL_ID, PIPELINE_VERSION, production_embedder_id,
+    EMBED_DIM, Embedder, MODEL_ID, PIPELINE_VERSION, persist_usearch, production_embedder_id,
+    restore_usearch,
 };
 use crate::types::{LitecodeError, Result};
 
@@ -134,11 +135,9 @@ impl SessionSemanticIndex {
     }
 
     pub fn load(workspace_root: &Path) -> Result<Self> {
-        let ann_path = vectors_path(workspace_root);
         let chunks_file = chunks_path(workspace_root);
         let ann = new_ann_index()?;
-        ann.load(ann_path.to_str().unwrap_or("vectors.usearch"))
-            .map_err(|e| LitecodeError::Config(format!("load session usearch: {e}")))?;
+        restore_usearch(&ann, &vectors_path(workspace_root))?;
 
         let meta_on_disk = read_meta(workspace_root)?;
         let embedder_id = meta_on_disk
@@ -178,10 +177,7 @@ impl SessionSemanticIndex {
         let dir = session_index_dir(workspace_root);
         std::fs::create_dir_all(&dir).map_err(|e| LitecodeError::Config(e.to_string()))?;
 
-        let ann_path = vectors_path(workspace_root);
-        self.ann
-            .save(ann_path.to_str().unwrap_or("vectors.usearch"))
-            .map_err(|e| LitecodeError::Config(format!("save session usearch: {e}")))?;
+        persist_usearch(&self.ann, &vectors_path(workspace_root))?;
 
         let chunks_file = chunks_path(workspace_root);
         let mut file =
