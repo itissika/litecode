@@ -28,6 +28,10 @@ cd desktop && npm install && npm run test
 
 提交前请确保 `cargo check` 与 `cargo test` 通过，且不引入无关改动。
 
+## 临时脚本
+
+调试用的复现脚本、一次性探针、截图产物等，一律放在已忽略的 `.tmp/` 目录下（如 `web/.tmp/probe.mjs`），不得散落在 `src/`、`web/` 等源码目录，也不得进入提交。提交前用 `git status` 复查，清掉这类残留。
+
 ## 提交规范
 
 所有提交必须遵守 [Agent.md](Agent.md) 中的「提交铁律」，要点：

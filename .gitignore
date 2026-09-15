@@ -71,6 +71,10 @@ dev/
 
 # Stray debug / scratch artifacts (never commit)
 .tmp_*
+*.tmp.*
+
+# Scratch dir for throwaway probes / repro scripts (never commit)
+.tmp/
 
 # Orchestrator scratch board (session-local, never commit)
 FRONTEND_REWORK_BOARD.md

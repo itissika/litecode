@@ -31,19 +31,21 @@ fn self_worker_binary() -> Result<PathBuf> {
         .map_err(|e| LitecodeError::ToolExecution(format!("code_search worker: current_exe: {e}")))
 }
 
-fn spawn_exe(exe: &Path) -> Result<CodeSearchWorkerClient> {
-    let mut child = Command::new(exe)
-        .arg("code-search-worker")
+fn spawn_exe(exe: &Path, force_cpu_ort: bool) -> Result<CodeSearchWorkerClient> {
+    let mut cmd = Command::new(exe);
+    cmd.arg("code-search-worker")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| {
-            LitecodeError::ToolExecution(format!(
-                "code_search worker spawn failed ({}): {e}",
-                exe.display()
-            ))
-        })?;
+        .stderr(Stdio::null());
+    if force_cpu_ort {
+        cmd.env("LITECODE_ORT_FORCE_CPU", "1");
+    }
+    let mut child = cmd.spawn().map_err(|e| {
+        LitecodeError::ToolExecution(format!(
+            "code_search worker spawn failed ({}): {e}",
+            exe.display()
+        ))
+    })?;
     // Kernel-level tie so the worker cannot outlive this process (Windows
     // Job Object; no-op elsewhere).
     crate::proc_lifetime::bind_child_to_parent(child.id());
@@ -60,7 +62,12 @@ fn spawn_exe(exe: &Path) -> Result<CodeSearchWorkerClient> {
 
 impl CodeSearchWorkerClient {
     pub fn spawn() -> Result<Self> {
-        spawn_exe(&self_worker_binary()?)
+        spawn_exe(&self_worker_binary()?, false)
+    }
+
+    /// Second-chance spawn: skip CUDA EP so a native abort cannot repeat.
+    pub fn spawn_cpu_ort() -> Result<Self> {
+        spawn_exe(&self_worker_binary()?, true)
     }
 
     fn next_id(&self) -> u64 {

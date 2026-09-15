@@ -419,24 +419,45 @@ impl CodeSearchEngine {
         session_db_path: Option<&std::path::Path>,
         epoch: u64,
     ) -> Result<Option<CodeSearchWorkerClient>> {
-        let mut client = CodeSearchWorkerClient::spawn()?;
-        self.set_worker_os_pid(client.pid());
-        if !self.warmup_still_valid(epoch) {
-            client.kill();
-            self.set_worker_os_pid(None);
-            return Ok(None);
-        }
-        match self.handshake_worker(&mut client, root, session_db_path, epoch) {
-            Ok(true) => Ok(Some(client)),
-            Ok(false) => {
+        let mut force_cpu_ort = false;
+        loop {
+            let mut client = if force_cpu_ort {
+                CodeSearchWorkerClient::spawn_cpu_ort()?
+            } else {
+                CodeSearchWorkerClient::spawn()?
+            };
+            self.set_worker_os_pid(client.pid());
+            if !self.warmup_still_valid(epoch) {
                 client.kill();
                 self.set_worker_os_pid(None);
-                Ok(None)
+                return Ok(None);
             }
-            Err(e) => {
-                client.kill();
-                self.set_worker_os_pid(None);
-                Err(e)
+            match self.handshake_worker(&mut client, root, session_db_path, epoch) {
+                Ok(true) => {
+                    if force_cpu_ort {
+                        tracing::info!("code_search worker recovered on CPU EP");
+                    }
+                    return Ok(Some(client));
+                }
+                Ok(false) => {
+                    client.kill();
+                    self.set_worker_os_pid(None);
+                    return Ok(None);
+                }
+                Err(e) => {
+                    let died = handshake_failure_is_worker_death(&mut client, &e);
+                    client.kill();
+                    self.set_worker_os_pid(None);
+                    if died && !force_cpu_ort && self.warmup_still_valid(epoch) {
+                        tracing::warn!(
+                            error = %e,
+                            "code_search worker died during warmup; retrying with CPU EP"
+                        );
+                        force_cpu_ort = true;
+                        continue;
+                    }
+                    return Err(e);
+                }
             }
         }
     }
@@ -451,6 +472,31 @@ impl CodeSearchEngine {
             *root = None;
         }
         crate::telemetry::release_heap_to_os();
+    }
+}
+
+/// True when warmup IPC failed because the child is gone (CUDA native abort,
+/// delay-load crash, stdout EOF). JSON-RPC errors from a live worker are false.
+fn handshake_failure_is_worker_death(
+    client: &mut CodeSearchWorkerClient,
+    err: &LitecodeError,
+) -> bool {
+    if !matches!(client.try_wait(), Ok(None)) {
+        return true;
+    }
+    handshake_error_looks_like_death(err)
+}
+
+fn handshake_error_looks_like_death(err: &LitecodeError) -> bool {
+    match err {
+        LitecodeError::Io(e) if e.kind() == std::io::ErrorKind::BrokenPipe => true,
+        LitecodeError::ToolExecution(msg) if msg.contains("closed stdout") => true,
+        other => {
+            let msg = other.to_string();
+            msg.contains("closed stdout")
+                || msg.contains("Broken pipe")
+                || msg.contains("broken pipe")
+        }
     }
 }
 
@@ -623,5 +669,20 @@ mod tests {
                 .search("main", None, 5)
                 .expect("code search still Ok after session lane error");
         }
+    }
+
+    #[test]
+    fn handshake_closed_stdout_is_worker_death() {
+        assert!(handshake_error_looks_like_death(
+            &LitecodeError::ToolExecution("code_search worker closed stdout".into())
+        ));
+        assert!(handshake_error_looks_like_death(&LitecodeError::Io(
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken pipe")
+        )));
+        assert!(!handshake_error_looks_like_death(
+            &LitecodeError::ToolExecution(
+                "code_search worker error (-32000): tokenizer missing".into()
+            )
+        ));
     }
 }

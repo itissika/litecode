@@ -6,6 +6,8 @@
 //! Session lives in the code-search worker process only (not the agent main process).
 
 use std::path::{Path, PathBuf};
+#[cfg(feature = "ort-cuda")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
 
@@ -42,17 +44,7 @@ impl OrtGraniteEmbedder {
         knobs.log_applied();
 
         let intra_threads = ort_intra_threads();
-        let mut builder = ort::session::Session::builder()
-            .map_err(|e| LitecodeError::Config(format!("ort Session::builder: {e}")))?
-            .with_intra_threads(intra_threads)
-            .map_err(|e| LitecodeError::Config(format!("ort with_intra_threads: {e}")))?;
-
-        builder = knobs.apply_session(builder)?;
-        let (mut builder, device) = knobs.apply_execution_providers(builder)?;
-
-        let session = builder.commit_from_file(&onnx_path).map_err(|e| {
-            LitecodeError::Config(format!("ort commit_from_file {}: {e}", onnx_path.display()))
-        })?;
+        let (session, device) = open_ort_session(&onnx_path, &knobs, intra_threads)?;
 
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| LitecodeError::Config(format!("tokenizer load: {e}")))?;
@@ -295,42 +287,88 @@ impl OrtSessionKnobs {
             .map_err(|e| LitecodeError::Config(format!("CPU EP register: {e}")))
     }
 
-    fn apply_execution_providers(
-        &self,
-        builder: ort::session::builder::SessionBuilder,
-    ) -> Result<(ort::session::builder::SessionBuilder, &'static str)> {
-        #[cfg(feature = "ort-cuda")]
-        {
-            return self.apply_cuda_or_cpu_ep(builder);
-        }
-        #[cfg(not(feature = "ort-cuda"))]
-        {
-            Ok((self.apply_cpu_ep(builder)?, "cpu-ort"))
-        }
-    }
-
+    /// CUDA first (fail the list if it cannot register) plus CPU for nodes the
+    /// CUDA EP cannot take. Caller must rebuild a fresh session on error — a
+    /// recovered builder may still carry a half-registered CUDA factory.
     #[cfg(feature = "ort-cuda")]
-    fn apply_cuda_or_cpu_ep(
+    fn apply_cuda_ep(
         &self,
         builder: ort::session::builder::SessionBuilder,
-    ) -> Result<(ort::session::builder::SessionBuilder, &'static str)> {
+    ) -> Result<ort::session::builder::SessionBuilder> {
         use ort::ep::{CPU, CUDA};
-        if let Err(reason) = cuda_provider_dylib_ok() {
-            tracing::warn!(%reason, "CUDA EP skipped; using CPU EP");
-            return Ok((self.apply_cpu_ep(builder)?, "cpu-ort"));
-        }
         let cpu = CPU::default().with_arena_allocator(self.cpu_arena);
-        match builder
+        builder
             .with_execution_providers([CUDA::default().build().error_on_failure(), cpu.build()])
-        {
-            Ok(b) => {
+            .map_err(|e| LitecodeError::Config(format!("CUDA EP register: {e}")))
+    }
+}
+
+enum OrtDevice {
+    Cpu,
+    #[cfg(feature = "ort-cuda")]
+    Cuda,
+}
+
+/// Parent may set this on a second spawn after the CUDA worker native-aborts.
+#[cfg(feature = "ort-cuda")]
+const FORCE_CPU_ORT_ENV: &str = "LITECODE_ORT_FORCE_CPU";
+
+#[cfg(feature = "ort-cuda")]
+static CUDA_UNUSABLE: AtomicBool = AtomicBool::new(false);
+
+fn open_ort_session(
+    onnx_path: &Path,
+    knobs: &OrtSessionKnobs,
+    intra_threads: usize,
+) -> Result<(ort::session::Session, &'static str)> {
+    #[cfg(feature = "ort-cuda")]
+    if should_try_cuda() {
+        match commit_ort_session(onnx_path, knobs, intra_threads, OrtDevice::Cuda) {
+            Ok(session) => {
                 tracing::info!("CUDA EP enabled");
-                Ok((b, "cuda-ort"))
+                return Ok((session, "cuda-ort"));
             }
             Err(e) => {
-                tracing::warn!(error = %e, "CUDA EP unavailable; using CPU EP");
-                Ok((self.apply_cpu_ep(e.recover())?, "cpu-ort"))
+                CUDA_UNUSABLE.store(true, Ordering::SeqCst);
+                tracing::warn!(error = %e, "CUDA ORT session failed; retrying CPU EP");
             }
+        }
+    }
+    let session = commit_ort_session(onnx_path, knobs, intra_threads, OrtDevice::Cpu)?;
+    Ok((session, "cpu-ort"))
+}
+
+fn commit_ort_session(
+    onnx_path: &Path,
+    knobs: &OrtSessionKnobs,
+    intra_threads: usize,
+    device: OrtDevice,
+) -> Result<ort::session::Session> {
+    let mut builder = ort::session::Session::builder()
+        .map_err(|e| LitecodeError::Config(format!("ort Session::builder: {e}")))?
+        .with_intra_threads(intra_threads)
+        .map_err(|e| LitecodeError::Config(format!("ort with_intra_threads: {e}")))?;
+    builder = knobs.apply_session(builder)?;
+    builder = match device {
+        OrtDevice::Cpu => knobs.apply_cpu_ep(builder)?,
+        #[cfg(feature = "ort-cuda")]
+        OrtDevice::Cuda => knobs.apply_cuda_ep(builder)?,
+    };
+    builder.commit_from_file(onnx_path).map_err(|e| {
+        LitecodeError::Config(format!("ort commit_from_file {}: {e}", onnx_path.display()))
+    })
+}
+
+#[cfg(feature = "ort-cuda")]
+fn should_try_cuda() -> bool {
+    if env_flag_nonzero(FORCE_CPU_ORT_ENV) || CUDA_UNUSABLE.load(Ordering::SeqCst) {
+        return false;
+    }
+    match cuda_provider_dylib_ok() {
+        Ok(()) => true,
+        Err(reason) => {
+            tracing::warn!(%reason, "CUDA EP skipped; using CPU EP");
+            false
         }
     }
 }
