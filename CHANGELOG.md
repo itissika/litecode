@@ -2,6 +2,24 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.1.8] - 2026-09-16
+
+### 新增
+
+**Subagent 子代理体系（本版核心）**
+
+- 工具集：新增 `subagent_launch` / `subagent_wait` / `subagent_stop` / `subagent_list` / `subagent_send` 完整工具链；`subagent_send` 可向运行中的子代理追加消息、继续对话。
+- seed：内置 agent 种子齐套 —— primary：`default` 通用助理 + `orchestrator` 编排者（可管理子代理团队）；subagent：`general` 通用实现者 + `explore` 只读调研者；均带 builtin prompts 与默认工具 / 权限绑定，初始化即用。
+- 生命周期：launch 一律后台运行，父 turn 取消不再连带取消子代理；子会话与父会话建立父子关系，UI 提供 Subagent Roster 面板与状态栏。
+
+### 其他体验优化
+
+- **搜索与索引**：深度优化代码 / 语义搜索与索引（`-u` 过滤、ANN 索引持久化、worker CPU 回退、结果排序更精准），减少不必要重建。
+- **工作区与会话**：新增 `workspace_stats` 工具，会话预览与 function call 处理更完善，乐观消息未落盘时看门狗明确提示。
+- **设置与模型**：设置热加载与持久化更稳（Exa key 独立保存、被引用的 provider 防误删），修复 DeepSeek / Mimo 思考模式 + 工具的 400。
+- **构建与打包**：新增 CUDA 加速支持（个人 drop-in worker，不影响官方安装包）。
+- **稳定性与可观测性**：压缩摘要可取消并加超时，不再被静默对端卡死；子代理资源随会话删除级联清理；遥测更准确。
+
 ## [0.1.7] - 2026-09-03
 
 ### 新增
