@@ -9,14 +9,16 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::authority::responses::{Item, OutputItem, Response, ResponseStreamEvent};
+use crate::authority::responses::{Item, ResponseStreamEvent};
 use crate::config::schema::ProviderAuth;
 use crate::types::{LitecodeError, Result, StreamEvents};
 
 use tokio_util::sync::CancellationToken;
 
+use crate::config::schema::ADAPTER_OPENAI_RESPONSES;
 use crate::llm::provider::LlmProvider;
 use crate::llm::request::ModelRequest;
+use crate::platform_knobs::{ThinkingSpec, map_thinking_to_wire};
 
 use super::responses_sse::{SseLineReader, check_event_stream_content_type, sse_data_payload};
 use super::stream_contract::{
@@ -86,8 +88,13 @@ impl OpenaiResponsesProvider {
             "temperature": params.temperature,
         });
 
-        if let Some(reasoning_effort) = &params.reasoning_effort {
-            body["reasoning"] = serde_json::json!({ "effort": reasoning_effort });
+        match params.thinking {
+            ThinkingSpec::Off => {}
+            ThinkingSpec::Tier(tier) => {
+                if let Some(effort) = map_thinking_to_wire(ADAPTER_OPENAI_RESPONSES, tier).1 {
+                    body["reasoning"] = serde_json::json!({ "effort": effort });
+                }
+            }
         }
 
         Ok(body)
@@ -111,10 +118,6 @@ fn normalize_endpoint(endpoint: String) -> String {
     trimmed.to_string()
 }
 
-fn output_items_to_items(output: Vec<OutputItem>) -> Vec<Item> {
-    output.into_iter().map(Item::from).collect()
-}
-
 impl LlmProvider for OpenaiResponsesProvider {
     fn endpoint(&self) -> &str {
         &self.endpoint_url
@@ -133,40 +136,6 @@ impl LlmProvider for OpenaiResponsesProvider {
             Ok(p) => Box::new(p),
             Err(_) => self.box_clone(),
         }
-    }
-
-    /// Explicit non-stream path (`stream: false`). Degradation = call this, not silently disable SSE.
-    fn complete<'a>(
-        &'a self,
-        request: &'a ModelRequest,
-        api_key: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        Box::pin(async move {
-            let body = Self::build_body(request, false)?;
-            let (header_name, header_value) = self.auth_header(api_key);
-            let resp = self
-                .client
-                .post(&self.endpoint_url)
-                .header(header_name, header_value)
-                .header("content-type", "application/json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| transport_error("sending OpenAI response", &e))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                return Err(LitecodeError::Llm(format!("HTTP {status}: {text}")));
-            }
-
-            let response: Response = resp
-                .json()
-                .await
-                .map_err(|e| LitecodeError::Llm(format!("deserialize Response: {e}")))?;
-
-            Ok(output_items_to_items(response.output))
-        })
     }
 
     /// Native Responses SSE (`stream: true`). Final Items come from
@@ -287,8 +256,7 @@ mod tests {
             tools: vec![],
             max_output_tokens: 64,
             temperature: 0.0,
-            reasoning_effort: None,
-            thinking_mode: None,
+            thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: None,
         }
@@ -421,6 +389,20 @@ mod tests {
         off_obj.remove("stream");
         on_obj.remove("stream");
         assert_eq!(off_obj, on_obj);
+    }
+
+    #[test]
+    fn compact_thinking_off_omits_reasoning() {
+        let mut req = sample_request();
+        req.thinking = crate::platform_knobs::ThinkingSpec::Off;
+        let body = OpenaiResponsesProvider::build_body(&req, true).unwrap();
+        assert!(body.get("reasoning").is_none(), "got {body}");
+    }
+
+    #[test]
+    fn medium_tier_sends_reasoning_effort() {
+        let body = OpenaiResponsesProvider::build_body(&sample_request(), false).unwrap();
+        assert_eq!(body["reasoning"]["effort"], "medium");
     }
 
     #[tokio::test]
@@ -603,19 +585,4 @@ mod tests {
         assert!(msg.contains("upstream exploded"), "got: {msg}");
     }
 
-    #[tokio::test]
-    async fn complete_non_stream_returns_output_items() {
-        let body = completed_response_json();
-        let endpoint = serve_once(body, "application/json").await;
-        let provider =
-            OpenaiResponsesProvider::new(endpoint, ProviderAuth::Bearer).expect("provider");
-        let items = provider
-            .complete(&sample_request(), "sk-test")
-            .await
-            .expect("complete ok");
-        let ids: Vec<_> = items.iter().filter_map(item_id).collect();
-        assert!(ids.contains(&"msg_1".to_string()));
-        assert!(ids.contains(&"rs_1".to_string()));
-        assert!(ids.contains(&"fc_1".to_string()));
-    }
 }

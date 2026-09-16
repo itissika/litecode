@@ -17,12 +17,13 @@ use reqwest::Client;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::authority::responses::{Item, OutputItem, Response, ResponseStreamEvent};
+use crate::authority::responses::{Item, ResponseStreamEvent};
 use crate::config::schema::ProviderAuth;
 use crate::types::{LitecodeError, Result, StreamEvents};
 
 use crate::llm::provider::LlmProvider;
 use crate::llm::request::ModelRequest;
+use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
 
 use super::reasoning_replay::ensure_reasoning_replay;
 use super::responses_sse::{SseLineReader, check_event_stream_content_type, sse_data_payload};
@@ -130,15 +131,13 @@ impl DeepseekResponsesProvider {
 
 /// DeepSeek Responses `reasoning.effort`.
 ///
-/// Platform three-tier (via `ModelRequest.reasoning_effort`): `low` / `high` / `max`.
-/// Vendor default when unset is `high`.
+/// `Off` → `none`. Platform Low/Med/High → `low` / `high` / `max`.
 fn resolve_deepseek_reasoning_effort(params: &ModelRequest) -> &'static str {
-    match params.reasoning_effort.as_deref() {
-        Some("none") => "none",
-        Some("low") => "low",
-        Some("max") => "max",
-        Some("high") | Some("medium") => "high",
-        _ => "high",
+    match params.thinking {
+        ThinkingSpec::Off => "none",
+        ThinkingSpec::Tier(ThinkingTier::Low) => "low",
+        ThinkingSpec::Tier(ThinkingTier::Medium) => "high",
+        ThinkingSpec::Tier(ThinkingTier::High) => "max",
     }
 }
 
@@ -183,14 +182,6 @@ pub(crate) fn harden_deepseek_json(value: &mut Value) {
     }
 }
 
-fn parse_response(text: &str) -> Result<Response> {
-    let mut value: Value = serde_json::from_str(text)
-        .map_err(|e| LitecodeError::Llm(format!("deserialize Response JSON: {e}")))?;
-    harden_deepseek_json(&mut value);
-    serde_json::from_value(value)
-        .map_err(|e| LitecodeError::Llm(format!("deserialize Response: {e}")))
-}
-
 fn parse_stream_event(data: &str) -> Result<ResponseStreamEvent> {
     let mut value: Value = serde_json::from_str(data).map_err(|e| {
         LitecodeError::Llm(format!(
@@ -221,10 +212,6 @@ fn normalize_endpoint(endpoint: String) -> String {
     trimmed.to_string()
 }
 
-fn output_items_to_items(output: Vec<OutputItem>) -> Vec<Item> {
-    output.into_iter().map(Item::from).collect()
-}
-
 impl LlmProvider for DeepseekResponsesProvider {
     fn endpoint(&self) -> &str {
         &self.endpoint_url
@@ -243,39 +230,6 @@ impl LlmProvider for DeepseekResponsesProvider {
             Ok(p) => Box::new(p),
             Err(_) => self.box_clone(),
         }
-    }
-
-    fn complete<'a>(
-        &'a self,
-        request: &'a ModelRequest,
-        api_key: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        Box::pin(async move {
-            let body = Self::build_body(request, false)?;
-            let (header_name, header_value) = self.auth_header(api_key);
-            let resp = self
-                .client
-                .post(&self.endpoint_url)
-                .header(header_name, header_value)
-                .header("content-type", "application/json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| transport_error("sending DeepSeek response", &e))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                return Err(LitecodeError::Llm(format!("HTTP {status}: {text}")));
-            }
-
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| transport_error("reading DeepSeek response", &e))?;
-            let response = parse_response(&text)?;
-            Ok(output_items_to_items(response.output))
-        })
     }
 
     fn complete_with_stream_events<'a>(
@@ -373,6 +327,7 @@ mod tests {
     };
     use crate::config::schema::ProviderAuth;
     use crate::llm::request::{ModelRequest, ToolDef};
+    use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -386,8 +341,7 @@ mod tests {
             tools,
             max_output_tokens: 64,
             temperature: 0.7,
-            reasoning_effort: None,
-            thinking_mode: None,
+            thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: None,
         }
@@ -509,38 +463,37 @@ mod tests {
     #[test]
     fn reasoning_effort_maps_platform_tiers() {
         let mut req = sample_request(vec![]);
-        req.reasoning_effort = Some("low".into());
+        req.thinking = ThinkingSpec::Tier(ThinkingTier::Low);
         let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(body["reasoning"]["effort"], "low");
         assert!(body.get("temperature").is_none());
 
-        req.reasoning_effort = Some("high".into());
+        req.thinking = ThinkingSpec::Tier(ThinkingTier::Medium);
         let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(body["reasoning"]["effort"], "high");
 
-        req.reasoning_effort = Some("max".into());
+        req.thinking = ThinkingSpec::Tier(ThinkingTier::High);
         let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(body["reasoning"]["effort"], "max");
 
-        req.reasoning_effort = Some("none".into());
+        req.thinking = ThinkingSpec::Off;
         let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(body["reasoning"]["effort"], "none");
         assert_eq!(body["temperature"], 0.7);
     }
 
     #[test]
-    fn thinking_mode_does_not_override_effort() {
+    fn compact_off_is_independent_of_medium_default() {
         let mut req = sample_request(vec![]);
-        req.thinking_mode = Some("disabled".into());
-        req.reasoning_effort = Some("high".into());
+        req.thinking = ThinkingSpec::Off;
         let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
-        assert_eq!(body["reasoning"]["effort"], "high");
+        assert_eq!(body["reasoning"]["effort"], "none");
     }
 
     #[test]
     fn medium_effort_maps_to_vendor_high() {
         let mut req = sample_request(vec![]);
-        req.reasoning_effort = Some("medium".into());
+        req.thinking = ThinkingSpec::Tier(ThinkingTier::Medium);
         let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(body["reasoning"]["effort"], "high");
     }
@@ -639,9 +592,9 @@ mod tests {
             "no tools → vendor ignores reasoning, no insertion"
         );
 
-        // Compact summarizer shape: thinking off (effort none), no tools.
+        // Compact summarizer shape: thinking off, no tools.
         let mut req = sample_request(vec![]);
-        req.reasoning_effort = Some("none".into());
+        req.thinking = ThinkingSpec::Off;
         req.input = vec![crate::types::user_text("summarize"), assistant_msg("x")];
         let body = DeepseekResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(
@@ -845,21 +798,5 @@ mod tests {
             }
             other => panic!("expected message, got {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn complete_non_stream_hardens_usage_and_returns_items() {
-        let body = completed_response_json();
-        let endpoint = serve_once(body, "application/json").await;
-        let provider =
-            DeepseekResponsesProvider::new(endpoint, ProviderAuth::Bearer).expect("provider");
-        let items = provider
-            .complete(&sample_request(vec![]), "sk-test")
-            .await
-            .expect("complete ok");
-        let ids: Vec<_> = items.iter().filter_map(item_id).collect();
-        assert!(ids.contains(&"msg_1".to_string()));
-        assert!(ids.contains(&"rs_1".to_string()));
-        assert!(ids.contains(&"fc_1".to_string()));
     }
 }

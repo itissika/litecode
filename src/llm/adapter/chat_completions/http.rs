@@ -12,7 +12,6 @@ use super::super::stream_contract::{
     StreamContractGate, StreamItemAccumulator, forward_stream_event, resolve_stream_outcome,
 };
 use super::super::transport_error;
-use super::decode::items_from_chat_message;
 use super::stream::ChatSynth;
 
 pub(crate) fn wrap_upstream(
@@ -21,29 +20,6 @@ pub(crate) fn wrap_upstream(
     body: &str,
 ) -> LitecodeError {
     LitecodeError::Llm(format!("{error_prefix}. HTTP {status}: {body}"))
-}
-
-pub(crate) async fn complete_from_response(
-    resp: reqwest::Response,
-    error_prefix: &str,
-) -> Result<Vec<Item>> {
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(wrap_upstream(error_prefix, status, &text));
-    }
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| transport_error("reading chat-completions response", &e))?;
-    let value: Value = serde_json::from_str(&text).map_err(|e| {
-        LitecodeError::Llm(format!("{error_prefix}. not Chat JSON: {e}; body={text}"))
-    })?;
-    let message = value
-        .pointer("/choices/0/message")
-        .cloned()
-        .ok_or_else(|| LitecodeError::Llm(format!("{error_prefix}. missing choices[0].message")))?;
-    Ok(items_from_chat_message(&message))
 }
 
 pub(crate) async fn stream_from_response<'a>(

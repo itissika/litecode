@@ -324,8 +324,6 @@ export function ModelsSection() {
           api_model_id: closed && !remote ? (catalog[0] ?? "") : "",
           context_window: closed ? 0 : 200_000,
           max_tokens: closed ? 0 : 8192,
-          thinking_mode: null,
-          reasoning_effort: null,
           json_output: false,
           capabilities: ["text"],
         },

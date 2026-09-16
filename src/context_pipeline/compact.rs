@@ -4,24 +4,22 @@ use tokio_util::sync::CancellationToken;
 
 use crate::authority::responses::MessageItem;
 use crate::context_pipeline::keep_recent::{build_compaction_prompt, find_keep_recent_cut};
-use crate::llm::{LlmProvider, ModelRequest};
+use crate::llm::{CompactLlmCall, ModelRequest};
 use crate::runtime::observer::{
     CompactionFailKind, CompactionStage, CompactionTrigger, InternalEvent,
 };
 use crate::session::event::Seq;
 use crate::session::manager::SessionManager;
-use crate::types::{Item, LitecodeError, Result, Transcript, item_text_preview, user_text};
+use crate::types::{Item, LitecodeError, Result, Transcript, item_text_preview};
 
 use super::budget::{BudgetPolicy, ProviderPromptBaseline};
 use super::summary::compact_summary_message_with_reminder;
 
-/// Wall-clock cap for the non-stream compact call.
+/// Wall-clock cap for the compact LLM call.
 ///
-/// [`LlmProvider::complete`] takes no cancel token and the shared HTTP client
-/// only sets `connect_timeout`, so a provider that accepts the request and then
-/// goes silent would otherwise pend forever and wedge the session. Generous on
-/// purpose: a legitimate summary is ~1-3k output tokens, while a silent peer
-/// never answers at all.
+/// A provider that accepts the request and then goes silent would otherwise pend
+/// forever and wedge the session. Generous on purpose: a legitimate summary is
+/// ~1-3k output tokens, while a silent peer never answers at all.
 const COMPACT_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Compaction policy and execution.
@@ -40,9 +38,7 @@ impl CompactPolicy {
         budget: &BudgetPolicy,
         sessions: &SessionManager,
         session_id: &str,
-        provider: &dyn LlmProvider,
-        api_key: &str,
-        model: &str,
+        llm: CompactLlmCall<'_>,
         system_prompt: &str,
         max_tokens: u32,
         transcript: &mut Transcript,
@@ -80,9 +76,7 @@ impl CompactPolicy {
             budget,
             sessions,
             session_id,
-            provider,
-            api_key,
-            model,
+            llm,
             system_prompt,
             max_tokens,
             &prompt_baseline,
@@ -115,9 +109,7 @@ impl CompactPolicy {
         budget: &BudgetPolicy,
         sessions: &SessionManager,
         session_id: &str,
-        provider: &dyn LlmProvider,
-        api_key: &str,
-        model: &str,
+        llm: CompactLlmCall<'_>,
         system_prompt: &str,
         max_tokens: u32,
         prompt_baseline: &ProviderPromptBaseline,
@@ -165,9 +157,7 @@ impl CompactPolicy {
                 budget,
                 sessions,
                 session_id,
-                provider,
-                api_key,
-                model,
+                llm,
                 system_prompt,
                 max_tokens,
                 prompt_baseline,
@@ -202,9 +192,7 @@ impl CompactPolicy {
         budget: &BudgetPolicy,
         sessions: &SessionManager,
         session_id: &str,
-        provider: &dyn LlmProvider,
-        api_key: &str,
-        model: &str,
+        llm: CompactLlmCall<'_>,
         system_prompt: &str,
         max_tokens: u32,
         prompt_baseline: &ProviderPromptBaseline,
@@ -293,9 +281,7 @@ impl CompactPolicy {
         let summary_max_tokens = budget.compact_output_tokens(max_tokens);
 
         let summary = match Self::first_pass_compaction(
-            provider,
-            api_key,
-            model,
+            llm,
             system_prompt,
             summary_max_tokens,
             cut,
@@ -402,9 +388,7 @@ impl CompactPolicy {
     }
 
     async fn first_pass_compaction(
-        provider: &dyn LlmProvider,
-        api_key: &str,
-        model: &str,
+        llm: CompactLlmCall<'_>,
         system_prompt: &str,
         max_tokens: u32,
         cut: usize,
@@ -424,9 +408,7 @@ impl CompactPolicy {
         let kept = transcript[cut..].to_vec();
         let prompt = build_compaction_prompt(discarded);
         let summary = Self::call_llm_compact(
-            provider,
-            api_key,
-            model,
+            llm,
             system_prompt,
             &prompt,
             max_tokens,
@@ -458,9 +440,7 @@ impl CompactPolicy {
     }
 
     pub(crate) async fn call_llm_compact(
-        provider: &dyn LlmProvider,
-        api_key: &str,
-        model: &str,
+        llm: CompactLlmCall<'_>,
         system: &str,
         prompt: &str,
         max_tokens: u32,
@@ -468,9 +448,7 @@ impl CompactPolicy {
         cancel: &CancellationToken,
     ) -> Result<String> {
         Self::call_llm_compact_with_timeout(
-            provider,
-            api_key,
-            model,
+            llm,
             system,
             prompt,
             max_tokens,
@@ -481,15 +459,12 @@ impl CompactPolicy {
         .await
     }
 
-    /// Cancellable, wall-clock-capped non-stream compact call.
+    /// Cancellable, wall-clock-capped compact call via the unified stream path.
     ///
-    /// Cancellation is observed *while awaiting* the provider (not only before
-    /// and after), and a silent peer fails the request instead of pending
-    /// forever. Dropping the `complete` future aborts the HTTP request.
+    /// Cancellation is observed while awaiting the provider (and passed into it),
+    /// and a silent peer fails the request instead of pending forever.
     async fn call_llm_compact_with_timeout(
-        provider: &dyn LlmProvider,
-        api_key: &str,
-        model: &str,
+        llm: CompactLlmCall<'_>,
         system: &str,
         prompt: &str,
         max_tokens: u32,
@@ -501,27 +476,30 @@ impl CompactPolicy {
             return Err(LitecodeError::Canceled);
         }
 
-        let request = compact_model_request(model, system, prompt, max_tokens, session_id);
+        let request = ModelRequest::compact(llm.model, system, prompt, max_tokens, session_id);
         let started = Instant::now();
         let items = tokio::select! {
             biased;
             _ = cancel.cancelled() => {
                 tracing::info!(
                     session_id,
-                    model,
+                    model = llm.model,
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     "compaction request canceled while waiting for the provider"
                 );
                 return Err(LitecodeError::Canceled);
             }
-            result = tokio::time::timeout(timeout, provider.complete(&request, api_key)) => {
+            result = tokio::time::timeout(
+                timeout,
+                llm.provider.complete_with_stream_events(&request, llm.api_key, None, cancel),
+            ) => {
                 match result {
                     Ok(Ok(items)) => items,
                     Ok(Err(error)) => return Err(error),
                     Err(_) => {
                         tracing::error!(
                             session_id,
-                            model,
+                            model = llm.model,
                             timeout_secs = timeout.as_secs(),
                             "compaction request timed out with no provider response"
                         );
@@ -534,28 +512,6 @@ impl CompactPolicy {
             }
         };
         Ok(summary_text_from_compact_output(&items))
-    }
-}
-
-/// Compact is a one-shot summarizer: no thinking, fixed output cap from the caller.
-fn compact_model_request(
-    model: &str,
-    system: &str,
-    prompt: &str,
-    max_tokens: u32,
-    session_id: &str,
-) -> ModelRequest {
-    ModelRequest {
-        model: model.to_string(),
-        instructions: system.to_string(),
-        input: vec![user_text(prompt)],
-        max_output_tokens: max_tokens,
-        temperature: 0.3,
-        tools: vec![],
-        thinking_mode: Some("disabled".into()),
-        reasoning_effort: Some("none".into()),
-        json_output: false,
-        session_id: Some(session_id.to_string()),
     }
 }
 
@@ -642,12 +598,13 @@ mod tests {
     use crate::authority::responses::{
         OutputStatus, ReasoningItem, ReasoningItemContent, ReasoningTextContent,
     };
+    use crate::llm::LlmProvider;
     use crate::types::{StreamEvents, assistant_text};
     use std::future::Future;
     use std::pin::Pin;
 
-    /// Non-stream fake whose `complete` never resolves — the silent-provider
-    /// failure mode that used to pend the turn forever.
+    /// Silent provider whose stream call never resolves — the failure mode that
+    /// used to pend the turn forever.
     struct PendingProvider;
 
     impl LlmProvider for PendingProvider {
@@ -659,14 +616,6 @@ mod tests {
             Box::new(PendingProvider)
         }
 
-        fn complete<'a>(
-            &'a self,
-            _request: &'a ModelRequest,
-            _api_key: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-            Box::pin(std::future::pending::<Result<Vec<Item>>>())
-        }
-
         fn complete_with_stream_events<'a>(
             &'a self,
             _request: &'a ModelRequest,
@@ -674,7 +623,7 @@ mod tests {
             _on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
             _cancel: &'a CancellationToken,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-            unimplemented!("compact only uses the non-stream path")
+            Box::pin(std::future::pending::<Result<Vec<Item>>>())
         }
     }
 
@@ -689,14 +638,6 @@ mod tests {
             Box::new(TextProvider)
         }
 
-        fn complete<'a>(
-            &'a self,
-            _request: &'a ModelRequest,
-            _api_key: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-            Box::pin(async move { Ok::<_, LitecodeError>(vec![assistant_text("## summary\nkept")]) })
-        }
-
         fn complete_with_stream_events<'a>(
             &'a self,
             _request: &'a ModelRequest,
@@ -704,7 +645,15 @@ mod tests {
             _on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
             _cancel: &'a CancellationToken,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-            unimplemented!("compact only uses the non-stream path")
+            Box::pin(async move { Ok::<_, LitecodeError>(vec![assistant_text("## summary\nkept")]) })
+        }
+    }
+
+    fn compact_llm(provider: &dyn LlmProvider) -> CompactLlmCall<'_> {
+        CompactLlmCall {
+            provider,
+            api_key: "sk-test",
+            model: "compact-model",
         }
     }
 
@@ -724,9 +673,7 @@ mod tests {
     async fn compact_request_times_out_on_silent_provider() {
         let cancel = CancellationToken::new();
         let err = CompactPolicy::call_llm_compact_with_timeout(
-            &PendingProvider,
-            "sk-test",
-            "compact-model",
+            compact_llm(&PendingProvider),
             "system",
             "prompt",
             128,
@@ -752,9 +699,7 @@ mod tests {
             trigger.cancel();
         });
         let err = CompactPolicy::call_llm_compact_with_timeout(
-            &PendingProvider,
-            "sk-test",
-            "compact-model",
+            compact_llm(&PendingProvider),
             "system",
             "prompt",
             128,
@@ -771,9 +716,7 @@ mod tests {
     async fn compact_request_returns_summary_on_provider_success() {
         let cancel = CancellationToken::new();
         let summary = CompactPolicy::call_llm_compact_with_timeout(
-            &TextProvider,
-            "sk-test",
-            "compact-model",
+            compact_llm(&TextProvider),
             "system",
             "prompt",
             128,
@@ -803,9 +746,8 @@ mod tests {
 
     #[test]
     fn compact_request_disables_thinking_and_uses_caller_cap() {
-        let req = compact_model_request("m", "sys", "prompt", 20_480, "s1");
-        assert_eq!(req.thinking_mode.as_deref(), Some("disabled"));
-        assert_eq!(req.reasoning_effort.as_deref(), Some("none"));
+        let req = ModelRequest::compact("m", "sys", "prompt", 20_480, "s1");
+        assert_eq!(req.thinking, crate::platform_knobs::ThinkingSpec::Off);
         assert_eq!(req.max_output_tokens, 20_480);
         assert!(req.tools.is_empty());
     }

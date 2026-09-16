@@ -14,7 +14,6 @@ use std::sync::Mutex;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::llm::LlmProvider;
 use crate::session::manager::SessionManager;
 use crate::session::store::Session;
 use crate::session::task_state::TaskReminders;
@@ -219,9 +218,7 @@ impl ContextPipeline {
         &self,
         sessions: &SessionManager,
         session_id: &str,
-        provider: &dyn LlmProvider,
-        api_key: &str,
-        compact_model: &str,
+        llm: crate::llm::CompactLlmCall<'_>,
         compact_system: &str,
         compact_max_tokens: u32,
         prompt_baseline: &ProviderPromptBaseline,
@@ -262,9 +259,7 @@ impl ContextPipeline {
                 &self.budget,
                 sessions,
                 session_id,
-                provider,
-                api_key,
-                compact_model,
+                llm,
                 compact_system,
                 compact_max_tokens,
                 prompt_baseline,

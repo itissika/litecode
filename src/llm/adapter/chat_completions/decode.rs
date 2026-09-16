@@ -32,6 +32,7 @@ pub(crate) fn chat_reasoning_text(node: &Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
+#[allow(dead_code)]
 pub(crate) fn items_from_chat_message(message: &Value) -> Vec<Item> {
     let mut items = Vec::new();
     if let Some(text) = chat_reasoning_text(message) {

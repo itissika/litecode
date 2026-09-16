@@ -13,6 +13,22 @@ use crate::llm::closed_context_windows;
 pub const CONTEXT_STANDARD_OPEN: usize = 200_000;
 pub const CLOSED_DEFAULT_MAX_TOKENS: u32 = 8192;
 
+/// Platform thinking intent on [`crate::llm::ModelRequest`].
+///
+/// Adapters map this to vendor wire in `build_body`. `Off` is compaction (and
+/// any other caller that must not think) — it is **not** `ThinkingTier::Low`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingSpec {
+    Off,
+    Tier(ThinkingTier),
+}
+
+impl Default for ThinkingSpec {
+    fn default() -> Self {
+        Self::Tier(ThinkingTier::default())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -131,7 +147,11 @@ pub fn effective_max_tokens(model: &ModelDefinition) -> u32 {
     }
 }
 
-/// Map platform `thinking_tier` to legacy `ModelRequest` vendor fields (adapter-specific).
+/// Adapter-internal: map a platform **tier** to vendor `thinking_mode` / `effort` strings.
+///
+/// [`ThinkingSpec::Off`] is not a tier — each adapter's `build_body` maps Off
+/// itself (omit vs `none` vs `thinking.type=disabled`). Do not invent a fake
+/// universal `"none"` pair here.
 pub fn map_thinking_to_wire(
     adapter_id: &str,
     tier: ThinkingTier,
@@ -175,8 +195,6 @@ mod tests {
                 api_model_id: String::new(),
                 context_window: 0,
                 max_tokens: 0,
-                thinking_mode: None,
-                reasoning_effort: None,
                 json_output: false,
                 capabilities: vec![ModelCapability::Text],
             },
@@ -193,8 +211,6 @@ mod tests {
                 api_model_id: "gpt".into(),
                 context_window: declared,
                 max_tokens: 8192,
-                thinking_mode: None,
-                reasoning_effort: None,
                 json_output: false,
                 capabilities: vec![ModelCapability::Text],
             },

@@ -358,7 +358,7 @@ pub enum BindingSource {
     #[default]
     SessionModel,
     /// Agent turns (subagent / compaction): resolve from the agent profile's
-    /// `model_ref`, with an optional launch-time models-registry override.
+    /// `model_ref`, with an optional already-seeded catalog id (child send).
     Agent {
         name: String,
         model_id_override: Option<String>,
@@ -468,6 +468,8 @@ pub struct AgentRuntime {
     sessions: Arc<SessionManager>,
     pub(crate) runtime_ctx: Option<Arc<RuntimeContext>>,
     pub turn_llm: TurnLlmBinding,
+    /// Shared handle so compact (and other sidecars) reuse the process provider registry.
+    runtime_handle: RuntimeHandle,
     pub agent_config: AgentConfig,
     pub(crate) tool_pipeline: Option<ToolPipeline>,
     pub(crate) context_pipeline: ContextPipeline,
@@ -520,6 +522,7 @@ impl AgentRuntime {
     ) -> Result<Self> {
         let cancel = cancel.unwrap_or_default();
         let resolved = runtime.resolved.clone();
+        let runtime_handle = runtime.clone();
 
         let mut agent_config = agent_config_for(&resolved, agent_name)?;
         if let Some(max_steps) = max_steps_override {
@@ -568,6 +571,7 @@ impl AgentRuntime {
             sessions,
             runtime_ctx: None,
             turn_llm,
+            runtime_handle,
             agent_config,
             tool_pipeline: None,
             context_pipeline,

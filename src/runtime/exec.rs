@@ -1,12 +1,9 @@
 use std::sync::Arc;
 
-use crate::config::bridge::agent_config_from_profile;
 use crate::context_pipeline::build_system_prompt;
 use crate::llm::ModelRequest;
 use crate::llm::ToolDef;
-use crate::runtime::llm_resolve::binding_for_agent;
 use crate::runtime::observer::{FailReason, InternalEvent, TurnError, TurnPhase, TurnTokenStats};
-use crate::runtime::provider_registry::ProviderRegistry;
 use crate::session::{apply_prompt_overhead, compute_token_breakdown, count_text_tokens};
 use crate::types::{FunctionToolCall, Item, Result, Transcript};
 
@@ -75,23 +72,8 @@ impl AgentDeps for AgentRuntime {
             return Ok(());
         }
 
-        let compaction_binding = {
-            let mut registry = ProviderRegistry::new();
-            binding_for_agent(&self.resolved, &mut registry, "compaction", None, 0)?
-        };
-        let compaction_system = if let Some(profile) = self.resolved.agents().get("compaction") {
-            let compaction_agent = agent_config_from_profile(profile);
-            crate::context_pipeline::build_system_prompt(
-                "compaction",
-                &compaction_agent,
-                Some(&self.base_ctx),
-            )
-        } else {
-            crate::config::global_db::builtin_prompt_for("compaction")
-                .unwrap_or("")
-                .trim()
-                .to_string()
-        };
+        let compaction_binding = self.runtime_handle.resolve_compaction_binding()?;
+        let compaction_system = self.runtime_handle.compaction_system_prompt();
 
         let task_state = self
             .sessions
@@ -104,9 +86,7 @@ impl AgentDeps for AgentRuntime {
             .prepare_step(
                 &self.sessions,
                 &self.session_id,
-                compaction_binding.provider.as_ref(),
-                &compaction_binding.api_key,
-                &compaction_binding.api_model_id,
+                compaction_binding.compact_call(),
                 &compaction_system,
                 crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
                 &self.prompt_usage_baseline,
@@ -250,28 +230,11 @@ impl AgentRuntime {
             max_output_tokens: self.turn_llm.max_tokens,
             temperature: self.agent_config.temperature,
             tools: tool_schemas,
-            thinking_mode: self.resolve_thinking_mode(),
-            reasoning_effort: self.resolve_reasoning_effort(),
+            thinking: crate::platform_knobs::ThinkingSpec::Tier(self.turn_llm.thinking_tier),
             // Session binding only — never agent.model_ref (decoupled sticky model).
             json_output: self.turn_llm.model_def.json_output(),
             session_id: Some(self.session_id.clone()),
         }
-    }
-
-    fn resolve_thinking_mode(&self) -> Option<String> {
-        crate::platform_knobs::map_thinking_to_wire(
-            &self.turn_llm.model_def.adapter_id,
-            self.turn_llm.thinking_tier,
-        )
-        .0
-    }
-
-    fn resolve_reasoning_effort(&self) -> Option<String> {
-        crate::platform_knobs::map_thinking_to_wire(
-            &self.turn_llm.model_def.adapter_id,
-            self.turn_llm.thinking_tier,
-        )
-        .1
     }
 
     /// Items in/out via `complete_with_stream_events` (Responses SSE by default).
@@ -521,8 +484,7 @@ mod estimate_body_bytes_tests {
             tools: vec![],
             max_output_tokens: 64,
             temperature: 0.0,
-            reasoning_effort: None,
-            thinking_mode: None,
+            thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: None,
         }

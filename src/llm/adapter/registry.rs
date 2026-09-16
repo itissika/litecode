@@ -6,8 +6,7 @@ use serde_json::Value;
 use crate::config::schema::{
     ADAPTER_ARK_CODING, ADAPTER_COMMANDCODE, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES,
     ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE, ModelAdapterConfig, ModelCapability,
-    ModelDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition, ReasoningEffort,
-    ThinkingMode,
+    ModelDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition,
 };
 use crate::llm::provider::LlmProvider;
 use crate::types::{LitecodeError, Result};
@@ -70,8 +69,6 @@ pub struct AdapterDescriptor {
 }
 
 const AUTH_OPTIONS: &[&str] = &["bearer", "api_key"];
-const THINKING_OPTIONS: &[&str] = &["enabled", "disabled"];
-const REASONING_OPTIONS: &[&str] = &["high", "max"];
 const CAPABILITY_OPTIONS: &[&str] = &["text", "image", "video", "audio"];
 
 const SHARED_PROVIDER_FIELDS: &[FieldSchema] = &[
@@ -234,20 +231,6 @@ const SHARED_MODEL_FIELDS: &[FieldSchema] = &[
         field_type: FieldType::Number,
         required: true,
         options: None,
-    },
-    FieldSchema {
-        name: "thinking_mode",
-        label: "Thinking mode",
-        field_type: FieldType::Enum,
-        required: false,
-        options: Some(THINKING_OPTIONS),
-    },
-    FieldSchema {
-        name: "reasoning_effort",
-        label: "Reasoning effort",
-        field_type: FieldType::Enum,
-        required: false,
-        options: Some(REASONING_OPTIONS),
     },
     FieldSchema {
         name: "json_output",
@@ -614,26 +597,6 @@ pub fn parse_model_config(adapter_id: &str, value: &Value) -> Result<ModelAdapte
         .get("max_tokens")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
-    let thinking_mode = match value.get("thinking_mode").and_then(|v| v.as_str()) {
-        None | Some("") => None,
-        Some("enabled") => Some(ThinkingMode::Enabled),
-        Some("disabled") => Some(ThinkingMode::Disabled),
-        Some(other) => {
-            return Err(LitecodeError::Config(format!(
-                "unknown thinking_mode '{other}'"
-            )));
-        }
-    };
-    let reasoning_effort = match value.get("reasoning_effort").and_then(|v| v.as_str()) {
-        None | Some("") => None,
-        Some("high") => Some(ReasoningEffort::High),
-        Some("max") => Some(ReasoningEffort::Max),
-        Some(other) => {
-            return Err(LitecodeError::Config(format!(
-                "unknown reasoning_effort '{other}'"
-            )));
-        }
-    };
     let json_output = value
         .get("json_output")
         .and_then(|v| v.as_bool())
@@ -665,8 +628,6 @@ pub fn parse_model_config(adapter_id: &str, value: &Value) -> Result<ModelAdapte
         api_model_id,
         context_window,
         max_tokens,
-        thinking_mode,
-        reasoning_effort,
         json_output,
         capabilities,
     })
@@ -776,6 +737,20 @@ mod tests {
             cfg.capabilities,
             vec![ModelCapability::Text, ModelCapability::Image]
         );
+    }
+
+    #[test]
+    fn parse_model_config_ignores_legacy_thinking_keys() {
+        let cfg = parse_model_config(
+            ADAPTER_OPENAI_RESPONSES,
+            &serde_json::json!({
+                "api_model_id": "gpt-4o",
+                "thinking_mode": "enabled",
+                "reasoning_effort": "high",
+            }),
+        )
+        .expect("legacy thinking keys must not fail parse");
+        assert_eq!(cfg.api_model_id, "gpt-4o");
     }
 
     #[test]

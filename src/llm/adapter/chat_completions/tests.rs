@@ -9,6 +9,7 @@ use crate::authority::responses::{
     ReasoningItem, ReasoningItemContent, ReasoningTextContent,
 };
 use crate::llm::request::{ModelRequest, ToolDef};
+use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
 use crate::types::user_text;
 
 fn sample_request(tools: Vec<ToolDef>) -> ModelRequest {
@@ -19,8 +20,7 @@ fn sample_request(tools: Vec<ToolDef>) -> ModelRequest {
         tools,
         max_output_tokens: 64,
         temperature: 0.0,
-        reasoning_effort: None,
-        thinking_mode: None,
+        thinking: ModelRequest::sample_thinking(),
         json_output: false,
         session_id: Some("ses_test".into()),
     }
@@ -53,13 +53,21 @@ fn encode_user_and_system() {
 #[test]
 fn commandcode_encodes_reasoning_effort_but_opencode_does_not() {
     let mut req = sample_request(vec![]);
-    req.reasoning_effort = Some("max".into());
+    req.thinking = ThinkingSpec::Tier(ThinkingTier::High);
 
     let commandcode = encode_chat_body(&req, false, &ChatEncodeOpts::COMMANDCODE).unwrap();
     assert_eq!(commandcode["reasoning_effort"], "max");
 
     let opencode = encode_chat_body(&req, false, &ChatEncodeOpts::OPENCODE).unwrap();
     assert!(opencode.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn commandcode_omits_reasoning_effort_when_thinking_off() {
+    let mut req = sample_request(vec![]);
+    req.thinking = ThinkingSpec::Off;
+    let body = encode_chat_body(&req, true, &ChatEncodeOpts::COMMANDCODE).unwrap();
+    assert!(body.get("reasoning_effort").is_none(), "got {body}");
 }
 
 #[test]
@@ -100,8 +108,7 @@ fn encode_replays_tools_and_reasoning_key() {
         }],
         max_output_tokens: 16,
         temperature: 0.0,
-        reasoning_effort: None,
-        thinking_mode: None,
+        thinking: ModelRequest::sample_thinking(),
         json_output: false,
         session_id: Some("ses_test".into()),
     };
@@ -149,8 +156,7 @@ fn encode_keeps_reasoning_on_same_assistant_as_text() {
         tools: vec![],
         max_output_tokens: 16,
         temperature: 0.0,
-        reasoning_effort: None,
-        thinking_mode: None,
+        thinking: ModelRequest::sample_thinking(),
         json_output: false,
         session_id: Some("ses_test".into()),
     };
@@ -186,8 +192,7 @@ fn encode_tools_request_puts_reasoning_key_on_every_assistant() {
         }],
         max_output_tokens: 16,
         temperature: 0.0,
-        reasoning_effort: None,
-        thinking_mode: None,
+        thinking: ModelRequest::sample_thinking(),
         json_output: false,
         session_id: Some("ses_test".into()),
     };

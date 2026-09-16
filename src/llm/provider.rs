@@ -15,18 +15,10 @@ pub trait LlmProvider: Send + Sync {
         self.box_clone()
     }
 
-    /// Explicit non-stream convenience / degradation path (`stream: false` where applicable).
-    /// Runtime does **not** prefer this; use [`Self::complete_with_stream_events`].
-    fn complete<'a>(
-        &'a self,
-        request: &'a ModelRequest,
-        api_key: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>>;
-
-    /// Preferred runtime path: emit authority [`StreamEvents`] while completing.
+    /// Runtime path: emit authority [`StreamEvents`] while completing.
     ///
     /// Every implementor must provide this explicitly. Silently discarding `on_event`
-    /// (or defaulting to [`Self::complete`] while ignoring the callback) is forbidden.
+    /// is forbidden. There is no parallel non-stream product entry.
     ///
     /// Final Items come from a **terminal** Responses payload:
     /// `response.completed` or `response.incomplete` (`response.output`).

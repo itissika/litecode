@@ -274,8 +274,6 @@ mod tests {
                 api_model_id: "gpt-4".into(),
                 context_window: 200_000,
                 max_tokens: 4096,
-                thinking_mode: None,
-                reasoning_effort: None,
                 json_output: false,
                 capabilities: vec![ModelCapability::Text],
             },

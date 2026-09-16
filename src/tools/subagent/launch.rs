@@ -32,8 +32,6 @@ pub struct SpawnDeps {
 pub struct LaunchSpec {
     pub agent_name: String,
     pub prompt: String,
-    pub model_id_override: Option<String>,
-    pub max_steps_override: Option<u32>,
 }
 
 /// Open a child session and start its first turn the same way a human turn
@@ -63,14 +61,12 @@ pub async fn spawn_child_job(
             .to_string_lossy()
             .to_string()
     });
-    let seed_model = spec.model_id_override.clone().or_else(|| {
-        runtime
-            .resolved
-            .agents()
-            .get(&spec.agent_name)
-            .map(|profile| profile.model_ref.clone())
-            .filter(|model| !model.is_empty())
-    });
+    let seed_model = runtime
+        .resolved
+        .agents()
+        .get(&spec.agent_name)
+        .map(|profile| profile.model_ref.clone())
+        .filter(|model| !model.is_empty());
     let child_session_id = deps
         .sessions
         .open_child_session(
@@ -101,9 +97,8 @@ pub async fn spawn_child_job(
         return Err("child turn start failed: child session has no event channel".into());
     };
 
-    let mut opts = TurnOptions::agent(spec.agent_name.clone(), spec.model_id_override.clone());
+    let mut opts = TurnOptions::agent(spec.agent_name.clone(), None);
     opts.depth = deps.depth + 1;
-    opts.max_steps_override = spec.max_steps_override;
     if let Err(error) = start_turn_like_human(
         &runtime,
         &deps.sessions,
@@ -258,23 +253,9 @@ impl SubagentLaunchTool {
             ));
         }
 
-        let model_id_override: Option<String> = if let Some(model_id) = input["model"].as_str() {
-            if !resolved.global().models.contains_key(model_id) {
-                return Err(ToolCallResult::error(format!(
-                    "model '{}' is not a models registry id; use an id from the models table",
-                    model_id
-                )));
-            }
-            Some(model_id.to_string())
-        } else {
-            None
-        };
-
         Ok(LaunchSpec {
             agent_name,
             prompt,
-            model_id_override,
-            max_steps_override: input["max_steps"].as_u64().map(|n| (n as u32).min(100)),
         })
     }
 
@@ -374,14 +355,6 @@ impl Tool for SubagentLaunchTool {
                 "prompt": {
                     "type": "string",
                     "description": "Assignment for the new child session"
-                },
-                "model": {
-                    "type": "string",
-                    "description": "Optional models registry id override (must exist in models table)"
-                },
-                "max_steps": {
-                    "type": "integer",
-                    "description": "Optional max_steps override"
                 },
             },
             "required": ["agent", "prompt"]

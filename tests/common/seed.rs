@@ -53,8 +53,6 @@ pub fn ready_test_model(
             api_model_id: api_model_id.into(),
             context_window,
             max_tokens: 8192,
-            thinking_mode: None,
-            reasoning_effort: None,
             json_output: false,
             capabilities: vec![ModelCapability::Text],
         },

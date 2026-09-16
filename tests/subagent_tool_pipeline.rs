@@ -155,14 +155,6 @@ impl LlmProvider for ThreadProbeProvider {
         Box::new(self.clone())
     }
 
-    fn complete<'a>(
-        &'a self,
-        request: &'a ModelRequest,
-        api_key: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        self.inner.complete(request, api_key)
-    }
-
     fn complete_with_stream_events<'a>(
         &'a self,
         request: &'a ModelRequest,
@@ -190,14 +182,6 @@ impl LlmProvider for PanicProvider {
 
     fn box_clone(&self) -> Box<dyn LlmProvider> {
         Box::new(self.clone())
-    }
-
-    fn complete<'a>(
-        &'a self,
-        _request: &'a ModelRequest,
-        _api_key: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        Box::pin(async { panic!("provider boom") })
     }
 
     fn complete_with_stream_events<'a>(

@@ -16,10 +16,10 @@ use crate::llm::request::ModelRequest;
 use crate::types::{Item, Result, StreamEvents};
 
 use super::chat_completions::{
-    ChatEncodeOpts, chat_post_url, complete_from_response, encode_chat_body, normalize_endpoint,
+    ChatEncodeOpts, chat_post_url, encode_chat_body, normalize_endpoint,
     stream_from_response,
 };
-use super::{llm_http_client, transport_error};
+use super::llm_http_client;
 
 /// Official Zen host. Empty Settings endpoint fills this; override for Go.
 pub(crate) const DEFAULT_ENDPOINT: &str = "https://opencode.ai/zen/v1";
@@ -114,31 +114,6 @@ impl LlmProvider for OpencodeProvider {
         }
     }
 
-    fn complete<'a>(
-        &'a self,
-        request: &'a ModelRequest,
-        api_key: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        Box::pin(async move {
-            let body = encode_chat_body(request, false, &ChatEncodeOpts::OPENCODE)?;
-            let (header_name, header_value) = self.auth_header(api_key);
-            let request_id = Uuid::new_v4().to_string();
-            let zen_session = zen_session_header(request);
-            let resp = apply_opencode_headers(
-                self.client.post(self.post_url()),
-                header_name,
-                header_value,
-                &zen_session,
-                &request_id,
-            )
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| transport_error("sending OpenCode response", &e))?;
-            complete_from_response(resp, ERROR_PREFIX).await
-        })
-    }
-
     fn complete_with_stream_events<'a>(
         &'a self,
         request: &'a ModelRequest,
@@ -190,8 +165,7 @@ mod tests {
             tools,
             max_output_tokens: 64,
             temperature: 0.0,
-            reasoning_effort: None,
-            thinking_mode: None,
+            thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: Some("ses_test".into()),
         }
@@ -323,7 +297,12 @@ mod tests {
         let endpoint = serve_once("nope".into(), "400 Bad Request", "application/json").await;
         let provider = OpencodeProvider::new(endpoint, ProviderAuth::Bearer).expect("provider");
         let err = provider
-            .complete(&sample_request(vec![]), "sk-test")
+            .complete_with_stream_events(
+                &sample_request(vec![]),
+                "sk-test",
+                None,
+                &CancellationToken::new(),
+            )
             .await
             .expect_err("fail");
         let msg = err.to_string();
@@ -377,9 +356,12 @@ mod tests {
             let mut buf = vec![0u8; 8192];
             let n = socket.read(&mut buf).await.expect("read");
             captured_cb.lock().unwrap().extend_from_slice(&buf[..n]);
-            let body = r#"{"choices":[{"message":{"role":"assistant","content":"ok"}}]}"#;
+            let body = concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+                "data: [DONE]\n\n"
+            );
             let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = socket.write_all(resp.as_bytes()).await;
@@ -389,7 +371,10 @@ mod tests {
             .expect("provider");
         let mut req = sample_request(vec![]);
         req.session_id = Some("ses_parallel_a".into());
-        provider.complete(&req, "sk-test").await.expect("ok");
+        provider
+            .complete_with_stream_events(&req, "sk-test", None, &CancellationToken::new())
+            .await
+            .expect("ok");
         let captured = captured.lock().unwrap();
         let raw = String::from_utf8_lossy(&captured);
         assert!(

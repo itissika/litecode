@@ -15,7 +15,7 @@ use litecode::authority::responses::{
     OutputTextContent,
 };
 
-/// Pops one `Vec<Item>` per `complete` / `complete_with_stream_events` call.
+/// Pops one `Vec<Item>` per `complete_with_stream_events` call.
 #[derive(Clone)]
 pub struct ScriptedProvider {
     responses: Arc<Mutex<Vec<Vec<Item>>>>,
@@ -112,18 +112,6 @@ impl LlmProvider for HangProvider {
         Box::new(self.clone())
     }
 
-    fn complete<'a>(
-        &'a self,
-        _request: &'a ModelRequest,
-        _api_key: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        Box::pin(async {
-            Err(LitecodeError::Llm(
-                "HangProvider has no non-stream path".into(),
-            ))
-        })
-    }
-
     fn complete_with_stream_events<'a>(
         &'a self,
         _request: &'a ModelRequest,
@@ -154,15 +142,6 @@ impl LlmProvider for ScriptedProvider {
 
     fn box_clone(&self) -> Box<dyn LlmProvider> {
         Box::new(self.clone())
-    }
-
-    fn complete<'a>(
-        &'a self,
-        _request: &'a ModelRequest,
-        _api_key: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        let items = self.next_items();
-        Box::pin(async move { items })
     }
 
     fn complete_with_stream_events<'a>(

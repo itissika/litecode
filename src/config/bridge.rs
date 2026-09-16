@@ -6,9 +6,7 @@
 
 use crate::config::AgentConfig;
 use crate::config::resolved::ResolvedConfig;
-use crate::config::schema::{
-    AgentProfile, AgentRole, GlobalSettings, ReasoningEffort, ThinkingMode,
-};
+use crate::config::schema::{AgentProfile, AgentRole, GlobalSettings};
 use crate::types::LitecodeError;
 
 pub const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
@@ -93,31 +91,6 @@ pub fn max_tokens_for_agent(global: &GlobalSettings, agent_name: &str) -> u32 {
             );
             8192
         })
-}
-
-pub fn thinking_mode_for_agent(global: &GlobalSettings, agent_name: &str) -> Option<ThinkingMode> {
-    let model_ref = model_ref_for_agent(global, agent_name);
-    if model_ref.is_empty() {
-        return None;
-    }
-    global
-        .models
-        .get(&model_ref)
-        .and_then(|m| m.thinking_mode())
-}
-
-pub fn reasoning_effort_for_agent(
-    global: &GlobalSettings,
-    agent_name: &str,
-) -> Option<ReasoningEffort> {
-    let model_ref = model_ref_for_agent(global, agent_name);
-    if model_ref.is_empty() {
-        return None;
-    }
-    global
-        .models
-        .get(&model_ref)
-        .and_then(|m| m.reasoning_effort())
 }
 
 pub fn json_output_for_agent(global: &GlobalSettings, agent_name: &str) -> bool {
@@ -221,8 +194,6 @@ mod tests {
                             api_model_id: "api-default".into(),
                             context_window: 100_000,
                             max_tokens: 12_345,
-                            thinking_mode: None,
-                            reasoning_effort: None,
                             json_output: false,
                             capabilities: vec![ModelCapability::Text],
                         },
@@ -239,8 +210,6 @@ mod tests {
                             api_model_id: "api-compact".into(),
                             context_window: 200_000,
                             max_tokens: 4_096,
-                            thinking_mode: None,
-                            reasoning_effort: None,
                             json_output: false,
                             capabilities: vec![ModelCapability::Text],
                         },
@@ -297,7 +266,6 @@ mod tests {
             context_window_for_agent(&global, "default"),
             DEFAULT_CONTEXT_WINDOW
         );
-        assert!(thinking_mode_for_agent(&global, "default").is_none());
         assert!(!json_output_for_agent(&global, "default"));
     }
 }

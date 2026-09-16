@@ -5,8 +5,6 @@ export type ToolPreset = "ALL" | "SAFE";
 export type AvailableKind = "core" | "engine" | "custom" | "mcp";
 export type ToolOrigin = "builtin" | "global" | "workspace";
 export type ToolScope = "global" | "workspace";
-export type ThinkingMode = "enabled" | "disabled";
-export type ReasoningEffort = "high" | "max";
 
 export type EngineWarmupState =
   | "idle"
@@ -93,8 +91,6 @@ export interface ModelAdapterConfig {
   api_model_id: string;
   context_window: number;
   max_tokens: number;
-  thinking_mode?: ThinkingMode | null;
-  reasoning_effort?: ReasoningEffort | null;
   json_output?: boolean;
   capabilities: string[];
 }

@@ -131,6 +131,85 @@ fn wait_child_turn(sessions: &SessionManager, child_id: &str) {
     panic!("child turn {child_id} did not finish");
 }
 
+#[test]
+fn launch_schema_exposes_only_agent_and_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let resolved = reviewer_resolved(cwd);
+    let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
+    let sessions = Arc::new(SessionManager::new_for_test(
+        Arc::new(TurnGuard::new()),
+        db_path,
+    ));
+    let tool = launch_tool(
+        resolved,
+        sessions,
+        "parent",
+        ScriptedProvider::with_text("x"),
+    );
+    let schema = tool.schema();
+    let keys: Vec<&str> = schema["properties"]
+        .as_object()
+        .expect("properties")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, vec!["agent", "prompt"]);
+    assert!(schema.get("properties").unwrap().get("model").is_none());
+    assert!(schema.get("properties").unwrap().get("max_steps").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn launch_ignores_model_and_max_steps_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path();
+    let resolved = reviewer_resolved(cwd);
+    let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
+    let project = cwd.to_string_lossy().to_string();
+    let sessions = Arc::new(SessionManager::new_for_test(
+        Arc::new(TurnGuard::new()),
+        db_path.clone(),
+    ));
+    let parent_id = sessions
+        .open_session(&project, "default", Some("default"))
+        .await
+        .expect("parent");
+    let tool = launch_tool(
+        resolved,
+        Arc::clone(&sessions),
+        &parent_id,
+        ScriptedProvider::with_text("ok"),
+    );
+    let result = run_subagent(
+        &tool,
+        "call_ignore_1",
+        serde_json::json!({
+            "agent": "reviewer",
+            "prompt": "go",
+            "model": "does-not-exist-model-id",
+            "max_steps": 1
+        }),
+    )
+    .await;
+    assert!(
+        !result.content.starts_with("Error:"),
+        "extra Settings knobs must be ignored, got: {}",
+        result.content
+    );
+    let child_id = result
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("child_session_id"))
+        .and_then(|v| v.as_str())
+        .expect("child_session_id");
+    wait_child_turn(&sessions, child_id);
+    assert_eq!(
+        sessions.session_model_id(child_id).as_deref(),
+        Some("default"),
+        "child must keep the agent's Settings model_ref"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subagent_launch_creates_durable_child_with_parent_link() {
     let dir = tempfile::tempdir().unwrap();
@@ -457,7 +536,13 @@ async fn child_lifecycle_is_broadcast_to_workspace() {
 async fn failed_binding_aborts_orphan_child_session() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path();
-    let resolved = reviewer_resolved(cwd);
+    let workspace = test_workspace(cwd);
+    set_runtime_paths(workspace.paths.clone());
+    let mut global = reviewer_resolved(cwd).global().clone();
+    if let Some(reviewer) = global.agents.get_mut("reviewer") {
+        reviewer.model_ref.clear();
+    }
+    let resolved = resolve(global, workspace);
     let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
     let project = cwd.to_string_lossy().to_string();
 
@@ -470,7 +555,7 @@ async fn failed_binding_aborts_orphan_child_session() {
         .await
         .expect("parent");
 
-    // Force LLM binding failure via unknown model override.
+    // Force LLM binding failure via empty agent model_ref (no launch override).
     let tool = launch_tool(
         resolved,
         Arc::clone(&sessions),
@@ -482,8 +567,7 @@ async fn failed_binding_aborts_orphan_child_session() {
         "call_fail_1",
         serde_json::json!({
             "agent": "reviewer",
-            "prompt": "x",
-            "model": "does-not-exist-model-id"
+            "prompt": "x"
         }),
     )
     .await;

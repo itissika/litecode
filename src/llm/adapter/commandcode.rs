@@ -30,10 +30,10 @@ use crate::llm::request::ModelRequest;
 use crate::types::{Item, Result, StreamEvents};
 
 use super::chat_completions::{
-    ChatEncodeOpts, chat_post_url, complete_from_response, encode_chat_body, normalize_endpoint,
+    ChatEncodeOpts, chat_post_url, encode_chat_body, normalize_endpoint,
     stream_from_response,
 };
-use super::{llm_http_client, transport_error};
+use super::llm_http_client;
 
 /// Official Provider API root. Empty Settings endpoint fills this.
 pub(crate) const DEFAULT_ENDPOINT: &str = "https://api.commandcode.ai/provider/v1";
@@ -108,27 +108,6 @@ impl LlmProvider for CommandcodeProvider {
         }
     }
 
-    fn complete<'a>(
-        &'a self,
-        request: &'a ModelRequest,
-        api_key: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        Box::pin(async move {
-            let body = encode_chat_body(request, false, &ChatEncodeOpts::COMMANDCODE)?;
-            let (header_name, header_value) = self.auth_header(api_key);
-            let resp = apply_commandcode_headers(
-                self.client.post(self.post_url()),
-                header_name,
-                header_value,
-            )
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| transport_error("sending Command Code response", &e))?;
-            complete_from_response(resp, ERROR_PREFIX).await
-        })
-    }
-
     fn complete_with_stream_events<'a>(
         &'a self,
         request: &'a ModelRequest,
@@ -173,8 +152,7 @@ mod tests {
             tools: vec![],
             max_output_tokens: 64,
             temperature: 0.0,
-            reasoning_effort: None,
-            thinking_mode: None,
+            thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: Some("ses_test".into()),
         }
@@ -224,9 +202,12 @@ mod tests {
             let mut buf = vec![0u8; 8192];
             let n = socket.read(&mut buf).await.expect("read");
             captured_cb.lock().unwrap().extend_from_slice(&buf[..n]);
-            let body = r#"{"choices":[{"message":{"role":"assistant","content":"ok"}}]}"#;
+            let body = concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+                "data: [DONE]\n\n"
+            );
             let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = socket.write_all(resp.as_bytes()).await;
@@ -236,7 +217,12 @@ mod tests {
             CommandcodeProvider::new(format!("http://{addr}/provider/v1"), ProviderAuth::Bearer)
                 .expect("provider");
         provider
-            .complete(&sample_request(), "sk-cmd")
+            .complete_with_stream_events(
+                &sample_request(),
+                "sk-cmd",
+                None,
+                &CancellationToken::new(),
+            )
             .await
             .expect("ok");
         let captured = captured.lock().unwrap();
@@ -262,8 +248,8 @@ mod tests {
             "must POST chat completions in {raw}"
         );
         assert!(
-            lower.contains("\"stream\":false") || lower.contains("\"stream\": false"),
-            "must send stream:false in {raw}"
+            lower.contains("\"stream\":true") || lower.contains("\"stream\": true"),
+            "must send stream:true in {raw}"
         );
     }
 
@@ -363,7 +349,12 @@ mod tests {
         let endpoint = serve_once("nope".into(), "400 Bad Request", "application/json").await;
         let provider = CommandcodeProvider::new(endpoint, ProviderAuth::Bearer).expect("provider");
         let err = provider
-            .complete(&sample_request(), "sk-test")
+            .complete_with_stream_events(
+                &sample_request(),
+                "sk-test",
+                None,
+                &CancellationToken::new(),
+            )
             .await
             .expect_err("fail");
         let msg = err.to_string();

@@ -10,6 +10,17 @@ mod request;
 pub use provider::LlmProvider;
 pub use request::{ModelRequest, ToolDef};
 
+/// Compact request context: provider + credentials + wire model id.
+///
+/// No vendor thinking strings. Callers map a [`crate::runtime::TurnLlmBinding`]
+/// via `compact_call()`; [`ModelRequest::compact`] always sets thinking Off.
+#[derive(Clone, Copy)]
+pub struct CompactLlmCall<'a> {
+    pub provider: &'a dyn LlmProvider,
+    pub api_key: &'a str,
+    pub model: &'a str,
+}
+
 pub use adapter::public::{
     AdapterDescriptor, FieldSchema, FieldType, adapter_default_capabilities,
     apply_owned_modality_capabilities, catalog_supported_ids, closed_api_model_ids,

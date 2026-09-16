@@ -94,8 +94,6 @@ async fn prepare(
             api_model_id: "m".into(),
             context_window: 128_000,
             max_tokens: 1024,
-            thinking_mode: None,
-            reasoning_effort: None,
             json_output: false,
             capabilities: vec![litecode::config::schema::ModelCapability::Text],
         },
@@ -107,9 +105,11 @@ async fn prepare(
         .prepare_step(
             sessions,
             sid,
-            &provider,
-            "key",
-            "m",
+            litecode::llm::CompactLlmCall {
+                provider: &provider,
+                api_key: "key",
+                model: "m",
+            },
             "system",
             1024,
             &prompt_baseline,
@@ -173,9 +173,11 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
         &budget,
         &sessions,
         &sid,
-        &provider,
-        "key",
-        "m",
+        litecode::llm::CompactLlmCall {
+            provider: &provider,
+            api_key: "key",
+            model: "m",
+        },
         "system",
         1024,
         &mut transcript,
@@ -377,8 +379,6 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
             api_model_id: "m".into(),
             context_window: 128_000,
             max_tokens: 1024,
-            thinking_mode: None,
-            reasoning_effort: None,
             json_output: false,
             capabilities: vec![litecode::config::schema::ModelCapability::Text],
         },
@@ -390,9 +390,11 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
         .prepare_step(
             &sessions,
             &sid,
-            &provider,
-            "key",
-            "m",
+            litecode::llm::CompactLlmCall {
+                provider: &provider,
+                api_key: "key",
+                model: "m",
+            },
             "system",
             1024,
             &prompt_baseline,
@@ -506,8 +508,6 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
             api_model_id: "m".into(),
             context_window: 128_000,
             max_tokens: 1024,
-            thinking_mode: None,
-            reasoning_effort: None,
             json_output: false,
             capabilities: vec![litecode::config::schema::ModelCapability::Text],
         },
@@ -522,9 +522,11 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         .prepare_step(
             &sessions,
             &sid,
-            &provider,
-            "key",
-            "m",
+            litecode::llm::CompactLlmCall {
+                provider: &provider,
+                api_key: "key",
+                model: "m",
+            },
             "system",
             1024,
             &prompt_baseline,
@@ -1379,10 +1381,10 @@ fn commit_user_message_returns_session_preview() {
     let mut turn = pipeline.begin_turn(&sessions, &sid).unwrap();
     turn.push(WorkingRow::pending(user_text("hello from user")));
     let outcome = pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
-    let (preview, _updated_at) = outcome
+    let preview = outcome
         .preview
         .expect("user commit must surface last_message for session list");
-    assert_eq!(preview, "hello from user");
+    assert_eq!(preview.user.as_deref(), Some("hello from user"));
 }
 
 struct PipelinePersistDeps {

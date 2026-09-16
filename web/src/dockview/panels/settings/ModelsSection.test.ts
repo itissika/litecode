@@ -13,8 +13,6 @@ function draftModel(patch: Partial<ModelDefinition> = {}): ModelDefinition {
       api_model_id: "",
       context_window: 200_000,
       max_tokens: 8192,
-      thinking_mode: null,
-      reasoning_effort: null,
       json_output: false,
       capabilities: ["text"],
     },

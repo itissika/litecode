@@ -1,5 +1,5 @@
-# Local nightly desktop SKU: Windows installers with embed weights + WSL slim
-# Linux tar (kernel + web, no models). Does not publish a GitHub Release.
+# One-click local nightly desktop SKU: Windows NSIS + WSL slim Linux tar
+# (kernel + web, no models). Does not publish a GitHub Release.
 #
 # Usage (repo root, PowerShell):
 #   ./scripts/package_local.ps1
@@ -101,15 +101,20 @@ $ModelDir = Join-Path $Root "models\ibm-granite\granite-embedding-97m-multilingu
 if (-not (Test-Path (Join-Path $ModelDir "artifacts\ort-lin-q8-emb-q4-bs128-a1.onnx"))) {
   throw "embed weights missing at $ModelDir — cannot build the product SKU"
 }
-& (Join-Path $Root "scripts\package_win.ps1") -SkipAssemble -Profile $Profile -SkipPortable
+& (Join-Path $Root "scripts\package_win.ps1") -SkipAssemble -Profile $Profile -SkipPortable -SkipLinuxFreshness
 
 $outDir = Join-Path $Root "desktop\out"
+$setup = Join-Path $outDir "Litecode-Setup-$Version-x64.exe"
+if (-not (Test-Path -LiteralPath $setup)) {
+  throw "expected nightly installer missing: $setup"
+}
+
 Write-Host @"
 
 ==> nightly artifacts (v$Version, LITECODE_CHANNEL=nightly)
   Linux tar (no embed):  $(Join-Path $winDist "litecode-server-$Version-linux-x64.tar.gz")
   Linux staged: $(Join-Path $winDist "linux\litecode-server-linux-x64.tar.gz")
-  Windows NSIS (embed + tar): $outDir
+  Windows NSIS (embed + tar): $setup
 
 Open Remote uploads embed from sidecar/models, then the slim linux tar.
 

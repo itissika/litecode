@@ -14,8 +14,7 @@ pub mod workspace_identity;
 
 pub use bridge::{
     DEFAULT_CONTEXT_WINDOW, agent_config_for, agent_config_from_profile, api_model_id_for_agent,
-    context_window_for_agent, json_output_for_agent, max_tokens_for_agent,
-    reasoning_effort_for_agent, thinking_mode_for_agent, warn_bridge_fallbacks,
+    context_window_for_agent, json_output_for_agent, max_tokens_for_agent, warn_bridge_fallbacks,
 };
 pub use gate::{ApplyPlan, CommitAck, DocId, EvalView, PersistDoc};
 pub use manager::ConfigManager;

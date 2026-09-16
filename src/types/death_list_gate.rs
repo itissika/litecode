@@ -525,6 +525,80 @@ fn session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept() {
     );
 }
 
+#[test]
+fn compact_llm_path_does_not_bypass_unified_provider() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let compact =
+        fs::read_to_string(root.join("src/context_pipeline/compact.rs")).expect("compact.rs");
+    assert!(
+        compact.contains("complete_with_stream_events"),
+        "compact must send through the unified stream provider entry"
+    );
+
+    let mut pipeline_hits = Vec::new();
+    let mut pipeline_files = Vec::new();
+    walk_rs_files(&root.join("src/context_pipeline"), &mut pipeline_files);
+    for path in pipeline_files {
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let stripped = text.replace("complete_with_stream_events", "");
+        if text.contains("thinking_mode:")
+            || text.contains("reasoning_effort:")
+            || stripped.contains("provider.complete(")
+        {
+            pipeline_hits.push(rel);
+        }
+    }
+    assert!(
+        pipeline_hits.is_empty(),
+        "context_pipeline must not invent vendor thinking strings or call complete(): {pipeline_hits:?}"
+    );
+
+    let mut hits = Vec::new();
+    let mut files = Vec::new();
+    walk_rs_files(&root.join("src"), &mut files);
+    for path in files {
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if rel.starts_with("src/llm/adapter/") || rel == "src/types/death_list_gate.rs" {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let stripped = text.replace("complete_with_stream_events", "");
+        if stripped.contains(".complete(&request")
+            || stripped.contains("provider.complete(")
+            || stripped.contains("LlmProvider::complete")
+        {
+            hits.push(rel);
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "non-adapter complete() leftover in {hits:?}"
+    );
+
+    let registry = fs::read_to_string(root.join("src/llm/adapter/registry.rs")).expect("registry.rs");
+    assert!(
+        !registry.contains("name: \"thinking_mode\""),
+        "Settings catalog must not advertise thinking_mode"
+    );
+    assert!(
+        !registry.contains("name: \"reasoning_effort\""),
+        "Settings catalog must not advertise reasoning_effort"
+    );
+}
+
 /// Ticket 05: search/revert must not use SQL window pointers as authority.
 #[test]
 fn session_seq_g6_derived_paths_use_surface_not_pointers() {

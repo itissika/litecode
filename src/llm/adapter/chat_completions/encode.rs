@@ -1,7 +1,9 @@
 use serde_json::{Map, Value};
 
 use crate::authority::responses::{FunctionCallOutput, Item, MessageItem};
+use crate::config::schema::ADAPTER_COMMANDCODE;
 use crate::llm::request::ModelRequest;
+use crate::platform_knobs::{ThinkingSpec, map_thinking_to_wire};
 use crate::types::Result;
 
 pub(crate) const REASONING_CONTENT_KEY: &str = "reasoning_content";
@@ -149,10 +151,15 @@ pub(crate) fn encode_chat_body(
     if stream && opts.include_stream_usage {
         body["stream_options"] = serde_json::json!({ "include_usage": true });
     }
-    if opts.include_reasoning_effort
-        && let Some(effort) = params.reasoning_effort.as_deref()
-    {
-        body["reasoning_effort"] = Value::String(effort.to_string());
+    if opts.include_reasoning_effort {
+        match params.thinking {
+            ThinkingSpec::Off => {}
+            ThinkingSpec::Tier(tier) => {
+                if let Some(effort) = map_thinking_to_wire(ADAPTER_COMMANDCODE, tier).1 {
+                    body["reasoning_effort"] = Value::String(effort);
+                }
+            }
+        }
     }
     Ok(body)
 }

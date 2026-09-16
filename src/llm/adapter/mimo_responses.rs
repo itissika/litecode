@@ -22,12 +22,13 @@ use reqwest::Client;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::authority::responses::{Item, OutputItem, Response, ResponseStreamEvent};
+use crate::authority::responses::{Item, ResponseStreamEvent};
 use crate::config::schema::ProviderAuth;
 use crate::types::{LitecodeError, Result, StreamEvents};
 
 use crate::llm::provider::LlmProvider;
 use crate::llm::request::ModelRequest;
+use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
 
 use super::reasoning_replay::ensure_reasoning_replay;
 use super::responses_sse::{SseLineReader, check_event_stream_content_type, sse_data_payload};
@@ -122,19 +123,14 @@ impl MimoResponsesProvider {
     }
 }
 
-/// MiMo Responses `reasoning.effort` — maps platform `thinking_mode` / `reasoning_effort`.
+/// MiMo Responses `reasoning.effort`.
 ///
-/// Vendor default for `mimo-v2.5` / `mimo-v2.5-pro` is thinking on; `none` only when
-/// explicitly disabled (`thinking_mode = disabled` / platform Low).
+/// Vendor default is thinking on; `none` only for [`ThinkingSpec::Off`] or platform Low.
 fn resolve_mimo_reasoning_effort(params: &ModelRequest) -> &'static str {
-    if params.thinking_mode.as_deref() == Some("disabled") {
-        return "none";
-    }
-    match params.reasoning_effort.as_deref() {
-        Some("high") | Some("max") => "high",
-        Some("medium") => "medium",
-        Some("low") => "low",
-        _ => "medium", // enabled or vendor default (Deep Thinking docs)
+    match params.thinking {
+        ThinkingSpec::Off | ThinkingSpec::Tier(ThinkingTier::Low) => "none",
+        ThinkingSpec::Tier(ThinkingTier::Medium) => "medium",
+        ThinkingSpec::Tier(ThinkingTier::High) => "high",
     }
 }
 
@@ -163,14 +159,6 @@ pub(crate) fn harden_mimo_json(value: &mut Value) {
         }
         _ => {}
     }
-}
-
-fn parse_response(text: &str) -> Result<Response> {
-    let mut value: Value = serde_json::from_str(text)
-        .map_err(|e| LitecodeError::Llm(format!("deserialize Response JSON: {e}")))?;
-    harden_mimo_json(&mut value);
-    serde_json::from_value(value)
-        .map_err(|e| LitecodeError::Llm(format!("deserialize Response: {e}")))
 }
 
 fn parse_stream_event(data: &str) -> Result<ResponseStreamEvent> {
@@ -203,10 +191,6 @@ fn normalize_endpoint(endpoint: String) -> String {
     trimmed.to_string()
 }
 
-fn output_items_to_items(output: Vec<OutputItem>) -> Vec<Item> {
-    output.into_iter().map(Item::from).collect()
-}
-
 impl LlmProvider for MimoResponsesProvider {
     fn endpoint(&self) -> &str {
         &self.endpoint_url
@@ -225,39 +209,6 @@ impl LlmProvider for MimoResponsesProvider {
             Ok(p) => Box::new(p),
             Err(_) => self.box_clone(),
         }
-    }
-
-    fn complete<'a>(
-        &'a self,
-        request: &'a ModelRequest,
-        api_key: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        Box::pin(async move {
-            let body = Self::build_body(request, false)?;
-            let (header_name, header_value) = self.auth_header(api_key);
-            let resp = self
-                .client
-                .post(&self.endpoint_url)
-                .header(header_name, header_value)
-                .header("content-type", "application/json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| transport_error("sending MiMo response", &e))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                return Err(LitecodeError::Llm(format!("HTTP {status}: {text}")));
-            }
-
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| transport_error("reading MiMo response", &e))?;
-            let response = parse_response(&text)?;
-            Ok(output_items_to_items(response.output))
-        })
     }
 
     fn complete_with_stream_events<'a>(
@@ -348,6 +299,7 @@ impl LlmProvider for MimoResponsesProvider {
 mod tests {
     use super::*;
     use crate::llm::request::{ModelRequest, ToolDef};
+    use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
 
     fn sample_request(tools: Vec<ToolDef>) -> ModelRequest {
         ModelRequest {
@@ -357,8 +309,7 @@ mod tests {
             tools,
             max_output_tokens: 64,
             temperature: 0.0,
-            reasoning_effort: None,
-            thinking_mode: None,
+            thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: None,
         }
@@ -378,12 +329,12 @@ mod tests {
             input_schema: serde_json::json!({}),
         }];
         let mut req = sample_request(tools);
-        req.thinking_mode = Some("enabled".into());
+        req.thinking = ThinkingSpec::Tier(ThinkingTier::Medium);
         let body = MimoResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(body["reasoning"]["effort"], "medium");
         assert!(body.get("tools").is_some());
 
-        req.reasoning_effort = Some("high".into());
+        req.thinking = ThinkingSpec::Tier(ThinkingTier::High);
         let body = MimoResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(body["reasoning"]["effort"], "high");
     }
@@ -397,15 +348,15 @@ mod tests {
     #[test]
     fn reasoning_effort_maps_thinking_mode() {
         let mut req = sample_request(vec![]);
-        req.thinking_mode = Some("enabled".into());
+        req.thinking = ThinkingSpec::Tier(ThinkingTier::Medium);
         let body = MimoResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(body["reasoning"]["effort"], "medium");
 
-        req.reasoning_effort = Some("high".into());
+        req.thinking = ThinkingSpec::Tier(ThinkingTier::High);
         let body = MimoResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(body["reasoning"]["effort"], "high");
 
-        req.thinking_mode = Some("disabled".into());
+        req.thinking = ThinkingSpec::Off;
         let body = MimoResponsesProvider::build_body(&req, false).unwrap();
         assert_eq!(body["reasoning"]["effort"], "none");
     }
@@ -448,7 +399,7 @@ mod tests {
 
         // Thinking explicitly disabled.
         let mut req = sample_request(vec![]);
-        req.thinking_mode = Some("disabled".into());
+        req.thinking = ThinkingSpec::Off;
         req.input = vec![
             crate::types::user_text("hi"),
             crate::types::assistant_text("summary"),

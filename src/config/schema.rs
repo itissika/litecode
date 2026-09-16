@@ -85,10 +85,6 @@ pub struct ModelAdapterConfig {
     pub context_window: usize,
     pub max_tokens: u32,
     #[serde(default)]
-    pub thinking_mode: Option<ThinkingMode>,
-    #[serde(default)]
-    pub reasoning_effort: Option<ReasoningEffort>,
-    #[serde(default)]
     pub json_output: bool,
     #[serde(default = "default_capabilities")]
     pub capabilities: Vec<ModelCapability>,
@@ -104,8 +100,6 @@ impl Default for ModelAdapterConfig {
             api_model_id: String::new(),
             context_window: 0,
             max_tokens: 0,
-            thinking_mode: None,
-            reasoning_effort: None,
             json_output: false,
             capabilities: default_capabilities(),
         }
@@ -139,14 +133,6 @@ impl ModelDefinition {
         self.config.max_tokens
     }
 
-    pub fn thinking_mode(&self) -> Option<ThinkingMode> {
-        self.config.thinking_mode
-    }
-
-    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
-        self.config.reasoning_effort
-    }
-
     pub fn json_output(&self) -> bool {
         self.config.json_output
     }
@@ -157,38 +143,6 @@ impl ModelDefinition {
 
     pub fn supports(&self, cap: &str) -> bool {
         self.config.capabilities.iter().any(|c| c.as_str() == cap)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ThinkingMode {
-    Enabled,
-    Disabled,
-}
-
-impl ThinkingMode {
-    pub fn as_api_str(self) -> &'static str {
-        match self {
-            Self::Enabled => "enabled",
-            Self::Disabled => "disabled",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReasoningEffort {
-    High,
-    Max,
-}
-
-impl ReasoningEffort {
-    pub fn as_api_str(self) -> &'static str {
-        match self {
-            Self::High => "high",
-            Self::Max => "max",
-        }
     }
 }
 

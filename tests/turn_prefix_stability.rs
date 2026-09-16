@@ -174,19 +174,6 @@ impl LlmProvider for RecordingProvider {
         Box::new(self.clone())
     }
 
-    fn complete<'a>(
-        &'a self,
-        request: &'a ModelRequest,
-        _api_key: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        self.captured
-            .lock()
-            .expect("captured")
-            .push(capture_request(request));
-        let items = self.next_items();
-        Box::pin(async move { items })
-    }
-
     fn complete_with_stream_events<'a>(
         &'a self,
         request: &'a ModelRequest,
@@ -342,8 +329,6 @@ fn test_model() -> litecode::config::schema::ModelDefinition {
             api_model_id: "m".into(),
             context_window: 128_000,
             max_tokens: 1024,
-            thinking_mode: None,
-            reasoning_effort: None,
             json_output: false,
             capabilities: vec![litecode::config::schema::ModelCapability::Text],
         },
@@ -364,9 +349,11 @@ async fn prepare_snapshot(
         .prepare_step(
             sessions,
             sid,
-            &provider,
-            "key",
-            "m",
+            litecode::llm::CompactLlmCall {
+                provider: &provider,
+                api_key: "key",
+                model: "m",
+            },
             "system",
             1024,
             &ProviderPromptBaseline::default(),

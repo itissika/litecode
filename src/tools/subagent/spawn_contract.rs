@@ -49,8 +49,6 @@ fn model(id: &str, provider_ref: &str) -> ModelDefinition {
             api_model_id: format!("api-{id}"),
             context_window: 8_000,
             max_tokens: 1_024,
-            thinking_mode: None,
-            reasoning_effort: None,
             json_output: false,
             capabilities: vec![ModelCapability::Text],
         },
@@ -177,16 +175,10 @@ fn make_deps(env: &SpawnEnv) -> SpawnDeps {
     }
 }
 
-async fn spawn_and_wait(
-    env: &SpawnEnv,
-    deps: SpawnDeps,
-    model_id: Option<&str>,
-) -> (String, WaitOutcome) {
+async fn spawn_and_wait(env: &SpawnEnv, deps: SpawnDeps) -> (String, WaitOutcome) {
     let spec = LaunchSpec {
         agent_name: "explore".into(),
         prompt: "report back".into(),
-        model_id_override: model_id.map(str::to_string),
-        max_steps_override: Some(3),
     };
     let child = spawn_child_job(&deps, &env.parent, "call-contract", spec)
         .await
@@ -224,7 +216,7 @@ async fn spawn_reads_fresh_agent_model_ref_from_live_config() {
     assert!(env.revision.load(Ordering::Acquire) >= 1);
 
     let deps = make_deps(&env);
-    let (child, outcome) = spawn_and_wait(&env, deps, None).await;
+    let (child, outcome) = spawn_and_wait(&env, deps).await;
 
     assert!(
         matches!(outcome, WaitOutcome::Exited(_)),
@@ -247,7 +239,7 @@ async fn child_calls_agent_provider_endpoint_not_parent_provider() {
     let env = spawn_env("m2").await;
 
     let deps = make_deps(&env);
-    let (_child, outcome) = spawn_and_wait(&env, deps, None).await;
+    let (_child, outcome) = spawn_and_wait(&env, deps).await;
 
     let WaitOutcome::Exited(notice) = outcome else {
         panic!("child must exit, got {outcome:?}");
@@ -266,25 +258,5 @@ async fn child_calls_agent_provider_endpoint_not_parent_provider() {
         !notice.final_text.contains("60001"),
         "child must NOT call the parent's provider (p1), got: {}",
         notice.final_text
-    );
-}
-
-/// The `model` override on the launch tool call must win over both the agent's
-/// model_ref and any parent state.
-#[tokio::test]
-async fn launch_model_override_selects_provider() {
-    let env = spawn_env("m2").await;
-
-    let deps = make_deps(&env);
-    let (child, outcome) = spawn_and_wait(&env, deps, Some("m3")).await;
-
-    assert!(
-        matches!(outcome, WaitOutcome::Exited(_)),
-        "child must exit, got {outcome:?}"
-    );
-    assert_eq!(
-        env.sessions.session_model_id(&child).as_deref(),
-        Some("m3"),
-        "launch model override must seed the child session model"
     );
 }

@@ -12,10 +12,11 @@ use reqwest::Client;
 use serde_json::{Map, Value};
 use tokio_util::sync::CancellationToken;
 
-use crate::authority::responses::{Item, OutputItem, Response, ResponseStreamEvent};
+use crate::authority::responses::{Item, ResponseStreamEvent};
 use crate::config::schema::ProviderAuth;
 use crate::llm::provider::LlmProvider;
 use crate::llm::request::ModelRequest;
+use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
 use crate::types::{LitecodeError, Result, StreamEvents};
 
 use super::responses_sse::{SseLineReader, check_event_stream_content_type, sse_data_payload};
@@ -96,28 +97,21 @@ impl ArkCodingProvider {
 
 /// Official Doubao Responses thinking dialect (doc 1956279).
 ///
-/// Platform Low → `thinking.type=disabled` and no `reasoning.effort` (`disabled` +
-/// `low|medium|high` is a 400). Medium/High → `enabled` plus `reasoning.effort`.
-/// Coding Plan probe (P1a–c) accepted these combos on `doubao-seed-2.1-turbo`;
-/// Kimi / MiniMax / GLM returned HTTP 200 with the same fields, so they are not omitted.
+/// `Off` / platform Low → `thinking.type=disabled` and no `reasoning`.
+/// Medium/High → `enabled` plus `reasoning.effort`.
 fn apply_ark_thinking(body: &mut Value, params: &ModelRequest) {
-    if params.thinking_mode.as_deref() == Some("disabled") {
-        body["thinking"] = serde_json::json!({ "type": "disabled" });
-        return;
-    }
-    match params.reasoning_effort.as_deref() {
-        Some("low") | Some("none") | Some("minimal") => {
+    match params.thinking {
+        ThinkingSpec::Off | ThinkingSpec::Tier(ThinkingTier::Low) => {
             body["thinking"] = serde_json::json!({ "type": "disabled" });
         }
-        Some("medium") => {
+        ThinkingSpec::Tier(ThinkingTier::Medium) => {
             body["thinking"] = serde_json::json!({ "type": "enabled" });
             body["reasoning"] = serde_json::json!({ "effort": "medium" });
         }
-        Some("high") | Some("max") => {
+        ThinkingSpec::Tier(ThinkingTier::High) => {
             body["thinking"] = serde_json::json!({ "type": "enabled" });
             body["reasoning"] = serde_json::json!({ "effort": "high" });
         }
-        _ => {}
     }
 }
 
@@ -311,14 +305,6 @@ fn fill_ark_response_object(map: &mut Map<String, Value>, event_type: Option<&st
     }
 }
 
-fn parse_response(text: &str) -> Result<Response> {
-    let mut value: Value = serde_json::from_str(text)
-        .map_err(|e| LitecodeError::Llm(format!("deserialize Response JSON: {e}")))?;
-    harden_ark_json(&mut value);
-    serde_json::from_value(value)
-        .map_err(|e| LitecodeError::Llm(format!("deserialize Response: {e}")))
-}
-
 fn parse_stream_event(data: &str) -> Result<ResponseStreamEvent> {
     let mut value: Value = serde_json::from_str(data).map_err(|e| {
         LitecodeError::Llm(format!(
@@ -340,10 +326,6 @@ fn normalize_endpoint(endpoint: String) -> String {
         return trimmed.to_string();
     }
     format!("{trimmed}/responses")
-}
-
-fn output_items_to_items(output: Vec<OutputItem>) -> Vec<Item> {
-    output.into_iter().map(Item::from).collect()
 }
 
 fn apply_ark_headers(
@@ -380,40 +362,6 @@ impl LlmProvider for ArkCodingProvider {
             Ok(p) => Box::new(p),
             Err(_) => self.box_clone(),
         }
-    }
-
-    fn complete<'a>(
-        &'a self,
-        request: &'a ModelRequest,
-        api_key: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        Box::pin(async move {
-            let body = Self::build_body(request, false)?;
-            maybe_dump_ark_wire_body(request, &body);
-            let (header_name, header_value) = self.auth_header(api_key);
-            let resp = apply_ark_headers(
-                self.client.post(&self.endpoint_url),
-                header_name,
-                header_value,
-            )
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| transport_error("sending Ark Coding Plan response", &e))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                return Err(http_err(status, text));
-            }
-
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| transport_error("reading Ark Coding Plan response", &e))?;
-            let response = parse_response(&text)?;
-            Ok(output_items_to_items(response.output))
-        })
     }
 
     fn complete_with_stream_events<'a>(
@@ -511,10 +459,12 @@ mod tests {
     };
     use crate::config::schema::ProviderAuth;
     use crate::llm::request::ModelRequest;
+    use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
     use crate::types::user_text;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use tokio_util::sync::CancellationToken;
 
     fn sample_request() -> ModelRequest {
         ModelRequest {
@@ -524,8 +474,7 @@ mod tests {
             tools: vec![],
             max_output_tokens: 64,
             temperature: 0.0,
-            reasoning_effort: None,
-            thinking_mode: None,
+            thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: Some("ses_ark".into()),
         }
@@ -669,30 +618,24 @@ mod tests {
     #[test]
     fn build_body_store_false_and_thinking_dialect() {
         let mut req = sample_request();
-        let none = ArkCodingProvider::build_body(&req, false).unwrap();
-        assert_eq!(none["store"], false);
-        assert!(none.get("thinking").is_none());
-        assert!(none.get("reasoning").is_none());
-        assert_eq!(none["stream"], false);
+        let medium = ArkCodingProvider::build_body(&req, false).unwrap();
+        assert_eq!(medium["store"], false);
+        assert_eq!(medium["thinking"]["type"], "enabled");
+        assert_eq!(medium["reasoning"]["effort"], "medium");
+        assert_eq!(medium["stream"], false);
 
-        req.reasoning_effort = Some("low".into());
+        req.thinking = ThinkingSpec::Tier(ThinkingTier::Low);
         let low = ArkCodingProvider::build_body(&req, true).unwrap();
         assert_eq!(low["thinking"]["type"], "disabled");
         assert!(low.get("reasoning").is_none());
         assert_eq!(low["stream"], true);
 
-        req.reasoning_effort = Some("medium".into());
-        let med = ArkCodingProvider::build_body(&req, false).unwrap();
-        assert_eq!(med["thinking"]["type"], "enabled");
-        assert_eq!(med["reasoning"]["effort"], "medium");
-
-        req.reasoning_effort = Some("high".into());
+        req.thinking = ThinkingSpec::Tier(ThinkingTier::High);
         let high = ArkCodingProvider::build_body(&req, false).unwrap();
         assert_eq!(high["thinking"]["type"], "enabled");
         assert_eq!(high["reasoning"]["effort"], "high");
 
-        req.thinking_mode = Some("disabled".into());
-        req.reasoning_effort = Some("high".into());
+        req.thinking = ThinkingSpec::Off;
         let off = ArkCodingProvider::build_body(&req, false).unwrap();
         assert_eq!(off["thinking"]["type"], "disabled");
         assert!(off.get("reasoning").is_none());
@@ -707,8 +650,7 @@ mod tests {
             tools: vec![],
             max_output_tokens: 16,
             temperature: 0.0,
-            reasoning_effort: Some("medium".into()),
-            thinking_mode: None,
+            thinking: ThinkingSpec::Tier(ThinkingTier::Medium),
             json_output: false,
             session_id: None,
         };
@@ -728,9 +670,9 @@ mod tests {
             let mut buf = vec![0u8; 8192];
             let n = socket.read(&mut buf).await.expect("read");
             captured_cb.lock().unwrap().extend_from_slice(&buf[..n]);
-            let body = completed_response_json();
+            let body = sse_text_only();
             let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = socket.write_all(resp.as_bytes()).await;
@@ -740,7 +682,12 @@ mod tests {
             ArkCodingProvider::new(format!("http://{addr}/api/coding/v3"), ProviderAuth::Bearer)
                 .expect("provider");
         provider
-            .complete(&sample_request(), "sk-ark")
+            .complete_with_stream_events(
+                &sample_request(),
+                "sk-ark",
+                None,
+                &CancellationToken::new(),
+            )
             .await
             .expect("ok");
         let captured = captured.lock().unwrap();
@@ -820,7 +767,12 @@ mod tests {
         let endpoint = serve_once("nope".into(), "400 Bad Request", "application/json").await;
         let provider = ArkCodingProvider::new(endpoint, ProviderAuth::Bearer).expect("provider");
         let err = provider
-            .complete(&sample_request(), "sk-test")
+            .complete_with_stream_events(
+                &sample_request(),
+                "sk-test",
+                None,
+                &CancellationToken::new(),
+            )
             .await
             .expect_err("fail");
         let msg = err.to_string();

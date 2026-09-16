@@ -4,7 +4,8 @@
 param(
     [string]$Root = "",
     [switch]$Require,
-    [switch]$WarnOnly
+    [switch]$WarnOnly,
+    [switch]$SkipFreshness
 )
 
 $ErrorActionPreference = "Stop"
@@ -65,7 +66,9 @@ Linux server bundle looks older than src/, web/src, or Cargo.toml.
   Rebuild in WSL so Open Remote matches the Windows sidecar:
     ./scripts/package_linux.sh
 "@
-    if ($WarnOnly -or -not $Require) {
+    if ($SkipFreshness) {
+        Write-Host "==> Linux bundle present; skipping source-mtime freshness check"
+    } elseif ($WarnOnly -or -not $Require) {
         Write-Warning $warn.Trim()
     } else {
         throw $warn.Trim()

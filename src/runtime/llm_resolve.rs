@@ -31,6 +31,16 @@ pub struct TurnLlmBinding {
     pub model_def: ModelDefinition,
 }
 
+impl TurnLlmBinding {
+    pub fn compact_call(&self) -> crate::llm::CompactLlmCall<'_> {
+        crate::llm::CompactLlmCall {
+            provider: self.provider.as_ref(),
+            api_key: &self.api_key,
+            model: &self.api_model_id,
+        }
+    }
+}
+
 /// Resolve the LLM binding for a main session turn.
 ///
 /// Reads **only** `session.model_id`. Empty / missing → Config error.
@@ -66,8 +76,9 @@ pub fn resolve_session_llm(
 
 /// Resolve a binding for an agent (subagent / compaction) without session state.
 ///
-/// Optional `model_id_override` is a catalog config id from the tool call;
-/// otherwise uses the agent's Settings `model_ref`.
+/// Uses the agent's Settings `model_ref`. Optional `model_id_override` is an
+/// internal catalog id (e.g. a child session's already-seeded model), not a
+/// `subagent_launch` tool argument.
 pub fn binding_for_agent(
     resolved: &ResolvedConfig,
     registry: &mut ProviderRegistry,
@@ -336,8 +347,6 @@ mod tests {
                 api_model_id: "text-model".into(),
                 context_window: 8_000,
                 max_tokens: 1024,
-                thinking_mode: None,
-                reasoning_effort: None,
                 json_output: false,
                 capabilities: vec![ModelCapability::Text],
             },
@@ -354,8 +363,6 @@ mod tests {
                 api_model_id: "mm".into(),
                 context_window: 200_000,
                 max_tokens: 8192,
-                thinking_mode: None,
-                reasoning_effort: None,
                 json_output: false,
                 capabilities: vec![
                     ModelCapability::Text,
@@ -576,8 +583,6 @@ mod tests {
                     api_model_id: "compact-api-model".into(),
                     context_window: 64_000,
                     max_tokens: 2_048,
-                    thinking_mode: None,
-                    reasoning_effort: None,
                     json_output: false,
                     capabilities: vec![ModelCapability::Text],
                 },
