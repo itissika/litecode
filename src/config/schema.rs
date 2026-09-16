@@ -13,6 +13,7 @@ pub const ADAPTER_DEEPSEEK_RESPONSES: &str = "deepseek_responses";
 pub const ADAPTER_MIMO_RESPONSES: &str = "mimo_responses";
 pub const ADAPTER_OPENCODE: &str = "opencode";
 pub const ADAPTER_ARK_CODING: &str = "ark_coding";
+pub const ADAPTER_COMMANDCODE: &str = "commandcode";
 
 /// LLM provider auth mode for HTTP requests.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

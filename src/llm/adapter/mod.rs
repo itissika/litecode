@@ -3,10 +3,10 @@
 //! # Adapter selection
 //!
 //! Product adapters are registered in [`registry`] (`openai_responses`,
-//! `deepseek_responses`, `mimo_responses`, `opencode`, `ark_coding`). OpenAI /
-//! DeepSeek / MiMo / Ark Coding Plan speak Responses JSON/SSE; OpenCode uses the
-//! Chat Completions codec in [`chat_completions`]. Vendor-tolerant hardening
-//! stays in this directory.
+//! `deepseek_responses`, `mimo_responses`, `opencode`, `ark_coding`,
+//! `commandcode`). OpenAI / DeepSeek / MiMo / Ark Coding speak Responses
+//! JSON/SSE; OpenCode and Command Code use the Chat Completions codec in
+//! [`chat_completions`]. Vendor-tolerant hardening stays in this directory.
 //!
 //! # Streaming contract
 //!
@@ -17,6 +17,7 @@
 
 mod ark_coding;
 mod chat_completions;
+mod commandcode;
 mod deepseek_responses;
 mod mimo_responses;
 mod openai_responses;
@@ -189,10 +190,10 @@ pub(super) fn from_definition(def: &ProviderDefinition) -> Result<Box<dyn LlmPro
 pub mod public {
     pub use super::registry::{
         AdapterDescriptor, FieldSchema, FieldType, adapter_default_capabilities,
-        apply_owned_modality_capabilities, closed_api_model_ids, closed_context_windows,
-        closed_default_endpoint, has_remote_model_catalog, is_known_adapter, list_adapters,
-        parse_model_config, parse_provider_config, provider_ready, validate_model_config,
-        validate_provider_config,
+        apply_owned_modality_capabilities, catalog_supported_ids, closed_api_model_ids,
+        closed_context_windows, closed_default_endpoint, has_remote_model_catalog, is_known_adapter,
+        list_adapters, parse_model_config, parse_provider_config, provider_ready,
+        validate_model_config, validate_provider_config,
     };
 }
 

@@ -5,6 +5,8 @@ import type { AdapterDescriptor } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import {
   ConnectionSection,
+  allowedAuth,
+  authOptions,
   serializeProviderDrafts,
   type ProviderDraft,
 } from "./ConnectionSection";
@@ -187,5 +189,36 @@ describe("ConnectionSection persist UX", () => {
     fireEvent.click(remove);
     await vi.advanceTimersByTimeAsync(400);
     expect(saveProviders).not.toHaveBeenCalled();
+  });
+
+  it("derives auth modes from the adapter descriptor and normalizes a stale one", () => {
+    const descriptors: AdapterDescriptor[] = [
+      ...adapters,
+      {
+        id: "commandcode",
+        label: "Command Code",
+        provider_fields: [
+          { name: "endpoint", label: "Endpoint", type: "string", required: false },
+          { name: "api_key", label: "API Key", type: "secret", required: true },
+          {
+            name: "auth",
+            label: "Auth",
+            type: "enum",
+            required: true,
+            options: ["bearer"],
+          },
+        ],
+        model_fields: [],
+        default_endpoint: "https://api.commandcode.ai/provider/v1",
+      },
+    ];
+    // Descriptor-declared modes win; an adapter without an `auth` field keeps both.
+    expect(authOptions(descriptors, "commandcode")).toEqual(["bearer"]);
+    expect(authOptions(descriptors, "openai")).toEqual(["bearer", "api_key"]);
+
+    // A stored mode the adapter does not offer falls back to its first allowed one.
+    expect(allowedAuth(descriptors, "commandcode", "api_key")).toBe("bearer");
+    expect(allowedAuth(descriptors, "commandcode", "bearer")).toBe("bearer");
+    expect(allowedAuth(descriptors, "openai", "api_key")).toBe("api_key");
   });
 });

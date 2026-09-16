@@ -30,6 +30,11 @@ impl ChatEncodeOpts {
         include_stream_usage: true,
         reasoning_write_key: ReasoningWriteKey::ReasoningContent,
     };
+
+    pub(crate) const COMMANDCODE: Self = Self {
+        include_stream_usage: true,
+        reasoning_write_key: ReasoningWriteKey::ReasoningContent,
+    };
 }
 
 fn item_text(item: &Item) -> String {

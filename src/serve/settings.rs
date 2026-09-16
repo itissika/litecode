@@ -17,7 +17,8 @@ use crate::config::schema::{
 use crate::config::workspace::WorkspaceEnginesFile;
 use crate::config::{CommitAck, DocId};
 use crate::llm::{
-    chat_models_url, has_remote_model_catalog, list_adapters, parse_chat_model_catalog,
+    catalog_supported_ids, chat_models_url, has_remote_model_catalog, list_adapters,
+    parse_chat_model_catalog,
 };
 use crate::mcp::{McpConnectionPool, McpRunState, McpServerSnapshot, McpToolSchema};
 use crate::serve::state::ServeState;
@@ -237,7 +238,9 @@ async fn get_provider_models(State(state): State<ServeState>, Path(id): Path<Str
         return catalog_fetch_error(format!("HTTP {status}: {body}"));
     }
     match parse_chat_model_catalog(&body) {
-        Ok(ids) => ok_json(serde_json::json!({ "ids": ids })),
+        Ok(ids) => ok_json(
+            serde_json::json!({ "ids": catalog_supported_ids(&provider.adapter_id, ids) }),
+        ),
         Err(e) => catalog_fetch_error(e.to_string()),
     }
 }

@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::schema::{
-    ADAPTER_ARK_CODING, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES,
+    ADAPTER_ARK_CODING, ADAPTER_COMMANDCODE, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES,
     ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE, ModelAdapterConfig, ModelCapability,
     ModelDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition, ReasoningEffort,
     ThinkingMode,
@@ -13,6 +13,9 @@ use crate::llm::provider::LlmProvider;
 use crate::types::{LitecodeError, Result};
 
 use super::ark_coding::{ArkCodingProvider, DEFAULT_ENDPOINT as ARK_DEFAULT_ENDPOINT};
+use super::commandcode::{
+    DEFAULT_ENDPOINT as COMMANDCODE_DEFAULT_ENDPOINT, CommandcodeProvider,
+};
 use super::deepseek_responses::{
     API_MODEL_IDS as DEEPSEEK_API_MODEL_IDS,
     CONTEXT_WINDOW_DEFAULT as DEEPSEEK_CONTEXT_WINDOW_DEFAULT,
@@ -116,6 +119,35 @@ const CLOSED_PROVIDER_FIELDS: &[FieldSchema] = &[
         field_type: FieldType::Enum,
         required: true,
         options: Some(AUTH_OPTIONS),
+    },
+];
+
+/// Command Code documents Bearer as the only auth for `/chat/completions`
+/// (`x-api-key` is Anthropic-SDK-on-`/messages` only), so the Settings form
+/// must not offer the api_key mode — it could only produce a 401.
+const COMMANDCODE_AUTH_OPTIONS: &[&str] = &["bearer"];
+
+const COMMANDCODE_PROVIDER_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "endpoint",
+        label: "Endpoint",
+        field_type: FieldType::String,
+        required: false,
+        options: None,
+    },
+    FieldSchema {
+        name: "api_key",
+        label: "API Key",
+        field_type: FieldType::Secret,
+        required: true,
+        options: None,
+    },
+    FieldSchema {
+        name: "auth",
+        label: "Auth",
+        field_type: FieldType::Enum,
+        required: true,
+        options: Some(COMMANDCODE_AUTH_OPTIONS),
     },
 ];
 
@@ -277,6 +309,16 @@ const ADAPTERS: &[AdapterDescriptor] = &[
         // returns the general inference catalog and is not usable here.
         remote_model_catalog: false,
     },
+    AdapterDescriptor {
+        id: ADAPTER_COMMANDCODE,
+        label: "Command Code",
+        provider_fields: COMMANDCODE_PROVIDER_FIELDS,
+        model_fields: SHARED_MODEL_FIELDS,
+        default_endpoint: Some(COMMANDCODE_DEFAULT_ENDPOINT),
+        // Official GET {endpoint}/models — same OpenAI list shape as OpenCode.
+        // Anthropic ids are filtered out (see `catalog_supported_ids`).
+        remote_model_catalog: true,
+    },
 ];
 
 /// All registered adapters (product surface).
@@ -299,6 +341,7 @@ pub fn closed_default_endpoint(adapter_id: &str) -> Option<&'static str> {
         ADAPTER_MIMO_RESPONSES => Some(MIMO_DEFAULT_ENDPOINT),
         ADAPTER_OPENCODE => Some(OPENCODE_DEFAULT_ENDPOINT),
         ADAPTER_ARK_CODING => Some(ARK_DEFAULT_ENDPOINT),
+        ADAPTER_COMMANDCODE => Some(COMMANDCODE_DEFAULT_ENDPOINT),
         _ => None,
     }
 }
@@ -308,6 +351,28 @@ pub fn has_remote_model_catalog(adapter_id: &str) -> bool {
         .iter()
         .find(|a| a.id == adapter_id)
         .is_some_and(|a| a.remote_model_catalog)
+}
+
+/// Command Code serves Anthropic models only on the sibling `/messages`
+/// endpoint and rejects them on `/chat/completions` with HTTP 400 ("wrong
+/// endpoint for the model"), so ids matching this predicate cannot work on the
+/// adapter's wire. Catalog ids are un-prefixed for Anthropic (`claude-*`) and
+/// vendor-prefixed for everything else (`deepseek/...`).
+fn is_messages_only_model(api_model_id: &str) -> bool {
+    let lower = api_model_id.trim().to_ascii_lowercase();
+    lower.starts_with("anthropic/") || lower.contains("claude")
+}
+
+/// Filter a fetched `/models` catalog down to ids this adapter can actually
+/// serve on its wire.
+pub fn catalog_supported_ids(adapter_id: &str, ids: Vec<String>) -> Vec<String> {
+    match adapter_id {
+        ADAPTER_COMMANDCODE => ids
+            .into_iter()
+            .filter(|id| !is_messages_only_model(id))
+            .collect(),
+        _ => ids,
+    }
 }
 
 /// Closed-adapter context budgets: `(default, max)`.
@@ -346,6 +411,9 @@ pub fn closed_api_model_ids(adapter_id: &str) -> Option<&'static [&'static str]>
 /// - DeepSeek ids containing `vision` (e.g. `deepseek-v4-flash-vision-exp`):
 ///   text + image. `/models` does not return modalities.
 /// - Ark Coding Plan `doubao-seed-2.1-turbo`: text + image (Coding Plan `/responses` P2).
+/// - Command Code: every model is text-only on LiteCode's Chat Completions
+///   codec, which cannot serialize image parts — declaring image would make
+///   `validate_llm_input_capabilities` admit a screenshot the wire then drops.
 /// - Everything else: text-only.
 pub fn adapter_default_capabilities(adapter_id: &str, api_model_id: &str) -> Vec<ModelCapability> {
     match adapter_id {
@@ -369,7 +437,10 @@ pub fn adapter_default_capabilities(adapter_id: &str, api_model_id: &str) -> Vec
 pub fn adapter_owns_modality_matrix(adapter_id: &str) -> bool {
     matches!(
         adapter_id,
-        ADAPTER_DEEPSEEK_RESPONSES | ADAPTER_MIMO_RESPONSES | ADAPTER_ARK_CODING
+        ADAPTER_DEEPSEEK_RESPONSES
+            | ADAPTER_MIMO_RESPONSES
+            | ADAPTER_ARK_CODING
+            | ADAPTER_COMMANDCODE
     )
 }
 
@@ -428,6 +499,14 @@ pub fn validate_model_config(
         )));
     }
     let closed = crate::platform_knobs::is_closed_adapter(adapter_id);
+    if adapter_id == ADAPTER_COMMANDCODE && is_messages_only_model(&config.api_model_id) {
+        return Err(LitecodeError::Config(format!(
+            "model '{model_id}' api_model_id '{}' is served by the Command Code Anthropic Messages \
+             endpoint, which this adapter does not implement; pick a non-Anthropic id from the \
+             adapter catalog",
+            config.api_model_id
+        )));
+    }
     if closed {
         let api = config.api_model_id.trim();
         if api.is_empty() {
@@ -604,6 +683,7 @@ pub fn build_client(def: &ProviderDefinition) -> Result<Box<dyn LlmProvider>> {
         ADAPTER_MIMO_RESPONSES => Ok(Box::new(MimoResponsesProvider::new(endpoint, auth)?)),
         ADAPTER_OPENCODE => Ok(Box::new(OpencodeProvider::new(endpoint, auth)?)),
         ADAPTER_ARK_CODING => Ok(Box::new(ArkCodingProvider::new(endpoint, auth)?)),
+        ADAPTER_COMMANDCODE => Ok(Box::new(CommandcodeProvider::new(endpoint, auth)?)),
         other => Err(LitecodeError::Config(format!(
             "unknown adapter_id '{other}' for provider '{}'",
             def.id
@@ -615,7 +695,7 @@ pub fn build_client(def: &ProviderDefinition) -> Result<Box<dyn LlmProvider>> {
 mod tests {
     use super::*;
     use crate::config::schema::{
-        ADAPTER_ARK_CODING, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES,
+        ADAPTER_ARK_CODING, ADAPTER_COMMANDCODE, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES,
         ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE,
     };
 
@@ -729,6 +809,17 @@ mod tests {
         assert_eq!(ark.default_endpoint, Some(ARK_DEFAULT_ENDPOINT));
         assert!(!ark.remote_model_catalog);
         assert!(!has_remote_model_catalog(ADAPTER_ARK_CODING));
+        let commandcode = list_adapters()
+            .iter()
+            .find(|a| a.id == ADAPTER_COMMANDCODE)
+            .unwrap();
+        assert_eq!(
+            commandcode.default_endpoint,
+            Some(COMMANDCODE_DEFAULT_ENDPOINT)
+        );
+        assert_eq!(commandcode.label, "Command Code");
+        assert!(commandcode.remote_model_catalog);
+        assert!(has_remote_model_catalog(ADAPTER_COMMANDCODE));
         assert!(deepseek.remote_model_catalog);
         assert!(has_remote_model_catalog(ADAPTER_DEEPSEEK_RESPONSES));
         assert!(!has_remote_model_catalog(ADAPTER_MIMO_RESPONSES));
@@ -810,5 +901,100 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ark.endpoint, ARK_DEFAULT_ENDPOINT);
+
+        let cmd = parse_provider_config(
+            ADAPTER_COMMANDCODE,
+            &serde_json::json!({ "api_key": "sk-cmd" }),
+        )
+        .unwrap();
+        assert_eq!(cmd.endpoint, COMMANDCODE_DEFAULT_ENDPOINT);
+    }
+
+    /// Real ids from `GET https://api.commandcode.ai/provider/v1/models`:
+    /// Anthropic ids are un-prefixed (`claude-*`), everything else is
+    /// `vendor/model` (or bare for OpenAI's `gpt-*`).
+    #[test]
+    fn commandcode_catalog_hides_messages_only_models() {
+        let ids = vec![
+            "claude-sonnet-5".into(),
+            "claude-opus-4-8".into(),
+            "claude-haiku-4-5-20251001".into(),
+            "gpt-5.6-sol".into(),
+            "deepseek/deepseek-v4-flash".into(),
+            "zai-org/GLM-5.3".into(),
+            "Qwen/Qwen3.8-Max".into(),
+            "google/gemini-3.8-flash".into(),
+            "poolside/laguna-s-2.1-free".into(),
+        ];
+        let filtered = catalog_supported_ids(ADAPTER_COMMANDCODE, ids);
+        assert_eq!(
+            filtered,
+            vec![
+                "gpt-5.6-sol".to_string(),
+                "deepseek/deepseek-v4-flash".to_string(),
+                "zai-org/GLM-5.3".to_string(),
+                "Qwen/Qwen3.8-Max".to_string(),
+                "google/gemini-3.8-flash".to_string(),
+                "poolside/laguna-s-2.1-free".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn catalog_filter_is_identity_for_other_adapters() {
+        let ids = vec!["claude-sonnet-5".to_string()];
+        assert_eq!(catalog_supported_ids(ADAPTER_OPENCODE, ids.clone()), ids);
+    }
+
+    #[test]
+    fn commandcode_rejects_messages_only_model_ids_at_config_time() {
+        let claude = ModelAdapterConfig {
+            api_model_id: "claude-sonnet-5".into(),
+            context_window: 1_000_000,
+            max_tokens: 8192,
+            capabilities: vec![ModelCapability::Text],
+            ..ModelAdapterConfig::default()
+        };
+        let err = validate_model_config("cc", ADAPTER_COMMANDCODE, &claude).unwrap_err();
+        assert!(err.to_string().contains("Anthropic Messages"), "{err}");
+
+        let deepseek = ModelAdapterConfig {
+            api_model_id: "deepseek/deepseek-v4-flash".into(),
+            ..claude
+        };
+        validate_model_config("cc", ADAPTER_COMMANDCODE, &deepseek).unwrap();
+    }
+
+    #[test]
+    fn commandcode_offers_bearer_auth_only() {
+        let descriptor = list_adapters()
+            .iter()
+            .find(|a| a.id == ADAPTER_COMMANDCODE)
+            .unwrap();
+        let auth = descriptor
+            .provider_fields
+            .iter()
+            .find(|f| f.name == "auth")
+            .unwrap();
+        assert_eq!(auth.options, Some(&["bearer"][..]));
+    }
+
+    #[test]
+    fn commandcode_modality_matrix_is_adapter_owned_text_only() {
+        let mut model = ModelDefinition {
+            id: "mm".into(),
+            adapter_id: ADAPTER_COMMANDCODE.into(),
+            provider_ref: "cc".into(),
+            label: "MM".into(),
+            config: ModelAdapterConfig {
+                api_model_id: "gpt-5.6-sol".into(),
+                context_window: 1_000_000,
+                max_tokens: 8192,
+                capabilities: vec![ModelCapability::Text, ModelCapability::Image],
+                ..ModelAdapterConfig::default()
+            },
+        };
+        apply_owned_modality_capabilities(&mut model);
+        assert_eq!(model.config.capabilities, vec![ModelCapability::Text]);
     }
 }

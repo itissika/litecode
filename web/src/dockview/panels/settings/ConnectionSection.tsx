@@ -43,6 +43,36 @@ function endpointFieldRequired(
   return field?.required ?? true;
 }
 
+/**
+ * Auth modes the adapter's `provider_fields` declare (registry is the single
+ * source of truth). Unknown / un-declared adapters keep the legacy pair.
+ */
+export function authOptions(
+  adapters: AdapterDescriptor[],
+  adapterId: string,
+): string[] {
+  const field = adapters
+    .find((a) => a.id === adapterId)
+    ?.provider_fields.find((f) => f.name === "auth");
+  const declared = field?.options ?? [];
+  return declared.length > 0 ? declared : ["bearer", "api_key"];
+}
+
+function normalizeAuth(value: string): ProviderDraft["auth"] {
+  return value === "api_key" ? "api_key" : "bearer";
+}
+
+/** Stored auth, or the adapter's first allowed mode when the stored one is not offered. */
+export function allowedAuth(
+  adapters: AdapterDescriptor[],
+  adapterId: string,
+  stored: string,
+): ProviderDraft["auth"] {
+  const allowed = authOptions(adapters, adapterId);
+  if (allowed.includes(stored)) return normalizeAuth(stored);
+  return normalizeAuth(allowed[0] ?? "bearer");
+}
+
 function viewToDraft(view: ProviderView, adapters: AdapterDescriptor[]): ProviderDraft {
   const stored = view.endpoint ?? "";
   return {
@@ -51,7 +81,7 @@ function viewToDraft(view: ProviderView, adapters: AdapterDescriptor[]): Provide
     label: view.label,
     endpoint: stored.trim() || adapterDefaultEndpoint(adapters, view.adapter_id),
     api_key: "",
-    auth: view.auth === "api_key" ? "api_key" : "bearer",
+    auth: allowedAuth(adapters, view.adapter_id, view.auth),
     masked_key: view.api_key,
   };
 }
@@ -250,7 +280,11 @@ export function ConnectionSection() {
                         const current = row.endpoint.trim();
                         const endpoint =
                           !current || current === prevDefault ? nextDefault : row.endpoint;
-                        updateDraft(index, { adapter_id: v, endpoint });
+                        updateDraft(index, {
+                          adapter_id: v,
+                          endpoint,
+                          auth: allowedAuth(adapters, v, row.auth),
+                        });
                       }}
                       options={adapterOptions}
                       disabled={saveBlocked || adapterOptions.length === 0}
@@ -261,15 +295,11 @@ export function ConnectionSection() {
                     <FieldLabel required>Auth</FieldLabel>
                     <Select
                       value={row.auth}
-                      onChange={(v) =>
-                        updateDraft(index, {
-                          auth: v === "api_key" ? "api_key" : "bearer",
-                        })
-                      }
-                      options={[
-                        { value: "bearer", label: "bearer" },
-                        { value: "api_key", label: "api_key" },
-                      ]}
+                      onChange={(v) => updateDraft(index, { auth: normalizeAuth(v) })}
+                      options={authOptions(adapters, row.adapter_id).map((value) => ({
+                        value,
+                        label: value,
+                      }))}
                       disabled={saveBlocked}
                       className="w-full"
                     />
