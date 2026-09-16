@@ -4,7 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::schema::{ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES, ModelDefinition};
+use crate::config::schema::{
+    ADAPTER_COMMANDCODE, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES, ModelDefinition,
+};
 use crate::llm::closed_context_windows;
 
 /// System / OpenAI-compatible Default budget (economic).
@@ -145,6 +147,11 @@ pub fn map_thinking_to_wire(
             ThinkingTier::Medium => (Some("enabled".into()), Some("medium".into())),
             ThinkingTier::High => (Some("enabled".into()), Some("high".into())),
         },
+        ADAPTER_COMMANDCODE => match tier {
+            ThinkingTier::Low => (None, Some("low".into())),
+            ThinkingTier::Medium => (None, Some("high".into())),
+            ThinkingTier::High => (None, Some("max".into())),
+        },
         _ => match tier {
             ThinkingTier::Low => (None, Some("low".into())),
             ThinkingTier::Medium => (None, Some("medium".into())),
@@ -237,6 +244,22 @@ mod tests {
         );
         assert_eq!(
             map_thinking_to_wire(ADAPTER_DEEPSEEK_RESPONSES, ThinkingTier::High),
+            (None, Some("max".into()))
+        );
+    }
+
+    #[test]
+    fn commandcode_thinking_tiers_span_provider_effort_range() {
+        assert_eq!(
+            map_thinking_to_wire(ADAPTER_COMMANDCODE, ThinkingTier::Low),
+            (None, Some("low".into()))
+        );
+        assert_eq!(
+            map_thinking_to_wire(ADAPTER_COMMANDCODE, ThinkingTier::Medium),
+            (None, Some("high".into()))
+        );
+        assert_eq!(
+            map_thinking_to_wire(ADAPTER_COMMANDCODE, ThinkingTier::High),
             (None, Some("max".into()))
         );
     }

@@ -83,7 +83,7 @@ impl Tool for PlanTool {
     fn description(&self, _ctx: &Context) -> String {
         "Create or finish the session plan under .litecode/plan/. \
          create writes a product-owned Markdown file (filename is auto-generated). \
-         finish clears the active plan pointer 鈥?that is the only way to end a plan. \
+         finish clears the active plan pointer that is the only way to end a plan. \
          Never delete, move, or overwrite .litecode/plan/ with write, edit, or bash; \
          never rm the plan file or the .litecode directory."
             .into()

@@ -287,13 +287,16 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     // WaveText fragments the current task into char spans, so match textContent.
     expect(todo.textContent).toContain("first");
     expect(within(todo).getByText("0/2")).toBeTruthy();
-    // The expanded capsule's width is set inline (animated px, flex reflow
-    // cannot transition) rather than a flex-1 class.
-    expect(todo.style.width).toMatch(/^\d+px$/);
+    // Flexbox computes the responsive endpoint; the expanded capsule takes all
+    // remaining space and animates the focus hand-off via flex-grow.
+    expect(todo.style.flexBasis).toBe("36px");
+    expect(todo.style.flexGrow).toBe("1");
 
     // Hover plan: full-row with its own detail (empty state here).
     fireEvent.mouseEnter(screen.getByTestId("capsule-plan"));
     const plan = screen.getByTestId("capsule-plan");
+    expect(plan.style.flexGrow).toBe("1");
+    expect(todo.style.flexGrow).toBe("0");
     expect(within(plan).getByText("No active plan")).toBeTruthy();
     expect(
       screen

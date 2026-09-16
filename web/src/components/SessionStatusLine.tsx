@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -29,10 +28,8 @@ import { WaveText } from "./WaveText";
 type TodoItemStatus = "pending" | "in_progress" | "completed";
 type TodoItem = { id: string; content: string; status: TodoItemStatus };
 
-/** Gap between capsules (matches `gap-2` on the row). */
-const ROW_GAP_PX = 8;
-/** Fallback collapsed width until the row can be measured (icon + padding). */
-const COLLAPSED_FALLBACK_PX = 36;
+/** Icon-only capsule width; the expanded capsule receives remaining row space. */
+const CAPSULE_BASE_PX = 36;
 
 /** The four session-mount status families the line surfaces. */
 export type CapsuleId = "terminal" | "subagent" | "plan" | "todo";
@@ -159,35 +156,10 @@ export function SessionStatusLine({
   const draggingRef = useRef(false);
   const dragStartRef = useRef({ y: 0, h: PANEL_INITIAL_H });
 
-  // Animated width plumbing: the expanded capsule animates between its
-  // collapsed (icon-only) width and the remaining row width. Measured so the
-  // animation is a plain CSS width transition (flex reflow cannot animate).
-  // jsdom has no layout and no ResizeObserver, so both measurements fall back
-  // safely when they report nothing.
+  // Flexbox owns width calculation: every capsule has the same icon-only
+  // basis, while the expanded one receives all remaining row space. Animating
+  // flex-grow preserves the focus hand-off without measuring the row in JS.
   const rowRef = useRef<HTMLDivElement>(null);
-  const [rowWidth, setRowWidth] = useState(0);
-  const [collapsedWidth, setCollapsedWidth] = useState(COLLAPSED_FALLBACK_PX);
-  useLayoutEffect(() => {
-    const el = rowRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const measure = () => {
-      setRowWidth(el.clientWidth);
-      const collapsed = el.querySelector<HTMLElement>(
-        '[data-expanded="false"]',
-      );
-      if (collapsed && collapsed.offsetWidth > 0) {
-        setCollapsedWidth(collapsed.offsetWidth);
-      }
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  const expandedWidth = Math.max(
-    rowWidth - 3 * collapsedWidth - 3 * ROW_GAP_PX,
-    collapsedWidth,
-  );
 
   // Every freshly-opened panel starts at the fixed initial height. The panel is
   // keyed by `openId`, so switching capsules remounts it; this resets the ref
@@ -354,7 +326,7 @@ export function SessionStatusLine({
   // sits right above the row — so growth reads as coming out of the button.
   // jsdom reports zero rects; the origin then collapses to the row's left.
   const panelId = openId ?? closingId;
-  let originX = COLLAPSED_FALLBACK_PX / 2;
+  let originX = CAPSULE_BASE_PX / 2;
   const rowEl = rowRef.current;
   if (panelId && rowEl) {
     const capsuleEl = rowEl.querySelector<HTMLElement>(
@@ -363,7 +335,7 @@ export function SessionStatusLine({
     if (capsuleEl) {
       const er = capsuleEl.getBoundingClientRect();
       const rr = rowEl.getBoundingClientRect();
-      originX = er.left - rr.left + COLLAPSED_FALLBACK_PX / 2;
+      originX = er.left - rr.left + CAPSULE_BASE_PX / 2;
     }
   }
 
@@ -417,7 +389,6 @@ export function SessionStatusLine({
           id="todo"
           open={openId === "todo"}
           expanded={expandedId === "todo"}
-          width={expandedId === "todo" ? expandedWidth : collapsedWidth}
           onToggle={toggle}
           onHoverStart={onHoverStart}
           onHoverEnd={onHoverEnd}
@@ -453,7 +424,6 @@ export function SessionStatusLine({
           id="plan"
           open={openId === "plan"}
           expanded={expandedId === "plan"}
-          width={expandedId === "plan" ? expandedWidth : collapsedWidth}
           onToggle={toggle}
           onHoverStart={onHoverStart}
           onHoverEnd={onHoverEnd}
@@ -474,7 +444,6 @@ export function SessionStatusLine({
           id="subagent"
           open={openId === "subagent"}
           expanded={expandedId === "subagent"}
-          width={expandedId === "subagent" ? expandedWidth : collapsedWidth}
           onToggle={toggle}
           onHoverStart={onHoverStart}
           onHoverEnd={onHoverEnd}
@@ -504,7 +473,6 @@ export function SessionStatusLine({
           id="terminal"
           open={openId === "terminal"}
           expanded={expandedId === "terminal"}
-          width={expandedId === "terminal" ? expandedWidth : collapsedWidth}
           onToggle={toggle}
           onHoverStart={onHoverStart}
           onHoverEnd={onHoverEnd}
@@ -546,7 +514,6 @@ function Capsule({
   id,
   open,
   expanded,
-  width,
   onToggle,
   onHoverStart,
   onHoverEnd,
@@ -559,7 +526,6 @@ function Capsule({
   id: CapsuleId;
   open: boolean;
   expanded: boolean;
-  width: number;
   onToggle: (id: CapsuleId) => void;
   onHoverStart: (id: CapsuleId) => void;
   onHoverEnd: (id: CapsuleId) => void;
@@ -582,12 +548,12 @@ function Capsule({
       onMouseEnter={() => onHoverStart(id)}
       onMouseLeave={() => onHoverEnd(id)}
       style={{
-        width,
+        flexBasis: CAPSULE_BASE_PX,
+        flexGrow: expanded ? 1 : 0,
         // Inline: composerCardClass ships its own `transition-shadow`, which
-        // beats same-specificity transition-* classes in the cascade and would
-        // otherwise drop `width` from the animated properties entirely.
+        // beats same-specificity transition-* classes in the cascade.
         transitionProperty:
-          "width, color, background-color, border-color, box-shadow",
+          "flex-grow, color, background-color, border-color, box-shadow",
         transitionDuration: "200ms",
         transitionTimingFunction: "ease-out",
       }}

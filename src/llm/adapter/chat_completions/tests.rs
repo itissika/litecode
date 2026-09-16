@@ -51,6 +51,18 @@ fn encode_user_and_system() {
 }
 
 #[test]
+fn commandcode_encodes_reasoning_effort_but_opencode_does_not() {
+    let mut req = sample_request(vec![]);
+    req.reasoning_effort = Some("max".into());
+
+    let commandcode = encode_chat_body(&req, false, &ChatEncodeOpts::COMMANDCODE).unwrap();
+    assert_eq!(commandcode["reasoning_effort"], "max");
+
+    let opencode = encode_chat_body(&req, false, &ChatEncodeOpts::OPENCODE).unwrap();
+    assert!(opencode.get("reasoning_effort").is_none());
+}
+
+#[test]
 fn encode_replays_tools_and_reasoning_key() {
     let fc = Item::FunctionCall(FunctionToolCall {
         id: Some("fc_1".into()),

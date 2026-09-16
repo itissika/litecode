@@ -13,8 +13,10 @@
 //! - Anthropic models are served by the sibling `/messages` endpoint only and
 //!   are rejected here with HTTP 400; they are filtered from the catalog and
 //!   refused by `validate_model_config`.
-//! - Undocumented knobs (`reasoning_effort`, `json_output`) are intentionally
-//!   not sent; LiteCode's chat codec treats them as no-ops for this wire.
+//! - `reasoning_effort` is passed through on Chat Completions requests. LiteCode
+//!   maps its three tiers to Command Code `low` / `high` / `max` without
+//!   per-model clipping or fallback; upstream validation errors remain visible.
+//! - `json_output` is not sent because this wire does not document it.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -204,7 +206,9 @@ mod tests {
             "https://api.commandcode.ai/provider/v1/chat/completions"
         );
         assert_eq!(
-            super::super::chat_completions::models_get_url(&normalize_endpoint(DEFAULT_ENDPOINT.into())),
+            super::super::chat_completions::models_get_url(&normalize_endpoint(
+                DEFAULT_ENDPOINT.into()
+            )),
             "https://api.commandcode.ai/provider/v1/models"
         );
     }
@@ -228,12 +232,13 @@ mod tests {
             let _ = socket.write_all(resp.as_bytes()).await;
             let _ = socket.shutdown().await;
         });
-        let provider = CommandcodeProvider::new(
-            format!("http://{addr}/provider/v1"),
-            ProviderAuth::Bearer,
-        )
-        .expect("provider");
-        provider.complete(&sample_request(), "sk-cmd").await.expect("ok");
+        let provider =
+            CommandcodeProvider::new(format!("http://{addr}/provider/v1"), ProviderAuth::Bearer)
+                .expect("provider");
+        provider
+            .complete(&sample_request(), "sk-cmd")
+            .await
+            .expect("ok");
         let captured = captured.lock().unwrap();
         let raw = String::from_utf8_lossy(&captured);
         let lower = raw.to_ascii_lowercase();
@@ -242,7 +247,10 @@ mod tests {
             "missing bearer in {raw}"
         );
         assert!(
-            lower.contains(&format!("user-agent: litecode/{}", env!("CARGO_PKG_VERSION"))),
+            lower.contains(&format!(
+                "user-agent: litecode/{}",
+                env!("CARGO_PKG_VERSION")
+            )),
             "missing litecode ua in {raw}"
         );
         assert!(
@@ -266,8 +274,7 @@ mod tests {
             "data: [DONE]\n\n"
         );
         let endpoint = serve_once(sse.into(), "200 OK", "text/event-stream").await;
-        let provider =
-            CommandcodeProvider::new(endpoint, ProviderAuth::Bearer).expect("provider");
+        let provider = CommandcodeProvider::new(endpoint, ProviderAuth::Bearer).expect("provider");
         let items = provider
             .complete_with_stream_events(
                 &sample_request(),
@@ -316,11 +323,9 @@ mod tests {
             let _ = socket.write_all(resp.as_bytes()).await;
             let _ = socket.shutdown().await;
         });
-        let provider = CommandcodeProvider::new(
-            format!("http://{addr}/provider/v1"),
-            ProviderAuth::Bearer,
-        )
-        .expect("provider");
+        let provider =
+            CommandcodeProvider::new(format!("http://{addr}/provider/v1"), ProviderAuth::Bearer)
+                .expect("provider");
         let items = provider
             .complete_with_stream_events(
                 &sample_request(),
@@ -356,8 +361,7 @@ mod tests {
     #[tokio::test]
     async fn http_400_uses_commandcode_prefix() {
         let endpoint = serve_once("nope".into(), "400 Bad Request", "application/json").await;
-        let provider =
-            CommandcodeProvider::new(endpoint, ProviderAuth::Bearer).expect("provider");
+        let provider = CommandcodeProvider::new(endpoint, ProviderAuth::Bearer).expect("provider");
         let err = provider
             .complete(&sample_request(), "sk-test")
             .await

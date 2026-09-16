@@ -22,17 +22,20 @@ impl ReasoningWriteKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ChatEncodeOpts {
     pub include_stream_usage: bool,
+    pub include_reasoning_effort: bool,
     pub reasoning_write_key: ReasoningWriteKey,
 }
 
 impl ChatEncodeOpts {
     pub(crate) const OPENCODE: Self = Self {
         include_stream_usage: true,
+        include_reasoning_effort: false,
         reasoning_write_key: ReasoningWriteKey::ReasoningContent,
     };
 
     pub(crate) const COMMANDCODE: Self = Self {
         include_stream_usage: true,
+        include_reasoning_effort: true,
         reasoning_write_key: ReasoningWriteKey::ReasoningContent,
     };
 }
@@ -145,6 +148,11 @@ pub(crate) fn encode_chat_body(
     }
     if stream && opts.include_stream_usage {
         body["stream_options"] = serde_json::json!({ "include_usage": true });
+    }
+    if opts.include_reasoning_effort
+        && let Some(effort) = params.reasoning_effort.as_deref()
+    {
+        body["reasoning_effort"] = Value::String(effort.to_string());
     }
     Ok(body)
 }
