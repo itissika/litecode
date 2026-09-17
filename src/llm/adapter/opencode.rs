@@ -1,14 +1,13 @@
 //! OpenCode Chat-Completions adapter (Zen default host; Go via endpoint override).
 //!
-//! Conversion lives in [`super::chat_completions`]. This file owns Zen headers,
-//! host, and error wrapping.
+//! Conversion lives in [`super::chat_completions`]. This file owns Zen/Go
+//! headers, host, and error wrapping.
 
 use std::future::Future;
 use std::pin::Pin;
 
 use reqwest::Client;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 use crate::config::schema::ProviderAuth;
 use crate::llm::provider::LlmProvider;
@@ -73,25 +72,27 @@ fn zen_session_header(request: &ModelRequest) -> String {
     }
 }
 
-/// OpenCode Zen headers aligned with `packages/opencode/src/session/llm/request.ts`.
-/// `x-opencode-session` must be the Litecode conversation id, not a process-wide UUID.
+/// OpenCode Zen/Go headers per the official docs
+/// (<https://opencode.ai/docs/go/>, "Where can I use it?"): third-party
+/// clients must identify with their **own** user agent (e.g.
+/// `my-coding-agent/1.0`) and send a stable per-conversation session ID in
+/// `x-opencode-session` so routing and prompt caching can be optimized.
+/// `x-opencode-client` / `x-opencode-project` / `x-opencode-request` are
+/// official-CLI telemetry and are deliberately not sent — LiteCode never
+/// claims another agent's client identity (same policy as `commandcode.rs`).
 fn apply_opencode_headers(
     builder: reqwest::RequestBuilder,
     header_name: String,
     header_value: String,
     session_id: &str,
-    request_id: &str,
 ) -> reqwest::RequestBuilder {
-    let user_agent = format!("opencode/{}", env!("CARGO_PKG_VERSION"));
+    let user_agent = format!("litecode/{}", env!("CARGO_PKG_VERSION"));
     builder
         .header(header_name, header_value)
         .header("content-type", "application/json")
         .header("accept", "*/*")
         .header("user-agent", user_agent)
-        .header("x-opencode-client", "cli")
-        .header("x-opencode-project", "global")
         .header("x-opencode-session", session_id)
-        .header("x-opencode-request", request_id)
 }
 
 impl LlmProvider for OpencodeProvider {
@@ -124,7 +125,6 @@ impl LlmProvider for OpencodeProvider {
         Box::pin(async move {
             let body = encode_chat_body(request, true, &ChatEncodeOpts::OPENCODE)?;
             let (header_name, header_value) = self.auth_header(api_key);
-            let request_id = Uuid::new_v4().to_string();
             let zen_session = zen_session_header(request);
             let resp = super::send_cancellable(
                 apply_opencode_headers(
@@ -132,7 +132,6 @@ impl LlmProvider for OpencodeProvider {
                     header_name,
                     header_value,
                     &zen_session,
-                    &request_id,
                 )
                 .header("accept", "text/event-stream")
                 .json(&body),
@@ -346,7 +345,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete_sends_request_session_as_x_opencode_session() {
+    async fn complete_sends_own_ua_and_session_header() {
+        // Go docs "Where can I use it?": own user agent + stable
+        // `x-opencode-session`; no official-CLI identity/telemetry headers.
         let captured: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let captured_cb = Arc::clone(&captured);
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -377,15 +378,32 @@ mod tests {
             .expect("ok");
         let captured = captured.lock().unwrap();
         let raw = String::from_utf8_lossy(&captured);
+        let lower = raw.to_ascii_lowercase();
         assert!(
-            raw.to_ascii_lowercase()
-                .contains("x-opencode-session: ses_parallel_a"),
+            lower.contains("x-opencode-session: ses_parallel_a"),
             "missing per-session header in {raw}"
         );
         assert!(
-            !raw.to_ascii_lowercase()
-                .contains("x-opencode-session: global"),
+            !lower.contains("x-opencode-session: global"),
             "must not fall back to process-wide session in {raw}"
         );
+        assert!(
+            lower.contains(&format!(
+                "user-agent: litecode/{}",
+                env!("CARGO_PKG_VERSION")
+            )),
+            "must identify as litecode, not the opencode cli, in {raw}"
+        );
+        for banned in [
+            "x-opencode-client",
+            "x-opencode-project",
+            "x-opencode-request",
+            "user-agent: opencode",
+        ] {
+            assert!(
+                !lower.contains(banned),
+                "must not send official-CLI identity header {banned} in {raw}"
+            );
+        }
     }
 }

@@ -17,7 +17,8 @@ import {
   SearchSection,
 } from "../../components/SearchResults";
 import type { SearchResultGroup, SearchResultLine } from "../../components/SearchResults";
-import { openSessionPanel } from "../../lib/sessionPanelNav";
+import { openKnownSessionPanel } from "../../lib/sessionPanelNav";
+import { useSessionStore } from "../../stores/sessionStore";
 
 const TEXT_DEBOUNCE_MS = 280;
 const SEMANTIC_DEBOUNCE_MS = 3000;
@@ -100,18 +101,19 @@ function sessionGroupsToCards(
   groups: SessionSearchGroup[],
   highlight: string,
   highlightCaseSensitive: boolean,
+  onOpen: (sessionId: string, revealSeq?: number) => void,
 ): SearchResultGroup[] {
   return groups.map((group) => ({
     key: group.session_id,
     title: group.session_id.slice(0, 8),
     subtitle: sessionGroupSubtitle(group),
     matchCount: group.match_count,
-    onOpenTitle: () => openSessionPanel(group.session_id),
+    onOpenTitle: () => onOpen(group.session_id),
     lines: group.hits.map((hit) => ({
       id: `${group.session_id}:${hit.seq}:${hit.line}`,
       lineLabel: String(hit.line),
       text: hit.summary,
-      onOpen: () => openSessionPanel(group.session_id, hit.seq),
+      onOpen: () => onOpen(group.session_id, hit.seq),
     })),
     highlight,
     highlightCaseSensitive,
@@ -186,6 +188,13 @@ export function SearchPanel(_props: IDockviewPanelProps) {
   const splitRef = useRef(split);
   splitRef.current = split;
   const paneRef = useRef<HTMLDivElement>(null);
+
+  // Search results carry no identity: route through the fail-closed classifier
+  // against the CURRENT session list (a child or an unknown id opens the
+  // read-only panel, only a confirmed root opens the writable one).
+  const routeOpen = useCallback((sessionId: string, revealSeq?: number) => {
+    openKnownSessionPanel(sessionId, useSessionStore.getState().sessions, revealSeq);
+  }, []);
 
   const clearTimers = () => {
     if (textDebounceRef.current) clearTimeout(textDebounceRef.current);
@@ -584,6 +593,7 @@ export function SearchPanel(_props: IDockviewPanelProps) {
                 sessionPage?.groups ?? [],
                 query.trim(),
                 caseSensitive,
+                routeOpen,
               )}
             />
             {sessionPage?.has_more && (

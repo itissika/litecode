@@ -476,6 +476,7 @@ function ItemBubbleImpl({
   rows,
   userAnchorK,
   showRevert,
+  readOnly,
   sessionId,
   bubbleKey,
   editingAnchor,
@@ -487,6 +488,7 @@ function ItemBubbleImpl({
   rows: HumanRow[];
   userAnchorK?: number;
   showRevert: boolean;
+  readOnly: boolean;
   isRunning: boolean;
   sessionId: string;
   /** Stable identity of this bubble (`min(seq)`). Namespaces
@@ -511,6 +513,7 @@ function ItemBubbleImpl({
   const groups = groupNodes(nodes);
   const userText = nodes.find((node) => node.kind === "text")?.text ?? "";
   const editing =
+    !readOnly &&
     isUser &&
     bubbleKey !== undefined &&
     editingAnchor?.bubbleKey === bubbleKey &&
@@ -586,9 +589,9 @@ function ItemBubbleImpl({
         ) : (
         <div
           data-user-message-bubble
-          className="flex cursor-text items-start gap-2"
+          className={`flex items-start gap-2 ${readOnly ? "" : "cursor-text"}`}
           onClick={(event) => {
-            if (!showRevert || userAnchorK === undefined || !bubbleKey || editing) return;
+            if (readOnly || !showRevert || userAnchorK === undefined || !bubbleKey || editing) return;
             onEditAnchor({
               bubbleKey,
               userAnchorK,
@@ -628,6 +631,7 @@ export const ItemBubble = memo(
     prev.sessionId === next.sessionId &&
     prev.isRunning === next.isRunning &&
     prev.showRevert === next.showRevert &&
+    prev.readOnly === next.readOnly &&
     prev.showRevertFiles === next.showRevertFiles &&
     prev.userAnchorK === next.userAnchorK &&
     prev.bubbleKey === next.bubbleKey &&
@@ -769,6 +773,10 @@ interface MessageListProps {
   onDismissEdit?: () => void;
   miniPhase?: "idle" | "entering" | "visible" | "exiting";
   onMiniAnimationEnd?: () => void;
+  /** Hard read-only boundary: user bubbles get no MiniChat/revert/replay and no
+   *  text cursor. Not merely a noop handler — the writable affordances are not
+   *  built at all. */
+  readOnly?: boolean;
 }
 
 export const MessageList = memo(function MessageList({
@@ -790,6 +798,7 @@ export const MessageList = memo(function MessageList({
   onDismissEdit = () => {},
   miniPhase = "idle",
   onMiniAnimationEnd = () => {},
+  readOnly = false,
 }: MessageListProps) {
   const bubbles = useMemo(() => groupRowsForBubbles(messages), [messages]);
   // Transient "compacting now" line: `compacting` is set on started and cleared
@@ -1024,7 +1033,7 @@ export const MessageList = memo(function MessageList({
             const firstIdx = first ? messages.indexOf(first) : -1;
             const sealed = first != null && first.seq >= 0;
             const isUser = first != null && isHumanUserRow(first);
-            const showRevert = sealed && isUser && firstIdx >= 0;
+            const showRevert = !readOnly && sealed && isUser && firstIdx >= 0;
             const userAnchorK = showRevert
               ? deriveUserAnchorK(messages, firstIdx, userDetailBefore)
               : undefined;
@@ -1051,6 +1060,7 @@ export const MessageList = memo(function MessageList({
                     userAnchorK={userAnchorK}
                     showRevert={showRevert}
                     showRevertFiles={showRevertFiles}
+                    readOnly={readOnly}
                     isRunning={isRunning}
                     sessionId={sessionId}
                     bubbleKey={bubbleKey}

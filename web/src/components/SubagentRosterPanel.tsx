@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretDown } from "@phosphor-icons/react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   functionCallOutputText,
@@ -14,30 +13,17 @@ import type {
   SubagentWait,
 } from "../api/types";
 import { formatElapsed } from "../lib/bashLive";
+import { openSubagentPanel } from "../lib/sessionPanelNav";
 import { useConnectionStore } from "../stores/connectionStore";
-import { displayMessages, useMessageStore } from "../stores/messageStore";
+import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useSubagentStore } from "../stores/subagentStore";
-import { useTurnStore } from "../stores/turnStore";
-import { MessageList } from "./MessageList";
-import { releaseSubagentCard } from "./sessionTeardown";
-import {
-  holdSubagentRoster,
-  releaseSubagentRoster,
-} from "./subagentRosterHolds";
 import { SubagentStatusIcon } from "./SubagentStatusIcon";
 import type { ToolStatus } from "./ToolIcon";
 
 const EMPTY_JOBS: SubagentJob[] = [];
 const EMPTY_WAITS: SubagentWait[] = [];
 const EMPTY_ROWS: HumanRow[] = [];
-
-/**
- * Fixed height of an expanded card's transcript scroller. One scroller ⇒ one
- * virtualizer; the card can never blow out the panel (which owns its own
- * height + overflow). Drag the panel to PANEL_MAX_H to see a card whole.
- */
-const CARD_BODY_H = 280;
 
 type FinishedStatus = "completed" | "failed" | "unknown" | "finished";
 interface RosterEntry {
@@ -110,9 +96,8 @@ function iconStatus(entry: RosterEntry): ToolStatus {
 
 /**
  * Dock "Workers" panel body: every subagent session launched from this parent,
- * as an expandable card. The roster is sourced from the durable
- * `subagentBindings` (call_id → child session id), deduped by child id, and
- * enriched per child by:
+ * as a flat row. The roster is sourced from the durable `subagentBindings`
+ * (call_id → child session id), deduped by child id, and enriched per child by:
  *   1. the session itself — `sessionStore.sessions` (agent_id / assistant_preview /
  *      preview / running). PRIMARY: the server lists child sessions too, so this
  *      labels a child that was never subscribed (P7). `sessionStore.byId` (the
@@ -120,11 +105,10 @@ function iconStatus(entry: RosterEntry): ToolStatus {
  *   2. the live `subagentStore.jobs` entry (agent_name + start time → timer).
  *   3. the parent transcript's `subagent_launch` row (agent name / outcome).
  *
- * Expanding a card subscribes the child session and renders its FULL transcript
- * with the same stack as the main panel (MessageList virtualizer); collapsing
- * releases the subscription and keeps the child's
- * slices (P6) — unless the child still has its own dock tab open, which owns
- * that subscription.
+ * A row is pure NAVIGATION: clicking it opens/focuses the child's independent
+ * read-only dock panel (`openSubagentPanel`). The roster no longer embeds the
+ * child transcript, holds a child subscription, or owns any per-row expansion
+ * state — that surface lives entirely in `SubagentReadOnlyPanel`.
  */
 export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
   const bindings = useMessageStore(
@@ -140,7 +124,11 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
   const sessions = useSessionStore((s) => s.sessions);
   const listSessions = useSessionStore((s) => s.listSessions);
   const connState = useConnectionStore((s) => s.state);
-  const [open, setOpen] = useState<Set<string>>(() => new Set());
+  // `sessionStore.sessions` is globally sorted by updated_at, so live children
+  // can trade places on every lifecycle refresh. Preserve first-seen order while
+  // this panel is mounted; otherwise a row moves under a stationary pointer
+  // during scrolling and the next click can hit a different row.
+  const rosterOrderRef = useRef<Map<string, number>>(new Map());
 
   // `session/list` is only PUSHED on session create/delete — never on turn
   // start/finish or a preview update — so the list would go stale while the
@@ -198,16 +186,18 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
         preview: session?.assistant_preview || session?.preview || undefined,
       });
     }
-    return [...byChild.values()];
+    const next = [...byChild.values()];
+    for (const entry of next) {
+      if (!rosterOrderRef.current.has(entry.childId)) {
+        rosterOrderRef.current.set(entry.childId, rosterOrderRef.current.size);
+      }
+    }
+    return next.sort(
+      (a, b) =>
+        rosterOrderRef.current.get(a.childId)! -
+        rosterOrderRef.current.get(b.childId)!,
+    );
   }, [bindings, rows, jobs, sessions, sessionId]);
-
-  const toggle = (childId: string) =>
-    setOpen((cur) => {
-      const next = new Set(cur);
-      if (next.has(childId)) next.delete(childId);
-      else next.add(childId);
-      return next;
-    });
 
   if (roster.length === 0 && waits.length === 0) {
     return (
@@ -237,8 +227,7 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
             <SubagentRosterItem
               key={entry.childId}
               entry={entry}
-              open={open.has(entry.childId)}
-              onToggle={() => toggle(entry.childId)}
+              onOpen={() => openSubagentPanel(entry.childId)}
             />
           ))}
         </ul>
@@ -249,29 +238,20 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
 
 function SubagentRosterItem({
   entry,
-  open,
-  onToggle,
+  onOpen,
 }: {
   entry: RosterEntry;
-  open: boolean;
-  onToggle: () => void;
+  onOpen: () => void;
 }) {
   const label = entry.agent ?? "subagent";
   return (
     <li>
       <button
         type="button"
-        aria-expanded={open}
         aria-label={`Subagent ${label}`}
-        onClick={onToggle}
+        onClick={onOpen}
         className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary)"
       >
-        <CaretDown
-          size={11}
-          weight="bold"
-          aria-hidden
-          className={`shrink-0 transition-transform ${open ? "" : "-rotate-90"}`}
-        />
         <SubagentStatusIcon
           agent={entry.agent}
           live={entry.running}
@@ -294,7 +274,6 @@ function SubagentRosterItem({
         ) : null}
         <SubagentStatus entry={entry} />
       </button>
-      {open && <SubagentCardBody childSessionId={entry.childId} />}
     </li>
   );
 }
@@ -339,114 +318,5 @@ function SubagentStatus({ entry }: { entry: RosterEntry }) {
     >
       {text}
     </span>
-  );
-}
-
-/**
- * Subscribes `childSessionId` while the roster card is expanded, then renders
- * the child's FULL transcript with the main-panel stack: a non-scrolling frame
- * carrying the persistent inset, one scroll container (the element the
- * virtualizer measures) and a centered reading-measure column inside it.
- *
- * On collapse it releases the subscription — but never when the child still has
- * its own `agent-<childId>` dock panel open, since `ensureSubscribe` /
- * `unsubscribeSession` are not refcounted and tearing it down here would kill
- * that tab's stream. While mounted it also HOLDS the session in the shared
- * roster registry, so closing that tab cannot tear down the card's stream
- * either.
- *
- * P6: collapse does NOT drop the child's message/turn slices any more. The
- * slices stay resident (bounded: one per child ever expanded) and a re-expand
- * tops them up through the snapshot gap (`loadRange`) instead of cold-starting.
- */
-function SubagentCardBody({ childSessionId }: { childSessionId: string }) {
-  const connState = useConnectionStore((s) => s.state);
-
-  useEffect(() => {
-    if (connState !== "connected") return;
-    holdSubagentRoster(childSessionId);
-    void useConnectionStore
-      .getState()
-      .ensureSubscribe(childSessionId)
-      .catch(() => {});
-    // `ensureSubscribe` itself starts the catch-up: the child's snapshot carries
-    // `buffer.next_seq`, and `sessionStore.applySnapshot` appends the missing
-    // tail when the retained window lags it.
-    return () => {
-      releaseSubagentRoster(childSessionId);
-      releaseSubagentCard(childSessionId);
-    };
-  }, [childSessionId, connState]);
-
-  const messages = useMessageStore((s) =>
-    displayMessages(s.bySession.get(childSessionId)),
-  );
-  const loadingHistory = useMessageStore(
-    (s) => s.bySession.get(childSessionId)?.loadingHistory ?? false,
-  );
-  const fromSeq = useMessageStore(
-    (s) => s.bySession.get(childSessionId)?.fromSeq ?? 0,
-  );
-  const userDetailBefore = useMessageStore(
-    (s) => s.bySession.get(childSessionId)?.userDetailBefore ?? 0,
-  );
-  const runState = useTurnStore(
-    (s) => s.byId.get(childSessionId)?.runState ?? "idle",
-  );
-  const loadMoreHistoryAction = useMessageStore((s) => s.loadMoreHistory);
-  const onLoadMore = useCallback(() => {
-    loadMoreHistoryAction(childSessionId);
-  }, [loadMoreHistoryAction, childSessionId]);
-
-  const listRef = useRef<HTMLDivElement>(null);
-
-  const isRunning = runState === "running" || runState === "cancelling";
-  const canLoadMore = fromSeq > 0;
-  const empty = messages.length === 0 && !isRunning;
-
-  // Read-only card: the main panel's editing / reveal / jump affordances are
-  // deliberately left at MessageList's safe defaults (noop handlers, null
-  // anchor), so a child bubble click is inert instead of opening a rewrite box.
-  return (
-    <div
-      className="relative [--_dk-foldcard-frame:transparent]"
-      style={{ height: CARD_BODY_H }}
-      data-testid="subagent-card-body"
-    >
-      {empty ? (
-        <p className="px-3 py-2 text-dk-2xs italic text-(--_dk-text-disabled)">
-          Empty subagent session
-        </p>
-      ) : (
-        <>
-          {/* 1. Non-scrolling frame: carries the persistent inset. Transparent
-              so the panel's own glass shows through — the old solid
-              --_dk-editor fill was only there to let the blur strip's tint
-              blend, and it killed the glassmorphism. */}
-          <div className="flex h-full min-h-0 flex-col px-3 pt-2">
-            {/* 2. Scroll container: the element the virtualizer measures. */}
-            <div
-              ref={listRef}
-              className="min-h-0 flex-1 overflow-y-auto"
-            >
-              {/* 3. Content column: centered reading measure only. */}
-              <div className="mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col">
-                <MessageList
-                  key={childSessionId}
-                  messages={messages}
-                  loadingHistory={loadingHistory}
-                  canLoadMore={canLoadMore}
-                  onLoadMore={onLoadMore}
-                  userDetailBefore={userDetailBefore}
-                  isRunning={isRunning}
-                  scrollRef={listRef}
-                  sessionId={childSessionId}
-                />
-              </div>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
   );
 }

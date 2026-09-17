@@ -1,98 +1,22 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { userTextItem } from "../api/adapter";
-import type { HumanRow } from "../api/types";
 import { setDockviewApi, useConnectionStore } from "../stores/connectionStore";
+import { openSubagentPanel } from "../lib/sessionPanelNav";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useSubagentStore } from "../stores/subagentStore";
 import { useTurnStore } from "../stores/turnStore";
 import { SubagentRosterPanel } from "./SubagentRosterPanel";
-import {
-  isSubagentRosterHeld,
-  resetSubagentRosterHolds,
-} from "./subagentRosterHolds";
 
-/**
- * The expanded card mounts the REAL MessageList (virtualizer), so render every
- * virtual item — jsdom has no layout and would otherwise measure 0 items.
- */
-vi.mock("@tanstack/react-virtual", () => ({
-  useVirtualizer: ({
-    count,
-    getItemKey,
-  }: {
-    count: number;
-    getItemKey?: (index: number) => string | number;
-  }) => ({
-    getVirtualItems: () =>
-      Array.from({ length: count }, (_, index) => ({
-        key: getItemKey?.(index) ?? index,
-        index,
-        start: index * 200,
-        size: 200,
-        end: (index + 1) * 200,
-      })),
-    getTotalSize: () => count * 200,
-    measureElement: () => {},
-    scrollToEnd: () => {},
-    scrollToIndex: () => {},
-    isAtEnd: () => true,
-    options: {},
-  }),
-}));
+// The roster is pure navigation now — the child transcript lives in its own
+// dock panel. Mock the nav seam so a click is observable without a dockview.
+vi.mock("../lib/sessionPanelNav", () => ({ openSubagentPanel: vi.fn() }));
 
-class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+const openSubagentPanelMock = vi.mocked(openSubagentPanel);
 
 const PARENT = "s1";
 const CHILD = "child-a";
-
-const userRow = (seq: number, text: string): HumanRow => ({
-  seq,
-  kind: "item/user",
-  body: userTextItem(text),
-});
-
-const assistantRow = (seq: number, text: string): HumanRow => ({
-  seq,
-  kind: "item/assistant",
-  body: {
-    type: "message",
-    role: "assistant",
-    id: `msg-${seq}`,
-    status: "completed",
-    content: [{ type: "output_text", text, annotations: [] }],
-  },
-});
-
-function seedChild(rows: HumanRow[]): void {
-  useMessageStore.setState((s) => {
-    const bySession = new Map(s.bySession);
-    bySession.set(CHILD, {
-      bySeq: new Map(rows.map((r) => [r.seq, r])),
-      messages: rows,
-      display: rows,
-      pendingUser: null,
-      fromSeq: 0,
-      toSeq: rows.length,
-      userDetailBefore: 0,
-      loadingHistory: false,
-      hydrated: true,
-      shapeError: null,
-      subagentBindings: {},
-      blockLogGrowth: false,
-      turnEndNotice: null,
-      itemIdToSeq: new Map(),
-    });
-    return { bySession };
-  });
-}
 
 function seedSession(agentId: string, preview: string, running = false): void {
   useSessionStore.setState({
@@ -164,7 +88,7 @@ afterEach(() => {
   useTurnStore.getState().resetTurn(CHILD);
   useSubagentStore.getState().reset(PARENT);
   useSessionStore.setState({ sessions: [], byId: new Map() });
-  resetSubagentRosterHolds();
+  openSubagentPanelMock.mockClear();
   vi.restoreAllMocks();
 });
 
@@ -200,7 +124,7 @@ describe("SubagentRosterPanel — card header", () => {
     expect(
       within(roster).getByTestId("subagent-roster-preview").textContent,
     ).toBe("reading the panel wiring");
-    // Collapsed: no transcript mounted yet.
+    // The roster never embeds a transcript.
     expect(screen.queryByTestId("message-list")).toBeNull();
   });
 
@@ -269,6 +193,41 @@ describe("SubagentRosterPanel — card header", () => {
     expect(container.querySelector(".tool-icon.sa-presence.sa-running")).toBeTruthy();
   });
 
+  it("keeps card order stable when live session updates reorder the global list", () => {
+    useMessageStore.getState().onSubagentBound(PARENT, {
+      session_id: PARENT,
+      call_id: "call_b",
+      child_session_id: "child-b",
+    });
+    const session = (id: string, agent: string, updatedAt: number) => ({
+      id,
+      project: "/p",
+      updated_at: updatedAt,
+      preview: agent,
+      running: true,
+      turn: null,
+      agent_id: agent,
+      api_model_id: "m",
+      parent_session_id: PARENT,
+      parent_call_id: `call_${id.at(-1)}`,
+    });
+    useSessionStore.setState({
+      sessions: [session(CHILD, "alpha", 2), session("child-b", "beta", 1)],
+    });
+
+    const roster = renderPanel();
+    const headers = () => within(roster).getAllByRole("button");
+
+    useSessionStore.setState({
+      sessions: [session("child-b", "beta", 3), session(CHILD, "alpha", 2)],
+    });
+
+    expect(headers().map((header) => header.getAttribute("aria-label"))).toEqual([
+      "Subagent alpha",
+      "Subagent beta",
+    ]);
+  });
+
   it("falls back to the parent transcript row when the session is unknown", () => {
     useMessageStore.getState().onBufferItem(PARENT, {
       session_id: PARENT,
@@ -304,115 +263,35 @@ describe("SubagentRosterPanel — card header", () => {
   });
 });
 
-describe("SubagentRosterPanel — expanded card is the full child transcript", () => {
-  it("subscribes on expand and renders one bubble per child user row", () => {
+describe("SubagentRosterPanel — row navigation", () => {
+  it("opens the read-only subagent panel on click and embeds no transcript", () => {
     seedSession("researcher", "busy", true);
-    seedChild([
-      userRow(0, "do the thing"),
-      assistantRow(1, "done"),
-      userRow(2, "now do this"),
-    ]);
+    const roster = renderPanel();
+
+    // No inline MessageList; the roster only lists metadata.
+    expect(screen.queryByTestId("message-list")).toBeNull();
+
+    fireEvent.click(
+      within(roster).getByRole("button", { name: "Subagent researcher" }),
+    );
+
+    expect(openSubagentPanelMock).toHaveBeenCalledWith(CHILD);
+    // Still no embedded transcript after the click.
+    expect(screen.queryByTestId("message-list")).toBeNull();
+  });
+
+  it("does not own a child subscription", () => {
+    seedSession("researcher", "busy", true);
     const subscribe = vi
       .spyOn(useConnectionStore.getState(), "ensureSubscribe")
       .mockResolvedValue(undefined);
 
     const roster = renderPanel();
-    fireEvent.click(within(roster).getByRole("button", { name: /Subagent/ }));
-
-    expect(subscribe).toHaveBeenCalledWith(CHILD);
-    // P5-4: every item/user row of the child renders as a user bubble — the
-    // launch prompt AND the following subagent_send message.
-    expect(screen.getByTestId("message-list")).toBeTruthy();
-    expect(
-      document.querySelectorAll("[data-user-message-bubble]"),
-    ).toHaveLength(2);
-    expect(screen.getByText("now do this")).toBeTruthy();
-  });
-
-  it("unsubscribes on collapse but KEEPS the child slices (P6 incremental re-expand)", () => {
-    seedSession("researcher", "busy", true);
-    seedChild([userRow(0, "do the thing")]);
-    vi.spyOn(useConnectionStore.getState(), "ensureSubscribe").mockResolvedValue(
-      undefined,
-    );
-    const unsubscribe = vi.spyOn(
-      useConnectionStore.getState(),
-      "unsubscribeSession",
+    fireEvent.click(
+      within(roster).getByRole("button", { name: "Subagent researcher" }),
     );
 
-    const roster = renderPanel();
-    const row = within(roster).getByRole("button", { name: /Subagent/ });
-    fireEvent.click(row);
-    fireEvent.click(row);
-
-    expect(unsubscribe).toHaveBeenCalledWith(CHILD);
-    expect(
-      useMessageStore.getState().bySession.get(CHILD)?.messages.length ?? 0,
-    ).toBe(1);
-  });
-
-  it("leaves the subscription alone while the child owns a dock tab", () => {
-    seedSession("researcher", "busy", true);
-    seedChild([userRow(0, "do the thing")]);
-    vi.spyOn(useConnectionStore.getState(), "ensureSubscribe").mockResolvedValue(
-      undefined,
-    );
-    const unsubscribe = vi.spyOn(
-      useConnectionStore.getState(),
-      "unsubscribeSession",
-    );
-    setDockviewApi({
-      getPanel: (id: string) => (id === `agent-${CHILD}` ? {} : undefined),
-    } as never);
-
-    const roster = renderPanel();
-    const row = within(roster).getByRole("button", { name: /Subagent/ });
-    fireEvent.click(row);
-    fireEvent.click(row);
-
-    expect(unsubscribe).not.toHaveBeenCalled();
-  });
-
-  it("holds the child in the roster registry while expanded (tab-close guard)", () => {
-    seedSession("researcher", "busy", true);
-    seedChild([userRow(0, "do the thing")]);
-    vi.spyOn(useConnectionStore.getState(), "ensureSubscribe").mockResolvedValue(
-      undefined,
-    );
-
-    const roster = renderPanel();
-    const row = within(roster).getByRole("button", { name: /Subagent/ });
-    fireEvent.click(row);
-    expect(isSubagentRosterHeld(CHILD)).toBe(true);
-
-    fireEvent.click(row);
-    expect(isSubagentRosterHeld(CHILD)).toBe(false);
-  });
-
-  it("re-expands onto the retained slices: re-subscribes, no cold start", () => {
-    seedSession("researcher", "busy", false);
-    seedChild([userRow(0, "do the thing")]);
-    const subscribe = vi
-      .spyOn(useConnectionStore.getState(), "ensureSubscribe")
-      .mockResolvedValue(undefined);
-
-    const roster = renderPanel();
-    const row = within(roster).getByRole("button", { name: /Subagent/ });
-    fireEvent.click(row);
-    fireEvent.click(row);
-
-    // Collapsed: the projection is retained (P6), not reset.
-    expect(
-      useMessageStore.getState().bySession.get(CHILD)?.messages.length ?? 0,
-    ).toBe(1);
-
-    fireEvent.click(row);
-
-    expect(subscribe).toHaveBeenCalledTimes(2);
-    expect(screen.getByText("do the thing")).toBeTruthy();
-    expect(
-      useMessageStore.getState().bySession.get(CHILD)?.messages.length ?? 0,
-    ).toBe(1);
+    expect(subscribe).not.toHaveBeenCalledWith(CHILD);
   });
 });
 

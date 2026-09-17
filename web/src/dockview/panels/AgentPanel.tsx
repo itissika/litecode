@@ -18,6 +18,7 @@ import { PermissionCard } from "../../components/PermissionModal";
 import { ProgressiveBlur } from "../../components/ProgressiveBlur";
 import { SessionStatusLine } from "../../components/SessionStatusLine";
 import { releaseSessionTab } from "../../components/sessionTeardown";
+import { SubagentReadOnlyContent } from "../../components/SubagentReadOnlyContent";
 import { composerCardClass } from "../../components/composerCard";
 
 class AgentErrorBoundary extends Component<
@@ -58,7 +59,17 @@ function PanelCrash({ onClose }: { onClose: () => void }) {
 // `subscribedSessions` on every drop, so re-calling ensureSubscribe here
 // always re-arms the server-side subscription after a reconnect.
 export function AgentPanel(props: IDockviewPanelProps) {
-  const sessionId = (props.params as { sessionId?: string }).sessionId ?? "";
+  const params = props.params as { sessionId?: string; sessionKind?: string };
+  const sessionId = params.sessionId ?? "";
+  // TRUSTED ENTRY PROVENANCE. Only `openSessionPanel` — the writable, root-only
+  // navigation entry (SessionList filtered to roots, `newSession`, and a
+  // root-confirmed Search hit) — tags its params with `sessionKind: "root"`. A
+  // freshly created root is not in `session/list` yet, so without this it would
+  // fail closed to a blank read-only transcript. We deliberately do NOT infer
+  // writability from the `agent-*` panel id (that reopens the child bypass) and
+  // do NOT guess with a timeout: absent metadata still fails closed. A restored
+  // legacy `agent-<child>` panel carries no such param and stays read-only.
+  const explicitRootIntent = params.sessionKind === "root";
   const connState = useConnectionStore((s) => s.state);
   const [isActive, setIsActive] = useState(props.api.isActive);
 
@@ -105,6 +116,25 @@ export function AgentPanel(props: IDockviewPanelProps) {
   const preview = useSessionStore(
     (s) => s.sessions.find((x) => x.id === sessionId)?.preview?.trim() ?? "",
   );
+
+  // Identity classification against the known session list. This is the SAFETY
+  // boundary: a legacy/restored `agent-*` panel can carry a CHILD session id
+  // (old layout, or a Search hit opened before the read-only phase), and a
+  // Search hit can land here for a session the list has not classified yet.
+  //
+  // The HIGHEST invariant is "a known child is always read-only". So metadata
+  // WINS over params: once the list confirms `parent_session_id`, the panel is
+  // read-only no matter what provenance the params claim (a stale/forged layout
+  // param must never reopen a child). Only when the session is NOT a known child
+  // do we trust either the trusted root intent (fresh `newSession` root, absent
+  // from the list) or a present session (known root). An unknown id with no
+  // intent fails closed.
+  const session = useSessionStore((s) =>
+    s.sessions.find((x) => x.id === sessionId),
+  );
+  const knownChild = session !== undefined && !!session.parent_session_id;
+  const writable =
+    !knownChild && (explicitRootIntent || session !== undefined);
   useEffect(() => {
     props.api.setTitle(preview || sessionId.slice(0, 8));
   }, [props.api, sessionId, preview]);
@@ -119,7 +149,11 @@ export function AgentPanel(props: IDockviewPanelProps) {
 
   return (
     <AgentErrorBoundary onClose={close}>
-      <AgentChatShell sessionId={sessionId} isActive={isActive} />
+      {writable ? (
+        <AgentChatShell sessionId={sessionId} isActive={isActive} />
+      ) : (
+        <SubagentReadOnlyContent sessionId={sessionId} isActive={isActive} />
+      )}
     </AgentErrorBoundary>
   );
 }

@@ -18,7 +18,7 @@ pub use grants::{
     check_runtime_grant, clear_runtime_grants, clear_runtime_grants_for, grant_runtime,
 };
 pub use matchers::{ArgMatcher, MatchContext, matches};
-pub use messages::permission_denied_message;
+pub use messages::{permission_denied_by_user_message, permission_denied_message};
 pub use policy::{BindingPathMode, DEFAULT_RULE_ID, PolicyRule, ToolPolicy};
 pub use presets::{apply_preset_to_tools, binding_for_tool};
 pub use sensitive::is_sensitive_system_path;

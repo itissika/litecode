@@ -224,10 +224,10 @@ export function SessionStatusLine({
   const onHoverStart = (id: CapsuleId) => {
     hoverRef.current = id;
     setExpandedId(id);
-    // While a panel is already open, hover follows: the panel tracks the
-    // hovered capsule. A closed panel still waits for a click (level-1 vs
-    // level-2 remain distinct gestures).
-    setOpenId((cur) => (cur ? id : cur));
+    // Hover only changes the level-1 summary slot. Switching an already-open
+    // panel on hover makes ordinary pointer movement after scrolling destructive:
+    // the mounted panel (including a Workers transcript and its open cards) is
+    // replaced without an explicit click.
   };
   const onHoverEnd = (id: CapsuleId) => {
     if (hoverRef.current === id) hoverRef.current = null;
@@ -357,7 +357,7 @@ export function SessionStatusLine({
             height: openId ? PANEL_INITIAL_H : heightRef.current,
             transformOrigin: `${originX}px 100%`,
           }}
-          className={`${composerCardClass} relative overflow-hidden ${
+          className={`${composerCardClass} relative overflow-hidden [container-type:size] ${
             openId ? "status-panel-enter" : "status-panel-exit"
           }`}
           onAnimationEnd={
@@ -376,7 +376,12 @@ export function SessionStatusLine({
           >
             <span aria-hidden className="block h-0.5 w-3 rounded-full bg-current" />
           </button>
-          <div className="h-full overflow-y-auto py-2">{panelBody}</div>
+          <div
+            className="h-full overflow-y-auto overscroll-contain py-2"
+            data-testid="status-panel-scroll"
+          >
+            {panelBody}
+          </div>
         </div>
       )}
 

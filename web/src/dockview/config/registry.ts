@@ -5,6 +5,7 @@ import { SearchPanel } from "../panels/SearchPanel";
 import { GitPanelHost as GitPanel } from "../panels/GitPanel";
 import { EditorPanel } from "../panels/EditorPanel";
 import { AgentPanel } from "../panels/AgentPanel";
+import { SubagentReadOnlyPanel } from "../panels/SubagentReadOnlyPanel";
 import { AboutPanel } from "../panels/AboutPanel";
 import { SessionListPanel } from "../panels/SessionListPanel";
 import { TerminalPanel } from "../panels/TerminalPanel";
@@ -19,6 +20,7 @@ export const panelComponents: Record<string, React.FunctionComponent<IDockviewPa
   git: GitPanel,
   editor: EditorPanel,
   agent: AgentPanel,
+  subagent: SubagentReadOnlyPanel,
   about: AboutPanel, // registered; not in the default layout, kept for a future standalone panel
   sessions: SessionListPanel, // persistent Sessions panel on the right
   terminal: TerminalPanel,

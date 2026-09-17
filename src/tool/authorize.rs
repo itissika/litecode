@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use crate::context_pipeline::Context;
 use crate::permission::{
     AskOutcome, PermissionAction, PermissionEngine, PermissionSink, check_runtime_grant,
-    grant_runtime, permission_denied_message,
+    grant_runtime, permission_denied_by_user_message, permission_denied_message,
 };
 use crate::tool::schema_validate::{check_tool_input, invalid_input_for, parse_tool_arguments};
 use crate::tool::trait_::Tool;
@@ -90,10 +90,8 @@ pub async fn authorize(
             match sink.ask_permission(&name, &eval.rule_id, &summary, cancel) {
                 AskOutcome::Aborted => return AuthResult::Aborted,
                 AskOutcome::Deny => {
-                    return AuthResult::Denied(permission_denied_message(
-                        &name,
-                        &eval.rule_id,
-                        &effective_input,
+                    return AuthResult::Denied(permission_denied_by_user_message(
+                        &name, &summary,
                     ));
                 }
                 AskOutcome::Allow { always } => {

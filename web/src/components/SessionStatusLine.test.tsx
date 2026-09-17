@@ -375,7 +375,7 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     expect(within(capsule).getByText("Plan")).toBeTruthy();
   });
 
-  it("hover alone never opens a panel; an open panel follows hover", () => {
+  it("hover alone never opens or switches a panel", () => {
     render(<SessionStatusLine sessionId="s1" />);
     // Level-1 hover without a panel: horizontal slot only, no panel.
     fireEvent.mouseEnter(screen.getByTestId("capsule-plan"));
@@ -387,20 +387,33 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     expect(screen.getByTestId("status-capsule-panel").dataset.capsule).toBe(
       "terminal",
     );
-    // …then hovering another capsule follows it onto the panel.
+    // …and incidental hover only changes the horizontal summary slot. The
+    // vertical panel stays mounted until the user explicitly clicks.
     fireEvent.mouseEnter(screen.getByTestId("capsule-plan"));
     expect(screen.getByTestId("status-capsule-panel").dataset.capsule).toBe(
-      "plan",
+      "terminal",
     );
-    // Pointer leaving the capsule keeps the panel on the last hovered one.
+    expect(screen.getByTestId("capsule-plan").dataset.expanded).toBe("true");
     fireEvent.mouseLeave(screen.getByTestId("capsule-plan"));
     expect(screen.getByTestId("status-capsule-panel").dataset.capsule).toBe(
-      "plan",
+      "terminal",
     );
   });
 });
 
 describe("SessionStatusLine — vertical expand", () => {
+  it("contains panel scrolling instead of chaining into the chat transcript", () => {
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+
+    expect(screen.getByTestId("status-panel-scroll").className).toContain(
+      "overscroll-contain",
+    );
+    expect(screen.getByTestId("status-capsule-panel").className).toContain(
+      "[container-type:size]",
+    );
+  });
+
   it("opens the clicked capsule's panel at the fixed initial height", () => {
     useBashStore.getState().applySnapshot("s1", { jobs: [bashJob], waits: [] });
     render(<SessionStatusLine sessionId="s1" />);
@@ -883,56 +896,32 @@ describe("SessionStatusLine — subagent roster panel (dock)", () => {
     ).toBe("completed");
   });
 
-  it("subscribes the child on expand and unsubscribes on collapse, keeping its slice", () => {
+  it("opens the child in its own read-only dock panel on row click (no embedded transcript)", () => {
     bind("call_a", CHILD_A);
-    // A loaded-but-empty window: `toSeq` marks the slice as hydrated, so a
-    // collapse that dropped the projection would reset it back to 0.
-    useMessageStore.getState().onBufferLoaded(CHILD_A, {
-      session_id: CHILD_A,
-      from_seq: 0,
-      to_seq: 1,
-      events: [],
-    });
-    const subscribe = vi
-      .spyOn(useConnectionStore.getState(), "ensureSubscribe")
-      .mockResolvedValue(undefined);
-    const unsubscribe = vi.spyOn(
-      useConnectionStore.getState(),
-      "unsubscribeSession",
-    );
-
-    const roster = openRoster();
-    const row = within(roster).getByRole("button", { name: "Subagent subagent" });
-    fireEvent.click(row);
-
-    expect(subscribe).toHaveBeenCalledWith(CHILD_A);
-    // The child viewport mounted (empty session → its own empty state).
-    expect(screen.getByText("Empty subagent session")).toBeTruthy();
-
-    fireEvent.click(row);
-    expect(unsubscribe).toHaveBeenCalledWith(CHILD_A);
-    // P6: the projection stays resident for an incremental re-expand.
-    expect(useMessageStore.getState().bySession.get(CHILD_A)?.toSeq).toBe(1);
-  });
-
-  it("does not unsubscribe a child that still has its own dock tab open", () => {
-    bind("call_a", CHILD_A);
-    vi.spyOn(useConnectionStore.getState(), "ensureSubscribe").mockResolvedValue(
-      undefined,
-    );
-    const unsubscribe = vi.spyOn(
-      useConnectionStore.getState(),
-      "unsubscribeSession",
-    );
+    const addPanel = vi.fn();
     setDockviewApi({
-      getPanel: (id: string) => (id === `agent-${CHILD_A}` ? {} : undefined),
+      getPanel: () => undefined,
+      addPanel,
+      addGroup: vi.fn(() => ({ id: "g-new" })),
+      groups: [{ api: { location: { type: "grid" }, id: "g1" } }],
     } as never);
 
     const roster = openRoster();
-    const row = within(roster).getByRole("button", { name: "Subagent subagent" });
-    fireEvent.click(row);
-    fireEvent.click(row);
+    // The roster no longer embeds the child transcript.
+    expect(screen.queryByTestId("message-list")).toBeNull();
 
-    expect(unsubscribe).not.toHaveBeenCalled();
+    fireEvent.click(
+      within(roster).getByRole("button", { name: "Subagent subagent" }),
+    );
+
+    expect(addPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: `subagent-${CHILD_A}`,
+        component: "subagent",
+        params: { sessionId: CHILD_A },
+      }),
+    );
+    // Still no embedded transcript after the click — it lives in the dock panel.
+    expect(screen.queryByTestId("message-list")).toBeNull();
   });
 });
