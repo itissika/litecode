@@ -19,8 +19,7 @@ use litecode::session::manager::SessionManager;
 use litecode::tool::Tool;
 use litecode::tool::trait_::ToolExecutionContext;
 use litecode::tools::subagent::{
-    SubagentJobBoard, SubagentLaunchTool, SubagentListTool, SubagentSendTool, SubagentStopTool,
-    SubagentWaitTool,
+    SubagentLaunchTool, SubagentListTool, SubagentSendTool, SubagentStopTool, SubagentWaitTool,
 };
 use litecode::types::ToolCallResult;
 
@@ -117,11 +116,6 @@ impl SubagentHarness {
         self.dir.path().to_string_lossy().to_string()
     }
 
-    /// Hub job registry (subagent job facts).
-    pub fn jobs(&self) -> &Arc<SubagentJobBoard> {
-        &self.runtime.subagent_hub.jobs
-    }
-
     pub fn launch_tool(&self) -> SubagentLaunchTool {
         SubagentLaunchTool::new(
             self.runtime.clone(),
@@ -134,11 +128,11 @@ impl SubagentHarness {
     }
 
     pub fn wait_tool(&self) -> SubagentWaitTool {
-        SubagentWaitTool::new(Arc::clone(self.jobs()))
+        SubagentWaitTool::new(Arc::clone(&self.sessions))
     }
 
     pub fn stop_tool(&self) -> SubagentStopTool {
-        SubagentStopTool::new(Arc::clone(&self.sessions), Arc::clone(self.jobs()))
+        SubagentStopTool::new(Arc::clone(&self.sessions))
     }
 
     pub fn list_tool(&self) -> SubagentListTool {
@@ -200,7 +194,11 @@ impl SubagentHarness {
         let result = self
             .launch(
                 call_id,
-                serde_json::json!({ "agent": SUBAGENT_AGENT, "prompt": prompt }),
+                serde_json::json!({
+                    "agent": SUBAGENT_AGENT,
+                    "responsibility": "test",
+                    "prompt": prompt
+                }),
             )
             .await;
         assert_eq!(
@@ -232,15 +230,15 @@ impl SubagentHarness {
         panic!("child turn {child_id} did not finish");
     }
 
-    /// Wait until the job registry reports the child as no longer running.
-    /// The session turn can flip idle slightly earlier (the runtime finalizes
-    /// in-thread), so the job fact is the surface tests assert on.
     pub fn wait_child_settled(&self, child_id: &str) {
-        self.wait_for(|| !self.jobs().is_alive(child_id), "child job settle");
+        self.wait_child_turn(child_id);
     }
 
     pub fn wait_mailbox(&self, parent_id: &str) {
-        self.wait_for(|| self.jobs().mailbox_pending(parent_id), "exit notice");
+        self.wait_for(
+            || self.runtime.subagent_hub.has_pending(parent_id),
+            "completion reference",
+        );
     }
 
     pub fn wait_for(&self, mut predicate: impl FnMut() -> bool, what: &str) {

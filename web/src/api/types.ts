@@ -333,6 +333,9 @@ export interface SessionInfo {
   label?: string;
   parent_session_id?: string | null;
   parent_call_id?: string | null;
+  responsibility?: string;
+  /** Last durable `turn/end.reason` once the session is idle. */
+  last_turn_reason?: string;
   /** Accumulated turn-step kinds for the current (or just-finished) turn.
    *  Appended on each `turn_step` event, cleared on `turn_started`. Purely a
    *  client-side flourish counter — never persisted, not sent back to the server. */
@@ -364,11 +367,14 @@ export interface SessionLifecycle {
   /** Sent with `created`. Set when the session is a subagent child. */
   parent_session_id?: string | null;
   parent_call_id?: string | null;
+  responsibility?: string;
   /** Sent with `created`. */
   project?: string;
   agent_id?: string;
   updated_at?: number;
   step_kind?: TurnStepKind;
+  /** Durable `turn/end.reason` on `turn_finished`. */
+  reason?: string;
 }
 
 export interface SessionAttached {
@@ -426,8 +432,6 @@ export interface SessionSnapshot {
   max_file_revert_k?: number | null;
   /** Running agent bash jobs + wait_shell waiters (reconnect hydrate). */
   bash?: BashJobsSnapshot | null;
-  /** Running subagent workers + subagent_wait waiters (reconnect hydrate). */
-  subagent?: SubagentJobsSnapshot | null;
   /** Session-scoped todos (reconnect hydrate; not derived from the transcript). */
   todos?: {
     id: string;
@@ -460,30 +464,6 @@ export interface BashJobsSnapshot {
 }
 
 export interface BashJobsNotification extends BashJobsSnapshot {
-  session_id: string;
-}
-
-export interface SubagentJob {
-  id: string;
-  call_id: string;
-  agent_name: string;
-  prompt_preview: string;
-  started_at_ms: number;
-}
-
-export interface SubagentWait {
-  call_id: string;
-  watching_id?: string | null;
-  started_at_ms: number;
-  deadline_ms?: number | null;
-}
-
-export interface SubagentJobsSnapshot {
-  jobs: SubagentJob[];
-  waits: SubagentWait[];
-}
-
-export interface SubagentJobsNotification extends SubagentJobsSnapshot {
   session_id: string;
 }
 

@@ -5,13 +5,13 @@ use tokio_util::sync::CancellationToken;
 use crate::authority::responses::{Item, ResponseStreamEvent};
 use crate::types::{LitecodeError, Result, StreamEvents};
 
+use super::super::interrupted_stream_error;
 use super::super::responses_sse::{
     SseLineReader, check_event_stream_content_type, sse_data_payload,
 };
 use super::super::stream_contract::{
     StreamContractGate, StreamItemAccumulator, forward_stream_event, resolve_stream_outcome,
 };
-use super::super::transport_error;
 use super::stream::ChatSynth;
 
 pub(crate) fn wrap_upstream(
@@ -20,6 +20,21 @@ pub(crate) fn wrap_upstream(
     body: &str,
 ) -> LitecodeError {
     LitecodeError::Llm(format!("{error_prefix}. HTTP {status}: {body}"))
+}
+
+fn forward_all<'a>(
+    events: Vec<ResponseStreamEvent>,
+    gate: &mut StreamContractGate,
+    acc: &mut StreamItemAccumulator,
+    on_event: &mut Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
+) -> Result<Option<Vec<Item>>> {
+    let mut last = None;
+    for event in events {
+        if let Some(items) = forward_stream_event(gate, acc, event, on_event)? {
+            last = Some(items);
+        }
+    }
+    Ok(last)
 }
 
 pub(crate) async fn stream_from_response<'a>(
@@ -44,16 +59,6 @@ pub(crate) async fn stream_from_response<'a>(
     let mut synth = ChatSynth::new();
     let mut cancelled = cancel.is_cancelled();
 
-    let mut forward_all = |events: Vec<ResponseStreamEvent>| -> Result<Option<Vec<Item>>> {
-        let mut last = None;
-        for event in events {
-            if let Some(items) = forward_stream_event(&mut gate, &mut acc, event, &mut on_event)? {
-                last = Some(items);
-            }
-        }
-        Ok(last)
-    };
-
     while !cancelled {
         tokio::select! {
             biased;
@@ -64,7 +69,11 @@ pub(crate) async fn stream_from_response<'a>(
             chunk = stream.next() => {
                 let Some(chunk) = chunk else { break; };
                 let chunk = chunk.map_err(|e| {
-                    transport_error("reading chat-completions event stream", &e)
+                    interrupted_stream_error(
+                        "reading chat-completions event stream",
+                        &e,
+                        &acc,
+                    )
                 })?;
                 for line in reader.feed(&chunk)? {
                     let Some(data) = sse_data_payload(&line) else {
@@ -80,7 +89,9 @@ pub(crate) async fn stream_from_response<'a>(
                     })?;
                     let mut events = Vec::new();
                     synth.ingest_chunk(&value, &mut events);
-                    if let Some(items) = forward_all(events)? {
+                    if let Some(items) =
+                        forward_all(events, &mut gate, &mut acc, &mut on_event)?
+                    {
                         terminal_items = Some(items);
                     }
                     if cancel.is_cancelled() {
@@ -104,12 +115,17 @@ pub(crate) async fn stream_from_response<'a>(
             })?;
             let mut events = Vec::new();
             synth.ingest_chunk(&value, &mut events);
-            if let Some(items) = forward_all(events)? {
+            if let Some(items) = forward_all(events, &mut gate, &mut acc, &mut on_event)? {
                 terminal_items = Some(items);
             }
         }
         if terminal_items.is_none()
-            && let Some(items) = forward_all(synth.finish_events(model)?)?
+            && let Some(items) = forward_all(
+                synth.finish_events(model)?,
+                &mut gate,
+                &mut acc,
+                &mut on_event,
+            )?
         {
             terminal_items = Some(items);
         }

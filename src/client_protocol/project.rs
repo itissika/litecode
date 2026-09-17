@@ -496,14 +496,6 @@ fn project_with(
                 "waits": bash.waits,
             }),
         )),
-        InternalEvent::SubagentJobs { snapshot } => Some(notification(
-            super::protocol::methods::SUBAGENT_JOBS,
-            serde_json::json!({
-                "session_id": session_id,
-                "jobs": snapshot.jobs,
-                "waits": snapshot.waits,
-            }),
-        )),
     }
 }
 
@@ -675,15 +667,20 @@ pub fn session_lifecycle_turn_started(session_id: &str, turn: &TurnSnapshot) -> 
 }
 
 /// G0: lifecycle event — a turn finished.
-pub fn session_lifecycle_turn_finished(session_id: &str, turn: &TurnSnapshot) -> Value {
-    notification(
-        "session/lifecycle",
-        json!({
-            "session_id": session_id,
-            "event": "turn_finished",
-            "turn": turn,
-        }),
-    )
+pub fn session_lifecycle_turn_finished(
+    session_id: &str,
+    turn: &TurnSnapshot,
+    reason: Option<&str>,
+) -> Value {
+    let mut params = json!({
+        "session_id": session_id,
+        "event": "turn_finished",
+        "turn": turn,
+    });
+    if let Some(reason) = reason.filter(|value| !value.is_empty()) {
+        params["reason"] = json!(reason);
+    }
+    notification("session/lifecycle", params)
 }
 
 pub fn session_lifecycle_preview_updated(
@@ -713,6 +710,7 @@ pub fn session_lifecycle_created(
     agent_id: &str,
     parent_session_id: Option<&str>,
     parent_call_id: Option<&str>,
+    responsibility: &str,
     updated_at: i64,
 ) -> Value {
     let mut params = json!({
@@ -720,6 +718,7 @@ pub fn session_lifecycle_created(
         "event": "created",
         "project": project,
         "agent_id": agent_id,
+        "responsibility": responsibility,
         "updated_at": updated_at,
         "turn": null,
     });
@@ -793,7 +792,12 @@ pub fn lifecycle_event_to_wire(ev: &LifecycleEvent) -> Value {
         LifecycleEvent::TurnFinished {
             session_id,
             progress,
-        } => session_lifecycle_turn_finished(session_id, &turn_progress_to_snapshot(progress)),
+            reason,
+        } => session_lifecycle_turn_finished(
+            session_id,
+            &turn_progress_to_snapshot(progress),
+            reason.as_deref(),
+        ),
         LifecycleEvent::SessionPreviewUpdated {
             session_id,
             preview,
@@ -811,6 +815,7 @@ pub fn lifecycle_event_to_wire(ev: &LifecycleEvent) -> Value {
             agent_id,
             parent_session_id,
             parent_call_id,
+            responsibility,
             updated_at,
         } => session_lifecycle_created(
             session_id,
@@ -818,6 +823,7 @@ pub fn lifecycle_event_to_wire(ev: &LifecycleEvent) -> Value {
             agent_id,
             parent_session_id.as_deref(),
             parent_call_id.as_deref(),
+            responsibility,
             *updated_at,
         ),
         LifecycleEvent::TurnStep {
@@ -1000,6 +1006,7 @@ pub fn buffer_snapshot(
             updated_at: 0,
             parent_session_id: None,
             parent_call_id: None,
+            responsibility: String::new(),
             subagent_depth: 0,
             agent_id: binding.agent_id.clone(),
             model_id: binding.model_id.clone(),
@@ -1038,7 +1045,6 @@ pub fn buffer_snapshot(
         context_mode: binding.context_mode.clone(),
         max_file_revert_k: None,
         bash: None,
-        subagent: None,
         todos: Vec::new(),
         active_plan_path: None,
     }

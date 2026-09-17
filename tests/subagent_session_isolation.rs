@@ -6,8 +6,8 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::RwLock;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
@@ -24,9 +24,9 @@ use litecode::runtime::subagent_auto_turn::install_subagent_auto_turn;
 use litecode::session::event::EventType;
 use litecode::session::live::LifecycleEvent;
 use litecode::session::manager::SessionManager;
+use litecode::session::manager::SessionStatus;
 use litecode::tool::Tool;
 use litecode::tool::trait_::ToolExecutionContext;
-use litecode::session::manager::SessionStatus;
 use litecode::tools::subagent::{SubagentLaunchTool, SubagentListTool};
 use tokio_util::sync::CancellationToken;
 
@@ -132,7 +132,7 @@ fn wait_child_turn(sessions: &SessionManager, child_id: &str) {
 }
 
 #[test]
-fn launch_schema_exposes_only_agent_and_prompt() {
+fn launch_schema_exposes_only_team_assignment_fields() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path();
     let resolved = reviewer_resolved(cwd);
@@ -154,7 +154,7 @@ fn launch_schema_exposes_only_agent_and_prompt() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys, vec!["agent", "prompt"]);
+    assert_eq!(keys, vec!["agent", "prompt", "responsibility"]);
     assert!(schema.get("properties").unwrap().get("model").is_none());
     assert!(schema.get("properties").unwrap().get("max_steps").is_none());
 }
@@ -185,6 +185,7 @@ async fn launch_ignores_model_and_max_steps_input() {
         "call_ignore_1",
         serde_json::json!({
             "agent": "reviewer",
+            "responsibility": "test",
             "prompt": "go",
             "model": "does-not-exist-model-id",
             "max_steps": 1
@@ -239,6 +240,7 @@ async fn subagent_launch_creates_durable_child_with_parent_link() {
         "call_launch_1",
         serde_json::json!({
             "agent": "reviewer",
+            "responsibility": "test",
             "prompt": "review this"
         }),
     )
@@ -270,6 +272,7 @@ async fn subagent_launch_creates_durable_child_with_parent_link() {
         Some(parent_id.as_str())
     );
     assert_eq!(child_meta.parent_call_id.as_deref(), Some("call_launch_1"));
+    assert_eq!(child_meta.responsibility, "test");
 
     let listed = sessions.data().list_sessions_blocking().unwrap();
     assert!(
@@ -331,6 +334,7 @@ async fn parent_event_channel_does_not_receive_child_turn_events() {
         "call_iso_1",
         serde_json::json!({
             "agent": "reviewer",
+            "responsibility": "test",
             "prompt": "go"
         }),
     )
@@ -414,6 +418,7 @@ async fn subagent_bound_arrives_on_parent_before_tool_returns() {
         "call_bind_1",
         serde_json::json!({
             "agent": "reviewer",
+            "responsibility": "test",
             "prompt": "go"
         }),
     )
@@ -493,6 +498,7 @@ async fn child_lifecycle_is_broadcast_to_workspace() {
         "call_life_1",
         serde_json::json!({
             "agent": "reviewer",
+            "responsibility": "test",
             "prompt": "x"
         }),
     )
@@ -567,6 +573,7 @@ async fn failed_binding_aborts_orphan_child_session() {
         "call_fail_1",
         serde_json::json!({
             "agent": "reviewer",
+            "responsibility": "test",
             "prompt": "x"
         }),
     )
@@ -613,6 +620,7 @@ fn missing_call_id_scope_errors_without_creating_child() {
     );
     let result = tool.call(serde_json::json!({
         "agent": "reviewer",
+        "responsibility": "test",
         "prompt": "x"
     }));
     assert!(
@@ -721,6 +729,7 @@ async fn remove_parent_after_child_turn_cascades_physically() {
         "call_delete_after_turn",
         serde_json::json!({
             "agent": "reviewer",
+            "responsibility": "test",
             "prompt": "review this"
         }),
     )
@@ -788,7 +797,9 @@ async fn subagent_list_reports_raw_session_statuses() {
     );
     let running = tool.call_inner(serde_json::json!({}));
     assert!(
-        running.content.contains(&format!("{first}  running ")),
+        running
+            .content
+            .contains(&format!("{first}  reviewer  -  running ")),
         "{}",
         running.content
     );
@@ -796,7 +807,9 @@ async fn subagent_list_reports_raw_session_statuses() {
     assert!(sessions.cancel_turn_sync(&first));
     let stopping = tool.call_inner(serde_json::json!({}));
     assert!(
-        stopping.content.contains(&format!("{first}  stopping ")),
+        stopping
+            .content
+            .contains(&format!("{first}  reviewer  -  stopping ")),
         "{}",
         stopping.content
     );
@@ -804,7 +817,9 @@ async fn subagent_list_reports_raw_session_statuses() {
     assert!(sessions.finish_turn(&first, "t-list").is_some());
     let settled = tool.call_inner(serde_json::json!({}));
     assert!(
-        settled.content.contains(&format!("{first}  idle ")),
+        settled
+            .content
+            .contains(&format!("{first}  reviewer  -  idle ")),
         "{}",
         settled.content
     );
@@ -871,6 +886,7 @@ async fn child_exit_triggers_parent_auto_turn_reminder() {
         "call_auto_turn",
         serde_json::json!({
             "agent": "reviewer",
+            "responsibility": "test",
             "prompt": "go"
         }),
     )
@@ -883,7 +899,10 @@ async fn child_exit_triggers_parent_auto_turn_reminder() {
 
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     loop {
-        let events = sessions.data().events_blocking(&parent).expect("parent events");
+        let events = sessions
+            .data()
+            .events_blocking(&parent)
+            .expect("parent events");
         if events
             .iter()
             .any(|event| event.event_type == EventType::ReminderJobExit)

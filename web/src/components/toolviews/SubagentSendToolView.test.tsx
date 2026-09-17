@@ -8,7 +8,7 @@ afterEach(() => {
 });
 
 describe("SubagentSendToolView", () => {
-  it("shows which child session was resumed", () => {
+  it("shows the child id and started status without dumping the report", () => {
     render(
       <SubagentSendToolView
         name="subagent_send"
@@ -17,11 +17,15 @@ describe("SubagentSendToolView", () => {
         output={{
           type: "function_call_output",
           call_id: "send_a",
-          output: "status: running",
+          output: "status: running\nThe child runs in the background\n",
         }}
       />,
     );
-    expect(screen.getByText("sent to child-a")).toBeTruthy();
+    const line = screen.getByTestId("subagent-send-line");
+    expect(line.textContent).toContain("child-a");
+    expect(line.textContent).toContain("continue");
+    expect(line.textContent).toContain("running");
+    expect(line.textContent).not.toContain("The child runs in the background");
   });
 
   it("surfaces a failed send", () => {
@@ -32,6 +36,6 @@ describe("SubagentSendToolView", () => {
         input={{ id: "child-a", message: "continue" }}
       />,
     );
-    expect(screen.getByText("send failed")).toBeTruthy();
+    expect(screen.getByTestId("subagent-send-line").textContent).toContain("failed");
   });
 });

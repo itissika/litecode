@@ -229,15 +229,10 @@ pub async fn build_tool_list(
                     )));
                 }
                 "subagent_wait" => {
-                    tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(
-                        &runtime.subagent_hub.jobs,
-                    ))));
+                    tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(&sessions))));
                 }
                 "subagent_stop" => {
-                    tools.push(Arc::new(SubagentStopTool::new(
-                        Arc::clone(&sessions),
-                        Arc::clone(&runtime.subagent_hub.jobs),
-                    )));
+                    tools.push(Arc::new(SubagentStopTool::new(Arc::clone(&sessions))));
                 }
                 "subagent_send" => {
                     tools.push(Arc::new(SubagentSendTool::new(

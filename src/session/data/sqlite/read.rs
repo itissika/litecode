@@ -201,7 +201,7 @@ fn list_sessions(conn: &Connection) -> Result<Vec<SessionListRow>> {
     let mut roots = query_session_list(
         conn,
         "SELECT id, project, updated_at, last_message, last_assistant, agent_id, model_id,
-                parent_session_id, parent_call_id
+                parent_session_id, parent_call_id, responsibility
          FROM sessions
          WHERE parent_session_id IS NULL
          ORDER BY updated_at DESC LIMIT 50",
@@ -210,7 +210,7 @@ fn list_sessions(conn: &Connection) -> Result<Vec<SessionListRow>> {
     let mut children = query_session_list(
         conn,
         "SELECT id, project, updated_at, last_message, last_assistant, agent_id, model_id,
-                parent_session_id, parent_call_id
+                parent_session_id, parent_call_id, responsibility
          FROM sessions
          WHERE parent_session_id IS NOT NULL
          ORDER BY updated_at DESC",
@@ -237,6 +237,7 @@ fn query_session_list(
             model_id: row.get(6)?,
             parent_session_id: nonempty_id(row.get(7)?),
             parent_call_id: nonempty_id(row.get(8)?),
+            responsibility: row.get(9)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()

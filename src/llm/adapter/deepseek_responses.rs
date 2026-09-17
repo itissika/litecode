@@ -30,7 +30,7 @@ use super::responses_sse::{SseLineReader, check_event_stream_content_type, sse_d
 use super::stream_contract::{
     StreamContractGate, StreamItemAccumulator, forward_stream_event, resolve_stream_outcome,
 };
-use super::{llm_http_client, transport_error};
+use super::{interrupted_stream_error, llm_http_client};
 
 /// Platform Default context budget for this closed adapter.
 pub(crate) const CONTEXT_WINDOW_DEFAULT: usize = 256_000;
@@ -278,7 +278,7 @@ impl LlmProvider for DeepseekResponsesProvider {
                     chunk = stream.next() => {
                         let Some(chunk) = chunk else { break; };
                         let chunk = chunk.map_err(|e| {
-                            transport_error("reading DeepSeek event stream", &e)
+                            interrupted_stream_error("reading DeepSeek event stream", &e, &acc)
                         })?;
                         for line in reader.feed(&chunk)? {
                             let Some(data) = sse_data_payload(&line) else {

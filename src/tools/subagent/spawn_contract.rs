@@ -7,8 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tokio_util::sync::CancellationToken;
-
 use crate::config::SettingsWriter;
 use crate::config::TurnGuard;
 use crate::config::global_db;
@@ -22,7 +20,8 @@ use crate::ide_base::IdeBaseHandle;
 use crate::optional::EngineManager;
 use crate::runtime::RuntimeHandle;
 use crate::session::manager::SessionManager;
-use crate::tools::subagent::{LaunchSpec, SpawnDeps, WaitOutcome, spawn_child_job};
+use crate::session::model::TurnResult;
+use crate::tools::subagent::{LaunchSpec, SpawnDeps, spawn_child_job};
 
 /// Provider on a closed local port: any LLM call fails fast, and the error
 /// text names the port — which lets tests assert WHICH provider was called.
@@ -175,22 +174,26 @@ fn make_deps(env: &SpawnEnv) -> SpawnDeps {
     }
 }
 
-async fn spawn_and_wait(env: &SpawnEnv, deps: SpawnDeps) -> (String, WaitOutcome) {
+async fn spawn_and_wait(env: &SpawnEnv, deps: SpawnDeps) -> (String, TurnResult) {
     let spec = LaunchSpec {
         agent_name: "explore".into(),
+        responsibility: "research".into(),
         prompt: "report back".into(),
     };
-    let child = spawn_child_job(&deps, &env.parent, "call-contract", spec)
+    let (child, turn_id) = spawn_child_job(&deps, &env.parent, "call-contract", spec)
         .await
         .expect("spawn");
-    let outcome = env.runtime.subagent_hub.jobs.wait(
-        &env.parent,
-        Some(&child),
-        Some(Duration::from_secs(30)),
-        &CancellationToken::new(),
-        false,
-    );
-    (child, outcome)
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Ok(result) = env.sessions.data().turn_result_blocking(&child, &turn_id) {
+                break result;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("child turn must settle");
+    (child, result)
 }
 
 /// First-class contract: a subagent launched after a settings write must read
@@ -216,12 +219,7 @@ async fn spawn_reads_fresh_agent_model_ref_from_live_config() {
     assert!(env.revision.load(Ordering::Acquire) >= 1);
 
     let deps = make_deps(&env);
-    let (child, outcome) = spawn_and_wait(&env, deps).await;
-
-    assert!(
-        matches!(outcome, WaitOutcome::Exited(_)),
-        "child must exit, got {outcome:?}"
-    );
+    let (child, _result) = spawn_and_wait(&env, deps).await;
     assert_eq!(
         env.sessions.session_model_id(&child).as_deref(),
         Some("m3"),
@@ -239,24 +237,20 @@ async fn child_calls_agent_provider_endpoint_not_parent_provider() {
     let env = spawn_env("m2").await;
 
     let deps = make_deps(&env);
-    let (_child, outcome) = spawn_and_wait(&env, deps).await;
-
-    let WaitOutcome::Exited(notice) = outcome else {
-        panic!("child must exit, got {outcome:?}");
-    };
+    let (_child, result) = spawn_and_wait(&env, deps).await;
     assert!(
-        !notice.ok,
+        result.reason != "completed",
         "dummy endpoints must fail; unexpected success: {}",
-        notice.final_text
+        result.output
     );
     assert!(
-        notice.final_text.contains("60002"),
+        result.output.contains("60002"),
         "child must call the agent's provider (p2), got: {}",
-        notice.final_text
+        result.output
     );
     assert!(
-        !notice.final_text.contains("60001"),
+        !result.output.contains("60001"),
         "child must NOT call the parent's provider (p1), got: {}",
-        notice.final_text
+        result.output
     );
 }

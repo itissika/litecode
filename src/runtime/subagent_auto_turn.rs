@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use crate::permission::{PermissionSink, deny_permission_sink};
 use crate::runtime::{RuntimeHandle, TurnOptions, spawn_turn};
 use crate::session::{LifecycleEvent, SessionManager};
-use crate::tools::subagent::{SubagentHub, format_exit_reminder};
+use crate::tools::subagent::{SubagentHub, status::format_completion_reminder};
 use crate::types::LitecodeError;
 
 pub enum IdleAutoTurn {
@@ -37,7 +37,7 @@ pub fn try_begin_idle_auto_turn(
     if sid.is_empty() || sid == "_" {
         return IdleAutoTurn::SkippedNoUi;
     }
-    if !hub.jobs.mailbox_pending(sid) {
+    if !hub.has_pending(sid) {
         return IdleAutoTurn::SkippedEmptyMailbox;
     }
     if sessions.subscriber_count_blocking(sid) == 0 {
@@ -66,16 +66,16 @@ pub fn try_begin_idle_auto_turn(
         Err(_) => return IdleAutoTurn::SkippedSessionGone,
     }
 
-    let notices = hub.jobs.take_mailbox(sid);
-    if notices.is_empty() {
+    let completions = hub.take_completions(sid);
+    if completions.is_empty() {
         sessions.release_turn_reservation(sid, &turn_id);
         return IdleAutoTurn::SkippedEmptyMailbox;
     }
-    let jobs = hub.jobs.running(sid);
-    let input = format_exit_reminder(&notices, &jobs);
+    let input = format_completion_reminder(sessions, &completions);
     let append_result = sessions.append_job_exit(sid, &crate::types::user_text(&input));
     if let Err(error) = append_result {
         tracing::warn!(session_id = sid, %error, "failed to persist subagent exit reminder");
+        hub.restore_completions(sid, completions);
         sessions.release_turn_reservation(sid, &turn_id);
         return IdleAutoTurn::SkippedSessionGone;
     }
@@ -194,17 +194,17 @@ pub fn install_subagent_auto_turn(
     sessions: Arc<SessionManager>,
     workspace_root: PathBuf,
 ) {
-    let hub_for_jobs = Arc::clone(&hub);
+    let hub_for_completion = Arc::clone(&hub);
     let runtime_for_exit = Arc::clone(&runtime);
     let sessions_for_exit = Arc::clone(&sessions);
     let root_for_exit = workspace_root.clone();
-    hub.set_exit_handler(Arc::new(move |notice| {
+    hub.set_exit_handler(Arc::new(move |completion| {
         maybe_spawn_idle_auto_turn(
-            &hub_for_jobs,
+            &hub_for_completion,
             &runtime_for_exit,
             &sessions_for_exit,
             &root_for_exit,
-            &notice.parent_session_id,
+            &completion.parent_session_id,
         );
     }));
 
@@ -225,9 +225,6 @@ pub fn install_subagent_auto_turn(
                             &workspace_root,
                             &session_id,
                         );
-                    }
-                    Ok(LifecycleEvent::SessionRemoved { session_id }) => {
-                        hub_for_life.forget_child(&session_id);
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -254,6 +251,14 @@ mod tests {
     use crate::optional::EngineManager;
     use crate::workspace::WorkspaceService;
     use std::sync::atomic::AtomicU64;
+
+    fn queue_completion(hub: &SubagentHub, parent: &str) {
+        hub.completions.push(crate::tools::subagent::CompletionRef {
+            parent_session_id: parent.into(),
+            child_session_id: "child-a".into(),
+            turn_id: "turn-a".into(),
+        });
+    }
 
     fn test_runtime(
         root: &std::path::Path,
@@ -302,15 +307,13 @@ mod tests {
         let sid = sessions
             .open_session_sync(&dir.path().display().to_string(), "default", None)
             .unwrap();
-        hub.jobs
-            .insert_running_for_test(&sid, "child-a", "reviewer", "go");
-        hub.jobs.finish("child-a", true, false, "done".into());
+        queue_completion(&hub, &sid);
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
             IdleAutoTurn::SkippedNoUi => {}
             _ => panic!("expected no UI"),
         }
         assert!(!sessions.is_session_busy_blocking(&sid));
-        assert!(!hub.jobs.take_mailbox(&sid).is_empty());
+        assert!(!hub.take_completions(&sid).is_empty());
     }
 
     #[test]
@@ -330,14 +333,12 @@ mod tests {
                 &dir.path().display().to_string(),
             )
             .unwrap();
-        hub.jobs
-            .insert_running_for_test(&sid, "child-a", "reviewer", "go");
-        hub.jobs.finish("child-a", true, false, "done".into());
+        queue_completion(&hub, &sid);
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
             IdleAutoTurn::SkippedBusy => {}
             _ => panic!("expected busy"),
         }
-        assert!(!hub.jobs.take_mailbox(&sid).is_empty());
+        assert!(!hub.take_completions(&sid).is_empty());
     }
 
     #[test]
@@ -348,12 +349,10 @@ mod tests {
             .open_session_sync(&dir.path().display().to_string(), "default", None)
             .unwrap();
         let _ = sessions.attach(&sid);
-        hub.jobs
-            .insert_running_for_test(&sid, "child-a", "reviewer", "review this");
-        hub.jobs.finish("child-a", true, false, "done".into());
-        let notice = hub.jobs.notice_snapshot("child-a").expect("notice");
-        let expected =
-            format_exit_reminder(std::slice::from_ref(&notice), &hub.jobs.running(&sid));
+        queue_completion(&hub, &sid);
+        let pending = hub.take_completions(&sid);
+        let expected = format_completion_reminder(&sessions, &pending);
+        hub.restore_completions(&sid, pending);
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
             IdleAutoTurn::Prepared {
                 input,
@@ -368,7 +367,7 @@ mod tests {
             }
             _ => panic!("expected prepared, got non-prepared variant"),
         }
-        assert!(hub.jobs.take_mailbox(&sid).is_empty());
+        assert!(hub.take_completions(&sid).is_empty());
         assert!(!sessions.is_session_busy_blocking(&sid));
     }
 }

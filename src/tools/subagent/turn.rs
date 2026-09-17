@@ -47,13 +47,7 @@ pub(crate) async fn start_turn_like_human(
         }
     };
     if let Err(error) = sessions
-        .start_turn(
-            session_id,
-            handle,
-            agent_id,
-            project,
-            Arc::clone(sessions),
-        )
+        .start_turn(session_id, handle, agent_id, project, Arc::clone(sessions))
         .await
     {
         sessions.release_turn_reservation(session_id, &turn_id);

@@ -58,6 +58,12 @@ pub enum LitecodeError {
     #[error("llm error: {0}")]
     Llm(String),
 
+    #[error("llm stream interrupted: {message}")]
+    LlmStreamInterrupted {
+        message: String,
+        partial: Vec<crate::types::Item>,
+    },
+
     #[error("canceled")]
     Canceled,
 

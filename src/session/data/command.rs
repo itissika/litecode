@@ -55,6 +55,7 @@ pub struct SessionListRow {
     pub model_id: Option<String>,
     pub parent_session_id: Option<String>,
     pub parent_call_id: Option<String>,
+    pub responsibility: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -98,6 +99,7 @@ pub enum SessionMutation {
         model_id: Option<String>,
         parent_session_id: Option<String>,
         parent_call_id: Option<String>,
+        responsibility: String,
     },
     Apply {
         session_id: String,

@@ -15,7 +15,6 @@ import type {
 import { getModels, type ModelDefinition } from "../api/settings";
 import { useConnectionStore, attachSiblingStores, getDockviewApi } from "./connectionStore";
 import { useBashStore } from "./bashStore";
-import { useSubagentStore } from "./subagentStore";
 import { useToastStore } from "./toastStore";
 import { useTurnStore } from "./turnStore";
 import { useMessageStore } from "./messageStore";
@@ -174,10 +173,6 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     if (snap.bash) {
       useBashStore.getState().applySnapshot(sessionId, snap.bash);
     }
-    if (snap.subagent) {
-      useSubagentStore.getState().applySnapshot(sessionId, snap.subagent);
-    }
-
     if (snap.buffer.next_seq === 0) {
       useTurnStore.getState().clearPendingStream(sessionId);
       useMessageStore.getState().onBufferLoaded(sessionId, {
@@ -361,6 +356,8 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         agent_id,
         parent_session_id,
         parent_call_id,
+        responsibility,
+        reason,
       } = params;
       set((state) => {
         const exists = state.sessions.some((s) => s.id === session_id);
@@ -398,6 +395,8 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             // carry the parent ids the `created` event carries.
             parent_session_id: parent_session_id ?? null,
             parent_call_id: parent_call_id ?? null,
+            responsibility: responsibility ?? "",
+            last_turn_reason: event === "turn_finished" ? reason : undefined,
           };
           return { sessions: sortSessions([...state.sessions, fresh]) };
         }
@@ -435,14 +434,21 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             // New turn: wipe the previous turn's accumulated step kinds.
             const sessions = state.sessions.map((s) =>
               s.id === session_id
-                ? { ...s, running: true, turn: turn ?? s.turn, step_kinds: [] }
+                ? { ...s, running: true, status: "running" as const, turn: turn ?? s.turn, step_kinds: [], last_turn_reason: undefined }
                 : s,
             );
             return { sessions: sortSessions(sessions) };
           }
           case "turn_updated": {
             const sessions = state.sessions.map((s) =>
-              s.id === session_id ? { ...s, running: true, turn: turn ?? s.turn } : s,
+              s.id === session_id
+                ? {
+                    ...s,
+                    running: true,
+                    status: turn?.phase === "cancelling" ? "stopping" as const : "running" as const,
+                    turn: turn ?? s.turn,
+                  }
+                : s,
             );
             return { sessions: sortSessions(sessions) };
           }
@@ -454,7 +460,15 @@ export const useSessionStore = create<SessionStore>((set, get) => {
               turn?.turn_id,
             );
             const sessions = state.sessions.map((s) =>
-              s.id === session_id ? { ...s, running: false, turn: null } : s,
+              s.id === session_id
+                ? {
+                    ...s,
+                    running: false,
+                    status: "idle" as const,
+                    turn: null,
+                    last_turn_reason: reason ?? s.last_turn_reason,
+                  }
+                : s,
             );
             return { sessions: sortSessions(sessions) };
           }

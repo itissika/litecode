@@ -840,6 +840,7 @@ pub(crate) fn load_meta_on(
         created_at,
         parent_session_id,
         parent_call_id,
+        responsibility,
         subagent_depth,
         agent_id,
         model_id,
@@ -856,6 +857,7 @@ pub(crate) fn load_meta_on(
         i64,
         Option<String>,
         Option<String>,
+        String,
         u32,
         String,
         Option<String>,
@@ -869,7 +871,7 @@ pub(crate) fn load_meta_on(
         String,
     ) = conn
         .query_row(
-            "SELECT project, created_at, parent_session_id, parent_call_id, subagent_depth,
+            "SELECT project, created_at, parent_session_id, parent_call_id, responsibility, subagent_depth,
                     agent_id, model_id, thinking_tier, context_mode, updated_at,
                     compacted_seq, spine_from, todos_json, active_plan_slug, last_message
              FROM sessions WHERE id = ?1",
@@ -891,6 +893,7 @@ pub(crate) fn load_meta_on(
                     row.get(12)?,
                     row.get(13)?,
                     row.get(14)?,
+                    row.get(15)?,
                 ))
             },
         )
@@ -911,6 +914,7 @@ pub(crate) fn load_meta_on(
         created_at,
         parent_session_id,
         parent_call_id,
+        responsibility,
         subagent_depth,
         agent_id,
         model_id,
@@ -1094,6 +1098,7 @@ impl Session {
             model_id,
             None,
             None,
+            "",
             std::env::temp_dir().join("litecode"),
             None,
             true,
@@ -1116,6 +1121,7 @@ impl Session {
         model_id: Option<&str>,
         parent_session_id: Option<&str>,
         parent_call_id: Option<&str>,
+        responsibility: &str,
     ) -> Result<Self> {
         Self::insert_new(
             db,
@@ -1124,6 +1130,7 @@ impl Session {
             model_id,
             parent_session_id,
             parent_call_id,
+            responsibility,
             data_root,
             None,
             false,
@@ -1137,6 +1144,7 @@ impl Session {
         model_id: Option<&str>,
         parent_session_id: Option<&str>,
         parent_call_id: Option<&str>,
+        responsibility: &str,
         data_root: PathBuf,
         db_path: Option<PathBuf>,
         ephemeral: bool,
@@ -1165,9 +1173,9 @@ impl Session {
         db.conn().execute(
             "INSERT INTO sessions (
                 id, schema_version, project, last_message, agent_id, model_id, created_at, updated_at,
-                parent_session_id, parent_call_id, subagent_depth
+                parent_session_id, parent_call_id, responsibility, subagent_depth
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             rusqlite::params![
                 id,
                 SESSION_LOG_SCHEMA_VERSION,
@@ -1179,6 +1187,7 @@ impl Session {
                 now,
                 parent_session_id_owned,
                 parent_call_id_owned,
+                responsibility,
                 subagent_depth,
             ],
         )?;

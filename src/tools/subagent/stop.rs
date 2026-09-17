@@ -1,4 +1,4 @@
-//! Stop a background subagent child.
+//! Cancel the current turn of a child Session.
 
 use std::sync::{Arc, Mutex};
 
@@ -10,20 +10,17 @@ use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
 
-use super::jobs::{StopMark, SubagentJobBoard};
 use super::status;
 
 pub struct SubagentStopTool {
     sessions: Arc<SessionManager>,
-    jobs: Arc<SubagentJobBoard>,
     session_id: Mutex<String>,
 }
 
 impl SubagentStopTool {
-    pub fn new(sessions: Arc<SessionManager>, jobs: Arc<SubagentJobBoard>) -> Self {
+    pub fn new(sessions: Arc<SessionManager>) -> Self {
         Self {
             sessions,
-            jobs,
             session_id: Mutex::new(String::new()),
         }
     }
@@ -35,23 +32,46 @@ impl SubagentStopTool {
     fn call_stop(&self, input: Value) -> ToolCallResult {
         let child_id = match crate::tool::require_nonempty_string(&input, "id") {
             Ok(id) => id,
-            Err(e) => return ToolCallResult::error(e),
+            Err(error) => return ToolCallResult::error(error),
         };
-        let sid = self.session_id();
-        match self.jobs.mark_stop(&sid, child_id) {
-            Ok(StopMark::CancelRequested(_notice)) => {
-                self.sessions.cancel_turn_sync(child_id);
-                ToolCallResult::ok(status::format_stopping_status(
+        let parent = self.session_id();
+        if !self
+            .sessions
+            .descendant_session_ids(&parent)
+            .iter()
+            .any(|id| id == child_id)
+        {
+            return ToolCallResult::error(status::format_unknown_child(child_id));
+        }
+
+        if let Some(progress) = self.sessions.get_cached_progress(child_id) {
+            if self.sessions.cancel_turn_sync(child_id) {
+                return ToolCallResult::ok(status::format_stop_requested(
                     child_id,
-                    &self.jobs.running(&sid),
+                    &progress.turn_id,
+                ));
+            }
+        }
+
+        match self.sessions.data().latest_turn_result_blocking(child_id) {
+            Ok(Some(result)) => {
+                let (agent, responsibility) = status::session_labels(&self.sessions, child_id);
+                ToolCallResult::ok(format!(
+                    "status: already ended\n{}",
+                    status::format_turn_result(
+                        child_id,
+                        agent.as_deref(),
+                        responsibility.as_deref(),
+                        &result,
+                    )
                 ))
             }
-            Ok(StopMark::AlreadyEnded(notice)) => ToolCallResult::ok(
-                status::format_already_ended_status(&notice, &self.jobs.running(&sid)),
-            ),
-            Err(unknown) => {
-                ToolCallResult::error(status::format_unknown_task(&unknown, &self.jobs.running(&sid)))
-            }
+            Ok(None) => ToolCallResult::ok(format!(
+                "status: idle\nchild_session_id: {child_id}\nreason: no completed turn\n"
+            )),
+            Err(error) => ToolCallResult::error(format!(
+                "subagent '{child_id}' result is unavailable: {error}"
+            )),
         }
     }
 }
@@ -81,8 +101,7 @@ impl Tool for SubagentStopTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let tool = SubagentStopTool {
             sessions: Arc::clone(&self.sessions),
-            jobs: Arc::clone(&self.jobs),
-            session_id: Mutex::new(execution.session_id.clone()),
+            session_id: Mutex::new(execution.session_id),
         };
         Box::pin(async move { tool.call_stop(input) })
     }
@@ -92,7 +111,7 @@ impl Tool for SubagentStopTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Cancel the current turn of a child session. The session remains.".into()
+        "Request cancellation of a child session's current turn. The child session and its context remain.".into()
     }
 
     fn set_active_session(&self, session_id: String) {
@@ -106,12 +125,11 @@ mod tests {
 
     #[test]
     fn schema_requires_id() {
-        let sessions = Arc::new(crate::session::manager::SessionManager::new_for_test(
+        let sessions = Arc::new(SessionManager::new_for_test(
             Arc::new(crate::config::TurnGuard::new()),
             String::new(),
         ));
-        let jobs = Arc::new(SubagentJobBoard::new());
-        let tool = SubagentStopTool::new(sessions, jobs);
+        let tool = SubagentStopTool::new(sessions);
         assert_eq!(tool.schema()["required"], serde_json::json!(["id"]));
     }
 }

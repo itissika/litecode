@@ -772,3 +772,41 @@ command: sleep 8
     expect(screen.getByText("background terminal exited")).toBeTruthy();
   });
 });
+
+describe("MessageList subagent_exit mark", () => {
+  const reminder = `<system-reminder>
+source: subagent
+The following background child session turns settled.
+status: settled
+settled: 1
+---
+child_session_id: child-abc
+turn_id: t1
+reason: cancelled
+agent: reviewer
+output:
+done
+</system-reminder>`;
+
+  it("projects a one-line mark instead of the reminder body", () => {
+    const row: HumanRow = {
+      seq: 9,
+      kind: "reminder/job_exit",
+      streaming: false,
+      body: userTextItem(reminder),
+    };
+    const node = rowsToNodes([row])[0]!;
+    expect(node).toMatchObject({
+      kind: "subagent_exit",
+      detail: "settled · reviewer · cancelled",
+      childId: "child-abc",
+    });
+
+    render(<NodeView node={node} />);
+    expect(screen.getByTestId("subagent-exit-mark").textContent).toBe(
+      "subagent settled · reviewer · cancelled",
+    );
+    expect(screen.queryByText(/The following background/)).toBeNull();
+    expect(screen.queryByText(/^done$/)).toBeNull();
+  });
+});

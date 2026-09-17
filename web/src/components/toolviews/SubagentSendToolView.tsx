@@ -1,22 +1,38 @@
+import { functionCallOutputText } from "../../api/adapter";
+import {
+  inputString,
+  sendStatusWord,
+  truncateLine,
+} from "../../lib/subagentUi";
+import { useSessionStore } from "../../stores/sessionStore";
 import type { ToolViewProps } from "./registry";
+import { SubagentInlineLine } from "./SubagentInlineLine";
 
 /**
- * Auxiliary subagent_send view: show which child_session_id was resumed.
+ * Single-line `subagent_send`: child agent + truncated message + live status.
+ * The tool's `format_started` body stays in the log for the agent, not the row.
  */
-export function SubagentSendToolView({ input, output, status }: ToolViewProps) {
-  const obj =
-    input && typeof input === "object" && !Array.isArray(input)
-      ? (input as Record<string, unknown>)
-      : {};
-  const childId = typeof obj.id === "string" ? obj.id : undefined;
-  if (status === "failed") {
-    return (
-      <div className="font-mono text-dk-sm text-(--_dk-red-500)">send failed</div>
-    );
-  }
+export function SubagentSendToolView({
+  input,
+  output,
+  status,
+}: ToolViewProps) {
+  const childId = inputString(input, "id");
+  const message = inputString(input, "message");
+  const child = useSessionStore((s) =>
+    childId ? s.sessions.find((session) => session.id === childId) : undefined,
+  );
+  const label = child?.agent_id || (childId ? childId.slice(0, 8) : "subagent");
+  const raw = output ? functionCallOutputText(output) : undefined;
+  const statusText = sendStatusWord(child, status, raw);
   return (
-    <div className="font-mono text-dk-sm text-(--_dk-text-muted)">
-      {childId ? `sent to ${childId}` : output ? "sent" : "sending…"}
-    </div>
+    <SubagentInlineLine
+      label={label}
+      secondary={message ? truncateLine(message) : undefined}
+      statusText={statusText}
+      failed={status === "failed" || statusText === "error"}
+      childId={childId}
+      testId="subagent-send-line"
+    />
   );
 }

@@ -6,6 +6,7 @@ import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 // `editor.api` ships the full standalone editor core (find, suggest, all
 // contribs) but no language services. Syntax highlighting comes from the
 // basic-languages contributions below (the set matched by `languageFromPath`);
+// HLSL / ShaderLab use the Shiki TextMate grammars already bundled for markdown.
 // JSON highlighting pulls the JSON language service (its own worker). The
 // TypeScript/JS/CSS/HTML language services are intentionally NOT bundled —
 // LiteCode gets hover/definition/diagnostics from the workspace LSP RPC, so
@@ -35,7 +36,11 @@ import "monaco-editor/esm/vs/basic-languages/swift/swift.contribution";
 import "monaco-editor/esm/vs/basic-languages/kotlin/kotlin.contribution";
 import "monaco-editor/esm/vs/basic-languages/lua/lua.contribution";
 import "monaco-editor/esm/vs/basic-languages/dockerfile/dockerfile.contribution";
+import "monaco-editor/esm/vs/basic-languages/wgsl/wgsl.contribution";
 import "monaco-editor/esm/vs/language/json/monaco.contribution";
+import { registerShaderSupport } from "./monacoShaders";
+
+registerShaderSupport(monaco);
 
 // Workers: the editor worker covers tokenization for every basic language; the
 // JSON language service needs its own worker.

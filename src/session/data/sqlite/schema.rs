@@ -165,6 +165,7 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             active_plan_slug  TEXT,
             parent_session_id TEXT,
             parent_call_id    TEXT,
+            responsibility    TEXT NOT NULL DEFAULT '',
             revision          INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_project
@@ -266,6 +267,12 @@ fn migrate_optional_columns(conn: &Connection) -> Result<()> {
                 [],
             )?;
         }
+        if !cols.iter().any(|c| c == "responsibility") {
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN responsibility TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
     }
     if table_exists(conn, "transcript_items")? {
         let cols = table_columns(conn, "transcript_items")?;
@@ -350,6 +357,12 @@ mod tests {
         assert!(table_exists(&conn, "sessions").unwrap());
         assert!(table_exists(&conn, "transcript_items").unwrap());
         assert!(table_exists(&conn, "transcript_fts").unwrap());
+        assert!(
+            table_columns(&conn, "sessions")
+                .unwrap()
+                .iter()
+                .any(|column| column == "responsibility")
+        );
         assert_eq!(user_version(&conn).unwrap(), USER_VERSION);
         let journal: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -359,6 +372,32 @@ mod tests {
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
             .unwrap();
         assert_eq!(fk, 1);
+    }
+
+    #[test]
+    fn existing_session_db_adds_responsibility_without_losing_sessions() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        conn.execute_batch("ALTER TABLE sessions DROP COLUMN responsibility;")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (
+                id, schema_version, project, agent_id, created_at, updated_at
+             ) VALUES ('existing', ?1, '/project', 'default', 1, 1)",
+            [SESSION_LOG_SCHEMA_VERSION],
+        )
+        .unwrap();
+
+        ensure_session_schema(&conn).unwrap();
+
+        let responsibility: String = conn
+            .query_row(
+                "SELECT responsibility FROM sessions WHERE id = 'existing'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(responsibility.is_empty());
     }
 
     #[test]

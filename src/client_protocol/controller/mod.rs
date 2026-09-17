@@ -301,6 +301,7 @@ impl Projection {
                 updated_at: meta.updated_at,
                 parent_session_id: meta.parent_session_id,
                 parent_call_id: meta.parent_call_id,
+                responsibility: meta.responsibility,
                 subagent_depth: meta.subagent_depth,
                 agent_id: meta.agent_id,
                 model_id: meta.model_id,
@@ -995,11 +996,8 @@ impl SessionController {
 
         let project_str = self.project.clone();
         let mut snapshot = proj.snapshot(&project_str, &binding);
-        // (Re)subscribe is the client's sync point: bash jobs and subagent
-        // workers are transient hub state whose live-only events can be missed
-        // across unmount/reconnect windows, so hydrate the pushed snapshot.
+        // (Re)subscribe is the client's sync point for transient bash state.
         snapshot.bash = Some(self.runtime.ide.terminal.jobs.wire_snapshot(session_id));
-        snapshot.subagent = Some(self.runtime.subagent_hub.wire_snapshot(session_id));
         proj.push_outgoing(session_snapshot(snapshot));
 
         let sid_owned = session_id.to_string();

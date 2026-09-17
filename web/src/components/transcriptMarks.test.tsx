@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { jobExitDetail, readableCompactSummary } from "./transcriptMarks";
+import { jobExitDetail, readableCompactSummary, subagentExitDetail } from "./transcriptMarks";
 
 describe("readableCompactSummary", () => {
   it("strips the conversation summary label prefix", () => {
@@ -40,5 +40,39 @@ describe("jobExitDetail", () => {
   it("returns undefined when the body carries no exit line", () => {
     expect(jobExitDetail("plain reminder body")).toBeUndefined();
     expect(jobExitDetail("")).toBeUndefined();
+  });
+});
+
+describe("subagentExitDetail", () => {
+  it("collapses a single child into agent and non-completed reason", () => {
+    expect(
+      subagentExitDetail(`<system-reminder>
+source: subagent
+status: settled
+settled: 1
+---
+child_session_id: child-abc
+reason: cancelled
+agent: reviewer
+output:
+done
+</system-reminder>`),
+    ).toEqual({ detail: "settled · reviewer · cancelled", childId: "child-abc" });
+  });
+
+  it("keeps a completed single child to agent only", () => {
+    expect(
+      subagentExitDetail(
+        "source: subagent\nsettled: 1\nchild_session_id: c1\nreason: completed\nagent: explore\n",
+      ),
+    ).toEqual({ detail: "settled · explore · completed", childId: "c1" });
+  });
+
+  it("summarizes a batch as a count", () => {
+    expect(
+      subagentExitDetail(
+        "settled: 3\nchild_session_id: a\nagent: one\n---\nchild_session_id: b\nagent: two\n",
+      ),
+    ).toEqual({ detail: "3 settled", childId: "a" });
   });
 });

@@ -8,6 +8,17 @@ use serde_json::Value;
 
 use super::event::Seq;
 
+/// Durable result of one session turn, reconstructed from the append-only log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnResult {
+    pub turn_id: String,
+    pub reason: String,
+    pub output: String,
+    pub transcript_path: String,
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+}
+
 /// Bumped whenever a reader cannot faithfully reconstruct the durable session
 /// model from a prior database shape.
 pub const SESSION_LOG_SCHEMA_VERSION: u32 = 3;
@@ -148,6 +159,8 @@ pub struct SessionMeta {
     pub created_at: i64,
     pub parent_session_id: Option<String>,
     pub parent_call_id: Option<String>,
+    /// Stable responsibility assigned when this child session was created.
+    pub responsibility: String,
     pub subagent_depth: u32,
     pub agent_id: String,
     pub model_id: Option<String>,

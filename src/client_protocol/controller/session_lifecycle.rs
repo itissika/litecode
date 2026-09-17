@@ -335,6 +335,17 @@ impl SessionController {
                 row.agent_id,
                 row.model_id,
             );
+            let last_turn_reason = if running || row.parent_session_id.is_none() {
+                String::new()
+            } else {
+                sessions_mgr
+                    .data()
+                    .latest_turn_end_reason_blocking(&row.id)
+                    .ok()
+                    .flatten()
+                    .map(|(_, reason)| reason)
+                    .unwrap_or_default()
+            };
             result.push(SessionInfo {
                 id: row.id,
                 project: row.project,
@@ -350,6 +361,8 @@ impl SessionController {
                 label: binding.label,
                 parent_session_id: row.parent_session_id,
                 parent_call_id: row.parent_call_id,
+                responsibility: row.responsibility,
+                last_turn_reason,
             });
         }
         Ok(result)

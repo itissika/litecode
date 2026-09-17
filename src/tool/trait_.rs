@@ -127,10 +127,6 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// Shared SubagentHub for launch / wait / stop mailbox drain.
-    fn agent_subagents(&self) -> Option<std::sync::Arc<crate::tools::subagent::SubagentHub>> {
-        None
-    }
 }
 
 #[cfg(test)]

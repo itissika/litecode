@@ -5,7 +5,6 @@ import { setDockviewApi, useConnectionStore } from "../stores/connectionStore";
 import { openSubagentPanel } from "../lib/sessionPanelNav";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
-import { useSubagentStore } from "../stores/subagentStore";
 import { useTurnStore } from "../stores/turnStore";
 import { SubagentRosterPanel } from "./SubagentRosterPanel";
 
@@ -44,6 +43,7 @@ function seedSession(agentId: string, preview: string, running = false): void {
 function seedListSession(patch: {
   assistant_preview?: string;
   preview?: string;
+  last_turn_reason?: string;
 }): void {
   useSessionStore.setState({
     sessions: [
@@ -86,7 +86,6 @@ afterEach(() => {
   useMessageStore.getState().reset(PARENT);
   useMessageStore.getState().reset(CHILD);
   useTurnStore.getState().resetTurn(CHILD);
-  useSubagentStore.getState().reset(PARENT);
   useSessionStore.setState({ sessions: [], byId: new Map() });
   openSubagentPanelMock.mockClear();
   vi.restoreAllMocks();
@@ -105,16 +104,13 @@ describe("SubagentRosterPanel — card header", () => {
     ).toBeTruthy();
   });
 
-  it("says finished (not unknown) for an old launch whose row left the window", () => {
-    // Durable binding + session/list entry, but the parent's launch/output rows
-    // are outside the loaded window: the child terminated, the ok/error detail
-    // is simply not reachable — that reads as "finished", never "unknown".
-    seedListSession({});
+  it("shows the child's last turn reason, not a launch-tool guess", () => {
+    seedListSession({ last_turn_reason: "cancelled" });
     const roster = renderPanel();
 
     expect(
       within(roster).getByTestId("subagent-roster-finished").textContent,
-    ).toBe("finished");
+    ).toBe("cancelled");
   });
 
   it("shows the child's last-message preview when the server sent no assistant text", () => {
@@ -259,7 +255,7 @@ describe("SubagentRosterPanel — card header", () => {
     ).toBeTruthy();
     expect(
       within(roster).getByTestId("subagent-roster-finished").textContent,
-    ).toBe("completed");
+    ).toBe("idle");
   });
 });
 

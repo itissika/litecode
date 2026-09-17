@@ -14,6 +14,7 @@ describe("processToolBucket", () => {
     expect(processToolBucket("subagent_wait")).toBeNull();
     expect(processToolBucket("subagent_stop")).toBeNull();
     expect(processToolBucket("subagent_launch")).toBeNull();
+    expect(processToolBucket("subagent_list")).toBeNull();
   });
 
   it("excludes the session-mount capsules (todo / plan) from header counts", () => {
@@ -35,6 +36,7 @@ describe("isInlineTool", () => {
     expect(isInlineTool("subagent_stop")).toBe(true);
     expect(isInlineTool("bash")).toBe(false);
     expect(isInlineTool("subagent_launch")).toBe(true);
+    expect(isInlineTool("subagent_list")).toBe(true);
   });
 
   it("identifies the session-mount capsules todo / plan", () => {
@@ -56,6 +58,7 @@ describe("isInlineCall", () => {
     expect(isInlineCall("plan")).toBe(true);
     expect(isInlineCall("wait_shell")).toBe(true);
     expect(isInlineCall("subagent_send")).toBe(true);
+    expect(isInlineCall("subagent_list")).toBe(true);
     expect(isInlineCall("read")).toBe(false);
     expect(isInlineCall("edit")).toBe(false);
   });

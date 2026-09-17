@@ -40,7 +40,7 @@ export function isJobExitReminderRow(
 }
 
 /** HumanView kinds that are marks, not user/assistant bubbles. */
-export type TranscriptMarkKind = "compact_cut" | "job_exit";
+export type TranscriptMarkKind = "compact_cut" | "job_exit" | "subagent_exit";
 
 export function isTranscriptMarkRow(row: HumanRow): boolean {
   return isCompactCutRow(row) || isJobExitReminderRow(row);
@@ -48,6 +48,7 @@ export function isTranscriptMarkRow(row: HumanRow): boolean {
 
 export function transcriptMarkKind(row: HumanRow): TranscriptMarkKind | null {
   if (isCompactCutRow(row)) return "compact_cut";
+  if (isSubagentExitReminderRow(row)) return "subagent_exit";
   if (isJobExitReminderRow(row)) return "job_exit";
   return null;
 }
@@ -60,6 +61,12 @@ export function isHumanUserRow(row: HumanRow): boolean {
 /** Injected and control-plane rows remain in the log but are hidden in HumanView. */
 export function isHiddenHumanRow(row: HumanRow): boolean {
   return row.kind.startsWith("turn/") || row.kind.startsWith("request/");
+}
+
+export function isSubagentExitReminderRow(row: HumanRow): boolean {
+  return isJobExitReminderRow(row) &&
+    isMessageItem(row.body) &&
+    /^source: subagent$/m.test(itemPlainText(row.body));
 }
 
 const HUMAN_VIEW_KINDS = new Set([

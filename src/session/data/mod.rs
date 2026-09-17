@@ -210,7 +210,129 @@ impl SessionData {
         }
     }
 
-    pub fn list_sessions_blocking(&self) -> Result<Vec<crate::session::data::command::SessionListRow>> {
+    /// Reconstruct one completed turn from the durable Session log.
+    pub fn turn_result_blocking(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Result<crate::session::model::TurnResult> {
+        use crate::authority::responses::MessageItem;
+        use crate::session::event::{EventType, item_from_event};
+        use crate::types::{Item, item_text_preview};
+
+        let events = self.events_blocking(session_id)?;
+        let start_seq = events
+            .iter()
+            .find(|event| {
+                event.event_type == EventType::TurnStart
+                    && event.data.get("turn").and_then(|value| value.as_str()) == Some(turn_id)
+            })
+            .map(|event| event.seq)
+            .ok_or_else(|| {
+                LitecodeError::SessionStorage(format!(
+                    "turn '{turn_id}' was not found in session '{session_id}'"
+                ))
+            })?;
+        let end = events
+            .iter()
+            .find(|event| {
+                event.seq >= start_seq
+                    && event.event_type == EventType::TurnEnd
+                    && event.data.get("turn").and_then(|value| value.as_str()) == Some(turn_id)
+            })
+            .ok_or_else(|| {
+                LitecodeError::SessionStorage(format!(
+                    "turn '{turn_id}' has not completed in session '{session_id}'"
+                ))
+            })?;
+        let reason = end
+            .data
+            .get("reason")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let output_event = events
+            .iter()
+            .filter(|event| {
+                event.seq > start_seq
+                    && event.seq < end.seq
+                    && event.event_type == EventType::ItemAssistant
+            })
+            .rev()
+            .find_map(|event| {
+                let item = item_from_event(event).ok()?;
+                matches!(item, Item::Message(MessageItem::Output(_))).then_some((event.seq, item))
+            });
+        let (output_seq, output) = output_event
+            .map(|(seq, item)| (Some(seq as i64), item_text_preview(&item)))
+            .unwrap_or_else(|| {
+                (
+                    None,
+                    end.data
+                        .get("final_text")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                )
+            });
+
+        let transcript = self.reader().transcript_file_blocking(session_id)?;
+        let (start_line, end_line) = output_seq
+            .map(|seq| {
+                let mut lines = transcript
+                    .line_index
+                    .iter()
+                    .filter(|span| span.seq == seq && !span.is_header && !span.is_blank)
+                    .map(|span| span.line);
+                let first = lines.next();
+                let last = lines.last().or(first);
+                (first, last)
+            })
+            .unwrap_or((None, None));
+
+        Ok(crate::session::model::TurnResult {
+            turn_id: turn_id.to_string(),
+            reason,
+            output,
+            transcript_path: transcript.virtual_path,
+            start_line,
+            end_line,
+        })
+    }
+
+    pub fn latest_turn_result_blocking(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::session::model::TurnResult>> {
+        let Some((turn_id, _)) = self.latest_turn_end_reason_blocking(session_id)? else {
+            return Ok(None);
+        };
+        self.turn_result_blocking(session_id, &turn_id).map(Some)
+    }
+
+    /// Last durable `turn/end` id and reason, without reconstructing the turn body.
+    pub fn latest_turn_end_reason_blocking(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(String, String)>> {
+        let events = self.events_blocking(session_id)?;
+        Ok(events.iter().rev().find_map(|event| {
+            if event.event_type != crate::session::event::EventType::TurnEnd {
+                return None;
+            }
+            let turn_id = event.data.get("turn").and_then(|value| value.as_str())?;
+            let reason = event
+                .data
+                .get("reason")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            Some((turn_id.to_string(), reason.to_string()))
+        }))
+    }
+
+    pub fn list_sessions_blocking(
+        &self,
+    ) -> Result<Vec<crate::session::data::command::SessionListRow>> {
         match self.read_blocking(SessionRead::ListSessions)? {
             ReadValue::List(v) => Ok(v),
             _ => Err(LitecodeError::SessionStorage("unexpected list".into())),
@@ -256,6 +378,7 @@ impl SessionData {
                 model_id: model_id.map(str::to_string),
                 parent_session_id: None,
                 parent_call_id: None,
+                responsibility: String::new(),
             })?
             .session_id)
     }
@@ -366,7 +489,9 @@ impl SessionDataReader {
         }
     }
 
-    pub fn list_sessions_blocking(&self) -> Result<Vec<crate::session::data::command::SessionListRow>> {
+    pub fn list_sessions_blocking(
+        &self,
+    ) -> Result<Vec<crate::session::data::command::SessionListRow>> {
         match self.read_blocking(SessionRead::ListSessions)? {
             ReadValue::List(v) => Ok(v),
             _ => Err(LitecodeError::SessionStorage("unexpected list".into())),

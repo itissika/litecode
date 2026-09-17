@@ -1,4 +1,4 @@
-﻿use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
@@ -42,23 +42,54 @@ impl SubagentListTool {
                 .sessions
                 .session_status(&id)
                 .unwrap_or(SessionStatus::Idle);
-            let (preview, updated_at) = self
-                .sessions
-                .reader()
-                .meta_blocking(&id)
-                .map(|meta| (meta.preview, meta.updated_at))
-                .unwrap_or_default();
-            let preview = if preview.trim().is_empty() {
-                "-".to_string()
-            } else {
-                preview
+            let Ok(meta) = self.sessions.reader().meta_blocking(&id) else {
+                continue;
             };
-            out.push_str(&format!(
-                "- {id}  {}  {updated_at}  {preview}\n",
-                status.as_str()
-            ));
+            out.push_str(&format!("- id: {id}\n"));
+            if !meta.agent_id.is_empty() {
+                out.push_str(&format!("  agent: {}\n", meta.agent_id));
+            }
+            if !meta.responsibility.is_empty() {
+                out.push_str(&format!("  responsibility: {}\n", meta.responsibility));
+            }
+            let last_send = meta
+                .preview
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !last_send.is_empty() {
+                out.push_str(&format!("  last_send: {last_send}\n"));
+            }
+            out.push_str(&format!("  state: {}\n", status.as_str()));
+            if let Some(progress) = self.sessions.get_cached_progress(&id) {
+                out.push_str(&format!(
+                    "  turn_age: {}\n  step: {}/{}\n",
+                    relative_time(progress.started_at_ms),
+                    progress.step,
+                    progress.step_max
+                ));
+            } else if status == SessionStatus::Idle {
+                if let Ok(Some((_, reason))) =
+                    self.sessions.data().latest_turn_end_reason_blocking(&id)
+                {
+                    out.push_str(&format!("  reason: {reason}\n"));
+                }
+            }
         }
         ToolCallResult::ok(out)
+    }
+}
+
+fn relative_time(timestamp_ms: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default();
+    let seconds = now.saturating_sub(timestamp_ms).max(0) as u64 / 1000;
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m{:02}s", seconds / 60, seconds % 60),
+        _ => format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60),
     }
 }
 
@@ -91,7 +122,7 @@ impl Tool for SubagentListTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "List this session's child sessions and each one's raw session status.".to_string()
+        "List child sessions as labeled blocks: id, agent, responsibility, last_send, state; running children also include turn_age and step; idle children include the latest turn reason.".to_string()
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {

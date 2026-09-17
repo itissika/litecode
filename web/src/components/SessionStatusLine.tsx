@@ -12,13 +12,12 @@ import type {
 import { StrategyIcon, TerminalIcon, UsersIcon } from "@phosphor-icons/react";
 
 import { normalizeToolFilePath } from "../api/adapter";
-import type { BashJob, SubagentJob } from "../api/types";
+import type { BashJob } from "../api/types";
 import { readFile } from "../api/workspace";
 import { useBashStore } from "../stores/bashStore";
 import { useEditorStore } from "../stores/editorStore";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
-import { useSubagentStore } from "../stores/subagentStore";
 import { useTurnStore } from "../stores/turnStore";
 import { composerCardClass } from "./composerCard";
 import { AgentMarkdown } from "./AgentMarkdown";
@@ -48,7 +47,6 @@ export const PANEL_EXIT_MS = 160;
 export const PANEL_MAX_H = 480;
 
 const EMPTY_BASH_JOBS: BashJob[] = [];
-const EMPTY_SUBAGENT_JOBS: SubagentJob[] = [];
 const EMPTY_TODO_ITEMS: TodoItem[] = [];
 
 /**
@@ -72,6 +70,7 @@ const EMPTY_TODO_ITEMS: TodoItem[] = [];
  *     fixed initial height, drag handle top-right (drag up to grow, same
  *     pointer-capture pattern as AgentChatInput). Only one panel open at a
  *     time; clicking the same capsule again or clicking outside closes it.
+ *     While a panel is already open, hover follows onto that capsule's panel.
  */
 export function SessionStatusLine({
   sessionId,
@@ -82,9 +81,6 @@ export function SessionStatusLine({
 }) {
   const bashJobs = useBashStore(
     (s) => s.bySession.get(sessionId)?.jobs ?? EMPTY_BASH_JOBS,
-  );
-  const subagentJobs = useSubagentStore(
-    (s) => s.bySession.get(sessionId)?.jobs ?? EMPTY_SUBAGENT_JOBS,
   );
   // Minimal worker summary: total children and the live running count.
   // Children are counted from the session list (durable — the roster panel
@@ -100,16 +96,14 @@ export function SessionStatusLine({
     [sessions, sessionId],
   );
   const subagentTotal = Math.max(
-    subagentJobs.length,
     childSessions.length,
     subagentBindings
       ? new Set(Object.values(subagentBindings).filter(Boolean)).size
       : 0,
   );
   const subagentRunning = Math.max(
-    subagentJobs.length,
     childSessions.filter(
-      (s) => s.running === true || s.status === "running_with_subagent",
+      (s) => s.running === true || s.status === "running" || s.status === "stopping",
     ).length,
   );
   const todoItems = useTurnStore(
@@ -224,10 +218,10 @@ export function SessionStatusLine({
   const onHoverStart = (id: CapsuleId) => {
     hoverRef.current = id;
     setExpandedId(id);
-    // Hover only changes the level-1 summary slot. Switching an already-open
-    // panel on hover makes ordinary pointer movement after scrolling destructive:
-    // the mounted panel (including a Workers transcript and its open cards) is
-    // replaced without an explicit click.
+    // While a panel is already open, hover follows: the panel tracks the
+    // hovered capsule. A closed panel still waits for a click (level-1 vs
+    // level-2 remain distinct gestures).
+    setOpenId((cur) => (cur ? id : cur));
   };
   const onHoverEnd = (id: CapsuleId) => {
     if (hoverRef.current === id) hoverRef.current = null;
@@ -242,7 +236,7 @@ export function SessionStatusLine({
   useEffect(() => {
     const cur = {
       bash: bashJobs.map((j) => j.id).join(","),
-      sub: `${subagentJobs.map((j) => j.id).join(",")}|${subagentTotal}`,
+      sub: `${childSessions.map((session) => `${session.id}:${session.status}:${session.running}`).join(",")}|${subagentTotal}`,
       plan: activePlanPath ?? "",
       todo: todoItems.map((i) => `${i.id}:${i.status}:${i.content}`).join("|"),
     };
@@ -253,7 +247,7 @@ export function SessionStatusLine({
     else if (prev.plan !== cur.plan) setExpandedId("plan");
     else if (prev.sub !== cur.sub) setExpandedId("subagent");
     else if (prev.bash !== cur.bash) setExpandedId("terminal");
-  }, [bashJobs, subagentJobs, subagentTotal, activePlanPath, todoItems, openId]);
+  }, [bashJobs, childSessions, subagentTotal, activePlanPath, todoItems, openId]);
 
   // Drag handle: dragging up grows the panel (delta = start.y - clientY), same
   // math as AgentChatInput's textarea resize. The new height is written straight
@@ -457,7 +451,7 @@ export function SessionStatusLine({
               size={14}
               weight="fill"
               aria-hidden
-              className={subagentJobs.length > 0 ? "subagent-status-icon" : ""}
+              className={subagentRunning > 0 ? "subagent-status-icon" : ""}
             />
           }
           label="Workers"

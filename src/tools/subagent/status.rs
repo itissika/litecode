@@ -1,210 +1,207 @@
-//! Agent-facing subagent job status text (running list + reminders).
-//!
-//! Stored facts are raw `turn/end.reason` values. Labels here are the agent
-//! client's rendering of those facts (same mapping humans get from `turn_error`).
+//! Agent-facing rendering of Session facts.
 
-pub use super::jobs::{format_exit_reminder, format_running_list};
-use super::jobs::{ExitNotice, RunningJob};
+use crate::session::manager::SessionManager;
+use crate::session::model::TurnResult;
 
-pub fn guidance_line() -> &'static str {
-    "Use subagent_list to list sessions. subagent_wait to wait. subagent_stop to cancel the current turn. session_search to read a child's transcript."
-}
+use super::jobs::CompletionRef;
 
-fn reason_output(notice: &ExitNotice) -> String {
-    match notice.reason.as_str() {
-        "max_steps" => {
-            const MSG: &str = "max steps reached";
-            if notice.final_text.is_empty() {
-                MSG.to_string()
-            } else if notice.final_text.contains(MSG) {
-                notice.final_text.clone()
-            } else {
-                format!("{}\n{MSG}", notice.final_text)
-            }
-        }
-        _ => notice.final_text.clone(),
+const REPORT_BUDGET: usize = 24_000;
+
+pub fn format_started(child_id: &str, turn_id: &str, responsibility: Option<&str>) -> String {
+    let mut out = format!("status: running\nchild_session_id: {child_id}\nturn_id: {turn_id}\n");
+    if let Some(responsibility) = responsibility.filter(|value| !value.is_empty()) {
+        out.push_str(&format!("responsibility: {responsibility}\n"));
     }
+    out.push_str(
+        "The child runs in the background; its result will be delivered when this turn settles.\n",
+    );
+    out
 }
 
-fn append_output(out: &mut String, notice: &ExitNotice) {
-    let text = reason_output(notice);
-    if text.is_empty() {
-        return;
+pub fn format_stop_requested(child_id: &str, turn_id: &str) -> String {
+    format!(
+        "status: stop_requested\nchild_session_id: {child_id}\nturn_id: {turn_id}\n\
+         The current work may already have consumed resources. Confirm the next assignment before continuing this session.\n"
+    )
+}
+
+pub fn format_unknown_child(child_id: &str) -> String {
+    format!("subagent '{child_id}' is not a child session of this session")
+}
+
+pub fn format_turn_result(
+    child_id: &str,
+    agent: Option<&str>,
+    responsibility: Option<&str>,
+    result: &TurnResult,
+) -> String {
+    format_turn_result_with_budget(child_id, agent, responsibility, result, REPORT_BUDGET)
+}
+
+pub fn session_labels(
+    sessions: &SessionManager,
+    child_id: &str,
+) -> (Option<String>, Option<String>) {
+    let agent = sessions.agent_id(child_id).filter(|value| !value.is_empty());
+    let responsibility = sessions
+        .reader()
+        .meta_blocking(child_id)
+        .ok()
+        .map(|meta| meta.responsibility)
+        .filter(|value| !value.is_empty());
+    (agent, responsibility)
+}
+
+fn format_turn_result_with_budget(
+    child_id: &str,
+    agent: Option<&str>,
+    responsibility: Option<&str>,
+    result: &TurnResult,
+    budget: usize,
+) -> String {
+    let mut out = format!(
+        "child_session_id: {child_id}\nturn_id: {}\nreason: {}\n",
+        result.turn_id, result.reason
+    );
+    if let Some(agent) = agent.filter(|value| !value.is_empty()) {
+        out.push_str(&format!("agent: {agent}\n"));
+    }
+    if let Some(responsibility) = responsibility.filter(|value| !value.is_empty()) {
+        out.push_str(&format!("responsibility: {responsibility}\n"));
+    }
+    if result.output.is_empty() {
+        return out;
+    }
+
+    let fixed_tail = truncation_location(result);
+    let remaining = budget.saturating_sub(out.len() + fixed_tail.len() + 32);
+    if result.output.len() <= remaining {
+        out.push_str("output:\n");
+        out.push_str(&result.output);
+        if !result.output.ends_with('\n') {
+            out.push('\n');
+        }
+        return out;
+    }
+
+    let mut kept = String::new();
+    for line in result.output.lines() {
+        let addition = line.len() + 1;
+        if kept.len() + addition > remaining {
+            break;
+        }
+        kept.push_str(line);
+        kept.push('\n');
     }
     out.push_str("output:\n");
-    out.push_str(&text);
-    if !text.ends_with('\n') {
-        out.push('\n');
-    }
-}
-
-pub fn format_running_status(child_id: &str, jobs: &[RunningJob]) -> String {
-    let mut out = String::new();
-    out.push_str("status: running\n");
-    out.push_str(&format!("child_session_id: {child_id}\n"));
-    out.push_str(&format_running_list(jobs));
-    out.push_str(guidance_line());
-    out.push('\n');
+    out.push_str(&kept);
+    out.push_str("output_truncated: true\n");
+    out.push_str(&fixed_tail);
     out
 }
 
-pub fn format_sent_status(child_id: &str, turn_id: &str, jobs: &[RunningJob]) -> String {
-    let mut out = String::new();
-    out.push_str("status: running\n");
-    out.push_str(&format!("child_session_id: {child_id}\n"));
-    out.push_str(&format!("turn_id: {turn_id}\n"));
-    out.push_str(&format_running_list(jobs));
-    out.push_str(guidance_line());
-    out.push('\n');
-    out
+fn truncation_location(result: &TurnResult) -> String {
+    match (result.start_line, result.end_line) {
+        (Some(start), Some(end)) => format!(
+            "transcript: {}\nstart_line: {start}\nend_line: {end}\n\
+             read: {{\"file_path\":\"{}\",\"start_line\":{start},\"end_line\":{end}}}\n",
+            result.transcript_path, result.transcript_path
+        ),
+        _ => format!("transcript: {}\n", result.transcript_path),
+    }
 }
 
-pub fn format_completed_status(notice: &ExitNotice, jobs: &[RunningJob]) -> String {
-    let mut out = String::new();
-    match notice.reason.as_str() {
-        "cancelled" => out.push_str("status: cancelled\n"),
-        "completed" => out.push_str("status: completed\n"),
-        "unknown" => out.push_str("status: unknown\n"),
-        _ => out.push_str("status: failed\n"),
+pub fn format_batch_results(sessions: &SessionManager, completions: &[CompletionRef]) -> String {
+    if completions.is_empty() {
+        return "status: nothing to wait for\n".into();
     }
-    out.push_str(&format!("child_session_id: {}\n", notice.child_session_id));
-    out.push_str(&format!("agent: {}\n", notice.agent_name));
-    append_output(&mut out, notice);
-    out.push_str(&format_running_list(jobs));
-    out.push_str(guidance_line());
-    out.push('\n');
-    out
-}
-
-pub fn format_exited_status(notice: &ExitNotice, jobs: &[RunningJob]) -> String {
-    let mut out = String::new();
-    out.push_str("status: exited\n");
-    out.push_str(&format!("child_session_id: {}\n", notice.child_session_id));
-    out.push_str(&format!("agent: {}\n", notice.agent_name));
-    if notice.stopped {
-        out.push_str("stopped: true\n");
-    }
-    if notice.reason == "unknown" {
-        out.push_str("reason: unknown\n");
-    } else if !notice.ok && !notice.stopped {
-        out.push_str("ok: false\n");
-    }
-    if !notice.prompt_preview.is_empty() {
-        out.push_str(&format!("task: {}\n", notice.prompt_preview));
-    }
-    append_output(&mut out, notice);
-    out.push_str(&format_running_list(jobs));
-    out.push_str(guidance_line());
-    out.push('\n');
-    out
-}
-
-pub fn format_waited_status(jobs: &[RunningJob]) -> String {
-    let mut out = String::from("status: still running\n");
-    out.push_str(&format_running_list(jobs));
-    out.push_str(guidance_line());
-    out.push('\n');
-    out
-}
-
-pub fn format_stopping_status(child_id: &str, jobs: &[RunningJob]) -> String {
-    let mut msg = format!("status: stopping\nchild_session_id: {child_id}\n");
-    msg.push_str(&format_running_list(jobs));
-    msg.push_str(guidance_line());
-    msg.push('\n');
-    msg
-}
-
-pub fn format_already_ended_status(notice: &ExitNotice, jobs: &[RunningJob]) -> String {
-    let mut out = String::from("status: already ended\n");
-    out.push_str(&format!("child_session_id: {}\n", notice.child_session_id));
-    out.push_str(&format!("agent: {}\n", notice.agent_name));
-    let outcome = match notice.reason.as_str() {
-        "cancelled" => "cancelled",
-        "completed" => "completed",
-        "unknown" => "unknown",
-        _ => "failed",
-    };
-    out.push_str(&format!("outcome: {outcome}\n"));
-    if !notice.prompt_preview.is_empty() {
-        out.push_str(&format!("task: {}\n", notice.prompt_preview));
-    }
-    if outcome == "failed" {
-        let text = reason_output(notice);
-        if !text.is_empty() {
-            let reason: String = text.chars().take(200).collect();
-            out.push_str(&format!("reason: {reason}\n"));
+    let mut out = format!("status: settled\nsettled: {}\n", completions.len());
+    for completion in completions {
+        out.push_str("---\n");
+        match sessions
+            .data()
+            .turn_result_blocking(&completion.child_session_id, &completion.turn_id)
+        {
+            Ok(result) => {
+                let (agent, responsibility) =
+                    session_labels(sessions, &completion.child_session_id);
+                out.push_str(&format_turn_result(
+                    &completion.child_session_id,
+                    agent.as_deref(),
+                    responsibility.as_deref(),
+                    &result,
+                ))
+            }
+            Err(error) => out.push_str(&format!(
+                "child_session_id: {}\nturn_id: {}\nreason: unknown\nresult_error: {error}\n",
+                completion.child_session_id, completion.turn_id
+            )),
         }
     }
-    out.push_str("hint: use subagent_wait to fetch the result.\n");
-    out.push_str(&format_running_list(jobs));
-    out.push_str(guidance_line());
-    out.push('\n');
     out
 }
 
-pub fn format_unknown_task(child_id: &str, jobs: &[RunningJob]) -> String {
-    let mut msg = format!(
-        "subagent '{child_id}' not found. It may have already exited or never existed.\n"
+pub fn format_wait_outcome(
+    sessions: &SessionManager,
+    completions: &[CompletionRef],
+    skipped: &[(String, String)],
+) -> String {
+    if completions.is_empty() {
+        let mut out = String::from("status: nothing to wait for\n");
+        append_skipped(&mut out, skipped);
+        return out;
+    }
+    let mut out = format_batch_results(sessions, completions);
+    append_skipped(&mut out, skipped);
+    out
+}
+
+fn append_skipped(out: &mut String, skipped: &[(String, String)]) {
+    if skipped.is_empty() {
+        return;
+    }
+    out.push_str(&format!("skipped: {}\n", skipped.len()));
+    for (id, reason) in skipped {
+        out.push_str("---\n");
+        out.push_str(&format!("skipped_id: {id}\nskipped_reason: {reason}\n"));
+    }
+}
+
+pub fn format_completion_reminder(
+    sessions: &SessionManager,
+    completions: &[CompletionRef],
+) -> String {
+    let mut inner = String::from(
+        "source: subagent\nThe following background child session turns settled.\n",
     );
-    msg.push_str(&format_running_list(jobs));
-    msg
+    inner.push_str(&format_batch_results(sessions, completions));
+    format!("<system-reminder>\n{}</system-reminder>", inner.trim_end())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn now_ms() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
-    }
-
-    fn notice(reason: &str, text: &str) -> ExitNotice {
-        ExitNotice {
-            child_session_id: "child-a".into(),
-            parent_session_id: "p1".into(),
-            agent_name: "reviewer".into(),
-            prompt_preview: "review this".into(),
-            reason: reason.into(),
-            ok: reason == "completed",
-            stopped: reason == "cancelled",
-            final_text: text.into(),
-        }
-    }
-
     #[test]
-    fn running_status_includes_id_and_guidance() {
-        let jobs = vec![RunningJob {
-            id: "child-a".into(),
-            agent_name: "reviewer".into(),
-            prompt_preview: "review this".into(),
-            started_at_ms: now_ms(),
-        }];
-        let got = format_running_status("child-a", &jobs);
-        assert!(got.starts_with("status: running\nchild_session_id: child-a\n"));
-        assert!(got.contains("- child-a  reviewer  "), "got: {got}");
-        assert!(got.contains("  review this\n"), "got: {got}");
-        assert!(got.contains(guidance_line()));
-        assert!(got.contains("running: 1\n"), "got: {got}");
-        assert!(!got.contains("running: 1/"), "got: {got}");
-    }
-
-    #[test]
-    fn max_steps_renders_human_reason() {
-        let got = format_exited_status(&notice("max_steps", ""), &[]);
-        assert!(got.contains("ok: false"), "{got}");
-        assert!(got.contains("max steps reached"), "{got}");
-        assert!(!got.contains("stopped: true"), "{got}");
-    }
-
-    #[test]
-    fn unknown_does_not_render_as_failed() {
-        let got = format_exited_status(&notice("unknown", ""), &[]);
-        assert!(got.contains("reason: unknown"), "{got}");
-        assert!(!got.contains("ok: false"), "{got}");
-        assert!(!got.contains("status: failed"), "{got}");
+    fn truncation_is_explicit_and_actionable() {
+        let result = TurnResult {
+            turn_id: "t".into(),
+            reason: "completed".into(),
+            output: "line\n".repeat(100),
+            transcript_path: ".litecode/sessions/c.md".into(),
+            start_line: Some(12),
+            end_line: Some(111),
+        };
+        let text = format_turn_result_with_budget(
+            "c",
+            Some("reviewer"),
+            Some("review the diff"),
+            &result,
+            180,
+        );
+        assert!(text.contains("responsibility: review the diff"));
+        assert!(text.contains("output_truncated: true"));
+        assert!(text.contains("\"start_line\":12"));
+        assert!(text.contains("\"end_line\":111"));
     }
 }

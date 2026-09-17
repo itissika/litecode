@@ -37,6 +37,9 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
         }
 
         deps.begin_step(step);
+        if let Err(error) = deps.inject_background_reminders(transcript) {
+            return TurnOutcome::Error(error);
+        }
 
         if let Err(e) = deps.compact_if_needed(transcript, step).await {
             return TurnOutcome::Error(e);
@@ -46,6 +49,29 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
             Ok(output) => output,
             Err(LitecodeError::Canceled) => {
                 return TurnOutcome::Cancelled { final_text };
+            }
+            Err(LitecodeError::LlmStreamInterrupted {
+                message,
+                mut partial,
+            }) => {
+                let persist_at = transcript.len();
+                let tool_uses: Vec<FunctionToolCall> = partial
+                    .iter()
+                    .filter_map(|item| match item {
+                        Item::FunctionCall(call) => Some(call.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                transcript.append(&mut partial);
+                append_interrupted_outputs(
+                    transcript,
+                    &tool_uses,
+                    "the LLM stream was interrupted before a result arrived",
+                );
+                if let Some(outcome) = persist_or_stop(deps, transcript, persist_at, &final_text) {
+                    return outcome;
+                }
+                return TurnOutcome::Error(LitecodeError::Llm(message));
             }
             Err(e) => return TurnOutcome::Error(e),
         };
@@ -100,7 +126,11 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
 
         if !tool_uses.is_empty() && skip_tools {
             let before_pad = transcript.len();
-            append_interrupted_outputs(transcript, &tool_uses);
+            append_interrupted_outputs(
+                transcript,
+                &tool_uses,
+                "the user cancelled the turn before a result arrived",
+            );
             if let Some(outcome) = persist_or_stop(deps, transcript, before_pad, &final_text) {
                 return outcome;
             }
@@ -144,7 +174,6 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
 
     TurnOutcome::Completed { final_text }
 }
-
 fn persist_or_stop(
     deps: &impl AgentDeps,
     transcript: &mut Transcript,
@@ -172,7 +201,11 @@ fn function_call_must_not_execute(fc: &FunctionToolCall) -> bool {
     )
 }
 
-fn append_interrupted_outputs(transcript: &mut Transcript, tool_uses: &[FunctionToolCall]) {
+fn append_interrupted_outputs(
+    transcript: &mut Transcript,
+    tool_uses: &[FunctionToolCall],
+    reason: &str,
+) {
     let answered: std::collections::HashSet<String> = transcript
         .iter()
         .filter_map(|item| match item {
@@ -187,7 +220,7 @@ fn append_interrupted_outputs(transcript: &mut Transcript, tool_uses: &[Function
         transcript.push(Item::FunctionCallOutput(FunctionCallOutputItemParam {
             call_id: fc.call_id.clone(),
             output: FunctionCallOutput::Text(format!(
-                "tool '{}' was interrupted: the user cancelled the turn before a result arrived",
+                "tool '{}' was interrupted: {reason}",
                 fc.name
             )),
             id: None,

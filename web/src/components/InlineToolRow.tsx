@@ -5,10 +5,10 @@ import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
 import { formatElapsed, headExitCode, isBashJobLive, matchJob } from "../lib/bashLive";
 import { bashKill } from "../lib/litecodeBash";
 import { useBashStore } from "../stores/bashStore";
-import { useSessionStore } from "../stores/sessionStore";
 import { useTurnStore } from "../stores/turnStore";
 import { KillShellToolView } from "./toolviews/KillShellToolView";
 import { SubagentLaunchToolView } from "./toolviews/SubagentLaunchToolView";
+import { SubagentListToolView } from "./toolviews/SubagentListToolView";
 import { SubagentSendToolView } from "./toolviews/SubagentSendToolView";
 import { SubagentStopToolView } from "./toolviews/SubagentStopToolView";
 import { SubagentWaitToolView } from "./toolviews/SubagentWaitToolView";
@@ -25,8 +25,8 @@ interface InlineToolRowProps {
 }
 
 /**
- * Single-line auxiliary tool row (wait_shell / kill_shell / subagent_launch /
- * subagent_send / todo / plan / background bash). No FoldCard — state and text
+ * Single-line auxiliary tool row (wait_shell / kill_shell / subagent_* /
+ * todo / plan / background bash). No FoldCard — state and text
  * fit on one line beside the status icon.
  */
 export function InlineToolRow({
@@ -79,11 +79,21 @@ export function InlineToolRow({
           sessionId={sessionId}
         />
       ) : toolName === "subagent_send" ? (
-        <SubagentSendLine
+        <SubagentSendToolView
+          name={toolName}
+          status={status}
           input={input}
           output={output}
+          call_id={call.call_id}
+          sessionId={sessionId}
+        />
+      ) : toolName === "subagent_list" ? (
+        <SubagentListToolView
+          name={toolName}
           status={status}
-          callId={call.call_id}
+          input={input}
+          output={output}
+          call_id={call.call_id}
           sessionId={sessionId}
         />
       ) : toolName === "todo" || toolName === "plan" ? (
@@ -113,9 +123,6 @@ export function InlineToolRow({
     </div>
   );
 }
-
-/** Longest reply summary kept on a `subagent_send` row (single line, truncated). */
-const SEND_SUMMARY_MAX = 80;
 
 /**
  * `todo` / `plan` row: icon + the same header summary the FoldCard uses, so the
@@ -221,75 +228,6 @@ function InlineBashLine({
           Kill
         </button>
       )}
-    </>
-  );
-}
-
-/** `subagent_send` target: the child session id it resumed. */
-function sendTarget(input: unknown): string | undefined {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
-  const id = (input as Record<string, unknown>).id;
-  return typeof id === "string" && id.length > 0 ? id : undefined;
-}
-
-/** One-line reply summary, collapsed to a single truncated line. */
-function sendSummary(output: FunctionCallOutputItem | undefined): string {
-  const flat = (output ? functionCallOutputText(output) : "").replace(/\s+/g, " ").trim();
-  if (!flat) return "";
-  return flat.length > SEND_SUMMARY_MAX
-    ? `${flat.slice(0, SEND_SUMMARY_MAX - 1)}…`
-    : flat;
-}
-
-/**
- * `subagent_send` row: `sent to <agent name>` (the child's agent type resolved
- * from `sessionStore.sessions`, else a short id) plus a truncated reply summary
- * once the send returns. `SubagentSendToolView` owns the "sent to X / send
- * failed" wording, so it is handed the resolved label as its `id` instead of
- * this row restating it — the view itself is untouched.
- */
-function SubagentSendLine({
-  input,
-  output,
-  status,
-  callId,
-  sessionId,
-}: {
-  input: unknown;
-  output?: FunctionCallOutputItem;
-  status: ReturnType<typeof deriveToolStatus>;
-  callId: string;
-  sessionId?: string;
-}) {
-  const childId = sendTarget(input);
-  const agentId = useSessionStore((s) =>
-    childId ? (s.sessions.find((x) => x.id === childId)?.agent_id ?? "") : "",
-  );
-  const label = agentId || (childId ? childId.slice(0, 8) : undefined);
-  const viewInput =
-    label && childId && label !== childId
-      ? { ...(input as Record<string, unknown>), id: label }
-      : input;
-  const summary = status === "failed" ? "" : sendSummary(output);
-
-  return (
-    <>
-      <SubagentSendToolView
-        name="subagent_send"
-        status={status}
-        input={viewInput}
-        output={output}
-        call_id={callId}
-        sessionId={sessionId}
-      />
-      {summary ? (
-        <span
-          data-testid="subagent-send-summary"
-          className="min-w-0 flex-1 truncate text-(--_dk-text-muted)"
-        >
-          {summary}
-        </span>
-      ) : null}
     </>
   );
 }

@@ -1,7 +1,8 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
+import type { FunctionCallItem, FunctionCallOutputItem, SessionInfo } from "../api/types";
+import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useBashStore } from "../stores/bashStore";
 import { useTurnStore } from "../stores/turnStore";
@@ -27,6 +28,7 @@ const output: FunctionCallOutputItem = {
 afterEach(() => {
   cleanup();
   useSessionStore.setState({ sessions: [] });
+  useMessageStore.setState({ bySession: new Map() });
   useBashStore.getState().reset();
   useTurnStore.setState({ byId: new Map() });
 });
@@ -43,7 +45,7 @@ describe("InlineToolRow — subagent_launch is a single-line row", () => {
     expect(container.querySelector(".foldcard-header")).toBeNull();
   });
 
-  it("seals to a completed status once output is present", () => {
+  it("seals to accepted when the child Session is not in the list yet", () => {
     render(
       <InlineToolRow
         call={launchCall({ agent: "worker" })}
@@ -52,7 +54,52 @@ describe("InlineToolRow — subagent_launch is a single-line row", () => {
       />,
     );
     expect(screen.getByTestId("subagent-launch-line").textContent).toContain(
-      "completed",
+      "accepted",
+    );
+  });
+
+  it("follows the bound child Session once it is idle", () => {
+    useMessageStore.getState().onSubagentBound("s1", {
+      session_id: "s1",
+      call_id: "call_a",
+      child_session_id: "child-1",
+    });
+    seedSession("child-1", "worker", { running: false, status: "idle" });
+    render(
+      <InlineToolRow
+        call={launchCall({ agent: "worker", responsibility: "review the diff" })}
+        output={output}
+        streaming={false}
+        sessionId="s1"
+      />,
+    );
+    const line = screen.getByTestId("subagent-launch-line");
+    expect(line.textContent).toContain("worker");
+    expect(line.textContent).toContain("review the diff");
+    expect(line.textContent).toContain("idle");
+  });
+
+  it("shows the bound child's last turn reason after it settles", () => {
+    useMessageStore.getState().onSubagentBound("s1", {
+      session_id: "s1",
+      call_id: "call_a",
+      child_session_id: "child-1",
+    });
+    seedSession("child-1", "worker", {
+      running: false,
+      status: "idle",
+      last_turn_reason: "cancelled",
+    });
+    render(
+      <InlineToolRow
+        call={launchCall({ agent: "worker" })}
+        output={output}
+        streaming={false}
+        sessionId="s1"
+      />,
+    );
+    expect(screen.getByTestId("subagent-launch-line").textContent).toContain(
+      "cancelled",
     );
   });
 
@@ -79,7 +126,11 @@ function sendOutput(text: string): FunctionCallOutputItem {
   return { type: "function_call_output", call_id: "call_send", output: text };
 }
 
-function seedSession(id: string, agentId: string): void {
+function seedSession(
+  id: string,
+  agentId: string,
+  patch: Partial<SessionInfo> = {},
+): void {
   useSessionStore.setState({
     sessions: [
       {
@@ -91,40 +142,44 @@ function seedSession(id: string, agentId: string): void {
         turn: null,
         agent_id: agentId,
         api_model_id: "m",
+        ...patch,
       },
     ],
   });
 }
 
 describe("InlineToolRow — subagent_send is a single-line row", () => {
-  it("resolves the agent name instead of falling through to the kill view", () => {
-    seedSession("child-abcdef1234", "researcher");
+  it("resolves the agent name and live status instead of dumping started output", () => {
+    seedSession("child-abcdef1234", "researcher", {
+      running: true,
+      status: "running",
+    });
     const { container } = render(
-      <InlineToolRow call={sendCall({ id: "child-abcdef1234", message: "go" })} />,
+      <InlineToolRow
+        call={sendCall({ id: "child-abcdef1234", message: "keep going" })}
+        output={sendOutput("status: running\nchild_session_id: child-abcdef1234\nThe child runs in the background\n")}
+      />,
     );
-    expect(container.textContent).toContain("sent to researcher");
-    expect(container.textContent).not.toContain("killed");
+    const line = screen.getByTestId("subagent-send-line");
+    expect(line.textContent).toContain("researcher");
+    expect(line.textContent).toContain("keep going");
+    expect(line.textContent).toContain("running");
+    expect(container.textContent).not.toContain("The child runs in the background");
+    expect(container.querySelector(".foldcard-header")).toBeNull();
   });
 
   it("falls back to a short child id when the session is unknown", () => {
-    const { container } = render(
-      <InlineToolRow call={sendCall({ id: "child-abcdef1234" })} />,
-    );
-    expect(container.textContent).toContain("sent to child-ab");
-  });
-
-  it("appends a flattened, truncated reply summary", () => {
-    seedSession("child-abcdef1234", "researcher");
     render(
-      <InlineToolRow call={sendCall({ id: "child-abcdef1234" })} output={sendOutput(`${'x'.repeat(200)}\n\nsecond`) } />,
+      <InlineToolRow
+        call={sendCall({ id: "child-abcdef1234" })}
+        output={sendOutput("status: running\n")}
+      />,
     );
-    const summary = screen.getByTestId("subagent-send-summary");
-    expect(summary.textContent).not.toContain("\n");
-    expect(summary.textContent?.endsWith("…")).toBe(true);
-    expect(summary.textContent?.length).toBe(80);
+    expect(screen.getByTestId("subagent-send-line").textContent).toContain("child-ab");
+    expect(screen.getByTestId("subagent-send-line").textContent).toContain("running");
   });
 
-  it("shows send failed (no reply summary) when the call failed", () => {
+  it("shows failed when the call failed", () => {
     seedSession("child-abcdef1234", "researcher");
     render(
       <InlineToolRow
@@ -132,8 +187,7 @@ describe("InlineToolRow — subagent_send is a single-line row", () => {
         output={sendOutput("Error: nope")}
       />,
     );
-    expect(screen.getByText("send failed")).toBeTruthy();
-    expect(screen.queryByTestId("subagent-send-summary")).toBeNull();
+    expect(screen.getByTestId("subagent-send-line").textContent).toContain("failed");
   });
 });
 
@@ -248,5 +302,57 @@ describe("InlineToolRow — background bash is a single-line row", () => {
     );
     expect(screen.getByTestId("inline-bash-status").textContent).toBe("exit_code: 1");
     expect(screen.queryByTestId("inline-bash-kill")).toBeNull();
+  });
+});
+
+describe("InlineToolRow — remaining subagent tools are single-line rows", () => {
+  it("shows wait target count while pending and settled N after output", () => {
+    const { rerender, container } = render(
+      <InlineToolRow
+        call={toolCall("subagent_wait", { ids: ["a", "b"], count: 2 }, "in_progress")}
+        streaming
+      />,
+    );
+    expect(screen.getByTestId("subagent-wait-pending").textContent?.replace(/\u00a0/g, " ")).toContain(
+      "waiting 2",
+    );
+    expect(container.querySelector(".foldcard-header")).toBeNull();
+
+    rerender(
+      <InlineToolRow
+        call={toolCall("subagent_wait", { ids: ["a", "b"], count: 2 })}
+        output={toolOutput(
+          "status: settled\nsettled: 1\n---\nchild_session_id: a\nreason: cancelled\nagent: reviewer\n",
+        )}
+      />,
+    );
+    expect(screen.getByTestId("subagent-wait-line").textContent).toBe(
+      "settled 1 · reviewer · cancelled",
+    );
+  });
+
+  it("shows stop already-ended from the tool output", () => {
+    seedSession("child-abcdef1234", "reviewer");
+    render(
+      <InlineToolRow
+        call={toolCall("subagent_stop", { id: "child-abcdef1234" })}
+        output={toolOutput("status: already ended\nreason: completed\n")}
+      />,
+    );
+    expect(screen.getByTestId("subagent-stop-line").textContent).toContain("reviewer");
+    expect(screen.getByTestId("subagent-stop-line").textContent).toContain(
+      "already ended · completed",
+    );
+  });
+
+  it("shows list as a session count, not a FoldCard dump", () => {
+    const { container } = render(
+      <InlineToolRow
+        call={toolCall("subagent_list", {})}
+        output={toolOutput("sessions: 2\n- a  worker\n- b  explore\n")}
+      />,
+    );
+    expect(screen.getByTestId("subagent-list-line").textContent).toBe("2 sessions");
+    expect(container.querySelector(".foldcard-header")).toBeNull();
   });
 });

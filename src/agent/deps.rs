@@ -22,6 +22,13 @@ pub trait AgentDeps {
 
     async fn compact_if_needed(&self, transcript: &mut Transcript, step: u64) -> Result<()>;
 
+    /// Inject independently delivered background completion Items before the
+    /// next request is prepared. Default is a no-op for test/runtime clients
+    /// without background work.
+    fn inject_background_reminders(&self, _transcript: &mut Transcript) -> Result<()> {
+        Ok(())
+    }
+
     fn emit_todo_progress(&mut self);
     fn emit_plan_changed(&mut self);
 

@@ -267,6 +267,7 @@ mod tests {
                 model_id: None,
                 parent_session_id: Some(parent.to_string()),
                 parent_call_id: Some(format!("call_{parent}")),
+                responsibility: String::new(),
             })
             .unwrap()
             .session_id;

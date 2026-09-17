@@ -17,6 +17,7 @@ import {
   isStreamFailureEvent,
   itemPlainText,
   markFunctionCallsFailed,
+  transcriptMarkKind,
   userTextItem,
 } from "./adapter";
 import type { HumanRow, Item, ResponseStreamEvent } from "./types";
@@ -78,6 +79,27 @@ describe("kind-based HumanView rows", () => {
         body: userTextItem("ok"),
       }),
     ).toBe(true);
+  });
+
+  it("shows subagent completion reminders as one-line marks, not hidden rows", () => {
+    const subagent: HumanRow = {
+      seq: 1,
+      kind: "reminder/job_exit",
+      body: userTextItem(
+        "<system-reminder>\nsource: subagent\nstatus: settled\n</system-reminder>",
+      ),
+    };
+    const other: HumanRow = {
+      seq: 2,
+      kind: "reminder/job_exit",
+      body: userTextItem("Background bash bg_1 exited"),
+    };
+    expect(isHiddenHumanRow(subagent)).toBe(false);
+    expect(isTranscriptMarkRow(subagent)).toBe(true);
+    expect(transcriptMarkKind(subagent)).toBe("subagent_exit");
+    expect(isHiddenHumanRow(other)).toBe(false);
+    expect(isTranscriptMarkRow(other)).toBe(true);
+    expect(transcriptMarkKind(other)).toBe("job_exit");
   });
 
   it("hydrates userDetailBefore from the server prefix for partial windows", () => {

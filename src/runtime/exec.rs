@@ -101,6 +101,31 @@ impl AgentDeps for AgentRuntime {
         Ok(())
     }
 
+    fn inject_background_reminders(&self, transcript: &mut Transcript) -> Result<()> {
+        let completions = self
+            .runtime_handle
+            .subagent_hub
+            .take_completions(&self.session_id);
+        if completions.is_empty() {
+            return Ok(());
+        }
+        let text = crate::tools::subagent::status::format_completion_reminder(
+            &self.sessions,
+            &completions,
+        );
+        if let Err(error) = self
+            .sessions
+            .append_job_exit(&self.session_id, &crate::types::user_text(&text))
+        {
+            self.runtime_handle
+                .subagent_hub
+                .restore_completions(&self.session_id, completions);
+            return Err(crate::types::LitecodeError::Anyhow(error));
+        }
+        *transcript = self.sessions.data().transcript_blocking(&self.session_id)?;
+        Ok(())
+    }
+
     fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
     }

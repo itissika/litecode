@@ -8,21 +8,17 @@ import {
   parseFunctionArguments,
 } from "../api/adapter";
 import type {
+  AgentRunState,
   HumanRow,
-  SubagentJob,
-  SubagentWait,
 } from "../api/types";
 import { formatElapsed } from "../lib/bashLive";
 import { openSubagentPanel } from "../lib/sessionPanelNav";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
-import { useSubagentStore } from "../stores/subagentStore";
 import { SubagentStatusIcon } from "./SubagentStatusIcon";
 import type { ToolStatus } from "./ToolIcon";
 
-const EMPTY_JOBS: SubagentJob[] = [];
-const EMPTY_WAITS: SubagentWait[] = [];
 const EMPTY_ROWS: HumanRow[] = [];
 
 type FinishedStatus = "completed" | "failed" | "unknown" | "finished";
@@ -32,8 +28,11 @@ interface RosterEntry {
   callId?: string;
   /** Resolved agent type; undefined until some source knows it. */
   agent?: string;
-  running: boolean;
+  responsibility?: string;
+  runState: AgentRunState;
   startedAt?: number;
+  lastTurnReason?: string;
+  launchFailed?: boolean;
   finished: FinishedStatus;
   /** Latest-message preview of the child session, when the list has it. */
   preview?: string;
@@ -88,9 +87,12 @@ function subagentRowMeta(
 
 /** Sealed tool status for the presence icon (only read once the child settles). */
 function iconStatus(entry: RosterEntry): ToolStatus {
-  if (entry.running) return "running";
-  if (entry.finished === "failed") return "failed";
-  if (entry.finished === "completed") return "ok";
+  if (entry.runState !== "idle") return "running";
+  if (entry.launchFailed || entry.lastTurnReason === "error") return "failed";
+  if (entry.lastTurnReason === "cancelled" || entry.lastTurnReason === "max_steps") {
+    return "warning";
+  }
+  if (entry.lastTurnReason === "completed") return "ok";
   return "unknown";
 }
 
@@ -102,8 +104,7 @@ function iconStatus(entry: RosterEntry): ToolStatus {
  *      preview / running). PRIMARY: the server lists child sessions too, so this
  *      labels a child that was never subscribed (P7). `sessionStore.byId` (the
  *      child slice, hydrated once subscribed) backs it up.
- *   2. the live `subagentStore.jobs` entry (agent_name + start time → timer).
- *   3. the parent transcript's `subagent_launch` row (agent name / outcome).
+ *   2. the parent transcript's `subagent_launch` row (agent name / outcome).
  *
  * A row is pure NAVIGATION: clicking it opens/focuses the child's independent
  * read-only dock panel (`openSubagentPanel`). The roster no longer embeds the
@@ -115,12 +116,6 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
     (s) => s.bySession.get(sessionId)?.subagentBindings,
   );
   const rows = useMessageStore((s) => s.bySession.get(sessionId)?.display);
-  const jobs = useSubagentStore(
-    (s) => s.bySession.get(sessionId)?.jobs ?? EMPTY_JOBS,
-  );
-  const waits = useSubagentStore(
-    (s) => s.bySession.get(sessionId)?.waits ?? EMPTY_WAITS,
-  );
   const sessions = useSessionStore((s) => s.sessions);
   const listSessions = useSessionStore((s) => s.listSessions);
   const connState = useConnectionStore((s) => s.state);
@@ -150,17 +145,20 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
     for (const s of sessions) {
       if (s.parent_session_id !== sessionId) continue;
       const callId = s.parent_call_id ?? undefined;
-      const job = callId ? jobs.find((j) => j.call_id === callId) : undefined;
       const info = callId ? meta.get(callId) : undefined;
       byChild.set(s.id, {
         childId: s.id,
         callId,
-        agent: s.agent_id || job?.agent_name || info?.agent || undefined,
-        running:
-          s.running === true ||
-          s.status === "running_with_subagent" ||
-          !!job,
-        startedAt: job?.started_at_ms,
+        agent: s.agent_id || info?.agent || undefined,
+        responsibility: s.responsibility || undefined,
+        runState: s.status === "stopping"
+          ? "cancelling"
+          : s.running === true || s.status === "running"
+            ? "running"
+            : "idle",
+        startedAt: s.turn?.started_at_ms,
+        lastTurnReason: s.last_turn_reason,
+        launchFailed: info?.finished === "failed",
         finished: info ? info.finished : "finished",
         preview: s.assistant_preview || s.preview || undefined,
       });
@@ -170,18 +168,21 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
     // arrived in a (re)pulled list (the async gap right after subagent_bound).
     for (const [callId, childId] of Object.entries(bindings ?? {})) {
       if (!childId || byChild.has(childId)) continue;
-      const job = jobs.find((j) => j.call_id === callId);
       const info = meta.get(callId);
       const session = sessions.find((s) => s.id === childId);
       byChild.set(childId, {
         childId,
         callId,
-        agent: session?.agent_id || job?.agent_name || info?.agent || undefined,
-        running:
-          !!job ||
-          session?.running === true ||
-          session?.status === "running_with_subagent",
-        startedAt: job?.started_at_ms,
+        agent: session?.agent_id || info?.agent || undefined,
+        responsibility: session?.responsibility || undefined,
+        runState: session?.status === "stopping"
+          ? "cancelling"
+          : session?.running === true || session?.status === "running"
+            ? "running"
+            : "idle",
+        startedAt: session?.turn?.started_at_ms,
+        lastTurnReason: session?.last_turn_reason,
+        launchFailed: info?.finished === "failed",
         finished: info ? info.finished : "finished",
         preview: session?.assistant_preview || session?.preview || undefined,
       });
@@ -197,9 +198,9 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
         rosterOrderRef.current.get(a.childId)! -
         rosterOrderRef.current.get(b.childId)!,
     );
-  }, [bindings, rows, jobs, sessions, sessionId]);
+  }, [bindings, rows, sessions, sessionId]);
 
-  if (roster.length === 0 && waits.length === 0) {
+  if (roster.length === 0) {
     return (
       <div className="px-3 py-2 text-xs italic text-(--_dk-text-disabled)">
         No subagents
@@ -209,18 +210,6 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="flex flex-col gap-0.5">
-      {waits.length > 0 && (
-        <ul className="space-y-0.5 px-1.5" data-testid="subagent-roster-waits">
-          {waits.map((wait) => (
-            <li
-              key={wait.call_id}
-              className="px-1.5 py-1 font-mono text-dk-xs text-(--_dk-text-muted)"
-            >
-              waiting on {wait.watching_id ?? "subagent"}
-            </li>
-          ))}
-        </ul>
-      )}
       {roster.length > 0 && (
         <ul className="space-y-0.5 px-1.5" data-testid="subagent-roster">
           {roster.map((entry) => (
@@ -254,9 +243,9 @@ function SubagentRosterItem({
       >
         <SubagentStatusIcon
           agent={entry.agent}
-          live={entry.running}
+          live={entry.runState !== "idle"}
           status={iconStatus(entry)}
-          runState={entry.running ? "running" : "idle"}
+          runState={entry.runState}
         />
         <span
           data-testid="subagent-roster-agent"
@@ -264,6 +253,14 @@ function SubagentRosterItem({
         >
           {label}
         </span>
+        {entry.responsibility ? (
+          <span
+            data-testid="subagent-roster-responsibility"
+            className="min-w-0 truncate text-(--_dk-text-secondary)"
+          >
+            {entry.responsibility}
+          </span>
+        ) : null}
         {entry.preview ? (
           <span
             data-testid="subagent-roster-preview"
@@ -282,35 +279,34 @@ function SubagentRosterItem({
 function SubagentStatus({ entry }: { entry: RosterEntry }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!entry.running) return;
+    if (entry.runState === "idle") return;
     const t = window.setInterval(() => setNow(Date.now()), 500);
     return () => window.clearInterval(t);
-  }, [entry.running]);
+  }, [entry.runState]);
 
-  if (entry.running) {
+  if (entry.runState !== "idle") {
     return (
       <span
         className="ml-auto shrink-0 font-mono text-(--_dk-text-muted)"
         data-testid="subagent-roster-running"
       >
         {entry.startedAt !== undefined
-          ? `running ${formatElapsed(now - entry.startedAt)}`
-          : "running"}
+          ? `${entry.runState === "cancelling" ? "cancelling" : "running"} ${formatElapsed(now - entry.startedAt)}`
+          : entry.runState === "cancelling" ? "cancelling" : "running"}
       </span>
     );
   }
   const text =
-    entry.finished === "failed"
+    entry.lastTurnReason ||
+    (entry.launchFailed
       ? "failed"
-      : entry.finished === "completed"
-        ? "completed"
-        : entry.finished === "finished"
-          ? "finished"
-          : "unknown";
+      : entry.finished === "failed"
+        ? "failed"
+        : "idle");
   return (
     <span
       className={`ml-auto shrink-0 ${
-        entry.finished === "failed"
+        entry.launchFailed || entry.lastTurnReason === "error"
           ? "text-(--_dk-red-500)"
           : "text-(--_dk-text-muted)"
       }`}

@@ -7,6 +7,7 @@ import {
   transcriptMarkKind,
   type TranscriptMarkKind,
 } from "../api/adapter";
+import { openSubagentPanel } from "../lib/sessionPanelNav";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { WaveText } from "./WaveText";
 import { Popover } from "./ui/Popover";
@@ -111,6 +112,55 @@ export function JobExitMark({ detail }: { detail?: string }) {
 }
 
 /**
+ * One-line subagent completion mark. The report body stays in the log for the
+ * agent; humans see a compact cut-style line, optionally opening the child.
+ */
+export function SubagentExitMark({
+  detail,
+  childId,
+}: {
+  detail?: string;
+  childId?: string;
+}) {
+  const label = detail ? `subagent ${detail}` : "subagent settled";
+  if (!childId) {
+    return (
+      <MarkLine role="status" label="Subagent settled" testId="subagent-exit-mark">
+        <span className="text-dk-2xs text-(--_dk-text-disabled)">{label}</span>
+      </MarkLine>
+    );
+  }
+  return (
+    <button
+      type="button"
+      data-testid="subagent-exit-mark"
+      aria-label="Subagent settled"
+      onClick={() => openSubagentPanel(childId)}
+      className="group flex w-full cursor-pointer select-none items-center gap-1.5 rounded py-1 text-left transition-colors hover:bg-(--_dk-ix-bg-hover)"
+    >
+      <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
+      <span className="text-dk-2xs text-(--_dk-text-disabled) group-hover:text-(--_dk-text-secondary)">
+        {label}
+      </span>
+    </button>
+  );
+}
+
+export function subagentExitDetail(text: string): { detail: string; childId?: string } {
+  const ids = [...text.matchAll(/^child_session_id: (\S+)/gm)].map((match) => match[1]!);
+  const agents = [...text.matchAll(/^agent: (\S+)/gm)].map((match) => match[1]!);
+  const reasons = [...text.matchAll(/^reason: (\S+)/gm)].map((match) => match[1]!);
+  const settled = /^settled: (\d+)/m.exec(text);
+  const n = settled ? Number(settled[1]) : ids.length || 1;
+  const who = n === 1 ? agents[0] || (ids[0] ? ids[0].slice(0, 8) : undefined) : undefined;
+  const reason = n === 1 && reasons.length === 1 ? reasons[0] : undefined;
+  const parts: string[] = n > 1 ? [`${n} settled`] : ["settled"];
+  if (who) parts.push(who);
+  if (reason) parts.push(reason);
+  return { detail: parts.join(" · "), childId: ids[0] };
+}
+
+/**
  * Exit detail carried by a background-terminal reminder body, e.g.
  * `Background bash bg_a exited with code 3.` → `bg_a · exit code 3`, or the
  * user-Kill variant → `bg_a · stopped by user (Kill)`. `undefined` when the
@@ -137,31 +187,43 @@ export function TranscriptMark({
   kind,
   summary,
   detail,
+  childId,
 }: {
   kind: TranscriptMarkKind;
   summary?: string;
   detail?: string;
+  childId?: string;
 }) {
   switch (kind) {
     case "compact_cut":
       return <CompactCutMark summary={summary} />;
     case "job_exit":
       return <JobExitMark detail={detail} />;
+    case "subagent_exit":
+      return <SubagentExitMark detail={detail} childId={childId} />;
   }
 }
 
 export function TranscriptMarkForRow({ row }: { row: HumanRow }) {
   const kind = transcriptMarkKind(row);
   if (!kind) return null;
+  const text =
+    row.kind === "reminder/job_exit" && isMessageItem(row.body)
+      ? itemPlainText(row.body)
+      : "";
+  const sub = kind === "subagent_exit" ? subagentExitDetail(text) : undefined;
   return (
     <TranscriptMark
       kind={kind}
       summary={kind === "compact_cut" && "summary" in row.body ? String(row.body.summary) : undefined}
       detail={
-        kind === "job_exit" && row.kind === "reminder/job_exit" && isMessageItem(row.body)
-          ? jobExitDetail(itemPlainText(row.body))
-          : undefined
+        kind === "job_exit"
+          ? jobExitDetail(text)
+          : kind === "subagent_exit"
+            ? sub?.detail
+            : undefined
       }
+      childId={sub?.childId}
     />
   );
 }

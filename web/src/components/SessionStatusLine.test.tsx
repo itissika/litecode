@@ -10,14 +10,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api/workspace", () => ({ readFile: vi.fn() }));
 
-import type { BashJob, SubagentJob } from "../api/types";
+import type { BashJob, SessionInfo } from "../api/types";
 import { readFile } from "../api/workspace";
 import { useBashStore } from "../stores/bashStore";
 import { setDockviewApi, useConnectionStore } from "../stores/connectionStore";
 import { useEditorStore } from "../stores/editorStore";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
-import { useSubagentStore } from "../stores/subagentStore";
 import { emptySlice, useTurnStore, type TurnSlice } from "../stores/turnStore";
 import {
   PANEL_EXIT_MS,
@@ -42,13 +41,29 @@ const bashJob2: BashJob = {
   started_at_ms: Date.now(),
 };
 
-const subJob: SubagentJob = {
-  id: "sa_a",
-  call_id: "sc1",
-  agent_name: "researcher",
-  prompt_preview: "find the wiring",
-  started_at_ms: Date.now(),
-};
+function subagentSession(
+  id = "sa_a",
+  parent = "s1",
+  running = true,
+  agent = "researcher",
+): SessionInfo {
+  return {
+    id,
+    project: "/p",
+    updated_at: Date.now(),
+    preview: "find the wiring",
+    running,
+    status: running ? "running" : "idle",
+    turn: running
+      ? { turn_id: `turn-${id}`, phase: "calling_llm", step: 1, step_max: 10, started_at_ms: Date.now() }
+      : null,
+    agent_id: agent,
+    api_model_id: "m",
+    parent_session_id: parent,
+    parent_call_id: `call-${id}`,
+    responsibility: "research",
+  };
+}
 
 function seedTurn(sessionId: string, patch: Partial<TurnSlice>) {
   useTurnStore.setState({
@@ -60,7 +75,6 @@ const originalOpenFile = useEditorStore.getState().openFile;
 
 beforeEach(() => {
   useBashStore.getState().reset();
-  useSubagentStore.getState().reset();
   useMessageStore.setState({ bySession: new Map() });
   useTurnStore.setState({ byId: new Map() });
   useSessionStore.setState({ project: null, sessions: [], byId: new Map() } as never);
@@ -72,7 +86,6 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   useBashStore.getState().reset();
-  useSubagentStore.getState().reset();
   useMessageStore.setState({ bySession: new Map() });
   useTurnStore.setState({ byId: new Map() });
   useSessionStore.setState({ project: null, sessions: [], byId: new Map() } as never);
@@ -107,7 +120,7 @@ describe("SessionStatusLine — resident capsules", () => {
     useBashStore
       .getState()
       .applySnapshot("s1", { jobs: [bashJob, bashJob2], waits: [] });
-    useSubagentStore.getState().applySnapshot("s1", { jobs: [subJob], waits: [] });
+    useSessionStore.setState({ sessions: [subagentSession()] });
     seedTurn("s1", {
       todoItems: [{ id: "t1", content: "do a", status: "pending" }],
       todoPending: 1,
@@ -269,7 +282,7 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     useBashStore
       .getState()
       .applySnapshot("s1", { jobs: [bashJob, bashJob2], waits: [] });
-    useSubagentStore.getState().applySnapshot("s1", { jobs: [subJob], waits: [] });
+    useSessionStore.setState({ sessions: [subagentSession()] });
     seedTurn("s1", {
       todoItems: [
         { id: "t1", content: "first", status: "in_progress" },
@@ -336,10 +349,8 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
   });
 
   it("counts bound subagents into the worker summary", () => {
-    // A live job plus two more durable bindings → 1 running of 3 total.
-    useSubagentStore
-      .getState()
-      .applySnapshot("s1", { jobs: [subJob], waits: [] });
+    // One running child plus two more durable bindings → 1 running of 3 total.
+    useSessionStore.setState({ sessions: [subagentSession()] });
 
     render(<SessionStatusLine sessionId="s1" />);
     // Landing the bindings after mount claims the worker slot while idle.
@@ -375,7 +386,7 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     expect(within(capsule).getByText("Plan")).toBeTruthy();
   });
 
-  it("hover alone never opens or switches a panel", () => {
+  it("hover alone never opens a panel; an open panel follows hover", () => {
     render(<SessionStatusLine sessionId="s1" />);
     // Level-1 hover without a panel: horizontal slot only, no panel.
     fireEvent.mouseEnter(screen.getByTestId("capsule-plan"));
@@ -387,16 +398,15 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     expect(screen.getByTestId("status-capsule-panel").dataset.capsule).toBe(
       "terminal",
     );
-    // …and incidental hover only changes the horizontal summary slot. The
-    // vertical panel stays mounted until the user explicitly clicks.
+    // …then hovering another capsule follows it onto the panel.
     fireEvent.mouseEnter(screen.getByTestId("capsule-plan"));
     expect(screen.getByTestId("status-capsule-panel").dataset.capsule).toBe(
-      "terminal",
+      "plan",
     );
-    expect(screen.getByTestId("capsule-plan").dataset.expanded).toBe("true");
+    // Pointer leaving the capsule keeps the panel on the last hovered one.
     fireEvent.mouseLeave(screen.getByTestId("capsule-plan"));
     expect(screen.getByTestId("status-capsule-panel").dataset.capsule).toBe(
-      "terminal",
+      "plan",
     );
   });
 });
@@ -810,15 +820,6 @@ describe("SessionStatusLine — subagent roster panel (dock)", () => {
     });
   }
 
-  function seedParentRow(seq: number, kind: string, body: unknown) {
-    useMessageStore.getState().onBufferItem(PARENT, {
-      session_id: PARENT,
-      seq,
-      kind,
-      body,
-    } as never);
-  }
-
   function openRoster(): HTMLElement {
     render(<SessionStatusLine sessionId={PARENT} />);
     fireEvent.click(screen.getByTestId("capsule-subagent"));
@@ -849,19 +850,10 @@ describe("SessionStatusLine — subagent roster panel (dock)", () => {
     expect(within(roster).getAllByRole("button")).toHaveLength(2);
   });
 
-  it("labels a running subagent from its live job", () => {
+  it("labels a running subagent from its child session", () => {
     bind("call_a", CHILD_A);
-    useSubagentStore.getState().applySnapshot(PARENT, {
-      jobs: [
-        {
-          id: "j1",
-          call_id: "call_a",
-          agent_name: "explore",
-          prompt_preview: "find it",
-          started_at_ms: Date.now(),
-        },
-      ],
-      waits: [],
+    useSessionStore.setState({
+      sessions: [subagentSession(CHILD_A, PARENT, true, "explore")],
     });
 
     const roster = openRoster();
@@ -871,20 +863,15 @@ describe("SessionStatusLine — subagent roster panel (dock)", () => {
     expect(within(roster).getByTestId("subagent-roster-running")).toBeTruthy();
   });
 
-  it("labels a finished subagent from the parent transcript", () => {
+  it("labels a finished subagent from the child's last turn reason", () => {
     bind("call_b", CHILD_B);
-    seedParentRow(0, "item/tool_call", {
-      type: "function_call",
-      id: "fc_b",
-      call_id: "call_b",
-      name: "subagent_launch",
-      arguments: JSON.stringify({ agent: "worker", prompt: "do it" }),
-      status: "completed",
-    });
-    seedParentRow(1, "item/tool_result", {
-      type: "function_call_output",
-      call_id: "call_b",
-      output: "done",
+    useSessionStore.setState({
+      sessions: [
+        {
+          ...subagentSession(CHILD_B, PARENT, false, "worker"),
+          last_turn_reason: "completed",
+        },
+      ],
     });
 
     const roster = openRoster();

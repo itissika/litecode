@@ -25,15 +25,15 @@ product rule, and maintaining it is not worth the surface.
    Launch opens a child with the existing `open_child_session`; a failed start
    uses `remove_session`. No `start_session_turn` / `spawn_child_turn` /
    `start_reserved_turn` on the session layer.
-2. **Hub is a client.** It lives on `RuntimeHandle` like `TerminalHub`: running
-   list, mailbox, waiters, wire snapshot. It subscribes to the child session
-   event stream (the same `subscribe` a UI uses) and records the job outcome
-   from live `TurnCompleted` (`reason` + `final_text`). If that event is
-   missed (`Lagged` / `Closed` / idle without completion), it hydrates the
-   last durable `turn/end` and last assistant text. No durable row settles as
-   `unknown`, never a synthesized failure. It does not join the turn thread or
-   call `finish_turn`. Rendering (`ok` / `stopped` / "max steps reached") is
-   agent-facing presentation of those facts, aligned with `turn_error`.
+2. **Hub is a completion router.** It subscribes to the same lifecycle stream
+   as clients and queues only `(parent_session_id, child_session_id, turn_id)`
+   references until the parent reaches a safe injection point. It owns no
+   running list, waiter, wire snapshot, or outcome. At delivery time the
+   generic Session data API reconstructs `TurnResult` from durable
+   `turn/start`, transcript items, and `turn/end`. The report, result path,
+   and truncation range therefore remain Session facts rather than a second
+   `JobRecord` model. The hub does not join a turn thread or call
+   `finish_turn`.
 3. **Depth lock is product.** Subagent tools bind only on primary turns
    (`depth == 0` / `SUBAGENT_MAX_DEPTH = 1`). Children cannot nest. There is
    no per-parent concurrency cap.
@@ -41,6 +41,13 @@ product rule, and maintaining it is not worth the surface.
    turns use `TurnOptions::default()`. Both go through `spawn_turn`. Busy send
    is the session (`is_turn_running_blocking` / `AgentAlreadyRunning`), not a
    hub latch.
+5. **Roster parity.** Responsibility is durable Session metadata. The agent
+   roster and human UI derive child state directly from child sessions; there
+   is no subagent-specific protocol snapshot or client store.
+6. **Wait is event-driven handoff.** `subagent_wait` freezes the selected
+   current `turn_id` values and waits for N or all of them to settle. It has no
+   duration or polling mode and returns the corresponding durable
+   `TurnResult` values.
 
 ## Consequences
 

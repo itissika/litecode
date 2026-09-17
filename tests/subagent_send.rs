@@ -6,9 +6,9 @@ mod common;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use common::ScriptedProvider;
 use common::scripted_provider::HangProvider;
 use common::subagent_fixture::SubagentHarness;
-use common::ScriptedProvider;
 use litecode::session::event::EventType;
 use litecode::tool::Tool;
 use litecode::types::ToolSignalLevel;
@@ -33,9 +33,7 @@ async fn send_to_idle_child_runs_another_turn() {
     let child = harness.launch_reviewer("call_launch", "first").await;
     harness.wait_child_settled(&child);
 
-    let sent = harness
-        .send("call_send", &child, "please continue")
-        .await;
+    let sent = harness.send("call_send", &child, "please continue").await;
     assert_eq!(sent.level, ToolSignalLevel::Ok, "{}", sent.content);
     assert!(sent.content.contains("status: running"), "{}", sent.content);
     assert!(sent.content.contains(&child), "{}", sent.content);
@@ -43,11 +41,11 @@ async fn send_to_idle_child_runs_another_turn() {
     let waited = harness
         .wait(
             "call_wait_send",
-            serde_json::json!({ "id": child, "sec": 10 }),
+            serde_json::json!({ "ids": [child.clone()] }),
         )
         .await;
     assert!(
-        waited.content.contains("status: exited"),
+        waited.content.contains("status: settled"),
         "{}",
         waited.content
     );
@@ -66,12 +64,9 @@ async fn send_to_idle_child_runs_another_turn() {
         .events_blocking(&harness.parent_id)
         .expect("parent events");
     assert!(
-        !parent_events.iter().any(|event| {
-            event
-                .data
-                .to_string()
-                .contains("please continue")
-        }),
+        !parent_events
+            .iter()
+            .any(|event| { event.data.to_string().contains("please continue") }),
         "child messages must not leak into the parent log"
     );
 }
@@ -86,18 +81,14 @@ async fn send_to_busy_child_fails_without_starting_a_turn() {
 
     let sent = harness.send("call_send_busy", &child, "again").await;
     assert_eq!(sent.level, ToolSignalLevel::Error, "{}", sent.content);
-    assert!(
-        sent.content.contains("already running"),
-        "{}",
-        sent.content
-    );
+    assert!(sent.content.contains("already running"), "{}", sent.content);
     assert_eq!(turn_starts(&harness, &child), 1, "no second turn may start");
     assert!(
-        harness.jobs().is_alive(&child),
-        "a rejected send must not drop the first running job"
+        harness.sessions.is_turn_running_blocking(&child),
+        "a rejected send must not stop the first running turn"
     );
     assert!(
-        !harness.jobs().mailbox_pending(&harness.parent_id),
+        !harness.runtime.subagent_hub.has_pending(&harness.parent_id),
         "a rejected send must not settle the first turn's exit"
     );
 }
@@ -108,14 +99,20 @@ async fn send_rejects_unknown_and_foreign_ids() {
 
     let unknown = harness.send("call_unknown", "01NOTACHILD", "hello").await;
     assert_eq!(unknown.level, ToolSignalLevel::Error);
-    assert!(unknown.content.contains("not a child session"), "{}", unknown.content);
+    assert!(
+        unknown.content.contains("not a child session"),
+        "{}",
+        unknown.content
+    );
 
     // The parent session itself is not a child of itself.
-    let self_send = harness
-        .send("call_self", &harness.parent_id, "hello")
-        .await;
+    let self_send = harness.send("call_self", &harness.parent_id, "hello").await;
     assert_eq!(self_send.level, ToolSignalLevel::Error);
-    assert!(self_send.content.contains("not a child session"), "{}", self_send.content);
+    assert!(
+        self_send.content.contains("not a child session"),
+        "{}",
+        self_send.content
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -138,11 +135,11 @@ async fn send_then_stop_cancels_the_new_turn() {
     let waited = harness
         .wait(
             "call_wait_stopped",
-            serde_json::json!({ "id": child, "sec": 10 }),
+            serde_json::json!({ "ids": [child.clone()] }),
         )
         .await;
     assert!(
-        waited.content.contains("stopped: true"),
+        waited.content.contains("reason: cancelled"),
         "{}",
         waited.content
     );

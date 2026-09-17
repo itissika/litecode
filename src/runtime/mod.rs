@@ -730,6 +730,7 @@ impl AgentRuntime {
                 data: serde_json::json!({
                     "turn": turn_id,
                     "reason": reason_name,
+                    "final_text": &text,
                 }),
                 surface_op: None,
                 source_seqs: None,
@@ -787,6 +788,15 @@ impl AgentRuntime {
                 Err(LitecodeError::MaxStepsReached)
             }
             TurnOutcome::Error(err) => {
+                match self.sessions.seal_in_progress_items(&self.session_id) {
+                    Ok(seqs) if !seqs.is_empty() => {
+                        self.emit_internal(InternalEvent::BufferRestamp { seqs });
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(session_id = %self.session_id, %error, "failed to seal in_progress rows on error");
+                    }
+                }
                 let msg = err.to_string();
                 self.emit_turn_completed(turn_id, TurnEndReason::Error, Some(msg))
             }

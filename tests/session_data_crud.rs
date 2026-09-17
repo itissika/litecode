@@ -87,6 +87,7 @@ fn parent_delete_cascades_child() {
             model_id: None,
             parent_session_id: Some(parent.clone()),
             parent_call_id: Some("call_1".into()),
+            responsibility: String::new(),
         })
         .unwrap()
         .session_id;
@@ -145,6 +146,7 @@ fn create_operation_id_is_idempotent() {
         model_id: None,
         parent_session_id: None,
         parent_call_id: None,
+        responsibility: String::new(),
     };
     let first = data.mutate_blocking(create()).unwrap();
     let second = data.mutate_blocking(create()).unwrap();

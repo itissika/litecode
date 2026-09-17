@@ -1,4 +1,4 @@
-﻿use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -294,6 +294,7 @@ impl SessionManager {
                 created_at: 0,
                 parent_session_id: None,
                 parent_call_id: None,
+                responsibility: String::new(),
                 subagent_depth: 0,
                 agent_id: "default".into(),
                 model_id: None,
@@ -360,6 +361,7 @@ impl SessionManager {
             model_id: model_id.map(|s| s.to_string()),
             parent_session_id: None,
             parent_call_id: None,
+            responsibility: String::new(),
         })?;
         let sid = receipt.session_id.clone();
         let meta = self.data.meta_blocking(&sid)?;
@@ -397,6 +399,20 @@ impl SessionManager {
         parent_session_id: &str,
         parent_call_id: &str,
     ) -> Result<String> {
+        self.open_child_session_with_responsibility(
+            project, agent_id, model_id, parent_session_id, parent_call_id, "",
+        )
+    }
+
+    pub fn open_child_session_with_responsibility(
+        &self,
+        project: &str,
+        agent_id: &str,
+        model_id: Option<&str>,
+        parent_session_id: &str,
+        parent_call_id: &str,
+        responsibility: &str,
+    ) -> Result<String> {
         if self.db_path().is_empty() || self.db_path() == ":memory:" {
             return Err(LitecodeError::ToolExecution(
                 "open_child_session requires a workspace SessionManager".into(),
@@ -409,6 +425,7 @@ impl SessionManager {
             model_id: model_id.map(|s| s.to_string()),
             parent_session_id: Some(parent_session_id.to_string()),
             parent_call_id: Some(parent_call_id.to_string()),
+            responsibility: responsibility.to_string(),
         })?;
         let sid = receipt.session_id.clone();
         let meta = self.data.meta_blocking(&sid)?;
@@ -430,6 +447,7 @@ impl SessionManager {
             agent_id: agent_id.to_string(),
             parent_session_id: Some(parent_session_id.to_string()),
             parent_call_id: Some(parent_call_id.to_string()),
+            responsibility: responsibility.to_string(),
             updated_at: meta.updated_at,
         });
         Ok(sid)
@@ -768,9 +786,16 @@ impl SessionManager {
             progress
         };
         self.turn_guard.end_turn();
+        let reason = self
+            .data()
+            .latest_turn_end_reason_blocking(session_id)
+            .ok()
+            .flatten()
+            .and_then(|(turn_id, reason)| (turn_id == progress.turn_id).then_some(reason));
         self.emit_lifecycle(LifecycleEvent::TurnFinished {
             session_id: session_id.to_string(),
             progress: progress.clone(),
+            reason,
         });
         Some(progress)
     }
@@ -2688,6 +2713,7 @@ mod child_session_tests {
                 model_id: None,
                 parent_session_id: Some("missing-parent".into()),
                 parent_call_id: Some("call_orphan".into()),
+                responsibility: String::new(),
             })
             .expect("create orphan")
             .session_id;
@@ -2697,5 +2723,4 @@ mod child_session_tests {
         assert_eq!(removed, 1);
         assert!(mgr.data().meta_blocking(&orphan).is_err());
     }
-
 }

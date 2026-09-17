@@ -54,6 +54,8 @@ pub enum LifecycleEvent {
     TurnFinished {
         session_id: String,
         progress: TurnProgress,
+        /// Durable `turn/end.reason` when the log has it (`completed` / `cancelled` / `error` / `max_steps`).
+        reason: Option<String>,
     },
     /// `sessions.last_message` / `last_assistant` changed — session list preview patch.
     SessionPreviewUpdated {
@@ -69,6 +71,7 @@ pub enum LifecycleEvent {
         agent_id: String,
         parent_session_id: Option<String>,
         parent_call_id: Option<String>,
+        responsibility: String,
         updated_at: i64,
     },
     /// Discrete turn-step start (reasoning / toolcall / text). Not merged.

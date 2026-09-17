@@ -158,17 +158,6 @@ impl ServeState {
                     );
                 }));
         }
-        {
-            let sessions = Arc::clone(&sessions);
-            let hub = Arc::clone(&subagent_hub);
-            subagent_hub.set_jobs_changed_handler(Arc::new(move |session_id: String| {
-                let snapshot = hub.wire_snapshot(&session_id);
-                let _ = sessions.publish_internal(
-                    &session_id,
-                    crate::runtime::observer::InternalEvent::SubagentJobs { snapshot },
-                );
-            }));
-        }
         Ok(Self {
             ide,
             runtime,

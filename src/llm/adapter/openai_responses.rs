@@ -24,7 +24,7 @@ use super::responses_sse::{SseLineReader, check_event_stream_content_type, sse_d
 use super::stream_contract::{
     StreamContractGate, StreamItemAccumulator, forward_stream_event, resolve_stream_outcome,
 };
-use super::{llm_http_client, transport_error};
+use super::{interrupted_stream_error, llm_http_client};
 
 /// Responses-protocol provider (`protocol = openai_responses`).
 pub struct OpenaiResponsesProvider {
@@ -187,7 +187,7 @@ impl LlmProvider for OpenaiResponsesProvider {
                     chunk = stream.next() => {
                         let Some(chunk) = chunk else { break; };
                         let chunk = chunk.map_err(|e| {
-                            transport_error("reading OpenAI event stream", &e)
+                            interrupted_stream_error("reading OpenAI event stream", &e, &acc)
                         })?;
                         for line in reader.feed(&chunk)? {
                             let Some(data) = sse_data_payload(&line) else {
@@ -344,6 +344,23 @@ mod tests {
             );
             let _ = socket.write_all(resp.as_bytes()).await;
             let _ = socket.shutdown().await;
+        });
+        format!("http://{addr}/v1")
+    }
+
+    async fn serve_truncated(body: String) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = vec![0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len() + 1024
+            );
+            socket.write_all(response.as_bytes()).await.expect("write");
+            socket.shutdown().await.expect("shutdown");
         });
         format!("http://{addr}/v1")
     }
@@ -508,6 +525,45 @@ mod tests {
             Item::Message(MessageItem::Output(msg)) => {
                 assert_eq!(msg.status, OutputStatus::Incomplete);
                 assert_eq!(crate::types::item_text_preview(&items[0]), "hi");
+            }
+            other => panic!("expected message, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn transport_disconnect_returns_partial_items_with_explicit_error() {
+        let body = format!(
+            "data: {}\n\n",
+            serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 1,
+                "item_id": "msg_1",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "recover me"
+            })
+        );
+        let endpoint = serve_truncated(body).await;
+        let provider =
+            OpenaiResponsesProvider::new(endpoint, ProviderAuth::Bearer).expect("provider");
+        let error = provider
+            .complete_with_stream_events(
+                &sample_request(),
+                "sk-test",
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("truncated response must remain an explicit failure");
+
+        let LitecodeError::LlmStreamInterrupted { partial, .. } = error else {
+            panic!("expected interrupted stream error, got {error:?}");
+        };
+        assert_eq!(partial.len(), 1);
+        assert_eq!(crate::types::item_text_preview(&partial[0]), "recover me");
+        match &partial[0] {
+            Item::Message(MessageItem::Output(msg)) => {
+                assert_eq!(msg.status, OutputStatus::Incomplete);
             }
             other => panic!("expected message, got {other:?}"),
         }

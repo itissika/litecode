@@ -18,9 +18,11 @@ export const TOOL_PARAM_META: Record<string, ToolParamConfig> = {
   bash: { primary: ["command"] },
   wait_shell: { primary: ["id", "sec"] },
   kill_shell: { primary: ["bash_id"] },
-  subagent_launch: { primary: ["agent", "prompt"] },
-  subagent_wait: { primary: ["id", "sec"] },
+  subagent_launch: { primary: ["agent", "responsibility", "prompt"] },
+  subagent_wait: { primary: ["ids", "count"] },
   subagent_stop: { primary: ["id"] },
+  subagent_send: { primary: ["id", "message"] },
+  subagent_list: { primary: [] },
 };
 
 export interface MetaField {

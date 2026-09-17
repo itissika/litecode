@@ -12,7 +12,8 @@ export function processToolBucket(name: string): ProcessToolBucket | null {
     name === "subagent_launch" ||
     name === "subagent_wait" ||
     name === "subagent_stop" ||
-    name === "subagent_send"
+    name === "subagent_send" ||
+    name === "subagent_list"
   )
     return null;
   return "tool";
@@ -26,6 +27,7 @@ export function isInlineTool(name: string): boolean {
     name === "subagent_wait" ||
     name === "subagent_stop" ||
     name === "subagent_send" ||
+    name === "subagent_list" ||
     name === "todo" ||
     name === "plan"
   );

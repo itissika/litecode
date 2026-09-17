@@ -86,12 +86,8 @@ fn tool_layer_does_not_finish_or_join_turns() {
 fn tool_turn_helper_uses_human_reserve_then_spawn() {
     let src = fs::read_to_string(src_root().join("tools/subagent/turn.rs")).unwrap();
     let reserve = src.find("reserve_turn").expect("tool helper reserves");
-    let spawn = src
-        .find("spawn_turn(")
-        .expect("tool helper spawns");
-    let start = src
-        .find(".start_turn(")
-        .expect("tool helper starts");
+    let spawn = src.find("spawn_turn(").expect("tool helper spawns");
+    let start = src.find(".start_turn(").expect("tool helper starts");
     assert!(
         reserve < spawn && spawn < start,
         "tools must reserve, then spawn_turn, then start_turn"
@@ -106,18 +102,19 @@ fn tool_turn_helper_uses_human_reserve_then_spawn() {
 fn runtime_and_protocol_do_not_open_child_sessions() {
     let runtime = read_combined(&["runtime"]);
     let protocol = read_combined(&["client_protocol"]);
-    for (name, src) in [("runtime", runtime.as_str()), ("protocol", protocol.as_str())] {
+    for (name, src) in [
+        ("runtime", runtime.as_str()),
+        ("protocol", protocol.as_str()),
+    ] {
         assert_absent(src, "open_child_session", name);
     }
 }
 
 #[test]
-fn tool_core_mailbox_drain_does_not_import_session_jobs() {
+fn tool_core_does_not_own_subagent_completion_delivery() {
     let executor = fs::read_to_string(src_root().join("tool/executor.rs")).unwrap();
     let trait_ = fs::read_to_string(src_root().join("tool/trait_.rs")).unwrap();
     assert_absent(&executor, "session::jobs", "tool/executor.rs");
-    assert!(
-        trait_.contains("agent_subagents"),
-        "tool trait must expose the hub for mailbox drain"
-    );
+    assert_absent(&executor, "agent_subagents", "tool/executor.rs");
+    assert_absent(&trait_, "agent_subagents", "tool/trait_.rs");
 }

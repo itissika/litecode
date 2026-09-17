@@ -11,7 +11,6 @@ use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::{LitecodeError, ToolCallResult};
 
-use super::jobs::prompt_preview;
 use super::status;
 use super::turn::start_turn_like_human;
 
@@ -36,7 +35,7 @@ impl SubagentSendTool {
         self.session_id.lock().unwrap().clone()
     }
 
-    async fn call_send(&self, input: Value, call_id: &str) -> ToolCallResult {
+    async fn call_send(&self, input: Value) -> ToolCallResult {
         let child_id = match crate::tool::require_nonempty_string(&input, "id") {
             Ok(id) => id.to_string(),
             Err(e) => return ToolCallResult::error(e),
@@ -51,11 +50,6 @@ impl SubagentSendTool {
                 "subagent_send requires an active session execution context",
             );
         }
-        if call_id.is_empty() {
-            return ToolCallResult::error(
-                "subagent_send requires an active tool call_id (missing execution context)",
-            );
-        }
         let is_child = self
             .sessions
             .descendant_session_ids(&parent)
@@ -68,8 +62,7 @@ impl SubagentSendTool {
         }
         if self.sessions.is_turn_running_blocking(&child_id) {
             return ToolCallResult::error(format!(
-                "subagent '{child_id}' is already running a turn. Wait for it \
-                 (subagent_wait) or stop it (subagent_stop), then send again."
+                "subagent '{child_id}' is already running a turn. Its result will be delivered when that turn settles."
             ));
         }
         if let Err(error) = self.sessions.ensure_entry(&child_id).await {
@@ -89,16 +82,12 @@ impl SubagentSendTool {
             .meta_blocking(&child_id)
             .map(|meta| meta.subagent_depth)
             .unwrap_or(self.depth + 1);
-        let project = self.sessions.project(&child_id).unwrap_or_else(|| {
-            self.sessions.project(&parent).unwrap_or_default()
-        });
-        let preview = prompt_preview(&message);
-        let Some(rx) = self.sessions.subscribe(&child_id) else {
-            return ToolCallResult::error(format!(
-                "subagent '{child_id}' has no event channel"
-            ));
-        };
-        let mut opts = TurnOptions::agent(agent_id.clone(), self.sessions.session_model_id(&child_id));
+        let project = self
+            .sessions
+            .project(&child_id)
+            .unwrap_or_else(|| self.sessions.project(&parent).unwrap_or_default());
+        let mut opts =
+            TurnOptions::agent(agent_id.clone(), self.sessions.session_model_id(&child_id));
         opts.depth = child_depth;
         let turn_id = match start_turn_like_human(
             &self.runtime,
@@ -114,20 +103,17 @@ impl SubagentSendTool {
             Ok(turn_id) => turn_id,
             Err(LitecodeError::AgentAlreadyRunning) => {
                 return ToolCallResult::error(format!(
-                    "subagent '{child_id}' is already running a turn. Wait for it \
-                     (subagent_wait) or stop it (subagent_stop), then send again."
+                    "subagent '{child_id}' is already running a turn. Its result will be delivered when that turn settles."
                 ));
             }
             Err(error) => {
                 return ToolCallResult::error(format!("subagent_send failed: {error}"));
             }
         };
-        let hub = &self.runtime.subagent_hub;
-        hub.jobs
-            .register_child(&child_id, &parent, call_id, &agent_id, preview);
-        hub.watch_child_exit(&child_id, call_id, rx);
-        let jobs = hub.jobs.running(&parent);
-        ToolCallResult::ok(status::format_sent_status(&child_id, &turn_id, &jobs))
+        let mut result = ToolCallResult::ok(status::format_started(&child_id, &turn_id, None));
+        result.metadata =
+            Some(serde_json::json!({ "child_session_id": child_id, "turn_id": turn_id }));
+        result
     }
 }
 
@@ -146,7 +132,7 @@ impl Tool for SubagentSendTool {
                 },
                 "message": {
                     "type": "string",
-                    "description": "Next assignment for this child"
+                    "description": "Next assignment within this child session's established responsibility"
                 }
             },
             "required": ["id", "message"]
@@ -164,8 +150,7 @@ impl Tool for SubagentSendTool {
             depth: self.depth,
             session_id: Mutex::new(execution.session_id.clone()),
         };
-        let call_id = execution.call_id.clone();
-        Box::pin(async move { tool.call_send(input, &call_id).await })
+        Box::pin(async move { tool.call_send(input).await })
     }
 
     fn call_inner(&self, _input: Value) -> ToolCallResult {
@@ -173,8 +158,7 @@ impl Tool for SubagentSendTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Send a message to an idle child session so it runs another turn in the background. \
-         Fails if that child is already running a turn."
+        "Start another background turn in an idle child session. Requires its id and a next assignment that fits the session's established responsibility; fails while that child is running."
             .into()
     }
 

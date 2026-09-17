@@ -12,6 +12,7 @@ import dotenv from "shiki/langs/dotenv.mjs";
 import elixir from "shiki/langs/elixir.mjs";
 import go from "shiki/langs/go.mjs";
 import graphql from "shiki/langs/graphql.mjs";
+import hlsl from "shiki/langs/hlsl.mjs";
 import html from "shiki/langs/html.mjs";
 import ini from "shiki/langs/ini.mjs";
 import java from "shiki/langs/java.mjs";
@@ -28,6 +29,7 @@ import python from "shiki/langs/python.mjs";
 import ruby from "shiki/langs/ruby.mjs";
 import rust from "shiki/langs/rust.mjs";
 import scala from "shiki/langs/scala.mjs";
+import shaderlab from "shiki/langs/shaderlab.mjs";
 import shell from "shiki/langs/shell.mjs";
 import sql from "shiki/langs/sql.mjs";
 import svelte from "shiki/langs/svelte.mjs";
@@ -74,6 +76,7 @@ const LANG_ALIASES: Record<string, string> = {
   vuejs: "vue",
   sveltejs: "svelte",
   prisma: "graphql",
+  shader: "shaderlab",
 };
 
 export function normalizeLang(raw: string): string {
@@ -94,6 +97,7 @@ const SUPPORTED_LANGS = new Set([
   "elixir",
   "go",
   "graphql",
+  "hlsl",
   "html",
   "ini",
   "java",
@@ -110,6 +114,7 @@ const SUPPORTED_LANGS = new Set([
   "ruby",
   "rust",
   "scala",
+  "shaderlab",
   "shell",
   "sql",
   "svelte",
@@ -146,6 +151,7 @@ export function getMarkdownHighlighter() {
         elixir,
         go,
         graphql,
+        hlsl,
         html,
         ini,
         java,
@@ -162,6 +168,7 @@ export function getMarkdownHighlighter() {
         ruby,
         rust,
         scala,
+        shaderlab,
         shell,
         sql,
         svelte,

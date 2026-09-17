@@ -7,6 +7,7 @@ import {
   functionCallOutputText,
   isFunctionCall,
   isFunctionCallOutput,
+  isHiddenHumanRow,
   isHumanUserRow,
   isHumanViewKind,
   isInProgressItem,
@@ -37,13 +38,14 @@ import { useStickToBottom } from "../lib/scrollStick";
 import { ToolCallCard } from "./ToolCallCard";
 import { isToolCallLive, processGroupAutoOpen } from "./toolCallStatus";
 import { MiniChatInput, type MiniChatInputSettings } from "./MiniChatInput";
-import { CompactingMark, TranscriptMark, TranscriptMarkForRow, jobExitDetail } from "./transcriptMarks";
+import { CompactingMark, TranscriptMark, TranscriptMarkForRow, jobExitDetail, subagentExitDetail } from "./transcriptMarks";
 
 type RenderNode =
   | { kind: "text"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
   | { kind: "reasoning"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
   | { kind: "compact_cut"; summary?: string; key: string; streaming: boolean; live: false }
   | { kind: "job_exit"; detail?: string; key: string; streaming: boolean; live: false }
+  | { kind: "subagent_exit"; detail?: string; childId?: string; key: string; streaming: boolean; live: false }
   | {
       kind: "tool";
       call: FunctionCallItem;
@@ -90,14 +92,28 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
   }
   const nodes: RenderNode[] = [];
   for (const row of rows) {
+    if (isHiddenHumanRow(row)) continue;
     const streaming = rowInProgress(row);
     const key = projectionRowKey(row);
     const mark = transcriptMarkKind(row);
     if (mark) {
-      const markDetail =
-        mark === "job_exit" && row.kind === "reminder/job_exit" && isMessageItem(row.body)
-          ? jobExitDetail(itemPlainText(row.body))
-          : undefined;
+      const reminderText =
+        row.kind === "reminder/job_exit" && isMessageItem(row.body)
+          ? itemPlainText(row.body)
+          : "";
+      if (mark === "subagent_exit") {
+        const parsed = subagentExitDetail(reminderText);
+        nodes.push({
+          kind: "subagent_exit",
+          key,
+          streaming: false,
+          live: false,
+          detail: parsed.detail,
+          childId: parsed.childId,
+        });
+        continue;
+      }
+      const markDetail = mark === "job_exit" ? jobExitDetail(reminderText) : undefined;
       nodes.push({
         kind: mark,
         key,
@@ -172,7 +188,7 @@ export function groupNodes(nodes: RenderNode[]): NodeGroup[] {
   let current: NodeGroup | null = null;
 
   for (const node of nodes) {
-    if (node.kind === "compact_cut" || node.kind === "job_exit") {
+    if (node.kind === "compact_cut" || node.kind === "job_exit" || node.kind === "subagent_exit") {
       groups.push({ type: "cut", nodes: [node] });
       current = null;
       continue;
@@ -273,6 +289,10 @@ export function NodeView({
       return <TranscriptMark kind={node.kind} summary={node.summary} />;
     case "job_exit":
       return <TranscriptMark kind={node.kind} detail={node.detail} />;
+    case "subagent_exit":
+      return (
+        <TranscriptMark kind={node.kind} detail={node.detail} childId={node.childId} />
+      );
   }
 }
 
@@ -649,8 +669,9 @@ function firstContentRow(group: HumanRow[]): HumanRow | undefined {
  * consecutive non-user Items (live shells or sealed) coalesce into one assistant bubble
  * so process/output grouping still works across Item atoms.
  *
- * Transcript marks (`compacted`, `reminder/job_exit`) are their own barrier
- * (not pushed into the previous assistant bubble, not glued onto the next user bubble).
+ * Transcript marks (`compacted`, `reminder/job_exit`, including subagent
+ * completion) are their own barrier (not pushed into the previous assistant
+ * bubble, not glued onto the next user bubble).
  */
 export function groupRowsForBubbles(rows: HumanRow[]): HumanRow[][] {
   const groups: HumanRow[][] = [];
@@ -664,7 +685,7 @@ export function groupRowsForBubbles(rows: HumanRow[]): HumanRow[][] {
   };
 
   for (const row of rows) {
-    if (!isHumanViewKind(row.kind)) continue;
+    if (!isHumanViewKind(row.kind) || isHiddenHumanRow(row)) continue;
     if (isTranscriptMarkRow(row)) {
       flush();
       groups.push([row]);

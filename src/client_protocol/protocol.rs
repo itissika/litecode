@@ -39,7 +39,6 @@ pub mod methods {
     pub const BASH_JOBS: &str = "bash/jobs";
     pub const BASH_TAIL: &str = "bash/tail";
     pub const BASH_KILL: &str = "bash/kill";
-    pub const SUBAGENT_JOBS: &str = "subagent/jobs";
     pub const SUBSCRIBE_LOGS: &str = "subscribe_logs";
     pub const UNSUBSCRIBE_LOGS: &str = "unsubscribe_logs";
 }
@@ -189,6 +188,11 @@ pub struct SessionInfo {
     /// Parent `function_call.call_id` that launched this child session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub responsibility: String,
+    /// Last durable `turn/end.reason` when the session is idle.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub last_turn_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,6 +247,7 @@ pub struct SessionMetaWire {
     pub updated_at: i64,
     pub parent_session_id: Option<String>,
     pub parent_call_id: Option<String>,
+    pub responsibility: String,
     pub subagent_depth: u32,
     pub agent_id: String,
     pub model_id: Option<String>,
@@ -349,9 +354,6 @@ pub struct SessionSnapshot {
     /// Running agent bash jobs and wait_shell waiters for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bash: Option<crate::terminal::BashJobsSnapshot>,
-    /// Running subagent workers and subagent_wait waiters for this session.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent: Option<crate::tools::subagent::SubagentJobsSnapshot>,
     /// Session-scoped todo list (reconnect / snapshot hydrate). Compact does
     /// not rewrite this column; the panel must not wait for the next turn event.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -26,7 +26,7 @@ use litecode::tool::ToolPipeline;
 use litecode::tool::output::DEFAULT_SPILL_THRESHOLD;
 use litecode::tool::trait_::ToolExecutionContext;
 use litecode::tool::write_lock::process_write_lock;
-use litecode::tools::subagent::{SubagentJobBoard, SubagentLaunchTool, SubagentStopTool};
+use litecode::tools::subagent::{SubagentHub, SubagentLaunchTool, SubagentStopTool};
 use litecode::types::{
     FunctionToolCall, Item, Result, StreamEvents, ToolSignalLevel, item_text_preview,
 };
@@ -60,7 +60,7 @@ fn launch_tool_with_hub(
     sessions: Arc<SessionManager>,
     parent_session_id: &str,
     provider: Box<dyn LlmProvider>,
-) -> (SubagentLaunchTool, Arc<SubagentJobBoard>) {
+) -> (SubagentLaunchTool, Arc<SubagentHub>) {
     let workspace =
         litecode::workspace::WorkspaceService::new(resolved.workspace_root().to_path_buf())
             .expect("workspace");
@@ -83,7 +83,7 @@ fn launch_tool_with_hub(
     )
     .with_test_llm_override(Arc::from(provider));
     runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
-    let hub = Arc::clone(&runtime.subagent_hub.jobs);
+    let hub = Arc::clone(&runtime.subagent_hub);
     let tool = SubagentLaunchTool::new(
         runtime,
         "default",
@@ -128,6 +128,7 @@ fn function_call(call_id: &str, prompt: &str) -> FunctionToolCall {
     FunctionToolCall {
         arguments: serde_json::json!({
             "agent": "reviewer",
+            "responsibility": "test",
             "prompt": prompt
         })
         .to_string(),
@@ -209,7 +210,7 @@ fn launch_declares_pipeline_parallel_and_cancellable() {
         "parent",
         Box::new(ScriptedProvider::with_text("x")),
     );
-    let input = serde_json::json!({"agent": "reviewer", "prompt": "go"});
+    let input = serde_json::json!({"agent": "reviewer", "responsibility": "test", "prompt": "go"});
     assert!(
         tool.is_concurrency_safe(&input),
         "subagent_launch must join the concurrent ToolPipeline batch"
@@ -248,7 +249,7 @@ async fn execute_returns_while_child_llm_runs_on_other_thread() {
     let tool = launch_tool(resolved, sessions, &parent_id, Box::new(probe));
     let result = tool
         .execute(
-            serde_json::json!({"agent": "reviewer", "prompt": "go"}),
+            serde_json::json!({"agent": "reviewer", "responsibility": "test", "prompt": "go"}),
             exec_ctx("call_thread", CancellationToken::new()),
         )
         .await;
@@ -292,16 +293,12 @@ async fn parent_cancel_does_not_stop_background_child_and_stop_tool_can() {
     let hang = HangProvider::until_cancel();
     let dropped = Arc::clone(&hang.dropped);
     let started = Arc::clone(&hang.started);
-    let (tool, hub) = launch_tool_with_hub(
-        resolved,
-        Arc::clone(&sessions),
-        &parent_id,
-        Box::new(hang),
-    );
+    let (tool, _hub) =
+        launch_tool_with_hub(resolved, Arc::clone(&sessions), &parent_id, Box::new(hang));
     let parent_cancel = CancellationToken::new();
     let result = tool
         .execute(
-            serde_json::json!({"agent": "reviewer", "prompt": "hang"}),
+            serde_json::json!({"agent": "reviewer", "responsibility": "test", "prompt": "hang"}),
             exec_ctx("call_bg_cancel", parent_cancel.clone()),
         )
         .await;
@@ -326,13 +323,13 @@ async fn parent_cancel_does_not_stop_background_child_and_stop_tool_can() {
     parent_cancel.cancel();
     tokio::time::sleep(Duration::from_millis(80)).await;
     assert!(
-        hub.is_alive(&child_id),
+        sessions.is_turn_running_blocking(&child_id),
         "parent cancel must not stop a background subagent"
     );
     assert!(!dropped.load(Ordering::SeqCst));
 
     // The first-class stop operation cancels the child's current turn.
-    let stop = SubagentStopTool::new(Arc::clone(&sessions), Arc::clone(&hub));
+    let stop = SubagentStopTool::new(Arc::clone(&sessions));
     let stop_result = stop
         .execute(
             serde_json::json!({"id": child_id}),
@@ -347,12 +344,13 @@ async fn parent_cancel_does_not_stop_background_child_and_stop_tool_can() {
     .await
     .expect("stop must cancel the child turn");
     assert!(
-        stop_result.content.contains("stopping") || stop_result.content.contains("already ended"),
+        stop_result.content.contains("stop_requested")
+            || stop_result.content.contains("already ended"),
         "stop result: {}",
         stop_result.content
     );
     tokio::time::timeout(Duration::from_secs(10), async {
-        while hub.is_alive(&child_id) {
+        while sessions.is_turn_running_blocking(&child_id) {
             tokio::task::yield_now().await;
         }
     })
@@ -385,6 +383,7 @@ async fn background_launch_returns_while_child_keeps_running() {
         tool.execute(
             serde_json::json!({
                 "agent": "reviewer",
+                "responsibility": "test",
                 "prompt": "hang"
             }),
             exec_ctx("call_bg", CancellationToken::new()),
@@ -393,7 +392,11 @@ async fn background_launch_returns_while_child_keeps_running() {
     .await
     .expect("background launch must return without waiting for the child");
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    assert!(result.content.contains("status: running"), "{}", result.content);
+    assert!(
+        result.content.contains("status: running"),
+        "{}",
+        result.content
+    );
     tokio::time::timeout(Duration::from_secs(10), async {
         while !started.load(Ordering::SeqCst) {
             tokio::task::yield_now().await;
@@ -442,7 +445,7 @@ async fn child_exit_fires_hub_exit_handler() {
 
     let result = tool
         .execute(
-            serde_json::json!({"agent": "reviewer", "prompt": "go"}),
+            serde_json::json!({"agent": "reviewer", "responsibility": "test", "prompt": "go"}),
             exec_ctx("call_exit_handler", CancellationToken::new()),
         )
         .await;
@@ -484,7 +487,7 @@ async fn pipeline_runs_two_launches_concurrently() {
         &parent_id,
         Box::new(ScriptedProvider::with_texts(&["one", "two"])),
     ));
-    let input = serde_json::json!({"agent": "reviewer", "prompt": "go"});
+    let input = serde_json::json!({"agent": "reviewer", "responsibility": "test", "prompt": "go"});
     assert!(tool.is_concurrency_safe(&input));
 
     let permission = PermissionEngine::resolver(resolved.clone(), "default", 0);
@@ -558,7 +561,7 @@ async fn worker_panic_finishes_job_and_releases_session() {
         .await
         .expect("parent");
 
-    let (tool, hub) = launch_tool_with_hub(
+    let (tool, _hub) = launch_tool_with_hub(
         resolved,
         Arc::clone(&sessions),
         &parent_id,
@@ -566,7 +569,7 @@ async fn worker_panic_finishes_job_and_releases_session() {
     );
     let result = tool
         .execute(
-            serde_json::json!({"agent": "reviewer", "prompt": "go"}),
+            serde_json::json!({"agent": "reviewer", "responsibility": "test", "prompt": "go"}),
             exec_ctx("call_panic", CancellationToken::new()),
         )
         .await;
@@ -580,7 +583,7 @@ async fn worker_panic_finishes_job_and_releases_session() {
         .to_string();
 
     tokio::time::timeout(Duration::from_secs(10), async {
-        while hub.is_alive(&child_id) {
+        while sessions.is_turn_running_blocking(&child_id) {
             tokio::task::yield_now().await;
         }
     })

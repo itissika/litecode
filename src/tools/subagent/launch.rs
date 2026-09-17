@@ -14,7 +14,6 @@ use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
 
-use super::jobs::prompt_preview;
 use super::status;
 use super::turn::start_turn_like_human;
 
@@ -31,31 +30,30 @@ pub struct SpawnDeps {
 
 pub struct LaunchSpec {
     pub agent_name: String,
+    pub responsibility: String,
     pub prompt: String,
 }
 
 /// Open a child session and start its first turn the same way a human turn
-/// starts: reserve → spawn_turn → start_turn. Hub only registers the job.
+/// starts: reserve → spawn_turn → start_turn.
 pub async fn spawn_child_job(
     deps: &SpawnDeps,
     parent_session_id: &str,
     call_id: &str,
     spec: LaunchSpec,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     if call_id.is_empty() {
         tracing::error!(parent_session_id, "subagent_launch missing tool call_id");
         return Err(
             "subagent_launch requires an active tool call_id (missing execution context)".into(),
         );
     }
-    let hub = &deps.runtime.subagent_hub;
     let mut runtime = deps.runtime.clone();
     runtime
         .apply_non_engine()
         .map_err(|error| format!("child turn start failed: {error}"))?;
     runtime.sync_workspace_tool_readiness();
 
-    let preview = prompt_preview(&spec.prompt);
     let project = deps.sessions.project(parent_session_id).unwrap_or_else(|| {
         workspace_root_from_paths(runtime.resolved.paths())
             .to_string_lossy()
@@ -69,12 +67,13 @@ pub async fn spawn_child_job(
         .filter(|model| !model.is_empty());
     let child_session_id = deps
         .sessions
-        .open_child_session(
+        .open_child_session_with_responsibility(
             &project,
             &spec.agent_name,
             seed_model.as_deref(),
             parent_session_id,
             call_id,
+            &spec.responsibility,
         )
         .map_err(|error| format!("child turn start failed: {error}"))?;
 
@@ -92,14 +91,9 @@ pub async fn spawn_child_job(
         );
     }
 
-    let Some(rx) = deps.sessions.subscribe(&child_session_id) else {
-        let _ = deps.sessions.remove_session(&child_session_id);
-        return Err("child turn start failed: child session has no event channel".into());
-    };
-
     let mut opts = TurnOptions::agent(spec.agent_name.clone(), None);
     opts.depth = deps.depth + 1;
-    if let Err(error) = start_turn_like_human(
+    let turn_id = match start_turn_like_human(
         &runtime,
         &deps.sessions,
         &child_session_id,
@@ -110,33 +104,27 @@ pub async fn spawn_child_job(
     )
     .await
     {
-        tracing::error!(
-            parent_session_id,
-            agent = %spec.agent_name,
-            error = %error,
-            "subagent child turn failed to start"
-        );
-        hub.forget_child(&child_session_id);
-        let _ = deps.sessions.remove_session(&child_session_id);
-        return Err(format!("child turn start failed: {error}"));
-    }
-
-    hub.jobs.register_child(
-        &child_session_id,
-        parent_session_id,
-        call_id,
-        &spec.agent_name,
-        preview,
-    );
-    hub.watch_child_exit(&child_session_id, call_id, rx);
+        Ok(turn_id) => turn_id,
+        Err(error) => {
+            tracing::error!(
+                parent_session_id,
+                agent = %spec.agent_name,
+                error = %error,
+                "subagent child turn failed to start"
+            );
+            let _ = deps.sessions.remove_session(&child_session_id);
+            return Err(format!("child turn start failed: {error}"));
+        }
+    };
     tracing::info!(
         parent_session_id,
         child_session_id = %child_session_id,
         agent = %spec.agent_name,
         call_id,
-        "subagent worker registered"
+        turn_id,
+        "subagent child turn started"
     );
-    Ok(child_session_id)
+    Ok((child_session_id, turn_id))
 }
 
 pub struct SubagentLaunchTool {
@@ -204,6 +192,9 @@ impl SubagentLaunchTool {
         let prompt = crate::tool::require_nonempty_string(input, "prompt")
             .map_err(ToolCallResult::error)?
             .to_string();
+        let responsibility = crate::tool::require_nonempty_string(input, "responsibility")
+            .map_err(ToolCallResult::error)?
+            .to_string();
 
         let resolved = &self.runtime.resolved;
         let parent = resolved
@@ -255,6 +246,7 @@ impl SubagentLaunchTool {
 
         Ok(LaunchSpec {
             agent_name,
+            responsibility,
             prompt,
         })
     }
@@ -270,23 +262,28 @@ impl SubagentLaunchTool {
             sessions: Arc::clone(&self.sessions),
         };
 
-        let child_id = match spawn_child_job(&deps, &self.parent_session_id, &self.parent_call_id, spec)
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => return ToolCallResult::error(e),
-        };
+        let responsibility = spec.responsibility.clone();
+        let (child_id, turn_id) =
+            match spawn_child_job(&deps, &self.parent_session_id, &self.parent_call_id, spec).await
+            {
+                Ok(started) => started,
+                Err(e) => return ToolCallResult::error(e),
+            };
 
-        let jobs = self.runtime.subagent_hub.jobs.running(&self.parent_session_id);
         with_child_meta(
-            ToolCallResult::ok(status::format_running_status(&child_id, &jobs)),
+            ToolCallResult::ok(status::format_started(
+                &child_id,
+                &turn_id,
+                Some(&responsibility),
+            )),
             &child_id,
+            &turn_id,
         )
     }
 }
 
-fn with_child_meta(mut result: ToolCallResult, child_id: &str) -> ToolCallResult {
-    result.metadata = Some(serde_json::json!({ "child_session_id": child_id }));
+fn with_child_meta(mut result: ToolCallResult, child_id: &str, turn_id: &str) -> ToolCallResult {
+    result.metadata = Some(serde_json::json!({ "child_session_id": child_id, "turn_id": turn_id }));
     result
 }
 
@@ -352,12 +349,16 @@ impl Tool for SubagentLaunchTool {
                     "type": "string",
                     "description": agent_desc
                 },
+                "responsibility": {
+                    "type": "string",
+                    "description": "Stable team responsibility for this child session"
+                },
                 "prompt": {
                     "type": "string",
-                    "description": "Assignment for the new child session"
+                    "description": "Self-contained first assignment: goal, relevant context, constraints, and expected result"
                 },
             },
-            "required": ["agent", "prompt"]
+            "required": ["agent", "responsibility", "prompt"]
         })
     }
 
@@ -373,10 +374,10 @@ impl Tool for SubagentLaunchTool {
     fn description(&self, _ctx: &Context) -> String {
         match self.format_available_subagents() {
             None => {
-                "Start a new child session. Returns child_session_id immediately; the child runs in the background.".into()
+                "Create a child session and start its first background turn. agent is the subagent profile, responsibility is the stable role, prompt is the first assignment. Returns immediately; the turn result is delivered when it settles.".into()
             }
             Some(catalog) => format!(
-                "Start a new child session. Returns child_session_id immediately; the child runs in the background. Available: {catalog}."
+                "Create a child session and start its first background turn. agent is the subagent profile, responsibility is the stable role, prompt is the first assignment. Returns immediately; the turn result is delivered when it settles. Available agents: {catalog}."
             ),
         }
     }
@@ -387,10 +388,6 @@ impl Tool for SubagentLaunchTool {
 
     fn is_cancellable(&self) -> bool {
         true
-    }
-
-    fn agent_subagents(&self) -> Option<std::sync::Arc<crate::tools::subagent::SubagentHub>> {
-        Some(Arc::clone(&self.runtime.subagent_hub))
     }
 
     fn timeout(&self) -> Option<u64> {

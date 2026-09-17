@@ -443,6 +443,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             model_id,
             parent_session_id,
             parent_call_id,
+            responsibility,
         } => {
             let session = Session::open_shared(
                 Rc::clone(&state.db),
@@ -452,6 +453,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 model_id.as_deref(),
                 parent_session_id.as_deref(),
                 parent_call_id.as_deref(),
+                &responsibility,
             )?;
             let id = session.id.clone();
             state.live.insert(id.clone(), session);

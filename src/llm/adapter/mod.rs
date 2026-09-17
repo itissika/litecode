@@ -52,11 +52,63 @@ pub(super) async fn send_cancellable(
     cancel: &CancellationToken,
     stage: &str,
 ) -> Result<reqwest::Response> {
-    tokio::select! {
-        biased;
-        _ = cancel.cancelled() => Err(LitecodeError::Canceled),
-        result = request.send() => result.map_err(|e| transport_error(stage, &e)),
+    const RETRY_DELAYS: [std::time::Duration; 2] = [
+        std::time::Duration::from_millis(300),
+        std::time::Duration::from_secs(1),
+    ];
+
+    let template = request.try_clone();
+    let mut first = Some(request);
+    for attempt in 0..=RETRY_DELAYS.len() {
+        let request = if let Some(request) = first.take() {
+            request
+        } else if let Some(request) = template
+            .as_ref()
+            .and_then(reqwest::RequestBuilder::try_clone)
+        {
+            request
+        } else {
+            return Err(LitecodeError::Llm(format!(
+                "{stage} failed: request body cannot be cloned for retry"
+            )));
+        };
+
+        let result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(LitecodeError::Canceled),
+            result = request.send() => result,
+        };
+        let retry = match &result {
+            Ok(response) => matches!(
+                response.status(),
+                reqwest::StatusCode::REQUEST_TIMEOUT
+                    | reqwest::StatusCode::BAD_GATEWAY
+                    | reqwest::StatusCode::SERVICE_UNAVAILABLE
+                    | reqwest::StatusCode::GATEWAY_TIMEOUT
+            ),
+            Err(error) => error.is_connect() || error.is_timeout() || error.is_request(),
+        };
+        if !retry || attempt == RETRY_DELAYS.len() || template.is_none() {
+            return result.map_err(|error| transport_error(stage, &error));
+        }
+
+        tracing::warn!(
+            stage,
+            attempt = attempt + 1,
+            max_attempts = RETRY_DELAYS.len() + 1,
+            status = result
+                .as_ref()
+                .ok()
+                .map(|response| response.status().as_u16()),
+            "transient LLM HTTP failure; retrying"
+        );
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(LitecodeError::Canceled),
+            _ = tokio::time::sleep(RETRY_DELAYS[attempt]) => {}
+        }
     }
+    unreachable!("bounded LLM HTTP retry loop")
 }
 
 #[cfg(test)]
@@ -78,6 +130,67 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(LitecodeError::Canceled)));
+    }
+
+    #[tokio::test]
+    async fn send_cancellable_retries_transient_status_before_stream_starts() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for status in ["503 Service Unavailable", "200 OK"] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request).await.unwrap();
+                let response =
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let client = llm_http_client().unwrap();
+        let response = send_cancellable(
+            client
+                .post(format!("http://{address}/responses"))
+                .body("{}"),
+            &CancellationToken::new(),
+            "test send",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_cancellable_does_not_retry_explicit_client_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let client = llm_http_client().unwrap();
+        let response = send_cancellable(
+            client
+                .post(format!("http://{address}/responses"))
+                .body("{}"),
+            &CancellationToken::new(),
+            "test send",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -179,6 +292,24 @@ pub(super) fn transport_error(stage: &str, error: &reqwest::Error) -> LitecodeEr
         error.is_body(),
         error.is_decode(),
     ))
+}
+
+fn interrupted_stream_error(
+    stage: &str,
+    error: &reqwest::Error,
+    acc: &stream_contract::StreamItemAccumulator,
+) -> LitecodeError {
+    let error = transport_error(stage, error);
+    if acc.is_empty() {
+        return error;
+    }
+    let LitecodeError::Llm(message) = error else {
+        unreachable!("transport_error always returns LitecodeError::Llm")
+    };
+    LitecodeError::LlmStreamInterrupted {
+        message,
+        partial: acc.seal_incomplete(),
+    }
 }
 
 /// Construct a boxed provider from a provider row (adapter_id selects the wire).
