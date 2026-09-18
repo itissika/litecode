@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -19,6 +20,7 @@ import { useEditorStore } from "../stores/editorStore";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useTurnStore } from "../stores/turnStore";
+import { useWorkspaceChangeStore } from "../stores/workspaceChangeStore";
 import { composerCardClass } from "./composerCard";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { SubagentRosterPanel } from "./SubagentRosterPanel";
@@ -645,27 +647,51 @@ function PlanPanel({
   onOpen: (path: string) => void;
 }) {
   const [doc, setDoc] = useState<PlanDoc>({ status: "loading" });
+  const lastChange = useWorkspaceChangeStore((s) => s.last);
+  // One loader owns the plan document. Each request gets a generation; only the
+  // newest generation may write state, so a slow initial read cannot overwrite
+  // a watcher-triggered re-read (or resurrect a deleted plan).
+  const requestId = useRef(0);
+  const load = useCallback((resolved: string) => {
+    const id = ++requestId.current;
+    void readFile(resolved)
+      .then((md) => {
+        if (id === requestId.current) setDoc({ status: "ok", md });
+      })
+      .catch(() => {
+        if (id === requestId.current) setDoc({ status: "lost" });
+      });
+  }, []);
 
+  // Mount / pointer change: load the file currently referenced by the session.
   useEffect(() => {
     if (!path) return;
-    let cancelled = false;
     setDoc({ status: "loading" });
     const resolved = normalizeToolFilePath(path, projectRoot);
     if (!resolved) {
       setDoc({ status: "lost" });
       return;
     }
-    void readFile(resolved)
-      .then((md) => {
-        if (!cancelled) setDoc({ status: "ok", md });
-      })
-      .catch(() => {
-        if (!cancelled) setDoc({ status: "lost" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [path, projectRoot]);
+    load(resolved);
+  }, [path, projectRoot, load]);
+
+  // Workspace tick: refresh content, or mark lost on a real external delete.
+  // The initial tick at mount is intentionally consumed: the effect above has
+  // already read the current disk state, so re-reading here would be duplicate.
+  const seenSeq = useRef(lastChange?.seq ?? 0);
+  useEffect(() => {
+    if (!path || !lastChange) return;
+    if (lastChange.seq === seenSeq.current) return;
+    seenSeq.current = lastChange.seq;
+    const resolved = normalizeToolFilePath(path, projectRoot);
+    if (!resolved || !lastChange.paths.includes(resolved)) return;
+    if (lastChange.kind === "deleted") {
+      requestId.current += 1;
+      setDoc({ status: "lost" });
+      return;
+    }
+    load(resolved);
+  }, [path, projectRoot, lastChange, load]);
 
   if (!path) return <PanelEmpty>No active plan</PanelEmpty>;
   return (

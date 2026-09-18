@@ -209,7 +209,7 @@ function turnEndNoticeFrom(tf: TurnFinished): TurnEndNotice | null {
 interface TurnStore {
   byId: Map<string, TurnSlice>;
 
-  start: (sessionId: string, input: string) => boolean;
+  start: (sessionId: string, input: string, planExecution?: boolean) => boolean;
   replayFromAnchor: (
     sessionId: string,
     userAnchorK: number,
@@ -369,7 +369,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
   return {
     byId: new Map(),
 
-    start: (sessionId, input) => {
+    start: (sessionId, input, planExecution = false) => {
       const trimmed = input.trim();
       if (!trimmed) return false;
 
@@ -393,7 +393,11 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       });
       debugTrace("turn", "start", { sessionId });
 
-      const startPayload = { input: trimmed, session_id: sessionId };
+      const startPayload = {
+        input: trimmed,
+        session_id: sessionId,
+        plan_execution: planExecution,
+      };
 
       clearSealWatchdog(sessionId);
       const sealWatchdog = window.setTimeout(() => {

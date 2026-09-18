@@ -67,11 +67,11 @@ impl CompactPolicy {
             .filter_map(|row| row.log_seq)
             .collect();
         let reminder = sessions
-            .with_entry_task_state(session_id, |state| {
-                Ok(crate::context_pipeline::tail_reminders::build_compaction_content(state))
-            })
+            .settle_stale_plan(session_id)
             .ok()
-            .flatten();
+            .and_then(|state| {
+                crate::context_pipeline::tail_reminders::build_compaction_content(&state)
+            });
         let did = Self::compact_transcript(
             budget,
             sessions,

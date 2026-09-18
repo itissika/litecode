@@ -1,13 +1,14 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-
-use crate::config::WorkspacePaths;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanRef {
     pub relative_path: String,
     pub slug: String,
+    /// Content hash the session last authored or acknowledged.
+    pub revision: Option<String>,
 }
 
 impl PlanRef {
@@ -15,8 +16,30 @@ impl PlanRef {
         Self {
             relative_path: format!(".litecode/plan/{slug}.md"),
             slug: slug.to_string(),
+            revision: None,
         }
     }
+
+    pub fn with_revision(slug: &str, revision: Option<String>) -> Self {
+        Self {
+            revision,
+            ..Self::new(slug)
+        }
+    }
+}
+
+/// Stable content hash for plan revision tracking.
+pub fn plan_content_revision(content: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Content hash of an existing plan file.
+pub fn plan_file_revision(path: &Path) -> Option<String> {
+    std::fs::read(path)
+        .ok()
+        .map(|bytes| plan_content_revision(&bytes))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -99,17 +122,15 @@ impl TaskReminders {
     }
 }
 
-pub fn plan_dir(paths: &WorkspacePaths) -> PathBuf {
-    paths.plan_dir.clone()
-}
-
 /// Clear active plan overlay when the plan file is missing on disk.
-pub fn prune_stale_active_plan(state: &mut TaskReminders) -> bool {
+///
+/// Callers pass the workspace-owned plan directory explicitly: this runs on
+/// shared worker threads where the thread-local `active_paths()` fallback would
+/// point at the process launch directory.
+pub fn prune_stale_active_plan(state: &mut TaskReminders, plan_dir: &Path) -> bool {
     let Some(plan) = state.active_plan.as_ref() else {
         return false;
     };
-    let paths = crate::config::workspace::active_paths();
-    let plan_dir = plan_dir(&paths);
     if !plan_dir.is_dir() {
         state.clear_plan();
         return true;
@@ -197,9 +218,6 @@ mod tests {
     #[test]
     fn prune_stale_active_plan_clears_when_file_missing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        crate::config::workspace::set_runtime_paths(
-            crate::config::WorkspacePaths::for_legacy_root(dir.path()),
-        );
         let plan_root = dir.path().join(".litecode/plan");
         std::fs::create_dir_all(&plan_root).unwrap();
         std::fs::write(plan_root.join("gone.md"), "# old").unwrap();
@@ -209,30 +227,25 @@ mod tests {
             todos: vec![],
             active_plan: Some(PlanRef::new("gone")),
         };
-        assert!(prune_stale_active_plan(&mut state));
+        assert!(prune_stale_active_plan(&mut state, &plan_root));
         assert!(state.active_plan.is_none());
     }
 
     #[test]
     fn prune_stale_active_plan_clears_when_plan_dir_missing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        crate::config::workspace::set_runtime_paths(
-            crate::config::WorkspacePaths::for_legacy_root(dir.path()),
-        );
+        let plan_root = dir.path().join(".litecode/plan");
         let mut state = TaskReminders {
             todos: vec![],
             active_plan: Some(PlanRef::new("gone")),
         };
-        assert!(prune_stale_active_plan(&mut state));
+        assert!(prune_stale_active_plan(&mut state, &plan_root));
         assert!(state.active_plan.is_none());
     }
 
     #[test]
     fn prune_stale_active_plan_keeps_when_file_exists() {
         let dir = tempfile::tempdir().expect("tempdir");
-        crate::config::workspace::set_runtime_paths(
-            crate::config::WorkspacePaths::for_legacy_root(dir.path()),
-        );
         let plan_root = dir.path().join(".litecode/plan");
         std::fs::create_dir_all(&plan_root).unwrap();
         std::fs::write(plan_root.join("keep.md"), "# keep").unwrap();
@@ -241,7 +254,14 @@ mod tests {
             todos: vec![],
             active_plan: Some(PlanRef::new("keep")),
         };
-        assert!(!prune_stale_active_plan(&mut state));
+        assert!(!prune_stale_active_plan(&mut state, &plan_root));
         assert!(state.active_plan.is_some());
+    }
+
+    #[test]
+    fn plan_content_revision_is_stable_and_content_sensitive() {
+        let first = plan_content_revision(b"# Plan");
+        assert_eq!(first, plan_content_revision(b"# Plan"));
+        assert_ne!(first, plan_content_revision(b"# Plan v2"));
     }
 }

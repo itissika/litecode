@@ -305,6 +305,7 @@ impl SessionManager {
                 spine_from: 0,
                 todos: Vec::new(),
                 plan_slug: None,
+                plan_revision: None,
                 preview: String::new(),
             }
         });
@@ -371,12 +372,12 @@ impl SessionManager {
                 .iter()
                 .filter_map(|v| serde_json::from_value(v.clone()).ok())
                 .collect(),
-            active_plan: meta
-                .plan_slug
-                .as_ref()
-                .map(|slug| crate::session::task_state::PlanRef::new(slug)),
+            active_plan: meta.plan_slug.as_ref().map(|slug| {
+                crate::session::task_state::PlanRef::with_revision(slug, meta.plan_revision.clone())
+            }),
         };
-        if prune_stale_active_plan(&mut task_state) {
+        let plan_dir = self.plan_dir_path();
+        if prune_stale_active_plan(&mut task_state, &plan_dir) {
             let _ = self.mutate_blocking(SessionMutation::SaveTaskState {
                 session_id: sid.clone(),
                 expected_revision: receipt.revision,
@@ -430,7 +431,8 @@ impl SessionManager {
         let sid = receipt.session_id.clone();
         let meta = self.data.meta_blocking(&sid)?;
         let mut task_state = TaskReminders::default();
-        if prune_stale_active_plan(&mut task_state) {
+        let plan_dir = self.plan_dir_path();
+        if prune_stale_active_plan(&mut task_state, &plan_dir) {
             let _ = self.mutate_blocking(SessionMutation::SaveTaskState {
                 session_id: sid.clone(),
                 expected_revision: receipt.revision,
@@ -466,12 +468,12 @@ impl SessionManager {
                 .iter()
                 .filter_map(|v| serde_json::from_value(v.clone()).ok())
                 .collect(),
-            active_plan: meta
-                .plan_slug
-                .as_ref()
-                .map(|slug| crate::session::task_state::PlanRef::new(slug)),
+            active_plan: meta.plan_slug.as_ref().map(|slug| {
+                crate::session::task_state::PlanRef::with_revision(slug, meta.plan_revision.clone())
+            }),
         };
-        if prune_stale_active_plan(&mut task_state) {
+        let plan_dir = self.plan_dir_path();
+        if prune_stale_active_plan(&mut task_state, &plan_dir) {
             let _ = self.mutate_blocking(SessionMutation::SaveTaskState {
                 session_id: session_id.to_string(),
                 expected_revision: revision,
@@ -586,6 +588,87 @@ impl SessionManager {
             state,
         })?;
         Ok(())
+    }
+
+    /// Workspace-owned plan directory for this manager's `.litecode` root.
+    pub fn plan_dir_path(&self) -> std::path::PathBuf {
+        self.data_root_path().join("plan")
+    }
+
+    /// Update the content hash the session last saw for its active plan.
+    pub fn update_active_plan_revision(
+        &self,
+        session_id: &str,
+        slug: &str,
+        revision: &str,
+    ) -> anyhow::Result<()> {
+        self.with_entry_task_state_mut(session_id, |state| {
+            if let Some(plan) = state.active_plan.as_mut()
+                && plan.slug == slug
+            {
+                plan.revision = Some(revision.to_string());
+            }
+            Ok(())
+        })?;
+        self.save_task_state(session_id)
+    }
+
+    /// Compare the active plan file with the revision the session last saw.
+    ///
+    /// Execution turns call this before spawning: when the on-disk Markdown was
+    /// edited outside the session, the agent gets a reminder to read it before
+    /// executing. The revision is only advanced after a completed read/edit tool
+    /// call in the turn, so an ignored reminder fires again next time. `None`
+    /// means the file is unchanged (or missing; stale settlement owns that case).
+    pub fn plan_execution_reminder(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+        let Some(plan) = self.with_entry_task_state(session_id, |s| Ok(s.active_plan.clone()))?
+        else {
+            return Ok(None);
+        };
+        let path = self.plan_dir_path().join(format!("{}.md", plan.slug));
+        let Some(revision) = crate::session::task_state::plan_file_revision(&path) else {
+            return Ok(None);
+        };
+        if plan.revision.as_deref() == Some(revision.as_str()) {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "<system-reminder>\n[Plan updated] {} changed since you last read it. Read that file before starting execution.\n</system-reminder>",
+            plan.relative_path
+        )))
+    }
+
+    /// Drop an active-plan pointer whose plan file is gone, just before a model call.
+    ///
+    /// The system owns file loss, not the model: when the pointer was stale the
+    /// cleared state is persisted and a PlanChanged event is published so the UI
+    /// stops showing a plan that no longer exists. Persistence and publish
+    /// failures are logged, never fatal — the caller still gets the settled state.
+    ///
+    /// The plan directory is resolved from this manager's own data root, never
+    /// from thread-local `active_paths()`: manual compaction runs on shared
+    /// worker threads that have no workspace context.
+    pub fn settle_stale_plan(&self, session_id: &str) -> anyhow::Result<TaskReminders> {
+        let plan_dir = self.plan_dir_path();
+        let (state, changed) = self.with_entry_task_state_mut(session_id, |s| {
+            let changed = prune_stale_active_plan(s, &plan_dir);
+            Ok((s.clone(), changed))
+        })?;
+        if !changed {
+            return Ok(state);
+        }
+        if let Err(e) = self.save_task_state(session_id) {
+            tracing::warn!(session_id, error = %e, "failed to persist cleared active plan");
+        }
+        if !self.publish_internal(
+            session_id,
+            InternalEvent::PlanChanged {
+                active_plan_path: None,
+            },
+        ) {
+            tracing::warn!(session_id, "failed to publish cleared active plan");
+        }
+        Ok(state)
     }
 
     pub fn with_entry_task_state_mut<F, R>(&self, session_id: &str, f: F) -> anyhow::Result<R>
@@ -1601,7 +1684,8 @@ impl SessionManager {
     pub fn register_session(&self, session_id: &str, mut task_state: TaskReminders) {
         let meta = self.data.meta_blocking(session_id).ok();
         let revision = self.data.revision_blocking(session_id).unwrap_or(0);
-        if prune_stale_active_plan(&mut task_state) {
+        let plan_dir = self.plan_dir_path();
+        if prune_stale_active_plan(&mut task_state, &plan_dir) {
             let _ = self.mutate_blocking(SessionMutation::SaveTaskState {
                 session_id: session_id.to_string(),
                 expected_revision: revision,
@@ -2722,5 +2806,143 @@ mod child_session_tests {
         let removed = mgr.remove_orphan_child_sessions();
         assert_eq!(removed, 1);
         assert!(mgr.data().meta_blocking(&orphan).is_err());
+    }
+}
+
+#[cfg(test)]
+mod plan_settle_tests {
+    use super::*;
+    use crate::config::TurnGuard;
+    use crate::config::WorkspacePaths;
+    use crate::config::workspace::set_runtime_paths;
+    use crate::session::task_state::PlanRef;
+    use std::sync::Arc;
+
+    fn setup() -> (tempfile::TempDir, Arc<SessionManager>, String) {
+        let dir = tempfile::tempdir().unwrap();
+        // Deliberately point the thread-local workspace elsewhere: plan
+        // resolution must come from the SessionManager data root.
+        set_runtime_paths(WorkspacePaths::for_legacy_root(
+            &dir.path().join("wrong-thread-workspace"),
+        ));
+        let db = dir.path().join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db.to_str().unwrap().to_string(),
+        ));
+        let sid = mgr.open_session_sync("/proj", "default", None).unwrap();
+        (dir, mgr, sid)
+    }
+
+    fn seed_active_plan(mgr: &SessionManager, sid: &str, slug: &str) {
+        seed_active_plan_with_revision(mgr, sid, slug, None);
+    }
+
+    fn seed_active_plan_with_revision(
+        mgr: &SessionManager,
+        sid: &str,
+        slug: &str,
+        revision: Option<String>,
+    ) {
+        mgr.with_entry_task_state_mut(sid, |s| {
+            s.set_active_plan(PlanRef::with_revision(slug, revision));
+            Ok(())
+        })
+        .unwrap();
+        mgr.save_task_state(sid).unwrap();
+    }
+
+    fn write_plan_file(mgr: &SessionManager, slug: &str, content: &str) -> std::path::PathBuf {
+        let root = mgr.plan_dir_path();
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join(format!("{slug}.md"));
+        std::fs::write(&file, content).unwrap();
+        file
+    }
+
+    #[test]
+    fn keeps_active_plan_when_file_exists() {
+        let (_dir, mgr, sid) = setup();
+        write_plan_file(&mgr, "calm-river", "# Plan");
+        seed_active_plan(&mgr, &sid, "calm-river");
+        let mut rx = mgr.subscribe(&sid).expect("subscribe");
+        while rx.try_recv().is_ok() {}
+
+        let state = mgr.settle_stale_plan(&sid).unwrap();
+        assert!(state.active_plan.is_some());
+        assert!(
+            rx.try_recv().is_err(),
+            "an existing plan must not emit PlanChanged"
+        );
+    }
+
+    #[test]
+    fn clears_missing_plan_then_persists_and_publishes() {
+        let (_dir, mgr, sid) = setup();
+        seed_active_plan(&mgr, &sid, "gone-river");
+        let mut rx = mgr.subscribe(&sid).expect("subscribe");
+        while rx.try_recv().is_ok() {}
+
+        let state = mgr.settle_stale_plan(&sid).unwrap();
+        assert!(state.active_plan.is_none());
+        assert!(
+            mgr.with_entry_task_state(&sid, |s| Ok(s.active_plan.clone()))
+                .unwrap()
+                .is_none()
+        );
+        assert!(mgr.data().meta_blocking(&sid).unwrap().plan_slug.is_none());
+
+        let envelope = rx.try_recv().expect("PlanChanged");
+        assert!(matches!(
+            envelope.event,
+            InternalEvent::PlanChanged {
+                active_plan_path: None
+            }
+        ));
+    }
+
+    #[test]
+    fn plan_execution_reminder_tracks_external_edit_until_seen() {
+        let (_dir, mgr, sid) = setup();
+        write_plan_file(&mgr, "calm-river", "# v1");
+        let rev1 = crate::session::task_state::plan_content_revision(b"# v1");
+        seed_active_plan_with_revision(&mgr, &sid, "calm-river", Some(rev1.clone()));
+
+        assert!(mgr.plan_execution_reminder(&sid).unwrap().is_none());
+
+        write_plan_file(&mgr, "calm-river", "# v2");
+        let reminder = mgr
+            .plan_execution_reminder(&sid)
+            .unwrap()
+            .expect("external edit must produce a reminder");
+        assert!(reminder.contains(".litecode/plan/calm-river.md"));
+        assert!(reminder.contains("Read that file before starting execution"));
+
+        // An ignored reminder stays dirty: the agent has not seen rev2 yet.
+        assert!(
+            mgr.plan_execution_reminder(&sid)
+                .unwrap()
+                .expect("unseen revision must keep reminding")
+                .contains(".litecode/plan/calm-river.md")
+        );
+
+        // A completed read/edit advances the seen revision exactly once.
+        let rev2 = crate::session::task_state::plan_content_revision(b"# v2");
+        mgr.update_active_plan_revision(&sid, "calm-river", &rev2)
+            .unwrap();
+        assert_eq!(
+            mgr.with_entry_task_state(&sid, |s| Ok(s.active_plan.clone()))
+                .unwrap()
+                .unwrap()
+                .revision
+                .as_deref(),
+            Some(rev2.as_str())
+        );
+        assert_eq!(
+            mgr.data().meta_blocking(&sid).unwrap().plan_revision,
+            Some(rev2)
+        );
+        assert!(mgr.plan_execution_reminder(&sid).unwrap().is_none());
     }
 }

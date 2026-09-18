@@ -116,10 +116,11 @@ fn classify_event(event: &Event, root: &Path) -> Option<(Vec<String>, bool)> {
     Some((paths, deleted))
 }
 
-/// Keep editable `.litecode/*.json`; drop product-internal trees (index writes);
-/// otherwise `watcher_exclude` is a hard cut — no Search-line rescue.
+/// Keep editable `.litecode/*.json` and plan markdown; drop product-internal
+/// trees (index writes); otherwise `watcher_exclude` is a hard cut — no
+/// Search-line rescue.
 fn event_rel_is_broadcast(rel: &str) -> bool {
-    if is_editable_litecode_json(rel) {
+    if is_editable_litecode_json(rel) || is_plan_file_rel(rel) {
         return true;
     }
     if path_has_product_internal_dir(rel) {
@@ -140,7 +141,7 @@ pub fn filter_change_for_ui(mut change: WorkspaceChange) -> Option<WorkspaceChan
 }
 
 fn ui_rel_is_noteworthy(rel: &str) -> bool {
-    if is_editable_litecode_json(rel) {
+    if is_editable_litecode_json(rel) || is_plan_file_rel(rel) {
         return true;
     }
     if path_has_product_internal_dir(rel) {
@@ -194,6 +195,15 @@ fn coalesce_pending(
 
 fn is_editable_litecode_json(rel: &str) -> bool {
     is_workspace_excludes_rel(rel) || crate::config::workspace::is_workspace_tool_defs_rel(rel)
+}
+
+/// A plan markdown file: exactly one level under `.litecode/plan/`, ending .md.
+/// The atomic-create temp name (`.<slug>.md.tmp`) and nested paths stay out.
+fn is_plan_file_rel(rel: &str) -> bool {
+    let Some(name) = rel.strip_prefix(".litecode/plan/") else {
+        return false;
+    };
+    !name.contains('/') && name.len() > 3 && name.ends_with(".md")
 }
 
 fn changes_include_workspace_excludes(changes: &[WorkspaceChange]) -> bool {
@@ -417,6 +427,45 @@ mod tests {
             let (paths, _) = classify_event(&ev, &root).expect(name);
             assert_eq!(paths, vec![format!(".litecode/{name}")]);
         }
+        crate::workspace::filter::activate_workspace_excludes(prev);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_markdown_is_broadcast_and_reaches_ui() {
+        let _lock = crate::workspace::filter::lock_excludes_cache_for_test();
+        let prev = crate::workspace::filter::active_workspace_excludes();
+        let root = temp_root();
+        crate::workspace::filter::activate_workspace_excludes(
+            crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults(),
+        );
+
+        let plan = root.join(".litecode").join("plan").join("calm-river.md");
+        fs::create_dir_all(plan.parent().unwrap()).unwrap();
+        fs::write(&plan, b"# Plan").unwrap();
+        let ev = make_event(EventKind::Modify(ModifyKind::Any), &[plan.to_str().unwrap()]);
+        let (paths, _) = classify_event(&ev, &root).expect("plan .md must broadcast");
+        assert_eq!(paths, vec![".litecode/plan/calm-river.md".to_string()]);
+        let ui = filter_change_for_ui(changed(&[".litecode/plan/calm-river.md"]))
+            .expect("plan .md must reach the UI");
+        assert_eq!(ui.paths, vec![".litecode/plan/calm-river.md".to_string()]);
+
+        // The atomic-create staging file does not end in .md: still blocked.
+        let tmp = root.join(".litecode").join("plan").join(".calm-river.md.tmp");
+        fs::write(&tmp, b"# Plan").unwrap();
+        let ev_tmp = make_event(EventKind::Modify(ModifyKind::Any), &[tmp.to_str().unwrap()]);
+        assert!(classify_event(&ev_tmp, &root).is_none());
+
+        // Only one level under plan/ counts as a plan file.
+        let nested = root.join(".litecode").join("plan").join("sub").join("x.md");
+        fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        fs::write(&nested, b"# Plan").unwrap();
+        let ev_nested = make_event(
+            EventKind::Modify(ModifyKind::Any),
+            &[nested.to_str().unwrap()],
+        );
+        assert!(classify_event(&ev_nested, &root).is_none());
+
         crate::workspace::filter::activate_workspace_excludes(prev);
         let _ = fs::remove_dir_all(&root);
     }

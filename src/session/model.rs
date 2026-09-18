@@ -171,5 +171,7 @@ pub struct SessionMeta {
     pub spine_from: Seq,
     pub todos: Vec<Value>,
     pub plan_slug: Option<String>,
+    /// Content hash the session last saw for `plan_slug`.
+    pub plan_revision: Option<String>,
     pub preview: String,
 }

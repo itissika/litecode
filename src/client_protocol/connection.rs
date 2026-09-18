@@ -97,6 +97,8 @@ pub async fn handle_jsonrpc(
                 input: String,
                 #[serde(default)]
                 session_id: String,
+                #[serde(default)]
+                plan_execution: bool,
             }
             let params: Params = match serde_json::from_value::<Params>(rpc.params.clone()) {
                 Ok(p) => p,
@@ -158,7 +160,13 @@ pub async fn handle_jsonrpc(
             let turn_id = uuid::Uuid::new_v4().to_string();
             let permission_sink = session.permission_sink_for(&sid, perm_tx, &turn_id);
             match session
-                .start_turn(&sid, &params.input, permission_sink, &turn_id)
+                .start_turn(
+                    &sid,
+                    &params.input,
+                    permission_sink,
+                    &turn_id,
+                    params.plan_execution,
+                )
                 .await
             {
                 Ok(()) => {

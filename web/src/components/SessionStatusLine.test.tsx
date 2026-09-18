@@ -18,6 +18,7 @@ import { useEditorStore } from "../stores/editorStore";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { emptySlice, useTurnStore, type TurnSlice } from "../stores/turnStore";
+import { useWorkspaceChangeStore } from "../stores/workspaceChangeStore";
 import {
   PANEL_EXIT_MS,
   PANEL_INITIAL_H,
@@ -79,6 +80,7 @@ beforeEach(() => {
   useTurnStore.setState({ byId: new Map() });
   useSessionStore.setState({ project: null, sessions: [], byId: new Map() } as never);
   useEditorStore.setState({ openFile: originalOpenFile } as never);
+  useWorkspaceChangeStore.setState({ last: null });
   vi.mocked(readFile).mockReset().mockResolvedValue("# plan");
 });
 
@@ -90,6 +92,7 @@ afterEach(() => {
   useTurnStore.setState({ byId: new Map() });
   useSessionStore.setState({ project: null, sessions: [], byId: new Map() } as never);
   useEditorStore.setState({ openFile: originalOpenFile } as never);
+  useWorkspaceChangeStore.setState({ last: null });
 });
 
 describe("SessionStatusLine — resident capsules", () => {
@@ -752,6 +755,88 @@ describe("SessionStatusLine — migrated chip content", () => {
     fireEvent.click(screen.getByTestId("capsule-plan"));
 
     expect(await screen.findByText("lost")).toBeTruthy();
+  });
+
+  it("re-reads the plan when the watcher reports the file changed", async () => {
+    useSessionStore.setState({ project: "E:\\project" } as never);
+    vi.mocked(readFile).mockResolvedValueOnce("# v1");
+    seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+    expect(await screen.findByRole("heading", { name: "v1" })).toBeTruthy();
+
+    vi.mocked(readFile).mockResolvedValueOnce("# v2");
+    act(() => {
+      useWorkspaceChangeStore
+        .getState()
+        .record([".litecode/plan/calm.md"], "modified");
+    });
+
+    expect(await screen.findByRole("heading", { name: "v2" })).toBeTruthy();
+    expect(vi.mocked(readFile)).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks the plan lost when the watcher reports it deleted", async () => {
+    useSessionStore.setState({ project: "E:\\project" } as never);
+    vi.mocked(readFile).mockResolvedValue("# v1");
+    seedTurn("s1", { activePlanPath: ".litecode/plan/gone.md" });
+
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+    expect(await screen.findByRole("heading", { name: "v1" })).toBeTruthy();
+
+    act(() => {
+      useWorkspaceChangeStore
+        .getState()
+        .record([".litecode/plan/gone.md"], "deleted");
+    });
+
+    expect(await screen.findByText("lost")).toBeTruthy();
+  });
+
+  it("does not re-read on mount when the latest workspace tick is already known", async () => {
+    useSessionStore.setState({ project: "E:\\project" } as never);
+    useWorkspaceChangeStore
+      .getState()
+      .record([".litecode/plan/calm.md"], "modified");
+    vi.mocked(readFile).mockResolvedValue("# current");
+    seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+
+    expect(await screen.findByRole("heading", { name: "current" })).toBeTruthy();
+    expect(vi.mocked(readFile)).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a stale in-flight read after the watcher reports deletion", async () => {
+    useSessionStore.setState({ project: "E:\\project" } as never);
+    let resolveRead: (value: string) => void = () => {};
+    vi.mocked(readFile).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    seedTurn("s1", { activePlanPath: ".litecode/plan/gone.md" });
+
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+
+    act(() => {
+      useWorkspaceChangeStore
+        .getState()
+        .record([".litecode/plan/gone.md"], "deleted");
+    });
+    expect(await screen.findByText("lost")).toBeTruthy();
+
+    await act(async () => {
+      resolveRead("# stale");
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("heading", { name: "stale" })).toBeNull();
+    expect(screen.getByText("lost")).toBeTruthy();
   });
 
   it("sits the Open affordance at the end of the plan file row", async () => {

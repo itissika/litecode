@@ -372,6 +372,9 @@ pub struct TurnOptions {
     pub binding: BindingSource,
     pub depth: u32,
     pub max_steps_override: Option<u32>,
+    /// One-shot harness reminder appended after the user message of the first
+    /// step. Kept out of `input` so the optimistic user row still seals by text.
+    pub plan_review_reminder: Option<String>,
 }
 
 impl TurnOptions {
@@ -430,6 +433,7 @@ pub fn spawn_turn(
     };
     let (tx, rx) = mpsc::unbounded_channel::<InternalEnvelope>();
     let observer = ChannelObserver::new(tx);
+    let plan_review_reminder = opts.plan_review_reminder.clone();
     let mut agent_loop = runtime.build_runtime(
         session_id,
         sessions,
@@ -438,6 +442,7 @@ pub fn spawn_turn(
         observer,
         opts,
     )?;
+    agent_loop.set_plan_review_reminder(plan_review_reminder);
 
     let cancel = agent_loop.cancel_token();
     let step_max = agent_loop.agent_config.max_steps;
@@ -485,6 +490,8 @@ pub struct AgentRuntime {
     pub(crate) turn_usage_totals: TurnTokenStats,
     /// Stored parameters for deferred build_tool_list (async MCP schema fetch).
     build_tool_params: Option<Arc<BuildToolParams>>,
+    /// One-shot plan reminder consumed by `inject_background_reminders`.
+    plan_review_reminder: Option<String>,
 }
 
 /// Parameters needed to call build_tool_list lazily on first turn.
@@ -583,12 +590,17 @@ impl AgentRuntime {
             turn_token_stats: TurnTokenStats::default(),
             turn_usage_totals: TurnTokenStats::default(),
             build_tool_params: Some(build_tool_params),
+            plan_review_reminder: None,
         };
         Ok(runtime)
     }
 
     pub fn sessions(&self) -> &Arc<SessionManager> {
         &self.sessions
+    }
+
+    pub(crate) fn set_plan_review_reminder(&mut self, reminder: Option<String>) {
+        self.plan_review_reminder = reminder;
     }
 
     /// Access the runtime context — panics if called before first turn (logic error).
@@ -1005,6 +1017,7 @@ impl AgentRuntime {
         self.emit_plan_changed();
 
         let outcome = crate::agent::run(self, &mut items).await;
+        self.sync_active_plan_revision_after_turn(&items);
 
         let should_commit = matches!(
             outcome,

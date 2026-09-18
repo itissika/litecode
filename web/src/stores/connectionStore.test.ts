@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useConnectionStore, shouldIgnoreForwardedSubagentEvent } from "./connectionStore";
 import { useMessageStore } from "./messageStore";
 import { useSessionStore } from "./sessionStore";
+import { useWorkspaceChangeStore } from "./workspaceChangeStore";
 
 describe("shouldIgnoreForwardedSubagentEvent", () => {
   it("ignores turn/buffer/permission when parent_session_id is set", () => {
@@ -77,5 +78,26 @@ describe("agent/subagent_bound → session/list refresh", () => {
     });
 
     expect(listSessions).not.toHaveBeenCalled();
+  });
+});
+
+describe("workspace/changed → workspace change store", () => {
+  afterEach(() => {
+    useWorkspaceChangeStore.setState({ last: null });
+  });
+
+  it("records every change for panels that re-read files", () => {
+    useConnectionStore.getState().dispatchEnvelope({
+      method: "workspace/changed",
+      params: {
+        paths: [".litecode/plan/calm-river.md"],
+        kind: "modified",
+      },
+    });
+
+    expect(useWorkspaceChangeStore.getState().last).toMatchObject({
+      paths: [".litecode/plan/calm-river.md"],
+      kind: "modified",
+    });
   });
 });

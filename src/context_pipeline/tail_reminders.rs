@@ -1,3 +1,4 @@
+use crate::session::task_state::PlanRef;
 use crate::session::task_state::TaskReminders;
 use crate::session::task_state::TodoStatus;
 
@@ -6,8 +7,8 @@ use crate::session::task_state::TodoStatus;
 /// Called only right after a full context compaction (Plan C: no per-step
 /// injection), so the model regains todo/plan awareness after the window reset.
 /// Includes the **full todo list** — counts alone are useless to a model that
-/// just lost its working memory — plus the active plan path and a read/rebuild
-/// hint. Returns `None`
+/// just lost its working memory — plus the active plan path and a
+/// continue/finish hint. Returns `None`
 /// when there is nothing to remind (no active todos and no active plan).
 pub fn build_compaction_content(state: &TaskReminders) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
@@ -26,10 +27,7 @@ pub fn build_compaction_content(state: &TaskReminders) -> Option<String> {
     }
 
     if let Some(plan) = &state.active_plan {
-        parts.push(format!(
-            "[Active plan] {}\nRead this file before continuing. If it does not exist, call plan finish, then plan create to reconstruct the plan from remaining task context. Do not delete plan files with write, edit, or bash.",
-            plan.relative_path
-        ));
+        parts.push(active_plan_reminder(plan));
     }
 
     if parts.is_empty() {
@@ -37,6 +35,15 @@ pub fn build_compaction_content(state: &TaskReminders) -> Option<String> {
     } else {
         Some(parts.join("\n\n"))
     }
+}
+
+/// Reminder for an active plan that exists on disk (callers settle stale
+/// pointers first), so it only says how to continue or close the plan.
+fn active_plan_reminder(plan: &PlanRef) -> String {
+    format!(
+        "[Active plan] {}\nAn active plan exists. If it is not finished, re-read the plan and continue the work. If the work is done, call plan finish to clear the active plan state.",
+        plan.relative_path
+    )
 }
 
 /// Append a reminder as a `user_text` Item into a transcript.
@@ -93,9 +100,8 @@ mod tests {
         };
         let tail = build_compaction_content(&state).expect("tail");
         assert!(tail.starts_with("[Active plan] .litecode/plan/calm-river.md"));
-        assert!(tail.contains("Read this file before continuing"));
+        assert!(tail.contains("re-read the plan and continue the work"));
         assert!(tail.contains("plan finish"));
-        assert!(tail.contains("plan create"));
     }
 
     #[test]

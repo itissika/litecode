@@ -604,6 +604,26 @@ describe("turnStore convergence", () => {
     );
   });
 
+  it("passes plan_execution to agent/run for an execution turn", async () => {
+    const sessionId = "s-plan-exec";
+    const sendRpc = vi.fn(async () => ({ started: true }));
+    useConnectionStore.setState({ sendRpc } as never);
+
+    expect(useTurnStore.getState().start(sessionId, "execute the plan", true)).toBe(
+      true,
+    );
+    await vi.waitFor(() => {
+      expect(sendRpc).toHaveBeenCalledWith(
+        "agent/run",
+        expect.objectContaining({
+          input: "execute the plan",
+          session_id: sessionId,
+          plan_execution: true,
+        }),
+      );
+    });
+  });
+
   it("agent/run reject returns to idle and discards the optimistic user row", async () => {
     const sessionId = "s3";
     useConnectionStore.setState({

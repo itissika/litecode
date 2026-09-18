@@ -28,6 +28,7 @@ import type { WorkspaceChangeKind } from "../api/workspace";
 import { useBashStore } from "./bashStore";
 import { useToastStore } from "./toastStore";
 import { useEngineStore } from "./engineStore";
+import { useWorkspaceChangeStore } from "./workspaceChangeStore";
 
 /** Module-level dockview API reference, set by useDockviewConfig. */
 let _dockviewApi: DockviewApi | null = null;
@@ -381,6 +382,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
           case "workspace/changed": {
             const { paths, kind } = params as unknown as WorkspaceChanged;
             const changeKind = kind as WorkspaceChangeKind;
+            useWorkspaceChangeStore.getState().record(paths, changeKind);
             void editor?.handleWorkspaceChange(paths, changeKind);
             void tree?.handleWorkspaceChange(paths, changeKind);
             settings?.handleWorkspaceChange?.(paths, changeKind);

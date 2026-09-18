@@ -851,6 +851,7 @@ pub(crate) fn load_meta_on(
         spine_from,
         todos_json,
         plan_slug,
+        plan_revision,
         preview,
     ): (
         String,
@@ -868,12 +869,13 @@ pub(crate) fn load_meta_on(
         i64,
         String,
         Option<String>,
+        Option<String>,
         String,
     ) = conn
         .query_row(
             "SELECT project, created_at, parent_session_id, parent_call_id, responsibility, subagent_depth,
                     agent_id, model_id, thinking_tier, context_mode, updated_at,
-                    compacted_seq, spine_from, todos_json, active_plan_slug, last_message
+                    compacted_seq, spine_from, todos_json, active_plan_slug, plan_revision, last_message
              FROM sessions WHERE id = ?1",
             rusqlite::params![session_id],
             |row| {
@@ -894,6 +896,7 @@ pub(crate) fn load_meta_on(
                     row.get(13)?,
                     row.get(14)?,
                     row.get(15)?,
+                    row.get(16)?,
                 ))
             },
         )
@@ -925,6 +928,7 @@ pub(crate) fn load_meta_on(
         spine_from,
         todos: serde_json::from_str(&todos_json).unwrap_or_default(),
         plan_slug,
+        plan_revision,
         preview,
     })
 }
@@ -1346,19 +1350,23 @@ impl Session {
 
     /// Load session-scoped todo/plan state from SQLite.
     pub fn load_task_state(&self) -> Result<TaskReminders> {
-        let (todos_json, active_plan_slug): (String, Option<String>) = self
+        let (todos_json, active_plan_slug, plan_revision): (
+            String,
+            Option<String>,
+            Option<String>,
+        ) = self
             .conn()
             .query_row(
-                "SELECT COALESCE(todos_json, '[]'), active_plan_slug FROM sessions WHERE id = ?1",
+                "SELECT COALESCE(todos_json, '[]'), active_plan_slug, plan_revision FROM sessions WHERE id = ?1",
                 rusqlite::params![self.id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
 
         let todos: Vec<TodoItem> = serde_json::from_str(&todos_json)
             .map_err(|e| LitecodeError::ToolExecution(format!("parse session todos: {e}")))?;
 
-        let active_plan = active_plan_slug.map(|slug| PlanRef::new(&slug));
+        let active_plan = active_plan_slug.map(|slug| PlanRef::with_revision(&slug, plan_revision));
 
         let mut state = TaskReminders { todos, active_plan };
         state.normalize();
@@ -1418,11 +1426,15 @@ impl Session {
         state.normalize();
 
         let todos_json = serde_json::to_string(&state.todos)?;
-        let active_plan_slug = state.active_plan.as_ref().map(|p| p.slug.as_str());
+        let (active_plan_slug, plan_revision) = state
+            .active_plan
+            .as_ref()
+            .map(|p| (Some(p.slug.as_str()), p.revision.as_deref()))
+            .unwrap_or((None, None));
 
         conn.execute(
-            "UPDATE sessions SET todos_json = ?1, active_plan_slug = ?2 WHERE id = ?3",
-            rusqlite::params![todos_json, active_plan_slug, session_id],
+            "UPDATE sessions SET todos_json = ?1, active_plan_slug = ?2, plan_revision = ?3 WHERE id = ?4",
+            rusqlite::params![todos_json, active_plan_slug, plan_revision, session_id],
         )
         .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
         Ok(())
@@ -2456,6 +2468,25 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn task_state_roundtrips_plan_revision() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let state = TaskReminders {
+            todos: Vec::new(),
+            active_plan: Some(PlanRef {
+                relative_path: ".litecode/plan/calm-river.md".into(),
+                slug: "calm-river".into(),
+                revision: Some("rev-1".into()),
+            }),
+        };
+        session.save_task_state(&state).unwrap();
+
+        let loaded = session.load_task_state().unwrap();
+        let plan = loaded.active_plan.expect("active plan");
+        assert_eq!(plan.slug, "calm-river");
+        assert_eq!(plan.revision.as_deref(), Some("rev-1"));
     }
 
     #[test]

@@ -163,6 +163,7 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             subagent_depth    INTEGER NOT NULL DEFAULT 0,
             todos_json        TEXT NOT NULL DEFAULT '[]',
             active_plan_slug  TEXT,
+            plan_revision     TEXT,
             parent_session_id TEXT,
             parent_call_id    TEXT,
             responsibility    TEXT NOT NULL DEFAULT '',
@@ -272,6 +273,9 @@ fn migrate_optional_columns(conn: &Connection) -> Result<()> {
                 "ALTER TABLE sessions ADD COLUMN responsibility TEXT NOT NULL DEFAULT ''",
                 [],
             )?;
+        }
+        if !cols.iter().any(|c| c == "plan_revision") {
+            conn.execute("ALTER TABLE sessions ADD COLUMN plan_revision TEXT", [])?;
         }
     }
     if table_exists(conn, "transcript_items")? {

@@ -29,7 +29,7 @@ MCP / 自定义工具：本文件只存**定义**。进对话还要人类在设�
 
 - `files_exclude`：资源管理器当文件不存在；检索默认也不碰。
 - `search_exclude`：资源管理器还能看见，但人的搜索、`grep` / `glob`、文本索引、语义索引默认不扫。生成物（`Cargo.lock`、`package-lock.json`、`*.min.js` 等）不想被检索时写在这里，不要靠引擎再滤一层语言表。
-- `watcher_exclude`：监视器**源上硬切**，命中的路径不上变化总线（引擎和界面都收不到增量）。默认含 `**/.litecode/**`。**例外**（硬编码放行，否则设置无法热加载）：`excludes.json`、`mcp.json`、`custom_tools.json`。不放行 `index/` 等产物，也不放行 `engines.json`。
+- `watcher_exclude`：监视器**源上硬切**，命中的路径不上变化总线（引擎和界面都收不到增量）。默认含 `**/.litecode/**`。**例外**（硬编码放行，否则设置无法热加载）：`excludes.json`、`mcp.json`、`custom_tools.json`；以及用于计划面板刷新的 `.litecode/plan/*.md`（索引仍硬跳过 `.litecode`）。不放行 `index/` 等产物，也不放行 `engines.json`。
 
 另两个开关：`git_ignore`（检索是否尊重 `.gitignore`，默认 `true`）；`explorer_git_ignore`（资源管理器是否尊重 `.gitignore`，默认 `false`）。检索只认排除名单 + 是否用 ignore 文件；不另藏 hidden。本目录自身的硬跳不走这份列表。
 
@@ -107,7 +107,7 @@ MCP / 自定义工具：本文件只存**定义**。进对话还要人类在设�
 
 ## 只读
 
-排障或用专用工具可以读。**不要**用 `write` / `edit` / `bash` 创建、覆盖、移动、删除。例外只有：`engines.json` 由人类在设置页开关；计划用 `plan` 工具（不要自拟文件名）。打开工作区会建空的 `logs/`、`plan/`，并覆盖本 README。
+排障或用专用工具可以读。**不要**用 `write` / `edit` / `bash` 创建、覆盖、移动、删除。例外只有：`engines.json` 由人类在设置页开关；计划的创建/结束走 `plan` 工具（不要自拟文件名），正文可用 `edit` 修订，但不要 `write`、`rm`、重命名。打开工作区会建空的 `logs/`、`plan/`，并覆盖本 README。
 
 路径均相对 `.litecode/`。
 
@@ -119,7 +119,7 @@ MCP / 自定义工具：本文件只存**定义**。进对话还要人类在设�
 | `workspace.lock` | 同一时刻只允许一个 serve/CLI 占用本工作区。异常退出后先确认没有其它 LiteCode 再处理残留锁 |
 | `sessions.db` | 会话日志真源（SQLite，可能还有 `-wal`/`-shm`）。打开工作区不预建。查历史用 `session_search`。不要删 |
 | `logs/` | 进程日志 `logs/litecode.log`。排障可读 |
-| `plan/` | 工作区计划稿。增/结束只走 `plan` 工具（`finish` 只清会话指针，不删文件） |
+| `plan/` | 工作区计划稿。创建/结束走 `plan` 工具，正文用 `edit` 修订（不要 `write`/`rm`/重命名；`finish` 只清会话指针，不删文件） |
 | `bash/` | 后台命令输出：`bash/<id>.output`（id 形如 `bg_<8 位 hex>`）。用 `read` 看，不要改正在写的文件 |
 | `index/` | `code_search` 语义索引产物。不要手编 |
 | `session-index/` | 会话语料的语义索引。字面检索走 `sessions.db` |

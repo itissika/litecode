@@ -6,10 +6,9 @@ use std::sync::Mutex;
 use petname::{Generator, Petnames};
 use serde_json::Value;
 
-use crate::config::workspace::active_paths;
 use crate::context_pipeline::Context;
 use crate::session::manager::SessionManager;
-use crate::session::task_state::{PlanRef, plan_dir};
+use crate::session::task_state::{PlanRef, plan_content_revision};
 use crate::tool::Tool;
 use crate::types::{LitecodeError, Result, ToolCallResult};
 
@@ -81,11 +80,13 @@ impl Tool for PlanTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Create or finish the session plan under .litecode/plan/. \
-         create writes a product-owned Markdown file (filename is auto-generated). \
-         finish clears the active plan pointer that is the only way to end a plan. \
-         Never delete, move, or overwrite .litecode/plan/ with write, edit, or bash; \
-         never rm the plan file or the .litecode directory."
+        "Create or finish the session plan under .litecode/plan/.\n\
+         A plan is co-authored with the user: after create, keep confirming and refining it with edit\n\
+         until the user approves, and never start executing the plan before that approval.\n\
+         create writes a Markdown file (filename is auto-generated); to rewrite the plan from scratch,\n\
+         call create again instead of write.\n\
+         finish clears the active plan pointer — that is the only way to end a plan.\n\
+         Never rm, rename, or move plan files; never write plan files or the .litecode directory."
             .into()
     }
 
@@ -113,8 +114,13 @@ impl Tool for PlanTool {
 }
 
 impl PlanTool {
-    fn set_active_plan(&self, session_id: &str, slug: &str) -> Result<()> {
-        let plan = PlanRef::new(slug);
+    fn set_active_plan(
+        &self,
+        session_id: &str,
+        slug: &str,
+        revision: Option<String>,
+    ) -> Result<()> {
+        let plan = PlanRef::with_revision(slug, revision);
         self.sessions
             .with_entry_task_state_mut(session_id, |state| {
                 state.set_active_plan(plan);
@@ -147,12 +153,11 @@ impl PlanTool {
 
     fn do_create(&self, input: &Value) -> Result<String> {
         let session_id = self.session_id()?;
-        let paths = active_paths();
 
         let content = crate::tool::require_nonempty_string(input, "content")
             .map_err(LitecodeError::ToolExecution)?;
 
-        let plan_root = plan_dir(&paths);
+        let plan_root = self.sessions.plan_dir_path();
         std::fs::create_dir_all(&plan_root)?;
 
         let slug = Self::generate_slug(&plan_root)?;
@@ -164,7 +169,8 @@ impl PlanTool {
         // active-plan pointer, then publish via rename 鈥?a failure before the
         // rename leaves neither a visible .md nor a DB pointer.
         std::fs::write(&tmp_path, content)?;
-        if let Err(e) = self.set_active_plan(&session_id, &slug) {
+        let revision = Some(plan_content_revision(content.as_bytes()));
+        if let Err(e) = self.set_active_plan(&session_id, &slug, revision) {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(e);
         }
@@ -291,6 +297,9 @@ mod tests {
         let plan = state.active_plan.as_ref().expect("active plan");
         assert_eq!(plan.slug, slug);
         assert_eq!(plan.relative_path, format!(".litecode/plan/{slug}.md"));
+        let expected_revision =
+            crate::session::task_state::plan_content_revision(file_content.as_bytes());
+        assert_eq!(plan.revision.as_deref(), Some(expected_revision.as_str()));
     }
 
     #[test]

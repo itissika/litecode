@@ -44,7 +44,7 @@ pub use model::{
 pub use store::{Session, SessionContextMeter, TranscriptRow};
 pub use surface::{Surface, SurfaceOp, derive_messages, derive_transcript_items, fold_surface};
 pub use task_state::{
-    PlanRef, TaskReminders, TodoItem, TodoStatus, plan_dir, prune_stale_active_plan, render_todos,
+    PlanRef, TaskReminders, TodoItem, TodoStatus, prune_stale_active_plan, render_todos,
 };
 pub use working::{WorkingRow, align_working, project_items};
 pub use workspace_lock::{WorkspaceLock, WorkspaceWriteLease};
