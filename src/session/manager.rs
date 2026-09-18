@@ -67,6 +67,16 @@ impl SessionStatus {
     }
 }
 
+/// Live child-session counts for the post-compaction reminder.
+///
+/// Counts only — ids, responsibilities, and results stay behind
+/// `subagent_list`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChildCounts {
+    pub total: usize,
+    pub running: usize,
+}
+
 impl SessionActivity {
     fn status(&self) -> SessionStatus {
         match self {
@@ -1024,6 +1034,34 @@ impl SessionManager {
     /// Public descendant ids for session-level tooling; root excluded.
     pub fn descendant_session_ids(&self, session_id: &str) -> Vec<String> {
         self.collect_child_ids_blocking(session_id)
+    }
+
+    /// Live child-session counts for the whole subtree: total and non-idle.
+    ///
+    /// Cheap read used by the post-compaction reminder so a window reset does
+    /// not erase the fact that child sessions exist. Details stay behind
+    /// `subagent_list`; this never spawns work.
+    pub fn child_counts(&self, session_id: &str) -> ChildCounts {
+        let ids = self.descendant_session_ids(session_id);
+        if ids.is_empty() {
+            return ChildCounts {
+                total: 0,
+                running: 0,
+            };
+        }
+        let records = self.records.lock().unwrap();
+        let running = ids
+            .iter()
+            .filter(|id| {
+                records
+                    .get(id.as_str())
+                    .is_some_and(|record| record.activity.status() != SessionStatus::Idle)
+            })
+            .count();
+        ChildCounts {
+            total: ids.len(),
+            running,
+        }
     }
 
     /// Signal cancel to every descendant running turn. Revert uses this before
@@ -2785,6 +2823,50 @@ mod child_session_tests {
         assert!(mgr.finish_turn(&child, "t-status").is_some());
         assert_eq!(mgr.session_status(&child), Some(SessionStatus::Idle));
         assert_eq!(mgr.session_status(&parent), Some(SessionStatus::Idle));
+    }
+
+    #[tokio::test]
+    async fn child_counts_tracks_subtree_running_and_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db.to_str().unwrap().to_string(),
+        ));
+        let parent = mgr.open_session("/proj", "default", None).await.unwrap();
+        let busy = mgr
+            .open_child_session("/proj", "reviewer", None, &parent, "call_busy")
+            .unwrap();
+        let idle = mgr
+            .open_child_session("/proj", "general", None, &parent, "call_idle")
+            .unwrap();
+        mgr.reserve_turn(&busy, "t-busy".into(), 5, "reviewer", "/proj")
+            .expect("reserve child");
+
+        assert_eq!(
+            mgr.child_counts(&parent),
+            ChildCounts {
+                total: 2,
+                running: 1
+            }
+        );
+        assert_eq!(
+            mgr.child_counts(&busy),
+            ChildCounts {
+                total: 0,
+                running: 0
+            }
+        );
+
+        assert!(mgr.release_turn_reservation(&busy, "t-busy"));
+        assert_eq!(
+            mgr.child_counts(&parent),
+            ChildCounts {
+                total: 2,
+                running: 0
+            }
+        );
+        assert_eq!(mgr.child_counts(&idle).total, 0);
     }
 
 

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import type { HumanRow } from "../api/types";
 import {
+  bashCallMetaByCallId,
   formatElapsed,
   headExitCode,
   isBackgroundBashResult,
@@ -104,5 +106,71 @@ bash_id: bg_a
     expect(isBashJobLive(`exit_code: 0
 ok
 `, job)).toBe(false);
+  });
+});
+
+function callRow(
+  callId: string,
+  name: string,
+  args: Record<string, unknown>,
+  seq = 1,
+): HumanRow {
+  return {
+    seq,
+    kind: "item/tool_call",
+    streaming: false,
+    body: {
+      type: "function_call",
+      id: `fc_${callId}`,
+      call_id: callId,
+      name,
+      arguments: JSON.stringify(args),
+      status: "completed",
+    },
+  };
+}
+
+function outputRow(callId: string, output: string, seq = 2): HumanRow {
+  return {
+    seq,
+    kind: "item/tool_result",
+    streaming: false,
+    body: { type: "function_call_output", call_id: callId, output },
+  };
+}
+
+describe("bashCallMetaByCallId", () => {
+  it("collects the full command and marks an explicit background call", () => {
+    const meta = bashCallMetaByCallId([
+      callRow("c1", "bash", { command: "npm run dev", run_in_background: true }),
+    ]);
+    expect(meta.get("c1")).toMatchObject({
+      command: "npm run dev",
+      background: true,
+    });
+  });
+
+  it("leaves a foreground call un-owned until its result converts it", () => {
+    const foreground = bashCallMetaByCallId([
+      callRow("c1", "bash", { command: "ls" }),
+    ]);
+    expect(foreground.get("c1")?.background).toBe(false);
+
+    // A foreground call that outlived its wait seals as a running document and
+    // becomes a job the transcript itself renders as the single-line row.
+    const converted = bashCallMetaByCallId([
+      callRow("c1", "bash", { command: "cargo build" }),
+      outputRow("c1", `status: running\nbash_id: bg_a\n`),
+    ]);
+    expect(converted.get("c1")?.background).toBe(true);
+    expect(converted.get("c1")?.output?.call_id).toBe("c1");
+  });
+
+  it("ignores non-bash calls and unloaded calls", () => {
+    const meta = bashCallMetaByCallId([
+      callRow("c1", "read", { file_path: "a.ts", run_in_background: true }),
+      outputRow("c1", "file body"),
+    ]);
+    expect(meta.size).toBe(0);
   });
 });

@@ -70,7 +70,10 @@ impl CompactPolicy {
             .settle_stale_plan(session_id)
             .ok()
             .and_then(|state| {
-                crate::context_pipeline::tail_reminders::build_compaction_content(&state)
+                crate::context_pipeline::tail_reminders::build_compaction_content(
+                    &state,
+                    Some(sessions.child_counts(session_id)),
+                )
             });
         let did = Self::compact_transcript(
             budget,

@@ -1,4 +1,11 @@
-import type { BashJob } from "../api/types";
+import {
+  functionCallOutputText,
+  isFunctionCall,
+  isFunctionCallOutput,
+  itemFromRow,
+  parseFunctionArguments,
+} from "../api/adapter";
+import type { BashJob, FunctionCallOutputItem, HumanRow } from "../api/types";
 
 export function formatElapsed(ms: number): string {
   const sec = Math.max(0, Math.floor(ms / 1000));
@@ -60,4 +67,54 @@ export function matchJob(
   const bashId = parseBashId(outputText);
   if (bashId) return jobs.find((j) => j.id === bashId);
   return undefined;
+}
+
+/**
+ * Transcript-derived metadata for one bash tool call, keyed by `call_id`.
+ *
+ *  - `command` — the full command from the call arguments (the job wire only
+ *    carries a collapsed, 80-char `command_preview`).
+ *  - `output` — the sealed tool result, when the result row is loaded.
+ *  - `background` — the capsule's ownership verdict: `run_in_background: true`
+ *    on the call, or a result that sealed as a running document (a foreground
+ *    call the backend converted to a job when it outlived its wait — the
+ *    transcript routes it to the single-line row on the same text).
+ *
+ * A call outside the loaded window has no entry; callers treat that as
+ * background (unknown), which is the safe direction — a live job's call row is
+ * in the window in practice, and hiding a real terminal is worse than showing
+ * a conservative one.
+ */
+export interface BashCallMeta {
+  command?: string;
+  output?: FunctionCallOutputItem;
+  background: boolean;
+}
+
+export function bashCallMetaByCallId(rows: HumanRow[]): Map<string, BashCallMeta> {
+  const meta = new Map<string, BashCallMeta>();
+  for (const row of rows) {
+    const item = itemFromRow(row);
+    if (!item || !isFunctionCall(item)) continue;
+    if (item.name !== "bash" || !item.call_id) continue;
+    const args = parseFunctionArguments(item.arguments);
+    const obj =
+      args && typeof args === "object" && !Array.isArray(args)
+        ? (args as Record<string, unknown>)
+        : {};
+    const entry: BashCallMeta = { background: obj.run_in_background === true };
+    if (typeof obj.command === "string") entry.command = obj.command;
+    meta.set(item.call_id, entry);
+  }
+  for (const row of rows) {
+    const item = itemFromRow(row);
+    if (!item || !isFunctionCallOutput(item) || !item.call_id) continue;
+    const entry = meta.get(item.call_id);
+    if (!entry) continue;
+    entry.output = item;
+    if (isBackgroundBashResult(functionCallOutputText(item))) {
+      entry.background = true;
+    }
+  }
+  return meta;
 }

@@ -4,27 +4,33 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api/workspace", () => ({ readFile: vi.fn() }));
 
-import type { BashJob, SessionInfo } from "../api/types";
+import type { BashJob, HumanRow, SessionInfo } from "../api/types";
 import { readFile } from "../api/workspace";
 import { useBashStore } from "../stores/bashStore";
 import { setDockviewApi, useConnectionStore } from "../stores/connectionStore";
 import { useEditorStore } from "../stores/editorStore";
-import { useMessageStore } from "../stores/messageStore";
+import {
+  emptySlice as emptyMessageSlice,
+  useMessageStore,
+} from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { emptySlice, useTurnStore, type TurnSlice } from "../stores/turnStore";
 import { useWorkspaceChangeStore } from "../stores/workspaceChangeStore";
 import {
+  BASH_CLAIM_GRACE_MS,
   PANEL_EXIT_MS,
   PANEL_INITIAL_H,
   PANEL_MAX_H,
   PLAN_EXECUTE_PROMPT,
   SessionStatusLine,
+  panelInitialHeight,
 } from "./SessionStatusLine";
 
 const bashJob: BashJob = {
@@ -70,6 +76,49 @@ function subagentSession(
 function seedTurn(sessionId: string, patch: Partial<TurnSlice>) {
   useTurnStore.setState({
     byId: new Map([[sessionId, { ...emptySlice(), ...patch }]]),
+  });
+}
+
+/** Transcript rows for a bash call — the capsule's background verdict and the
+ *  full command come from these (the job wire only carries a preview). */
+function bashCallRow(
+  callId: string,
+  args: Record<string, unknown>,
+  seq = 1,
+): HumanRow {
+  return {
+    seq,
+    kind: "item/tool_call",
+    streaming: false,
+    body: {
+      type: "function_call",
+      id: `fc_${callId}`,
+      call_id: callId,
+      name: "bash",
+      arguments: JSON.stringify(args),
+      status: "completed",
+    },
+  };
+}
+
+function bashResultRow(callId: string, output: string, seq = 2): HumanRow {
+  return {
+    seq,
+    kind: "item/tool_result",
+    streaming: false,
+    body: { type: "function_call_output", call_id: callId, output },
+  };
+}
+
+function seedRows(sessionId: string, rows: HumanRow[]) {
+  useMessageStore.setState((state) => {
+    const bySession = new Map(state.bySession);
+    bySession.set(sessionId, {
+      ...emptyMessageSlice(),
+      messages: rows,
+      display: rows,
+    });
+    return { bySession };
   });
 }
 
@@ -234,6 +283,10 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
   });
 
   it("an idle data change claims the slot for that capsule's domain", () => {
+    vi.useFakeTimers();
+    seedRows("s1", [
+      bashCallRow("c1", { command: "sleep 1", run_in_background: true }),
+    ]);
     render(<SessionStatusLine sessionId="s1" />);
     // Move the slot off todo first; hover claims are sticky.
     const plan = screen.getByTestId("capsule-plan");
@@ -241,14 +294,88 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     fireEvent.mouseLeave(plan);
     expect(plan.dataset.expanded).toBe("true");
 
-    // Idle (no hover, no panel): a bash change claims terminal.
+    // Idle (no hover, no panel): a background terminal claims the slot, but
+    // only after the short-call grace window.
     act(() => {
       useBashStore
         .getState()
         .applySnapshot("s1", { jobs: [bashJob], waits: [] });
     });
+    expect(screen.getByTestId("capsule-terminal").dataset.expanded).toBe(
+      "false",
+    );
+    act(() => {
+      vi.advanceTimersByTime(BASH_CLAIM_GRACE_MS + 1);
+    });
     expect(screen.getByTestId("capsule-terminal").dataset.expanded).toBe("true");
     expect(screen.getByTestId("capsule-plan").dataset.expanded).toBe("false");
+  });
+
+  it("keeps a foreground bash call out of the capsule and the slot", () => {
+    vi.useFakeTimers();
+    // No `run_in_background`: a foreground call stays in the message list.
+    seedRows("s1", [bashCallRow("c1", { command: "ls" })]);
+    render(<SessionStatusLine sessionId="s1" />);
+
+    act(() => {
+      useBashStore
+        .getState()
+        .applySnapshot("s1", { jobs: [bashJob], waits: [] });
+    });
+    act(() => {
+      vi.advanceTimersByTime(BASH_CLAIM_GRACE_MS * 3);
+    });
+
+    expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("true");
+    const terminal = screen.getByTestId("capsule-terminal");
+    expect(within(terminal).getByText("×0")).toBeTruthy();
+    expect(within(terminal).getByText("No active terminals")).toBeTruthy();
+  });
+
+  it("never claims for a background job that dies inside the grace window", () => {
+    vi.useFakeTimers();
+    seedRows("s1", [
+      bashCallRow("c1", { command: "npm run dev", run_in_background: true }),
+    ]);
+    render(<SessionStatusLine sessionId="s1" />);
+
+    act(() => {
+      useBashStore
+        .getState()
+        .applySnapshot("s1", { jobs: [bashJob], waits: [] });
+    });
+    act(() => {
+      vi.advanceTimersByTime(BASH_CLAIM_GRACE_MS - 100);
+    });
+    act(() => {
+      useBashStore.getState().applySnapshot("s1", { jobs: [], waits: [] });
+    });
+    act(() => {
+      vi.advanceTimersByTime(BASH_CLAIM_GRACE_MS * 2);
+    });
+    expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("true");
+  });
+
+  it("does not claim the slot when a background job leaves", () => {
+    vi.useFakeTimers();
+    seedRows("s1", [
+      bashCallRow("c1", { command: "npm run dev", run_in_background: true }),
+    ]);
+    useBashStore.getState().applySnapshot("s1", { jobs: [bashJob], waits: [] });
+    render(<SessionStatusLine sessionId="s1" />);
+    // The job was already present at mount: a baseline, never a claim.
+    act(() => {
+      vi.advanceTimersByTime(BASH_CLAIM_GRACE_MS * 2);
+    });
+    expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("true");
+
+    act(() => {
+      useBashStore.getState().applySnapshot("s1", { jobs: [], waits: [] });
+    });
+    act(() => {
+      vi.advanceTimersByTime(BASH_CLAIM_GRACE_MS * 2);
+    });
+    expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("true");
   });
 
   it("claims the slot for a plan change too", () => {
@@ -301,7 +428,7 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     // Todo owns the slot by default: current task + progress count, and the
     // expanded capsule stretches to fill the row (flex-1).
     const todo = screen.getByTestId("capsule-todo");
-    // WaveText fragments the current task into char spans, so match textContent.
+    // The current task renders as plain text, so match textContent.
     expect(todo.textContent).toContain("first");
     expect(within(todo).getByText("0/2")).toBeTruthy();
     // Flexbox computes the responsive endpoint; the expanded capsule takes all
@@ -437,11 +564,80 @@ describe("SessionStatusLine — vertical expand", () => {
 
     const panel = screen.getByTestId("status-capsule-panel");
     expect(panel.dataset.capsule).toBe("terminal");
-    expect(panel.style.height).toBe(`${PANEL_INITIAL_H}px`);
-    // Migrated terminal content: the alive job, clickable to reveal.
+    // The terminal panel opens taller: it hosts a live console, not a list.
+    expect(panel.style.height).toBe(`${panelInitialHeight("terminal")}px`);
+    // The alive job's compact header still carries the reveal affordance.
     expect(
       screen.getByRole("button", { name: "Reveal terminal: sleep 1" }),
     ).toBeTruthy();
+  });
+
+  it("renders the shared bash view with the live tail for a background job", async () => {
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method === "bash/tail") {
+        return {
+          text: "live-out",
+          truncated_on_disk: false,
+          alive: true,
+          exit_code: null,
+        };
+      }
+      throw new Error(`unexpected rpc ${method}`);
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+    // The transcript supplies the full command + the sealed running doc, so
+    // the view can address the job by its bash id.
+    seedRows("s1", [
+      bashCallRow("c1", {
+        command: "npm run dev -- --host",
+        run_in_background: true,
+      }),
+      bashResultRow(
+        "c1",
+        "status: running\nbash_id: bg_a\noutput_file: .litecode/bash/bg_a.output\n",
+      ),
+    ]);
+    useBashStore.getState().applySnapshot("s1", { jobs: [bashJob], waits: [] });
+    render(<SessionStatusLine sessionId="s1" />);
+
+    fireEvent.click(screen.getByTestId("capsule-terminal"));
+
+    const console = screen.getByTestId("bash-console");
+    // The full command comes from the call arguments, not the 80-char preview.
+    expect(within(console).getByText("npm run dev -- --host")).toBeTruthy();
+    expect(await screen.findByText("live-out")).toBeTruthy();
+    await waitFor(() => {
+      expect(sendRpc).toHaveBeenCalledWith("bash/tail", { bash_id: "bg_a" });
+    });
+  });
+
+  it("lists only background jobs in the terminal panel", () => {
+    // A foreground call of the same session must not lease a panel slot.
+    seedRows("s1", [bashCallRow("c1", { command: "ls" })]);
+    useBashStore.getState().applySnapshot("s1", { jobs: [bashJob], waits: [] });
+    render(<SessionStatusLine sessionId="s1" />);
+
+    fireEvent.click(screen.getByTestId("capsule-terminal"));
+
+    const panel = screen.getByTestId("status-capsule-panel");
+    expect(within(panel).getByText("No active terminals")).toBeTruthy();
+    expect(screen.queryByTestId("terminal-job-bg_a")).toBeNull();
+  });
+
+  it("kills a live terminal from the panel", () => {
+    const sendRpc = vi.fn(async (method: string) =>
+      method === "bash/tail"
+        ? { text: "", truncated_on_disk: false, alive: true, exit_code: null }
+        : { ok: true },
+    );
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+    useBashStore.getState().applySnapshot("s1", { jobs: [bashJob], waits: [] });
+    render(<SessionStatusLine sessionId="s1" />);
+
+    fireEvent.click(screen.getByTestId("capsule-terminal"));
+    fireEvent.click(screen.getByRole("button", { name: /^Kill$/ }));
+
+    expect(sendRpc).toHaveBeenCalledWith("bash/kill", { bash_id: "bg_a" });
   });
 
   it("closes the panel when its capsule is clicked again", () => {
@@ -627,7 +823,7 @@ describe("SessionStatusLine — drag handle", () => {
     fireEvent.click(screen.getByTestId("capsule-terminal"));
     const panel = screen.getByTestId("status-capsule-panel");
     expect(panel.dataset.capsule).toBe("terminal");
-    expect(panel.style.height).toBe(`${PANEL_INITIAL_H}px`);
+    expect(panel.style.height).toBe(`${panelInitialHeight("terminal")}px`);
   });
 
   it("releases the body drag lock on pointerup", () => {
@@ -913,12 +1109,12 @@ describe("SessionStatusLine — migrated chip content", () => {
     render(<SessionStatusLine sessionId="s1" />);
     fireEvent.click(screen.getByTestId("capsule-todo"));
     const panel = screen.getByTestId("status-capsule-panel");
-    // Header: current task WaveText (char-fragmented, spaces as \u00a0) +
-    // progress count.
-    expect(panel.textContent).toContain("do\u00a0a");
+    // Header: current task plain text + progress count.
+    expect(panel.textContent).toContain("do a");
     expect(within(panel).getByText("0/2")).toBeTruthy();
-    // List rows: only the non-in_progress items — no plain "do a" row.
-    expect(within(panel).queryByText("do a")).toBeNull();
+    // List rows: only the non-in_progress items — "do a" appears exactly
+    // once (the header), with no duplicated list row.
+    expect(within(panel).getAllByText("do a")).toHaveLength(1);
     expect(within(panel).getByText("do b")).toBeTruthy();
   });
 });

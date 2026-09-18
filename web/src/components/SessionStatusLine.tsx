@@ -10,11 +10,13 @@ import type {
   PointerEvent as ReactPointerEvent,
   ReactNode,
 } from "react";
-import { PlayIcon, StrategyIcon, TerminalIcon, UsersIcon } from "@phosphor-icons/react";
+import { CrosshairIcon, PlayIcon, StrategyIcon, TerminalIcon, UsersIcon } from "@phosphor-icons/react";
 
 import { normalizeToolFilePath } from "../api/adapter";
 import type { BashJob } from "../api/types";
 import { readFile } from "../api/workspace";
+import { bashCallMetaByCallId, type BashCallMeta } from "../lib/bashLive";
+import { bashKill } from "../lib/litecodeBash";
 import { useBashStore } from "../stores/bashStore";
 import { useEditorStore } from "../stores/editorStore";
 import { useMessageStore } from "../stores/messageStore";
@@ -24,7 +26,7 @@ import { useWorkspaceChangeStore } from "../stores/workspaceChangeStore";
 import { composerCardClass } from "./composerCard";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { SubagentRosterPanel } from "./SubagentRosterPanel";
-import { WaveText } from "./WaveText";
+import { BashToolView } from "./toolviews/BashToolView";
 
 type TodoItemStatus = "pending" | "in_progress" | "completed";
 type TodoItem = { id: string; content: string; status: TodoItemStatus };
@@ -37,9 +39,24 @@ export type CapsuleId = "terminal" | "subagent" | "plan" | "todo";
 
 /** Fixed initial height of a vertically-expanded capsule panel (px). */
 export const PANEL_INITIAL_H = 160;
+/** The terminal panel opens taller: it hosts the live BashToolView console, so
+ *  the shared 160px default would only fit the command header. */
+export const PANEL_INITIAL_H_TERMINAL = 320;
+
+export function panelInitialHeight(id: CapsuleId): number {
+  return id === "terminal" ? PANEL_INITIAL_H_TERMINAL : PANEL_INITIAL_H;
+}
+
 export const PANEL_MIN_H = 80;
 /** Exit-animation duration (ms) — matches `status-panel-exit` in chat.css. */
 export const PANEL_EXIT_MS = 160;
+
+/**
+ * A newly-appeared background terminal claims the horizontal slot only after it
+ * has survived this long. A job that dies inside the window was a short call and
+ * must not flash the capsule; its icon animation and count land immediately.
+ */
+export const BASH_CLAIM_GRACE_MS = 1500;
 // Known limitation (F2): this is a static ceiling, not clamped to the dockview
 // pane's rect, so on a very short pane a panel dragged to PANEL_MAX_H could have
 // its top clipped by the pane's overflow:hidden. Deliberately left as a plain
@@ -66,11 +83,13 @@ const EMPTY_TODO_ITEMS: TodoItem[] = [];
  *     time. The expanded capsule stretches to fill the row (width animated
  *     from its collapsed icon-only size, content cross-fading) and shows
  *     icon + label + rich detail + count (todo: current task + progress,
- *     plan: active path, subagent: running count, bash: latest command). The
- *     slot is public mutable state: hovering a capsule claims it (sticky — it
- *     stays after the mouse leaves), and while idle (no hover, no panel open)
- *     a data change in any capsule's domain claims the slot for that capsule
- *     (attention cue). Todo owns the slot by default.
+ *     plan: active path, subagent: running count, bash: latest background
+ *     command — background terminals only, a foreground call stays in the
+ *     transcript). The slot is public mutable state: hovering a capsule claims
+ *     it (sticky — it stays after the mouse leaves), and while idle (no hover,
+ *     no panel open) a data change in any capsule's domain claims the slot for
+ *     that capsule (attention cue); a background terminal claims only once it
+ *     outlives the short-call grace window. Todo owns the slot by default.
  *  3. Level 2 — vertical: clicking a capsule expands its panel above the row:
  *     fixed initial height, drag handle top-right (drag up to grow, same
  *     pointer-capture pattern as AgentChatInput). Only one panel open at a
@@ -86,6 +105,22 @@ export function SessionStatusLine({
 }) {
   const bashJobs = useBashStore(
     (s) => s.bySession.get(sessionId)?.jobs ?? EMPTY_BASH_JOBS,
+  );
+  // Transcript-derived bash call metadata (loaded rows only): the background
+  // verdict, the full command and the sealed result for the terminal views.
+  const messageRows = useMessageStore((s) => s.bySession.get(sessionId)?.display);
+  const bashCallMeta = useMemo(
+    () => bashCallMetaByCallId(messageRows ?? []),
+    [messageRows],
+  );
+  // Only background terminals own the capsule: a foreground call — even a long
+  // one — stays in the transcript and never claims the slot or lists here. A
+  // call outside the loaded window has no verdict and stays visible (safe
+  // direction: hiding a real terminal is worse than showing one redundantly).
+  const backgroundJobs = useMemo(
+    () =>
+      bashJobs.filter((job) => bashCallMeta.get(job.call_id)?.background ?? true),
+    [bashJobs, bashCallMeta],
   );
   // Minimal worker summary: total children and the live running count.
   // Children are counted from the session list (durable — the roster panel
@@ -153,6 +188,10 @@ export function SessionStatusLine({
   // Which capsule the pointer currently rests on (ref: the data-change watcher
   // reads it without needing hover to be render state).
   const hoverRef = useRef<CapsuleId | null>(null);
+  // Same for the open panel: the delayed terminal claim re-checks it when its
+  // grace timer fires, without re-running the watcher (hover/open are not deps).
+  const openRef = useRef<CapsuleId | null>(null);
+  openRef.current = openId;
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const heightRef = useRef(PANEL_INITIAL_H);
@@ -173,7 +212,7 @@ export function SessionStatusLine({
   // or whole-component unmount — tears this effect down, so `document.body`
   // never stays stuck at ns-resize / user-select:none.
   useEffect(() => {
-    heightRef.current = PANEL_INITIAL_H;
+    heightRef.current = openId ? panelInitialHeight(openId) : PANEL_INITIAL_H;
     return () => {
       draggingRef.current = false;
       document.body.style.userSelect = "";
@@ -241,10 +280,15 @@ export function SessionStatusLine({
   // capsule. Signatures are compared by value, not array identity — snapshot
   // replays must not fire the trigger. Changes observed while busy are
   // consumed, not queued.
+  //
+  // Background terminals are the one delayed case: a new job claims only after
+  // it survives BASH_CLAIM_GRACE_MS, and a job leaving never claims at all —
+  // short calls must not flash the capsule. The pending claim is dropped by the
+  // effect's own cleanup (any later domain change, panel open, or unmount).
   const sigRef = useRef<{ bash: string; sub: string; plan: string; todo: string } | null>(null);
   useEffect(() => {
     const cur = {
-      bash: bashJobs.map((j) => j.id).join(","),
+      bash: backgroundJobs.map((j) => j.id).join(","),
       sub: `${childSessions.map((session) => `${session.id}:${session.status}:${session.running}`).join(",")}|${subagentTotal}`,
       plan: activePlanPath ?? "",
       todo: todoItems.map((i) => `${i.id}:${i.status}:${i.content}`).join("|"),
@@ -252,11 +296,29 @@ export function SessionStatusLine({
     const prev = sigRef.current;
     sigRef.current = cur;
     if (!prev || hoverRef.current !== null || openId !== null) return;
-    if (prev.todo !== cur.todo) setExpandedId("todo");
-    else if (prev.plan !== cur.plan) setExpandedId("plan");
-    else if (prev.sub !== cur.sub) setExpandedId("subagent");
-    else if (prev.bash !== cur.bash) setExpandedId("terminal");
-  }, [bashJobs, childSessions, subagentTotal, activePlanPath, todoItems, openId]);
+    if (prev.todo !== cur.todo) {
+      setExpandedId("todo");
+      return;
+    }
+    if (prev.plan !== cur.plan) {
+      setExpandedId("plan");
+      return;
+    }
+    if (prev.sub !== cur.sub) {
+      setExpandedId("subagent");
+      return;
+    }
+    if (prev.bash === cur.bash) return;
+    const before = new Set(prev.bash.split(",").filter(Boolean));
+    const added = cur.bash.split(",").filter((id) => id && !before.has(id));
+    if (added.length === 0) return; // removals never claim the slot
+    const timer = window.setTimeout(() => {
+      if (hoverRef.current === null && openRef.current === null) {
+        setExpandedId("terminal");
+      }
+    }, BASH_CLAIM_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [backgroundJobs, childSessions, subagentTotal, activePlanPath, todoItems, openId]);
 
   // Drag handle: dragging up grows the panel (delta = start.y - clientY), same
   // math as AgentChatInput's textarea resize. The new height is written straight
@@ -314,7 +376,12 @@ export function SessionStatusLine({
 
   const panelBody =
     (openId ?? closingId) === "terminal" ? (
-      <TerminalPanel jobs={bashJobs} onRevealBash={onRevealBash} />
+      <TerminalPanel
+        sessionId={sessionId}
+        jobs={backgroundJobs}
+        callMeta={bashCallMeta}
+        onRevealBash={onRevealBash}
+      />
     ) : (openId ?? closingId) === "subagent" ? (
       <SubagentRosterPanel sessionId={sessionId} />
     ) : (openId ?? closingId) === "plan" ? (
@@ -366,9 +433,9 @@ export function SessionStatusLine({
           data-testid="status-capsule-panel"
           data-capsule={panelId}
           style={{
-            // A fresh open starts at the fixed initial height; the closing
-            // mount keeps the dragged height it was shut at.
-            height: openId ? PANEL_INITIAL_H : heightRef.current,
+            // A fresh open starts at the capsule's fixed initial height; the
+            // closing mount keeps the dragged height it was shut at.
+            height: openId ? panelInitialHeight(openId) : heightRef.current,
             transformOrigin: `${originX}px 100%`,
           }}
           className={`${composerCardClass} relative overflow-hidden [container-type:size] ${
@@ -423,11 +490,7 @@ export function SessionStatusLine({
           label="Tasks"
           detail={
             todoCurrent ? (
-              <WaveText
-                text={todoCurrent.content}
-                className="todo-wave-text"
-                charClass="todo-wave-char"
-              />
+              <span>{todoCurrent.content}</span>
             ) : (
               <span className="italic text-(--_dk-text-disabled)">
                 No active task
@@ -500,14 +563,14 @@ export function SessionStatusLine({
               size={14}
               weight="fill"
               aria-hidden
-              className={bashJobs.length > 0 ? "terminal-status-icon" : ""}
+              className={backgroundJobs.length > 0 ? "terminal-status-icon" : ""}
             />
           }
           label="Terminals"
           detail={
-            bashJobs.length > 0 ? (
+            backgroundJobs.length > 0 ? (
               <span className="truncate">
-                {bashJobs[bashJobs.length - 1]?.command_preview}
+                {backgroundJobs[backgroundJobs.length - 1]?.command_preview}
               </span>
             ) : (
               <span className="italic text-(--_dk-text-disabled)">
@@ -515,8 +578,8 @@ export function SessionStatusLine({
               </span>
             )
           }
-          count={`×${bashJobs.length}`}
-          ariaLabel={`Terminal status, ${bashJobs.length} active`}
+          count={`×${backgroundJobs.length}`}
+          ariaLabel={`Terminal status, ${backgroundJobs.length} active`}
         />
       </div>
     </div>
@@ -611,39 +674,95 @@ function PanelEmpty({ children }: { children: ReactNode }) {
   );
 }
 
-/** Migrated terminal chip content: the alive bash jobs, each clickable to
- *  reveal its live view (preserves the old chip's click-to-cycle affordance). */
+/** Live background terminals. Each job renders the shared `BashToolView` body
+ *  (command + the tee-tail poll), so this panel is where a background process
+ *  is watched — the transcript keeps its single-line row. The compact header
+ *  carries the Kill action and a reveal-in-transcript jump. */
 function TerminalPanel({
+  sessionId,
   jobs,
+  callMeta,
   onRevealBash,
 }: {
+  sessionId: string;
   jobs: BashJob[];
+  callMeta: ReadonlyMap<string, BashCallMeta>;
   onRevealBash?: (callId: string) => void;
 }) {
   if (jobs.length === 0) return <PanelEmpty>No active terminals</PanelEmpty>;
   return (
-    <ul className="space-y-0.5 px-1.5">
+    <div className="flex flex-col gap-2 px-1.5">
       {jobs.map((job) => (
-        <li key={job.id}>
-          <button
-            type="button"
-            aria-label={`Reveal terminal: ${job.command_preview}`}
-            onClick={() => onRevealBash?.(job.call_id)}
-            className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary)"
-          >
-            <TerminalIcon
-              size={13}
-              weight="fill"
-              aria-hidden
-              className="terminal-status-icon shrink-0"
-            />
-            <span className="min-w-0 flex-1 truncate font-mono">
-              {job.command_preview}
-            </span>
-          </button>
-        </li>
+        <TerminalJob
+          key={job.id}
+          job={job}
+          sessionId={sessionId}
+          meta={callMeta.get(job.call_id)}
+          onRevealBash={onRevealBash}
+        />
       ))}
-    </ul>
+    </div>
+  );
+}
+
+/** One live terminal: a compact command row (Kill + Reveal) over the shared
+ *  bash view, which owns the live `bash/tail` poll. */
+function TerminalJob({
+  job,
+  sessionId,
+  meta,
+  onRevealBash,
+}: {
+  job: BashJob;
+  sessionId: string;
+  meta?: BashCallMeta;
+  onRevealBash?: (callId: string) => void;
+}) {
+  // Full command from the loaded call arguments; the wire's collapsed preview
+  // is the fallback when the call row is outside the transcript window.
+  const command = meta?.command ?? job.command_preview;
+  return (
+    <div data-testid={`terminal-job-${job.id}`} className="flex flex-col gap-1">
+      {/* pr-8 keeps the actions clear of the panel's absolute resize handle,
+          which overlays the top-right corner of the panel body. */}
+      <div className="flex items-center gap-1.5 pr-8 pl-0.5 text-xs text-(--_dk-text-muted)">
+        <TerminalIcon
+          size={13}
+          weight="fill"
+          aria-hidden
+          className="terminal-status-icon shrink-0"
+        />
+        <span
+          title={command}
+          className="min-w-0 flex-1 truncate font-mono"
+        >
+          {job.command_preview}
+        </span>
+        <button
+          type="button"
+          onClick={() => void bashKill(job.id)}
+          className="btn-danger btn-xs shrink-0"
+        >
+          Kill
+        </button>
+        <button
+          type="button"
+          aria-label={`Reveal terminal: ${job.command_preview}`}
+          onClick={() => onRevealBash?.(job.call_id)}
+          className="btn-ghost btn-icon btn-xs shrink-0"
+        >
+          <CrosshairIcon size={13} aria-hidden />
+        </button>
+      </div>
+      <BashToolView
+        name="bash"
+        status="running"
+        input={{ command }}
+        output={meta?.output}
+        call_id={job.call_id}
+        sessionId={sessionId}
+      />
+    </div>
   );
 }
 
@@ -777,11 +896,7 @@ function TodoPanelBody({
         <ProgressRing pct={pct} />
         <span className="min-w-0 flex-1 truncate">
           {current ? (
-            <WaveText
-              text={current.content}
-              className="todo-wave-text"
-              charClass="todo-wave-char"
-            />
+            <span className="text-(--_dk-text-secondary)">{current.content}</span>
           ) : (
             <span className="italic text-(--_dk-text-disabled)">
               No active task

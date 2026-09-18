@@ -251,7 +251,10 @@ impl ContextPipeline {
             .take(committed_len)
             .filter_map(|row| row.log_seq)
             .collect();
-        let reminder = tail_reminders::build_compaction_content(task_state);
+        let reminder = tail_reminders::build_compaction_content(
+            task_state,
+            Some(sessions.child_counts(session_id)),
+        );
 
         let compacted = self
             .compact

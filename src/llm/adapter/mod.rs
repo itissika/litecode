@@ -45,21 +45,35 @@ pub(super) fn llm_http_client() -> Result<reqwest::Client> {
         .build()?)
 }
 
+/// First backoff for a transient failure while opening a stream.
+const RETRY_BASE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+/// Cap for the doubling backoff — long waits stop helping once a link is gone.
+const RETRY_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(8);
+/// Retries after the first attempt (total attempts = `RETRY_MAX + 1`).
+const RETRY_MAX: usize = 5;
+
+/// Backoff for a 0-based retry index: `base * 2^attempt`, capped at
+/// [`RETRY_MAX_DELAY`] (500ms, 1s, 2s, 4s, 8s, 8s, …).
+fn retry_delay(attempt: usize) -> std::time::Duration {
+    let factor = 1u32 << attempt.min(16);
+    RETRY_BASE_DELAY.saturating_mul(factor).min(RETRY_MAX_DELAY)
+}
+
 /// Send a request while remaining cancellable during connect/headers.
 /// Dropping the pending `send()` future aborts the HTTP request.
+///
+/// Transient failures (connect/timeout/request errors, 408/502/503/504) retry up
+/// to [`RETRY_MAX`] times with a doubling backoff; a non-clonable body is sent
+/// once. Nothing has reached the model server on these paths, so a retry cannot
+/// duplicate a generation.
 pub(super) async fn send_cancellable(
     request: reqwest::RequestBuilder,
     cancel: &CancellationToken,
     stage: &str,
 ) -> Result<reqwest::Response> {
-    const RETRY_DELAYS: [std::time::Duration; 2] = [
-        std::time::Duration::from_millis(300),
-        std::time::Duration::from_secs(1),
-    ];
-
     let template = request.try_clone();
     let mut first = Some(request);
-    for attempt in 0..=RETRY_DELAYS.len() {
+    for attempt in 0..=RETRY_MAX {
         let request = if let Some(request) = first.take() {
             request
         } else if let Some(request) = template
@@ -88,14 +102,16 @@ pub(super) async fn send_cancellable(
             ),
             Err(error) => error.is_connect() || error.is_timeout() || error.is_request(),
         };
-        if !retry || attempt == RETRY_DELAYS.len() || template.is_none() {
+        if !retry || attempt == RETRY_MAX || template.is_none() {
             return result.map_err(|error| transport_error(stage, &error));
         }
 
+        let delay = retry_delay(attempt);
         tracing::warn!(
             stage,
             attempt = attempt + 1,
-            max_attempts = RETRY_DELAYS.len() + 1,
+            max_attempts = RETRY_MAX + 1,
+            delay_ms = delay.as_millis() as u64,
             status = result
                 .as_ref()
                 .ok()
@@ -105,7 +121,7 @@ pub(super) async fn send_cancellable(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(LitecodeError::Canceled),
-            _ = tokio::time::sleep(RETRY_DELAYS[attempt]) => {}
+            _ = tokio::time::sleep(delay) => {}
         }
     }
     unreachable!("bounded LLM HTTP retry loop")
@@ -117,6 +133,20 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+
+    #[test]
+    fn retry_delay_doubles_then_caps() {
+        let ms = |n: u64| std::time::Duration::from_millis(n);
+        assert_eq!(retry_delay(0), ms(500));
+        assert_eq!(retry_delay(1), ms(1_000));
+        assert_eq!(retry_delay(2), ms(2_000));
+        assert_eq!(retry_delay(3), ms(4_000));
+        assert_eq!(retry_delay(4), ms(8_000));
+        assert_eq!(retry_delay(5), ms(8_000));
+        // No shift overflow far past the retry budget.
+        assert_eq!(retry_delay(64), ms(8_000));
+        assert_eq!(retry_delay(usize::MAX), ms(8_000));
+    }
 
     #[tokio::test]
     async fn send_cancellable_returns_canceled_when_token_fires() {
