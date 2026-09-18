@@ -7,7 +7,7 @@ use crate::types::{LitecodeError, Result};
 
 pub const FTS_TABLE: &str = "transcript_fts";
 
-const SEARCHABLE_KINDS: &str = "'item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted', 'reminder/job_exit'";
+const SEARCHABLE_KINDS: &str = "'item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted', 'reminder/job_exit', 'reminder/plan', 'plan/execute'";
 
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     let has_fts5: bool = conn

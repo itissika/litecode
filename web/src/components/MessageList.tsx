@@ -46,6 +46,8 @@ type RenderNode =
   | { kind: "compact_cut"; summary?: string; key: string; streaming: boolean; live: false }
   | { kind: "job_exit"; detail?: string; key: string; streaming: boolean; live: false }
   | { kind: "subagent_exit"; detail?: string; childId?: string; key: string; streaming: boolean; live: false }
+  | { kind: "plan"; key: string; streaming: boolean; live: false }
+  | { kind: "plan_execute"; key: string; streaming: boolean; live: false }
   | {
       kind: "tool";
       call: FunctionCallItem;
@@ -188,7 +190,13 @@ export function groupNodes(nodes: RenderNode[]): NodeGroup[] {
   let current: NodeGroup | null = null;
 
   for (const node of nodes) {
-    if (node.kind === "compact_cut" || node.kind === "job_exit" || node.kind === "subagent_exit") {
+    if (
+      node.kind === "compact_cut" ||
+      node.kind === "job_exit" ||
+      node.kind === "subagent_exit" ||
+      node.kind === "plan" ||
+      node.kind === "plan_execute"
+    ) {
       groups.push({ type: "cut", nodes: [node] });
       current = null;
       continue;
@@ -221,6 +229,11 @@ export function NodeView({
    *  namespace this node's FoldCard state across virtual-list remounts. */
   bubbleKey?: string;
 }) {
+  // The plan-execution mark names the plan the button launched; the row itself
+  // only carries the prompt text, so the path comes from the session pointer.
+  const activePlanPath = useTurnStore((s) =>
+    sessionId ? (s.byId.get(sessionId)?.activePlanPath ?? null) : null,
+  );
   switch (node.kind) {
     case "reasoning":
       return (
@@ -293,6 +306,10 @@ export function NodeView({
       return (
         <TranscriptMark kind={node.kind} detail={node.detail} childId={node.childId} />
       );
+    case "plan":
+      return <TranscriptMark kind={node.kind} />;
+    case "plan_execute":
+      return <TranscriptMark kind={node.kind} planPath={activePlanPath} />;
   }
 }
 
@@ -826,6 +843,11 @@ export const MessageList = memo(function MessageList({
   // on succeeded/failed. Do not key off `turnPhase`, which can stay compacting
   // after the checkpoint lands.
   const compactingNow = useTurnStore((s) => s.byId.get(sessionId)?.compacting ?? false);
+  // Plan-execution marks name the plan the button launched; the persisted row
+  // carries only the prompt text, so the path comes from the session pointer.
+  const activePlanPath = useTurnStore(
+    (s) => s.byId.get(sessionId)?.activePlanPath ?? null,
+  );
   const loader = canLoadMore ? 1 : 0;
   const count = loader + bubbles.length + (compactingNow ? 1 : 0);
 
@@ -1073,7 +1095,11 @@ export const MessageList = memo(function MessageList({
               >
                 {cutOnly
                   ? group.map((cut) => (
-                      <TranscriptMarkForRow key={projectionRowKey(cut)} row={cut} />
+                      <TranscriptMarkForRow
+                        key={projectionRowKey(cut)}
+                        row={cut}
+                        planPath={activePlanPath}
+                      />
                     ))
                   : (
                   <ItemBubble

@@ -10,7 +10,7 @@ import type {
   PointerEvent as ReactPointerEvent,
   ReactNode,
 } from "react";
-import { StrategyIcon, TerminalIcon, UsersIcon } from "@phosphor-icons/react";
+import { PlayIcon, StrategyIcon, TerminalIcon, UsersIcon } from "@phosphor-icons/react";
 
 import { normalizeToolFilePath } from "../api/adapter";
 import type { BashJob } from "../api/types";
@@ -47,6 +47,9 @@ export const PANEL_EXIT_MS = 160;
 // the reviewer asked not to add a persistent listener for it. Revisit on real-
 // device acceptance if a short-pane clip is observed.
 export const PANEL_MAX_H = 480;
+
+/** User message the "执行计划" button sends on the human's behalf. */
+export const PLAN_EXECUTE_PROMPT = "按当前计划开始执行。";
 
 const EMPTY_BASH_JOBS: BashJob[] = [];
 const EMPTY_TODO_ITEMS: TodoItem[] = [];
@@ -120,6 +123,10 @@ export function SessionStatusLine({
   );
   const activePlanPath = useTurnStore(
     (s) => s.byId.get(sessionId)?.activePlanPath ?? null,
+  );
+  // A turn is in flight for this session whenever runState left "idle".
+  const running = useTurnStore(
+    (s) => (s.byId.get(sessionId)?.runState ?? "idle") !== "idle",
   );
   const projectRoot = useSessionStore((s) => s.project);
   const openFile = useEditorStore((s) => s.openFile);
@@ -293,6 +300,15 @@ export function SessionStatusLine({
     if (resolved) void openFile(resolved);
   };
 
+  // Fire the plan-execution turn on the human's behalf. The store sends
+  // `plan_execution: true`, so the backend injects a one-shot "re-read the plan"
+  // reminder when the on-disk plan changed since the agent last read it. A
+  // `false` return means the turn could not start (already running / socket
+  // down); the button is disabled while running, so this is the offline case.
+  const executePlan = () => {
+    useTurnStore.getState().start(sessionId, PLAN_EXECUTE_PROMPT, true);
+  };
+
   const todoCurrent = todoItems.find((item) => item.status === "in_progress");
   const todoTotal = todoPending + todoInProgress + todoCompleted;
 
@@ -305,7 +321,9 @@ export function SessionStatusLine({
       <PlanPanel
         path={activePlanPath}
         projectRoot={projectRoot}
+        running={running}
         onOpen={openPlan}
+        onExecute={executePlan}
       />
     ) : (openId ?? closingId) === "todo" ? (
       <TodoPanelBody
@@ -640,11 +658,15 @@ type PlanDoc =
 function PlanPanel({
   path,
   projectRoot,
+  running,
   onOpen,
+  onExecute,
 }: {
   path: string | null;
   projectRoot: string | null;
+  running: boolean;
   onOpen: (path: string) => void;
+  onExecute: () => void;
 }) {
   const [doc, setDoc] = useState<PlanDoc>({ status: "loading" });
   const lastChange = useWorkspaceChangeStore((s) => s.last);
@@ -700,6 +722,16 @@ function PlanPanel({
         <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--_dk-text-secondary)">
           {path}
         </span>
+        <button
+          type="button"
+          onClick={onExecute}
+          disabled={running}
+          data-testid="plan-execute"
+          className="flex shrink-0 items-center gap-1.5 rounded border border-(--_dk-line) px-2 py-1 text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary) disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+        >
+          <PlayIcon size={13} weight="fill" aria-hidden />
+          执行计划
+        </button>
         <button
           type="button"
           onClick={() => onOpen(path)}

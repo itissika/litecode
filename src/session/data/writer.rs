@@ -548,6 +548,42 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 CommitKind::Appended { seq },
             )
         }
+        SessionMutation::AppendPlanReminder {
+            session_id,
+            expected_revision,
+            operation_id,
+            item,
+        } => {
+            let seq = {
+                let session = ensure_live(state, &session_id)?;
+                session.append_plan_reminder(&item)?
+            };
+            bump_receipt(
+                state,
+                &session_id,
+                &operation_id.0,
+                expected_revision,
+                CommitKind::Appended { seq },
+            )
+        }
+        SessionMutation::AppendPlanExecute {
+            session_id,
+            expected_revision,
+            operation_id,
+            item,
+        } => {
+            let seq = {
+                let session = ensure_live(state, &session_id)?;
+                session.append_plan_execute(&item)?
+            };
+            bump_receipt(
+                state,
+                &session_id,
+                &operation_id.0,
+                expected_revision,
+                CommitKind::Appended { seq },
+            )
+        }
         SessionMutation::SealInProgress {
             session_id,
             expected_revision,

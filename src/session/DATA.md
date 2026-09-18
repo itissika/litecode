@@ -143,8 +143,19 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 | kind | 脊骨 | HumanView | AgentView | body |
 |---|---|---|---|---|
 | `reminder/job_exit` | 追加 | 切痕，同 `compacted` | 原样 user `Item` | 与 `item/user` 相同的 message JSON |
+| `reminder/plan` | 追加 | 切痕「计划已更新 · 需重读」 | 原样 user `Item` | 与 `item/user` 相同的 message JSON |
 
 后台 job 结束先以 `reminder/job_exit` 写入同一条 item 通道，再 `spawn_turn`；`already_last_user` 避免再写一条 `item/user`。锚点仍只认 `item/user`。
+
+计划执行回合若发现磁盘上的 active plan 自上次读取后被改过，先以 `reminder/plan` 写入一条一次性「先重读再执行」提示（`plan_execution_reminder`）。它与 `reminder/job_exit` 同构，只是 HumanView 渲染为计划切痕，不落进「后台终端退出」。
+
+#### 系统代发的用户消息 — 不是人键入；body 仍是 user `Item`
+
+| kind | 脊骨 | HumanView | AgentView | body |
+|---|---|---|---|---|
+| `plan/execute` | 追加 | 切痕「<计划文件> 开始执行」 | 原样 user `Item` | 与 `item/user` 相同的 message JSON |
+
+「执行计划」按钮由前端代发：文本是前端常量，后端以 `plan/execute` 落盘（**不是** `item/user`）。所以它**不**参与 revert 锚点（`SQL_ANCHOR_SEQ` 只数 `item/user`），也不落进「后台终端退出」。回合起点 `already_last_user` 按文本去重，故不会再补一条 `item/user`。
 
 #### 控制面 — 不进脊骨，两 View 都不读
 

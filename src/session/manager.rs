@@ -621,8 +621,20 @@ impl SessionManager {
     /// call in the turn, so an ignored reminder fires again next time. `None`
     /// means the file is unchanged (or missing; stale settlement owns that case).
     pub fn plan_execution_reminder(&self, session_id: &str) -> anyhow::Result<Option<String>> {
-        let Some(plan) = self.with_entry_task_state(session_id, |s| Ok(s.active_plan.clone()))?
-        else {
+        // Fail-open: this only decorates an execution turn, so a lock/entry
+        // failure degrades to "no reminder" instead of interrupting the turn.
+        let plan = match self.with_entry_task_state(session_id, |s| Ok(s.active_plan.clone())) {
+            Ok(plan) => plan,
+            Err(error) => {
+                tracing::warn!(
+                    session_id,
+                    error = %error,
+                    "plan_execution_reminder: task state unavailable; skipping"
+                );
+                return Ok(None);
+            }
+        };
+        let Some(plan) = plan else {
             return Ok(None);
         };
         let path = self.plan_dir_path().join(format!("{}.md", plan.slug));
@@ -1745,6 +1757,40 @@ impl SessionManager {
     ) -> anyhow::Result<()> {
         let expected = self.expected_revision(session_id);
         self.mutate_blocking(SessionMutation::AppendJobExit {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            item: item.clone(),
+        })?;
+        Ok(())
+    }
+
+    /// Persist a plan-review reminder as a dedicated `reminder/plan` spine Item.
+    pub fn append_plan_reminder(
+        &self,
+        session_id: &str,
+        item: &crate::types::Item,
+    ) -> anyhow::Result<()> {
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::AppendPlanReminder {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            item: item.clone(),
+        })?;
+        Ok(())
+    }
+
+    /// Persist the plan-execution trigger as a dedicated `plan/execute` spine Item.
+    ///
+    /// System-issued on the human's behalf; deliberately not a revert anchor.
+    pub fn append_plan_execute(
+        &self,
+        session_id: &str,
+        item: &crate::types::Item,
+    ) -> anyhow::Result<()> {
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::AppendPlanExecute {
             session_id: session_id.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),

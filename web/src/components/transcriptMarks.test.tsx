@@ -1,5 +1,22 @@
-import { describe, expect, it } from "vitest";
-import { jobExitDetail, readableCompactSummary, subagentExitDetail } from "./transcriptMarks";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+import { PlanExecuteMark, jobExitDetail, readableCompactSummary, subagentExitDetail } from "./transcriptMarks";
+
+afterEach(cleanup);
+
+describe("PlanExecuteMark", () => {
+  it("names the plan file the button launched", () => {
+    render(<PlanExecuteMark planPath=".litecode/plan/calm.md" />);
+    expect(screen.getByTestId("plan-execute-mark").textContent).toBe(
+      ".litecode/plan/calm.md 开始执行",
+    );
+  });
+
+  it("degrades to the bare label with no active plan pointer", () => {
+    render(<PlanExecuteMark planPath={null} />);
+    expect(screen.getByTestId("plan-execute-mark").textContent).toBe("开始执行");
+  });
+});
 
 describe("readableCompactSummary", () => {
   it("strips the conversation summary label prefix", () => {

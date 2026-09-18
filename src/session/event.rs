@@ -21,6 +21,8 @@ pub enum EventType {
     ItemToolResult,
     Compacted,
     ReminderJobExit,
+    ReminderPlan,
+    PlanExecute,
     TurnStart,
     TurnEnd,
     StepStart,
@@ -53,6 +55,8 @@ impl EventType {
             "item/tool_result" => Self::ItemToolResult,
             "compacted" => Self::Compacted,
             "reminder/job_exit" => Self::ReminderJobExit,
+            "reminder/plan" => Self::ReminderPlan,
+            "plan/execute" => Self::PlanExecute,
             "turn/start" => Self::TurnStart,
             "turn/end" => Self::TurnEnd,
             "step/start" => Self::StepStart,
@@ -72,6 +76,8 @@ impl EventType {
             Self::ItemToolResult => "item/tool_result",
             Self::Compacted => "compacted",
             Self::ReminderJobExit => "reminder/job_exit",
+            Self::ReminderPlan => "reminder/plan",
+            Self::PlanExecute => "plan/execute",
             Self::TurnStart => "turn/start",
             Self::TurnEnd => "turn/end",
             Self::StepStart => "step/start",
@@ -92,6 +98,8 @@ impl EventType {
                 | Self::ItemToolResult
                 | Self::Compacted
                 | Self::ReminderJobExit
+                | Self::ReminderPlan
+                | Self::PlanExecute
         )
     }
 
@@ -103,7 +111,11 @@ impl EventType {
     }
 
     pub fn enters_spine(&self) -> bool {
-        self.is_item() || matches!(self, Self::Compacted | Self::ReminderJobExit)
+        self.is_item()
+            || matches!(
+                self,
+                Self::Compacted | Self::ReminderJobExit | Self::ReminderPlan | Self::PlanExecute
+            )
     }
 
     /// Control-plane kinds are stored in SessionLog but never enter the spine.

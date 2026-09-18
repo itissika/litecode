@@ -244,6 +244,21 @@ export interface JobExitReminderLogRow {
   body: Item;
 }
 
+/** A durable plan-review reminder: a system mark, never a chat bubble. */
+export interface PlanReminderLogRow {
+  seq: number;
+  kind: "reminder/plan";
+  body: Item;
+}
+
+/** The system-issued plan-execution trigger. Body is a user `Item`, but the kind
+ *  is its own: it is *not* a revert anchor (anchors only count `item/user`). */
+export interface PlanExecuteLogRow {
+  seq: number;
+  kind: "plan/execute";
+  body: Item;
+}
+
 export interface ControlLogRow {
   seq: number;
   kind: "turn/start" | "turn/end" | "request/header" | "request/context";
@@ -255,6 +270,8 @@ export type WireBufferEvent =
   | ItemLogRow
   | CompactedLogRow
   | JobExitReminderLogRow
+  | PlanReminderLogRow
+  | PlanExecuteLogRow
   | ControlLogRow;
 
 /** HumanView row: a committed log row with transient UI-only state. */

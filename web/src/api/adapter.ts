@@ -7,6 +7,8 @@ import type {
   JobExitReminderLogRow,
   MessageItem,
   OutputMessageItem,
+  PlanExecuteLogRow,
+  PlanReminderLogRow,
   ReasoningItem,
   ResponseStreamEvent,
   TurnMeta,
@@ -39,15 +41,41 @@ export function isJobExitReminderRow(
   return row.kind === "reminder/job_exit";
 }
 
+/** A durable plan-review reminder: a system mark, never a chat bubble. */
+export function isPlanReminderRow(
+  row: HumanRow,
+): row is PlanReminderLogRow & { streaming?: boolean } {
+  return row.kind === "reminder/plan";
+}
+
+/** The system-issued plan-execution trigger: a system mark, never a chat bubble. */
+export function isPlanExecuteRow(
+  row: HumanRow,
+): row is PlanExecuteLogRow & { streaming?: boolean } {
+  return row.kind === "plan/execute";
+}
+
 /** HumanView kinds that are marks, not user/assistant bubbles. */
-export type TranscriptMarkKind = "compact_cut" | "job_exit" | "subagent_exit";
+export type TranscriptMarkKind =
+  | "compact_cut"
+  | "job_exit"
+  | "subagent_exit"
+  | "plan"
+  | "plan_execute";
 
 export function isTranscriptMarkRow(row: HumanRow): boolean {
-  return isCompactCutRow(row) || isJobExitReminderRow(row);
+  return (
+    isCompactCutRow(row) ||
+    isJobExitReminderRow(row) ||
+    isPlanReminderRow(row) ||
+    isPlanExecuteRow(row)
+  );
 }
 
 export function transcriptMarkKind(row: HumanRow): TranscriptMarkKind | null {
   if (isCompactCutRow(row)) return "compact_cut";
+  if (isPlanExecuteRow(row)) return "plan_execute";
+  if (isPlanReminderRow(row)) return "plan";
   if (isSubagentExitReminderRow(row)) return "subagent_exit";
   if (isJobExitReminderRow(row)) return "job_exit";
   return null;
@@ -56,6 +84,18 @@ export function transcriptMarkKind(row: HumanRow): TranscriptMarkKind | null {
 /** Only explicit user log rows are composer bubbles and revert anchors. */
 export function isHumanUserRow(row: HumanRow): boolean {
   return row.kind === "item/user";
+}
+
+/**
+ * Text of a row that stands in for the optimistic composer bubble once it lands.
+ * `item/user` is the normal case; `plan/execute` replaces the bubble with a mark
+ * (its body is still the user `Item` the composer optimistically rendered).
+ * `null` for any other row.
+ */
+export function optimisticUserSealText(row: HumanRow): string | null {
+  if (isPlanExecuteRow(row)) return isMessageItem(row.body) ? itemPlainText(row.body) : null;
+  if (row.kind === "item/user") return isMessageItem(row.body) ? itemPlainText(row.body) : null;
+  return null;
 }
 
 /** Injected and control-plane rows remain in the log but are hidden in HumanView. */
@@ -76,6 +116,8 @@ const HUMAN_VIEW_KINDS = new Set([
   "item/tool_result",
   "compacted",
   "reminder/job_exit",
+  "reminder/plan",
+  "plan/execute",
 ]);
 
 /** Kinds HumanView may group or render. Unknown/future kinds stay in the log. */

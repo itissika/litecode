@@ -17,6 +17,7 @@ import {
   isStreamFailureEvent,
   itemPlainText,
   markFunctionCallsFailed,
+  optimisticUserSealText,
   transcriptMarkKind,
   userTextItem,
 } from "./adapter";
@@ -100,6 +101,38 @@ describe("kind-based HumanView rows", () => {
     expect(isHiddenHumanRow(other)).toBe(false);
     expect(isTranscriptMarkRow(other)).toBe(true);
     expect(transcriptMarkKind(other)).toBe("job_exit");
+  });
+
+  it("shows a plan-review reminder as a plan mark, never a job exit", () => {
+    const plan: HumanRow = {
+      seq: 3,
+      kind: "reminder/plan",
+      body: userTextItem(
+        "<system-reminder>\n[Plan updated] .litecode/plan/calm.md changed since you last read it.\n</system-reminder>",
+      ),
+    };
+    expect(isHiddenHumanRow(plan)).toBe(false);
+    expect(isHumanUserRow(plan)).toBe(false);
+    expect(isTranscriptMarkRow(plan)).toBe(true);
+    expect(transcriptMarkKind(plan)).toBe("plan");
+  });
+
+  it("shows the plan-execution trigger as its own mark, not a user bubble", () => {
+    const exec: HumanRow = { seq: 4, kind: "plan/execute", body: userTextItem("按当前计划开始执行。") };
+    expect(isHiddenHumanRow(exec)).toBe(false);
+    expect(isHumanViewKind(exec.kind)).toBe(true);
+    expect(isHumanUserRow(exec)).toBe(false);
+    expect(isTranscriptMarkRow(exec)).toBe(true);
+    expect(transcriptMarkKind(exec)).toBe("plan_execute");
+    // It seals the optimistic composer bubble it replaced.
+    expect(optimisticUserSealText(exec)).toBe("按当前计划开始执行。");
+  });
+
+  it("seals optimistic composer bubbles only for user and plan-execute rows", () => {
+    expect(optimisticUserSealText(userRow(1, "hi"))).toBe("hi");
+    expect(
+      optimisticUserSealText({ seq: 2, kind: "reminder/plan", body: userTextItem("hi") }),
+    ).toBeNull();
   });
 
   it("hydrates userDetailBefore from the server prefix for partial windows", () => {

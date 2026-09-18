@@ -304,7 +304,10 @@ pub fn derive_transcript_items(events: &[SessionEvent]) -> Result<Vec<Item>> {
     origin.sort_by_key(|event| event.seq);
     let mut loaded = Vec::with_capacity(origin.len());
     for event in origin {
-        if matches!(event.event_type, EventType::ReminderJobExit) {
+        if matches!(
+            event.event_type,
+            EventType::ReminderJobExit | EventType::ReminderPlan | EventType::PlanExecute
+        ) {
             continue;
         }
         loaded.push((event, item_from_event(event)?));

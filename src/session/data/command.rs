@@ -126,6 +126,18 @@ pub enum SessionMutation {
         operation_id: MutationId,
         item: Item,
     },
+    AppendPlanReminder {
+        session_id: String,
+        expected_revision: u64,
+        operation_id: MutationId,
+        item: Item,
+    },
+    AppendPlanExecute {
+        session_id: String,
+        expected_revision: u64,
+        operation_id: MutationId,
+        item: Item,
+    },
     SealInProgress {
         session_id: String,
         expected_revision: u64,
@@ -206,6 +218,8 @@ impl SessionMutation {
             | Self::InsertDetails { operation_id, .. }
             | Self::PersistItem { operation_id, .. }
             | Self::AppendJobExit { operation_id, .. }
+            | Self::AppendPlanReminder { operation_id, .. }
+            | Self::AppendPlanExecute { operation_id, .. }
             | Self::SealInProgress { operation_id, .. }
             | Self::CommitTurnDelta { operation_id, .. }
             | Self::Compact { operation_id, .. }
@@ -230,6 +244,8 @@ impl SessionMutation {
             | Self::InsertDetails { session_id, .. }
             | Self::PersistItem { session_id, .. }
             | Self::AppendJobExit { session_id, .. }
+            | Self::AppendPlanReminder { session_id, .. }
+            | Self::AppendPlanExecute { session_id, .. }
             | Self::SealInProgress { session_id, .. }
             | Self::CommitTurnDelta { session_id, .. }
             | Self::Compact { session_id, .. }
@@ -258,6 +274,12 @@ impl SessionMutation {
                 expected_revision, ..
             }
             | Self::AppendJobExit {
+                expected_revision, ..
+            }
+            | Self::AppendPlanReminder {
+                expected_revision, ..
+            }
+            | Self::AppendPlanExecute {
                 expected_revision, ..
             }
             | Self::SealInProgress {

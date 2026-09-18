@@ -597,7 +597,7 @@ fn refresh_compact_pointers_from_log(tx: &Connection, session_id: &str) -> Resul
          WHERE session_id = ?1 AND seq >= ?2 AND seq < ?3
            AND kind IN (
              'item/user', 'item/assistant', 'item/tool_call', 'item/tool_result',
-             'reminder/job_exit'
+             'reminder/job_exit', 'reminder/plan', 'plan/execute'
            )",
         rusqlite::params![session_id, compacted.to as i64, seq],
         |row| row.get(0),
@@ -641,7 +641,7 @@ fn row_to_item(row: &TranscriptRow, data_root: &Path) -> Result<Item> {
             Ok(body.agent_item())
         }
         "compact_checkpoint" | "detail" | "item/user" | "item/assistant" | "item/tool_call"
-        | "item/tool_result" | "reminder/job_exit" => {
+        | "item/tool_result" | "reminder/job_exit" | "reminder/plan" | "plan/execute" => {
             if let Some(body) = &row.body {
                 return serde_json::from_str(body).map_err(Into::into);
             }
@@ -1570,7 +1570,10 @@ impl Session {
             draft.time = chrono::Utc::now().timestamp_millis();
         }
         let item = if draft.event_type.is_item()
-            || matches!(draft.event_type, EventType::ReminderJobExit)
+            || matches!(
+                draft.event_type,
+                EventType::ReminderJobExit | EventType::ReminderPlan | EventType::PlanExecute
+            )
         {
             Some(serde_json::from_value::<Item>(draft.data.clone())?)
         } else {
@@ -1918,6 +1921,32 @@ impl Session {
     pub fn append_job_exit(&self, item: &Item) -> Result<Seq> {
         let mut draft =
             EventDraft::surface_item(EventType::ReminderJobExit, item, SurfaceOp::Append)?;
+        draft.time = message_timestamp(item);
+        match self.apply(SessionApply::Append(draft))? {
+            ApplyOutcome::Appended(seq) => Ok(seq),
+            _ => unreachable!("append operation must append"),
+        }
+    }
+
+    /// Append a plan-review reminder as a normal spine Item with kind `reminder/plan`.
+    pub fn append_plan_reminder(&self, item: &Item) -> Result<Seq> {
+        let mut draft =
+            EventDraft::surface_item(EventType::ReminderPlan, item, SurfaceOp::Append)?;
+        draft.time = message_timestamp(item);
+        match self.apply(SessionApply::Append(draft))? {
+            ApplyOutcome::Appended(seq) => Ok(seq),
+            _ => unreachable!("append operation must append"),
+        }
+    }
+
+    /// Append the plan-execution trigger message with kind `plan/execute`.
+    ///
+    /// It carries a user `Item` body (so AgentView sees it as a user turn), but
+    /// its kind is its own: it is system-issued on the human's behalf and is
+    /// deliberately **not** a revert anchor (anchors only count `item/user`).
+    pub fn append_plan_execute(&self, item: &Item) -> Result<Seq> {
+        let mut draft =
+            EventDraft::surface_item(EventType::PlanExecute, item, SurfaceOp::Append)?;
         draft.time = message_timestamp(item);
         match self.apply(SessionApply::Append(draft))? {
             ApplyOutcome::Appended(seq) => Ok(seq),
@@ -4148,6 +4177,53 @@ mod tests {
         assert_eq!(working.len(), 2);
         assert_eq!(item_text_preview(&working[0].item), "hi");
         assert!(item_text_preview(&working[1].item).contains("Background bash bg-1"));
+        let human = crate::session::derive_transcript_items(&events).unwrap();
+        assert_eq!(human.len(), 1);
+    }
+
+    #[test]
+    fn plan_reminder_roundtrips_into_agent_working_set() {
+        use crate::types::item_text_preview;
+
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session.insert_detail_rows(&[user_text("hi")]).unwrap();
+        session
+            .append_plan_reminder(&user_text(
+                "<system-reminder>\n[Plan updated] .litecode/plan/calm.md changed since you last read it.\n</system-reminder>",
+            ))
+            .unwrap();
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].event_type, EventType::ReminderPlan);
+        // The reminder reaches the agent's working set (unlike the human view).
+        let working = session.load_working_set().unwrap();
+        assert_eq!(working.len(), 2);
+        assert_eq!(item_text_preview(&working[0].item), "hi");
+        assert!(item_text_preview(&working[1].item).contains("Plan updated"));
+        // Neither view surfaces it as a chat bubble: it stays a one-line mark.
+        let human = crate::session::derive_transcript_items(&events).unwrap();
+        assert_eq!(human.len(), 1);
+    }
+
+    #[test]
+    fn plan_execute_roundtrips_into_agent_working_set() {
+        use crate::types::item_text_preview;
+
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session.insert_detail_rows(&[user_text("hi")]).unwrap();
+        session
+            .append_plan_execute(&user_text("按当前计划开始执行。"))
+            .unwrap();
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].event_type, EventType::PlanExecute);
+        // The persisted kind is its own — never `item/user` (so never an anchor).
+        assert_eq!(events[1].event_type.as_str(), "plan/execute");
+        // The message reaches the agent's working set as a real user turn.
+        let working = session.load_working_set().unwrap();
+        assert_eq!(working.len(), 2);
+        assert_eq!(item_text_preview(&working[1].item), "按当前计划开始执行。");
+        // HumanView renders it as a mark, not a second chat bubble.
         let human = crate::session::derive_transcript_items(&events).unwrap();
         assert_eq!(human.len(), 1);
     }

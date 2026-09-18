@@ -75,7 +75,18 @@ impl AgentDeps for AgentRuntime {
         let compaction_binding = self.runtime_handle.resolve_compaction_binding()?;
         let compaction_system = self.runtime_handle.compaction_system_prompt();
 
-        let task_state = self.sessions.settle_stale_plan(&self.session_id)?;
+        // Fail-open: a stale-plan settlement error must not abort the turn.
+        let task_state = match self.sessions.settle_stale_plan(&self.session_id) {
+            Ok(state) => state,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    error = %error,
+                    "settle_stale_plan failed; continuing with current reminders"
+                );
+                Default::default()
+            }
+        };
 
         // Single computation: `prepare_step` reports whether a full compaction
         // actually ran; phase/compaction events are driven from that truth so
@@ -102,10 +113,19 @@ impl AgentDeps for AgentRuntime {
     fn inject_background_reminders(&mut self, transcript: &mut Transcript) -> Result<()> {
         let mut appended = false;
         if let Some(reminder) = self.plan_review_reminder.take() {
-            self.sessions
-                .append_job_exit(&self.session_id, &crate::types::user_text(&reminder))
-                .map_err(crate::types::LitecodeError::Anyhow)?;
-            appended = true;
+            // Fail-open: the plan reminder only decorates the turn. A persist
+            // failure must degrade to "no reminder", never abort the turn.
+            match self
+                .sessions
+                .append_plan_reminder(&self.session_id, &crate::types::user_text(&reminder))
+            {
+                Ok(()) => appended = true,
+                Err(error) => tracing::warn!(
+                    session_id = %self.session_id,
+                    error = %error,
+                    "failed to persist plan reminder; continuing without it"
+                ),
+            }
         }
 
         let completions = self

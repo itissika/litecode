@@ -23,6 +23,7 @@ import {
   PANEL_EXIT_MS,
   PANEL_INITIAL_H,
   PANEL_MAX_H,
+  PLAN_EXECUTE_PROMPT,
   SessionStatusLine,
 } from "./SessionStatusLine";
 
@@ -732,6 +733,36 @@ describe("SessionStatusLine — migrated chip content", () => {
     fireEvent.click(screen.getByTestId("capsule-plan"));
     fireEvent.click(screen.getByRole("button", { name: "Open plan" }));
     expect(openFile).toHaveBeenCalledWith(".litecode/plan/calm.md");
+  });
+
+  it("执行计划 fires a plan_execution turn for the active plan", () => {
+    const sendRpc = vi.fn(async () => ({ started: true }));
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+    seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+    fireEvent.click(screen.getByRole("button", { name: "执行计划" }));
+
+    expect(sendRpc).toHaveBeenCalledWith("agent/run", {
+      input: PLAN_EXECUTE_PROMPT,
+      session_id: "s1",
+      plan_execution: true,
+    });
+  });
+
+  it("disables 执行计划 while a turn is already running", () => {
+    seedTurn("s1", {
+      activePlanPath: ".litecode/plan/calm.md",
+      runState: "running",
+    });
+
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+    const button = screen.getByRole("button", {
+      name: "执行计划",
+    }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
   });
 
   it("renders the plan file's markdown in the plan panel", async () => {

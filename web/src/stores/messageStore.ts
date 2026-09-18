@@ -2,13 +2,13 @@ import { create } from "zustand";
 import {
   applyStreamEvent,
   hydrateUserDetailBefore,
-  isHumanUserRow,
   isWellFormedBufferRow,
   itemFromRow,
   isStreamFailureEvent,
   itemAuthorityId,
   itemPlainText,
   markFunctionCallsFailed,
+  optimisticUserSealText,
   sealMismatchError,
 } from "../api/adapter";
 import type {
@@ -202,10 +202,14 @@ function upsertEvents(slice: MessageSlice, events: WireBufferEvent[]): MessageSl
     }
     bySeq.set(ev.seq, { ...nextRow, streaming: nextRow.streaming });
     rememberRowItem(itemIdToSeq, nextRow);
-    if (pendingUser && nextItem && isHumanUserRow(nextRow) && itemPlainText(pendingUser.item) === itemPlainText(nextItem)) {
-      pendingUser = null;
-    }
-  }
+    // `item/user` seals the composer bubble; `plan/execute` lands in its place
+    // (same user Item text) and must seal it too, or the row double-renders.
+    if (pendingUser) {
+      const sealText = optimisticUserSealText(nextRow);
+      if (sealText !== null && sealText === itemPlainText(pendingUser.item)) {
+        pendingUser = null;
+      }
+    }  }
 
   const messages = sortedMessages(bySeq);
   let fromSeq = slice.fromSeq;

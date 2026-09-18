@@ -215,6 +215,24 @@ describe("messageStore seq map", () => {
     expect(slice.messages[0]!.seq).toBe(0);
   });
 
+  it("pending user also seals on a plan/execute row (mark replaces the bubble)", () => {
+    const sid = "s-pend-plan";
+    useMessageStore.getState().pushPendingUser(sid, {
+      clientId: "pending-plan",
+      item: userMsg("按当前计划开始执行。"),
+    });
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      seq: 0,
+      kind: "plan/execute",
+      body: userMsg("按当前计划开始执行。"),
+    });
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.pendingUser).toBeNull();
+    expect(slice.messages).toHaveLength(1);
+    expect(slice.messages[0]!.kind).toBe("plan/execute");
+  });
+
   it("displayMessages snapshot is stable while pending user is set", () => {
     const sid = "s-new-pending";
     useMessageStore.getState().pushPendingUser(sid, {

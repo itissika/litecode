@@ -56,7 +56,15 @@ impl SessionController {
         let plan_review_reminder = if plan_execution {
             match self.sessions.plan_execution_reminder(session_id) {
                 Ok(reminder) => reminder,
-                Err(error) => return Err(StartTurnError::Runtime(error)),
+                Err(error) => {
+                    // Fail-open: a plan-reminder lookup must never block the turn.
+                    tracing::warn!(
+                        session_id,
+                        error = %error,
+                        "plan_execution_reminder failed; continuing without reminder"
+                    );
+                    None
+                }
             }
         } else {
             None
@@ -104,6 +112,25 @@ impl SessionController {
                 }
                 other => StartTurnError::Runtime(anyhow::anyhow!("{other}")),
             })?;
+
+        // The plan-execution message is issued on the human's behalf, so it
+        // carries its own kind (`plan/execute`) instead of `item/user`: it must
+        // not read as a revert anchor, and HumanView renders it as a chip.
+        // Persist it before the spawn; the runtime's `already_last_user` text
+        // check then skips pushing a duplicate `item/user` row.
+        if plan_execution {
+            if let Err(error) = self
+                .sessions
+                .append_plan_execute(session_id, &crate::types::user_text(input))
+            {
+                // Fail-open: degrade to a plain `item/user` pushed by the runtime.
+                tracing::warn!(
+                    session_id,
+                    error = %error,
+                    "failed to persist plan-execution message; continuing"
+                );
+            }
+        }
 
         // Spawn the turn using per-session primary + sticky model_id.
         let turn_opts = TurnOptions {
