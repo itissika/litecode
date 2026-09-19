@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import type { HumanRow } from "../api/types";
 import { isCompactCutRow, projectionRowKey } from "../api/adapter";
-import { bubbleIdentity, canRevertFiles, groupRowsForBubbles, locateBashTool, locateSeq } from "./MessageList";
+import {
+  bubbleIdentity,
+  canRevertFiles,
+  groupRowsForBubbles,
+  locateBashTool,
+  locateSeq,
+  shouldCompensateSizeChange,
+} from "./MessageList";
 
 const userRow: HumanRow = {
   seq: 0,
@@ -233,5 +240,69 @@ describe("locateSeq", () => {
     expect(locateSeq(bubbles, 1)).toBe(1);
     expect(locateSeq(bubbles, 2)).toBe(1);
     expect(locateSeq(bubbles, 99)).toBeNull();
+  });
+});
+describe("shouldCompensateSizeChange", () => {
+  // The list is absolutely positioned, so Chromium's scroll anchoring never
+  // fires for it (verified: the same growth moved scrollTop in a normal-flow
+  // scroller and left it untouched for an abspos item). This predicate is the
+  // only compensation the list gets, so the cases below are the whole contract.
+
+  it("compensates a first measurement even while the user is unpinned", () => {
+    // History paging mounts a page of never-measured bubbles, each sized from a
+    // content-independent estimate: without this the measured delta shoves the
+    // viewport on every measurement (the "scroll up and the list jitters" bug).
+    expect(
+      shouldCompensateSizeChange({
+        stickToEnd: false,
+        measured: false,
+        itemEnd: 4000,
+        scrollOffset: 2000,
+      }),
+    ).toBe(true);
+  });
+
+  it("leaves a re-measurement of an on-screen item alone while unpinned", () => {
+    // Streamed growth / a FoldCard opening changes the bottom of the item the
+    // reader is looking at; compensating by the full delta pushes their view
+    // down once per flush and once per 240ms animation frame.
+    expect(
+      shouldCompensateSizeChange({
+        stickToEnd: false,
+        measured: true,
+        itemEnd: 2600,
+        scrollOffset: 2000,
+      }),
+    ).toBe(false);
+  });
+
+  it("compensates a re-measurement of an item entirely above the viewport", () => {
+    expect(
+      shouldCompensateSizeChange({
+        stickToEnd: false,
+        measured: true,
+        itemEnd: 2000,
+        scrollOffset: 2000,
+      }),
+    ).toBe(true);
+    expect(
+      shouldCompensateSizeChange({
+        stickToEnd: false,
+        measured: true,
+        itemEnd: 1999,
+        scrollOffset: 2000,
+      }),
+    ).toBe(true);
+  });
+
+  it("always compensates while pinned to the end", () => {
+    expect(
+      shouldCompensateSizeChange({
+        stickToEnd: true,
+        measured: true,
+        itemEnd: 2600,
+        scrollOffset: 2000,
+      }),
+    ).toBe(true);
   });
 });

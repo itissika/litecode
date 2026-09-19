@@ -828,6 +828,22 @@ mod open_tests {
                     description TEXT NOT NULL DEFAULT '',
                     allowed_subagents_json TEXT NOT NULL DEFAULT '[]'
                 );
+                CREATE TABLE agent_tools (
+                    agent_id TEXT NOT NULL,
+                    tool_id TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    policy_json TEXT NOT NULL DEFAULT '{}',
+                    path_mode TEXT NOT NULL DEFAULT 'unrestricted',
+                    last_applied_preset TEXT,
+                    PRIMARY KEY (agent_id, tool_id)
+                );
+                CREATE TABLE mcp_servers (
+                    id TEXT PRIMARY KEY,
+                    command TEXT NOT NULL,
+                    args_json TEXT NOT NULL DEFAULT '[]',
+                    env_json TEXT NOT NULL DEFAULT '{}',
+                    transport_json TEXT NOT NULL DEFAULT '{\"type\":\"stdio\"}'
+                );
                 INSERT INTO agents (id, role, model_ref) VALUES ('default', 'primary', '');
                 PRAGMA user_version = 5;
                 ",
@@ -851,6 +867,22 @@ mod open_tests {
             .query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))
             .unwrap();
         assert_eq!(agents, 1);
+        let allowed_tools: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_tools') WHERE name='allowed_tools_json'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(allowed_tools, 1);
+        let timeout: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('mcp_servers') WHERE name='timeout'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(timeout, 1);
     }
 
     #[test]

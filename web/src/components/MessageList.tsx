@@ -790,6 +790,47 @@ function seqHitSelector(seq: number): string {
   return `[data-seq-hit~="${seq}"]`;
 }
 
+/**
+ * Whether a measured size change should be compensated by shifting scrollTop.
+ *
+ * The library's default rule is "the changed item starts above the viewport →
+ * adjust by the full delta", with one nuance (virtual-core `resizeItem`): a
+ * *first* measurement (a key that was never sized) is always compensated, in
+ * both scroll directions. Two things make that default wrong for this list:
+ *
+ *  - Streamed growth and FoldCard toggles change the *bottom* of an item that
+ *    is still on screen (its start is above the viewport), so a full-delta
+ *    adjustment yanks the reader's view down on every flush and every 240ms
+ *    animation frame.
+ *  - Native scroll anchoring cannot cover the rest of the cases for us: items
+ *    are absolutely positioned (`position: absolute` + `translateY`), and
+ *    Chromium's anchor-node selection skips out-of-flow boxes. Measured on
+ *    Chromium: growing the content above the viewport moved a normal-flow
+ *    scroller's scrollTop by the delta, while the identical change in an
+ *    absolutely positioned item left scrollTop untouched.
+ *
+ * So compensate exactly what can silently shift a viewport the user is reading:
+ * the estimate→actual delta of a never-measured item (history paging mounts a
+ * page of them at once, each with a content-independent estimate), and any size
+ * change of an item that is entirely above the viewport. Re-measurements of
+ * already-sized on-screen items stay uncompensated — they are the streamed
+ * growth / FoldCard animation case above.
+ */
+export function shouldCompensateSizeChange(input: {
+  /** User is pinned to the end (bottom) of the list. */
+  stickToEnd: boolean;
+  /** The item already has a measured size, i.e. this is a re-measurement. */
+  measured: boolean;
+  /** Bottom edge of the changed item, in scroll coordinates. */
+  itemEnd: number;
+  /** Current scroll offset. */
+  scrollOffset: number;
+}): boolean {
+  if (input.stickToEnd) return true;
+  if (!input.measured) return true;
+  return input.itemEnd <= input.scrollOffset;
+}
+
 interface MessageListProps {
   messages: HumanRow[];
   loadingHistory: boolean;
@@ -930,21 +971,23 @@ export const MessageList = memo(function MessageList({
     followOnAppend: stickToEnd,
   });
 
-  // While the user is unpinned (scrolled up), never compensate an item's
-  // size change by shifting scrollTop. The virtualizer's default rule
-  // ("item top above the viewport → adjust by the full delta") is wrong
-  // for streamed growth and FoldCard open/close: the change happens at the
-  // bottom of the last item — below the user's reading anchor — so the
-  // adjustment pushes their view down with every flush / 240ms animation
-  // frame. Native scroll anchoring (overflow-anchor: auto) keeps the first
-  // visible node stable, which is the correct anchor in that state.
-  // `stickRef` (not the async React state) is read so a stream flush that
-  // lands in the same frame as the wheel-unpin gesture still sees the
-  // unpinned intent. This predicate is a public instance property, not a
-  // VirtualizerOptions field in this version — assigned once per instance
-  // (idempotent on re-render, same pattern as the library's own setOptions).
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () =>
-    stickRef.current;
+  // See shouldCompensateSizeChange for the rule. Briefly: while unpinned, an
+  // item that has never been measured must still be compensated — paging in
+  // history mounts a whole page of over/under-estimated items, and without the
+  // compensation each measurement shoves the visible content (native scroll
+  // anchoring does not help: the items are absolutely positioned).
+  // `stickRef` (not the async React state) is read so a stream flush that lands
+  // in the same frame as the wheel-unpin gesture still sees the unpinned intent.
+  // This predicate is a public instance property, not a VirtualizerOptions field
+  // in this version — assigned once per instance (idempotent on re-render, same
+  // pattern as the library's own setOptions).
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
+    shouldCompensateSizeChange({
+      stickToEnd: stickRef.current,
+      measured: instance.itemSizeCache.has(item.key),
+      itemEnd: item.end,
+      scrollOffset: instance.scrollOffset ?? 0,
+    });
 
   const virtualItems = virtualizer.getVirtualItems();
 

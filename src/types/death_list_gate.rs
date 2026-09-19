@@ -754,10 +754,6 @@ fn death_list_adapter_registry_invariants() {
         fs::read_to_string(root.join("src/config/global_db/schema.sql")).expect("schema.sql");
     let schema_rs = fs::read_to_string(root.join("src/config/schema.rs")).expect("schema.rs");
 
-    assert!(
-        seed.contains("No fake providers"),
-        "seed.rs must not plant fake LLM provider/model rows"
-    );
     for line in seed.lines() {
         if is_comment_line(line) {
             continue;

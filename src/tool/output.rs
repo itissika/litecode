@@ -364,7 +364,7 @@ mod tests {
             panic!("expected blob ref");
         };
         assert_eq!(
-            std::fs::read(crate::session::media::media_blob_path(dir.path(), blob_id)).unwrap(),
+            crate::session::media::read_media_blob(dir.path(), blob_id).unwrap(),
             png
         );
     }

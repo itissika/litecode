@@ -143,6 +143,13 @@ mod tests {
                 allowed_tools_json TEXT,
                 PRIMARY KEY (agent_id, tool_id)
             );
+            CREATE TABLE mcp_servers (
+                id TEXT PRIMARY KEY,
+                command TEXT NOT NULL,
+                args_json TEXT NOT NULL DEFAULT '[]',
+                env_json TEXT NOT NULL DEFAULT '{}',
+                transport_json TEXT NOT NULL DEFAULT '{\"type\":\"stdio\"}'
+            );
             INSERT INTO tool_catalog (id, tier, init_scope, catalog_enabled)
                 VALUES ('read', 'core', 'none', 1);
             INSERT INTO agents (id, role, model_ref) VALUES ('default', 'primary', '');
@@ -185,6 +192,13 @@ mod tests {
                 last_applied_preset TEXT,
                 PRIMARY KEY (agent_id, tool_id)
             );
+            CREATE TABLE mcp_servers (
+                id TEXT PRIMARY KEY,
+                command TEXT NOT NULL,
+                args_json TEXT NOT NULL DEFAULT '[]',
+                env_json TEXT NOT NULL DEFAULT '{{}}',
+                transport_json TEXT NOT NULL DEFAULT '{{\"type\":\"stdio\"}}'
+            );
             PRAGMA user_version = {CURRENT_USER_VERSION};",
         ))
         .unwrap();
@@ -199,6 +213,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(col, 1);
+        let timeout_col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('mcp_servers') WHERE name='timeout'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(timeout_col, 1);
     }
 
     #[test]

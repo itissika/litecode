@@ -1,4 +1,4 @@
-//! Todo tool 鈥?session-scoped task tracking (SQLite authority).
+//! Todo tool — session-scoped task tracking (SQLite authority).
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -91,26 +91,36 @@ impl Tool for TodoWriteTool {
 
         match self.commit_todos(&todos) {
             Ok(committed) => {
-                // Count from the committed (normalized) state, not the raw input.
-                let pending = committed
+                // Count the SUBMITTED list, not the committed one. The only
+                // normalization is "all completed -> dropped", which would
+                // otherwise report 0/0/0 for a fully-finished list.
+                let pending = todos
                     .iter()
                     .filter(|t| t.status == TodoStatus::Pending)
                     .count();
-                let in_progress = committed
+                let in_progress = todos
                     .iter()
                     .filter(|t| t.status == TodoStatus::InProgress)
                     .count();
-                let completed = committed
+                let completed = todos
                     .iter()
                     .filter(|t| t.status == TodoStatus::Completed)
                     .count();
                 // Count-only ack. The full list already lives in the call
                 // arguments (and in TaskState for compact); echoing it here
                 // duplicated noise into every later LLM view.
-                ToolCallResult::ok(format!(
-                    "OK. Status 鈥?pending: {}, in_progress: {}, completed: {}",
-                    pending, in_progress, completed
-                ))
+                if committed.is_empty() && completed > 0 {
+                    // Everything finished: the overlay was dropped, so say that
+                    // instead of reporting a bare 0/0/0 that reads like data loss.
+                    ToolCallResult::ok(format!(
+                        "OK. All {completed} todos completed; task list cleared."
+                    ))
+                } else {
+                    ToolCallResult::ok(format!(
+                        "OK. Status — pending: {}, in_progress: {}, completed: {}",
+                        pending, in_progress, completed
+                    ))
+                }
             }
             Err(e) => ToolCallResult::error(e.to_string()),
         }
@@ -419,6 +429,28 @@ mod tests {
 
         let reloaded = load_task_state(&manager, &sid);
         assert_eq!(reloaded.todos[0].status, TodoStatus::InProgress);
+    }
+
+    #[test]
+    fn test_all_completed_reports_cleared_list() {
+        let dir = test_dir();
+        let (manager, sid, _home) = setup(dir.path());
+        let tool = make_tool(Arc::clone(&manager), &sid);
+
+        let result = tool.call(serde_json::json!({
+            "todos": [
+                {"content": "A", "status": "completed"},
+                {"content": "B", "status": "completed"}
+            ]
+        }));
+        // A fully-finished list must not be acked as a bare 0/0/0.
+        assert_eq!(
+            result.content,
+            "OK. All 2 todos completed; task list cleared."
+        );
+        // The overlay is genuinely dropped, not merely mis-reported.
+        let reloaded = load_task_state(&manager, &sid);
+        assert!(reloaded.todos.is_empty());
     }
 
     #[test]

@@ -596,6 +596,10 @@ mod tests {
         cfg("user.email", "test@litecode.local");
         cfg("user.name", "Litecode Test");
         cfg("commit.gpgsign", "false");
+        // Tests assert exact file bytes; do not inherit the host's checkout
+        // conversion policy (notably system-wide core.autocrlf=true on Windows).
+        cfg("core.autocrlf", "false");
+        cfg("core.eol", "lf");
     }
 
     fn sandbox_at(dir: &Path) -> Sandbox {

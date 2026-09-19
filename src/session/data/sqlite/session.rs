@@ -4558,10 +4558,21 @@ mod tests {
             .into_iter()
             .filter(|e| e.event_type == EventType::ItemToolResult)
             .collect();
+        let diagnostics: Vec<_> = results
+            .iter()
+            .map(|event| {
+                format!(
+                    "seq={} state={:?} call_id={:?}",
+                    event.seq,
+                    event.state,
+                    event.data.get("call_id").and_then(|v| v.as_str())
+                )
+            })
+            .collect();
         assert_eq!(
             results.len(),
             1,
-            "same call_id must not append a second result"
+            "same call_id must not append a second result; persisted rows: {diagnostics:?}"
         );
         let mut rows = session.load_working_set().unwrap();
         rows.push(WorkingRow::pending(other));

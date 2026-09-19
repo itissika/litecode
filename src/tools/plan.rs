@@ -1,4 +1,4 @@
-//! Plan tool 鈥?workspace-scoped markdown plans under `.litecode/plan/`.
+//! Plan tool — workspace-scoped markdown plans under `.litecode/plan/`.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -166,7 +166,7 @@ impl PlanTool {
         let tmp_path = plan_root.join(format!(".{slug}.md.tmp"));
 
         // Atomic create (REV-10): stage the .md as a temp file, persist the
-        // active-plan pointer, then publish via rename 鈥?a failure before the
+        // active-plan pointer, then publish via rename — a failure before the
         // rename leaves neither a visible .md nor a DB pointer.
         std::fs::write(&tmp_path, content)?;
         let revision = Some(plan_content_revision(content.as_bytes()));

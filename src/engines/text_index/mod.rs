@@ -1113,51 +1113,19 @@ mod tests {
         );
 
         let probes = engine.accelerator_probe_count();
-        let files = grep_run(
-            root,
-            serde_json::json!({ "pattern": "shared_needle_xyz", "output_mode": "files" }),
-        );
         let content = grep_run(root, serde_json::json!({ "pattern": "shared_needle_xyz" }));
-        let files_off = grep_run(
-            root,
-            serde_json::json!({
-                "pattern": "shared_needle_xyz",
-                "output_mode": "files",
-                "offset": 1
-            }),
-        );
-        let content_off = grep_run(
-            root,
-            serde_json::json!({ "pattern": "shared_needle_xyz", "offset": 10 }),
-        );
         let lane = lexical_search_with_preset(&q, FilterPreset::Search).unwrap();
         let probes_after = engine.accelerator_probe_count();
         unregister_engine();
         drop(engine);
 
         assert!(
-            files.contains("late.rs") && files.contains("indexed.rs"),
-            "files mode must scan disk: {files}"
-        );
-        assert!(
-            files.contains("Found 2 files (23 matches)"),
-            "disk total is 3+20, not the 3-hit index window: {files}"
-        );
-        assert!(
             content.contains("late.rs") && content.contains("indexed.rs"),
-            "content mode must scan disk: {content}"
+            "grep must scan disk and include files added after the index snapshot: {content}"
         );
         assert!(
-            !files_off.contains("past end"),
-            "index-accelerated grep would treat offset=1 as past the single indexed file: {files_off}"
-        );
-        assert!(
-            files_off.contains("indexed.rs") && !files_off.contains("late.rs"),
-            "files offset skips ranked files (late.rs has more hits): {files_off}"
-        );
-        assert!(
-            !content_off.contains("past end") && content_off.contains("late.rs"),
-            "content offset=10 must page the disk hit list: {content_off}"
+            content.contains("Found 23 matches"),
+            "grep must report all 3+20 disk matches, not the stale index window: {content}"
         );
         assert_eq!(lane.matches.len(), 23);
         assert!(

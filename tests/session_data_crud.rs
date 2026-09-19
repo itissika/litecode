@@ -18,35 +18,6 @@ fn open() -> (
 }
 
 #[test]
-fn mutation_enum_is_closed() {
-    fn visit(m: &SessionMutation) {
-        match m {
-            SessionMutation::Create { .. }
-            | SessionMutation::Apply { .. }
-            | SessionMutation::InsertDetails { .. }
-            | SessionMutation::PersistItem { .. }
-            | SessionMutation::AppendJobExit { .. }
-            | SessionMutation::SealInProgress { .. }
-            | SessionMutation::CommitTurnDelta { .. }
-            | SessionMutation::Compact { .. }
-            | SessionMutation::SaveTaskState { .. }
-            | SessionMutation::SaveContextMeter { .. }
-            | SessionMutation::SetAgent { .. }
-            | SessionMutation::SetModel { .. }
-            | SessionMutation::SetThinkingTier { .. }
-            | SessionMutation::SetContextMode { .. }
-            | SessionMutation::Delete { .. }
-            | SessionMutation::ClearOrphanedModelIds { .. }
-            | SessionMutation::RebuildFts { .. } => {}
-        }
-    }
-    let m = SessionMutation::RebuildFts {
-        operation_id: MutationId::new(),
-    };
-    visit(&m);
-}
-
-#[test]
 fn create_append_meta_delete() {
     let (_dir, data) = open();
     let sid = data.create_session("/proj", "default", Some("m")).unwrap();

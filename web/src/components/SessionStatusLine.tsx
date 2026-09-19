@@ -648,10 +648,22 @@ function Capsule({
       <span className="flex shrink-0 items-center">{icon}</span>
       <span
         data-content-hidden={!expanded}
-        className={`flex min-w-0 flex-1 items-center gap-1.5 transition-[opacity,visibility] ${
+        className={`flex min-w-0 flex-1 items-center gap-1.5 ${
+          // Two invariants, both from the ghost-row bug:
+          // 1. The expanded state must NOT declare `visible`: a descendant that
+          //    declares `visibility: visible` overrides an ancestor's `hidden`,
+          //    and dockview hides the inactive panel's whole overlay that way
+          //    (defaultRenderer="always") — this line painted as a ghost text
+          //    row over the active session after a tab switch.
+          // 2. The expanded state must NOT transition `visibility` either: a
+          //    pending/running visibility transition holds the value at
+          //    `visible`, so the panel-level hide only landed after
+          //    delay+duration (~300ms) — the ghost's visible tail. Only the
+          //    collapse direction needs it, to keep the text on screen while
+          //    its opacity fades out.
           expanded
-            ? "visible opacity-100 duration-150 delay-150"
-            : "invisible opacity-0 duration-100"
+            ? "transition-opacity opacity-100 duration-150 delay-150"
+            : "invisible opacity-0 transition-[opacity,visibility] duration-100"
         }`}
       >
         <span className="shrink-0 whitespace-nowrap">{label}</span>

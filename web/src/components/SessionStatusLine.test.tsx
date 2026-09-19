@@ -169,6 +169,43 @@ describe("SessionStatusLine — resident capsules", () => {
     }
   });
 
+  it("never declares `visible` on the capsule content (must inherit an ancestor's hidden)", () => {
+    // Regression: dockview hides an inactive panel's whole overlay with
+    // `visibility: hidden` (defaultRenderer="always"). A descendant that
+    // declares `visibility: visible` overrides that hide, so the label row kept
+    // painting as a ghost text line over the active session after a tab switch.
+    // Only the collapsed state may touch visibility (with `invisible`).
+    const hasToken = (el: Element, token: string) =>
+      (el.className as string).split(/\s+/).includes(token);
+    render(<SessionStatusLine sessionId="s1" />);
+    const wrapper = (id: string) =>
+      screen.getByTestId(`capsule-${id}`).querySelector("[data-content-hidden]")!;
+
+    // Todo owns the slot by default; the other three are collapsed.
+    expect(hasToken(wrapper("todo"), "visible")).toBe(false);
+    expect(hasToken(wrapper("todo"), "invisible")).toBe(false);
+    // An expanded wrapper must not transition `visibility` either: a pending
+    // visibility transition holds the value at `visible`, which delayed the
+    // hide-by-ancestor until delay+duration (~300ms). Only the collapse
+    // direction keeps it so the text stays on screen while fading out.
+    expect(wrapper("todo").className).not.toContain("visibility");
+    for (const id of ["plan", "subagent", "terminal"] as const) {
+      expect(hasToken(wrapper(id), "visible")).toBe(false);
+      expect(hasToken(wrapper(id), "invisible")).toBe(true);
+      expect(wrapper(id).className).toContain("transition-[opacity,visibility]");
+    }
+
+    // Hovering another capsule flips which wrapper is expanded — still no
+    // `visible`, and the vacated one goes back to `invisible`.
+    fireEvent.mouseEnter(screen.getByTestId("capsule-plan"));
+    expect(hasToken(wrapper("plan"), "visible")).toBe(false);
+    expect(hasToken(wrapper("plan"), "invisible")).toBe(false);
+    expect(wrapper("plan").className).not.toContain("visibility");
+    expect(hasToken(wrapper("todo"), "visible")).toBe(false);
+    expect(hasToken(wrapper("todo"), "invisible")).toBe(true);
+    expect(wrapper("todo").className).toContain("transition-[opacity,visibility]");
+  });
+
   it("surfaces the live counts in the accessible name and the hover label", () => {
     useBashStore
       .getState()

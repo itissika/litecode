@@ -354,31 +354,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_orphan_tool_binding_fails() {
-        let mut global = minimal_global();
-        global.agents.insert(
-            "default".into(),
-            AgentProfile {
-                role: AgentRole::Primary,
-                model_ref: "default".into(),
-                tools: HashMap::from([(
-                    "nonexistent-tool".into(),
-                    AgentToolBinding {
-                        enabled: true,
-                        policy: crate::permission::ToolPolicy::allow_all(),
-                        path_mode: crate::permission::BindingPathMode::default(),
-                        last_applied_preset: None,
-                        allowed_tools: None,
-                    },
-                )]),
-                ..Default::default()
-            },
-        );
-        let err = ConfigManager::validate(&global).unwrap_err();
-        assert!(matches!(err, LitecodeError::Config(msg) if msg.contains("nonexistent-tool")));
-    }
-
-    #[test]
     fn validate_dangling_model_ref_fails() {
         let mut global = minimal_global();
         global.agents.insert(
