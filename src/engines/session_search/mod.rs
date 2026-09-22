@@ -407,6 +407,10 @@ fn hydrate_hits(
 }
 
 /// First and last rendered body line of one item, plus its reader-facing label.
+///
+/// The label is the item's type, plus the tool name for the rows that are a
+/// tool call or a tool result — "which tool" is the question a bare `tool call`
+/// leaves open.
 fn body_span(file: &TranscriptFile, seq: i64) -> Option<(u32, u32, String)> {
     let mut first: Option<u32> = None;
     let mut last: Option<u32> = None;
@@ -420,6 +424,9 @@ fn body_span(file: &TranscriptFile, seq: i64) -> Option<(u32, u32, String)> {
         last = Some(span.line);
         if label.is_empty() {
             label = transcript_file::type_label(&span.kind, &span.item_type);
+            if let Some(tool) = file.tool_name(seq) {
+                label = format!("{label} · {tool}");
+            }
         }
     }
     Some((first?, last?, label))
@@ -1666,6 +1673,57 @@ mod tests {
         // Internal coordinates stay out of the view.
         assert!(!view.contains("seq"), "{view}");
         assert!(!view.contains("Showing"), "{view}");
+    }
+
+    #[test]
+    fn agent_view_names_the_tool_of_a_call_and_its_result() {
+        use crate::authority::responses::{
+            FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
+        };
+        use crate::types::Item;
+
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(
+                &id,
+                &[
+                    Item::FunctionCall(FunctionToolCall {
+                        arguments: r#"{"command":"grep TOOL_NAME_NEEDLE"}"#.into(),
+                        call_id: "call_1".into(),
+                        namespace: None,
+                        name: "bash".into(),
+                        id: None,
+                        status: None,
+                    }),
+                    Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                        call_id: "call_1".into(),
+                        output: FunctionCallOutput::Text("TOOL_NAME_NEEDLE found".into()),
+                        id: None,
+                        status: None,
+                    }),
+                ],
+            )
+            .unwrap();
+            id
+        };
+        let reader = SessionDataReader::open(&db);
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "TOOL_NAME_NEEDLE".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 2, "the call and its result both match");
+
+        let view = build_agent_view(&reader, &hits, dir.path()).unwrap();
+        assert!(view.contains("tool call · bash"), "{view}");
+        assert!(view.contains("tool result · bash"), "{view}");
     }
 
     #[test]

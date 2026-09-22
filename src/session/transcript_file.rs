@@ -21,6 +21,7 @@
 //! change renumbers every line of every session at once. Never make it a
 //! per-call parameter.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::session::data::read_bytes;
@@ -78,6 +79,11 @@ pub struct TranscriptFile {
     pub virtual_path: String,
     pub lines: Vec<String>,
     pub line_index: Vec<LineSpan>,
+    /// Tool name per `seq`, for the rows that are a tool call or a tool result.
+    /// A result carries the name of the call it answers, resolved inside its own
+    /// session; rows that are neither, or whose call is not in this file, are
+    /// absent rather than empty.
+    pub tool_names: HashMap<i64, String>,
 }
 
 impl TranscriptFile {
@@ -100,6 +106,11 @@ impl TranscriptFile {
             return None;
         }
         self.line_index.get(line.saturating_sub(1) as usize)
+    }
+
+    /// The tool a row is a call of (or the result of), when it is one.
+    pub fn tool_name(&self, seq: i64) -> Option<&str> {
+        self.tool_names.get(&seq).map(String::as_str)
     }
 
     pub fn first_body_line(&self, seq: i64) -> Option<u32> {
@@ -212,6 +223,22 @@ pub fn row_plain_text(row: &SearchableRow, data_root: &Path) -> Result<Option<St
 /// pipeline uses this instead, so the whole batch fails and the cursor stays
 /// where it was.
 pub fn row_plain_text_strict(row: &SearchableRow, data_root: &Path) -> Result<Option<String>> {
+    let Some(item) = row_item(row, data_root)? else {
+        return Ok(None);
+    };
+    let text = item_text_preview(&item);
+    if text.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(normalize_newlines(&text)))
+    }
+}
+
+/// One row's parsed item, when it has a readable body.
+///
+/// The projected text and the tool linkage are both read off this one parse, so
+/// rendering a transcript parses each row exactly once.
+fn row_item(row: &SearchableRow, data_root: &Path) -> Result<Option<Item>> {
     let json = if let Some(body) = &row.body {
         body.clone()
     } else if let Some(body_ref) = &row.body_ref {
@@ -224,20 +251,25 @@ pub fn row_plain_text_strict(row: &SearchableRow, data_root: &Path) -> Result<Op
     } else {
         return Ok(None);
     };
-    let text = if let Ok(item) = serde_json::from_str::<Item>(&json) {
-        item_text_preview(&item)
-    } else if let Ok(body) = serde_json::from_str::<crate::session::model::CompactedBody>(&json) {
-        item_text_preview(&body.agent_item())
-    } else {
-        return Err(LitecodeError::SessionStorage(format!(
-            "unparseable transcript row {}:{}",
-            row.session_id, row.seq
-        )));
-    };
-    if text.trim().is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(normalize_newlines(&text)))
+    if let Ok(item) = serde_json::from_str::<Item>(&json) {
+        return Ok(Some(item));
+    }
+    if let Ok(body) = serde_json::from_str::<crate::session::model::CompactedBody>(&json) {
+        return Ok(Some(body.agent_item()));
+    }
+    Err(LitecodeError::SessionStorage(format!(
+        "unparseable transcript row {}:{}",
+        row.session_id, row.seq
+    )))
+}
+
+/// `(call_id, name)` of a tool call, or `(call_id, None)` of a tool result: a
+/// result does not name its tool, only the call it answers.
+fn item_tool_link(item: &Item) -> Option<(String, Option<String>)> {
+    match item {
+        Item::FunctionCall(call) => Some((call.call_id.clone(), Some(call.name.clone()))),
+        Item::FunctionCallOutput(out) => Some((out.call_id.clone(), None)),
+        _ => None,
     }
 }
 
@@ -280,27 +312,61 @@ pub fn load_transcript_file(
     let virtual_path = virtual_path_for(session_id);
     let mut lines = Vec::new();
     let mut line_index = Vec::new();
+    // `(seq, call_id, name)` of the tool rows, kept apart from the render loop
+    // because a result resolves to a call that may only be read later on.
+    let mut links: Vec<(i64, String, Option<String>)> = Vec::new();
     for row in rows {
         if row.session_id != session_id {
             continue;
         }
-        let Some(plain) = row_plain_text(row, data_root)? else {
-            continue;
+        let item = match row_item(row, data_root) {
+            Ok(Some(item)) => item,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %row.session_id,
+                    seq = row.seq,
+                    error = %e,
+                    "session transcript skip unreadable row"
+                );
+                continue;
+            }
         };
+        let text = item_text_preview(&item);
+        if text.trim().is_empty() {
+            continue;
+        }
+        if let Some((call_id, name)) = item_tool_link(&item) {
+            links.push((row.seq, call_id, name));
+        }
         push_item(
             &mut lines,
             &mut line_index,
             row.seq,
             &row.kind,
             &row.item_type,
-            &plain,
+            &normalize_newlines(&text),
         );
     }
+    let call_names: HashMap<&str, &str> = links
+        .iter()
+        .filter_map(|(_, call_id, name)| Some((call_id.as_str(), name.as_deref()?)))
+        .collect();
+    let tool_names: HashMap<i64, String> = links
+        .iter()
+        .filter_map(|(seq, call_id, name)| {
+            let name = name
+                .as_deref()
+                .or_else(|| call_names.get(call_id.as_str()).copied())?;
+            Some((*seq, name.to_string()))
+        })
+        .collect();
     Ok(TranscriptFile {
         session_id: session_id.to_string(),
         virtual_path,
         lines,
         line_index,
+        tool_names,
     })
 }
 
@@ -478,6 +544,39 @@ mod tests {
             .map(|s| s.seq)
             .collect();
         assert_eq!(headers, vec![1]);
+    }
+
+    #[test]
+    fn tool_rows_name_the_tool_they_call() {
+        use crate::authority::responses::{
+            FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
+        };
+        use crate::types::Item;
+
+        let (data, sid) = seeded(&[
+            user_text("hello"),
+            Item::FunctionCall(FunctionToolCall {
+                arguments: r#"{"command":"ls"}"#.into(),
+                call_id: "call_1".into(),
+                namespace: None,
+                name: "bash".into(),
+                id: None,
+                status: None,
+            }),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                call_id: "call_1".into(),
+                output: FunctionCallOutput::Text("ok".into()),
+                id: None,
+                status: None,
+            }),
+        ]);
+        let reader = data.reader();
+        let rows = reader.searchable_rows_blocking(Some(&sid)).unwrap();
+        let file = load_transcript_file(&sid, &rows, reader.data_root()).unwrap();
+
+        assert_eq!(file.tool_name(0), None, "a message is not a tool row");
+        assert_eq!(file.tool_name(1), Some("bash"), "a call names its tool");
+        assert_eq!(file.tool_name(2), Some("bash"), "a result names its call");
     }
 
     #[test]

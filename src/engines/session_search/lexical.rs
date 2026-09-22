@@ -25,10 +25,9 @@ const FETCH_DEPTH: usize = 200;
 ///
 /// This used to be 250_000, on a ~200ms forty-thousand-row measurement. That
 /// measurement does not survive the chunked corpus: the parity fixture builds
-/// 4_000 rows in seconds, which puts this workspace's ~50k rows at tens of
-/// seconds inside the caller's own thread — long enough to read as a hang, and
-/// nothing can interrupt it. Inline stops where a build still finishes in a
-/// second or two.
+/// 4_000 rows in seconds, and this workspace's ~50k rows measure 71 seconds and
+/// a 286MB file — inside the caller's own thread, where nothing can interrupt
+/// it. Inline stops where a build still finishes in a second or two.
 const INLINE_BUILD_MAX_ROWS: usize = 2_000;
 
 /// What the lane can say about whether it answered the question.
