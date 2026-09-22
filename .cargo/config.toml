@@ -1,4 +1,5 @@
 [build]
-# Keep cold builds responsive on machines with limited RAM.
-jobs = 2
+# No jobs cap: cargo parallelizes to the logical core count. Do not reintroduce
+# a fixed `jobs` value here — low-RAM CI runners should cap via CARGO_BUILD_JOBS
+# in their own environment instead of slowing down every local build.
 
