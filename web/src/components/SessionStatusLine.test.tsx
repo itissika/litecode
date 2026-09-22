@@ -26,11 +26,10 @@ import { useWorkspaceChangeStore } from "../stores/workspaceChangeStore";
 import {
   BASH_CLAIM_GRACE_MS,
   PANEL_EXIT_MS,
-  PANEL_INITIAL_H,
   PANEL_MAX_H,
+  PANEL_MIN_H,
   PLAN_EXECUTE_PROMPT,
   SessionStatusLine,
-  panelInitialHeight,
 } from "./SessionStatusLine";
 
 const bashJob: BashJob = {
@@ -76,6 +75,15 @@ function subagentSession(
 function seedTurn(sessionId: string, patch: Partial<TurnSlice>) {
   useTurnStore.setState({
     byId: new Map([[sessionId, { ...emptySlice(), ...patch }]]),
+  });
+}
+
+/** jsdom has no layout, so a content-sized panel reports no height of its own;
+ *  stub what a laid-out panel would report as its starting height. */
+function stubRenderedHeight(panel: HTMLElement, height: number) {
+  Object.defineProperty(panel, "offsetHeight", {
+    value: height,
+    configurable: true,
   });
 }
 
@@ -415,7 +423,7 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("true");
   });
 
-  it("claims the slot for a plan change too", () => {
+  it("claims the slot for the session's first plan and opens its panel", () => {
     render(<SessionStatusLine sessionId="s1" />);
     expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("true");
 
@@ -424,6 +432,67 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     });
     expect(screen.getByTestId("capsule-plan").dataset.expanded).toBe("true");
     expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("false");
+    // The slot only carries the path, so a newly activated plan also opens its
+    // panel — the file is read straight away.
+    const panel = screen.getByTestId("status-capsule-panel");
+    expect(panel.dataset.capsule).toBe("plan");
+    expect(vi.mocked(readFile)).toHaveBeenCalledWith(".litecode/plan/calm.md");
+  });
+
+  it("only claims the slot when one plan replaces another (no panel)", () => {
+    seedTurn("s1", { activePlanPath: ".litecode/plan/first.md" });
+    render(<SessionStatusLine sessionId="s1" />);
+
+    act(() => {
+      // `plan create` again rewrites the plan under a fresh slug: that is a
+      // revision, not a new plan — the slot follows the new path, the panel
+      // stays closed so it cannot pop open over what is being read.
+      seedTurn("s1", { activePlanPath: ".litecode/plan/second.md" });
+    });
+
+    const plan = screen.getByTestId("capsule-plan");
+    expect(plan.dataset.expanded).toBe("true");
+    expect(within(plan).getByText(".litecode/plan/second.md")).toBeTruthy();
+    expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
+  });
+
+  it("clearing the active plan claims the slot without opening a panel", () => {
+    seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+    render(<SessionStatusLine sessionId="s1" />);
+
+    act(() => {
+      seedTurn("s1", {});
+    });
+    expect(screen.getByTestId("capsule-plan").dataset.expanded).toBe("true");
+    expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
+  });
+
+  it("auto-opens the plan panel content-sized, dropping any dragged height", () => {
+    vi.useFakeTimers();
+    render(<SessionStatusLine sessionId="s1" />);
+    // Drag the plan panel, then close it: the dragged height survives the exit
+    // animation mount and must not leak into the next open.
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+    const handle = screen.getByTestId("status-panel-resize");
+    stubRenderedHeight(screen.getByTestId("status-capsule-panel"), 120);
+    fireEvent.pointerDown(handle, { pointerId: 1, clientY: 400 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientY: 300 });
+    fireEvent.pointerUp(handle, { pointerId: 1, clientY: 300 });
+    expect(screen.getByTestId("status-capsule-panel").style.height).toBe(
+      "220px",
+    );
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+    act(() => {
+      vi.advanceTimersByTime(PANEL_EXIT_MS + 100);
+    });
+    expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
+
+    act(() => {
+      seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+    });
+    const panel = screen.getByTestId("status-capsule-panel");
+    expect(panel.dataset.capsule).toBe("plan");
+    expect(panel.style.height).toBe("");
   });
 
   it("consumes data changes seen while hovered instead of queueing them", () => {
@@ -584,15 +653,34 @@ describe("SessionStatusLine — vertical expand", () => {
     render(<SessionStatusLine sessionId="s1" />);
     fireEvent.click(screen.getByTestId("capsule-plan"));
 
-    expect(screen.getByTestId("status-panel-scroll").className).toContain(
-      "overscroll-contain",
+    const scroll = screen.getByTestId("status-panel-scroll");
+    expect(scroll.className).toContain("overscroll-contain");
+    // Content-sized: the panel carries no height of its own, the scrollport is
+    // what the auto-height ceiling caps.
+    expect(screen.getByTestId("status-capsule-panel").style.height).toBe("");
+    expect(scroll.style.maxHeight).toBe(`${PANEL_MAX_H}px`);
+  });
+
+  it("caps the auto height to the space above the row inside the pane", () => {
+    const { container } = render(
+      <div className="dv-content-container">
+        <SessionStatusLine sessionId="s1" />
+      </div>,
     );
-    expect(screen.getByTestId("status-capsule-panel").className).toContain(
-      "[container-type:size]",
+    const pane = container.querySelector<HTMLElement>(".dv-content-container")!;
+    pane.getBoundingClientRect = () => ({ top: 100 }) as unknown as DOMRect;
+    const row = screen.getByTestId("session-status-capsules");
+    row.getBoundingClientRect = () => ({ top: 400 }) as unknown as DOMRect;
+
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+
+    // 400 − 100 − 16 (row gap + breathing room).
+    expect(screen.getByTestId("status-panel-scroll").style.maxHeight).toBe(
+      "284px",
     );
   });
 
-  it("opens the clicked capsule's panel at the fixed initial height", () => {
+  it("opens the clicked capsule's panel content-sized", () => {
     useBashStore.getState().applySnapshot("s1", { jobs: [bashJob], waits: [] });
     render(<SessionStatusLine sessionId="s1" />);
 
@@ -601,8 +689,9 @@ describe("SessionStatusLine — vertical expand", () => {
 
     const panel = screen.getByTestId("status-capsule-panel");
     expect(panel.dataset.capsule).toBe("terminal");
-    // The terminal panel opens taller: it hosts a live console, not a list.
-    expect(panel.style.height).toBe(`${panelInitialHeight("terminal")}px`);
+    // Auto height: no fixed initial height, whatever the capsule (the terminal
+    // panel is no exception — its console brings its own height).
+    expect(panel.style.height).toBe("");
     // The alive job's compact header still carries the reveal affordance.
     expect(
       screen.getByRole("button", { name: "Reveal terminal: sleep 1" }),
@@ -809,15 +898,16 @@ describe("SessionStatusLine — drag handle", () => {
 
     const panel = screen.getByTestId("status-capsule-panel");
     const handle = screen.getByTestId("status-panel-resize");
-    expect(panel.style.height).toBe(`${PANEL_INITIAL_H}px`);
+    expect(panel.style.height).toBe("");
+    stubRenderedHeight(panel, 120);
 
     fireEvent.pointerDown(handle, { pointerId: 1, clientY: 400 });
     fireEvent.pointerMove(handle, { pointerId: 1, clientY: 300 });
-    expect(panel.style.height).toBe(`${PANEL_INITIAL_H + 100}px`);
+    expect(panel.style.height).toBe("220px");
 
     // Dragging down shrinks it back; the panel never goes below the floor.
     fireEvent.pointerMove(handle, { pointerId: 1, clientY: 900 });
-    expect(panel.style.height).toBe("80px");
+    expect(panel.style.height).toBe(`${PANEL_MIN_H}px`);
 
     fireEvent.pointerUp(handle, { pointerId: 1, clientY: 900 });
   });
@@ -830,7 +920,7 @@ describe("SessionStatusLine — drag handle", () => {
       pointerId: 1,
       clientY: 100,
     });
-    expect(panel.style.height).toBe(`${PANEL_INITIAL_H}px`);
+    expect(panel.style.height).toBe("");
   });
 
   it("clamps the panel height at the maximum when dragged far up", () => {
@@ -846,21 +936,27 @@ describe("SessionStatusLine — drag handle", () => {
     fireEvent.pointerUp(handle, { pointerId: 1, clientY: 0 });
   });
 
-  it("resets to the fixed initial height when switching capsules", () => {
+  it("drops the dragged height when another capsule opens", () => {
     render(<SessionStatusLine sessionId="s1" />);
     fireEvent.click(screen.getByTestId("capsule-todo"));
     const handle = screen.getByTestId("status-panel-resize");
+    stubRenderedHeight(screen.getByTestId("status-capsule-panel"), 120);
     fireEvent.pointerDown(handle, { pointerId: 1, clientY: 400 });
     fireEvent.pointerMove(handle, { pointerId: 1, clientY: 300 });
     fireEvent.pointerUp(handle, { pointerId: 1, clientY: 300 });
     expect(screen.getByTestId("status-capsule-panel").style.height).toBe(
-      `${PANEL_INITIAL_H + 100}px`,
+      "220px",
     );
 
     fireEvent.click(screen.getByTestId("capsule-terminal"));
     const panel = screen.getByTestId("status-capsule-panel");
     expect(panel.dataset.capsule).toBe("terminal");
-    expect(panel.style.height).toBe(`${panelInitialHeight("terminal")}px`);
+    // Not remembered: the new panel is content-sized again…
+    expect(panel.style.height).toBe("");
+
+    // …including when its own capsule is reopened later.
+    fireEvent.click(screen.getByTestId("capsule-todo"));
+    expect(screen.getByTestId("status-capsule-panel").style.height).toBe("");
   });
 
   it("releases the body drag lock on pointerup", () => {

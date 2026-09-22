@@ -7,7 +7,6 @@ use crate::session::model::SESSION_LOG_SCHEMA_VERSION;
 use crate::types::{LitecodeError, Result};
 
 use super::conn::BUSY_TIMEOUT;
-use super::fts;
 
 pub const USER_VERSION: i32 = 5;
 
@@ -191,7 +190,6 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             source_seqs     TEXT,
             cites           TEXT,
             state           TEXT NOT NULL DEFAULT 'final',
-            search_text     TEXT,
             PRIMARY KEY (session_id, seq)
         );
         CREATE INDEX IF NOT EXISTS idx_transcript_items_session_seq
@@ -248,7 +246,7 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
     if table_exists(conn, "session_context_meter")? {
         migrate_meter_table(conn)?;
     }
-    fts::ensure_schema(conn)?;
+    drop_legacy_fts(conn)?;
     conn.execute_batch(&format!("PRAGMA user_version={USER_VERSION};"))?;
     Ok(())
 }
@@ -278,13 +276,40 @@ fn migrate_optional_columns(conn: &Connection) -> Result<()> {
             conn.execute("ALTER TABLE sessions ADD COLUMN plan_revision TEXT", [])?;
         }
     }
+    Ok(())
+}
+
+/// One-time removal of the retired in-store FTS projection.
+///
+/// `transcript_items.search_text` plus the `transcript_fts` shadow table were
+/// superseded by the chunked sparse index under `session-index/`. The write
+/// triggers still fired on every mutation while nothing read the index, so drop
+/// them here to stop paying that cost. Fresh databases never create any of it.
+fn drop_legacy_fts(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS transcript_items_ai;
+         DROP TRIGGER IF EXISTS transcript_items_ad;
+         DROP TRIGGER IF EXISTS transcript_items_au;
+         DROP TABLE IF EXISTS transcript_fts;
+         DROP TABLE IF EXISTS transcript_fts_state;",
+    )
+    .map_err(|e| LitecodeError::SessionStorage(format!("drop legacy FTS: {e}")))?;
+
+    // Best-effort: reclaiming the stale projection must never keep the store
+    // from opening. SQLite refuses DROP COLUMN while anything still references
+    // the column, and that refusal is not worth failing startup over.
     if table_exists(conn, "transcript_items")? {
         let cols = table_columns(conn, "transcript_items")?;
-        if !cols.iter().any(|c| c == "search_text") {
-            conn.execute(
-                "ALTER TABLE transcript_items ADD COLUMN search_text TEXT",
+        if cols.iter().any(|c| c == "search_text") {
+            if let Err(e) = conn.execute(
+                "ALTER TABLE transcript_items DROP COLUMN search_text",
                 [],
-            )?;
+            ) {
+                tracing::warn!(
+                    error = %e,
+                    "session transcript keep retired search_text column"
+                );
+            }
         }
     }
     Ok(())
@@ -360,7 +385,7 @@ mod tests {
         ensure_session_schema(&conn).unwrap();
         assert!(table_exists(&conn, "sessions").unwrap());
         assert!(table_exists(&conn, "transcript_items").unwrap());
-        assert!(table_exists(&conn, "transcript_fts").unwrap());
+        assert!(!table_exists(&conn, "transcript_fts").unwrap());
         assert!(
             table_columns(&conn, "sessions")
                 .unwrap()

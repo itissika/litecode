@@ -18,19 +18,44 @@ use crate::engines::code_search::{
 use crate::types::{LitecodeError, Result};
 
 use super::{SEMANTIC_WINDOW, SessionHitLane, SessionTextHit};
+use super::corpus::{self, SessionDoc};
+use super::slots::{Policy, SlotCfg};
 
 use crate::session::SessionDataReader;
 
 const EMBED_BATCH: usize = 32;
 const SNIPPET_CHARS: usize = 200;
+/// Bump when the dense document shape changes: 2 = chunked final corpus with
+/// char ranges (was 0/1 = one document per raw row, no offsets).
+const DOC_SCHEMA: u32 = 2;
+/// Chunk budget of the dense corpus: the same hard cut the sparse lane uses,
+/// kept under `EMBED_MAX_LENGTH` so no chunk is ever truncated by the embedder.
+const DENSE_CHUNK_TOKENS: usize = 448;
 
+fn dense_chunk_cfg() -> super::chunk::ChunkCfg {
+    super::chunk::ChunkCfg {
+        tokens: DENSE_CHUNK_TOKENS,
+        // A split row also keeps a head+tail projection as an anchor vector: the
+        // faithful chunks alone lose ranking, the anchor restores it.
+        anchor: true,
+    }
+}
+
+/// One embeddable unit: a chunk of the locked final corpus, or a split row's
+/// head+tail anchor. `key` is the corpus document key (`sid:seq` / `sid:seq#k`)
+/// and `char_start..char_end` is the range it covers inside the row's projected
+/// text — the renderer turns that range into an `L<a>…L<b>` region.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SessionChunk {
     id: u64,
+    key: String,
     session_id: String,
     seq: i64,
     item_type: String,
     text: String,
+    char_start: usize,
+    char_end: usize,
+    anchor: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +68,9 @@ pub struct SessionIndexMeta {
     pub indexed_chunks: usize,
     #[serde(default)]
     pub last_change_id: i64,
+    /// Dense document shape; 0/absent = the pre-chunking row-level corpus.
+    #[serde(default)]
+    pub doc_schema: u32,
 }
 
 impl SessionIndexMeta {
@@ -55,6 +83,7 @@ impl SessionIndexMeta {
             created_at: Utc::now().to_rfc3339(),
             indexed_chunks,
             last_change_id: 0,
+            doc_schema: DOC_SCHEMA,
         }
     }
 }
@@ -80,6 +109,7 @@ fn needs_rebuild(meta: &SessionIndexMeta) -> bool {
         || meta.model_id != MODEL_ID
         || meta.embedder_id != production_embedder_id()
         || meta.embed_dim != EMBED_DIM
+        || meta.doc_schema != DOC_SCHEMA
 }
 
 fn read_meta(workspace_root: &Path) -> Result<Option<SessionIndexMeta>> {
@@ -114,8 +144,8 @@ fn new_ann_index() -> Result<Index> {
 
 pub struct SessionSemanticIndex {
     chunks: HashMap<u64, SessionChunk>,
-    /// `(session_id, seq)` → chunk id for reconcile.
-    by_key: HashMap<(String, i64), u64>,
+    /// Corpus document key (`sid:seq` / `sid:seq#k`) → chunk id for reconcile.
+    by_key: HashMap<String, u64>,
     ann: Index,
     next_id: u64,
     embedder_id: String,
@@ -165,9 +195,7 @@ impl SessionSemanticIndex {
                 .map_err(|e| LitecodeError::Config(format!("parse session chunk: {e}")))?;
             let id = chunk.id;
             index.next_id = index.next_id.max(id + 1);
-            index
-                .by_key
-                .insert((chunk.session_id.clone(), chunk.seq), id);
+            index.by_key.insert(chunk.key.clone(), id);
             index.chunks.insert(id, chunk);
         }
         Ok(index)
@@ -215,7 +243,7 @@ impl SessionSemanticIndex {
 
     fn remove_id(&mut self, id: u64) {
         if let Some(chunk) = self.chunks.remove(&id) {
-            self.by_key.remove(&(chunk.session_id, chunk.seq));
+            self.by_key.remove(&chunk.key);
             let _ = self.ann.remove(id);
         }
     }
@@ -250,8 +278,7 @@ impl SessionSemanticIndex {
         }
         for (chunk, vec) in chunks.into_iter().zip(vectors) {
             self.ann_add(chunk.id, &vec)?;
-            self.by_key
-                .insert((chunk.session_id.clone(), chunk.seq), chunk.id);
+            self.by_key.insert(chunk.key.clone(), chunk.id);
             self.chunks.insert(chunk.id, chunk);
         }
         Ok(())
@@ -307,8 +334,10 @@ impl SessionSemanticIndex {
                 item_type: chunk.item_type.clone(),
                 summary,
                 score: 1.0 / (1.0 + dist as f64),
-                char_start: 0,
-                char_end: 0,
+                // The chunk's own range: the renderer maps it to the row's
+                // physical lines (`L<a>…L<b>`), so a semantic hit is a *region*.
+                char_start: chunk.char_start,
+                char_end: chunk.char_end,
                 lane: SessionHitLane::Semantic,
             });
             if hits.len() >= top_k {
@@ -332,19 +361,28 @@ impl SessionSemanticIndex {
         if latest < self.last_change_id {
             *self = Self::new_empty()?;
         }
-        let rows = reader.searchable_rows_blocking(None)?;
-        let live =
-            crate::session::transcript_file::iter_searchable_texts(&rows, reader.data_root())?;
-        let live_keys: HashSet<(String, i64)> = live
-            .iter()
-            .map(|(sid, seq, _, _)| (sid.clone(), *seq))
-            .collect();
+        // The dense corpus is the locked final policy: slot projection (人话 +
+        // 工具调用 + 工具产出，压缩总结剔除), echo removal, budget trim, then
+        // 448-token hard-cut chunks with a head+tail anchor for split rows — the
+        // same grid the sparse lane uses, so both lanes agree on coordinates.
+        let tk = super::tokenizer::open()?;
+        let docs = corpus::build_docs(
+            reader,
+            Policy::Final,
+            &SlotCfg::default(),
+            &dense_chunk_cfg(),
+            Some(&tk),
+        )?;
+        let live: HashMap<&str, &SessionDoc> = docs.iter().map(|d| (d.key.as_str(), d)).collect();
 
         let mut dirty = false;
         let stale: Vec<u64> = self
             .chunks
             .iter()
-            .filter(|(_, c)| !live_keys.contains(&(c.session_id.clone(), c.seq)))
+            .filter(|(_, c)| {
+                live.get(c.key.as_str())
+                    .map_or(true, |doc| doc.text != c.text)
+            })
             .map(|(id, _)| *id)
             .collect();
         for id in stale {
@@ -353,23 +391,22 @@ impl SessionSemanticIndex {
         }
 
         let mut to_add = Vec::new();
-        for (session_id, seq, item_type, text) in live {
-            let key = (session_id.clone(), seq);
-            if let Some(&id) = self.by_key.get(&key) {
-                if self.chunks.get(&id).is_some_and(|c| c.text == text) {
-                    continue;
-                }
-                self.remove_id(id);
-                dirty = true;
+        for doc in &docs {
+            if self.by_key.contains_key(doc.key.as_str()) {
+                continue;
             }
             let id = self.next_id;
             self.next_id += 1;
             to_add.push(SessionChunk {
                 id,
-                session_id,
-                seq,
-                item_type,
-                text,
+                key: doc.key.clone(),
+                session_id: doc.session_id.clone(),
+                seq: doc.seq,
+                item_type: doc.item_type.clone(),
+                text: doc.text.clone(),
+                char_start: doc.chunk_start,
+                char_end: doc.chunk_end,
+                anchor: doc.anchor,
             });
         }
 
@@ -574,6 +611,50 @@ mod tests {
         index.save(root).unwrap();
         let loaded = SessionSemanticIndex::load(root).unwrap();
         assert_eq!(loaded.len(), index.len());
+    }
+
+    #[test]
+    fn dense_corpus_chunks_long_rows_with_ranges_and_anchor() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        {
+            let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            // CJK prose: 1536 chars is still ≫448 tokens, so the row splits
+            // (English prose gets budget-trimmed to one chunk first).
+            let long = "这是一段很长的思考过程，需要按字符硬切，不能有任何字符丢失。".repeat(80);
+            data.insert_items(&id, &[user_text(&long)]).unwrap();
+        }
+        let reader = crate::session::SessionDataReader::open(&db);
+        let mut emb = HashEmbedder;
+        let index = ensure_session_index(root, &reader, &mut emb).unwrap();
+
+        let chunks: Vec<&SessionChunk> = index.chunks.values().collect();
+        assert_eq!(
+            chunks.iter().filter(|c| c.anchor).count(),
+            1,
+            "a split row keeps exactly one anchor"
+        );
+        let mut faithful: Vec<&SessionChunk> =
+            chunks.iter().filter(|c| !c.anchor).copied().collect();
+        assert!(faithful.len() > 1, "long row must split");
+        for c in &chunks {
+            assert!(c.char_end > c.char_start, "non-empty range: {c:?}");
+        }
+        // The faithful chunks tile the row's projected text.
+        faithful.sort_by_key(|c| c.char_start);
+        assert_eq!(faithful[0].char_start, 0);
+        for pair in faithful.windows(2) {
+            assert_eq!(pair[0].char_end, pair[1].char_start, "chunks must tile");
+        }
+        // Semantic hits carry that range (the renderer's `L<a>…L<b>` input).
+        let q = emb.embed_one("retry backoff").unwrap();
+        let hits = index.search(&q, 4, None).unwrap();
+        assert!(!hits.is_empty());
+        assert!(hits.iter().any(|h| h.char_end > h.char_start));
     }
 
     #[test]

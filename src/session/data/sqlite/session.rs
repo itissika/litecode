@@ -382,24 +382,9 @@ fn insert_event_row(
         event.event_type.as_str().to_string()
     };
     let (surface_op, source_seqs, cites) = event_sql_envelope(event)?;
-    let search_text = if let Some(item) = item {
-        let plain = crate::types::item_text_preview(item);
-        if plain.trim().is_empty() {
-            None
-        } else {
-            Some(plain)
-        }
-    } else if event.event_type == EventType::Compacted {
-        serde_json::from_value::<CompactedBody>(event.data.clone())
-            .ok()
-            .map(|b| b.summary)
-            .filter(|s| !s.trim().is_empty())
-    } else {
-        None
-    };
     tx.execute(
-        "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs, cites, state, search_text)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs, cites, state)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         rusqlite::params![
             session_id,
             seq,
@@ -416,7 +401,6 @@ fn insert_event_row(
             source_seqs,
             cites,
             event.state.as_str(),
-            search_text,
         ],
     )?;
     if let Some(body_ref) = &body_ref
@@ -470,18 +454,10 @@ fn seal_event_row(
     let (body, body_ref, token_estimate) =
         encode_detail_row(item, data_root, DEFAULT_SPILL_THRESHOLD)?;
     let event_type = surface_event_type_of(item).as_str().to_string();
-    let search_text = {
-        let plain = crate::types::item_text_preview(item);
-        if plain.trim().is_empty() {
-            None
-        } else {
-            Some(plain)
-        }
-    };
     tx.execute(
         "UPDATE transcript_items
-         SET item_type = ?1, body = ?2, body_ref = ?3, token_estimate = ?4, event_type = ?5, state = ?6, search_text = ?7
-         WHERE session_id = ?8 AND seq = ?9",
+         SET item_type = ?1, body = ?2, body_ref = ?3, token_estimate = ?4, event_type = ?5, state = ?6
+         WHERE session_id = ?7 AND seq = ?8",
         rusqlite::params![
             item_type,
             body,
@@ -489,7 +465,6 @@ fn seal_event_row(
             token_estimate,
             event_type,
             log_state_of_item(item).as_str(),
-            search_text,
             session_id,
             seq_i,
         ],

@@ -507,7 +507,7 @@ impl SettingsWriter {
         // Orphan session model_id clear runs in serve/settings.rs after write
         // (SessionManager has the DB handle; SettingsWriter stays config-only).
         // Closed adapters are adapter-owned: their modality capabilities are the
-        // vendor's official matrix (e.g. mimo-v2.5 = full text/image/video/audio),
+        // vendor's official matrix (e.g. mimo-v2.6-pro = full text/image/video/audio),
         // so UI payloads cannot silently downgrade them to the ["text"] default.
         let normalized: HashMap<String, ModelDefinition> = models
             .into_iter()
@@ -1158,11 +1158,17 @@ mod tests {
         mimo_pro.config.api_model_id = "mimo-v2.5-pro".into();
         mimo_pro.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
 
+        let mut mimo_v26 = sample_model("mimo26", "mimo");
+        mimo_v26.adapter_id = crate::config::schema::ADAPTER_MIMO_RESPONSES.into();
+        mimo_v26.config.api_model_id = "mimo-v2.6-pro".into();
+        mimo_v26.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
+
         let mut open = sample_model("open", "main");
         open.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
 
         settings.models.insert("mimo25".into(), mimo_v25);
         settings.models.insert("mimopro".into(), mimo_pro);
+        settings.models.insert("mimo26".into(), mimo_v26);
         settings.models.insert("open".into(), open);
         settings.agents.get_mut("default").unwrap().model_ref = "mimo25".into();
         global_db::import_into(&db, &settings).unwrap();
@@ -1191,6 +1197,16 @@ mod tests {
             loaded.models["mimopro"].config.capabilities,
             vec![ModelCapability::Text],
             "mimo-v2.5-pro is text-only"
+        );
+        assert_eq!(
+            loaded.models["mimo26"].config.capabilities,
+            vec![
+                ModelCapability::Text,
+                ModelCapability::Image,
+                ModelCapability::Video,
+                ModelCapability::Audio,
+            ],
+            "mimo-v2.6-pro must default to full modality"
         );
         assert_eq!(
             loaded.models["open"].config.capabilities,

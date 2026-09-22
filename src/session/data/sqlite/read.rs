@@ -1,5 +1,5 @@
 //! Typed read queries. All sessions.db SELECTs for SessionData live here
-//! or in `session.rs` / `fts.rs` in this directory.
+//! or in `session.rs` in this directory.
 
 use rusqlite::Connection;
 
@@ -11,7 +11,6 @@ use crate::session::working::WorkingRow;
 use crate::types::{LitecodeError, Result};
 
 use super::super::command::{ReadValue, SessionChange, SessionListRow, SessionRead};
-use super::fts;
 use super::session::{self, TranscriptRow};
 
 pub fn execute(
@@ -110,22 +109,6 @@ pub fn execute(
             conn,
             session_id.as_deref(),
         )?)),
-        SessionRead::FtsSearch {
-            query,
-            session_id,
-            limit,
-        } => {
-            let escaped = fts::escape_match_query(&query);
-            if escaped.is_empty() {
-                return Ok(ReadValue::FtsHits(Vec::new()));
-            }
-            Ok(ReadValue::FtsHits(fts::search(
-                conn,
-                &escaped,
-                session_id.as_deref(),
-                limit,
-            )?))
-        }
         SessionRead::ChangeLogSince { last_change_id } => {
             Ok(ReadValue::Changes(change_log_since(conn, last_change_id)?))
         }

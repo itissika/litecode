@@ -37,19 +37,48 @@ const CAPSULE_BASE_PX = 36;
 /** The four session-mount status families the line surfaces. */
 export type CapsuleId = "terminal" | "subagent" | "plan" | "todo";
 
-/** Fixed initial height of a vertically-expanded capsule panel (px). */
-export const PANEL_INITIAL_H = 160;
-/** The terminal panel opens taller: it hosts the live BashToolView console, so
- *  the shared 160px default would only fit the command header. */
-export const PANEL_INITIAL_H_TERMINAL = 320;
-
-export function panelInitialHeight(id: CapsuleId): number {
-  return id === "terminal" ? PANEL_INITIAL_H_TERMINAL : PANEL_INITIAL_H;
-}
-
+/** Drag floor (px); a content-sized panel shorter than this keeps its own
+ *  height as the floor. */
 export const PANEL_MIN_H = 80;
 /** Exit-animation duration (ms) — matches `status-panel-exit` in chat.css. */
 export const PANEL_EXIT_MS = 160;
+
+/** Absolute ceiling for the auto height (px): a pane taller than this still
+ *  opens a panel that leaves the transcript readable. Below it the ceiling is
+ *  the free space above the capsule row inside the pane. */
+export const PANEL_MAX_H = 480;
+
+/** Space kept between the panel's top edge and the pane's top edge (px) — the
+ *  8px row gap below the panel plus breathing room. */
+const PANEL_TOP_MARGIN = 16;
+
+/**
+ * The dockview group content container hosting this status line — the pane area
+ * a panel must not outgrow (dockview clips at the group's content container).
+ */
+function hostingPane(el: HTMLElement | null): HTMLElement | null {
+  return el?.closest<HTMLElement>(".dv-content-container") ?? null;
+}
+
+/**
+ * Auto-height ceiling: the free space above the capsule row inside the hosting
+ * pane. The panel itself is content-sized — this only caps its scrolling body.
+ * Outside a pane (isolated use, jsdom without layout) the static PANEL_MAX_H
+ * stands.
+ */
+function panelHeightCap(rowEl: HTMLElement | null): number {
+  const pane = hostingPane(rowEl);
+  if (!rowEl || !pane) return PANEL_MAX_H;
+  // The row's rect is never transformed and the pane top is fixed while the
+  // panel grows upward (the dock sits bottom-anchored), so one read is enough.
+  const space =
+    rowEl.getBoundingClientRect().top -
+    pane.getBoundingClientRect().top -
+    PANEL_TOP_MARGIN;
+  // jsdom (and any tree without layout) reports zero rects → static ceiling.
+  if (!(space > 0)) return PANEL_MAX_H;
+  return Math.max(PANEL_MIN_H, Math.min(PANEL_MAX_H, Math.round(space)));
+}
 
 /**
  * A newly-appeared background terminal claims the horizontal slot only after it
@@ -57,14 +86,6 @@ export const PANEL_EXIT_MS = 160;
  * must not flash the capsule; its icon animation and count land immediately.
  */
 export const BASH_CLAIM_GRACE_MS = 1500;
-// Known limitation (F2): this is a static ceiling, not clamped to the dockview
-// pane's rect, so on a very short pane a panel dragged to PANEL_MAX_H could have
-// its top clipped by the pane's overflow:hidden. Deliberately left as a plain
-// static cap — a rect-based clamp needs live layout (unverifiable in jsdom) and
-// the reviewer asked not to add a persistent listener for it. Revisit on real-
-// device acceptance if a short-pane clip is observed.
-export const PANEL_MAX_H = 480;
-
 /** User message the "执行计划" button sends on the human's behalf. */
 export const PLAN_EXECUTE_PROMPT = "按当前计划开始执行。";
 
@@ -89,12 +110,18 @@ const EMPTY_TODO_ITEMS: TodoItem[] = [];
  *     it (sticky — it stays after the mouse leaves), and while idle (no hover,
  *     no panel open) a data change in any capsule's domain claims the slot for
  *     that capsule (attention cue); a background terminal claims only once it
- *     outlives the short-call grace window. Todo owns the slot by default.
- *  3. Level 2 — vertical: clicking a capsule expands its panel above the row:
- *     fixed initial height, drag handle top-right (drag up to grow, same
- *     pointer-capture pattern as AgentChatInput). Only one panel open at a
- *     time; clicking the same capsule again or clicking outside closes it.
- *     While a panel is already open, hover follows onto that capsule's panel.
+ *     outlives the short-call grace window. Plan is the one capsule that also
+ *     opens its panel on a claim, and only for a plan arriving from nothing
+ *     (a rewrite lands as another plan file and only claims the slot). Todo
+ *     owns the slot by default.
+ *  3. Level 2 — vertical: clicking a capsule expands its panel above the row,
+ *     content-sized (auto height) and capped to the free space above the row
+ *     inside the pane; the top-right drag handle overrides that height for the
+ *     current open only (same pointer-capture pattern as AgentChatInput, and
+ *     never remembered: the next open is content-sized again). Only one panel
+ *     open at a time; clicking the same capsule again or clicking outside
+ *     closes it. While a panel is already open, hover follows onto that
+ *     capsule's panel.
  */
 export function SessionStatusLine({
   sessionId,
@@ -194,30 +221,45 @@ export function SessionStatusLine({
   openRef.current = openId;
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const heightRef = useRef(PANEL_INITIAL_H);
+  /** Dragged height in px; null → the panel is content-sized. A drag overrides
+   *  the current open only — the next open starts content-sized again. */
+  const heightRef = useRef<number | null>(null);
   const draggingRef = useRef(false);
-  const dragStartRef = useRef({ y: 0, h: PANEL_INITIAL_H });
+  const dragStartRef = useRef({ y: 0, h: PANEL_MIN_H });
+  /** Auto-height ceiling in px, measured against the hosting pane. */
+  const [panelCap, setPanelCap] = useState(PANEL_MAX_H);
 
   // Flexbox owns width calculation: every capsule has the same icon-only
   // basis, while the expanded one receives all remaining row space. Animating
   // flex-grow preserves the focus hand-off without measuring the row in JS.
   const rowRef = useRef<HTMLDivElement>(null);
 
-  // Every freshly-opened panel starts at the fixed initial height. The panel is
-  // keyed by `openId`, so switching capsules remounts it; this resets the ref
-  // the drag math reads from.
-  //
   // The cleanup doubles as the drag-lock release (F3): any close path that
   // unmounts the handle mid-drag — Esc, outside click, re-click, capsule switch,
   // or whole-component unmount — tears this effect down, so `document.body`
-  // never stays stuck at ns-resize / user-select:none.
+  // never stays stuck at ns-resize / user-select:none. (The dragged height is
+  // dropped by the opening handlers below, right before the new panel mounts.)
   useEffect(() => {
-    heightRef.current = openId ? panelInitialHeight(openId) : PANEL_INITIAL_H;
     return () => {
       draggingRef.current = false;
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
     };
+  }, [openId]);
+
+  // Auto height ceiling: re-measured while a panel is open, so a pane resize
+  // (dockview splitter, window resize) re-caps it. jsdom has no layout and no
+  // ResizeObserver → the static ceiling stands there.
+  useEffect(() => {
+    if (!openId) return;
+    const row = rowRef.current;
+    const measure = () => setPanelCap(panelHeightCap(row));
+    measure();
+    const pane = hostingPane(row);
+    if (!pane || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(pane);
+    return () => observer.disconnect();
   }, [openId]);
 
   // Close on outside mousedown / Escape while a panel is open.
@@ -257,7 +299,9 @@ export function SessionStatusLine({
     } else {
       // A switch tears down any closing mount and mounts the new panel
       // directly (no exit/enter overlap — the subagent panel must not double-
-      // mount its subscription + virtualized list).
+      // mount its subscription + virtualized list). Opening also drops any
+      // dragged height: the new panel is content-sized.
+      heightRef.current = null;
       finishClose();
       setOpenId(id);
     }
@@ -267,8 +311,9 @@ export function SessionStatusLine({
     hoverRef.current = id;
     setExpandedId(id);
     // While a panel is already open, hover follows: the panel tracks the
-    // hovered capsule. A closed panel still waits for a click (level-1 vs
-    // level-2 remain distinct gestures).
+    // hovered capsule (content-sized again). A closed panel still waits for a
+    // click (level-1 vs level-2 remain distinct gestures).
+    if (openId && openId !== id) heightRef.current = null;
     setOpenId((cur) => (cur ? id : cur));
   };
   const onHoverEnd = (id: CapsuleId) => {
@@ -279,7 +324,10 @@ export function SessionStatusLine({
   // change in any capsule's domain claims the horizontal slot for that
   // capsule. Signatures are compared by value, not array identity — snapshot
   // replays must not fire the trigger. Changes observed while busy are
-  // consumed, not queued.
+  // consumed, not queued. Plan is the one claim that also opens the panel, and
+  // only when it arrives from nothing: the slot carries nothing but a path,
+  // while a rewrite (a fresh plan file) is a revision whose panel would pop
+  // open over the reader.
   //
   // Background terminals are the one delayed case: a new job claims only after
   // it survives BASH_CLAIM_GRACE_MS, and a job leaving never claims at all —
@@ -302,6 +350,16 @@ export function SessionStatusLine({
     }
     if (prev.plan !== cur.plan) {
       setExpandedId("plan");
+      // Only a plan arriving from nothing opens the panel — the session's first
+      // plan, which is the one the user still has to read. Replacing one plan
+      // with another is a revision (`plan create` rewrites it under a fresh
+      // slug): the slot follows the new path, but the panel must not pop open
+      // over whatever is being read. Clearing the plan only claims the slot
+      // too: there is nothing to read.
+      if (cur.plan && !prev.plan) {
+        heightRef.current = null;
+        setOpenId("plan");
+      }
       return;
     }
     if (prev.sub !== cur.sub) {
@@ -323,12 +381,14 @@ export function SessionStatusLine({
   // Drag handle: dragging up grows the panel (delta = start.y - clientY), same
   // math as AgentChatInput's textarea resize. The new height is written straight
   // to the panel's style (no React state), so dragging never re-renders the
-  // panel body.
+  // panel body. The drag starts from the height the content-sized panel happens
+  // to have, capped by the pane, and never lifts a shorter panel to PANEL_MIN_H.
   const applyResize = (clientY: number) => {
-    const delta = dragStartRef.current.y - clientY;
+    const start = dragStartRef.current;
+    const delta = start.y - clientY;
     const next = Math.max(
-      PANEL_MIN_H,
-      Math.min(PANEL_MAX_H, dragStartRef.current.h + delta),
+      Math.min(PANEL_MIN_H, start.h),
+      Math.min(panelCap, start.h + delta),
     );
     heightRef.current = next;
     if (panelRef.current) panelRef.current.style.height = `${next}px`;
@@ -337,7 +397,11 @@ export function SessionStatusLine({
   const onResizeStart = (e: ReactPointerEvent) => {
     e.preventDefault();
     draggingRef.current = true;
-    dragStartRef.current = { y: e.clientY, h: heightRef.current };
+    // offsetHeight, not a rect: the enter animation's scale would shrink a rect.
+    // jsdom reports 0 → the floor keeps the math sane.
+    const h = panelRef.current?.offsetHeight || PANEL_MIN_H;
+    heightRef.current = h;
+    dragStartRef.current = { y: e.clientY, h };
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     document.body.style.userSelect = "none";
     document.body.style.cursor = "ns-resize";
@@ -433,12 +497,16 @@ export function SessionStatusLine({
           data-testid="status-capsule-panel"
           data-capsule={panelId}
           style={{
-            // A fresh open starts at the capsule's fixed initial height; the
-            // closing mount keeps the dragged height it was shut at.
-            height: openId ? panelInitialHeight(openId) : heightRef.current,
+            // Content-sized (no height) until the handle is dragged; the closing
+            // mount keeps the dragged height it was shut at.
+            ...(heightRef.current != null
+              ? { height: heightRef.current }
+              : null),
             transformOrigin: `${originX}px 100%`,
           }}
-          className={`${composerCardClass} relative overflow-hidden [container-type:size] ${
+          // No `[container-type:size]` here: its size containment would make the
+          // content-sized panel collapse to zero height.
+          className={`${composerCardClass} relative overflow-hidden ${
             openId ? "status-panel-enter" : "status-panel-exit"
           }`}
           onAnimationEnd={
@@ -457,8 +525,12 @@ export function SessionStatusLine({
           >
             <span aria-hidden className="block h-0.5 w-3 rounded-full bg-current" />
           </button>
+          {/* The scrollport owns the ceiling: the panel is content-sized, so the
+              cap must sit on the scrolling box itself. `h-full` still resolves
+              once a drag has given the panel an explicit height. */}
           <div
             className="h-full overflow-y-auto overscroll-contain py-2"
+            style={{ maxHeight: panelCap }}
             data-testid="status-panel-scroll"
           >
             {panelBody}

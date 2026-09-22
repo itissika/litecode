@@ -18,7 +18,6 @@ pub use command::{
     SessionListRow, SessionMutation, SessionRead, SessionRevision,
 };
 pub use reader::SessionReadPool;
-pub use sqlite::fts;
 pub use writer::{FaultKind, WRITER_QUEUE_CAPACITY};
 use writer::{WriterHandle, WriterHooks};
 
@@ -536,22 +535,6 @@ impl SessionDataReader {
             _ => Err(LitecodeError::SessionStorage(
                 "unexpected searchable".into(),
             )),
-        }
-    }
-
-    pub fn fts_search_blocking(
-        &self,
-        query: &str,
-        session_id: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<(String, i64, String)>> {
-        match self.read_blocking(SessionRead::FtsSearch {
-            query: query.to_string(),
-            session_id: session_id.map(str::to_string),
-            limit,
-        })? {
-            ReadValue::FtsHits(v) => Ok(v),
-            _ => Err(LitecodeError::SessionStorage("unexpected fts".into())),
         }
     }
 

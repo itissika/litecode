@@ -14,7 +14,6 @@ use crate::types::{LitecodeError, Result};
 
 use super::command::{CommitKind, CommitReceipt, SessionMutation};
 use super::sqlite::conn::SharedDb;
-use super::sqlite::fts;
 use super::sqlite::ops;
 use super::sqlite::read;
 use super::sqlite::session::{ApplyOutcome, CommitDeltaOutcome, Session, SessionApply};
@@ -807,19 +806,6 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 state.db.conn(),
                 &valid_ids.into_iter().collect(),
             )?;
-            Ok(CommitReceipt {
-                session_id: String::new(),
-                operation_id: operation_id.0,
-                revision: 0,
-                change_id: 0,
-                outcome: CommitKind::MetaUpdated,
-                preview: None,
-                assistant_preview: None,
-                working_set: None,
-            })
-        }
-        SessionMutation::RebuildFts { operation_id } => {
-            fts::rebuild(state.db.conn())?;
             Ok(CommitReceipt {
                 session_id: String::new(),
                 operation_id: operation_id.0,

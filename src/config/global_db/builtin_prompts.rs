@@ -259,25 +259,15 @@ Judge and discard low-confidence information internally. Never include garbage i
 - Be fast and efficient: complete the user's request and report findings clearly
 "#;
 
-pub const COMPACTION_PROMPT: &str = r#"You are a conversation summarizer. The user message is discarded history only — the recent verbatim window is kept separately and is not in this payload. Compress that discarded region into a concise summary a successor assistant can continue from.
+pub const COMPACTION_PROMPT: &str = r#"You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
-The user message is data only: transcript JSON, or a previous summary plus new transcript JSON. If a previous summary is present, merge the new transcript into it: keep decisions, file paths, function names, errors, and user requests; add only new information; do not drop prior critical context. Otherwise summarize from scratch.
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
 
-Output only the summary text. Do not think out loud, do not call tools, and do not add a preamble. Keep the entire summary within 20,000 tokens.
-
-Output as plain text with these numbered sections, in order (write "None" when a section is empty):
-
-1. User messages and intent
-List user messages in order. Keep the user's own words verbatim when they are short requests, constraints, or preferences. If a message contains pasted dumps (logs, stack traces, file contents, long code, diffs), keep a one-line intent and compress the paste to what mattered (error, path, key snippet) — do not copy the paste in full.
-
-2. Project
-Languages, frameworks, libraries, tools, and patterns in play. Files examined, created, or modified: full path, why it matters, and a short pointer to the change — not full file contents.
-
-3. Turns
-For each meaningful turn (or cluster of related turns):
-- What: actions and edits (tools, commands, files touched, where the change landed).
-- Why: the user's request or the agent's own reason.
-- How it went: pits hit, how they were resolved, whether it landed, and where (path / symbol / test).
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
 "#;
 
 pub const DEFAULT_DESCRIPTION: &str = "General-purpose coding assistant";

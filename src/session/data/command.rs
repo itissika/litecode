@@ -205,9 +205,6 @@ pub enum SessionMutation {
         operation_id: MutationId,
         valid_ids: Vec<String>,
     },
-    RebuildFts {
-        operation_id: MutationId,
-    },
 }
 
 impl SessionMutation {
@@ -230,16 +227,13 @@ impl SessionMutation {
             | Self::SetThinkingTier { operation_id, .. }
             | Self::SetContextMode { operation_id, .. }
             | Self::Delete { operation_id, .. }
-            | Self::ClearOrphanedModelIds { operation_id, .. }
-            | Self::RebuildFts { operation_id, .. } => &operation_id.0,
+            | Self::ClearOrphanedModelIds { operation_id, .. } => &operation_id.0,
         }
     }
 
     pub fn session_id(&self) -> Option<&str> {
         match self {
-            Self::Create { .. } | Self::ClearOrphanedModelIds { .. } | Self::RebuildFts { .. } => {
-                None
-            }
+            Self::Create { .. } | Self::ClearOrphanedModelIds { .. } => None,
             Self::Apply { session_id, .. }
             | Self::InsertDetails { session_id, .. }
             | Self::PersistItem { session_id, .. }
@@ -261,9 +255,7 @@ impl SessionMutation {
 
     pub fn expected_revision(&self) -> Option<u64> {
         match self {
-            Self::Create { .. } | Self::ClearOrphanedModelIds { .. } | Self::RebuildFts { .. } => {
-                None
-            }
+            Self::Create { .. } | Self::ClearOrphanedModelIds { .. } => None,
             Self::Apply {
                 expected_revision, ..
             }
@@ -385,11 +377,6 @@ pub enum SessionRead {
     SearchableRows {
         session_id: Option<String>,
     },
-    FtsSearch {
-        query: String,
-        session_id: Option<String>,
-        limit: usize,
-    },
     ChangeLogSince {
         last_change_id: i64,
     },
@@ -426,7 +413,6 @@ pub enum ReadValue {
     Count(i64),
     Revision(u64),
     Searchable(Vec<crate::session::transcript_file::SearchableRow>),
-    FtsHits(Vec<(String, i64, String)>),
     Changes(Vec<SessionChange>),
     Empty,
 }

@@ -51,23 +51,94 @@ fn encode_user_and_system() {
 }
 
 #[test]
-fn commandcode_encodes_reasoning_effort_but_opencode_does_not() {
+fn commandcode_encodes_reasoning_effort_for_every_model() {
     let mut req = sample_request(vec![]);
     req.thinking = ThinkingSpec::Tier(ThinkingTier::High);
+    req.model = "glm-5.2".into();
 
     let commandcode = encode_chat_body(&req, false, &ChatEncodeOpts::COMMANDCODE).unwrap();
     assert_eq!(commandcode["reasoning_effort"], "max");
-
-    let opencode = encode_chat_body(&req, false, &ChatEncodeOpts::OPENCODE).unwrap();
-    assert!(opencode.get("reasoning_effort").is_none());
 }
 
 #[test]
-fn commandcode_omits_reasoning_effort_when_thinking_off() {
+fn opencode_encodes_reasoning_effort_for_declared_families() {
+    let mut req = sample_request(vec![]);
+    assert_eq!(req.model, "deepseek-v4-flash-free");
+
+    // Zen/Go declare `low | high | max` for the DeepSeek v4 flash line and for
+    // GLM 5.3, so the three platform tiers land on three distinct wire values.
+    for model in ["deepseek-v4-flash-free", "glm-5.3", "glm-5.3-flash"] {
+        req.model = model.into();
+        for (tier, expected) in [
+            (ThinkingTier::Low, "low"),
+            (ThinkingTier::Medium, "high"),
+            (ThinkingTier::High, "max"),
+        ] {
+            req.thinking = ThinkingSpec::Tier(tier);
+            let body = encode_chat_body(&req, false, &ChatEncodeOpts::OPENCODE).unwrap();
+            assert_eq!(body["reasoning_effort"], expected, "{model} tier {tier:?}");
+        }
+    }
+
+    // Generation marker, not a bare `deepseek` prefix: a later 4.x keeps working.
+    req.model = "deepseek-v4.1-flash".into();
+    req.thinking = ThinkingSpec::Tier(ThinkingTier::High);
+    let body = encode_chat_body(&req, false, &ChatEncodeOpts::OPENCODE).unwrap();
+    assert_eq!(body["reasoning_effort"], "max");
+}
+
+#[test]
+fn opencode_clamps_low_up_to_a_models_declared_floor() {
+    // `deepseek-v4-pro` declares `high | max` only, so a raw `low` is rejected.
+    let mut req = sample_request(vec![]);
+    req.model = "deepseek-v4-pro".into();
+
+    for (tier, expected) in [
+        (ThinkingTier::Low, "high"),
+        (ThinkingTier::Medium, "high"),
+        (ThinkingTier::High, "max"),
+    ] {
+        req.thinking = ThinkingSpec::Tier(tier);
+        let body = encode_chat_body(&req, false, &ChatEncodeOpts::OPENCODE).unwrap();
+        assert_eq!(body["reasoning_effort"], expected, "tier {tier:?}");
+    }
+}
+
+#[test]
+fn opencode_leaves_other_families_on_the_vendor_default() {
+    // Every model whose declared vocabulary is not exactly `low | high | max`
+    // keeps the vendor default: `glm-5.2` / `kimi-k3` / `hy3` drift per model,
+    // `mimo-v2.5` declares no effort at all, and the undocumented
+    // `deepseek-flash` / legacy `deepseek-reasoner`-style ids are unverified.
+    let mut req = sample_request(vec![]);
+    req.thinking = ThinkingSpec::Tier(ThinkingTier::High);
+    for model in [
+        "glm-5.2",
+        "glm-5.1",
+        "kimi-k3",
+        "kimi-k2.6",
+        "mimo-v2.5",
+        "hy3",
+        "minimax-m3",
+        "deepseek-flash",
+    ] {
+        req.model = model.into();
+        let body = encode_chat_body(&req, false, &ChatEncodeOpts::OPENCODE).unwrap();
+        assert!(body.get("reasoning_effort").is_none(), "{model}: {body}");
+    }
+}
+
+#[test]
+fn thinking_off_omits_reasoning_effort_on_both_chat_adapters() {
     let mut req = sample_request(vec![]);
     req.thinking = ThinkingSpec::Off;
-    let body = encode_chat_body(&req, true, &ChatEncodeOpts::COMMANDCODE).unwrap();
-    assert!(body.get("reasoning_effort").is_none(), "got {body}");
+
+    // `none` is not in every host's effort literal (Zen rejects it for models
+    // whose upstream omits it), so Off omits the field instead of cancelling.
+    for opts in [ChatEncodeOpts::COMMANDCODE, ChatEncodeOpts::OPENCODE] {
+        let body = encode_chat_body(&req, true, &opts).unwrap();
+        assert!(body.get("reasoning_effort").is_none(), "got {body}");
+    }
 }
 
 #[test]

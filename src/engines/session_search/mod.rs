@@ -2,14 +2,22 @@
 //!
 //! Does not own session writes, schema migration, or ORT lifecycle.
 
+mod chunk;
+mod corpus;
+mod echo;
 mod lexical;
 mod semantic_index;
+mod slots;
+mod sparse;
+mod tokenizer;
 
 pub use semantic_index::{
     SessionSemanticIndex, consume_session_index, ensure_session_index, load_session_index,
     queue_session_dirty, read_session_pending_hint, session_index_status, session_should_rebuild,
     session_work_from_disk, write_session_pending_hint,
 };
+pub use lexical::ensure_sparse_index;
+pub use sparse::sparse_index_path;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -248,6 +256,13 @@ fn cmp_hits(a: &SessionTextHit, b: &SessionTextHit) -> std::cmp::Ordering {
 
 /// Agent-facing final ordering: score desc → caller family first → most
 /// recently updated session first → stable (session_id, seq) for pagination.
+///
+/// The time key is the carrier of "newest first" among equal scores (mostly the
+/// exact-match tier, where every hit scores 1.0). It is deliberately **not**
+/// dropped: without it the fallback would be earliest-first (or the lane's ULID
+/// order), i.e. the original would stop outranking later mentions. The rendered
+/// view also carries `created`/`updated`, but that is for the reader, not a
+/// substitute for the ordering.
 pub fn sort_hits_for_agent(
     hits: &mut [SessionTextHit],
     prefer_session_ids: &[String],

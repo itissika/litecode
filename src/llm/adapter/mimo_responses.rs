@@ -8,11 +8,19 @@
 //!
 //! - [Responses API](https://mimo.mi.com/docs/en-US/api/chat/responses): `reasoning.effort`
 //!   — `none` off; `low`/`medium`/`high` on (vendor: identical behavior today).
+//! - [List Models](https://mimo.mi.com/docs/zh-CN/api/model/list-models): the
+//!   Settings picker pulls wire ids from `GET {endpoint}/v1/models`; speech ids
+//!   (`*-asr` / `*-tts*`) are filtered out — they live on dedicated speech
+//!   endpoints this adapter does not implement.
 //! - [Deep Thinking](https://mimo.mi.com/docs/en-US/quick-start/usage-guide/text-generation/deep-thinking):
 //!   `mimo-v2.5` / `mimo-v2.5-pro` default to thinking **enabled**; multi-turn tool
 //!   examples use thinking on with tools and require authority `Item::Reasoning`
 //!   round-trip. Do **not** force `effort: none` when `tools` is non-empty — that
 //!   contradicts the Deep Thinking tool-call walkthrough.
+//! - Input media: MiMo's Responses schema has no `input_file` part — video and
+//!   audio are `input_video` + `video_url` / `input_audio` + `audio_url`, each
+//!   accepting a URL or base64 `data:` URL. [`serialize_input_item`] rewrites the
+//!   authority file parts to those vendor shapes.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -22,8 +30,11 @@ use reqwest::Client;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::authority::responses::{Item, ResponseStreamEvent};
+use crate::authority::responses::{
+    FunctionCallOutput, InputContent, Item, MessageItem, ResponseStreamEvent,
+};
 use crate::config::schema::ProviderAuth;
+use crate::session::media_tokens::classify_input_file;
 use crate::types::{LitecodeError, Result, StreamEvents};
 
 use crate::llm::provider::LlmProvider;
@@ -41,8 +52,17 @@ use super::{interrupted_stream_error, llm_http_client};
 pub(crate) const CONTEXT_WINDOW_DEFAULT: usize = 256_000;
 /// Vendor maximum context window — used when session `context_mode = max`.
 pub(crate) const CONTEXT_WINDOW_MAX: usize = 1_000_000;
-/// Selectable wire model ids for Settings dropdown.
-pub(crate) const API_MODEL_IDS: &[&str] = &["mimo-v2.5", "mimo-v2.5-pro"];
+/// Static fallback wire model ids. The live `/models` catalog is authoritative
+/// (`remote_model_catalog` is on), so this only backs surfaces without a
+/// fetched list. v2.5 ids stay for existing configs until their 2026-10-21
+/// retirement.
+pub(crate) const API_MODEL_IDS: &[&str] = &[
+    "mimo-v2.6-pro",
+    "mimo-v2.6-flash",
+    "mimo-v2.6-pro-ultraspeed",
+    "mimo-v2.5",
+    "mimo-v2.5-pro",
+];
 /// Official MiMo Responses host (pay-as-you-go). `/responses` is appended by
 /// [`normalize_endpoint`]. Token-plan hosts remain user-overridable in Settings.
 pub(crate) const DEFAULT_ENDPOINT: &str = "https://api.xiaomimimo.com/v1";
@@ -100,7 +120,7 @@ impl MimoResponsesProvider {
             ensure_reasoning_replay(&params.input, !tools.is_empty(), effort != "none");
         let input: Vec<Value> = input_items
             .iter()
-            .map(serde_json::to_value)
+            .map(serialize_input_item)
             .collect::<std::result::Result<_, _>>()
             .map_err(|e| LitecodeError::Llm(format!("serialize input items: {e}")))?;
 
@@ -121,6 +141,54 @@ impl MimoResponsesProvider {
 
         Ok(body)
     }
+}
+
+/// Serialize one authority item into MiMo's Responses dialect.
+///
+/// MiMo's Responses schema has no `input_file` part: video and audio arrive as
+/// `input_video` + `video_url` / `input_audio` + `audio_url`, and both `*_url`
+/// fields accept a plain URL or a base64 `data:` URL (vendor schema docs). Map
+/// every classifiable file part accordingly; unclassifiable documents keep the
+/// authority shape.
+fn serialize_input_item(item: &Item) -> serde_json::Result<Value> {
+    let mut value = serde_json::to_value(item)?;
+    let parts = match item {
+        Item::Message(MessageItem::Input(msg)) => msg.content.as_slice(),
+        Item::FunctionCallOutput(out) => match &out.output {
+            FunctionCallOutput::Content(parts) => parts.as_slice(),
+            FunctionCallOutput::Text(_) => return Ok(value),
+        },
+        _ => return Ok(value),
+    };
+    let mapped: Vec<Value> = parts
+        .iter()
+        .map(map_input_content)
+        .collect::<std::result::Result<_, _>>()?;
+    value[match item {
+        Item::FunctionCallOutput(_) => "output",
+        _ => "content",
+    }] = Value::Array(mapped);
+    Ok(value)
+}
+
+/// Map one input content part into MiMo's dialect (see [`serialize_input_item`]).
+fn map_input_content(content: &InputContent) -> serde_json::Result<Value> {
+    let InputContent::InputFile(file) = content else {
+        return serde_json::to_value(content);
+    };
+    let Some(url) = file.file_data.as_deref().or(file.file_url.as_deref()) else {
+        return serde_json::to_value(content);
+    };
+    let (part_type, url_key) = match classify_input_file(file) {
+        Some("image") => ("input_image", "image_url"),
+        Some("video") => ("input_video", "video_url"),
+        Some("audio") => ("input_audio", "audio_url"),
+        _ => return serde_json::to_value(content),
+    };
+    let mut mapped = serde_json::Map::new();
+    mapped.insert("type".into(), Value::from(part_type));
+    mapped.insert(url_key.into(), Value::from(url));
+    Ok(Value::Object(mapped))
 }
 
 /// MiMo Responses `reasoning.effort`.
@@ -298,6 +366,10 @@ impl LlmProvider for MimoResponsesProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::authority::responses::{
+        FunctionCallOutputItemParam, InputFileContent, InputImageContent, InputMessage, InputRole,
+        InputTextContent,
+    };
     use crate::llm::request::{ModelRequest, ToolDef};
     use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
 
@@ -425,5 +497,85 @@ mod tests {
         harden_mimo_json(&mut v);
         assert_eq!(v["usage"]["input_tokens_details"]["cached_tokens"], 0);
         assert_eq!(v["usage"]["output_tokens_details"]["reasoning_tokens"], 0);
+    }
+
+    fn tool_output_item(part: InputContent) -> Item {
+        Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: "call_1".into(),
+            output: FunctionCallOutput::Content(vec![part]),
+            id: None,
+            status: None,
+        })
+    }
+
+    fn file_part(filename: &str, file_data: Option<&str>, file_url: Option<&str>) -> InputContent {
+        InputContent::InputFile(InputFileContent {
+            file_data: file_data.map(Into::into),
+            file_id: None,
+            file_url: file_url.map(Into::into),
+            filename: Some(filename.into()),
+            detail: None,
+        })
+    }
+
+    #[test]
+    fn video_and_audio_tool_outputs_use_vendor_url_parts() {
+        let data_url = "data:video/mp4;base64,AAAA";
+        let mut req = sample_request(vec![]);
+        req.input = vec![
+            tool_output_item(file_part("clip.mp4", Some(data_url), None)),
+            tool_output_item(file_part("voice.mp3", None, Some("https://cdn.test/voice.mp3"))),
+        ];
+        let body = MimoResponsesProvider::build_body(&req, false).unwrap();
+        assert_eq!(body["input"][0]["output"][0]["type"], "input_video");
+        assert_eq!(body["input"][0]["output"][0]["video_url"], data_url);
+        assert_eq!(body["input"][1]["output"][0]["type"], "input_audio");
+        assert_eq!(
+            body["input"][1]["output"][0]["audio_url"],
+            "https://cdn.test/voice.mp3"
+        );
+    }
+
+    #[test]
+    fn image_parts_keep_openai_shapes() {
+        let mut req = sample_request(vec![]);
+        req.input = vec![
+            tool_output_item(file_part("shot.webp", None, Some("https://cdn.test/shot.webp"))),
+            Item::Message(MessageItem::Input(InputMessage {
+                content: vec![
+                    InputContent::InputText(InputTextContent { text: "look".into() }),
+                    InputContent::InputImage(InputImageContent {
+                        detail: Default::default(),
+                        file_id: None,
+                        image_url: Some("data:image/png;base64,BBBB".into()),
+                    }),
+                ],
+                role: InputRole::User,
+                status: None,
+            })),
+        ];
+        let body = MimoResponsesProvider::build_body(&req, false).unwrap();
+        assert_eq!(body["input"][0]["output"][0]["type"], "input_image");
+        assert_eq!(
+            body["input"][0]["output"][0]["image_url"],
+            "https://cdn.test/shot.webp"
+        );
+        assert_eq!(body["input"][1]["type"], "message");
+        assert_eq!(body["input"][1]["role"], "user");
+        assert_eq!(body["input"][1]["content"][0]["type"], "input_text");
+        assert_eq!(body["input"][1]["content"][0]["text"], "look");
+        assert_eq!(body["input"][1]["content"][1]["type"], "input_image");
+    }
+
+    #[test]
+    fn unclassifiable_document_keeps_authority_input_file() {
+        let mut req = sample_request(vec![]);
+        req.input = vec![tool_output_item(file_part(
+            "spec.pdf",
+            None,
+            Some("https://cdn.test/spec.pdf"),
+        ))];
+        let body = MimoResponsesProvider::build_body(&req, false).unwrap();
+        assert_eq!(body["input"][0]["output"][0]["type"], "input_file");
     }
 }

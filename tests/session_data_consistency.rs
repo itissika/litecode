@@ -1,32 +1,9 @@
-//! Projection consistency: log fold, FTS keys, change-log watermark.
+//! Projection consistency: log fold, change-log watermark.
 
 mod common;
 
 use common::SessionDataFixture;
 use litecode::types::user_text;
-
-#[test]
-fn fts_keys_match_searchable_rows_after_writes() {
-    let fixture = SessionDataFixture::new();
-    let data = &fixture.data;
-    let sid = data.create_session("/p", "default", None).unwrap();
-    data.insert_items(
-        &sid,
-        &[
-            user_text("alpha UNIQUE_FTS_TOKEN omega"),
-            user_text("beta filler"),
-        ],
-    )
-    .unwrap();
-    let rows = data.reader().searchable_rows_blocking(Some(&sid)).unwrap();
-    assert_eq!(rows.len(), 2);
-    let hits = data
-        .reader()
-        .fts_search_blocking("UNIQUE_FTS_TOKEN", Some(&sid), 16)
-        .unwrap();
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].0, sid);
-}
 
 #[test]
 fn change_log_tracks_each_successful_mutation() {

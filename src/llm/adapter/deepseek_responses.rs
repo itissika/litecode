@@ -38,7 +38,11 @@ pub(crate) const CONTEXT_WINDOW_DEFAULT: usize = 256_000;
 pub(crate) const CONTEXT_WINDOW_MAX: usize = 1_000_000;
 /// Fallback / default wire ids. Settings lists live ids from GET `/models`
 /// (<https://api-docs.deepseek.com/zh-cn/api/list-models/>).
-pub(crate) const API_MODEL_IDS: &[&str] = &["deepseek-v4-flash", "deepseek-v4-pro"];
+///
+/// The retired names `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` are
+/// still accepted as aliases but are served by DeepSeek-V4.1-Flash, whose
+/// catalog id is `deepseek-flash`.
+pub(crate) const API_MODEL_IDS: &[&str] = &["deepseek-flash", "deepseek-v4-pro"];
 /// Official DeepSeek Responses host. `/responses` is appended by [`normalize_endpoint`].
 pub(crate) const DEFAULT_ENDPOINT: &str = "https://api.deepseek.com";
 
@@ -335,7 +339,7 @@ mod tests {
 
     fn sample_request(tools: Vec<ToolDef>) -> ModelRequest {
         ModelRequest {
-            model: "deepseek-v4-flash".into(),
+            model: "deepseek-flash".into(),
             instructions: "test".into(),
             input: vec![],
             tools,
@@ -352,7 +356,7 @@ mod tests {
             "id": "resp_1",
             "object": "response",
             "created_at": 1,
-            "model": "deepseek-v4-flash",
+            "model": "deepseek-flash",
             "status": "completed",
             "store": false,
             "output": [
