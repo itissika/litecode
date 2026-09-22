@@ -49,13 +49,12 @@ impl SessionSearchTool {
             _ => None,
         };
 
+        // Bring the semantic corpus up to date before the search reads it. The
+        // decision belongs to the engine, which compares the live store watermark
+        // when it can see the store; a hint file left by the last load cannot know
+        // about rows written since.
         if self.engines.code_search().worker_alive() {
-            match crate::engines::session_search::session_work_from_disk(workspace_root) {
-                crate::engines::code_search::IndexWork::None => {}
-                _ => {
-                    let _ = self.engines.consume_session_index_work();
-                }
-            }
+            let _ = self.engines.consume_session_index_work();
         }
         let bundle = match self.engines.search_sessions(
             query,

@@ -796,27 +796,36 @@ impl WorkspaceEngines {
     pub fn consume_session_index_work(&self) -> Result<RefreshAccepted> {
         match self.consume_preflight(&self.session_refresh_busy)? {
             ConsumePreflight::ShortCircuit(accepted) => Ok(accepted),
-            ConsumePreflight::Ready(root) => match session_search::session_work_from_disk(&root) {
-                code_search::IndexWork::None => Ok(RefreshAccepted {
-                    desired: true,
-                    mode: RefreshAcceptedMode::Incremental,
-                }),
-                work => {
-                    if !self.code_search.worker_alive() {
-                        return Ok(RefreshAccepted {
-                            desired: true,
-                            mode: RefreshAcceptedMode::Starting,
-                        });
+            ConsumePreflight::Ready(root) => {
+                // Read the store when we can see it: the on-disk hint is only a
+                // leftover from the last load and cannot know about rows written
+                // since (`session_work_now`).
+                let work = match self.session_reader() {
+                    Some(reader) => session_search::session_work_now(&root, &reader),
+                    None => session_search::session_work_from_disk(&root),
+                };
+                match work {
+                    code_search::IndexWork::None => Ok(RefreshAccepted {
+                        desired: true,
+                        mode: RefreshAcceptedMode::Incremental,
+                    }),
+                    work => {
+                        if !self.code_search.worker_alive() {
+                            return Ok(RefreshAccepted {
+                                desired: true,
+                                mode: RefreshAcceptedMode::Starting,
+                            });
+                        }
+                        self.spawn_scoped_refresh(
+                            &root,
+                            work,
+                            RefreshScope::Session,
+                            &self.session_refresh_busy,
+                            false,
+                        )
                     }
-                    self.spawn_scoped_refresh(
-                        &root,
-                        work,
-                        RefreshScope::Session,
-                        &self.session_refresh_busy,
-                        false,
-                    )
                 }
-            },
+            }
         }
     }
 

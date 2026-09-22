@@ -23,13 +23,13 @@ const FETCH_DEPTH: usize = 200;
 /// needed it. Above it the build goes to a background thread and searches are
 /// reported as unanswerable until it lands.
 ///
-/// This used to be 1500, chosen when every refresh paid a fixed two-second
-/// tokenizer load — the build was cheap and the load was not, so anything past a
-/// toy corpus had to be hidden from the caller. With the tokenizer shared the
-/// load is paid once per process, and a measured forty-thousand-row build is
-/// ~200ms end to end, which puts the tool-patience line in the hundreds of
-/// thousands of rows.
-const INLINE_BUILD_MAX_ROWS: usize = 250_000;
+/// This used to be 250_000, on a ~200ms forty-thousand-row measurement. That
+/// measurement does not survive the chunked corpus: the parity fixture builds
+/// 4_000 rows in seconds, which puts this workspace's ~50k rows at tens of
+/// seconds inside the caller's own thread — long enough to read as a hang, and
+/// nothing can interrupt it. Inline stops where a build still finishes in a
+/// second or two.
+const INLINE_BUILD_MAX_ROWS: usize = 2_000;
 
 /// What the lane can say about whether it answered the question.
 ///
@@ -119,6 +119,22 @@ pub fn search_lexical(
 /// searches, which reads exactly like a corpus with no matching rows.
 fn prepare_index(reader: &SessionDataReader, data_root: &std::path::Path) -> LaneState {
     let path = sparse::sparse_index_path(data_root);
+    // A missing or incompatible index over a corpus too large to build inline is
+    // dispatched to the background thread *before* the lock below: the answer is
+    // `Building` now, not after a build that runs tens of seconds in this thread.
+    // Waiting for one here is what turned a rebuild into a search that hung. The
+    // lock section re-checks the state, so the two can only agree.
+    let must_rebuild = match sparse::needs_rebuild(&path) {
+        Ok(needs) => needs,
+        Err(error) => return LaneState::Failed(error.to_string()),
+    };
+    if must_rebuild
+        && let Ok(keys) = reader.searchable_keys_blocking(None)
+        && keys.len() > INLINE_BUILD_MAX_ROWS
+    {
+        spawn_background_build(reader.clone(), data_root.to_path_buf());
+        return LaneState::Building;
+    }
     let prepared = with_refresh_lock(|| -> Result<LaneState> {
         // Re-checked inside the lock, not before it. Two searches arriving during
         // one stale index would otherwise both reconcile, and the loser of the
@@ -168,7 +184,7 @@ fn prepare_index(reader: &SessionDataReader, data_root: &std::path::Path) -> Lan
 
 /// Build or reconcile the sparse index, blocking. Warmup paths and the eval
 /// boards call this; agent searches self-heal lazily (inline for small corpora,
-/// background for large ones).
+/// background for large ones, which answer `Building` until it lands).
 pub fn ensure_sparse_index(reader: &SessionDataReader) -> Result<()> {
     match prepare_index(reader, reader.data_root()) {
         // `Building` is a real answer to "is it ready" — it is not — even though a
@@ -217,4 +233,35 @@ fn spawn_background_build(reader: SessionDataReader, data_root: PathBuf) {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&data_root);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{SessionData, WorkspaceWriteLease};
+    use crate::types::user_text;
+    use tempfile::TempDir;
+
+    /// A corpus too large to build inline is answered `Building` and built in the
+    /// background, instead of the search waiting out the whole build.
+    #[test]
+    fn a_large_corpus_is_not_built_inside_the_search() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        let rows: Vec<_> = (0..INLINE_BUILD_MAX_ROWS + 1)
+            .map(|i| user_text(&format!("row number {i}")))
+            .collect();
+        data.insert_items(&id, &rows).unwrap();
+        let reader = SessionDataReader::open(&db);
+
+        assert_eq!(
+            prepare_index(&reader, reader.data_root()),
+            LaneState::Building,
+            "the caller is answered now, not after the build"
+        );
+    }
 }

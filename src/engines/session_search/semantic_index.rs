@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
@@ -71,6 +72,11 @@ pub struct SessionIndexMeta {
     /// Dense document shape; 0/absent = the pre-chunking row-level corpus.
     #[serde(default)]
     pub doc_schema: u32,
+    /// Hash of the live `(session_id, seq)` list at the last reconcile — the
+    /// cheap half of "did anything move". A legacy file without it just pays one
+    /// full reconcile, which stores it.
+    #[serde(default)]
+    pub keys_hash: u64,
 }
 
 impl SessionIndexMeta {
@@ -84,6 +90,7 @@ impl SessionIndexMeta {
             indexed_chunks,
             last_change_id: 0,
             doc_schema: DOC_SCHEMA,
+            keys_hash: 0,
         }
     }
 }
@@ -150,6 +157,8 @@ pub struct SessionSemanticIndex {
     next_id: u64,
     embedder_id: String,
     last_change_id: i64,
+    /// Live key-list hash of the last reconcile; see [`hash_keys`].
+    keys_hash: u64,
 }
 
 impl SessionSemanticIndex {
@@ -161,6 +170,7 @@ impl SessionSemanticIndex {
             next_id: 1,
             embedder_id: production_embedder_id().into(),
             last_change_id: 0,
+            keys_hash: 0,
         })
     }
 
@@ -182,6 +192,7 @@ impl SessionSemanticIndex {
             next_id: 1,
             embedder_id,
             last_change_id: meta_on_disk.as_ref().map(|m| m.last_change_id).unwrap_or(0),
+            keys_hash: meta_on_disk.as_ref().map(|m| m.keys_hash).unwrap_or(0),
         };
 
         let file = File::open(&chunks_file).map_err(|e| LitecodeError::Config(e.to_string()))?;
@@ -223,6 +234,7 @@ impl SessionSemanticIndex {
             workspace_root,
             &SessionIndexMeta {
                 last_change_id: self.last_change_id,
+                keys_hash: self.keys_hash,
                 ..SessionIndexMeta::shell(&self.embedder_id, self.chunks.len())
             },
         )?;
@@ -349,6 +361,11 @@ impl SessionSemanticIndex {
     /// notification the writer never sent can never leave the index stale. The
     /// `stale` pass below drops chunks whose key or text is gone, which also
     /// covers a rolled-back change log without a special reset.
+    ///
+    /// The comparison runs in two stages, cheap first: a key-list hash (one
+    /// indexed query, no bodies) decides whether the projection below — which
+    /// reads every body, tokenizes every row and rewrites both index files — has
+    /// anything to do at all.
     pub fn reconcile(
         &mut self,
         reader: &SessionDataReader,
@@ -356,6 +373,10 @@ impl SessionSemanticIndex {
         embedder: &mut dyn Embedder,
     ) -> Result<bool> {
         let latest = reader.latest_change_id_blocking().unwrap_or(0);
+        let keys_hash = hash_live_keys(reader)?;
+        if self.last_change_id == latest && self.keys_hash == keys_hash {
+            return Ok(false);
+        }
         // The dense corpus is the locked final policy: slot projection (人话 +
         // 工具调用 + 工具产出，压缩总结剔除), echo removal, budget trim, then
         // 448-token hard-cut chunks with a head+tail anchor for split rows — the
@@ -414,15 +435,29 @@ impl SessionSemanticIndex {
         // above already ran against the live corpus either way. Its only job is to
         // retire the pending hint once the store stops moving, so the warmup pass
         // can go quiet instead of re-walking the corpus every turn.
-        if dirty || self.last_change_id != latest {
+        if dirty || self.last_change_id != latest || self.keys_hash != keys_hash {
             self.embedder_id = embedder.embedder_id().into();
             self.last_change_id = latest;
+            self.keys_hash = keys_hash;
             self.save(workspace_root)?;
             write_session_pending_hint(workspace_root, 0);
             dirty = true;
         }
         Ok(dirty)
     }
+}
+
+/// The cheap half of a reconcile: one indexed query over the key columns and
+/// never a body. `searchable_keys` is already `ORDER BY session_id, seq`, so the
+/// hash covers a stable order and means the same thing across processes.
+fn hash_live_keys(reader: &SessionDataReader) -> Result<u64> {
+    let keys = reader.searchable_keys_blocking(None)?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (session_id, seq) in &keys {
+        session_id.hash(&mut hasher);
+        seq.hash(&mut hasher);
+    }
+    Ok(hasher.finish())
 }
 
 fn index_files_exist(workspace_root: &Path) -> bool {
@@ -487,6 +522,11 @@ pub fn session_index_status(workspace_root: &Path) -> crate::engines::code_searc
     }
 }
 
+/// Work as seen from disk alone: the pending hint plus the rebuild criteria.
+///
+/// The hint is written when an index is loaded or a reconcile finishes, so this
+/// view can already be behind a store that has moved since. Callers that can see
+/// the store must ask [`session_work_now`]; this one is for status display.
 pub fn session_work_from_disk(workspace_root: &Path) -> crate::engines::code_search::IndexWork {
     use crate::engines::code_search::{IndexRebuildReason, IndexWork};
     if session_should_rebuild(workspace_root) {
@@ -512,6 +552,21 @@ pub fn session_work_from_disk(workspace_root: &Path) -> crate::engines::code_sea
     } else {
         IndexWork::Update { dirty }
     }
+}
+
+/// Work as of *now*: the live store watermark against the index's, not whatever
+/// hint some earlier loader happened to leave behind.
+///
+/// This is the question a caller asks before spending a reconcile, and the hint
+/// file cannot answer it: a session written after the last consume writes no
+/// hint, so a hint-only check leaves every later row unembedded until the
+/// process restarts.
+pub fn session_work_now(
+    workspace_root: &Path,
+    reader: &SessionDataReader,
+) -> crate::engines::code_search::IndexWork {
+    queue_session_dirty(workspace_root, reader);
+    session_work_from_disk(workspace_root)
 }
 
 /// Load compatible vectors; empty shell when the library is absent/unloadable.
@@ -554,8 +609,14 @@ pub fn consume_session_index(
 ) -> Result<bool> {
     if session_should_rebuild(workspace_root) {
         tracing::info!("session_search rebuilding semantic index");
+        // Only this lane's own marker: the directory also holds the sparse
+        // lane's `sparse.db`, and deleting the directory took that index with
+        // it, leaving a search to rebuild 282MB in its own thread. An absent
+        // `meta.json` is what makes `session_should_rebuild` true, the stale
+        // `chunks.jsonl` / `vectors.usearch` are never loaded without it
+        // (`load_session_index`), and `save` overwrites both.
+        let _ = std::fs::remove_file(meta_path(workspace_root));
         let dir = session_index_dir(workspace_root);
-        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|e| LitecodeError::Config(e.to_string()))?;
         *index = SessionSemanticIndex::new_empty()?;
     }
@@ -714,5 +775,108 @@ mod tests {
             session_work_from_disk(root),
             crate::engines::code_search::IndexWork::Update { .. }
         ));
+    }
+
+    #[test]
+    fn an_unchanged_store_is_not_reconciled_again() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("first row")]).unwrap();
+
+        let mut emb = HashEmbedder;
+        let reader = crate::session::SessionDataReader::open(&db);
+        let mut index = ensure_session_index(root, &reader, &mut emb).unwrap();
+        assert_eq!(read_session_pending_hint(root), 0);
+
+        let dir = root.join(".litecode").join("session-index");
+        let before = (
+            std::fs::read(dir.join("chunks.jsonl")).unwrap(),
+            std::fs::read(dir.join("meta.json")).unwrap(),
+        );
+
+        // Nothing moved: the second reconcile stops at the key list, so the
+        // projection never runs and neither index file is touched.
+        assert!(!index.reconcile(&reader, root, &mut emb).unwrap());
+        assert_eq!(
+            (
+                std::fs::read(dir.join("chunks.jsonl")).unwrap(),
+                std::fs::read(dir.join("meta.json")).unwrap(),
+            ),
+            before,
+            "an unchanged store must not rewrite the index"
+        );
+
+        // The store moves: the same call picks the row up.
+        data.insert_items(&id, &[user_text("second row")]).unwrap();
+        assert!(index.reconcile(&reader, root, &mut emb).unwrap());
+        assert_eq!(index.len(), 2);
+    }
+
+    #[test]
+    fn a_write_after_the_last_consume_is_work_without_a_hint() {
+        use crate::engines::code_search::IndexWork;
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("first row")]).unwrap();
+
+        let mut emb = HashEmbedder;
+        let reader = crate::session::SessionDataReader::open(&db);
+        let _ = ensure_session_index(root, &reader, &mut emb).unwrap();
+        assert_eq!(
+            session_work_now(root, &reader),
+            IndexWork::None,
+            "a consumed index is up to date"
+        );
+
+        data.insert_items(&id, &[user_text("later row")]).unwrap();
+        assert_eq!(
+            read_session_pending_hint(root),
+            0,
+            "the writer never touches the hint, so nothing else would see this row"
+        );
+        assert!(
+            matches!(session_work_now(root, &reader), IndexWork::Update { .. }),
+            "the live watermark, not the hint file, decides the work"
+        );
+    }
+
+    #[test]
+    fn a_dense_rebuild_keeps_the_sparse_index() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("first row")]).unwrap();
+
+        let reader = crate::session::SessionDataReader::open(&db);
+        crate::engines::session_search::ensure_sparse_index(&reader).unwrap();
+        let sparse = crate::engines::session_search::sparse_index_path(reader.data_root());
+        let before = std::fs::read(&sparse).unwrap();
+
+        // No meta.json yet, so this is the dense rebuild path: the one that used
+        // to `remove_dir_all` the shared directory and take the sparse lane's
+        // index with it, leaving the next search to rebuild it inline.
+        let mut emb = HashEmbedder;
+        let mut index = SessionSemanticIndex::new_empty().unwrap();
+        consume_session_index(root, &reader, &mut emb, &mut index).unwrap();
+        assert!(meta_path(root).is_file(), "the dense lane did rebuild");
+        assert_eq!(
+            std::fs::read(&sparse).unwrap(),
+            before,
+            "a dense rebuild must not touch the sparse lane's index"
+        );
     }
 }

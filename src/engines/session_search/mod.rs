@@ -19,7 +19,7 @@ mod tokenizer;
 pub use semantic_index::{
     SessionSemanticIndex, consume_session_index, ensure_session_index, load_session_index,
     queue_session_dirty, read_session_pending_hint, session_index_status, session_should_rebuild,
-    session_work_from_disk, write_session_pending_hint,
+    session_work_from_disk, session_work_now, write_session_pending_hint,
 };
 pub use lexical::ensure_sparse_index;
 pub use sparse::sparse_index_path;
