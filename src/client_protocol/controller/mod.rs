@@ -71,6 +71,8 @@ pub struct Projection {
     pub session_id: String,
     pub sessions: Arc<SessionManager>,
     pub buffer_revision: u64,
+    /// Wire cursor high-water: the last persisted `next_seq` this projection has
+    /// delivered up to. New rows are fetched from `[next_seq, <fresh next_seq>)`.
     pub next_seq: u64,
     pub turn_committed_next_seq: u64,
     pub turn_id: Option<String>,
@@ -101,14 +103,6 @@ pub struct Projection {
 impl Projection {
     fn seq_cursor(&self) -> (i64, u64) {
         self.sessions.entry_wire_seq_cursor(&self.session_id)
-    }
-
-    fn last_seq(next_seq: u64) -> i64 {
-        if next_seq == 0 {
-            -1
-        } else {
-            (next_seq - 1) as i64
-        }
     }
 
     fn child_session_id_for_encoded(&self, encoded: Option<&crate::types::Item>) -> Option<String> {
@@ -453,7 +447,10 @@ impl Projection {
     pub fn bump_buffer_revision(&mut self, project: &str, binding: &SessionBindingProjection) {
         self.buffer_revision = self.buffer_revision.saturating_add(1);
         let old_next = self.next_seq;
-        let (_, new_next) = self.seq_cursor();
+        // The cursor is a pair now: `last_seq` is the active tail, `next_seq` the
+        // persisted high-water. New rows live in `[old_next, new_next)` because an
+        // append always lands on the high-water (never in a hole left by a revert).
+        let (new_last, new_next) = self.seq_cursor();
         self.next_seq = new_next;
         // Provider occupancy is ring truth while a request's usage is showing.
         // Skip the full-log local estimate on step commits; compact clears the
@@ -493,8 +490,8 @@ impl Projection {
         }
         self.on_event(
             InternalEvent::BufferChanged {
-                last_seq: Self::last_seq(self.next_seq),
-                next_seq: self.next_seq,
+                last_seq: new_last,
+                next_seq: new_next,
                 revision: self.buffer_revision,
             },
             project,
@@ -531,13 +528,17 @@ impl Projection {
         {
             Ok(()) => {
                 self.bump_buffer_revision(project, binding);
+                // Re-read after the bump: `last_seq` is the new (dropped) active
+                // tail while `next_seq` is the persisted high-water that did not
+                // move back.
+                let (last_seq, next_seq) = self.seq_cursor();
                 self.push_outgoing(serde_json::json!({
                     "jsonrpc": "2.0",
                     "method": "buffer/reverted",
                     "params": {
                         "session_id": self.session_id,
-                        "last_seq": Self::last_seq(self.next_seq),
-                        "next_seq": self.next_seq,
+                        "last_seq": last_seq,
+                        "next_seq": next_seq,
                     },
                 }));
                 self.push_operation_ok(OperationKind::RevertToUserAnchor, project, binding);
@@ -1869,5 +1870,44 @@ mod compact_item_wire_tests {
         assert_eq!(restamp[0]["params"]["body"]["status"], "completed");
         assert_eq!(restamp[0]["params"]["body"]["content"][0]["text"], "hello");
         assert_eq!(restamp[0]["params"]["state"], "final");
+    }
+
+    #[test]
+    fn revert_then_append_delivers_new_seq_using_persisted_high_water() {
+        // Rows 0..8 (nine user messages); the persisted high-water is 9.
+        let (mut proj, sid, sessions) = setup_with_details(&[
+            "m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8",
+        ]);
+        proj.bump_buffer_revision("/p", &binding());
+        let _ = proj.take_outgoing();
+        assert_eq!(proj.next_seq, 9, "high-water after nine appends");
+        assert_eq!(proj.snapshot("/p", &binding()).buffer.last_seq, 8);
+
+        // Revert to user anchor k=6 → keeps seqs 0..5 (active MAX 5); the
+        // allocator high-water stays at 9 because a truncate never rewinds it.
+        proj.revert_to_user_anchor(6, "/p", &binding()).unwrap();
+        let out = proj.take_outgoing();
+        let reverted = out
+            .iter()
+            .find(|m| m["method"] == "buffer/reverted")
+            .expect("buffer/reverted notification");
+        assert_eq!(reverted["params"]["last_seq"], 5, "active tail dropped to 5");
+        assert_eq!(
+            reverted["params"]["next_seq"], 9,
+            "high-water did not move back"
+        );
+        assert_eq!(proj.next_seq, 9);
+        assert_eq!(proj.snapshot("/p", &binding()).buffer.last_seq, 5);
+
+        // Append must allocate the high-water seq 9, never the deleted seq 6, and
+        // the next bump must deliver exactly that row.
+        insert_detail(&sessions, &sid, "after-revert");
+        proj.bump_buffer_revision("/p", &binding());
+        let out = proj.take_outgoing();
+        let items = buffer_item_frames(&out);
+        assert_eq!(items.len(), 1, "the appended row must be delivered");
+        assert_eq!(items[0]["params"]["seq"], 9);
+        assert_eq!(proj.snapshot("/p", &binding()).buffer.last_seq, 9);
+        assert_eq!(proj.next_seq, 10);
     }
 }

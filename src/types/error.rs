@@ -79,6 +79,18 @@ pub enum LitecodeError {
     #[error("session storage error: {0}")]
     SessionStorage(String),
 
+    /// A retrieval lane could not answer the question that was put to it.
+    ///
+    /// Deliberately its own variant and not a flavour of storage error, because
+    /// the two call for opposite responses. A storage error says the question was
+    /// asked and the answer is unavailable. This says the question was **never
+    /// asked** — the index behind the lane was missing, mid-build, or broken. The
+    /// one thing a caller must not do is read that as "the corpus has no such
+    /// row": a search that could not run looks exactly like a search that found
+    /// nothing, and a caller acts on the difference.
+    #[error("retrieval lane did not answer: {0}")]
+    IndexNotReady(String),
+
     #[error("{0}")]
     Anyhow(#[from] anyhow::Error),
 }

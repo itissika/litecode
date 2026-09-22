@@ -16,7 +16,7 @@ use super::command::{CommitKind, CommitReceipt, SessionMutation};
 use super::sqlite::conn::SharedDb;
 use super::sqlite::ops;
 use super::sqlite::read;
-use super::sqlite::session::{ApplyOutcome, CommitDeltaOutcome, Session, SessionApply};
+use super::sqlite::session::{ApplyOutcome, CommitDeltaOutcome, Session};
 
 pub const WRITER_QUEUE_CAPACITY: usize = 256;
 
@@ -117,6 +117,10 @@ struct WriterState {
     data_root: PathBuf,
     live: HashMap<String, Session>,
     hooks: Arc<WriterHooks>,
+    /// Session directories and snapshots to remove **after** the commit lands.
+    /// Deleting them during the transaction would leave a rolled-back session
+    /// row pointing at files that are already gone.
+    deleted_files: Vec<(String, Option<String>)>,
 }
 
 impl WriterHandle {
@@ -257,10 +261,7 @@ fn writer_loop(
     ready: std::sync::mpsc::Sender<Result<()>>,
 ) {
     let db = match SharedDb::open_rw(&path) {
-        Ok(db) => {
-            let _ = ready.send(Ok(()));
-            Rc::new(db)
-        }
+        Ok(db) => Rc::new(db),
         Err(e) => {
             tracing::error!(error = %e, "session writer failed to open db");
             let _ = ready.send(Err(LitecodeError::SessionStorage(e.to_string())));
@@ -277,14 +278,75 @@ fn writer_loop(
         data_root,
         live: HashMap::new(),
         hooks,
+        deleted_files: Vec::new(),
     };
     cleanup_orphan_blob_files(&state);
+    if let Err(error) = seal_orphaned_in_progress(&state) {
+        // Not fatal: a session that cannot be sealed yet is a session that will
+        // be sealed when it is next resumed. Refusing to serve writes over it
+        // would turn a cosmetic problem into an outage.
+        tracing::warn!(error = %error, "could not seal rows left in flight by a previous run");
+    }
+    // Ready only once the startup repair has run: callers treat a successful
+    // open as "the store is in a servable state", and the repair is part of
+    // that state.
+    let _ = ready.send(Ok(()));
     while let Some(req) = rx.blocking_recv() {
         state.hooks.wait_if_paused();
         let result = execute(&mut state, req.mutation);
         let _ = req.reply.send(result);
     }
     let _ = state.db.checkpoint();
+}
+
+/// Seal rows the previous process left in flight.
+///
+/// The session layer promises that a session which has stopped has no
+/// `in_progress` rows: a cancelled or failed turn seals its own rows as
+/// `Incomplete` + `Final` (`runtime/mod.rs`). A process that *died* cannot keep
+/// that promise, so the promise is restored here, at startup, before a single
+/// mutation is served. At this moment nothing can be in flight, so every
+/// `in_progress` row in the database is an orphan by definition — no age
+/// heuristic, no guessing.
+///
+/// This is precisely the repair the projection refuses to do. Searching only
+/// settles history, so a crashed turn's rows are invisible to search until
+/// something seals them; leaving them alone would make them invisible forever.
+/// Sealing makes them visible, incomplete, and honest about it.
+///
+/// Nothing has to be told to the index: sealing makes the rows searchable, and
+/// the next reconciliation finds them by comparing key sets. That is the whole
+/// reason the reconcile does not need change notifications.
+fn seal_orphaned_in_progress(state: &WriterState) -> Result<usize> {
+    let ids: Vec<String> = {
+        let conn = state.db.conn();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT session_id FROM transcript_items
+             WHERE state = 'in_progress' ORDER BY session_id",
+        )?;
+        stmt.query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    let mut sealed = 0usize;
+    for id in ids {
+        let session = Session::resume_shared(Rc::clone(&state.db), state.data_root.clone(), &id)?;
+        let seqs = session.seal_in_progress_items()?;
+        if !seqs.is_empty() {
+            // "This session was interrupted by something that did not get to
+            // clean up" is a fact worth being able to look up later.
+            tracing::warn!(
+                session_id = %id,
+                rows = seqs.len(),
+                seqs = ?seqs,
+                "sealed rows a previous run left in flight"
+            );
+        }
+        sealed += seqs.len();
+    }
+    if sealed > 0 {
+        tracing::info!(rows = sealed, "sealed orphaned in-progress rows at startup");
+    }
+    Ok(sealed)
 }
 
 fn cleanup_orphan_blob_files(state: &WriterState) {
@@ -320,6 +382,7 @@ fn writer_loop_ephemeral(
         data_root: std::env::temp_dir().join("litecode"),
         live: HashMap::new(),
         hooks,
+        deleted_files: Vec::new(),
     };
     while let Some(req) = rx.blocking_recv() {
         state.hooks.wait_if_paused();
@@ -361,6 +424,7 @@ fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitR
         Ok(receipt) => {
             if state.hooks.take_fault_if(FaultKind::BeforeCommit) {
                 let _ = state.db.conn().execute_batch("ROLLBACK");
+                state.deleted_files.clear();
                 if let Some(session_id) = affected_session {
                     state.live.remove(&session_id);
                 }
@@ -380,6 +444,9 @@ fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitR
                 let path = state.data_root.join(super::blob::rel_path_for(&id));
                 let _ = std::fs::remove_file(path);
             }
+            for (session_id, project) in std::mem::take(&mut state.deleted_files) {
+                Session::cleanup_deleted_files(&state.data_root, &session_id, project.as_deref());
+            }
             if state.hooks.take_fault_if(FaultKind::AfterCommit) {
                 return Err(LitecodeError::SessionStorage(
                     "injected fault after commit".into(),
@@ -389,6 +456,7 @@ fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitR
         }
         Err(e) => {
             let _ = state.db.conn().execute_batch("ROLLBACK");
+            state.deleted_files.clear();
             // The legacy live projection is updated while dispatching.  A
             // rolled-back command must never leave that projection ahead of
             // disk; lazily hydrate it again on the next accepted command.
@@ -401,6 +469,11 @@ fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitR
     }
 }
 
+/// Record a receipt **in the caller's transaction**.
+///
+/// The receipt is written inside the same `BEGIN IMMEDIATE` as the mutation it
+/// describes, so a failure rolls the whole mutation back rather than committing
+/// content with no record of it.
 fn bump_receipt(
     state: &WriterState,
     session_id: &str,
@@ -464,21 +537,16 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             operation_id,
             op,
         } => {
-            let kind = match &op {
-                SessionApply::Append(_) => "append",
-                SessionApply::Seal { .. } => "seal",
-                SessionApply::Truncate { .. } => "truncate",
-            };
-            let outcome = {
+            let commit_kind = {
                 let session = ensure_live(state, &session_id)?;
-                session.apply(op)?
+                match session.apply(op)? {
+                    ApplyOutcome::Appended(seq) => CommitKind::Appended { seq },
+                    ApplyOutcome::Sealed { seq } => CommitKind::Sealed { seqs: vec![seq] },
+                    ApplyOutcome::Truncated { anchor } => {
+                        CommitKind::Truncated { from_seq: anchor }
+                    }
+                }
             };
-            let commit_kind = match outcome {
-                ApplyOutcome::Appended(seq) => CommitKind::Appended { seq },
-                ApplyOutcome::Sealed => CommitKind::Sealed { seqs: Vec::new() },
-                ApplyOutcome::Truncated => CommitKind::Truncated { from_seq: 0 },
-            };
-            let _ = kind;
             bump_receipt(
                 state,
                 &session_id,
@@ -617,29 +685,27 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                     &turn_id,
                 )?;
                 let working = session.load_working_set()?;
-                let (kind, preview) = match outcome {
-                    CommitDeltaOutcome::Discarded => (CommitKind::Idempotent, None),
+                match outcome {
+                    CommitDeltaOutcome::Discarded => (CommitKind::Idempotent, None, working),
                     CommitDeltaOutcome::Applied {
                         sealed_seqs,
                         preview,
                         ..
-                    } if sealed_seqs.is_empty() => (CommitKind::MetaUpdated, preview),
-                    CommitDeltaOutcome::Applied {
-                        sealed_seqs,
-                        preview,
-                        ..
-                    } => (CommitKind::Sealed { seqs: sealed_seqs }, preview),
-                };
-                (kind, preview, working)
+                    } => {
+                        let kind = if sealed_seqs.is_empty() {
+                            CommitKind::MetaUpdated
+                        } else {
+                            CommitKind::Sealed { seqs: sealed_seqs }
+                        };
+                        (kind, preview, working)
+                    }
+                }
             };
             let mut receipt =
                 bump_receipt(state, &session_id, &operation_id.0, expected_revision, kind)?;
-            receipt.preview = preview.as_ref().and_then(|patch| {
-                patch
-                    .user
-                    .clone()
-                    .map(|user| (user, patch.updated_at))
-            });
+            receipt.preview = preview
+                .as_ref()
+                .and_then(|patch| patch.user.clone().map(|user| (user, patch.updated_at)));
             receipt.assistant_preview = preview.as_ref().and_then(|patch| {
                 patch
                     .assistant
@@ -788,8 +854,10 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             expected_revision,
             operation_id,
         } => {
-            Session::delete_on(state.db.conn(), &state.data_root, &session_id)?;
+            let deleted = Session::delete_on(state.db.conn(), &session_id)?;
             state.live.remove(&session_id);
+            // The files go after the commit, not during it.
+            state.deleted_files.extend(deleted);
             bump_receipt(
                 state,
                 &session_id,

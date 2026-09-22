@@ -99,3 +99,49 @@ describe("AgentChatInput silent send", () => {
     );
   });
 });
+
+describe("AgentChatInput — subagent variant", () => {
+  it("keeps model / thinking tier / context mode + the usage ring", () => {
+    render(<AgentChatInput sessionId="session-1" variant="subagent" />);
+
+    expect(screen.getByTestId("subagent-controls")).toBeTruthy();
+    expect(screen.getByTitle("Model: Model 1")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Med" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Default" })).toBeTruthy();
+    expect(screen.getByTitle("Context usage")).toBeTruthy();
+  });
+
+  it("mounts no composer: no textarea, no send/cancel, no notification bell", () => {
+    render(<AgentChatInput sessionId="session-1" variant="subagent" />);
+
+    expect(document.querySelector("textarea")).toBeNull();
+    expect(screen.queryByPlaceholderText("Message the agent...")).toBeNull();
+    expect(screen.queryByTitle("Send")).toBeNull();
+    expect(screen.queryByTitle("Cancel")).toBeNull();
+  });
+
+  it("drops the agent picker: a child's identity is fixed by its profile", () => {
+    useSessionStore.setState({
+      primaryAgents: [{ id: "default", description: "" }],
+    } as never);
+
+    const primary = render(<AgentChatInput sessionId="session-1" />);
+    expect(screen.getByTitle("default")).toBeTruthy();
+    primary.unmount();
+
+    render(<AgentChatInput sessionId="session-1" variant="subagent" />);
+    expect(screen.queryByTitle("default")).toBeNull();
+  });
+
+  it("keeps the ring but drops its Compaction action (read-only)", () => {
+    const primary = render(<AgentChatInput sessionId="session-1" />);
+    fireEvent.click(screen.getByTitle("Context usage"));
+    expect(screen.getByLabelText("Compact context")).toBeTruthy();
+    primary.unmount();
+
+    render(<AgentChatInput sessionId="session-1" variant="subagent" />);
+    fireEvent.click(screen.getByTitle("Context usage"));
+    expect(screen.getByText("No context usage yet")).toBeTruthy();
+    expect(screen.queryByLabelText("Compact context")).toBeNull();
+  });
+});

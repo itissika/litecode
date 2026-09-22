@@ -76,19 +76,13 @@ impl SubagentSendTool {
                 ));
             }
         };
-        let child_depth = self
-            .sessions
-            .reader()
-            .meta_blocking(&child_id)
-            .map(|meta| meta.subagent_depth)
-            .unwrap_or(self.depth + 1);
         let project = self
             .sessions
             .project(&child_id)
             .unwrap_or_else(|| self.sessions.project(&parent).unwrap_or_default());
-        let mut opts =
-            TurnOptions::agent(agent_id.clone(), self.sessions.session_model_id(&child_id));
-        opts.depth = child_depth;
+        // Identity only — model / tier / context mode come from the child's own
+        // session row inside `spawn_turn`.
+        let opts = TurnOptions::child(agent_id.clone());
         let turn_id = match start_turn_like_human(
             &self.runtime,
             &self.sessions,

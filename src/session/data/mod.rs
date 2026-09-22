@@ -2,6 +2,8 @@
 
 mod blob;
 pub mod command;
+#[cfg(test)]
+mod final_immutability_tests;
 mod reader;
 pub(crate) mod sqlite;
 mod writer;
@@ -281,7 +283,7 @@ impl SessionData {
                 let mut lines = transcript
                     .line_index
                     .iter()
-                    .filter(|span| span.seq == seq && !span.is_header && !span.is_blank)
+                    .filter(|span| span.seq == seq && !span.is_header)
                     .map(|span| span.line);
                 let first = lines.next();
                 let last = lines.last().or(first);
@@ -521,6 +523,38 @@ impl SessionDataReader {
         })? {
             ReadValue::Seqs(v) => Ok(v),
             _ => Err(LitecodeError::SessionStorage("unexpected seqs".into())),
+        }
+    }
+
+    /// `(session_id, seq)` of every final searchable row. Integers only: this is
+    /// the cheap half of a reconciliation, safe to read in full.
+    pub fn searchable_keys_blocking(&self, session_id: Option<&str>) -> Result<Vec<(String, i64)>> {
+        match self.read_blocking(SessionRead::SearchableKeys {
+            session_id: session_id.map(str::to_string),
+        })? {
+            ReadValue::SearchableKeys(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected searchable keys".into(),
+            )),
+        }
+    }
+
+    /// Bodies for exactly these rows. The expensive half: only ask for the rows a
+    /// reconciliation actually found missing.
+    pub fn searchable_rows_for_blocking(
+        &self,
+        keys: &[(String, i64)],
+    ) -> Result<Vec<crate::session::transcript_file::SearchableRow>> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        match self.read_blocking(SessionRead::SearchableRowsFor {
+            keys: keys.to_vec(),
+        })? {
+            ReadValue::Searchable(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected searchable rows".into(),
+            )),
         }
     }
 

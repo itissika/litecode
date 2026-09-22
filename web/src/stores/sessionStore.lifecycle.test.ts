@@ -324,16 +324,19 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
       ],
     });
 
+    // Post-revert snapshot: the surviving tail is seq 0 while the allocator
+    // high-water (`next_seq`) stays at 5, so "window reaches past the tail" —
+    // not "window reaches past next_seq" — is what decides the trim.
     useSessionStore.getState().onOperationResult({
       op: "revert_to_user_anchor",
       ok: true,
       error: null,
-      snapshot: snap(sid, 1),
+      snapshot: { ...snap(sid, 1), buffer: { last_seq: 0, next_seq: 5, revision: 2 } },
     });
 
     const slice = useMessageStore.getState().bySession.get(sid)!;
     expect(slice.messages.map((row) => row.seq)).toEqual([0]);
-    expect(slice.toSeq).toBe(1);
+    expect(slice.toSeq).toBe(5);
     expect(slice.blockLogGrowth).toBe(true);
   });
 

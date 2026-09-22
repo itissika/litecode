@@ -115,7 +115,15 @@ function usedToolRows(bd: ItemTokenBreakdown | undefined): ToolTokenRow[] {
   );
 }
 
-export function ContextUsageRing({ sessionId }: { sessionId: string }) {
+export function ContextUsageRing({
+  sessionId,
+  readOnly = false,
+}: {
+  sessionId: string;
+  /** Subagent panels: the ring still reports occupancy and cache hit, but the
+   *  Compaction action (a write) stays in the human-owned primary panel. */
+  readOnly?: boolean;
+}) {
   // Live occupancy prefers provider prompt_tokens (updates each llm_completed
   // step). After compact the backend clears last-turn stats, so we fall back to
   // the working-set estimate until the next main-model call.
@@ -361,20 +369,22 @@ export function ContextUsageRing({ sessionId }: { sessionId: string }) {
                 <span className="text-(--_dk-text-disabled)">No context window configured</span>
               )}
             </div>
-            <button
-              type="button"
-              disabled={compactDisabled}
-              onClick={() => compact(sessionId)}
-              title={compacting ? "Compacting…" : "Compact context"}
-              aria-label={compacting ? "Compacting context" : "Compact context"}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-(--_dk-line) text-(--_dk-text-secondary) transition-colors hover:bg-(--_dk-ix-bg-hover) disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {compacting ? (
-                <CircleNotch size={14} weight="bold" className="animate-spin" aria-hidden />
-              ) : (
-                <ArrowsInSimple size={14} weight="bold" aria-hidden />
-              )}
-            </button>
+            {!readOnly && (
+              <button
+                type="button"
+                disabled={compactDisabled}
+                onClick={() => compact(sessionId)}
+                title={compacting ? "Compacting…" : "Compact context"}
+                aria-label={compacting ? "Compacting context" : "Compact context"}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-(--_dk-line) text-(--_dk-text-secondary) transition-colors hover:bg-(--_dk-ix-bg-hover) disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {compacting ? (
+                  <CircleNotch size={14} weight="bold" className="animate-spin" aria-hidden />
+                ) : (
+                  <ArrowsInSimple size={14} weight="bold" aria-hidden />
+                )}
+              </button>
+            )}
           </div>
 
           {/* Cache hit rate — session-total aggregate + last request; dot colors

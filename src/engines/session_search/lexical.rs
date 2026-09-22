@@ -4,7 +4,8 @@
 //! next door): exact substring → proximity → routed BM25 → n-gram fallback,
 //! with `|` alternatives and an exact match span per hit. The index lives at
 //! `<data_root>/session-index/sparse.db`; this module owns its lifecycle:
-//! build when missing, reconcile (change-id gated) when the store moved on.
+//! rebuild when the file is missing or incompatible, otherwise reconcile the
+//! final source key set before every search.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -18,17 +19,62 @@ use super::{SessionHitLane, SessionTextHit, SessionTextQuery, filter_hits};
 
 /// How many hits one query fetches; the page paginates over this list.
 const FETCH_DEPTH: usize = 200;
-/// Below this many searchable rows the index builds inline (tests and fresh
-/// workspaces: milliseconds). Above it the build goes to a background thread and
-/// the first search returns empty until it lands — the tool's timeout must not
-/// be spent on a full corpus build.
-const INLINE_BUILD_MAX_ROWS: usize = 1500;
+/// Below this many searchable rows the index builds inline, in the search that
+/// needed it. Above it the build goes to a background thread and searches are
+/// reported as unanswerable until it lands.
+///
+/// This used to be 1500, chosen when every refresh paid a fixed two-second
+/// tokenizer load — the build was cheap and the load was not, so anything past a
+/// toy corpus had to be hidden from the caller. With the tokenizer shared the
+/// load is paid once per process, and a measured forty-thousand-row build is
+/// ~200ms end to end, which puts the tool-patience line in the hundreds of
+/// thousands of rows.
+const INLINE_BUILD_MAX_ROWS: usize = 250_000;
+
+/// What the lane can say about whether it answered the question.
+///
+/// The distinction this type exists to preserve: "I searched and the corpus has
+/// no such row" and "I did not search" produce the same empty list and mean
+/// opposite things. A caller that sees no hits concludes the history does not
+/// contain the answer and stops looking; that is the right conclusion for an
+/// empty result and a permanent-looking false negative for an index that was
+/// merely late.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaneState {
+    /// The index was current and the query ran against it. An empty hit list is
+    /// now a fact about the corpus.
+    Ready,
+    /// No index could be produced in time to answer, so a build is running in the
+    /// background. The query did **not** run.
+    Building,
+    /// The index could not be read, built, or reconciled. The query did **not**
+    /// run.
+    Failed(String),
+}
+
+impl LaneState {
+    /// Why this lane did not answer, or `None` if it did.
+    pub fn unanswered(&self) -> Option<String> {
+        match self {
+            Self::Ready => None,
+            Self::Building => Some(
+                "the session index is still being built, so this search did not run; \
+                 retry in a moment"
+                    .to_string(),
+            ),
+            Self::Failed(why) => Some(format!(
+                "the session index could not be prepared, so this search did not run: {why}"
+            )),
+        }
+    }
+}
 
 /// Lexical search over the sparse index. Always-on.
 /// `|` separates alternatives; any alternative may match (handled in the lane).
-pub fn search_lexical(    reader: &SessionDataReader,
+pub fn search_lexical(
+    reader: &SessionDataReader,
     query: &SessionTextQuery,
-) -> Result<Vec<SessionTextHit>> {
+) -> Result<(Vec<SessionTextHit>, LaneState)> {
     let needle = query.query.trim();
     if needle.is_empty() {
         return Err(LitecodeError::Config(
@@ -38,30 +84,11 @@ pub fn search_lexical(    reader: &SessionDataReader,
 
     let data_root = reader.data_root();
     let path = sparse::sparse_index_path(data_root);
-    if sparse::needs_rebuild(&path)? {
-        let rows = match reader.searchable_rows_blocking(None) {
-            Ok(rows) => rows,
-            // A missing/unreadable store is an empty corpus, not an error.
-            Err(_) => return Ok(Vec::new()),
-        };
-        if rows.len() <= INLINE_BUILD_MAX_ROWS {
-            with_refresh_lock(|| {
-                sparse::build_index(
-                    &rows,
-                    data_root,
-                    reader.latest_change_id_blocking().unwrap_or(0),
-                )
-            })?;
-        } else {
-            spawn_background_build(reader.clone(), data_root.to_path_buf());
-            return Ok(Vec::new());
-        }
-    } else if sparse::is_stale(reader, &path)? {
-        let rows = match reader.searchable_rows_blocking(None) {
-            Ok(rows) => rows,
-            Err(_) => return Ok(Vec::new()),
-        };
-        with_refresh_lock(|| sparse::refresh_index(reader, &rows, data_root))?;
+    let state = prepare_index(reader, data_root);
+    if state.unanswered().is_some() {
+        // The query is not run. Returning the empty list here would be the bug
+        // this whole type exists to prevent.
+        return Ok((Vec::new(), state));
     }
 
     let index = sparse::open_read_only(&path)?.with_scope(query.include_session_id.as_deref());
@@ -81,29 +108,78 @@ pub fn search_lexical(    reader: &SessionDataReader,
             lane: SessionHitLane::Text,
         })
         .collect();
-    Ok(filter_hits(ranked, query))
+    Ok((filter_hits(ranked, query), LaneState::Ready))
+}
+
+/// Bring the index up to date, and say whether the lane is now allowed to answer.
+///
+/// Everything that can go wrong here is reported as a state rather than as a
+/// silent empty result, including the case that used to matter most: a corpus too
+/// large to build inline used to give the caller an empty list for the first few
+/// searches, which reads exactly like a corpus with no matching rows.
+fn prepare_index(reader: &SessionDataReader, data_root: &std::path::Path) -> LaneState {
+    let path = sparse::sparse_index_path(data_root);
+    let prepared = with_refresh_lock(|| -> Result<LaneState> {
+        // Re-checked inside the lock, not before it. Two searches arriving during
+        // one stale index would otherwise both reconcile, and the loser of the
+        // race would redo work the winner had just finished. The lock makes them
+        // take turns; a reconcile over an already-current index is a no-op.
+        //
+        // A rebuild is only for a missing or incompatible file. Everything else —
+        // including "the store moved on" — is a key-set reconcile that runs on
+        // every prepare before the query. There is no change-id gate: a missed
+        // notification must never be able to skip the diff.
+        if !sparse::needs_rebuild(&path)? {
+            sparse::refresh_from_source(reader, data_root)?;
+            return Ok(LaneState::Ready);
+        }
+
+        // The inline/background decision only needs how many rows there are, so it
+        // asks for keys first and reads bodies only when it will actually build.
+        // Only an *absent* store is an empty corpus. A store that exists but cannot
+        // be read is a failed lane, not an empty one: answering "the history has
+        // nothing" there would be the exact false negative this lane exists to
+        // prevent, and it would overwrite a good index with an empty one.
+        let keys = match reader.searchable_keys_blocking(None) {
+            Ok(keys) => keys,
+            Err(_) if !reader.path().is_file() => {
+                sparse::build_index(&[], data_root)?;
+                return Ok(LaneState::Ready);
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        if keys.len() > INLINE_BUILD_MAX_ROWS {
+            spawn_background_build(reader.clone(), data_root.to_path_buf());
+            return Ok(LaneState::Building);
+        }
+        let rows = reader.searchable_rows_for_blocking(&keys)?;
+        sparse::build_index(&rows, data_root)?;
+        Ok(LaneState::Ready)
+    });
+
+    match prepared {
+        Ok(state) => state,
+        // Not being able to prepare the index is not being able to answer, and a
+        // caller must never be handed an empty list for it.
+        Err(error) => LaneState::Failed(error.to_string()),
+    }
 }
 
 /// Build or reconcile the sparse index, blocking. Warmup paths and the eval
 /// boards call this; agent searches self-heal lazily (inline for small corpora,
 /// background for large ones).
 pub fn ensure_sparse_index(reader: &SessionDataReader) -> Result<()> {
-    let data_root = reader.data_root();
-    let path = sparse::sparse_index_path(data_root);
-    if sparse::needs_rebuild(&path)? {
-        let rows = reader.searchable_rows_blocking(None)?;
-        with_refresh_lock(|| {
-            sparse::build_index(
-                &rows,
-                data_root,
-                reader.latest_change_id_blocking().unwrap_or(0),
-            )
-        })?;
-    } else if sparse::is_stale(reader, &path)? {
-        let rows = reader.searchable_rows_blocking(None)?;
-        with_refresh_lock(|| sparse::refresh_index(reader, &rows, data_root))?;
+    match prepare_index(reader, reader.data_root()) {
+        // `Building` is a real answer to "is it ready" — it is not — even though a
+        // build was just set going. Reporting success here would let a caller
+        // believe an index it cannot query yet is in place.
+        LaneState::Building => Err(LitecodeError::IndexNotReady(
+            LaneState::Building.unanswered().unwrap_or_default(),
+        )),
+        LaneState::Failed(why) => Err(LitecodeError::IndexNotReady(why)),
+        LaneState::Ready => Ok(()),
     }
-    Ok(())
 }
 
 /// One writer at a time: builds and reconciles are rare but must not race each
@@ -129,11 +205,7 @@ fn spawn_background_build(reader: SessionDataReader, data_root: PathBuf) {
     std::thread::spawn(move || {
         let result = with_refresh_lock(|| {
             let rows = reader.searchable_rows_blocking(None)?;
-            sparse::build_index(
-                &rows,
-                reader.data_root(),
-                reader.latest_change_id_blocking().unwrap_or(0),
-            )
+            sparse::build_index(&rows, reader.data_root())
         });
         match result {
             Ok(()) => tracing::info!(path = %data_root.display(), "sparse session index ready"),

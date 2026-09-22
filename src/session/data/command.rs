@@ -377,6 +377,16 @@ pub enum SessionRead {
     SearchableRows {
         session_id: Option<String>,
     },
+    /// `(session_id, seq)` of every final searchable row. The cheap half of a
+    /// reconciliation: integers only, no bodies.
+    SearchableKeys {
+        session_id: Option<String>,
+    },
+    /// Bodies for exactly these rows, so an incremental refresh decodes only what
+    /// is new instead of the whole corpus.
+    SearchableRowsFor {
+        keys: Vec<(String, i64)>,
+    },
     ChangeLogSince {
         last_change_id: i64,
     },
@@ -399,7 +409,10 @@ pub enum ReadValue {
     Transcript(crate::types::Transcript),
     WorkingSet(Vec<WorkingRow>),
     Events(Vec<crate::session::event::SessionEvent>),
-    SeqCursor { last_seq: i64, next_seq: u64 },
+    SeqCursor {
+        last_seq: i64,
+        next_seq: u64,
+    },
     Meter(SessionContextMeter),
     List(Vec<SessionListRow>),
     Ids(Vec<String>),
@@ -413,6 +426,7 @@ pub enum ReadValue {
     Count(i64),
     Revision(u64),
     Searchable(Vec<crate::session::transcript_file::SearchableRow>),
+    SearchableKeys(Vec<(String, i64)>),
     Changes(Vec<SessionChange>),
     Empty,
 }

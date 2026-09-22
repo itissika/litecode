@@ -24,11 +24,9 @@ pub(crate) async fn start_turn_like_human(
     runtime.sync_workspace_tool_readiness();
 
     let turn_id = uuid::Uuid::new_v4().to_string();
-    let step_max = opts.max_steps_override.unwrap_or_else(|| {
-        crate::config::bridge::agent_config_for(&runtime.resolved, agent_id)
-            .map(|agent| agent.max_steps)
-            .unwrap_or(50)
-    });
+    let step_max = crate::config::bridge::agent_config_for(&runtime.resolved, agent_id)
+        .map(|agent| agent.max_steps)
+        .unwrap_or(50);
     sessions.reserve_turn(session_id, turn_id.clone(), step_max, agent_id, project)?;
 
     let handle = match spawn_turn(

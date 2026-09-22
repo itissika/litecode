@@ -8,7 +8,7 @@ use crate::types::{LitecodeError, Result};
 
 use super::conn::BUSY_TIMEOUT;
 
-pub const USER_VERSION: i32 = 5;
+pub const USER_VERSION: i32 = 6;
 
 const SESSIONS_REQUIRED_COLS: &[&str] = &[
     "schema_version",
@@ -166,7 +166,8 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             parent_session_id TEXT,
             parent_call_id    TEXT,
             responsibility    TEXT NOT NULL DEFAULT '',
-            revision          INTEGER NOT NULL DEFAULT 0
+            revision          INTEGER NOT NULL DEFAULT 0,
+            next_seq          INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_project
             ON sessions(project);
@@ -247,6 +248,7 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
         migrate_meter_table(conn)?;
     }
     drop_legacy_fts(conn)?;
+    drop_legacy_content_outbox(conn)?;
     conn.execute_batch(&format!("PRAGMA user_version={USER_VERSION};"))?;
     Ok(())
 }
@@ -275,6 +277,25 @@ fn migrate_optional_columns(conn: &Connection) -> Result<()> {
         if !cols.iter().any(|c| c == "plan_revision") {
             conn.execute("ALTER TABLE sessions ADD COLUMN plan_revision TEXT", [])?;
         }
+        if !cols.iter().any(|c| c == "next_seq") {
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN next_seq INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            // Additive migration for a database written before `next_seq`
+            // existed. Backfill every session to at least one past its current
+            // `MAX(seq)`, so the persisted allocation high-water can never hand
+            // out a seq some row already used (or that a truncate left behind).
+            conn.execute(
+                "UPDATE sessions
+                 SET next_seq = max(
+                     next_seq,
+                     (SELECT COALESCE(MAX(seq), -1) + 1
+                      FROM transcript_items t WHERE t.session_id = sessions.id)
+                 )",
+                [],
+            )?;
+        }
     }
     Ok(())
 }
@@ -301,10 +322,8 @@ fn drop_legacy_fts(conn: &Connection) -> Result<()> {
     if table_exists(conn, "transcript_items")? {
         let cols = table_columns(conn, "transcript_items")?;
         if cols.iter().any(|c| c == "search_text") {
-            if let Err(e) = conn.execute(
-                "ALTER TABLE transcript_items DROP COLUMN search_text",
-                [],
-            ) {
+            if let Err(e) = conn.execute("ALTER TABLE transcript_items DROP COLUMN search_text", [])
+            {
                 tracing::warn!(
                     error = %e,
                     "session transcript keep retired search_text column"
@@ -312,6 +331,20 @@ fn drop_legacy_fts(conn: &Connection) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+/// One-time removal of the retired content-impact outbox.
+///
+/// The derived index no longer consumes an impact stream, so the outbox tables
+/// are dead weight: every mutation used to insert a batch while nothing read it.
+/// Drop them here to stop paying that cost. Fresh databases never create them.
+fn drop_legacy_content_outbox(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS session_content_impacts;
+         DROP TABLE IF EXISTS session_content_change_batches;",
+    )
+    .map_err(|e| LitecodeError::SessionStorage(format!("drop legacy content outbox: {e}")))?;
     Ok(())
 }
 
@@ -386,6 +419,8 @@ mod tests {
         assert!(table_exists(&conn, "sessions").unwrap());
         assert!(table_exists(&conn, "transcript_items").unwrap());
         assert!(!table_exists(&conn, "transcript_fts").unwrap());
+        assert!(!table_exists(&conn, "session_content_change_batches").unwrap());
+        assert!(!table_exists(&conn, "session_content_impacts").unwrap());
         assert!(
             table_columns(&conn, "sessions")
                 .unwrap()
@@ -427,6 +462,123 @@ mod tests {
             )
             .unwrap();
         assert!(responsibility.is_empty());
+    }
+
+    #[test]
+    fn existing_session_db_drops_retired_content_outbox() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        // A real change row from the older writer, which the migration must not
+        // touch: dropping the outbox leaves `session_change_log` exactly as it was.
+        conn.execute(
+            "INSERT INTO session_change_log
+                (session_id, revision, kind, from_seq, to_seq, created_at)
+             VALUES ('s1', 1, 'Appended', 3, 4, 1)",
+            [],
+        )
+        .unwrap();
+        // Simulate a database written before the outbox was retired.
+        conn.execute_batch(
+            "CREATE TABLE session_content_change_batches (
+                change_id    INTEGER PRIMARY KEY,
+                version      INTEGER NOT NULL,
+                impact_count INTEGER NOT NULL
+             );
+             CREATE TABLE session_content_impacts (
+                change_id  INTEGER NOT NULL,
+                ordinal    INTEGER NOT NULL,
+                session_id TEXT NOT NULL,
+                action     TEXT NOT NULL,
+                from_seq   INTEGER,
+                to_seq     INTEGER,
+                PRIMARY KEY (change_id, ordinal)
+             );
+             INSERT INTO session_content_change_batches (change_id, version, impact_count)
+                VALUES (1, 1, 0);
+             PRAGMA user_version = 5;",
+        )
+        .unwrap();
+        assert!(table_exists(&conn, "session_content_change_batches").unwrap());
+        assert!(table_exists(&conn, "session_content_impacts").unwrap());
+        assert_eq!(user_version(&conn).unwrap(), 5);
+
+        ensure_session_schema(&conn).unwrap();
+
+        assert!(!table_exists(&conn, "session_content_change_batches").unwrap());
+        assert!(!table_exists(&conn, "session_content_impacts").unwrap());
+        assert_eq!(user_version(&conn).unwrap(), USER_VERSION);
+        // The old change log table is left exactly as it was, data included.
+        let cols = table_columns(&conn, "session_change_log").unwrap();
+        assert!(cols.iter().any(|c| c == "from_seq"));
+        assert!(cols.iter().any(|c| c == "to_seq"));
+        let (kind, from_seq, to_seq): (String, i64, i64) = conn
+            .query_row(
+                "SELECT kind, from_seq, to_seq FROM session_change_log WHERE session_id = 's1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((kind.as_str(), from_seq, to_seq), ("Appended", 3, 4));
+    }
+
+    #[test]
+    fn fresh_sessions_table_has_next_seq_starting_at_zero() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        let cols = table_columns(&conn, "sessions").unwrap();
+        assert!(cols.iter().any(|c| c == "next_seq"));
+        conn.execute(
+            "INSERT INTO sessions (id, schema_version, project, agent_id, created_at, updated_at)
+             VALUES ('s', ?1, '/p', 'default', 1, 1)",
+            [SESSION_LOG_SCHEMA_VERSION],
+        )
+        .unwrap();
+        let next: i64 = conn
+            .query_row("SELECT next_seq FROM sessions WHERE id = 's'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(next, 0, "a fresh session allocates from seq 0");
+    }
+
+    #[test]
+    fn existing_session_db_backfills_next_seq_to_max_plus_one() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        // Simulate a database written before `next_seq` existed. `next_seq` is
+        // deliberately **not** a required column, so this must migrate, not fail
+        // the pre-migration rejection.
+        conn.execute_batch("ALTER TABLE sessions DROP COLUMN next_seq;")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, schema_version, project, agent_id, created_at, updated_at)
+             VALUES ('s1', ?1, '/p', 'default', 1, 1)",
+            [SESSION_LOG_SCHEMA_VERSION],
+        )
+        .unwrap();
+        // Non-contiguous seqs (0 and 4): the backfill must clear the maximum.
+        conn.execute_batch(
+            "INSERT INTO transcript_items
+                (session_id, seq, item_type, kind, created_at, event_type, surface_op)
+             VALUES ('s1', 0, 'message', 'item/user', 1, 'item/user', 'append'),
+                    ('s1', 4, 'message', 'item/assistant', 1, 'item/assistant', 'append');",
+        )
+        .unwrap();
+        assert!(
+            !table_columns(&conn, "sessions")
+                .unwrap()
+                .iter()
+                .any(|c| c == "next_seq")
+        );
+
+        ensure_session_schema(&conn).unwrap();
+
+        let next: i64 = conn
+            .query_row("SELECT next_seq FROM sessions WHERE id = 's1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(next, 5, "backfill must be MAX(seq)+1 = 5");
     }
 
     #[test]

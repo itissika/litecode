@@ -4,7 +4,12 @@
 
 mod chunk;
 mod corpus;
+mod derive;
 mod echo;
+#[cfg(test)]
+mod golden;
+#[cfg(test)]
+mod parity;
 mod lexical;
 mod semantic_index;
 mod slots;
@@ -20,7 +25,6 @@ pub use lexical::ensure_sparse_index;
 pub use sparse::sparse_index_path;
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -28,8 +32,6 @@ use crate::session::SessionDataReader;
 use crate::session::transcript_file::{self, TranscriptFile};
 use crate::session::{count_text_tokens, truncate_text_tokens};
 use crate::types::{LitecodeError, Result};
-
-pub(crate) use crate::session::transcript_file::{SearchableRow as RawRow, row_plain_text};
 
 /// Semantic ANN over-fetch before gating / session filter.
 pub const SEMANTIC_WINDOW: usize = 16;
@@ -128,7 +130,14 @@ pub struct SessionSearchPage {
 struct HydratedHit {
     session_id: String,
     seq: i64,
+    /// The rendered line the match itself lands on.
     line: u32,
+    /// First and last rendered body line of the hit's item: a view shape is
+    /// clamped to this range so context never leaks into a neighbouring item.
+    first_line: u32,
+    last_line: u32,
+    /// Reader-facing type label of the item (`assistant reasoning`, `tool result`).
+    label: String,
     summary: String,
 }
 
@@ -138,11 +147,21 @@ pub fn search(reader: &SessionDataReader, query: &SessionTextQuery) -> Result<Ve
 }
 
 /// All ranked lexical hits (no pagination).
+///
+/// Returns an error rather than an empty list when the lane could not run. The
+/// two are indistinguishable to a reader and mean opposite things, and the whole
+/// point of `LaneState` is to stop the second from wearing the first's clothes:
+/// an empty `Ok` says "I looked, the history has nothing", which callers act on
+/// by concluding the answer is not in the history at all.
 pub fn search_all(
     reader: &SessionDataReader,
     query: &SessionTextQuery,
 ) -> Result<Vec<SessionTextHit>> {
-    lexical::search_lexical(reader, query)
+    let (hits, state) = lexical::search_lexical(reader, query)?;
+    match state.unanswered() {
+        None => Ok(hits),
+        Some(reason) => Err(LitecodeError::IndexNotReady(reason)),
+    }
 }
 
 /// Drop hits that violate include / exclude / context-window filters.
@@ -314,7 +333,8 @@ pub fn build_search_page(
     ranked: &[SessionTextHit],
     offset: usize,
 ) -> Result<SessionSearchPage> {
-    let hydrated = hydrate_hits(reader, ranked)?;
+    let rows = dedup_chunks_to_rows(ranked);
+    let (hydrated, _) = hydrate_hits(reader, &rows)?;
     let match_counts = count_by_session(&hydrated);
     let session_ids: Vec<String> = unique_session_order(&hydrated);
     let meta = load_session_meta(reader, &session_ids).unwrap_or_default();
@@ -327,7 +347,27 @@ pub fn build_search_page(
     ))
 }
 
-fn hydrate_hits(reader: &SessionDataReader, hits: &[SessionTextHit]) -> Result<Vec<HydratedHit>> {
+/// One row is one hit.
+///
+/// The lanes rank per chunk, so a long row can match at several offsets and every
+/// one of those hits would hydrate to the same seq (and, before wrapping, to the
+/// same line). The hit list is already rank-ordered, so the first chunk of a row
+/// wins and the rest are folded away — `matches` then counts rows, not chunks.
+fn dedup_chunks_to_rows(hits: &[SessionTextHit]) -> Vec<SessionTextHit> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(hits.len());
+    for hit in hits {
+        if seen.insert((hit.session_id.clone(), hit.seq)) {
+            out.push(hit.clone());
+        }
+    }
+    out
+}
+
+fn hydrate_hits(
+    reader: &SessionDataReader,
+    hits: &[SessionTextHit],
+) -> Result<(Vec<HydratedHit>, HashMap<String, TranscriptFile>)> {
     let mut cache: HashMap<String, TranscriptFile> = HashMap::new();
     let mut out = Vec::with_capacity(hits.len());
     for hit in hits {
@@ -337,6 +377,9 @@ fn hydrate_hits(reader: &SessionDataReader, hits: &[SessionTextHit]) -> Result<V
         }
         let file = cache.get(&hit.session_id).unwrap();
         let Some(line) = file.line_for_hit(hit.seq, hit.char_start, hit.char_end) else {
+            continue;
+        };
+        let Some((first_line, last_line, label)) = body_span(file, hit.seq) else {
             continue;
         };
         let summary = match hit.lane {
@@ -354,10 +397,32 @@ fn hydrate_hits(reader: &SessionDataReader, hits: &[SessionTextHit]) -> Result<V
             session_id: hit.session_id.clone(),
             seq: hit.seq,
             line,
+            first_line,
+            last_line,
+            label,
             summary,
         });
     }
-    Ok(out)
+    Ok((out, cache))
+}
+
+/// First and last rendered body line of one item, plus its reader-facing label.
+fn body_span(file: &TranscriptFile, seq: i64) -> Option<(u32, u32, String)> {
+    let mut first: Option<u32> = None;
+    let mut last: Option<u32> = None;
+    let mut label = String::new();
+    for span in file
+        .line_index
+        .iter()
+        .filter(|s| s.seq == seq && !s.is_header)
+    {
+        first.get_or_insert(span.line);
+        last = Some(span.line);
+        if label.is_empty() {
+            label = transcript_file::type_label(&span.kind, &span.item_type);
+        }
+    }
+    Some((first?, last?, label))
 }
 
 fn collapse_summary(text: &str) -> String {
@@ -404,7 +469,7 @@ fn pack_page(
     let mut emitted = 0usize;
     for hit in remaining {
         let candidate = push_hit(groups.clone(), hit, match_counts, meta);
-        let rendered = format_agent_groups(&candidate);
+        let rendered = packed_page_text(&candidate);
         let tokens = count_text_tokens(&rendered);
         if emitted > 0 && tokens > token_budget {
             break;
@@ -453,51 +518,364 @@ fn push_hit(
     groups
 }
 
-pub fn format_agent_page(page: &SessionSearchPage) -> String {
-    let mut body = format_agent_groups(&page.groups);
-    let footer = if page.has_more {
-        Some(crate::tool::format_offset_more(page.next_offset))
-    } else if page.offset > 0 {
-        Some(crate::tool::format_offset_done(page.offset))
-    } else {
-        None
-    };
-    if let Some(footer) = footer {
-        if !body.is_empty() {
-            body.push('\n');
-        }
-        body.push_str(&footer);
-    }
-    body
-}
-
-fn format_agent_groups(groups: &[SessionSearchGroup]) -> String {
+/// Size estimate of one packed page, in tokens.
+///
+/// The human page is drawn by the client from the structured
+/// [`SessionSearchPage`], so this only has to be *proportional* to what the
+/// client shows: a header block per group plus one line per hit.
+fn packed_page_text(groups: &[SessionSearchGroup]) -> String {
     let mut parts = Vec::new();
     for group in groups {
         parts.push(format!("### {}", group.session_id));
-        parts.push(format!("created: {}", format_abs_time(group.created_time)));
-        parts.push(format!("updated: {}", format_abs_time(group.updated_time)));
-        parts.push(format!(
-            "path: {} (virtual, not on disk — open with builtin read/grep/glob only; bash cannot access it)",
-            group.path
-        ));
+        parts.push(format!("created: {}", group.created_time));
+        parts.push(format!("updated: {}", group.updated_time));
+        parts.push(format!("path: {}", group.path));
         parts.push(format!("matches: {}", group.match_count));
         parts.push(String::new());
         for hit in &group.hits {
-            parts.push(format!(
-                "{}: {}",
-                crate::tool::format_line_label(hit.line, hit.line),
-                hit.summary
-            ));
+            parts.push(format!("{}: {}", hit.line, hit.summary));
         }
     }
     parts.join("\n")
 }
 
-fn format_abs_time(ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms)
-        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-        .unwrap_or_else(|| "?".into())
+/// Token budget for one agent-facing view. The same value `grep` uses, so the
+/// model meets one contract everywhere: one response is one window, and whatever
+/// does not fit is named in a file instead of being paged with an offset.
+pub const SEARCH_VIEW_TOKEN_BUDGET: usize = 2_000;
+
+/// Lines of context shown around a hit when the whole item does not fit.
+const HIT_CONTEXT_LINES: u32 = 2;
+
+/// Shortest session handle inside a view; extended until it is unique.
+const HANDLE_MIN_LEN: usize = SESSION_REF_SHORT_LEN;
+
+/// The shape a whole view is rendered in. Every shape is judged against the
+/// budget as a *whole* view, so a rich shape is never shown for the first few
+/// hits only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewShape {
+    /// Every hit's entire item.
+    WholeItem,
+    /// `HIT_CONTEXT_LINES` lines around every hit, clamped to its item.
+    Context,
+    /// The hit line alone.
+    Line,
+}
+
+/// Build the agent-facing answer: sessions grouped, one token-bounded shape.
+///
+/// An empty string means nothing could be resolved — the caller reports "no
+/// match" rather than a partial answer that reads like a whole one.
+pub fn build_agent_view(
+    reader: &SessionDataReader,
+    ranked: &[SessionTextHit],
+    workspace_root: &std::path::Path,
+) -> Result<String> {
+    build_agent_view_with_budget(reader, ranked, workspace_root, SEARCH_VIEW_TOKEN_BUDGET)
+}
+
+fn build_agent_view_with_budget(
+    reader: &SessionDataReader,
+    ranked: &[SessionTextHit],
+    workspace_root: &std::path::Path,
+    budget: usize,
+) -> Result<String> {
+    let rows = dedup_chunks_to_rows(ranked);
+    let (hits, files) = hydrate_hits(reader, &rows)?;
+    if hits.is_empty() {
+        return Ok(String::new());
+    }
+    let session_ids = unique_session_order(&hits);
+    let meta = load_session_meta(reader, &session_ids).unwrap_or_default();
+    let handles = unique_handles(&session_ids);
+    let now = chrono::Utc::now().timestamp_millis();
+    let headers = view_headers(&hits, &session_ids, &meta, &handles, now);
+
+    // View order: rank order, except that a session's hits stay together with the
+    // header that names them.
+    let ordered: Vec<&HydratedHit> = session_ids
+        .iter()
+        .flat_map(|sid| hits.iter().filter(move |h| &h.session_id == sid))
+        .collect();
+
+    for shape in [ViewShape::WholeItem, ViewShape::Context, ViewShape::Line] {
+        let view = render_view(&ordered, &files, &headers, shape, ordered.len());
+        if count_text_tokens(&view) <= budget {
+            return Ok(view);
+        }
+    }
+
+    // Nothing fits whole: carry as many hit lines as the budget allows and name
+    // the rest in a file `read`/`grep` can page through.
+    let slot = spill_slot(workspace_root);
+    let location = slot
+        .as_ref()
+        .map(|s| s.location.clone())
+        .unwrap_or_default();
+    // Reserve the footer's longest form: it shrinks as hits are carried.
+    let footer_bound = spill_footer(&ordered, &handles, &location, 0);
+    let shown = fit_prefix(&ordered, &files, &headers, &footer_bound, budget);
+    let body = render_view(&ordered, &files, &headers, ViewShape::Line, shown);
+    if shown == ordered.len() {
+        return Ok(body);
+    }
+    let written = slot
+        .as_ref()
+        .and_then(|s| {
+            s.write(&ordered[shown..], &files, &handles)
+                .map(|()| s.location.clone())
+        })
+        .unwrap_or(location);
+    let footer = spill_footer(&ordered, &handles, &written, shown);
+    Ok(format!("{body}{footer}"))
+}
+
+/// One header line per session — best handle, relative age, hit count — keyed by
+/// session, so each hit can carry the header of the session it came from. The
+/// count is that session's total, not what this view carries: it says whether
+/// narrowing the query is worth it.
+fn view_headers(
+    hits: &[HydratedHit],
+    order: &[String],
+    meta: &HashMap<String, SessionTimestamps>,
+    handles: &HashMap<String, String>,
+    now: i64,
+) -> HashMap<String, String> {
+    let mut out = HashMap::with_capacity(order.len());
+    for sid in order {
+        let count = hits.iter().filter(|h| &h.session_id == sid).count();
+        let handle = handles.get(sid).map(String::as_str).unwrap_or(sid.as_str());
+        let updated = meta.get(sid).map(|t| t.updated_at).unwrap_or(0);
+        out.insert(
+            sid.clone(),
+            format!(
+                "### {handle} · {} · {count} Matches\n",
+                format_age(now, updated)
+            ),
+        );
+    }
+    out
+}
+
+/// Render one shape for the first `take` hits of the view order. A session's
+/// header is emitted together with its first hit, so no hit is ever left
+/// unattributed.
+fn render_view(
+    ordered: &[&HydratedHit],
+    files: &HashMap<String, TranscriptFile>,
+    headers: &HashMap<String, String>,
+    shape: ViewShape,
+    take: usize,
+) -> String {
+    let mut out = String::new();
+    let mut current: Option<&str> = None;
+    for hit in ordered.iter().take(take) {
+        if current != Some(hit.session_id.as_str()) {
+            if let Some(header) = headers.get(&hit.session_id) {
+                out.push_str(header);
+            }
+            current = Some(hit.session_id.as_str());
+        }
+        let (from, to) = match shape {
+            ViewShape::WholeItem => (hit.first_line, hit.last_line),
+            ViewShape::Context => (
+                hit.line
+                    .saturating_sub(HIT_CONTEXT_LINES)
+                    .max(hit.first_line),
+                (hit.line + HIT_CONTEXT_LINES).min(hit.last_line),
+            ),
+            ViewShape::Line => (hit.line, hit.line),
+        };
+        let label = if from == to {
+            format!("L{from}")
+        } else {
+            format!("L{from}-{to}")
+        };
+        out.push_str(&format!("{label}: {}\n", hit.label));
+        if let Some(file) = files.get(&hit.session_id) {
+            for line in from..=to {
+                if let Some(text) = file.line_text(line) {
+                    out.push_str("  ");
+                    out.push_str(text);
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Largest prefix of the single-line shape whose whole view still fits.
+fn fit_prefix(
+    ordered: &[&HydratedHit],
+    files: &HashMap<String, TranscriptFile>,
+    headers: &HashMap<String, String>,
+    footer: &str,
+    budget: usize,
+) -> usize {
+    let mut best = 0;
+    for n in 1..=ordered.len() {
+        let body = render_view(ordered, files, headers, ViewShape::Line, n);
+        if count_text_tokens(&format!("{body}{footer}")) > budget {
+            break;
+        }
+        best = n;
+    }
+    best
+}
+
+/// Footer of a view that could not carry every hit: what was shown, where the
+/// rest is, and how many per session are missing.
+fn spill_footer(
+    ordered: &[&HydratedHit],
+    handles: &HashMap<String, String>,
+    location: &str,
+    shown: usize,
+) -> String {
+    let total = ordered.len();
+    let remaining = total.saturating_sub(shown);
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for hit in ordered.iter().skip(shown) {
+        let handle = handles
+            .get(&hit.session_id)
+            .cloned()
+            .unwrap_or_else(|| hit.session_id.clone());
+        match counts.iter_mut().find(|(h, _)| h == &handle) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((handle, 1)),
+        }
+    }
+    let per_session = counts
+        .iter()
+        .map(|(handle, n)| format!("{handle} {n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut out = format!(
+        "\nShowing {shown} of {total} hits; the remaining {remaining} are in {location} — read or grep it."
+    );
+    if !per_session.is_empty() {
+        out.push_str(&format!("\nMore in: {per_session}."));
+    }
+    out.push('\n');
+    out
+}
+
+/// Relative age, front-end style: `just now`, `5m ago`, `2h ago`, `3d ago`,
+/// `2w ago`, `4mo ago`, `1y+ ago`. An absolute timestamp would only mean
+/// something to a reader who already knows the current time.
+fn format_age(now_ms: i64, then_ms: i64) -> String {
+    const MINUTE: i64 = 60;
+    const HOUR: i64 = 60 * MINUTE;
+    const DAY: i64 = 24 * HOUR;
+    const WEEK: i64 = 7 * DAY;
+    const MONTH: i64 = 30 * DAY;
+    const YEAR: i64 = 365 * DAY;
+    let secs = (now_ms - then_ms).max(0) / 1000;
+    if secs < MINUTE {
+        "just now".into()
+    } else if secs < HOUR {
+        format!("{}m ago", secs / MINUTE)
+    } else if secs < DAY {
+        format!("{}h ago", secs / HOUR)
+    } else if secs < WEEK {
+        format!("{}d ago", secs / DAY)
+    } else if secs < MONTH {
+        format!("{}w ago", secs / WEEK)
+    } else if secs < YEAR {
+        format!("{}mo ago", secs / MONTH)
+    } else {
+        format!("{}y+ ago", secs / YEAR)
+    }
+}
+
+/// Session handles for one view: the shortest unique trailing slice, at least
+/// [`HANDLE_MIN_LEN`] chars. `resolve_session_ref` accepts a unique suffix, so a
+/// printed handle can be pasted into `session_id` or into
+/// `.litecode/sessions/<handle>.md`.
+fn unique_handles(ids: &[String]) -> HashMap<String, String> {
+    let longest = ids.iter().map(|id| id.chars().count()).max().unwrap_or(0);
+    let mut len = HANDLE_MIN_LEN;
+    loop {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut unique = true;
+        let mut out = HashMap::new();
+        for id in ids {
+            let handle = tail_chars(id, len);
+            if !seen.insert(handle.clone()) {
+                unique = false;
+            }
+            out.insert(id.clone(), handle);
+        }
+        if unique || len >= longest {
+            return out;
+        }
+        len += 1;
+    }
+}
+
+fn tail_chars(text: &str, n: usize) -> String {
+    let count = text.chars().count();
+    if count <= n {
+        return text.to_string();
+    }
+    text.chars().skip(count - n).collect()
+}
+
+/// A file under `.litecode/bash/` for the hits one view cannot carry. Reserved
+/// before the view is fitted so the footer can name it; only written when
+/// something is actually left over.
+struct SpillSlot {
+    path: std::path::PathBuf,
+    /// Workspace-relative path with `/` separators, ready for `read`.
+    location: String,
+}
+
+impl SpillSlot {
+    /// Write exactly the hits the view could not carry — never a second copy of
+    /// what the reader already has.
+    fn write(
+        &self,
+        ordered: &[&HydratedHit],
+        files: &HashMap<String, TranscriptFile>,
+        handles: &HashMap<String, String>,
+    ) -> Option<()> {
+        if ordered.is_empty() {
+            return None;
+        }
+        let mut body = format!(
+            "Remaining {} session-search hits not shown inline.\n\n",
+            ordered.len()
+        );
+        for hit in ordered {
+            let handle = handles
+                .get(&hit.session_id)
+                .map(String::as_str)
+                .unwrap_or(&hit.session_id);
+            // Exactly the line the single-line shape would have shown, so the
+            // spilled form and `read` agree about what `L<n>` holds.
+            let text = files
+                .get(&hit.session_id)
+                .and_then(|f| f.line_text(hit.line))
+                .unwrap_or(hit.summary.as_str());
+            body.push_str(&format!("{handle} L{}: {} {}\n", hit.line, hit.label, text));
+        }
+        std::fs::write(&self.path, body).ok()?;
+        Some(())
+    }
+}
+
+fn spill_slot(workspace_root: &std::path::Path) -> Option<SpillSlot> {
+    let dir = workspace_root.join(".litecode").join("bash");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!(
+        "session_search_{}.txt",
+        crate::terminal::bash_nonce()
+    ));
+    let location = crate::workspace::filter::cheap_rel_under(workspace_root, &path)
+        .map(|rel| rel.replace('\\', "/"))
+        .unwrap_or_else(|| path.display().to_string());
+    Some(SpillSlot { path, location })
 }
 
 /// Match-ready view of one text: normalized chars + a map from normalized
@@ -820,6 +1198,155 @@ mod tests {
         assert!(hits.is_empty());
     }
 
+    /// The three states a lane can be in, and the one thing they must not do:
+    /// look alike.
+    ///
+    /// "Nothing matched" and "the search never ran" both arrive as an empty list,
+    /// and they could not mean more different things. A caller that reads the
+    /// second as the first concludes the history does not hold the answer and
+    /// stops — which is right for an empty corpus and a permanent false negative
+    /// for an index that was merely broken or late. So an unanswered search is an
+    /// error, and an answered one is not, and the tests below pin both halves.
+    mod lane_state {
+        use super::*;
+        use crate::engines::session_search::sparse;
+        use crate::types::LitecodeError;
+
+        /// Plant a row that is searchable in shape and unreadable in body: the
+        /// reconcile will schedule it, and the derivation will then refuse it.
+        fn plant_unreadable_row(dir: &Path, session_id: &str) {
+            let conn = rusqlite::Connection::open(dir.join("sessions.db")).unwrap();
+            conn.execute(
+                "INSERT INTO transcript_items
+                    (session_id, seq, turn_id, turn_seq, item_type, kind, body,
+                     token_estimate, created_at, event_type, surface_op, state)
+                 VALUES (?1, 99, 't', 0, 'message', 'item/user', '{{{ not an item',
+                         1, 1, 'message', 'append', 'final')",
+                rusqlite::params![session_id],
+            )
+            .unwrap();
+        }
+
+        fn q(text: &str) -> SessionTextQuery {
+            SessionTextQuery {
+                query: text.into(),
+                offset: 0,
+                ..Default::default()
+            }
+        }
+
+        /// `Ready`: the query ran, and an empty result is a fact about the corpus.
+        #[test]
+        fn ready_is_a_real_answer_even_when_it_is_empty() {
+            let dir = TempDir::new().unwrap();
+            let (reader, _, _) = seed_db(dir.path());
+            let hits = search(&reader, &q("zqxjvkjv")).unwrap();
+            assert!(
+                hits.is_empty(),
+                "a searched corpus with no match answers with nothing"
+            );
+        }
+
+        /// `Failed`: the index could not be prepared, so the query did not run and
+        /// the caller is told, rather than handed the empty list that would have
+        /// been indistinguishable from `Ready` above.
+        #[test]
+        fn a_broken_index_is_an_error_not_an_empty_result() {
+            let dir = TempDir::new().unwrap();
+            let (reader, id_a, _) = seed_db(dir.path());
+
+            // A first search builds the index, so the missing one below is a real
+            // rebuild rather than a first run.
+            assert_eq!(search(&reader, &q("UNIQUE_SESSION_PHRASE")).unwrap().len(), 1);
+
+            plant_unreadable_row(dir.path(), &id_a);
+            std::fs::remove_file(sparse::sparse_index_path(dir.path())).unwrap();
+
+            let err = search(&reader, &q("UNIQUE_SESSION_PHRASE")).unwrap_err();
+            assert!(
+                matches!(err, LitecodeError::IndexNotReady(_)),
+                "the lane must say it did not answer, not that it found nothing: {err}"
+            );
+            assert!(
+                err.to_string().contains("did not run"),
+                "and say it plainly: {err}"
+            );
+        }
+
+        /// `Failed` must not be reachable through `ensure_sparse_index` as a
+        /// success either — the blocking warmup makes the same promise.
+        #[test]
+        fn warmup_reports_a_broken_index_too() {
+            let dir = TempDir::new().unwrap();
+            let (reader, id_a, _) = seed_db(dir.path());
+            assert!(lexical::ensure_sparse_index(&reader).is_ok());
+            plant_unreadable_row(dir.path(), &id_a);
+            std::fs::remove_file(sparse::sparse_index_path(dir.path())).unwrap();
+            assert!(matches!(
+                lexical::ensure_sparse_index(&reader),
+                Err(LitecodeError::IndexNotReady(_))
+            ));
+        }
+
+        /// The reconcile happens *before* the query, not after it. A search that
+        /// answered from a stale index and tidied up afterwards would return the
+        /// hits of yesterday and look perfectly healthy doing it.
+        #[test]
+        fn a_stale_index_is_caught_up_before_the_query_runs() {
+            let dir = TempDir::new().unwrap();
+            let (reader, id_a, _) = seed_db(dir.path());
+            assert!(
+                search(&reader, &q("zqxjvkjv")).unwrap().is_empty(),
+                "the marker does not exist yet"
+            );
+
+            {
+                let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+                let data = SessionData::open(&lease, &dir.path().join("sessions.db")).unwrap();
+                data.insert_items(&id_a, &[user_text("a zqxjvkjv arrives")])
+                    .unwrap();
+            }
+
+            let hits = search(&reader, &q("zqxjvkjv")).unwrap();
+            assert_eq!(
+                hits.len(),
+                1,
+                "the row written before the search is in its results"
+            );
+        }
+
+        /// Searches that arrive together take turns. The lock is what keeps two of
+        /// them from rebuilding the same index at once; equally important is that
+        /// the second one, on its turn, finds the work already done rather than
+        /// repeating it. Either way the answers must agree with each other and with
+        /// what a single search would have said.
+        #[test]
+        fn concurrent_searches_agree_and_none_is_left_unanswered() {
+            let dir = TempDir::new().unwrap();
+            let (reader, _, _) = seed_db(dir.path());
+            let expected = search(&reader, &q("UNIQUE_SESSION_PHRASE"));
+            let expected = expected.unwrap();
+            assert_eq!(expected.len(), 1);
+
+            let readers: Vec<SessionDataReader> =
+                (0..4).map(|_| SessionDataReader::open(&dir.path().join("sessions.db"))).collect();
+            let handles: Vec<_> = readers
+                .into_iter()
+                .map(|r| {
+                    std::thread::spawn(move || search(&r, &q("UNIQUE_SESSION_PHRASE")))
+                })
+                .collect();
+
+            for handle in handles {
+                let hits = handle
+                    .join()
+                    .expect("a concurrent search must not panic")
+                    .expect("a concurrent search must be answered");
+                assert_eq!(hits.len(), 1, "and answered the same way");
+            }
+        }
+    }
+
     #[test]
     fn gate_drops_weak_semantic() {
         let sem = vec![SessionTextHit {
@@ -1085,12 +1612,212 @@ mod tests {
     }
 
     #[test]
+    fn chunk_hits_on_one_row_collapse_to_a_single_hit() {
+        let hit = |seq: i64, start: usize| SessionTextHit {
+            session_id: "s".into(),
+            seq,
+            item_type: "message".into(),
+            summary: "chunk".into(),
+            score: 1.0,
+            char_start: start,
+            char_end: start + 4,
+            lane: SessionHitLane::Text,
+        };
+        // The same row matched at three chunk offsets, plus a second row.
+        let rows = dedup_chunks_to_rows(&[hit(7, 0), hit(7, 320), hit(9, 0), hit(7, 900)]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].seq, 7);
+        assert_eq!(rows[0].char_start, 0, "the best-ranked chunk wins");
+        assert_eq!(rows[1].seq, 9);
+    }
+
+    #[test]
+    fn agent_view_shows_the_whole_item_when_it_fits() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(&id, &[user_text("one\nVIEW_NEEDLE two\nthree")])
+                .unwrap();
+            id
+        };
+        let reader = SessionDataReader::open(&db);
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "VIEW_NEEDLE".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let view = build_agent_view(&reader, &hits, dir.path()).unwrap();
+        // The documented shape, pinned: session handle + age + count, then one
+        // label line per hit and the indented lines of its range.
+        assert_eq!(
+            view,
+            format!(
+                "### {} · just now · 1 Matches\nL2-4: user\n  one\n  VIEW_NEEDLE two\n  three\n",
+                short_session_ref(&sid)
+            ),
+            "{view}"
+        );
+        // Internal coordinates stay out of the view.
+        assert!(!view.contains("seq"), "{view}");
+        assert!(!view.contains("Showing"), "{view}");
+    }
+
+    #[test]
+    fn agent_view_spills_the_remainder_into_a_named_file() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            let items: Vec<_> = (0..12)
+                .map(|i| {
+                    user_text(format!(
+                        "DEGRADE_NEEDLE {i} filled with words to spend budget"
+                    ))
+                })
+                .collect();
+            data.insert_items(&id, &items).unwrap();
+            id
+        };
+        let reader = SessionDataReader::open(&db);
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "DEGRADE_NEEDLE".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // A budget too small for the whole set at any shape: a prefix of the
+        // single-line shape is carried and the rest is named.
+        let view = build_agent_view_with_budget(&reader, &hits, dir.path(), 90).unwrap();
+        assert!(view.contains("Showing "), "{view}");
+        assert!(
+            view.contains("are in .litecode/bash/session_search_"),
+            "{view}"
+        );
+        assert!(view.contains("More in: "), "{view}");
+        let location = view
+            .split(" are in ")
+            .nth(1)
+            .and_then(|rest| rest.split(" —").next())
+            .expect(&view);
+        let spilled = std::fs::read_to_string(dir.path().join(location)).unwrap();
+        assert!(spilled.contains("Remaining "), "{spilled}");
+        let entries: Vec<&str> = spilled
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .skip(1)
+            .collect();
+        assert!(!entries.is_empty(), "{spilled}");
+        for entry in entries {
+            assert!(
+                entry.starts_with(&format!("{} L", short_session_ref(&sid))),
+                "every spilled hit names its session: {entry}"
+            );
+            assert!(
+                entry.contains("filled with words to spend budget"),
+                "the spilled line is the rendered line: {entry}"
+            );
+        }
+
+        // The real budget carries the same corpus whole: no file, no footer.
+        let whole = build_agent_view(&reader, &hits, dir.path()).unwrap();
+        assert!(!whole.contains("Showing"), "{whole}");
+    }
+
+    #[test]
+    fn every_hit_travels_with_the_header_of_its_session() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        let (a, b) = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let a = data.create_session("/proj", "default", None).unwrap();
+            let b = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(&a, &[user_text("TWO_SESSION_MARKER from a")])
+                .unwrap();
+            data.insert_items(&b, &[user_text("TWO_SESSION_MARKER from b")])
+                .unwrap();
+            (a, b)
+        };
+        let reader = SessionDataReader::open(&db);
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "TWO_SESSION_MARKER".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 2, "both sessions must hit");
+
+        let view = build_agent_view(&reader, &hits, dir.path()).unwrap();
+        let mut current = String::new();
+        let mut attributed = 0;
+        for line in view.lines() {
+            if let Some(rest) = line.strip_prefix("### ") {
+                current = rest.split(" · ").next().unwrap_or_default().to_string();
+            } else if let Some(body) = line.strip_prefix("  ") {
+                let expected = if body.contains(" from a") {
+                    short_session_ref(&a)
+                } else {
+                    short_session_ref(&b)
+                };
+                assert!(
+                    current.ends_with(&expected),
+                    "a hit must sit under its own session header:\n{view}"
+                );
+                attributed += 1;
+            }
+        }
+        assert_eq!(attributed, 2, "{view}");
+    }
+
+    #[test]
+    fn handles_extend_until_they_are_unique() {
+        let ids = vec![
+            "01AAAA000000000001".to_string(),
+            "01BBBB000000000001".to_string(),
+        ];
+        let handles = unique_handles(&ids);
+        let a = handles.get(&ids[0]).unwrap();
+        let b = handles.get(&ids[1]).unwrap();
+        assert_ne!(a, b);
+        assert!(a.chars().count() > SESSION_REF_SHORT_LEN, "{a}");
+        assert!(ids[0].ends_with(a.as_str()), "{a}");
+    }
+
+    #[test]
+    fn age_reads_as_relative_time() {
+        let now = 1_700_000_000_000i64;
+        assert_eq!(format_age(now, now), "just now");
+        assert_eq!(format_age(now, now - 5 * 60_000), "5m ago");
+        assert_eq!(format_age(now, now - 2 * 3_600_000), "2h ago");
+        assert_eq!(format_age(now, now - 3 * 86_400_000), "3d ago");
+        assert_eq!(format_age(now, now - 8 * 86_400_000), "1w ago");
+        assert_eq!(format_age(now, now - 40 * 86_400_000), "1mo ago");
+        assert_eq!(format_age(now, now - 400 * 86_400_000), "1y+ ago");
+    }
+
+    #[test]
     fn pack_page_stops_on_whole_hit_and_advances_offset() {
         let hits: Vec<HydratedHit> = (0..8)
             .map(|i| HydratedHit {
                 session_id: "s".into(),
                 seq: i,
                 line: (i + 1) as u32,
+                first_line: (i + 1) as u32,
+                last_line: (i + 1) as u32,
+                label: "user".into(),
                 summary: format!("hit {i} {}", "x".repeat(20)),
             })
             .collect();
@@ -1110,6 +1837,9 @@ mod tests {
             session_id: "s".into(),
             seq: 0,
             line: 1,
+            first_line: 1,
+            last_line: 1,
+            label: "user".into(),
             summary: "only".into(),
         }];
         let page = pack_page(&hits, &HashMap::new(), &HashMap::new(), 3, 6000);

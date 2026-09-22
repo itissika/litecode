@@ -117,12 +117,14 @@ impl RuntimeHandle {
     }
 
     /// Resolve the hidden compaction agent for a standalone compact operation.
+    ///
+    /// Session-blind on purpose: compaction never inherits the compacted
+    /// session's model / tier / context mode.
     pub fn resolve_compaction_binding(&self) -> Result<TurnLlmBinding> {
         let mut binding = llm_resolve::binding_for_agent(
             &self.resolved,
             &mut self.provider_registry.lock().unwrap(),
             "compaction",
-            None,
             self.settings_revision(),
         )?;
         if let Some(provider) = &self.test_llm_override {
@@ -281,32 +283,17 @@ impl RuntimeHandle {
         session_id: String,
         sessions: Arc<SessionManager>,
         agent_name: &str,
+        depth: u32,
         sink: Arc<dyn PermissionSink>,
         observer: Arc<dyn RuntimeObserver>,
-        opts: TurnOptions,
     ) -> Result<AgentRuntime> {
         let revision = self.settings_revision();
+        // Config is session-owned, identity is not: every turn (human, subagent,
+        // auto) reads model / tier / context mode from the row of the session it
+        // runs in. The agent profile never supplies runtime config here.
         let mut binding = {
             let mut registry = self.provider_registry.lock().unwrap();
-            match &opts.binding {
-                BindingSource::SessionModel => resolve_session_llm(
-                    &self.resolved,
-                    &mut registry,
-                    &sessions,
-                    &session_id,
-                    revision,
-                )?,
-                BindingSource::Agent {
-                    name,
-                    model_id_override,
-                } => llm_resolve::binding_for_agent(
-                    &self.resolved,
-                    &mut registry,
-                    name,
-                    model_id_override.as_deref(),
-                    revision,
-                )?,
-            }
+            resolve_session_llm(&self.resolved, &mut registry, &sessions, &session_id, revision)?
         };
         if let Some(provider) = &self.test_llm_override {
             binding.provider = Arc::clone(provider);
@@ -318,11 +305,11 @@ impl RuntimeHandle {
             sessions,
             binding,
             agent_name,
-            opts.depth,
+            depth,
             sink,
             observer,
             None,
-            opts.max_steps_override,
+            None,
         )
     }
 }
@@ -351,39 +338,45 @@ impl Clone for RuntimeHandle {
     }
 }
 
-/// How a turn resolves its LLM binding.
+/// Where a turn's **agent identity** comes from.
+///
+/// Identity is the ONLY thing that differs between a primary session and a
+/// subagent child at spawn time. Runtime config (model / thinking tier / context
+/// mode → effective window) never forks: every turn resolves it from the row of
+/// the session it runs in (`resolve_session_llm`). Compaction is the single
+/// deliberate exception and keeps its own session-blind entry point
+/// (`resolve_compaction_binding`).
 #[derive(Clone, Debug, Default)]
-pub enum BindingSource {
-    /// Main-session turns: resolve from the session's model id.
+pub enum AgentIdentity {
+    /// Human / idle turns: the session's sticky `agent_id`, which must be a
+    /// Primary-role profile (`validate_primary_agent`).
     #[default]
-    SessionModel,
-    /// Agent turns (subagent / compaction): resolve from the agent profile's
-    /// `model_ref`, with an optional already-seeded catalog id (child send).
-    Agent {
-        name: String,
-        model_id_override: Option<String>,
-    },
+    FromSession,
+    /// Subagent child turns: run the named profile directly, so Subagent-role
+    /// profiles (which `validate_primary_agent` rejects) are legal.
+    Named(String),
 }
 
 /// Per-turn spawn options shared by every turn entry point (main sessions,
 /// subagents, auto-turns) — one spawn machinery, parameterized.
+///
+/// Notably absent: any config/binding selector. A session is a session — its
+/// row is the single source of model / tier / mode; tool-set depth is read from
+/// the session's durable `subagent_depth`. Don't reintroduce per-caller config
+/// arguments here (that is exactly how the child tier/mode gap appeared).
 #[derive(Clone, Debug, Default)]
 pub struct TurnOptions {
-    pub binding: BindingSource,
-    pub depth: u32,
-    pub max_steps_override: Option<u32>,
+    pub identity: AgentIdentity,
     /// One-shot harness reminder appended after the user message of the first
     /// step. Kept out of `input` so the optimistic user row still seals by text.
     pub plan_review_reminder: Option<String>,
 }
 
 impl TurnOptions {
-    pub fn agent(name: impl Into<String>, model_id_override: Option<String>) -> Self {
+    /// Child turn: named identity, session-owned config.
+    pub fn child(name: impl Into<String>) -> Self {
         Self {
-            binding: BindingSource::Agent {
-                name: name.into(),
-                model_id_override,
-            },
+            identity: AgentIdentity::Named(name.into()),
             ..Default::default()
         }
     }
@@ -418,29 +411,37 @@ pub fn spawn_turn(
     turn_id: String,
     opts: TurnOptions,
 ) -> anyhow::Result<TurnHandle> {
-    // The binding source is authoritative for the agent identity: main-session
-    // turns resolve from the session record, agent turns (subagent children)
-    // run the named agent profile directly — including Subagent-role profiles
-    // that `validate_primary_agent` would reject.
-    let primary_agent = match &opts.binding {
-        BindingSource::SessionModel => {
+    // Agent identity is the only per-caller choice: main-session turns resolve
+    // the session's sticky agent (Primary-role checked), child turns run the
+    // named profile directly — including Subagent-role profiles that
+    // `validate_primary_agent` would reject. Config is never a caller choice.
+    let agent_name = match &opts.identity {
+        AgentIdentity::FromSession => {
             let default_primary = runtime.desired_primary_agent();
             sessions
                 .resolve_primary_agent(&session_id, default_primary, &runtime.resolved)
                 .map_err(|e| anyhow::anyhow!("{e}"))?
         }
-        BindingSource::Agent { name, .. } => name.clone(),
+        AgentIdentity::Named(name) => name.clone(),
     };
+    // Tool-set depth is a session fact, not a caller argument: root sessions are
+    // 0, a child row carries `subagent_depth = 1`.
+    // `build_tool_list` uses it to drop subagent_*/plan/todo at depth >= 1.
+    let depth = sessions
+        .reader()
+        .meta_blocking(&session_id)
+        .map(|meta| meta.subagent_depth)
+        .unwrap_or(0);
     let (tx, rx) = mpsc::unbounded_channel::<InternalEnvelope>();
     let observer = ChannelObserver::new(tx);
     let plan_review_reminder = opts.plan_review_reminder.clone();
     let mut agent_loop = runtime.build_runtime(
         session_id,
         sessions,
-        &primary_agent,
+        &agent_name,
+        depth,
         permission_sink,
         observer,
-        opts,
     )?;
     agent_loop.set_plan_review_reminder(plan_review_reminder);
 

@@ -18,49 +18,85 @@ use anyhow::Result;
 use crate::session::transcript_file::{SearchableRow, VIRTUAL_SESSION_DIR, load_blob_text};
 use serde_json::Value;
 
-/// `(session_id, seq)` of every tool-result row that is a session echo.
-pub fn result_keys(rows: &[SearchableRow], data_root: &Path) -> Result<HashSet<(String, i64)>> {
-    let mut echo_calls: HashSet<String> = HashSet::new();
-    for row in rows {
-        if row.kind != "item/tool_call" {
-            continue;
-        }
-        let Some(raw) = raw_json(row, data_root) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<Value>(&raw) else {
-            continue;
-        };
-        if v.get("type").and_then(Value::as_str) != Some("function_call") {
-            continue;
-        }
-        let Some(call_id) = v.get("call_id").and_then(Value::as_str) else {
-            continue;
-        };
-        let name = v.get("name").and_then(Value::as_str).unwrap_or("");
-        let echo = name == "session_search"
-            || (matches!(name, "read" | "grep") && args_target_session(v.get("arguments")));
-        if echo {
-            echo_calls.insert(call_id.to_string());
-        }
+/// Call linkage of one `item/tool_call` row: which result belongs to it, and
+/// whether that result is a copy of session content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallInfo {
+    pub call_id: String,
+    /// The call reads from the session store, so its result is an echo.
+    pub session_read: bool,
+}
+
+/// The linkage of one `item/tool_call` row. `None` for any other kind, for an
+/// unreadable body, or for a call that carries no id.
+///
+/// This is the single place that decides "is this call an echo call?": the
+/// admission rule ([`result_keys`]) and the derivation stage both go through it,
+/// so a row's stored metadata can never disagree with how it was admitted.
+pub fn call_info(row: &SearchableRow, data_root: &Path) -> Option<CallInfo> {
+    if row.kind != "item/tool_call" {
+        return None;
     }
+    let v = row_json(row, data_root)?;
+    if v.get("type").and_then(Value::as_str) != Some("function_call") {
+        return None;
+    }
+    let call_id = v.get("call_id").and_then(Value::as_str)?.to_string();
+    let name = v.get("name").and_then(Value::as_str).unwrap_or("");
+    let session_read = name == "session_search"
+        || (matches!(name, "read" | "grep") && args_target_session(v.get("arguments")));
+    Some(CallInfo {
+        call_id,
+        session_read,
+    })
+}
+
+/// The `call_id` an `item/tool_result` row answers, when it names one.
+pub fn result_call_id(row: &SearchableRow, data_root: &Path) -> Option<String> {
+    if row.kind != "item/tool_result" {
+        return None;
+    }
+    let v = row_json(row, data_root)?;
+    if v.get("type").and_then(Value::as_str) != Some("function_call_output") {
+        return None;
+    }
+    v.get("call_id").and_then(Value::as_str).map(str::to_string)
+}
+
+/// `(session_id, seq)` of every tool-result row that is a session echo.
+///
+/// A `call_id` only means something inside the transcript that produced it, so
+/// the pairing is scoped to the session. Keeping it scoped is what makes the
+/// relation *local*: a session can be projected on its own, without consulting
+/// any other session's calls.
+pub fn result_keys(rows: &[SearchableRow], data_root: &Path) -> Result<HashSet<(String, i64)>> {
+    result_keys_with(rows, data_root, &HashSet::new())
+}
+
+/// [`result_keys`], with the closure seeded from calls the index already knows
+/// about.
+///
+/// An incremental batch may contain a result whose call was settled in an
+/// earlier batch; without the seed that result would be readmitted as ordinary
+/// content and its copy would become searchable. Call linkage is
+/// `(session_id, call_id)` — a result can only answer a call in its own session.
+pub fn result_keys_with(
+    rows: &[SearchableRow],
+    data_root: &Path,
+    known: &HashSet<(String, String)>,
+) -> Result<HashSet<(String, i64)>> {
+    let mut echo_calls: HashSet<(String, String)> = known.clone();
+    echo_calls.extend(
+        rows.iter()
+            .filter_map(|row| call_info(row, data_root).map(|info| (row, info)))
+            .filter(|(_, info)| info.session_read)
+            .map(|(row, info)| (row.session_id.clone(), info.call_id)),
+    );
 
     let mut out = HashSet::new();
     for row in rows {
-        if row.kind != "item/tool_result" {
-            continue;
-        }
-        let Some(raw) = raw_json(row, data_root) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<Value>(&raw) else {
-            continue;
-        };
-        if v.get("type").and_then(Value::as_str) != Some("function_call_output") {
-            continue;
-        }
-        if let Some(call_id) = v.get("call_id").and_then(Value::as_str)
-            && echo_calls.contains(call_id)
+        if let Some(call_id) = result_call_id(row, data_root)
+            && echo_calls.contains(&(row.session_id.clone(), call_id))
         {
             out.insert((row.session_id.clone(), row.seq));
         }
@@ -68,15 +104,17 @@ pub fn result_keys(rows: &[SearchableRow], data_root: &Path) -> Result<HashSet<(
     Ok(out)
 }
 
-/// The row's raw JSON, inline or from its blob. `None` on unreadable input —
-/// the caller keeps the row rather than guessing.
-fn raw_json(row: &SearchableRow, data_root: &Path) -> Option<String> {
-    if let Some(body) = &row.body {
-        return Some(body.clone());
-    }
-    row.body_ref
-        .as_deref()
-        .and_then(|r| load_blob_text(r, data_root).ok())
+/// The row's raw JSON, parsed. `None` on unreadable input — the caller keeps
+/// the row rather than guessing.
+fn row_json(row: &SearchableRow, data_root: &Path) -> Option<Value> {
+    let raw = if let Some(body) = &row.body {
+        body.clone()
+    } else {
+        row.body_ref
+            .as_deref()
+            .and_then(|r| load_blob_text(r, data_root).ok())?
+    };
+    serde_json::from_str::<Value>(&raw).ok()
 }
 
 /// `read`/`grep` arguments: any string value pointing into the session store.

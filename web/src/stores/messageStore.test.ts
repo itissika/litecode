@@ -324,17 +324,20 @@ describe("messageStore seq map", () => {
     expect(slice.shapeError).toBeNull();
   });
 
-  it("buffer/reverted keeps seq < next_seq", () => {
+  it("buffer/reverted keeps only the surviving tail when next_seq stays ahead", () => {
     const sid = "s-rev";
     load(sid, [ev(0, userMsg("a")), ev(1, assistantMsg("x", "b")), ev(2, userMsg("c"))]);
+    // A truncate drops the live tail to seq 0 but never rewinds the allocator:
+    // the next append still takes seq 5, so rows 1..4 are gone for good and must
+    // not survive in the window.
     useMessageStore.getState().onBufferReverted(sid, {
       session_id: sid,
       last_seq: 0,
-      next_seq: 1,
+      next_seq: 5,
     });
     const slice = useMessageStore.getState().bySession.get(sid)!;
     expect(slice.messages.map((r) => r.seq)).toEqual([0]);
-    expect(slice.toSeq).toBe(1);
+    expect(slice.toSeq).toBe(5);
   });
 
   it("ensureSeqLoaded is a no-op when the seq is already in the window", async () => {

@@ -21,8 +21,9 @@ use super::turn::start_turn_like_human;
 pub struct SpawnDeps {
     /// Live runtime handle of the parent turn. The child re-applies settings
     /// from the global DB at spawn time (same as a main-session turn) and
-    /// resolves its own LLM binding from the agent profile — never from the
-    /// parent session's provider.
+    /// resolves its own LLM binding from the child session's row (model / tier /
+    /// context mode) — never from the parent session's provider or the agent
+    /// profile's runtime config.
     pub runtime: RuntimeHandle,
     pub depth: u32,
     pub sessions: Arc<SessionManager>,
@@ -91,8 +92,7 @@ pub async fn spawn_child_job(
         );
     }
 
-    let mut opts = TurnOptions::agent(spec.agent_name.clone(), None);
-    opts.depth = deps.depth + 1;
+    let opts = TurnOptions::child(spec.agent_name.clone());
     let turn_id = match start_turn_like_human(
         &runtime,
         &deps.sessions,

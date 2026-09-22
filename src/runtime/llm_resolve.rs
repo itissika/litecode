@@ -41,9 +41,10 @@ impl TurnLlmBinding {
     }
 }
 
-/// Resolve the LLM binding for a main session turn.
+/// Resolve the LLM binding for a session turn — primary and child alike.
 ///
-/// Reads **only** `session.model_id`. Empty / missing → Config error.
+/// Reads **only** the row of the session the turn runs in: `model_id`,
+/// `thinking_tier`, `context_mode`. Empty / missing model → Config error.
 /// No runtime `?? agent.model_ref` fallback (`model_ref` is new-session seed only).
 pub fn resolve_session_llm(
     resolved: &ResolvedConfig,
@@ -74,25 +75,27 @@ pub fn resolve_session_llm(
     )
 }
 
-/// Resolve a binding for an agent (subagent / compaction) without session state.
+/// Resolve the hidden compaction agent's binding — deliberately session-blind.
 ///
-/// Uses the agent's Settings `model_ref`. Optional `model_id_override` is an
-/// internal catalog id (e.g. a child session's already-seeded model), not a
-/// `subagent_launch` tool argument.
+/// This is the ONLY session-independent resolve entry. Compaction must not
+/// inherit the compacted session's model / tier / mode (contract:
+/// `docs/adr/0003`, `dev/docs/archived/model-selection-contract.md` §7), so it
+/// reads the hidden `compaction` profile's Settings `model_ref` and runs at the
+/// platform defaults.
+///
+/// Session turns — including subagent children — never call this. They resolve
+/// from the row of the session they run in via [`resolve_session_llm`].
 pub fn binding_for_agent(
     resolved: &ResolvedConfig,
     registry: &mut ProviderRegistry,
     agent_name: &str,
-    model_id_override: Option<&str>,
     settings_revision: u64,
 ) -> Result<TurnLlmBinding> {
-    let model_id = model_id_override.map(str::to_string).unwrap_or_else(|| {
-        resolved
-            .agents()
-            .get(agent_name)
-            .map(|p| p.model_ref.clone())
-            .unwrap_or_default()
-    });
+    let model_id = resolved
+        .agents()
+        .get(agent_name)
+        .map(|p| p.model_ref.clone())
+        .unwrap_or_default();
 
     if model_id.trim().is_empty() {
         return Err(LitecodeError::Config(format!(
@@ -603,7 +606,6 @@ mod tests {
             &resolved,
             &mut ProviderRegistry::new(),
             "compaction",
-            None,
             0,
         )
         .expect("resolve hidden compaction binding");

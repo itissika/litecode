@@ -1,4 +1,4 @@
-//! Agent `session_search` — grouped path:line hits over past session transcripts.
+//! Agent `session_search` — one token-bounded view over past session transcripts.
 
 use serde_json::Value;
 
@@ -24,7 +24,6 @@ impl SessionSearchTool {
         reader: &crate::session::SessionDataReader,
         query: &str,
         session_id: Option<&str>,
-        offset: usize,
         active_session_id: Option<&str>,
     ) -> ToolCallResult {
         let include_session = match session_id {
@@ -60,7 +59,7 @@ impl SessionSearchTool {
         }
         let bundle = match self.engines.search_sessions(
             query,
-            offset,
+            0,
             RetrievalFilters {
                 include_session_id: include_session,
                 exclude_context_window,
@@ -74,16 +73,16 @@ impl SessionSearchTool {
             Err(e) => return ToolCallResult::error(e.to_string()),
         };
 
-        let page = match session_search::build_search_page(reader, &bundle.ranked, bundle.offset) {
-            Ok(p) => p,
+        let view = match session_search::build_agent_view(reader, &bundle.ranked, workspace_root) {
+            Ok(view) => view,
             Err(e) => return ToolCallResult::error(e.to_string()),
         };
-        if page.groups.is_empty() {
+        if view.trim().is_empty() {
             return ToolCallResult::ok(format!(
                 "No matching session transcript context for query '{query}'."
             ));
         }
-        ToolCallResult::ok(session_search::format_agent_page(&page))
+        ToolCallResult::ok(view)
     }
 }
 
@@ -99,15 +98,11 @@ impl Tool for SessionSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What to find in past session transcripts. Literal words/phrase; separate alternatives with | (any may match, e.g. 'retry|重试'); small typos are tolerated. The current session's live context window is never searched."
+                    "description": "What to find in past session transcripts. Literal words/phrase; separate alternatives with | (any may match, e.g. 'retry|重试'); matched literally and case-insensitively, so separators count. The current session's live context window is never searched."
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "Optional session scope: full id, unique prefix, or unique suffix from a previous hit path."
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "0-based hit offset for pagination (default 0). Use the next offset from a previous result when more hits remain."
+                    "description": "Optional session scope: full id, unique prefix, or the handle shown in a result."
                 }
             },
             "required": ["query"]
@@ -144,13 +139,12 @@ impl Tool for SessionSearchTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Search past conversation transcripts in this workspace. \
-         Returns session groups with a virtual path and L<line>: summary hits. \
-         Alternatives: separate with | and any may match (e.g. 'retry|重试'); small typos are tolerated. \
-         Hits from this session and its subagent sessions rank first, then most recently updated sessions. \
-         That path is not on disk and is only reachable through built-in tools — deepen a hit with read or grep, not bash. \
-         Live context-window turns of the current session are always excluded. \
-         Scope with session_id."
+        "Search past conversation transcripts. Use it to recall a decision, a fact, or a code change from an earlier session, including work another session did. \
+         Matching is literal and case-insensitive; alternatives: separate with | (e.g. 'retry|重试'). \
+         The current session's live context-window turns are never searched. \
+         Read a hit with read or grep on `.litecode/sessions/<id>.md` — join that directory, the id shown in the result, and `.md`; bash cannot reach it, and a hit's `L` range is the start_line/end_line to ask for. \
+         Narrow with session_id when the result names another session. \
+         A result too large for one response names a .txt file that holds the remainder."
             .into()
     }
 
@@ -176,10 +170,6 @@ impl SessionSearchTool {
         let session_id = input["session_id"]
             .as_str()
             .filter(|s| !s.trim().is_empty());
-        let offset = match parse_offset(&input["offset"]) {
-            Ok(o) => o,
-            Err(msg) => return ToolCallResult::error(msg),
-        };
         let active = if execution.session_id.is_empty() {
             None
         } else {
@@ -190,26 +180,9 @@ impl SessionSearchTool {
             reader,
             query.trim(),
             session_id,
-            offset,
             active,
         )
     }
-}
-
-fn parse_offset(v: &Value) -> std::result::Result<usize, String> {
-    if v.is_null() {
-        return Ok(0);
-    }
-    if let Some(n) = v.as_u64() {
-        return Ok(n as usize);
-    }
-    if let Some(n) = v.as_i64() {
-        if n < 0 {
-            return Err(crate::tool::must_be("offset", "a non-negative integer"));
-        }
-        return Ok(n as usize);
-    }
-    Err(crate::tool::must_be("offset", "a non-negative integer"))
 }
 
 #[cfg(test)]
@@ -280,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn typical_broad_search_renders_path_and_line() {
+    fn typical_broad_search_renders_handle_and_lines() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let id_a = seed_session(
@@ -296,28 +269,23 @@ mod tests {
             "",
         );
         assert!(
-            out.contains(&format!("### {id_a}")),
+            out.contains(&format!(
+                "### {} · ",
+                session_search::short_session_ref(&id_a)
+            )),
             "session header missing:\n{out}"
         );
-        assert!(out.contains("created:"), "{out}");
-        assert!(out.contains("updated:"), "{out}");
-        assert!(
-            out.contains(&transcript_file::virtual_path_for(&id_a)),
-            "path missing:\n{out}"
-        );
-        assert!(
-            out.contains("bash cannot access it"),
-            "virtual-path hint missing:\n{out}"
-        );
-        assert!(out.contains("matches:"), "{out}");
-        assert!(out.contains("L"), "{out}");
+        assert!(out.contains("Matches"), "{out}");
+        assert!(out.contains(": user"), "{out}");
         assert!(out.contains("AUTH_REFACTOR_TOKEN"), "{out}");
+        assert!(!out.contains("created:"), "{out}");
         assert!(
-            !out.contains("seq:"),
-            "agent view must not expose seq:\n{out}"
+            !out.contains("virtual"),
+            "no path plumbing in the view:\n{out}"
         );
+        assert!(!out.contains("seq"), "the view must not expose seq:\n{out}");
+        assert!(!out.contains("offset"), "{out}");
         assert!(!out.contains("OTHER_TOPIC_ONLY"), "{out}");
-        assert!(!out.contains("## Matches"), "{out}");
     }
 
     #[test]
@@ -343,57 +311,57 @@ mod tests {
             }),
             "",
         );
-        assert!(out.contains(&format!("### {sid}")), "{out}");
+        assert!(
+            out.contains(&format!(
+                "### {} · ",
+                session_search::short_session_ref(&sid)
+            )),
+            "{out}"
+        );
         let line_hits = out
             .lines()
-            .filter(|l| l.starts_with('L') && l.contains("MULTI_HIT_TOKEN"))
+            .filter(|l| l.contains("MULTI_HIT_TOKEN"))
             .count();
-        assert!(line_hits >= 2, "expected two hit lines:\n{out}");
+        assert!(line_hits >= 2, "expected two hit blocks:\n{out}");
     }
 
     #[test]
-    fn pagination_footer_guides_next_offset() {
+    fn a_result_over_budget_names_the_file_that_holds_the_rest() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let mut items = Vec::new();
-        for i in 0..40 {
+        for i in 0..120 {
             items.push(user_text(format!(
-                "PAGE_TOKEN_{i:02} shared PAGE_NEEDLE {}",
+                "PAGE_TOKEN_{i:03} shared PAGE_NEEDLE {}",
                 "word ".repeat(80)
             )));
         }
         seed_items(root, &items);
 
         let tool = SessionSearchTool::new(WorkspaceEngines::new());
-        let page0 = call_ok(
+        let out = call_ok(
             &tool,
             root,
             serde_json::json!({ "query": "PAGE_NEEDLE" }),
             "",
         );
-        let next = page0
-            .lines()
-            .find_map(|l| {
-                l.strip_prefix("More hits: pass offset=")
-                    .and_then(|rest| rest.strip_suffix('.'))
-                    .and_then(|n| n.parse::<usize>().ok())
-            })
-            .unwrap_or(0);
-        if next == 0 {
-            return;
-        }
-        let page1 = call_ok(
-            &tool,
-            root,
-            serde_json::json!({ "query": "PAGE_NEEDLE", "offset": next }),
-            "",
-        );
+        assert!(!out.contains("offset"), "paging is gone:\n{out}");
         assert!(
-            page1.contains("no further pages")
-                || page1.contains("More hits")
-                || page1.contains("L"),
-            "{page1}"
+            out.matches(": user").count() < 120,
+            "the view must not carry every hit:\n{out}"
         );
+        let location = out
+            .split(" are in ")
+            .nth(1)
+            .and_then(|rest| rest.split(" —").next())
+            .expect(&out);
+        assert!(
+            location.starts_with(".litecode/bash/session_search_"),
+            "{out}"
+        );
+        let spilled = std::fs::read_to_string(root.join(location)).unwrap();
+        assert!(spilled.contains("Remaining "), "{spilled}");
+        assert!(spilled.contains("PAGE_NEEDLE"), "{spilled}");
     }
 
     #[test]
@@ -418,11 +386,30 @@ mod tests {
             serde_json::json!({ "query": "VISIBLE_IN_WINDOW_MARKER" }),
             &current_id,
         );
-        assert!(out.contains(&other_id), "other session should hit:\n{out}");
         assert!(
-            !out.contains(&current_id),
+            out.contains(session_search::short_session_ref(&other_id)),
+            "other session should hit:\n{out}"
+        );
+        assert!(
+            !out.contains(session_search::short_session_ref(&current_id)),
             "current live window must not echo:\n{out}"
         );
+    }
+
+    #[test]
+    fn a_two_character_cjk_query_finds_the_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        seed_session(root, "短词标记在此");
+        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let out = call_ok(&tool, root, serde_json::json!({ "query": "短词" }), "");
+        // Two characters is an ordinary query: the row is found, with the normal
+        // view, and nothing is said about the index.
+        assert!(out.contains("### "), "{out}");
+        assert!(out.contains("L2: user"), "{out}");
+        assert!(out.contains("短词标记在此"), "{out}");
+        assert!(!out.contains("Nothing was searched"), "{out}");
+        assert!(!out.contains("grep(pattern="), "{out}");
     }
 
     #[test]
@@ -484,7 +471,7 @@ mod tests {
             serde_json::json!({ "query": "SCOPE_MARKER", "session_id": a }),
             "",
         );
-        assert!(out.contains(&a), "{out}");
+        assert!(out.contains(session_search::short_session_ref(&a)), "{out}");
         assert_eq!(out.matches("### ").count(), 1, "{out}");
     }
 
@@ -532,18 +519,21 @@ mod tests {
             serde_json::json!({ "query": "SEARCH_READ_ALIGN_TOKEN" }),
             "",
         );
+        // A hit is a label line (`L2-4: user`) plus the indented lines of that
+        // range: reading the range must land on the very same rendering.
         let hit = out
             .lines()
-            .find(|l| l.starts_with('L') && l.contains("SEARCH_READ_ALIGN_TOKEN"))
+            .find(|l| l.starts_with('L') && l.contains(": "))
             .expect(&format!("hit line missing:\n{out}"));
-        let line: u32 = hit
-            .trim_start_matches('L')
-            .split(':')
-            .next()
-            .unwrap()
-            .parse()
-            .expect(hit);
-        let path = crate::session::transcript_file::virtual_path_for(&sid);
+        let range = hit.split(':').next().unwrap().trim_start_matches('L');
+        let (start_line, end_line) = match range.split_once('-') {
+            Some((a, b)) => (a.parse::<u32>().expect(hit), b.parse::<u32>().expect(hit)),
+            None => {
+                let n = range.parse::<u32>().expect(hit);
+                (n, n)
+            }
+        };
+        let path = transcript_file::virtual_path_for(&sid);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -551,8 +541,8 @@ mod tests {
         let read = rt.block_on(crate::tools::read::ReadTool::default().execute(
             serde_json::json!({
                 "file_path": path,
-                "start_line": line,
-                "end_line": line,
+                "start_line": start_line,
+                "end_line": end_line,
             }),
             ToolExecutionContext {
                 path_mode: crate::workspace::ToolPathMode::All,
@@ -569,19 +559,19 @@ mod tests {
         assert_eq!(read.level, ToolSignalLevel::Ok, "{}", read.content);
         assert!(
             read.content.contains("SEARCH_READ_ALIGN_TOKEN"),
-            "read at L{line} should contain the hit:\n{}",
+            "read at L{start_line}-{end_line} should contain the hit:\n{}",
             read.content
         );
     }
 
     #[test]
-    fn schema_is_query_session_id_offset_only() {
+    fn schema_is_query_and_session_scope() {
         let tool = SessionSearchTool::new(WorkspaceEngines::new());
         let schema = tool.schema();
         let props = schema["properties"].as_object().unwrap();
         assert!(props.contains_key("query"));
         assert!(props.contains_key("session_id"));
-        assert!(props.contains_key("offset"));
+        assert!(!props.contains_key("offset"));
         assert!(!props.contains_key("session_filter"));
         assert!(!props.contains_key("expand"));
         assert_eq!(schema["additionalProperties"], false);

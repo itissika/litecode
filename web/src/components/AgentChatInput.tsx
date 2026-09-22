@@ -165,7 +165,19 @@ export function ContextModeToggle({
   );
 }
 
-export function AgentChatInput({ sessionId }: { sessionId: string }) {
+export function AgentChatInput({
+  sessionId,
+  variant = "primary",
+}: {
+  sessionId: string;
+  /** `subagent`: the child-session variant. Model / thinking tier / context
+   *  mode and the usage ring stay — those are the session-row writes a child
+   *  accepts — while every human-composition surface (agent picker, textarea,
+   *  send/cancel, notification bell) is absent: a child never takes a user
+   *  message, and its agent identity is fixed by its profile. */
+  variant?: "primary" | "subagent";
+}) {
+  const subagentView = variant === "subagent";
   const connection = useConnectionStore((s) => s.state);
   const runState = useTurnStore(
     (s) => s.byId.get(sessionId)?.runState ?? "idle",
@@ -312,6 +324,50 @@ export function AgentChatInput({ sessionId }: { sessionId: string }) {
       }
     }
   };
+
+  if (subagentView) {
+    return (
+      <div
+        data-testid="subagent-controls"
+        className={`${composerCardClass} focus-within:border-(--_dk-line-visible)`}
+      >
+        <div className="flex min-w-0 items-center gap-1 px-1.5 py-1">
+          <div className="flex min-w-0 flex-1 items-center gap-1">
+            <ModelSwitcher sessionId={sessionId} disabled={connBlocked} />
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <ThinkSlider
+              sessionId={sessionId}
+              value={thinkingTier}
+              disabled={connBlocked}
+              onChange={(tier) => setThinkingTier(sessionId, tier)}
+            />
+            <div className="mx-0.5 h-3.5 w-px shrink-0 bg-(--_dk-line)" />
+            <ContextModeToggle
+              mode={contextMode}
+              disabled={connBlocked}
+              onChange={(mode) => setContextMode(sessionId, mode)}
+            />
+            {/* Ring next to the context-mode button: with no draft row there is
+                no floating action row to host it. Read-only: a child has no
+                Compaction action of its own. */}
+            <span className="relative ml-0.5 flex h-[30px] w-[30px] shrink-0 items-center justify-center overflow-visible">
+              <ShapeBlur
+                shape="radial"
+                size={34}
+                inset={{ left: -2, top: -2 }}
+                strength={6}
+                maskSolid={40}
+                tintColor="var(--_dk-editor)"
+                tint={0.66}
+              />
+              <ContextUsageRing sessionId={sessionId} readOnly />
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <form

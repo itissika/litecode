@@ -7,16 +7,25 @@ import {
 } from "../lib/sessionPanelNav";
 import { displayMessages, useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
+import { AgentChatInput } from "./AgentChatInput";
 import { MessageList } from "./MessageList";
 import { ProgressiveBlur } from "./ProgressiveBlur";
+import { SessionStatusLine } from "./SessionStatusLine";
 
 /**
  * The read-only transcript region for a child session.
  *
  * It reuses the FULL transcript stack (message projection, `MessageList`
  * virtualizer, history paging, scroll and FoldCards) but passes `readOnly` to
- * `MessageList`, so a user bubble can never open MiniChat / revert / replay, and
- * it mounts NO composer, permission card, status line or model/agent controls.
+ * `MessageList`, so a user bubble can never open MiniChat / revert / replay.
+ *
+ * The control strip pinned at the bottom is the DERIVED subagent view: the same
+ * `SessionStatusLine` + `AgentChatInput` the writable shell mounts, both in
+ * their `variant="subagent"` form. Session-row knobs (model / thinking tier /
+ * context mode) and the usage ring stay editable — they are honored by the
+ * child's own next turn — while the agent picker, composer, send/cancel,
+ * permission card, Workers roster and the human-owned actions (terminal Kill,
+ * plan execution, compaction) are not rendered at all.
  *
  * It deliberately owns no connection subscription: the hosting panel
  * (`SubagentReadOnlyPanel`, or `AgentPanel` when it has classified the session
@@ -139,6 +148,15 @@ export function SubagentReadOnlyContent({
         tintCurve={1}
         offset={16}
       />
+
+      {/* Derived subagent controls — floats over the transcript exactly like the
+          writable `ComposerDock`, with every human-composition surface removed. */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-4">
+        <div className="pointer-events-auto mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col gap-2">
+          <SessionStatusLine sessionId={sessionId} variant="subagent" />
+          <AgentChatInput key={sessionId} sessionId={sessionId} variant="subagent" />
+        </div>
+      </div>
     </div>
   );
 }

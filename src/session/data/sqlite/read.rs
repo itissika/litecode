@@ -11,7 +11,7 @@ use crate::session::working::WorkingRow;
 use crate::types::{LitecodeError, Result};
 
 use super::super::command::{ReadValue, SessionChange, SessionListRow, SessionRead};
-use super::session::{self, TranscriptRow};
+use super::session;
 
 pub fn execute(
     conn: &Connection,
@@ -56,15 +56,13 @@ pub fn execute(
         SessionRead::ListSessions => Ok(ReadValue::List(list_sessions(conn)?)),
         SessionRead::ListSessionIds => Ok(ReadValue::Ids(list_session_ids(conn)?)),
         SessionRead::ListSessionsForGc => Ok(ReadValue::GcList(list_sessions_for_gc(conn)?)),
-        SessionRead::ListSessionActivity { since_ms } => {
-            Ok(ReadValue::SessionActivity(list_session_activity(conn, since_ms)?))
-        }
+        SessionRead::ListSessionActivity { since_ms } => Ok(ReadValue::SessionActivity(
+            list_session_activity(conn, since_ms)?,
+        )),
         SessionRead::ListChildIds { parent_session_id } => {
             Ok(ReadValue::Ids(list_child_ids(conn, &parent_session_id)?))
         }
-        SessionRead::ListOrphanChildSessions => {
-            Ok(ReadValue::Ids(list_orphan_child_ids(conn)?))
-        }
+        SessionRead::ListOrphanChildSessions => Ok(ReadValue::Ids(list_orphan_child_ids(conn)?)),
         SessionRead::ChildForCall {
             parent_session_id,
             parent_call_id,
@@ -109,6 +107,12 @@ pub fn execute(
             conn,
             session_id.as_deref(),
         )?)),
+        SessionRead::SearchableKeys { session_id } => Ok(ReadValue::SearchableKeys(
+            searchable_keys(conn, session_id.as_deref())?,
+        )),
+        SessionRead::SearchableRowsFor { keys } => {
+            Ok(ReadValue::Searchable(searchable_rows_for(conn, &keys)?))
+        }
         SessionRead::ChangeLogSince { last_change_id } => {
             Ok(ReadValue::Changes(change_log_since(conn, last_change_id)?))
         }
@@ -255,7 +259,13 @@ fn list_session_activity(
          ORDER BY updated_at DESC",
     )?;
     let rows = stmt.query_map(rusqlite::params![since_ms], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        ))
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
@@ -376,18 +386,116 @@ fn snapshot_stem(conn: &Connection, session_id: &str, k: i64) -> Result<i64> {
     .map_err(|_| LitecodeError::InvalidRevertAnchor(format!("k={k}")))
 }
 
-fn searchable_rows(conn: &Connection, session_id: Option<&str>) -> Result<Vec<SearchableRow>> {
-    let sql = if session_id.is_some() {
-        "SELECT session_id, seq, kind, item_type, body, body_ref FROM transcript_items
-         WHERE kind IN ('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted')
-           AND session_id = ?1
-         ORDER BY seq"
+/// Kinds the derived index can ever hold.
+///
+/// `compacted` is deliberately absent: a compaction summary is model-distilled
+/// text, not something the session authored, and it describes a range the
+/// original rows already cover. The reader-facing projection still shows it —
+/// see [`PROJECTED_KINDS`]; the two views answer different questions.
+const INDEXED_KINDS: &str = "('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result')";
+
+/// Kinds the reader-facing transcript projection renders: the indexed kinds plus
+/// the compaction summary, which a reader should see even though search skips it.
+const PROJECTED_KINDS: &str =
+    "('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted')";
+
+/// A row is searchable when its own content can no longer change.
+///
+/// The condition is deliberately row-local: the row itself is not
+/// `in_progress`. Nothing earlier in the session can hold a final row back —
+/// call-before-result ordering is a session write invariant, so a final row is
+/// never stuck behind an unfinished one. A row that arrives in flight becomes
+/// visible the moment it is sealed.
+fn searchable_sql(select: &str, kinds: &str, scoped: bool) -> String {
+    let order = if scoped {
+        " ORDER BY t.seq"
     } else {
-        "SELECT session_id, seq, kind, item_type, body, body_ref FROM transcript_items
-         WHERE kind IN ('item/user', 'item/assistant', 'item/tool_call', 'item/tool_result', 'compacted')
-         ORDER BY session_id, seq"
+        " ORDER BY t.session_id, t.seq"
     };
-    let mut stmt = conn.prepare(sql)?;
+    let scope = if scoped { " AND t.session_id = ?1" } else { "" };
+    format!(
+        "{select}
+         FROM transcript_items t
+         WHERE t.kind IN {kinds}
+           AND t.state != 'in_progress'{scope}{order}"
+    )
+}
+
+/// `(session_id, seq)` of every searchable row. Integers only — this is the
+/// cheap reconciliation key, never a row body.
+pub fn searchable_keys(conn: &Connection, session_id: Option<&str>) -> Result<Vec<(String, i64)>> {
+    let sql = searchable_sql(
+        "SELECT t.session_id, t.seq",
+        INDEXED_KINDS,
+        session_id.is_some(),
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let map_row = |row: &rusqlite::Row<'_>| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?));
+    let keys = if let Some(sid) = session_id {
+        stmt.query_map(rusqlite::params![sid], map_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    } else {
+        stmt.query_map([], map_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    Ok(keys)
+}
+
+/// Bodies for a specific set of searchable rows. Used by the incremental refresh
+/// so it reads and decodes only what actually changed.
+///
+/// `state != 'in_progress'` is required here too: a key may be named while its
+/// row is still settling, so the body read must never hand back a row that is
+/// not yet final.
+pub fn searchable_rows_for(
+    conn: &Connection,
+    keys: &[(String, i64)],
+) -> Result<Vec<SearchableRow>> {
+    const CHUNK: usize = 200;
+    let mut out = Vec::with_capacity(keys.len());
+    for chunk in keys.chunks(CHUNK) {
+        let placeholders = std::iter::repeat_n("(?, ?)", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT session_id, seq, kind, item_type, body, body_ref FROM transcript_items
+             WHERE kind IN {INDEXED_KINDS}
+               AND state != 'in_progress'
+               AND (session_id, seq) IN (VALUES {placeholders})"
+        );
+        let params: Vec<rusqlite::types::Value> = chunk
+            .iter()
+            .flat_map(|(sid, seq)| {
+                [
+                    rusqlite::types::Value::Text(sid.clone()),
+                    rusqlite::types::Value::Integer(*seq),
+                ]
+            })
+            .collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+            Ok(SearchableRow {
+                session_id: row.get(0)?,
+                seq: row.get(1)?,
+                kind: row.get(2)?,
+                item_type: row.get(3)?,
+                body: row.get(4)?,
+                body_ref: row.get(5)?,
+            })
+        })?;
+        out.extend(rows.collect::<std::result::Result<Vec<_>, _>>()?);
+    }
+    out.sort_by(|a, b| (&a.session_id, a.seq).cmp(&(&b.session_id, b.seq)));
+    Ok(out)
+}
+
+fn searchable_rows(conn: &Connection, session_id: Option<&str>) -> Result<Vec<SearchableRow>> {
+    let sql = searchable_sql(
+        "SELECT t.session_id, t.seq, t.kind, t.item_type, t.body, t.body_ref",
+        PROJECTED_KINDS,
+        session_id.is_some(),
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let map_row = |row: &rusqlite::Row<'_>| {
         Ok(SearchableRow {
             session_id: row.get(0)?,

@@ -2,7 +2,7 @@
 //!
 //! No BM25/CC/RRF here — lexical FTS lives in `sessions.db` on the always-on path.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -237,10 +237,6 @@ impl SessionSemanticIndex {
         self.chunks.is_empty()
     }
 
-    pub fn last_change_id(&self) -> i64 {
-        self.last_change_id
-    }
-
     fn remove_id(&mut self, id: u64) {
         if let Some(chunk) = self.chunks.remove(&id) {
             self.by_key.remove(&chunk.key);
@@ -348,6 +344,11 @@ impl SessionSemanticIndex {
     }
 
     /// Reconcile against live sessions.db: add missing / changed texts, drop stale keys.
+    ///
+    /// There is no change-id gate: the live corpus is always compared, so a
+    /// notification the writer never sent can never leave the index stale. The
+    /// `stale` pass below drops chunks whose key or text is gone, which also
+    /// covers a rolled-back change log without a special reset.
     pub fn reconcile(
         &mut self,
         reader: &SessionDataReader,
@@ -355,17 +356,11 @@ impl SessionSemanticIndex {
         embedder: &mut dyn Embedder,
     ) -> Result<bool> {
         let latest = reader.latest_change_id_blocking().unwrap_or(0);
-        if latest == self.last_change_id && latest > 0 {
-            return Ok(false);
-        }
-        if latest < self.last_change_id {
-            *self = Self::new_empty()?;
-        }
         // The dense corpus is the locked final policy: slot projection (人话 +
         // 工具调用 + 工具产出，压缩总结剔除), echo removal, budget trim, then
         // 448-token hard-cut chunks with a head+tail anchor for split rows — the
         // same grid the sparse lane uses, so both lanes agree on coordinates.
-        let tk = super::tokenizer::open()?;
+        let tk = super::tokenizer::shared()?;
         let docs = corpus::build_docs(
             reader,
             Policy::Final,
@@ -415,6 +410,10 @@ impl SessionSemanticIndex {
             dirty = true;
         }
 
+        // The change id is a scheduling watermark, not a correctness gate: the diff
+        // above already ran against the live corpus either way. Its only job is to
+        // retire the pending hint once the store stops moving, so the warmup pass
+        // can go quiet instead of re-walking the corpus every turn.
         if dirty || self.last_change_id != latest {
             self.embedder_id = embedder.embedder_id().into();
             self.last_change_id = latest;

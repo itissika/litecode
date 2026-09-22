@@ -147,6 +147,8 @@ pub enum CommitDeltaOutcome {
         preview: Option<SessionListPreview>,
         /// Existing rows changed in place and must be re-sent to live clients.
         sealed_seqs: Vec<Seq>,
+        /// Rows appended by this commit (new seqs), in log order.
+        appended_seqs: Vec<Seq>,
         /// True when this commit sealed or appended at least one row.
         mutated: bool,
     },
@@ -162,8 +164,23 @@ pub enum SessionApply {
 
 pub enum ApplyOutcome {
     Appended(Seq),
-    Sealed,
-    Truncated,
+    /// Sealed an existing row in place; carries the real seq it rewrote.
+    Sealed {
+        seq: Seq,
+    },
+    /// Truncated from the k-th user anchor; carries the real anchor seq, which
+    /// is the first invalidated seq (everything at or after it is gone).
+    Truncated {
+        anchor: i64,
+    },
+}
+
+/// What an `InsertDetails` mutation actually wrote.
+pub struct InsertDetailsOutcome {
+    /// `(last_message, updated_at)` when the delta updated the session preview.
+    pub preview: Option<(String, i64)>,
+    /// Inclusive `(first, last)` seq of the rows appended, when any were.
+    pub seq_range: Option<(Seq, Seq)>,
 }
 
 impl SessionApply {
@@ -178,21 +195,39 @@ impl SessionApply {
 
 /// Incremental surface + seq identity for one live Session. Hydrated once on
 /// open; write primitives update it under the write gate.
-#[derive(Debug, Clone, Default)]
+///
+/// Two seq cursors live here and are never mixed:
+/// * `next_seq` is the **allocation high-water**: the seq the next append will
+///   take. It is persisted in `sessions.next_seq` and only ever advances; a
+///   truncate never lowers it, so a deleted seq is never handed out again.
+/// * `active_max_seq` is the `MAX(seq)` of the rows currently in the log (`-1`
+///   when empty). It may drop when a truncate removes the tail and is what the
+///   stale-turn / revert guard is based on.
+#[derive(Debug, Clone)]
 struct LogProjection {
     surface: Surface,
     next_seq: Seq,
+    active_max_seq: i64,
     id_to_seq: HashMap<String, Seq>,
     items_by_seq: HashMap<Seq, Item>,
 }
 
-impl LogProjection {
-    fn max_seq(&self) -> i64 {
-        if self.next_seq == 0 {
-            -1
-        } else {
-            self.next_seq as i64 - 1
+impl Default for LogProjection {
+    fn default() -> Self {
+        Self {
+            surface: Surface::default(),
+            next_seq: 0,
+            active_max_seq: -1,
+            id_to_seq: HashMap::new(),
+            items_by_seq: HashMap::new(),
         }
+    }
+}
+
+impl LogProjection {
+    /// `MAX(seq)` of the live rows, `-1` when the log is empty.
+    fn active_max_seq(&self) -> i64 {
+        self.active_max_seq
     }
 
     fn apply_event(&mut self, event: &SessionEvent, item: Option<&Item>) -> Result<()> {
@@ -205,7 +240,8 @@ impl LogProjection {
             }
             apply_plan(&mut self.surface, plan);
         }
-        self.next_seq = event.seq.saturating_add(1);
+        self.next_seq = self.next_seq.max(event.seq.saturating_add(1));
+        self.active_max_seq = self.active_max_seq.max(event.seq as i64);
         if let Some(item) = item {
             if let Some(id) = item_log_id(item) {
                 self.id_to_seq.insert(id, event.seq);
@@ -422,6 +458,20 @@ fn blob_id_from_ref(body_ref: &str) -> Option<String> {
     }
 }
 
+/// Whether the row at `seq` has settled, i.e. whether its content is fixed for
+/// good. The database is the authority: the projection is a cache and may not
+/// have projected this row at all.
+fn row_is_settled(tx: &Connection, session_id: &str, seq: Seq) -> Result<bool> {
+    let state: Option<String> = tx
+        .query_row(
+            "SELECT state FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
+            rusqlite::params![session_id, seq as i64],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(state.as_deref() == Some(LogState::Final.as_str()))
+}
+
 fn seal_event_row(
     tx: &Connection,
     session_id: &str,
@@ -430,18 +480,30 @@ fn seal_event_row(
     item: &Item,
 ) -> Result<()> {
     let seq_i = seq as i64;
-    let current_kind: Option<String> = tx
+    let current: Option<(String, String)> = tx
         .query_row(
-            "SELECT event_type FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
+            "SELECT event_type, state FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
             rusqlite::params![session_id, seq_i],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    let Some(current_kind) = current_kind else {
+    let Some((current_kind, current_state)) = current else {
         return Err(LitecodeError::InvalidSessionEvent(format!(
             "seal_item: no row at seq {seq}"
         )));
     };
+    // Sealing is the one write that changes the content at an existing `seq`, and
+    // it is allowed exactly once, while the row is still in flight. `final` means
+    // the content at this `(session_id, seq)` is fixed for good; the derived index
+    // is built on that and no longer carries any mechanism for noticing a row that
+    // changed after it was projected. Rewriting a final row would therefore not
+    // fail loudly, it would leave the index quietly serving text that no longer
+    // exists. Refuse instead.
+    if current_state == LogState::Final.as_str() {
+        return Err(LitecodeError::InvalidSessionEvent(format!(
+            "seal_item: row {seq} is already final; settled rows never change"
+        )));
+    }
     if !matches!(
         EventType::from_str_name(&current_kind),
         EventType::ItemAssistant | EventType::ItemToolCall
@@ -483,6 +545,30 @@ fn seal_event_row(
         super::ops::register_blob_ref(tx, &blob_id, session_id, seq_i, 0, &rel.to_string_lossy())?;
     }
     Ok(())
+}
+
+/// The body of the row at `seq`, for identity comparison during commit.
+///
+/// The projection cache is consulted first, but it only holds rows still on the
+/// surface: a replace (compaction) shadows a row by dropping it from
+/// `items_by_seq` while the row itself survives in the log. Identity checks must
+/// therefore fall back to the database so a shadowed row is still recognised —
+/// and never resurrected as a duplicate append.
+fn persisted_item_at_seq(
+    projection: &LogProjection,
+    tx: &Connection,
+    session_id: &str,
+    data_root: &Path,
+    seq: Seq,
+) -> Result<Option<Item>> {
+    if let Some(item) = projection.items_by_seq.get(&seq) {
+        return Ok(Some(item.clone()));
+    }
+    let events = load_events_range_on(tx, session_id, seq as i64, seq as i64 + 1, data_root)?;
+    match events.into_iter().next() {
+        Some(event) => Ok(spine_agent_item(&event).ok()),
+        None => Ok(None),
+    }
 }
 
 fn replace_op_for_keep(
@@ -957,18 +1043,35 @@ pub(crate) fn load_events_on(
     load_events_range_on(conn, session_id, 0, i64::MAX, data_root)
 }
 
-/// `(last_seq, next_seq)` from `MAX(seq)`. Empty log → `(-1, 0)`.
+/// `(last_seq, next_seq)` for the client buffer cursor. The two are independent:
+///
+/// * `last_seq` is the **active** `MAX(seq)` of the live log (`-1` when empty).
+///   It moves back after a revert, which is exactly what the client must see.
+/// * `next_seq` is the **persisted allocation high-water** (`sessions.next_seq`).
+///   It never moves back, so after a revert it can exceed `last_seq + 1` and the
+///   log may be sparse. The client uses it only as the fetch high-water
+///   `[last_seq + 1, next_seq)`, which is empty right after a revert and resumes
+///   at the next append (which always lands on the high-water, not in a hole).
+///
+/// Empty log with no history → `(-1, 0)`.
 pub(crate) fn load_wire_seq_cursor_on(conn: &Connection, session_id: &str) -> Result<(i64, u64)> {
     let last: i64 = conn.query_row(
         "SELECT COALESCE(MAX(seq), -1) FROM transcript_items WHERE session_id = ?1",
         rusqlite::params![session_id],
         |row| row.get(0),
     )?;
-    let next = if last < 0 {
-        0
-    } else {
-        (last as u64).saturating_add(1)
-    };
+    let persisted: i64 = conn
+        .query_row(
+            "SELECT next_seq FROM sessions WHERE id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    // Defensive: a well-formed row already holds `>= last + 1`, but heal a legacy
+    // or inconsistent value forward so an append can never be aimed below an
+    // existing row.
+    let next = persisted.max(last.saturating_add(1)).max(0) as u64;
     Ok((last, next))
 }
 
@@ -1017,17 +1120,10 @@ pub(crate) fn load_events_range_on(
             data_root,
         )?);
     }
-    if from == 0 && to == i64::MAX {
-        for (i, event) in events.iter().enumerate() {
-            let expected = i as Seq;
-            if event.seq != expected {
-                return Err(LitecodeError::InvalidSessionEvent(format!(
-                    "seq hole: expected {expected}, got {}",
-                    event.seq
-                )));
-            }
-        }
-    }
+    // Seqs are strictly increasing (`ORDER BY seq`) but **not** necessarily
+    // contiguous: a revert deletes the tail and the next append allocates from
+    // the persisted high-water, leaving a hole where the deleted rows were. A
+    // stable identity does not need to be a dense one, so no hole is an error.
     Ok(events)
 }
 
@@ -1192,7 +1288,15 @@ impl Session {
         Ok(session)
     }
 
-    pub(crate) fn delete_on(conn: &Connection, data_root: &Path, session_id: &str) -> Result<()> {
+    /// Delete a session and every descendant. Returns the ids actually removed,
+    /// children first, so the caller can write one tombstone per session.
+    /// Delete a session and its descendants. Returns `(session_id, project)` for
+    /// every row removed, children first, so the caller can tombstone each one
+    /// and only remove their files once the transaction has committed.
+    pub(crate) fn delete_on(
+        conn: &Connection,
+        session_id: &str,
+    ) -> Result<Vec<(String, Option<String>)>> {
         let project: Option<String> = conn
             .query_row(
                 "SELECT project FROM sessions WHERE id = ?1",
@@ -1209,8 +1313,9 @@ impl Session {
             }
             ids
         };
+        let mut deleted = Vec::new();
         for child_id in &child_ids {
-            Self::delete_on(conn, data_root, child_id)?;
+            deleted.extend(Self::delete_on(conn, child_id)?);
         }
         let tx = conn;
         let changed = tx.execute(
@@ -1235,8 +1340,8 @@ impl Session {
             rusqlite::params![session_id],
         )?;
         super::ops::drop_blob_refs_session(&tx, session_id)?;
-        Self::cleanup_deleted_files(data_root, session_id, project.as_deref());
-        Ok(())
+        deleted.push((session_id.to_string(), project));
+        Ok(deleted)
     }
 
     pub(crate) fn cleanup_deleted_files(data_root: &Path, session_id: &str, project: Option<&str>) {
@@ -1439,8 +1544,7 @@ impl Session {
             let Item::Message(MessageItem::Output(message)) = item else {
                 continue;
             };
-            if message.role != AssistantRole::Assistant
-                || message.status != OutputStatus::Completed
+            if message.role != AssistantRole::Assistant || message.status != OutputStatus::Completed
             {
                 continue;
             }
@@ -1510,24 +1614,43 @@ impl Session {
                 }
             }
         }
-        let next_seq = events.last().map(|e| e.seq + 1).unwrap_or(0);
+        let active_max_seq = events.last().map(|e| e.seq as i64).unwrap_or(-1);
+        // The persisted high-water survives truncate; heal it forward if the
+        // table ever holds a seq at or past it (e.g. a row written by an older
+        // writer, or a `next_seq` update that raced a crash).
+        let persisted_next = self.load_persisted_next_seq()?;
+        let next_seq = persisted_next.max(active_max_seq.saturating_add(1)).max(0) as Seq;
         let projection = LogProjection {
             surface,
             next_seq,
+            active_max_seq,
             id_to_seq,
             items_by_seq,
         };
-        self.persisted_max_seq.set(projection.max_seq());
+        self.persisted_max_seq.set(projection.active_max_seq());
         *self.projection.borrow_mut() = projection;
         Ok(())
     }
 
+    /// Persisted allocation high-water from `sessions.next_seq` (`0` if unset).
+    fn load_persisted_next_seq(&self) -> Result<i64> {
+        let v: Option<i64> = self
+            .conn()
+            .query_row(
+                "SELECT next_seq FROM sessions WHERE id = ?1",
+                rusqlite::params![self.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(v.unwrap_or(0).max(0))
+    }
+
     fn cached_max_seq(&self) -> i64 {
-        self.projection.borrow().max_seq()
+        self.projection.borrow().active_max_seq()
     }
 
     fn commit_projection(&self, projection: LogProjection) {
-        self.persisted_max_seq.set(projection.max_seq());
+        self.persisted_max_seq.set(projection.active_max_seq());
         *self.projection.borrow_mut() = projection;
     }
 
@@ -1548,8 +1671,7 @@ impl Session {
             || matches!(
                 draft.event_type,
                 EventType::ReminderJobExit | EventType::ReminderPlan | EventType::PlanExecute
-            )
-        {
+            ) {
             Some(serde_json::from_value::<Item>(draft.data.clone())?)
         } else {
             None
@@ -1577,6 +1699,13 @@ impl Session {
             turn_seq,
             kind,
             token_estimate,
+        )?;
+        // Advance the persisted allocation high-water in the same writer
+        // transaction as the row it justified. `max` makes it monotonic: a
+        // re-hydrated/behind cursor can never be pulled backwards here.
+        tx.execute(
+            "UPDATE sessions SET next_seq = max(next_seq, ?1) WHERE id = ?2",
+            rusqlite::params![seq.saturating_add(1) as i64, self.id],
         )?;
         projection.apply_event(&event, item.as_ref())?;
         Ok((seq, item))
@@ -1671,11 +1800,11 @@ impl Session {
             }
             SessionApply::Seal { seq, item } => {
                 self.seal_unlocked(seq, &item)?;
-                Ok(ApplyOutcome::Sealed)
+                Ok(ApplyOutcome::Sealed { seq })
             }
             SessionApply::Truncate { user_k } => {
-                self.truncate_unlocked(user_k)?;
-                Ok(ApplyOutcome::Truncated)
+                let anchor = self.truncate_unlocked(user_k)?;
+                Ok(ApplyOutcome::Truncated { anchor })
             }
         }
     }
@@ -1716,7 +1845,7 @@ impl Session {
         Ok(())
     }
 
-    fn truncate_unlocked(&self, k: i64) -> Result<()> {
+    fn truncate_unlocked(&self, k: i64) -> Result<i64> {
         let tx = self.conn();
 
         let anchor_seq: i64 = tx
@@ -1816,7 +1945,7 @@ impl Session {
         // Remaining log is 0..anchor-1. A deleted replace must unshadow earlier
         // nodes; dropping `nodes >= anchor` from the live surface is not enough.
         self.hydrate_projection()?;
-        Ok(())
+        Ok(anchor_seq)
     }
 
     fn bump_session_updated(
@@ -1832,7 +1961,7 @@ impl Session {
     /// Returns `Some((preview, updated_at))` when this delta contains a user
     /// message and `last_message` was updated. Assistant/tool-only deltas no
     /// longer wipe `last_message`.
-    pub fn insert_detail_rows(&self, delta: &[Item]) -> Result<Option<(String, i64)>> {
+    pub fn insert_detail_rows(&self, delta: &[Item]) -> Result<InsertDetailsOutcome> {
         self.insert_detail_rows_with_turn(delta, "")
     }
 
@@ -1841,9 +1970,12 @@ impl Session {
         &self,
         delta: &[Item],
         turn_id: &str,
-    ) -> Result<Option<(String, i64)>> {
+    ) -> Result<InsertDetailsOutcome> {
         if delta.is_empty() {
-            return Ok(None);
+            return Ok(InsertDetailsOutcome {
+                preview: None,
+                seq_range: None,
+            });
         }
         let _gate = self.lock_write();
         let mut projection = self.projection.borrow().clone();
@@ -1853,16 +1985,26 @@ impl Session {
         } else {
             turn_id.to_string()
         };
+        let mut seq_range: Option<(Seq, Seq)> = None;
         for (i, msg) in delta.iter().enumerate() {
             let kind = surface_event_type_of(msg).as_str().to_owned();
             let mut draft =
                 EventDraft::surface_item(surface_event_type_of(msg), msg, SurfaceOp::Append)?;
             draft.time = message_timestamp(msg);
-            self.admit_draft_in_tx(&tx, draft, &turn_id, i as i64, &kind, 0, &mut projection)?;
+            let (seq, _) =
+                self.admit_draft_in_tx(&tx, draft, &turn_id, i as i64, &kind, 0, &mut projection)?;
+            seq_range = Some(match seq_range {
+                Some((first, last)) => (first.min(seq), last.max(seq)),
+                None => (seq, seq),
+            });
         }
         let preview_updated = self.bump_session_updated(&tx, delta)?;
         self.commit_projection(projection);
-        Ok(preview_updated.and_then(|patch| patch.user.map(|user| (user, patch.updated_at))))
+        Ok(InsertDetailsOutcome {
+            preview: preview_updated
+                .and_then(|patch| patch.user.map(|user| (user, patch.updated_at))),
+            seq_range,
+        })
     }
 
     /// Append one Item (including `in_progress`) and return its `seq`.
@@ -1905,8 +2047,7 @@ impl Session {
 
     /// Append a plan-review reminder as a normal spine Item with kind `reminder/plan`.
     pub fn append_plan_reminder(&self, item: &Item) -> Result<Seq> {
-        let mut draft =
-            EventDraft::surface_item(EventType::ReminderPlan, item, SurfaceOp::Append)?;
+        let mut draft = EventDraft::surface_item(EventType::ReminderPlan, item, SurfaceOp::Append)?;
         draft.time = message_timestamp(item);
         match self.apply(SessionApply::Append(draft))? {
             ApplyOutcome::Appended(seq) => Ok(seq),
@@ -1920,8 +2061,7 @@ impl Session {
     /// its kind is its own: it is system-issued on the human's behalf and is
     /// deliberately **not** a revert anchor (anchors only count `item/user`).
     pub fn append_plan_execute(&self, item: &Item) -> Result<Seq> {
-        let mut draft =
-            EventDraft::surface_item(EventType::PlanExecute, item, SurfaceOp::Append)?;
+        let mut draft = EventDraft::surface_item(EventType::PlanExecute, item, SurfaceOp::Append)?;
         draft.time = message_timestamp(item);
         match self.apply(SessionApply::Append(draft))? {
             ApplyOutcome::Appended(seq) => Ok(seq),
@@ -2011,6 +2151,7 @@ impl Session {
         };
         let mut mutated = false;
         let mut sealed_seqs = Vec::new();
+        let mut appended_seqs = Vec::new();
         let mut sealed_items = Vec::new();
         let mut appended: Vec<Item> = Vec::new();
         let mut next_turn_seq = 0i64;
@@ -2022,34 +2163,66 @@ impl Session {
                     .get(&seq)
                     .and_then(|existing| serde_json::to_value(existing).ok())
                     == serde_json::to_value(msg).ok();
-                if !same {
+                if same {
+                    continue;
+                }
+                // Different content at a seq this row already owns. If the row
+                // is still in flight it is sealed in place, as always. If it has
+                // already settled it may not be rewritten (see `seal_event_row`),
+                // and the text still has to land — so it becomes a new row.
+                //
+                // That is the same rule the id lookup below applies when it finds
+                // a settled row, and it is what makes resume-after-crash work:
+                // the startup repair seals the orphan as `Incomplete`, the pipeline
+                // reloads the working set, and the rest of the text arrives as a
+                // continuation rather than as a rewrite of history the index has
+                // already projected.
+                if row_is_settled(&tx, &self.id, seq)? {
+                    row.log_seq = None;
+                } else {
                     seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
                     projection.seal_item(seq, msg);
                     sealed_seqs.push(seq);
                     sealed_items.push(msg.clone());
                     mutated = true;
+                    continue;
                 }
-                continue;
             }
             if let Some(id) = item_log_id(msg) {
                 if self.truncated_item_ids.borrow().contains(&id) {
                     continue;
                 }
-                if let Some(seq) = projection.in_progress_seq_for_id(&id) {
-                    row.log_seq = Some(seq);
-                    let same = projection
-                        .items_by_seq
-                        .get(&seq)
-                        .and_then(|existing| serde_json::to_value(existing).ok())
-                        == serde_json::to_value(msg).ok();
-                    if !same {
+                // A logical identity may already own a row: either an open
+                // `in_progress` shell, or a row that already settled — including
+                // one a later replace shadowed off the surface. The identity map
+                // keeps every surviving event (`items_by_seq` does not), so
+                // consult it and the database, never the surface cache alone.
+                let existing_seq = projection
+                    .in_progress_seq_for_id(&id)
+                    .or_else(|| projection.id_to_seq.get(&id).copied());
+                if let Some(seq) = existing_seq
+                    && let Some(existing) =
+                        persisted_item_at_seq(&projection, &tx, &self.id, &self.data_root, seq)?
+                {
+                    if serde_json::to_value(&existing).ok() == serde_json::to_value(msg).ok() {
+                        // Identical content: bind the pending row to the row that
+                        // is already persisted and skip the append.
+                        row.log_seq = Some(seq);
+                        continue;
+                    }
+                    // Different content at an existing seq. Seal in place only
+                    // while the row is still in flight; a settled row is
+                    // immutable and the new content lands as a continuation
+                    // appended below (never a rewrite of the old seq).
+                    if !row_is_settled(&tx, &self.id, seq)? {
+                        row.log_seq = Some(seq);
                         seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
                         projection.seal_item(seq, msg);
                         sealed_seqs.push(seq);
                         sealed_items.push(msg.clone());
                         mutated = true;
+                        continue;
                     }
-                    continue;
                 }
             }
             let kind = surface_event_type_of(msg).as_str().to_owned();
@@ -2061,6 +2234,7 @@ impl Session {
             row.log_seq = Some(seq);
             next_turn_seq += 1;
             mutated = true;
+            appended_seqs.push(seq);
             appended.push(msg.clone());
         }
 
@@ -2072,6 +2246,7 @@ impl Session {
         Ok(CommitDeltaOutcome::Applied {
             preview: preview_updated,
             sealed_seqs,
+            appended_seqs,
             mutated,
         })
     }
@@ -2283,12 +2458,14 @@ impl Session {
             .map_err(Into::into)
     }
 
-    /// In-memory persisted-seq cursor value.
+    /// In-memory active `MAX(seq)` cursor (the log's current tail, `-1` when
+    /// empty). Distinct from the persisted allocation high-water `sessions.next_seq`.
     pub fn persisted_max_seq(&self) -> i64 {
         self.persisted_max_seq.get()
     }
 
-    /// Reload the cursor from the DB's current `MAX(seq)` (turn load, post-compact).
+    /// Reload the active-tail cursor from the DB's current `MAX(seq)` (turn load,
+    /// post-compact). Never touches the allocation high-water.
     pub fn reload_persisted_max_seq(&self) -> Result<()> {
         self.persisted_max_seq.set(self.cached_max_seq());
         Ok(())
@@ -2354,6 +2531,14 @@ impl Session {
     }
 
     /// `(last_seq, next_seq)` for wire snapshots. Empty log → `(-1, 0)`.
+    ///
+    /// **Split semantics.** `last_seq` is the **active** `MAX(seq)` of the live
+    /// rows; `next_seq` is the **persisted allocation high-water**
+    /// (`sessions.next_seq`). A revert moves `last_seq` back but not `next_seq`,
+    /// so the two are not tied by `next_seq == last_seq + 1`. The client keeps
+    /// rows `<= last_seq` and fetches `[last_seq + 1, next_seq)`; the next append
+    /// lands on the high-water, so that window refills exactly the new rows while
+    /// older holes stay closed. See [`load_wire_seq_cursor_on`].
     pub fn wire_seq_cursor(&self) -> Result<(i64, u64)> {
         load_wire_seq_cursor_on(self.conn(), &self.id)
     }
@@ -3397,8 +3582,9 @@ mod tests {
         let updated = session
             .insert_detail_rows(&[user_text("hello user")])
             .unwrap();
-        assert!(updated.is_some());
-        assert_eq!(updated.unwrap().0, "hello user");
+        assert!(updated.preview.is_some());
+        assert_eq!(updated.preview.unwrap().0, "hello user");
+        assert_eq!(updated.seq_range, Some((0, 0)));
 
         let assistant = Item::Message(MessageItem::Output(OutputMessage {
             id: "msg_1".into(),
@@ -3413,9 +3599,10 @@ mod tests {
         }));
         let second = session.insert_detail_rows(&[assistant]).unwrap();
         assert!(
-            second.is_none(),
+            second.preview.is_none(),
             "no user message in delta → no preview update"
         );
+        assert_eq!(second.seq_range, Some((1, 1)));
 
         let preview: String = session
             .conn()
@@ -3882,8 +4069,18 @@ mod tests {
         }
     }
 
+    /// A process that died mid-turn cannot seal what it left in flight, so the
+    /// next start seals it as `Incomplete`. The row becomes settled history at
+    /// that moment and is never rewritten again — the turn's remaining text
+    /// arrives as a continuation row instead.
+    ///
+    /// This is the shape the earlier design could not express: back then the
+    /// orphan was kept in flight so that the finished text could replace the
+    /// fragment in place. That worked for the transcript and quietly broke
+    /// search, because the derived index has no way to notice a row whose body
+    /// changed after it was projected.
     #[test]
-    fn crashed_session_reload_keeps_in_progress_row_for_seal() {
+    fn a_crashed_turn_is_sealed_incomplete_and_its_continuation_appends() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sessions.db");
         let lease = crate::session::WorkspaceWriteLease::acquire(dir.path()).unwrap();
@@ -3920,15 +4117,27 @@ mod tests {
         let events = data.events_blocking(&id).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].seq, seq);
-        assert_eq!(events[0].state, LogState::InProgress);
+        assert_eq!(
+            events[0].state,
+            LogState::Final,
+            "the restart sealed the orphan it found in flight"
+        );
         let loaded = crate::session::event::item_from_event(&events[0]).unwrap();
         match &loaded {
             Item::Message(MessageItem::Output(m)) => {
-                assert_eq!(m.status, OutputStatus::InProgress);
+                assert_eq!(
+                    m.status,
+                    OutputStatus::Incomplete,
+                    "sealed as short of content, not as complete"
+                );
             }
-            other => panic!("expected in_progress assistant, got {other:?}"),
+            other => panic!("expected sealed assistant, got {other:?}"),
         }
-        let sealed = Item::Message(MessageItem::Output(OutputMessage {
+        assert_eq!(item_text_preview(&loaded), "hel", "what did arrive is kept");
+
+        // The turn is finished afterwards. The row it wants to finish is settled,
+        // so the text lands as a new row and seq 0 is left exactly as it was.
+        let finished = Item::Message(MessageItem::Output(OutputMessage {
             id: "asst_crash".into(),
             role: AssistantRole::Assistant,
             content: vec![OutputMessageContent::OutputText(OutputTextContent {
@@ -3944,25 +4153,32 @@ mod tests {
                 session_id: id.clone(),
                 expected_revision: data.revision_blocking(&id).unwrap(),
                 operation_id: crate::session::MutationId::new(),
-                rows: vec![crate::session::WorkingRow::persisted(seq, sealed)],
+                rows: vec![crate::session::WorkingRow::persisted(seq, finished)],
                 expected_max_seq: seq as i64,
                 turn_id: "crash-recovery".into(),
             })
             .unwrap();
-        match seal_receipt.outcome {
-            crate::session::data::CommitKind::Sealed { seqs } => {
-                assert_eq!(
-                    seqs,
-                    vec![seq],
-                    "in-place seal must surface seqs for restamp"
-                );
-            }
-            other => panic!("expected Sealed receipt, got {other:?}"),
-        }
-        assert_eq!(data.events_blocking(&id).unwrap().len(), 1);
-        let loaded =
-            crate::session::event::item_from_event(&data.events_blocking(&id).unwrap()[0]).unwrap();
-        assert_eq!(item_text_preview(&loaded), "hello");
+        // No in-place seal happened: the continuation was appended, and the
+        // settled fragment at seq 0 is left exactly as it was.
+        assert!(
+            matches!(
+                seal_receipt.outcome,
+                crate::session::data::CommitKind::MetaUpdated
+            ),
+            "nothing was sealed in place, got {:?}",
+            seal_receipt.outcome
+        );
+
+        let events = data.events_blocking(&id).unwrap();
+        assert_eq!(events.len(), 2, "the fragment and the continuation");
+        let first = crate::session::event::item_from_event(&events[0]).unwrap();
+        assert_eq!(
+            item_text_preview(&first),
+            "hel",
+            "seq {seq} is settled: the index has already projected it and nothing may change it"
+        );
+        let second = crate::session::event::item_from_event(&events[1]).unwrap();
+        assert_eq!(item_text_preview(&second), "hello");
     }
 
     #[test]
@@ -4281,19 +4497,67 @@ mod tests {
     }
 
     #[test]
-    fn truncate_then_append_uses_new_max_plus_one() {
+    fn truncate_then_append_does_not_reuse_deleted_seqs() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("u0"), user_text("u1"), user_text("u2")])
+            .unwrap();
+        // Delete u1 (seq 1) and u2 (seq 2); u0 (seq 0) remains.
+        session.revert_to_user_anchor(1).unwrap();
+        assert_eq!(
+            session.cached_max_seq(),
+            0,
+            "the active tail drops to seq 0 after the revert"
+        );
+
+        // The next append must allocate from the persisted high-water, not from
+        // `active MAX + 1`, so the deleted seqs 1 and 2 are never handed out again.
+        let outcome = session.insert_detail_rows(&[user_text("fresh")]).unwrap();
+        assert_eq!(
+            outcome.seq_range,
+            Some((3, 3)),
+            "append must use the high-water (3), not reuse the deleted seq 1"
+        );
+        let events = session.load_events().unwrap();
+        assert_eq!(
+            events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![0, 3],
+            "the log keeps a hole where the revert deleted rows"
+        );
+        assert_eq!(session.cached_max_seq(), 3);
+        let fresh = crate::session::event::item_from_event(events.last().unwrap()).unwrap();
+        assert_eq!(item_text_preview(&fresh), "fresh");
+        let folded = fold_surface(&events).unwrap().nodes;
+        assert_eq!(session.projection.borrow().surface.nodes, folded);
+    }
+
+    #[test]
+    fn reopen_after_truncate_keeps_high_water_and_appends_into_the_hole() {
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         session
             .insert_detail_rows(&[user_text("u0"), user_text("u1"), user_text("u2")])
             .unwrap();
         session.revert_to_user_anchor(1).unwrap();
-        let seq = session.insert_detail_rows(&[user_text("fresh")]).unwrap();
-        let _ = seq;
-        let events = session.load_events().unwrap();
-        assert_eq!(events.last().unwrap().seq, 1);
-        assert_eq!(session.cached_max_seq(), 1);
-        let folded = fold_surface(&events).unwrap().nodes;
-        assert_eq!(session.projection.borrow().surface.nodes, folded);
+        // Re-hydrate from disk: the persisted high-water (3) must survive a
+        // revert, and a fresh append must not collapse back onto seq 1.
+        session.hydrate_projection().unwrap();
+        assert_eq!(
+            session.cached_max_seq(),
+            0,
+            "active tail is the surviving row"
+        );
+        let outcome = session
+            .insert_detail_rows(&[user_text("after-reopen")])
+            .unwrap();
+        assert_eq!(outcome.seq_range, Some((3, 3)));
+        // Full-load hydrate must tolerate the hole [0, 3] without erroring.
+        let seqs: Vec<u64> = session
+            .load_events()
+            .unwrap()
+            .iter()
+            .map(|e| e.seq)
+            .collect();
+        assert_eq!(seqs, vec![0, 3]);
     }
 
     #[test]
@@ -4565,6 +4829,96 @@ mod tests {
             2,
             "distinct call_id results must both persist"
         );
+    }
+
+    #[test]
+    fn commit_same_tool_result_identity_with_new_content_appends_continuation() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let fc = Item::FunctionCall(FunctionToolCall {
+            arguments: "{}".into(),
+            call_id: "call_c".into(),
+            namespace: None,
+            name: "read".into(),
+            id: None,
+            status: None,
+        });
+        session.persist_item(&fc).unwrap();
+        let first = Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: "call_c".into(),
+            output: FunctionCallOutput::Text("first".into()),
+            id: None,
+            status: None,
+        });
+        let first_seq = session.persist_item(&first).unwrap();
+
+        let second = Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: "call_c".into(),
+            output: FunctionCallOutput::Text("second".into()),
+            id: None,
+            status: None,
+        });
+        let mut rows = session.load_working_set().unwrap();
+        rows.push(WorkingRow::pending(second.clone()));
+        session
+            .commit_turn_delta_with_orphan_cleanup(&mut rows, &[], session.cached_max_seq(), "t1")
+            .unwrap();
+
+        let results: Vec<_> = session
+            .load_events()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event_type == EventType::ItemToolResult)
+            .collect();
+        assert_eq!(
+            results.len(),
+            2,
+            "a differing body for the same identity must land as a continuation"
+        );
+        // The settled row is untouched...
+        assert_eq!(results[0].seq, first_seq);
+        assert_eq!(results[0].data, serde_json::to_value(&first).unwrap());
+        // ...and the new body is a fresh, strictly higher seq.
+        assert!(results[1].seq > first_seq);
+        assert_eq!(results[1].data, serde_json::to_value(&second).unwrap());
+    }
+
+    #[test]
+    fn commit_shadowed_row_with_same_identity_is_not_resurrected() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let fc = Item::FunctionCall(FunctionToolCall {
+            arguments: "{}".into(),
+            call_id: "call_s".into(),
+            namespace: None,
+            name: "read".into(),
+            id: None,
+            status: None,
+        });
+        let fc_seq = session.persist_item(&fc).unwrap();
+        // An empty-keep compact replaces the whole surface with the summary,
+        // dropping the fc row from `items_by_seq` while it survives on disk.
+        session
+            .apply_compact_checkpoint(&user_text("summary"), 10)
+            .unwrap();
+
+        let mut rows = session.load_working_set().unwrap();
+        rows.push(WorkingRow::pending(fc.clone()));
+        session
+            .commit_turn_delta_with_orphan_cleanup(&mut rows, &[], session.cached_max_seq(), "t1")
+            .unwrap();
+
+        let calls: Vec<_> = session
+            .load_events()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event_type == EventType::ItemToolCall)
+            .collect();
+        assert_eq!(
+            calls.len(),
+            1,
+            "a shadowed row with the same identity must not be resurrected"
+        );
+        assert_eq!(calls[0].seq, fc_seq);
+        assert_eq!(calls[0].data, serde_json::to_value(&fc).unwrap());
     }
 
     #[test]

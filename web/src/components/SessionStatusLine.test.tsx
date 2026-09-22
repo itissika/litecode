@@ -1357,3 +1357,59 @@ describe("SessionStatusLine — subagent roster panel (dock)", () => {
     expect(screen.queryByTestId("message-list")).toBeNull();
   });
 });
+
+describe("SessionStatusLine — subagent variant", () => {
+  it("hides the Workers capsule: a child cannot spawn children", () => {
+    useSessionStore.setState({ sessions: [subagentSession()] } as never);
+
+    render(<SessionStatusLine sessionId="s1" variant="subagent" />);
+
+    expect(screen.getByTestId("capsule-todo")).toBeTruthy();
+    expect(screen.getByTestId("capsule-plan")).toBeTruthy();
+    expect(screen.getByTestId("capsule-terminal")).toBeTruthy();
+    expect(screen.queryByTestId("capsule-subagent")).toBeNull();
+  });
+
+  it("keeps the terminal reveal but drops Kill", () => {
+    useConnectionStore.setState({
+      state: "connected",
+      sendRpc: vi.fn(async () => ({ ok: true })),
+    } as never);
+    useBashStore.getState().applySnapshot("s1", { jobs: [bashJob], waits: [] });
+
+    render(<SessionStatusLine sessionId="s1" variant="subagent" />);
+    fireEvent.click(screen.getByTestId("capsule-terminal"));
+
+    expect(screen.getByTestId("terminal-job-bg_a")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /^Reveal terminal/ }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Kill$/ })).toBeNull();
+  });
+
+  it("keeps Open plan but drops the 执行计划 turn", async () => {
+    seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+
+    render(<SessionStatusLine sessionId="s1" variant="subagent" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+
+    expect(screen.getByText("Open plan")).toBeTruthy();
+    expect(screen.queryByTestId("plan-execute")).toBeNull();
+    expect(screen.queryByText("执行计划")).toBeNull();
+    // The file content still loads (read-only, no turn is started).
+    expect(await within(screen.getByTestId("status-capsule-panel")).findByText("plan")).toBeTruthy();
+  });
+
+  it("primary still offers both human-owned actions", () => {
+    useBashStore.getState().applySnapshot("s1", { jobs: [bashJob], waits: [] });
+    seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+
+    render(<SessionStatusLine sessionId="s1" />);
+
+    expect(screen.getByTestId("capsule-subagent")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("capsule-terminal"));
+    expect(screen.getByRole("button", { name: /^Kill$/ })).toBeTruthy();
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+    expect(screen.getByTestId("plan-execute")).toBeTruthy();
+  });
+});

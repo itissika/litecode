@@ -446,6 +446,24 @@ impl SessionController {
             }
             return Ok(());
         }
+        // A child session's identity comes from its agent profile and is fixed
+        // for the child's whole life: there is no "switch the agent" concept for
+        // subagents (the profile name seeds the row at launch). Config stays
+        // editable — model / thinking tier / context mode are session-owned and
+        // work identically to a primary session.
+        if self.sessions.is_child_session(session_id) {
+            let binding = self.session_binding(session_id);
+            if let Some(proj) = self.projection_mut(session_id) {
+                proj.push_operation_error(
+                    OperationKind::SetActivePrimary,
+                    ErrorCode::InvalidRequest,
+                    "child session identity is fixed by its agent profile".into(),
+                    &project,
+                    &binding,
+                );
+            }
+            return Ok(());
+        }
         self.runtime.apply_non_engine()?;
         match crate::runtime::RuntimeHandle::validate_primary_agent(
             &self.runtime.resolved,

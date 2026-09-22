@@ -95,7 +95,11 @@ const EMPTY_TODO_ITEMS: TodoItem[] = [];
 /**
  * One resident row of session-mount status capsules (terminal / subagent /
  * plan / todo). All four capsules are always present — no appear/disappear —
- * and keep the same glass at every state (empty capsules are NOT dimmed).
+ * and keep the same glass at every state (empty capsules are NOT dimmed). In
+ * `variant="subagent"` (a child session's panel) the Workers capsule is not
+ * rendered — a child cannot spawn children — so the row is three capsules, and
+ * the two actions that only a human-owned session may fire (terminal Kill,
+ * plan 执行计划) are hidden. Reveal / Open plan stay.
  *
  * Two-level expansion (user-fixed):
  *  1. Resident: four capsules never unmount; widths are adaptive with only
@@ -126,10 +130,16 @@ const EMPTY_TODO_ITEMS: TodoItem[] = [];
 export function SessionStatusLine({
   sessionId,
   onRevealBash,
+  variant = "primary",
 }: {
   sessionId: string;
   onRevealBash?: (callId: string) => void;
+  /** `subagent`: the child-session variant — no Workers capsule (nor its
+   *  roster panel) and no write actions a user would fire on their own
+   *  session: terminal Kill and the plan's 执行计划 turn are hidden. */
+  variant?: "primary" | "subagent";
 }) {
+  const subagentView = variant === "subagent";
   const bashJobs = useBashStore(
     (s) => s.bySession.get(sessionId)?.jobs ?? EMPTY_BASH_JOBS,
   );
@@ -445,6 +455,7 @@ export function SessionStatusLine({
         jobs={backgroundJobs}
         callMeta={bashCallMeta}
         onRevealBash={onRevealBash}
+        allowKill={!subagentView}
       />
     ) : (openId ?? closingId) === "subagent" ? (
       <SubagentRosterPanel sessionId={sessionId} />
@@ -455,6 +466,7 @@ export function SessionStatusLine({
         running={running}
         onOpen={openPlan}
         onExecute={executePlan}
+        allowExecute={!subagentView}
       />
     ) : (openId ?? closingId) === "todo" ? (
       <TodoPanelBody
@@ -594,35 +606,37 @@ export function SessionStatusLine({
           }
           ariaLabel="Session plan"
         />
-        <Capsule
-          id="subagent"
-          open={openId === "subagent"}
-          expanded={expandedId === "subagent"}
-          onToggle={toggle}
-          onHoverStart={onHoverStart}
-          onHoverEnd={onHoverEnd}
-          icon={
-            <UsersIcon
-              size={14}
-              weight="fill"
-              aria-hidden
-              className={subagentRunning > 0 ? "subagent-status-icon" : ""}
-            />
-          }
-          label="Workers"
-          detail={
-            subagentTotal > 0 ? (
-              <span>
-                {subagentRunning}/{subagentTotal} running
-              </span>
-            ) : (
-              <span className="italic text-(--_dk-text-disabled)">
-                No subagents
-              </span>
-            )
-          }
-          ariaLabel={`Subagent status, ${subagentRunning} running`}
-        />
+        {!subagentView && (
+          <Capsule
+            id="subagent"
+            open={openId === "subagent"}
+            expanded={expandedId === "subagent"}
+            onToggle={toggle}
+            onHoverStart={onHoverStart}
+            onHoverEnd={onHoverEnd}
+            icon={
+              <UsersIcon
+                size={14}
+                weight="fill"
+                aria-hidden
+                className={subagentRunning > 0 ? "subagent-status-icon" : ""}
+              />
+            }
+            label="Workers"
+            detail={
+              subagentTotal > 0 ? (
+                <span>
+                  {subagentRunning}/{subagentTotal} running
+                </span>
+              ) : (
+                <span className="italic text-(--_dk-text-disabled)">
+                  No subagents
+                </span>
+              )
+            }
+            ariaLabel={`Subagent status, ${subagentRunning} running`}
+          />
+        )}
         <Capsule
           id="terminal"
           open={openId === "terminal"}
@@ -767,11 +781,15 @@ function TerminalPanel({
   jobs,
   callMeta,
   onRevealBash,
+  allowKill,
 }: {
   sessionId: string;
   jobs: BashJob[];
   callMeta: ReadonlyMap<string, BashCallMeta>;
   onRevealBash?: (callId: string) => void;
+  /** `false` in the subagent variant: Kill is a write on the parent's own
+   *  machine state, so a child panel only reveals. */
+  allowKill: boolean;
 }) {
   if (jobs.length === 0) return <PanelEmpty>No active terminals</PanelEmpty>;
   return (
@@ -783,6 +801,7 @@ function TerminalPanel({
           sessionId={sessionId}
           meta={callMeta.get(job.call_id)}
           onRevealBash={onRevealBash}
+          allowKill={allowKill}
         />
       ))}
     </div>
@@ -796,11 +815,13 @@ function TerminalJob({
   sessionId,
   meta,
   onRevealBash,
+  allowKill,
 }: {
   job: BashJob;
   sessionId: string;
   meta?: BashCallMeta;
   onRevealBash?: (callId: string) => void;
+  allowKill: boolean;
 }) {
   // Full command from the loaded call arguments; the wire's collapsed preview
   // is the fallback when the call row is outside the transcript window.
@@ -822,13 +843,15 @@ function TerminalJob({
         >
           {job.command_preview}
         </span>
-        <button
-          type="button"
-          onClick={() => void bashKill(job.id)}
-          className="btn-danger btn-xs shrink-0"
-        >
-          Kill
-        </button>
+        {allowKill && (
+          <button
+            type="button"
+            onClick={() => void bashKill(job.id)}
+            className="btn-danger btn-xs shrink-0"
+          >
+            Kill
+          </button>
+        )}
         <button
           type="button"
           aria-label={`Reveal terminal: ${job.command_preview}`}
@@ -864,12 +887,16 @@ function PlanPanel({
   running,
   onOpen,
   onExecute,
+  allowExecute,
 }: {
   path: string | null;
   projectRoot: string | null;
   running: boolean;
   onOpen: (path: string) => void;
   onExecute: () => void;
+  /** `false` in the subagent variant: starting a plan turn is the human's
+   *  action on their own session; a child panel only reads / opens the file. */
+  allowExecute: boolean;
 }) {
   const [doc, setDoc] = useState<PlanDoc>({ status: "loading" });
   const lastChange = useWorkspaceChangeStore((s) => s.last);
@@ -925,16 +952,18 @@ function PlanPanel({
         <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--_dk-text-secondary)">
           {path}
         </span>
-        <button
-          type="button"
-          onClick={onExecute}
-          disabled={running}
-          data-testid="plan-execute"
-          className="flex shrink-0 items-center gap-1.5 rounded border border-(--_dk-line) px-2 py-1 text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary) disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-        >
-          <PlayIcon size={13} weight="fill" aria-hidden />
-          执行计划
-        </button>
+        {allowExecute && (
+          <button
+            type="button"
+            onClick={onExecute}
+            disabled={running}
+            data-testid="plan-execute"
+            className="flex shrink-0 items-center gap-1.5 rounded border border-(--_dk-line) px-2 py-1 text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary) disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+          >
+            <PlayIcon size={13} weight="fill" aria-hidden />
+            执行计划
+          </button>
+        )}
         <button
           type="button"
           onClick={() => onOpen(path)}

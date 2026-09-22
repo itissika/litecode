@@ -76,17 +76,32 @@ fn log_max_cursor(sessions: &SessionManager, sid: &str) -> (i64, u64) {
 }
 
 fn assert_cursors_agree(proj: &Projection, sessions: &SessionManager, sid: &str) {
+    // `last_seq` is the active tail (MAX(seq)); `next_seq` is the persisted
+    // allocation high-water. After a revert they diverge, so only `last_seq` is
+    // pinned to the log; `next_seq` is checked to agree across the entry cursor
+    // and the snapshot, and to stay strictly above the active tail.
     let from_events = log_max_cursor(sessions, sid);
     let from_entry = sessions.entry_wire_seq_cursor(sid);
     let snap = proj.snapshot("/p", &binding());
-    assert_eq!(from_entry, from_events, "entry cursor must equal MAX(seq)");
     assert_eq!(
-        snap.buffer.last_seq, from_events.0,
-        "snapshot last_seq must equal MAX(seq)"
+        from_entry.0, from_events.0,
+        "entry last_seq must equal the active MAX(seq)"
     );
     assert_eq!(
-        snap.buffer.next_seq, from_events.1,
-        "snapshot next_seq must equal MAX(seq)+1"
+        snap.buffer.last_seq, from_events.0,
+        "snapshot last_seq must equal the active MAX(seq)"
+    );
+    assert_eq!(
+        (from_entry.0, from_entry.1),
+        (snap.buffer.last_seq, snap.buffer.next_seq),
+        "entry and snapshot cursor must agree"
+    );
+    assert!(
+        snap.buffer.next_seq as i64 > from_events.0,
+        "high-water next_seq must stay strictly above the active MAX(seq) \
+         (next_seq={}, active_max={})",
+        snap.buffer.next_seq,
+        from_events.0
     );
 }
 
@@ -229,6 +244,9 @@ fn second_compact_appends_new_seq_and_keeps_both_checkpoints() {
 #[test]
 fn revert_k1_emits_reverted_and_operation_snapshot_matching_max_seq() {
     let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
+    let high_water_before = sessions.entry_wire_seq_cursor(&sid).1;
+    assert_eq!(high_water_before, 3);
+
     proj.revert_to_user_anchor(1, "/p", &binding()).unwrap();
     let out = proj.take_outgoing();
 
@@ -236,8 +254,9 @@ fn revert_k1_emits_reverted_and_operation_snapshot_matching_max_seq() {
         .iter()
         .find(|msg| msg["method"] == "buffer/reverted")
         .expect("buffer/reverted");
-    assert_eq!(reverted["params"]["next_seq"], 1);
+    // Active tail drops to the surviving row; the allocator high-water does not.
     assert_eq!(reverted["params"]["last_seq"], 0);
+    assert_eq!(reverted["params"]["next_seq"], 3);
 
     let op = out
         .iter()
@@ -245,7 +264,10 @@ fn revert_k1_emits_reverted_and_operation_snapshot_matching_max_seq() {
         .expect("operation_result");
     assert_eq!(op["params"]["ok"], true);
     assert_eq!(op["params"]["snapshot"]["buffer"]["last_seq"], 0);
-    assert_eq!(op["params"]["snapshot"]["buffer"]["next_seq"], 1);
+    assert_eq!(op["params"]["snapshot"]["buffer"]["next_seq"], 3);
+
+    // The truncate never rewinds the high-water, so no seq can be handed out twice.
+    assert_eq!(sessions.entry_wire_seq_cursor(&sid).1, high_water_before);
 
     let loaded = proj.materialize_range(0, 1).unwrap();
     assert!(
@@ -276,7 +298,9 @@ fn compact_then_revert_before_checkpoint_drops_compact_and_resets_pointers() {
         .iter()
         .find(|msg| msg["method"] == "buffer/reverted")
         .expect("buffer/reverted");
-    assert_eq!(reverted["params"]["next_seq"], 1);
+    assert_eq!(reverted["params"]["last_seq"], 0);
+    // Compact checkpoint (seq 3) is dropped, but the allocator high-water stays 4.
+    assert_eq!(reverted["params"]["next_seq"], 4);
 
     let events = sessions.data().events_blocking(&sid).unwrap();
     assert!(
@@ -308,8 +332,9 @@ fn compact_then_revert_after_checkpoint_keeps_compacted_seq() {
         .iter()
         .find(|msg| msg["method"] == "buffer/reverted")
         .expect("buffer/reverted");
-    assert_eq!(reverted["params"]["next_seq"], 4);
     assert_eq!(reverted["params"]["last_seq"], 3);
+    // The truncated tail (seq 4) is gone; the allocator high-water stays 5.
+    assert_eq!(reverted["params"]["next_seq"], 5);
 
     let events = sessions.data().events_blocking(&sid).unwrap();
     assert!(
@@ -325,20 +350,31 @@ fn compact_then_revert_after_checkpoint_keeps_compacted_seq() {
 }
 
 #[test]
-fn revert_then_append_uses_truncated_max_plus_one() {
+fn revert_then_append_does_not_reuse_deleted_seq() {
     let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
     proj.revert_to_user_anchor(1, "/p", &binding()).unwrap();
     let _ = proj.take_outgoing();
-    assert_eq!(sessions.entry_wire_seq_cursor(&sid), (0, 1));
+    // Active tail is 0, but the high-water stays at 3: the deleted seqs 1..2 are
+    // never handed out again.
+    assert_eq!(sessions.entry_wire_seq_cursor(&sid), (0, 3));
 
     insert_detail(&sessions, &sid, "after-revert");
     proj.bump_buffer_revision("/p", &binding());
     let out = proj.take_outgoing();
     let items = buffer_item_frames(&out);
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["params"]["seq"], 1);
+    assert_eq!(
+        items[0]["params"]["seq"], 3,
+        "post-revert append must take the old high-water, not MAX(seq)+1"
+    );
+
+    // Range delivery reaches the appended row even though the log has a hole at 1..2.
+    let loaded = proj.materialize_range(3, 4).unwrap();
+    assert_eq!(loaded.events.len(), 1);
+    assert_eq!(loaded.events[0].seq, 3);
+
     assert_cursors_agree(&proj, &sessions, &sid);
-    assert_buffer_items_below_next(&out, 2);
+    assert_buffer_items_below_next(&out, 4);
 }
 
 #[test]

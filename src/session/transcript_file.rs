@@ -3,6 +3,23 @@
 //! One virtual markdown-like file per session, addressed as
 //! `.litecode/sessions/<full_session_id>.md`. SQLite remains the only source of
 //! truth; this module never writes files.
+//!
+//! # Addressing contract
+//!
+//! A physical line holds at most [`RENDER_WIDTH`] chars of one item's text, cut
+//! at deterministic char offsets (hard cut, no word preference). A rendered
+//! `L<n>` therefore addresses a *bounded* line: no line is ever an entire
+//! fifty-thousand-char row, and one item can span as many lines as it needs.
+//!
+//! [`LineSpan::char_start_in_item`] / [`LineSpan::char_end_in_item`] give the
+//! item-local char range each line covers. The ranges stay contiguous and cover
+//! the item text exactly once (the line that carries the newline owns it), so a
+//! hit's `char_start` resolves to the very line that contains it — `read`,
+//! `grep` and `session_search` all address the same rendering.
+//!
+//! [`RENDER_WIDTH`] is an addressing constant, not a display preference: any
+//! change renumbers every line of every session at once. Never make it a
+//! per-call parameter.
 
 use std::path::Path;
 
@@ -13,6 +30,13 @@ use crate::types::{Item, LitecodeError, Result, item_text_preview};
 pub const VIRTUAL_SESSION_DIR: &str = ".litecode/sessions";
 pub const VIRTUAL_SESSION_PREFIX: &str = ".litecode/sessions/";
 pub const VIRTUAL_SESSION_SUFFIX: &str = ".md";
+
+/// Physical render width of the virtual transcript, in chars (hard cut).
+///
+/// Bounds every addressable line so one hit is one readable fragment instead of
+/// a whole spilled row. Changing it renumbers the `L<n>` of every session, so it
+/// is a product constant — never a per-call option.
+pub const RENDER_WIDTH: usize = 160;
 pub const READ_ONLY_MSG: &str =
     "this path is a read-only session transcript projection; use read or grep";
 pub const IN_CONTEXT_WINDOW_MSG: &str =
@@ -23,7 +47,6 @@ pub const SEARCHABLE_KINDS: &[&str] = &[
     "item/assistant",
     "item/tool_call",
     "item/tool_result",
-    "compacted",
 ];
 
 #[derive(Debug, Clone)]
@@ -43,7 +66,6 @@ pub struct LineSpan {
     pub kind: String,
     pub item_type: String,
     pub is_header: bool,
-    pub is_blank: bool,
     /// Inclusive char offset of this body line inside the item plain text.
     pub char_start_in_item: usize,
     /// Exclusive char offset of this body line inside the item plain text.
@@ -83,7 +105,7 @@ impl TranscriptFile {
     pub fn first_body_line(&self, seq: i64) -> Option<u32> {
         self.line_index
             .iter()
-            .find(|s| s.seq == seq && !s.is_header && !s.is_blank)
+            .find(|s| s.seq == seq && !s.is_header)
             .map(|s| s.line)
     }
 
@@ -91,7 +113,7 @@ impl TranscriptFile {
     pub fn line_for_char(&self, seq: i64, char_start: usize) -> Option<u32> {
         let mut last_body: Option<u32> = None;
         for span in &self.line_index {
-            if span.seq != seq || span.is_header || span.is_blank {
+            if span.seq != seq || span.is_header {
                 continue;
             }
             last_body = Some(span.line);
@@ -168,21 +190,37 @@ pub fn list_virtual_paths(ids: impl IntoIterator<Item = impl AsRef<str>>) -> Vec
 }
 
 pub fn row_plain_text(row: &SearchableRow, data_root: &Path) -> Result<Option<String>> {
+    match row_plain_text_strict(row, data_root) {
+        Ok(text) => Ok(text),
+        Err(e) => {
+            tracing::warn!(
+                session_id = %row.session_id,
+                seq = row.seq,
+                error = %e,
+                "session transcript skip unreadable row"
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Read one row's projected text, treating an unreadable source as an error.
+///
+/// [`row_plain_text`] answers "what can I show?" and drops whatever it cannot
+/// read. The index cannot afford that answer: a dropped row next to an advanced
+/// cursor is a document that is permanently missing from search. The derive
+/// pipeline uses this instead, so the whole batch fails and the cursor stays
+/// where it was.
+pub fn row_plain_text_strict(row: &SearchableRow, data_root: &Path) -> Result<Option<String>> {
     let json = if let Some(body) = &row.body {
         body.clone()
     } else if let Some(body_ref) = &row.body_ref {
-        match load_blob_text(body_ref, data_root) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::warn!(
-                    session_id = %row.session_id,
-                    seq = row.seq,
-                    error = %e,
-                    "session transcript skip unread blob"
-                );
-                return Ok(None);
-            }
-        }
+        load_blob_text(body_ref, data_root).map_err(|e| {
+            LitecodeError::SessionStorage(format!(
+                "unreadable transcript blob for {}:{}: {e}",
+                row.session_id, row.seq
+            ))
+        })?
     } else {
         return Ok(None);
     };
@@ -191,12 +229,10 @@ pub fn row_plain_text(row: &SearchableRow, data_root: &Path) -> Result<Option<St
     } else if let Ok(body) = serde_json::from_str::<crate::session::model::CompactedBody>(&json) {
         item_text_preview(&body.agent_item())
     } else {
-        tracing::warn!(
-            session_id = %row.session_id,
-            seq = row.seq,
-            "session transcript skip bad item json"
-        );
-        return Ok(None);
+        return Err(LitecodeError::SessionStorage(format!(
+            "unparseable transcript row {}:{}",
+            row.session_id, row.seq
+        )));
     };
     if text.trim().is_empty() {
         Ok(None)
@@ -276,7 +312,7 @@ fn push_item(
     item_type: &str,
     plain: &str,
 ) {
-    let header = format!("[seq:{seq} {kind} {item_type}]");
+    let header = format!("[s{seq} {}]", type_label(kind, item_type));
     push_line(
         lines,
         index,
@@ -286,7 +322,6 @@ fn push_item(
             kind: kind.to_string(),
             item_type: item_type.to_string(),
             is_header: true,
-            is_blank: false,
             char_start_in_item: 0,
             char_end_in_item: 0,
         },
@@ -298,47 +333,62 @@ fn push_item(
     let body_lines: Vec<&str> = plain.lines().collect();
     for (i, body) in body_lines.iter().enumerate() {
         let line_chars = body.chars().count();
-        let mut end = offset + line_chars;
+        let mut line_end = offset + line_chars;
         let has_more = i + 1 < body_lines.len() || plain.ends_with('\n');
-        if has_more && end < total_chars {
-            end += 1;
+        if has_more && line_end < total_chars {
+            line_end += 1;
         }
-        if end < offset {
-            end = offset;
+        if line_end < offset {
+            line_end = offset;
         }
-        push_line(
-            lines,
-            index,
-            LineSpan {
-                line: 0,
-                seq,
-                kind: kind.to_string(),
-                item_type: item_type.to_string(),
-                is_header: false,
-                is_blank: false,
-                char_start_in_item: offset,
-                char_end_in_item: end.max(offset),
-            },
-            (*body).to_string(),
-        );
-        offset = end;
+        // Hard cut at `RENDER_WIDTH`. The segments of one body line stay
+        // contiguous and the last one owns the trailing newline, so the whole
+        // item text is covered exactly once and `line_for_char` is exact.
+        let chars: Vec<char> = body.chars().collect();
+        let mut seg_start = 0usize;
+        loop {
+            let seg_end = (seg_start + RENDER_WIDTH).min(chars.len());
+            let is_last = seg_end == chars.len();
+            let start = offset + seg_start;
+            let end = if is_last { line_end } else { offset + seg_end };
+            push_line(
+                lines,
+                index,
+                LineSpan {
+                    line: 0,
+                    seq,
+                    kind: kind.to_string(),
+                    item_type: item_type.to_string(),
+                    is_header: false,
+                    char_start_in_item: start,
+                    char_end_in_item: end.max(start),
+                },
+                chars[seg_start..seg_end].iter().collect(),
+            );
+            if is_last {
+                break;
+            }
+            seg_start = seg_end;
+        }
+        offset = line_end;
     }
+}
 
-    push_line(
-        lines,
-        index,
-        LineSpan {
-            line: 0,
-            seq,
-            kind: kind.to_string(),
-            item_type: item_type.to_string(),
-            is_header: false,
-            is_blank: true,
-            char_start_in_item: offset,
-            char_end_in_item: offset,
-        },
-        String::new(),
-    );
+/// Reader-facing label for one row — the same vocabulary the search view uses.
+///
+/// The mapped cases cover every kind the store writes today; anything else falls
+/// back to its raw `kind`/`item_type` so a type added ahead of this table still
+/// renders instead of disappearing.
+pub fn type_label(kind: &str, item_type: &str) -> String {
+    match (kind, item_type) {
+        ("item/user", _) => "user".into(),
+        ("item/assistant", "reasoning") => "assistant reasoning".into(),
+        ("item/assistant", _) => "assistant message".into(),
+        ("item/tool_call", _) => "tool call".into(),
+        ("item/tool_result", _) => "tool result".into(),
+        ("compacted", _) => "compacted summary".into(),
+        _ => format!("{kind} {item_type}"),
+    }
 }
 
 fn push_line(lines: &mut Vec<String>, index: &mut Vec<LineSpan>, mut span: LineSpan, text: String) {
@@ -403,11 +453,10 @@ mod tests {
         let rows = reader.searchable_rows_blocking(Some(&sid)).unwrap();
         let file = load_transcript_file(&sid, &rows, reader.data_root()).unwrap();
         assert_eq!(file.virtual_path, virtual_path_for(&sid));
-        assert!(file.lines[0].starts_with("[seq:0 item/user "));
+        assert!(file.lines[0].starts_with("[s0 user]"));
         assert_eq!(file.lines[1], "alpha");
         assert_eq!(file.lines[2], "beta NEEDLE gamma");
         assert_eq!(file.lines[3], "delta");
-        assert_eq!(file.lines[4], "");
 
         let needle_start = "alpha\nbeta NEEDLE gamma\ndelta".find("NEEDLE").unwrap();
         let line = file.line_for_char(0, needle_start).unwrap();
@@ -482,6 +531,54 @@ mod tests {
         };
         let text = row_plain_text(&row, &data_root).unwrap().unwrap();
         assert!(text.contains("BLOB_NEEDLE"));
+    }
+
+    #[test]
+    fn long_body_line_is_wrapped_at_the_render_width() {
+        let long = "x".repeat(RENDER_WIDTH * 2 + 17);
+        let (data, sid) = seeded(&[user_text(&long)]);
+        let reader = data.reader();
+        let rows = reader.searchable_rows_blocking(Some(&sid)).unwrap();
+        let file = load_transcript_file(&sid, &rows, reader.data_root()).unwrap();
+        // header + 160 + 160 + 17
+        assert_eq!(file.lines.len(), 4);
+        assert!(file.lines.iter().all(|l| l.chars().count() <= RENDER_WIDTH));
+        assert_eq!(file.lines[1].chars().count(), RENDER_WIDTH);
+        assert_eq!(file.lines[2].chars().count(), RENDER_WIDTH);
+        assert_eq!(file.lines[3].chars().count(), 17);
+        // A match resolves to the segment that contains it, not to the row head.
+        assert_eq!(file.line_for_char(0, 5), Some(2));
+        assert_eq!(file.line_for_char(0, RENDER_WIDTH), Some(3));
+        assert_eq!(file.line_for_char(0, RENDER_WIDTH * 2 + 3), Some(4));
+        assert_eq!(
+            file.line_for_hit(0, RENDER_WIDTH * 2 + 3, RENDER_WIDTH * 2 + 9),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn wrapped_segments_cover_the_item_text_exactly_once() {
+        let text = "abcdefghij".repeat(70);
+        let (data, sid) = seeded(&[user_text(&text)]);
+        let reader = data.reader();
+        let rows = reader.searchable_rows_blocking(Some(&sid)).unwrap();
+        let file = load_transcript_file(&sid, &rows, reader.data_root()).unwrap();
+        let spans: Vec<_> = file
+            .line_index
+            .iter()
+            .filter(|s| s.seq == 0 && !s.is_header)
+            .collect();
+        assert_eq!(spans.len(), 5);
+        assert_eq!(spans[0].char_start_in_item, 0);
+        for pair in spans.windows(2) {
+            assert_eq!(pair[0].char_end_in_item, pair[1].char_start_in_item);
+        }
+        assert_eq!(spans.last().unwrap().char_end_in_item, text.chars().count());
+        let joined: String = spans
+            .iter()
+            .map(|s| file.line_text(s.line).unwrap())
+            .collect();
+        assert_eq!(joined, text, "wrapping must be lossless");
     }
 
     #[test]

@@ -243,8 +243,11 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         // `buffer/reverted` normally arrives before the operation result. If
         // that notification was lost during a socket hiccup, the snapshot is
         // still authoritative and must trim an already-loaded local window.
+        // A loaded window past the surviving tail (`last_seq`) still holds rows
+        // the revert deleted. `next_seq` is the allocator high-water and does
+        // not move back, so it cannot be the threshold.
         const local = useMessageStore.getState().bySession.get(op.snapshot.session_id);
-        if (local && local.toSeq > op.snapshot.buffer.next_seq) {
+        if (local && local.toSeq > op.snapshot.buffer.last_seq + 1) {
           useTurnStore.getState().clearPendingStream(op.snapshot.session_id);
           useTurnStore.getState().onTranscriptReverted(op.snapshot.session_id);
           useMessageStore.getState().onBufferReverted(op.snapshot.session_id, {

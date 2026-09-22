@@ -33,6 +33,7 @@
 ```
 
 写 SessionLog 只有三种：`append`（新 `LogSeq`）· `seal`（同一 `LogSeq` 写终态）· `truncate`（从某条 `item/user` 起含该行删掉其后）。  
+`truncate` 只删行、不回拨发号高水位：下一次 `append` 从 `sessions.next_seq` 取号，于是全量日志的 `LogSeq` 严格递增但**可以有空洞**（被删区间不会重现）。这是稳定身份的前提，全量加载不得再把空洞当错误。
 AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下一轮只问 Live。
 
 ---
@@ -81,6 +82,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 |---|---|---|
 | `compacted_seq` | `Option<LogSeq>` | 当前有效的 `compacted` 行。从未 compact 则为 `None`（现列 `checkpoint_seq`，`0` 改成 `None`） |
 | `spine_from` | `LogSeq` | 脊骨起点。无 compact 时为日志起点。被换掉的行仍在 SessionLog |
+| `next_seq` | `LogSeq` | **发号高水位**：下一条 `append` 取的 `LogSeq`（现列 `sessions.next_seq`，旧库按每会话 `MAX(seq)+1` 回填）。持久化且只增；`truncate` 不回拨，所以被删的 seq 永不复用。与「当前 `MAX(LogSeq)`」——active tail，`truncate` 会下降，用来做 stale-turn/回退并发守卫——是两个独立的游标，实现上不得混用 |
 
 ### 现在产品指针
 
@@ -99,7 +101,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 | Live / 线投影 | `TurnId`、相位、是否在跑、compacting、bash jobs、权限、token 统计 |
 | 目录投影 | `api_model_id`、`label`、`context_window` |
 | SessionLog | 换过的模型/工具集（`request/header`、`request/context`）、回合起止 |
-| 派生 | `max_seq` / `next_seq`、文件撤回锚点、FTS、meter |
+| 派生 | `max_seq`（active tail）、文件撤回锚点、FTS、meter |
 | 不抄 | Codex `WorldState`、Guardian、Realtime、fork 线程 id、`memory_mode` |
 
 ---

@@ -169,7 +169,7 @@ afterEach(() => {
 });
 
 describe("SubagentReadOnlyPanel — full read-only transcript", () => {
-  it("renders the child transcript with no writable UI", () => {
+  it("renders the child transcript with the derived subagent controls, no composer", () => {
     seedSession("root");
     seedChild([
       userRow(0, "do the thing"),
@@ -184,12 +184,34 @@ describe("SubagentReadOnlyPanel — full read-only transcript", () => {
     expect(screen.getByText("now do this")).toBeTruthy();
     expect(document.querySelectorAll("[data-user-message-bubble]")).toHaveLength(2);
 
-    // No writable surface at all.
+    // Derived subagent view: the status capsules + the session-row knobs are
+    // mounted (model / tier / context mode are honored by the child's own next
+    // turn), with the Workers capsule and the composer gone.
+    expect(screen.getByTestId("session-status-line")).toBeTruthy();
+    expect(screen.getByTestId("capsule-todo")).toBeTruthy();
+    expect(screen.queryByTestId("capsule-subagent")).toBeNull();
+    expect(screen.getByTestId("subagent-controls")).toBeTruthy();
+    expect(screen.getByTitle("Context usage")).toBeTruthy();
+
+    // No human-composition surface at all.
     expect(screen.queryByTestId("chat-input")).toBeNull();
-    expect(screen.queryByTestId("session-status-line")).toBeNull();
     expect(screen.queryByTestId("permission-card")).toBeNull();
     expect(screen.queryByTestId("mini-chat-input")).toBeNull();
     expect(document.querySelector("textarea")).toBeNull();
+    expect(screen.queryByTitle("Send")).toBeNull();
+    expect(screen.queryByTitle("Cancel")).toBeNull();
+  });
+
+  it("offers the knobs but none of the human-owned write actions", () => {
+    seedSession("root");
+    seedChild([userRow(0, "hi")]);
+
+    renderPanel();
+
+    // The ring reports usage; compaction stays a primary-panel action.
+    fireEvent.click(screen.getByTitle("Context usage"));
+    expect(screen.getByText("No context usage yet")).toBeTruthy();
+    expect(screen.queryByLabelText("Compact context")).toBeNull();
   });
 
   it("connected: ensures the child subscription", () => {

@@ -453,8 +453,11 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       const slice = getSlice(get().bySession, sessionId);
       const bySeq = new Map<number, HumanRow>();
       const itemIdToSeq = new Map<string, number>();
+      // `last_seq` is the surviving tail; `next_seq` is the allocator high-water
+      // and does not move back, so after a revert it can sit well above the
+      // tail. Keeping `seq < next_seq` would leave the deleted rows in the UI.
       for (const [seq, row] of slice.bySeq) {
-        if (seq < rev.next_seq) {
+        if (seq <= rev.last_seq) {
           bySeq.set(seq, row);
           rememberRowItem(itemIdToSeq, row);
         }

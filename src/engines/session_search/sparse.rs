@@ -9,7 +9,8 @@
 //! 3. exact substring → the trigram table's **indexed `LIKE`**, which the FTS5
 //!    trigram tokenizer answers from the index rather than a table scan;
 //! 4. ranked retrieval → `MATCH` + `ORDER BY rank` (BM25, k1=1.2 b=0.75);
-//! 5. queries shorter than 3 chars have no trigram and must fall back to `LIKE`;
+//! 5. queries shorter than 3 chars have no trigram, so the index cannot serve
+//!    them and the rows are scanned directly instead;
 //! 6. `LIKE` needs a pattern of ≥3 literal chars to be index-served, so the
 //!    normalization applied here must be the *same* fold the query gets;
 //! 7. proximity → `NEAR(...)`, FTS5's spelling of the span-near tier every
@@ -17,9 +18,9 @@
 //! 8. typo tolerance → n-gram overlap (the `trigram` OR), the documented
 //!    stand-in for the fuzzy matching FTS5 does not have (`pg_trgm`-style);
 //!    it is a **last-resort tier**, only consulted when 3/4/7 found nothing;
-//! 9. `|` separates alternatives and any branch may match — the product's query
-//!    contract (`lexical::split_patterns`): split, trim, dedupe, search each
-//!    branch, keep the best hit per key.
+//! 9. `|` separates alternatives and any branch may match — the contract the
+//!    `session_search` tool documents to the agent (`split_alternatives`):
+//!    split, trim, dedupe, search each branch, keep the best hit per key.
 //!
 //! Two FTS5 details are load-bearing and easy to get wrong:
 //!
@@ -75,16 +76,17 @@
 //! | `final`   | the product ladder: `like` 1.0 > `near` 0.9 >        |
 //! |           | routed `MATCH` 0.85 > n-gram fallback 0.72           |
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use crate::session::SessionDataReader;
-use crate::session::transcript_file::{SearchableRow, row_plain_text};
+use crate::session::transcript_file::SearchableRow;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use tokenizers::Tokenizer;
 
-use super::chunk::{self, ChunkCfg};
+
+use super::chunk::ChunkCfg;
+use super::derive;
 use super::echo;
 
 /// Bump when the index layout changes; an old cache is then rebuilt.
@@ -93,7 +95,17 @@ use super::echo;
 /// v5: single-pass token-boundary chunker (cuts shifted by ≤1 token).
 /// v6: session-echo result rows dropped (intent-only).
 /// v7: product lifecycle — `row_meta` text hashes, FTS5 triggers, `change_id`.
-const INDEX_SCHEMA: i64 = 7;
+/// v8: single derive pipeline — `source_state` (kind/item_type/hash/call_id/
+/// session_read_call/in_chunks) replaces the hash-only `row_meta`.
+/// v9: settled-prefix projection — `source_state` loses its content hash and
+/// indexes `(session_id, call_id)`. A row is identified by `(session_id, seq)`
+/// alone, and a settled row is never rewritten in place, so there is nothing
+/// left for a hash to notice. Old files are rebuilt rather than migrated.
+/// v10: pure key-set reconciliation — no outbox/`change_id` freshness, no
+/// forced keys, no content window. Every search reconciles the current final
+/// source key set against the indexed key ledger. Old files are rebuilt rather
+/// than migrated.
+const INDEX_SCHEMA: i64 = 10;
 
 /// Exact-substring hits score like the product's verbatim path, ranked hits
 /// land in the product's "index confirmed" band. The split is what lets the
@@ -114,7 +126,8 @@ const NEAR_DISTANCE: usize = 10;
 /// (sorted, so the query stays deterministic).
 const NEAR_MAX_TERMS: usize = 6;
 
-/// Below this many chars a query has no trigram at all.
+/// Below this many chars a query has no trigram at all: the index cannot serve
+/// it, and the `LIKE` lane scans the rows directly.
 const TRIGRAM_LEN: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,14 +228,6 @@ pub fn chunk_cfg(tokens: usize) -> ChunkCfg {
 }
 
 impl SparseIndex {
-    /// Change id the index was last reconciled at (0 = never seen).
-    pub fn change_id(&self) -> i64 {
-        meta(&self.conn, "change_id")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(0)
-    }
-
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -230,9 +235,9 @@ impl SparseIndex {
     /// Hits for one lane, best first. `limit` caps the list; the recipe's own
     /// order is preserved (exact substring first, then BM25).
     ///
-    /// `|` separates alternatives and any branch may match — the product's
-    /// query contract (`lexical::split_patterns`). Each branch is searched and
-    /// the best hit per key wins, so "A|B" behaves like the product's union.
+    /// `|` separates alternatives and any branch may match — the contract the
+    /// tool documents to the agent. Each branch is searched and the best hit per
+    /// key wins, so "A|B" is the union of what A and B each find.
     pub fn search(&self, lane: Lane, query: &str, limit: usize) -> Result<Vec<SparseHit>> {
         let alternatives = split_alternatives(query);
         if alternatives.is_empty() {
@@ -374,8 +379,20 @@ impl SparseIndex {
     }
 
     fn contains_like(&self, needle: &str, session_id: &str, seq: i64) -> Result<bool> {
+        // Below the trigram floor the index cannot answer, so the pinned row is
+        // checked against its own text directly.
         if needle.chars().count() < TRIGRAM_LEN {
-            return Ok(false);
+            let hit: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT 1 FROM rows
+                      WHERE session_id = ?1 AND seq = ?2 AND instr(text_norm, ?3) > 0
+                      LIMIT 1",
+                    params![session_id, seq, needle],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            return Ok(hit.is_some());
         }
         let pattern = format!("%{needle}%");
         let hit: Option<i64> = self
@@ -421,10 +438,12 @@ impl SparseIndex {
     /// ~18x slower), so a `_` or `%` in the query stays a LIKE wildcard and the
     /// result is a superset. `instr` then confirms the literal substring, which
     /// keeps the lane's "exact match" claim true without giving up the index.
+    ///
+    /// Below the trigram floor there is no index to give up: the rows are scanned
+    /// directly. A two-character CJK term is an ordinary query, not an error.
     fn like_hits(&self, needle: &str, limit: usize) -> Result<Vec<SparseHit>> {
-        // FTS5's LIKE optimization needs ≥3 literal characters in the pattern.
         if needle.chars().count() < TRIGRAM_LEN {
-            return Ok(Vec::new());
+            return self.scan_like_hits(needle, limit);
         }
         // The `ORDER BY` is not cosmetic: a `LIKE` probe with a `LIMIT` and no
         // order truncates in rowid order, which is arbitrary and silently loses
@@ -453,6 +472,46 @@ impl SparseIndex {
         let pattern = format!("%{needle}%");
         let limit_i64 = limit as i64;
         let mut bind: Vec<&dyn rusqlite::ToSql> = vec![&pattern, &needle, &limit_i64];
+        if let Some(scope) = &self.scope {
+            bind.push(scope);
+        }
+        let rows = stmt.query_map(rusqlite::params_from_iter(bind), |row| {
+            let text: String = row.get(3)?;
+            let pos: i64 = row.get(6)?;
+            let chunk_start: i64 = row.get(7)?;
+            let span = like_match_span(&text, needle, pos.max(1) as usize);
+            row_hit(
+                row,
+                &text,
+                span,
+                SCORE_LIKE,
+                None,
+                chunk_start.max(0) as usize,
+            )
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// `LIKE` without the index: a direct scan of the normalized row text, for
+    /// needles the trigram table cannot serve. The same `instr` predicate the
+    /// indexed path uses to confirm a hit is the only one needed here.
+    fn scan_like_hits(&self, needle: &str, limit: usize) -> Result<Vec<SparseHit>> {
+        let scope_clause = if self.scope.is_some() {
+            " AND r.session_id = ?3"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT r.session_id, r.seq, r.chunk, r.text, r.single, r.item_type,
+                    instr(r.text_norm, ?1) AS pos, r.char_start AS chunk_start
+               FROM rows r
+              WHERE instr(r.text_norm, ?1) > 0{scope_clause}
+              ORDER BY r.session_id DESC, r.seq DESC, r.chunk DESC
+              LIMIT ?2"
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let limit_i64 = limit as i64;
+        let mut bind: Vec<&dyn rusqlite::ToSql> = vec![&needle, &limit_i64];
         if let Some(scope) = &self.scope {
             bind.push(scope);
         }
@@ -668,8 +727,8 @@ fn extend_unique(hits: &mut Vec<SparseHit>, extra: Vec<SparseHit>, seen: &mut BT
 }
 
 /// Split a query on `|` into trimmed, non-empty, deduped alternatives — the
-/// product's contract (`lexical::split_patterns`), mirrored exactly so the lane
-/// answers "A|B" the way production does.
+/// contract the tool documents (`|` = alternatives, any may match), mirrored
+/// exactly so the lane answers "A|B" the way production does.
 fn split_alternatives(query: &str) -> Vec<&str> {
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     let mut out = Vec::new();
@@ -692,6 +751,10 @@ fn tier_score(base: f64, rank: usize, limit: usize) -> f64 {
 }
 
 fn open(path: &Path) -> Result<Connection> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create sparse index dir {}", parent.display()))?;
+    }
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -731,8 +794,7 @@ fn meta(conn: &Connection, key: &str) -> Result<String> {
 
 /// Rows-table DDL, shared by the index builder and its tests. `text` keeps the
 /// original chunk text so normalized offsets can be mapped back at query time;
-/// `row_meta` keeps one text hash per row, which is the reconcile's change
-/// detector (an edited row is re-chunked without comparing chunk text).
+/// [`SOURCE_STATE_DDL`] carries the per-row derived state.
 const ROWS_DDL: &str = "CREATE TABLE IF NOT EXISTS rows (
         rowid      INTEGER PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -745,13 +807,31 @@ const ROWS_DDL: &str = "CREATE TABLE IF NOT EXISTS rows (
         text_norm  TEXT NOT NULL,
         text       TEXT NOT NULL
      );
-     CREATE INDEX IF NOT EXISTS rows_key ON rows(session_id, seq);
-     CREATE TABLE IF NOT EXISTS row_meta (
-        session_id TEXT NOT NULL,
-        seq        INTEGER NOT NULL,
-        hash       INTEGER NOT NULL,
+     CREATE INDEX IF NOT EXISTS rows_key ON rows(session_id, seq);";
+
+/// `source_state` is the reconciliation ledger: one row per settled source row,
+/// carrying its allocation into the index plus the call linkage the echo rule
+/// needs. It deliberately keeps metadata for rows that never reach `rows`
+/// (echo results, compacted summaries) — they are part of the settled key set
+/// too, and a rewritten call has to be able to find its result without a
+/// corpus rescan.
+///
+/// There is no content hash here on purpose. A hash would have to cover every
+/// input to the derivation to be a sound change detector, and one of those
+/// inputs is *another row* — so the reconcile compares keys instead and
+/// re-derives anything it does not already have.
+const SOURCE_STATE_DDL: &str = "CREATE TABLE IF NOT EXISTS source_state (
+        session_id        TEXT NOT NULL,
+        seq               INTEGER NOT NULL,
+        kind              TEXT NOT NULL,
+        item_type         TEXT NOT NULL,
+        call_id           TEXT,
+        session_read_call INTEGER NOT NULL DEFAULT 0,
+        in_chunks         INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (session_id, seq)
-     );";
+     );
+     CREATE INDEX IF NOT EXISTS source_state_session_call
+        ON source_state(session_id, call_id) WHERE call_id IS NOT NULL;";
 
 /// FTS5 tables over `rows`. No bulk `rebuild` here: the triggers below keep
 /// them in sync on every insert/delete, which is what makes appends cheap.
@@ -801,140 +881,277 @@ pub fn needs_rebuild(path: &Path) -> Result<bool> {
     Ok(!schema_ok)
 }
 
-/// Cheap freshness probe: has the session store moved past the index's change id?
-pub fn is_stale(reader: &SessionDataReader, path: &Path) -> Result<bool> {
-    let conn = open(path)?;
-    let indexed = meta(&conn, "change_id")
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(-1);
-    Ok(indexed != reader.latest_change_id_blocking().unwrap_or(0))
-}
-
-/// Full build: recreate the file and index every searchable row.
-pub fn build_index(rows: &[SearchableRow], data_root: &Path, change_id: i64) -> Result<()> {
+/// Full build: make the index equal this corpus, atomically.
+///
+/// Everything happens inside **one** transaction, so a rebuild is published in a
+/// single step or not at all. A crash, a kill, or a failure part-way through
+/// leaves the previous index exactly as it was and rolls the new one back. There
+/// is no window in which the file exists but holds a partial index, and a reader
+/// never sees one.
+///
+/// The previous version deleted the file and rebuilt into the gap. That made
+/// every rebuild briefly make the index *absent*: a search landing in the window
+/// found nothing, and a crash in the window left nothing behind at all — the
+/// worst possible pairing, because a rebuild is exactly when somebody is likely
+/// to be searching.
+///
+/// The derivation is [`derive::derive_row`] — the same entry the incremental
+/// updater uses. The two paths are allowed to differ in *what they write*, never
+/// in *what they derive*.
+pub fn build_index(rows: &[SearchableRow], data_root: &Path) -> Result<()> {
     let path = sparse_index_path(data_root);
-    if path.exists() {
-        std::fs::remove_file(&path).with_context(|| format!("reset {}", path.display()))?;
-    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create sparse index dir {}", parent.display()))?;
     }
-    let tk = super::tokenizer::open()?;
-    let cfg = chunk_cfg(CHUNK_TOKENS);
-    let echo_keys = echo::result_keys(rows, data_root)?;
+    let tk = super::tokenizer::shared()?;
+    let chunk_cfg = chunk_cfg(CHUNK_TOKENS);
+    let cfg = derive::DeriveCfg {
+        tk: &tk,
+        chunk: &chunk_cfg,
+    };
+    // Derive first, then take the write lock. Tokenizing is the slow part and
+    // there is no reason to hold the file against readers while doing it.
+    let derived = derive_rows(rows, data_root, &cfg, &HashSet::new())?;
+
     let mut conn = open(&path)?;
-    conn.execute_batch("PRAGMA synchronous = OFF;")?;
-    ensure_schema(&conn)?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")?;
     let tx = conn.transaction()?;
+    // A rebuild is not a merge: the tables are recreated rather than cleared, so
+    // a row that has left the settled set cannot survive because this pass
+    // happened not to mention it, and a file left behind by an older schema
+    // cannot be reused by accident.
+    tx.execute_batch(
+        "DROP TRIGGER IF EXISTS rows_ai;
+         DROP TRIGGER IF EXISTS rows_ad;
+         DROP TABLE IF EXISTS rows;
+         DROP TABLE IF EXISTS source_state;
+         DROP TABLE IF EXISTS tri;
+         DROP TABLE IF EXISTS uni;",
+    )?;
+    tx.execute_batch(&format!(
+        "{ROWS_DDL} {SOURCE_STATE_DDL} {FTS_DDL} {TRIGGER_DDL}"
+    ))?;
+
     let mut indexed = 0usize;
-    for row in rows {
-        if !indexable(row, &echo_keys) {
-            continue;
+    for row in &derived {
+        upsert_source_state(&tx, row)?;
+        if row.in_chunks {
+            insert_row_chunks(&tx, row)?;
+            indexed += 1;
         }
-        let Some(raw) = row_plain_text(row, data_root)? else {
-            continue;
-        };
-        let text = raw.trim();
-        if text.is_empty() {
-            continue;
-        }
-        insert_row_chunks(&tx, &tk, &cfg, &row.session_id, row.seq, &row.item_type, text)?;
-        tx.execute(
-            "INSERT OR REPLACE INTO row_meta(session_id, seq, hash) VALUES (?1, ?2, ?3)",
-            params![row.session_id, row.seq, text_hash(text)],
-        )?;
-        indexed += 1;
     }
+
+    // Publish nothing but a complete index. If anything went missing, the
+    // transaction rolls back and the old index stays live, rather than being
+    // replaced by one with a hole in it that looks perfectly healthy.
+    let written: i64 = tx.query_row("SELECT COUNT(*) FROM source_state", [], |r| r.get(0))?;
+    if written != derived.len() as i64 {
+        return Err(anyhow::anyhow!(
+            "rebuild wrote {written} of {} settled rows; refusing to publish",
+            derived.len()
+        ));
+    }
+
+    // Written last, in the same transaction as the rows: a reader that sees the
+    // new schema is guaranteed to be looking at the index that goes with it.
     tx.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema', ?1)",
         params![INDEX_SCHEMA.to_string()],
     )?;
-    tx.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES ('change_id', ?1)",
-        params![change_id.to_string()],
-    )?;
     tx.commit()?;
-    tracing::info!(rows = indexed, "sparse session index built");
+    tracing::info!(
+        rows = indexed,
+        settled = derived.len(),
+        "sparse session index rebuilt"
+    );
     Ok(())
 }
 
-/// Incremental refresh: diff the index against the live rows and touch only the
-/// delta (new rows, edited rows, removed rows). Returns how many rows changed.
-pub fn refresh_index(
-    reader: &SessionDataReader,
+/// Derive rows through the one pipeline. Echo admission is resolved first (it is
+/// a cross-row relation), then each row is derived exactly once.
+///
+/// `known_echo_calls` seeds the closure with `(session_id, call_id)` pairs the
+/// index already recorded.
+fn derive_rows(
+    rows: &[SearchableRow],
+    data_root: &Path,
+    cfg: &derive::DeriveCfg<'_>,
+    known_echo_calls: &HashSet<(String, String)>,
+) -> Result<Vec<derive::DerivedRow>> {
+    let echo_keys = echo::result_keys_with(rows, data_root, known_echo_calls)?;
+    rows.iter()
+        .map(|row| {
+            let excluded = echo_keys.contains(&(row.session_id.clone(), row.seq));
+            derive::derive_row(row, data_root, cfg, excluded)
+        })
+        .collect()
+}
+
+/// What a reconciliation decided to do, in terms of source keys only.
+struct Plan {
+    to_add: Vec<(String, i64)>,
+    to_remove: Vec<(String, i64)>,
+}
+
+/// Compare the final source keys against what the index holds.
+///
+/// This is the whole change detector. There is no content hash, because a hash
+/// would have to cover every input to the derivation — and one of those inputs
+/// is another row, so a per-row hash cannot be sound. Keys are enough precisely
+/// because final rows never change: a row either enters the final set or leaves
+/// it (revert, delete), and both show up here. A final row is never rewritten in
+/// place, so nothing else has to be noticed.
+fn plan_reconcile(conn: &Connection, source_keys: &[(String, i64)]) -> Result<Plan> {
+    let source: HashSet<(String, i64)> = source_keys.iter().cloned().collect();
+    let mut stmt = conn.prepare("SELECT session_id, seq FROM source_state")?;
+    let indexed: HashSet<(String, i64)> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+
+    let mut to_add: Vec<(String, i64)> = source.difference(&indexed).cloned().collect();
+    let mut to_remove: Vec<(String, i64)> = indexed.difference(&source).cloned().collect();
+    // Deterministic order keeps the derived rows, and therefore the index, stable.
+    to_add.sort();
+    to_remove.sort();
+    Ok(Plan { to_add, to_remove })
+}
+
+/// Calls the index already knows to be session reads, keyed by session.
+fn known_echo_calls(conn: &Connection) -> Result<HashSet<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT session_id, call_id FROM source_state
+         WHERE session_read_call = 1 AND call_id IS NOT NULL",
+    )?;
+    let pairs = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    Ok(pairs.collect::<rusqlite::Result<HashSet<_>>>()?)
+}
+
+/// Write one reconciliation. Rows must already be derived, and must correspond
+/// exactly to `plan.to_add`: anything else would be a lie about the key set.
+fn apply_plan(
+    conn: &mut Connection,
+    plan: &Plan,
     rows: &[SearchableRow],
     data_root: &Path,
 ) -> Result<usize> {
-    let path = sparse_index_path(data_root);
-    let tk = super::tokenizer::open()?;
-    let cfg = chunk_cfg(CHUNK_TOKENS);
-    let echo_keys = echo::result_keys(rows, data_root)?;
-    let mut conn = open(&path)?;
-    let indexed: HashMap<(String, i64), i64> = {
-        let mut stmt = conn.prepare("SELECT session_id, seq, hash FROM row_meta")?;
-        let it = stmt.query_map([], |r| {
-            Ok((
-                (r.get::<_, String>(0)?, r.get::<_, i64>(1)?),
-                r.get::<_, i64>(2)?,
-            ))
-        })?;
-        it.collect::<rusqlite::Result<HashMap<_, _>>>()?
+    let tk = super::tokenizer::shared()?;
+    let chunk_cfg = chunk_cfg(CHUNK_TOKENS);
+    let cfg = derive::DeriveCfg {
+        tk: &tk,
+        chunk: &chunk_cfg,
     };
-    let mut live: Vec<(String, i64, String, i64, String)> = Vec::new();
-    for row in rows {
-        if !indexable(row, &echo_keys) {
-            continue;
-        }
-        let Some(raw) = row_plain_text(row, data_root)? else {
-            continue;
-        };
-        let text = raw.trim();
-        if text.is_empty() {
-            continue;
-        }
-        live.push((
-            row.session_id.clone(),
-            row.seq,
-            text.to_string(),
-            text_hash(text),
-            row.item_type.clone(),
+    // A source row that cannot be read fails the whole batch here, before any
+    // write: skipping it would leave a hole while the cursor moved on.
+    let known = known_echo_calls(conn)?;
+    let derived = derive_rows(rows, data_root, &cfg, &known)?;
+    let derived_keys: HashSet<(String, i64)> = derived
+        .iter()
+        .map(|r| (r.session_id.clone(), r.seq))
+        .collect();
+    let planned: HashSet<(String, i64)> = plan.to_add.iter().cloned().collect();
+    if derived_keys != planned {
+        return Err(anyhow::anyhow!(
+            "reconcile gave {} rows to add but derived {} bodies",
+            planned.len(),
+            derived_keys.len()
         ));
     }
 
     let tx = conn.transaction()?;
     let mut changed = 0usize;
-    let mut live_keys: HashSet<(String, i64)> = HashSet::new();
-    for (sid, seq, text, hash, item_type) in &live {
-        live_keys.insert((sid.clone(), *seq));
-        if indexed.get(&(sid.clone(), *seq)) == Some(hash) {
-            continue;
+    for row in &derived {
+        // The row is new or newly final: write what it derives to. `in_chunks`
+        // decides both halves, so a row that is not admitted stores its metadata
+        // and contributes nothing.
+        delete_row_chunks(&tx, &row.session_id, row.seq)?;
+        if row.in_chunks {
+            insert_row_chunks(&tx, row)?;
         }
-        delete_row_chunks(&tx, sid, *seq)?;
-        insert_row_chunks(&tx, &tk, &cfg, sid, *seq, item_type, text)?;
-        tx.execute(
-            "INSERT OR REPLACE INTO row_meta(session_id, seq, hash) VALUES (?1, ?2, ?3)",
-            params![sid, seq, hash],
-        )?;
+        upsert_source_state(&tx, row)?;
         changed += 1;
     }
-    for ((sid, seq), _) in &indexed {
-        if live_keys.contains(&(sid.clone(), *seq)) {
-            continue;
-        }
+    for (sid, seq) in &plan.to_remove {
         delete_row_chunks(&tx, sid, *seq)?;
         tx.execute(
-            "DELETE FROM row_meta WHERE session_id = ?1 AND seq = ?2",
+            "DELETE FROM source_state WHERE session_id = ?1 AND seq = ?2",
             params![sid, seq],
         )?;
         changed += 1;
     }
-    tx.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES ('change_id', ?1)",
-        params![reader.latest_change_id_blocking().unwrap_or(0).to_string()],
-    )?;
     tx.commit()?;
+    Ok(changed)
+}
+
+/// Incremental refresh.
+///
+/// Reads the final source key set (integers, no bodies), diffs it against the
+/// index, and fetches bodies only for the rows that are actually missing. Nothing
+/// is decoded twice and nothing is guessed. This runs before every search, so a
+/// key scan per query is expected; the cost is the diff, never the corpus.
+///
+/// The key scan and the body read are two separate reads of a store a writer may
+/// be mutating, so a row can vanish between them — a revert the user asked for
+/// while a search was in flight. That is the source moving, not a broken index,
+/// so the cycle is replayed once against a fresh scan before it is reported as a
+/// failure. A mismatch that survives the replay is real and stays loud.
+pub fn refresh_from_source(reader: &SessionDataReader, data_root: &Path) -> Result<usize> {
+    let path = sparse_index_path(data_root);
+    let mut conn = open(&path)?;
+    // Reconciliation can only move an index that already has the right shape. A
+    // stale schema is a rebuild, not something to paper over row by row.
+    ensure_schema(&conn)?;
+    if meta(&conn, "schema").ok() != Some(INDEX_SCHEMA.to_string()) {
+        return Err(anyhow::anyhow!(
+            "sparse index schema is not current; rebuild before reconciling"
+        ));
+    }
+
+    let mut source_keys = reader.searchable_keys_blocking(None)?;
+    for attempt in 0..2 {
+        let plan = plan_reconcile(&conn, &source_keys)?;
+        // Only the bodies that are actually going to be written are read.
+        let rows = reader.searchable_rows_for_blocking(&plan.to_add)?;
+        match apply_plan(&mut conn, &plan, &rows, data_root) {
+            Ok(changed) => return Ok(changed),
+            Err(err) if attempt == 0 => {
+                let fresh = reader.searchable_keys_blocking(None)?;
+                if fresh == source_keys {
+                    // The source did not move, so this is not a race: a body the
+                    // plan promised could not be derived. Report it.
+                    return Err(err);
+                }
+                source_keys = fresh;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    unreachable!("the loop either returns a count or an error")
+}
+
+/// Refresh against an already-read corpus.
+///
+/// Same reconciliation, but the bodies are supplied instead of fetched — used by
+/// the equivalence gate, which must be able to present a corpus that is not just
+/// "whatever the store currently holds".
+#[cfg(test)]
+pub fn refresh_index(rows: &[SearchableRow], data_root: &Path) -> Result<usize> {
+    let path = sparse_index_path(data_root);
+    let source_keys: Vec<(String, i64)> = rows
+        .iter()
+        .map(|r| (r.session_id.clone(), r.seq))
+        .collect();
+    let mut conn = open(&path)?;
+    let plan = plan_reconcile(&conn, &source_keys)?;
+    let wanted: HashSet<(String, i64)> = plan.to_add.iter().cloned().collect();
+    let rows: Vec<SearchableRow> = rows
+        .iter()
+        .filter(|r| wanted.contains(&(r.session_id.clone(), r.seq)))
+        .cloned()
+        .collect();
+    let changed = apply_plan(&mut conn, &plan, &rows, data_root)?;
     Ok(changed)
 }
 
@@ -942,43 +1159,48 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
          {ROWS_DDL}
+         {SOURCE_STATE_DDL}
          {FTS_DDL}
          {TRIGGER_DDL}"
     ))?;
     Ok(())
 }
 
-/// A row is indexed unless it is a compacted summary or a session-echo result.
-fn indexable(row: &SearchableRow, echo_keys: &HashSet<(String, i64)>) -> bool {
-    row.kind != "compacted" && !echo_keys.contains(&(row.session_id.clone(), row.seq))
+fn upsert_source_state(conn: &Connection, row: &derive::DerivedRow) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO source_state
+            (session_id, seq, kind, item_type, call_id, session_read_call, in_chunks)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            row.session_id,
+            row.seq,
+            row.kind,
+            row.item_type,
+            row.call_id,
+            i64::from(row.session_read_call),
+            i64::from(row.in_chunks),
+        ],
+    )?;
+    Ok(())
 }
 
-fn insert_row_chunks(
-    conn: &Connection,
-    tk: &Tokenizer,
-    cfg: &ChunkCfg,
-    session_id: &str,
-    seq: i64,
-    item_type: &str,
-    text: &str,
-) -> Result<usize> {
-    let pieces = chunk::chunk_text(tk, text, cfg);
-    if pieces.is_empty() {
+fn insert_row_chunks(conn: &Connection, row: &derive::DerivedRow) -> Result<usize> {
+    if row.chunks.is_empty() {
         return Ok(0);
     }
-    let total = pieces.len();
+    let total = row.chunks.len();
     let mut ins = conn.prepare_cached(
         "INSERT INTO rows(session_id, seq, chunk, single, item_type, char_start,
                           char_end, text_norm, text)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )?;
-    for c in pieces {
+    for c in &row.chunks {
         ins.execute(params![
-            session_id,
-            seq,
+            row.session_id,
+            row.seq,
             c.index as i64,
             i64::from(total == 1),
-            item_type,
+            row.item_type,
             c.start as i64,
             c.end as i64,
             normalize(&c.text),
@@ -994,14 +1216,6 @@ fn delete_row_chunks(conn: &Connection, session_id: &str, seq: i64) -> Result<()
         params![session_id, seq],
     )?;
     Ok(())
-}
-
-/// One text hash per row: the reconcile's change detector.
-fn text_hash(text: &str) -> i64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut hasher);
-    hasher.finish() as i64
 }
 
 /// Normalized text plus the map back to original char indices.
@@ -1395,6 +1609,41 @@ mod tests {
         // Both branches hit the same row: one hit survives (best score).
         let both = index.search(Lane::Like, "alpha|beta", 10).unwrap();
         assert_eq!(both.len(), 1, "{both:?}");
+    }
+
+    #[test]
+    fn a_needle_below_the_trigram_floor_is_scanned_not_dropped() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(ROWS_DDL).unwrap();
+        conn.execute(
+            "INSERT INTO rows(session_id, seq, chunk, single, char_start, char_end,
+                              text_norm, text)
+             VALUES ('s', 1, 0, 1, 0, 0, ?1, ?2)",
+            params![normalize("会话检索测试 alpha"), "会话检索测试 alpha"],
+        )
+        .unwrap();
+        conn.execute_batch(FTS_DDL).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tri(tri) VALUES('rebuild'); INSERT INTO uni(uni) VALUES('rebuild');",
+        )
+        .unwrap();
+        let index = SparseIndex {
+            conn,
+            path: PathBuf::from(":memory:"),
+            scope: None,
+        };
+        // Two CJK chars have no trigram, so the index cannot serve them — the row
+        // scan still answers, and at the exact-substring score.
+        let hits = index.search(Lane::Like, "会话", 10).unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].score, SCORE_LIKE);
+        assert_eq!(hits[0].seq, 1);
+        assert!(index.contains(Lane::Like, "会话", "s", 1).unwrap());
+        assert!(!index.contains(Lane::Like, "没戏", "s", 1).unwrap());
+        // The product ladder reaches the same row, and a short Latin needle too.
+        assert_eq!(index.search(Lane::Final, "会话", 10).unwrap().len(), 1);
+        assert_eq!(index.search(Lane::Like, "al", 10).unwrap().len(), 1);
+        assert!(index.search(Lane::Like, "没戏", 10).unwrap().is_empty());
     }
 
     #[test]

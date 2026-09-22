@@ -10,12 +10,20 @@ import { useSessionStore } from "../../stores/sessionStore";
 import { useTurnStore } from "../../stores/turnStore";
 import { AgentPanel } from "./AgentPanel";
 
-// Keep the writable surface cheap and observable.
+// Keep the writable surface cheap and observable. The variant is surfaced as a
+// distinct testid so "the Composer is never mounted for a child" stays a real
+// assertion now that the read-only branch mounts the derived subagent views.
 vi.mock("../../components/AgentChatInput", () => ({
-  AgentChatInput: () => <div data-testid="chat-input" />,
+  AgentChatInput: ({ variant }: { variant?: string }) => (
+    <div data-testid={variant === "subagent" ? "subagent-controls" : "chat-input"} />
+  ),
 }));
 vi.mock("../../components/SessionStatusLine", () => ({
-  SessionStatusLine: () => <div data-testid="session-status-line" />,
+  SessionStatusLine: ({ variant }: { variant?: string }) => (
+    <div
+      data-testid={variant === "subagent" ? "subagent-status-line" : "session-status-line"}
+    />
+  ),
 }));
 vi.mock("../../components/PermissionModal", () => ({
   PermissionCard: () => <div data-testid="permission-card" />,
@@ -152,13 +160,17 @@ describe("AgentPanel — fail-closed identity classification", () => {
     expect(screen.getByTestId("session-status-line")).toBeTruthy();
   });
 
-  it("renders read-only (no Composer) for a known child", () => {
+  it("renders read-only (the derived subagent controls, never the Composer) for a known child", () => {
     seedSession("root");
     seedMessages([userRow(0, "hello")]);
 
     render(<AgentPanel {...panelProps(ID)} />);
 
     expect(screen.getByTestId("message-list")).toBeTruthy();
+    // The child gets the subagent variants (session-row knobs only)…
+    expect(screen.getByTestId("subagent-controls")).toBeTruthy();
+    expect(screen.getByTestId("subagent-status-line")).toBeTruthy();
+    // …and never the writable surface.
     expect(screen.queryByTestId("chat-input")).toBeNull();
     expect(screen.queryByTestId("session-status-line")).toBeNull();
     expect(document.querySelector("textarea")).toBeNull();
@@ -171,8 +183,9 @@ describe("AgentPanel — fail-closed identity classification", () => {
 
     render(<AgentPanel {...panelProps(ID)} />);
 
-    // Transcript is shown read-only; never the Composer.
+    // Transcript is shown read-only (derived subagent controls); never the Composer.
     expect(screen.getByTestId("message-list")).toBeTruthy();
+    expect(screen.getByTestId("subagent-controls")).toBeTruthy();
     expect(screen.queryByTestId("chat-input")).toBeNull();
   });
 

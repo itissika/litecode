@@ -230,9 +230,13 @@ pub struct LspNotification {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BufferState {
-    /// Highest persisted log seq, or `-1` when the log is empty.
+    /// Highest **active** log seq, or `-1` when the log is empty. Moves back
+    /// after a revert.
     pub last_seq: i64,
-    /// Next seq the allocator will assign (`last_seq + 1`, or `0` if empty).
+    /// Persisted allocation high-water: the seq the next append will take. It
+    /// never moves back, so after a revert it can exceed `last_seq + 1` and the
+    /// log may be sparse. Clients keep rows `<= last_seq` and fetch
+    /// `[last_seq + 1, next_seq)`.
     pub next_seq: u64,
     pub revision: u64,
 }

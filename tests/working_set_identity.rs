@@ -115,7 +115,9 @@ fn revert_then_commit_discard_returns_fold_window_and_does_not_append() {
     let (sessions, sid) = open_with_users(&["a", "b", "c"]);
     assert_eq!(sessions.entry_wire_seq_cursor(&sid), (2, 3));
     sessions.entry_revert_to_user_anchor(&sid, 1).unwrap();
-    assert_eq!(sessions.entry_wire_seq_cursor(&sid), (0, 1));
+    // Active tail drops to 0; the allocator high-water stays at 3 (seqs 1..2 are
+    // deleted but must never be reused).
+    assert_eq!(sessions.entry_wire_seq_cursor(&sid), (0, 3));
 
     let stale = vec![
         WorkingRow::pending(user_text("a")),
@@ -139,15 +141,15 @@ fn revert_then_commit_discard_returns_fold_window_and_does_not_append() {
         .collect();
     assert_eq!(got, fold_visible(&sessions, &sid));
     assert_eq!(got, vec![(0, "a".into())]);
-    assert_eq!(sessions.entry_wire_seq_cursor(&sid), (0, 1));
+    assert_eq!(sessions.entry_wire_seq_cursor(&sid), (0, 3));
 
     sessions
         .insert_detail_rows(&sid, &[user_text("after")])
         .unwrap();
     assert_eq!(
         sessions.entry_wire_seq_cursor(&sid),
-        (1, 2),
-        "next append after discard must use truncated MAX(seq)+1"
+        (3, 4),
+        "next append after discard must use the persisted high-water, not MAX(seq)+1"
     );
     assert_reader_matches_fold(&sessions, &sid);
 }
