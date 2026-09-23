@@ -188,7 +188,9 @@ describe("SubagentReadOnlyPanel — full read-only transcript", () => {
     // mounted (model / tier / context mode are honored by the child's own next
     // turn), with the Workers capsule and the composer gone.
     expect(screen.getByTestId("session-status-line")).toBeTruthy();
-    expect(screen.getByTestId("capsule-todo")).toBeTruthy();
+    expect(screen.getByTestId("capsule-terminal")).toBeTruthy();
+    expect(screen.queryByTestId("capsule-todo")).toBeNull();
+    expect(screen.queryByTestId("capsule-plan")).toBeNull();
     expect(screen.queryByTestId("capsule-subagent")).toBeNull();
     expect(screen.getByTestId("subagent-controls")).toBeTruthy();
     expect(screen.getByTitle("Context usage")).toBeTruthy();

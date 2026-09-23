@@ -207,7 +207,9 @@ export function SessionStatusLine({
   // Level-1 horizontal expansion: exactly one capsule owns the slot at any
   // time. Public mutable — claimed by hover (sticky) or, while idle, by a data
   // change in that capsule's domain. Todo owns the slot by default.
-  const [expandedId, setExpandedId] = useState<CapsuleId>("todo");
+  const [expandedId, setExpandedId] = useState<CapsuleId>(
+    variant === "subagent" ? "terminal" : "todo",
+  );
   // Closing keeps the panel mounted so its shrink-back animation can play:
   // `openId` is nulled immediately and the mount is torn down on animationend.
   const [closingId, setClosingId] = useState<CapsuleId | null>(null);
@@ -555,57 +557,64 @@ export function SessionStatusLine({
         className="flex min-w-0 items-center gap-2"
         data-testid="session-status-capsules"
       >
-        <Capsule
-          id="todo"
-          open={openId === "todo"}
-          expanded={expandedId === "todo"}
-          onToggle={toggle}
-          onHoverStart={onHoverStart}
-          onHoverEnd={onHoverEnd}
-          icon={
-            <ProgressRing
-              pct={
-                todoTotal > 0
-                  ? Math.round((todoCompleted / todoTotal) * 100)
-                  : 0
+        {/* A child session never gets the plan/todo tools (registry depth gate +
+            profile strip), so both capsules would be permanently empty here:
+            the subagent variant renders only the terminal capsule. */}
+        {!subagentView && (
+          <>
+            <Capsule
+              id="todo"
+              open={openId === "todo"}
+              expanded={expandedId === "todo"}
+              onToggle={toggle}
+              onHoverStart={onHoverStart}
+              onHoverEnd={onHoverEnd}
+              icon={
+                <ProgressRing
+                  pct={
+                    todoTotal > 0
+                      ? Math.round((todoCompleted / todoTotal) * 100)
+                      : 0
+                  }
+                />
               }
+              label="Tasks"
+              detail={
+                todoCurrent ? (
+                  <span>{todoCurrent.content}</span>
+                ) : (
+                  <span className="italic text-(--_dk-text-disabled)">
+                    No active task
+                  </span>
+                )
+              }
+              count={`${todoCompleted}/${todoTotal}`}
+              ariaLabel={`Task status, ${todoTotal} ${
+                todoTotal === 1 ? "task" : "tasks"
+              }`}
             />
-          }
-          label="Tasks"
-          detail={
-            todoCurrent ? (
-              <span>{todoCurrent.content}</span>
-            ) : (
-              <span className="italic text-(--_dk-text-disabled)">
-                No active task
-              </span>
-            )
-          }
-          count={`${todoCompleted}/${todoTotal}`}
-          ariaLabel={`Task status, ${todoTotal} ${
-            todoTotal === 1 ? "task" : "tasks"
-          }`}
-        />
-        <Capsule
-          id="plan"
-          open={openId === "plan"}
-          expanded={expandedId === "plan"}
-          onToggle={toggle}
-          onHoverStart={onHoverStart}
-          onHoverEnd={onHoverEnd}
-          icon={<StrategyIcon size={14} weight="fill" aria-hidden />}
-          label="Plan"
-          detail={
-            activePlanPath ? (
-              <span className="truncate">{activePlanPath}</span>
-            ) : (
-              <span className="italic text-(--_dk-text-disabled)">
-                No active plan
-              </span>
-            )
-          }
-          ariaLabel="Session plan"
-        />
+            <Capsule
+              id="plan"
+              open={openId === "plan"}
+              expanded={expandedId === "plan"}
+              onToggle={toggle}
+              onHoverStart={onHoverStart}
+              onHoverEnd={onHoverEnd}
+              icon={<StrategyIcon size={14} weight="fill" aria-hidden />}
+              label="Plan"
+              detail={
+                activePlanPath ? (
+                  <span className="truncate">{activePlanPath}</span>
+                ) : (
+                  <span className="italic text-(--_dk-text-disabled)">
+                    No active plan
+                  </span>
+                )
+              }
+              ariaLabel="Session plan"
+            />
+          </>
+        )}
         {!subagentView && (
           <Capsule
             id="subagent"
