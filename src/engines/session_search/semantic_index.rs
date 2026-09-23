@@ -2,7 +2,7 @@
 //!
 //! No BM25/CC/RRF here — lexical FTS lives in `sessions.db` on the always-on path.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Write};
@@ -18,7 +18,7 @@ use crate::engines::code_search::{
 };
 use crate::types::{LitecodeError, Result};
 
-use super::{SEMANTIC_WINDOW, SessionHitLane, SessionTextHit};
+use super::{SEMANTIC_WINDOW, SessionHitLane, SessionTextHit, echo};
 use super::corpus::{self, SessionDoc};
 use super::slots::{Policy, SlotCfg};
 
@@ -111,6 +111,32 @@ fn chunks_path(workspace_root: &Path) -> PathBuf {
     session_index_dir(workspace_root).join("chunks.jsonl")
 }
 
+fn settled_path(workspace_root: &Path) -> PathBuf {
+    session_index_dir(workspace_root).join("source_state.jsonl")
+}
+
+/// One settled source row, as the dense corpus last derived it.
+///
+/// Kept so a reconcile can answer two questions without reading the corpus:
+/// which rows are already settled (the key diff), and which calls read the
+/// session store (the echo closure's seed). The sparse lane keeps the same facts
+/// in its `source_state` table; the dense lane keeps its own, so neither lane
+/// depends on the other having been built.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SettledRow {
+    session_id: String,
+    seq: i64,
+    /// The call this row is (a `tool_call`) or answers (a `tool_result`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    call_id: Option<String>,
+    /// This row is itself a call into the session store.
+    #[serde(default)]
+    session_read_call: bool,
+    /// Corpus document keys this row produced; empty for a row the policy drops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    doc_keys: Vec<String>,
+}
+
 fn needs_rebuild(meta: &SessionIndexMeta) -> bool {
     meta.pipeline_version != PIPELINE_VERSION
         || meta.model_id != MODEL_ID
@@ -159,6 +185,10 @@ pub struct SessionSemanticIndex {
     last_change_id: i64,
     /// Live key-list hash of the last reconcile; see [`hash_keys`].
     keys_hash: u64,
+    /// Every source row this index has settled, with the linkage the echo rule
+    /// needs. Empty on an index written before it existed, which is what makes
+    /// the first reconcile a one-off full pass.
+    settled: HashMap<(String, i64), SettledRow>,
 }
 
 impl SessionSemanticIndex {
@@ -171,6 +201,7 @@ impl SessionSemanticIndex {
             embedder_id: production_embedder_id().into(),
             last_change_id: 0,
             keys_hash: 0,
+            settled: HashMap::new(),
         })
     }
 
@@ -193,6 +224,7 @@ impl SessionSemanticIndex {
             embedder_id,
             last_change_id: meta_on_disk.as_ref().map(|m| m.last_change_id).unwrap_or(0),
             keys_hash: meta_on_disk.as_ref().map(|m| m.keys_hash).unwrap_or(0),
+            settled: HashMap::new(),
         };
 
         let file = File::open(&chunks_file).map_err(|e| LitecodeError::Config(e.to_string()))?;
@@ -209,15 +241,35 @@ impl SessionSemanticIndex {
             index.by_key.insert(chunk.key.clone(), id);
             index.chunks.insert(id, chunk);
         }
+
+        // A settled state that cannot be read is not a fatal index: dropping it
+        // costs one full pass (which rewrites it), while failing the load would
+        // cost the corpus its search.
+        match read_settled(workspace_root) {
+            Ok(settled) => index.settled = settled,
+            Err(error) => tracing::warn!(error = %error, "session index settled state unreadable"),
+        }
         Ok(index)
     }
 
+    /// Publish everything this index holds.
+    ///
+    /// A reconcile writes only the artifacts whose own content moved, so a pass
+    /// that settles rows without deriving documents does not rewrite the vectors.
     pub fn save(&self, workspace_root: &Path) -> Result<()> {
+        self.write_vectors(workspace_root)?;
+        self.write_chunks(workspace_root)?;
+        self.write_settled(workspace_root)?;
+        self.save_meta(workspace_root)
+    }
+
+    fn write_vectors(&self, workspace_root: &Path) -> Result<()> {
         let dir = session_index_dir(workspace_root);
         std::fs::create_dir_all(&dir).map_err(|e| LitecodeError::Config(e.to_string()))?;
+        persist_usearch(&self.ann, &vectors_path(workspace_root))
+    }
 
-        persist_usearch(&self.ann, &vectors_path(workspace_root))?;
-
+    fn write_chunks(&self, workspace_root: &Path) -> Result<()> {
         let chunks_file = chunks_path(workspace_root);
         let mut file =
             File::create(&chunks_file).map_err(|e| LitecodeError::Config(e.to_string()))?;
@@ -229,7 +281,11 @@ impl SessionSemanticIndex {
                 serde_json::to_string(chunk).map_err(|e| LitecodeError::Config(e.to_string()))?;
             writeln!(file, "{line}").map_err(|e| LitecodeError::Config(e.to_string()))?;
         }
+        Ok(())
+    }
 
+    /// Record the watermark without touching the corpus artifacts.
+    fn save_meta(&self, workspace_root: &Path) -> Result<()> {
         write_meta(
             workspace_root,
             &SessionIndexMeta {
@@ -237,7 +293,20 @@ impl SessionSemanticIndex {
                 keys_hash: self.keys_hash,
                 ..SessionIndexMeta::shell(&self.embedder_id, self.chunks.len())
             },
-        )?;
+        )
+    }
+
+    /// One line per settled row, ordered so a read-back is stable.
+    fn write_settled(&self, workspace_root: &Path) -> Result<()> {
+        let path = settled_path(workspace_root);
+        let mut file = File::create(&path).map_err(|e| LitecodeError::Config(e.to_string()))?;
+        let mut rows: Vec<&SettledRow> = self.settled.values().collect();
+        rows.sort_by(|a, b| (&a.session_id, a.seq).cmp(&(&b.session_id, b.seq)));
+        for row in rows {
+            let line =
+                serde_json::to_string(row).map_err(|e| LitecodeError::Config(e.to_string()))?;
+            writeln!(file, "{line}").map_err(|e| LitecodeError::Config(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -355,65 +424,206 @@ impl SessionSemanticIndex {
         Ok(hits)
     }
 
-    /// Reconcile against live sessions.db: add missing / changed texts, drop stale keys.
+    /// Reconcile against the live store.
     ///
-    /// There is no change-id gate: the live corpus is always compared, so a
-    /// notification the writer never sent can never leave the index stale. The
-    /// `stale` pass below drops chunks whose key or text is gone, which also
-    /// covers a rolled-back change log without a special reset.
+    /// Incremental by construction, the way the sparse lane is: the live key set
+    /// is diffed against the rows this index has already settled, and only the
+    /// delta is read, projected and embedded. The one cross-row relation the
+    /// projection has — the echo closure — is resolved from the settled state
+    /// instead of by re-deriving the corpus, which is what removes the full pass.
     ///
-    /// The comparison runs in two stages, cheap first: a key-list hash (one
-    /// indexed query, no bodies) decides whether the projection below — which
-    /// reads every body, tokenizes every row and rewrites both index files — has
-    /// anything to do at all.
+    /// The assumption, shared with the sparse lane: a settled row's derivation
+    /// never changes, because final rows are immutable. A row either enters the
+    /// settled set or leaves it, and both show up in the key diff.
+    ///
+    /// An index written before the settled state existed has no diff basis: its
+    /// first pass derives the corpus once (reusing every vector whose text is
+    /// unchanged, so nothing is re-embedded) and writes the state. Every later
+    /// pass is a delta.
     pub fn reconcile(
         &mut self,
         reader: &SessionDataReader,
         workspace_root: &Path,
         embedder: &mut dyn Embedder,
     ) -> Result<bool> {
+        let live = reader.searchable_keys_blocking(None)?;
         let latest = reader.latest_change_id_blocking().unwrap_or(0);
-        let keys_hash = hash_live_keys(reader)?;
+        let keys_hash = hash_keys(&live);
         if self.last_change_id == latest && self.keys_hash == keys_hash {
             return Ok(false);
         }
-        // The dense corpus is the locked final policy: slot projection (人话 +
-        // 工具调用 + 工具产出，压缩总结剔除), echo removal, budget trim, then
-        // 448-token hard-cut chunks with a head+tail anchor for split rows — the
-        // same grid the sparse lane uses, so both lanes agree on coordinates.
-        let tk = super::tokenizer::shared()?;
-        let docs = corpus::build_docs(
-            reader,
-            Policy::Final,
-            &SlotCfg::default(),
-            &dense_chunk_cfg(),
-            Some(&tk),
-        )?;
-        let live: HashMap<&str, &SessionDoc> = docs.iter().map(|d| (d.key.as_str(), d)).collect();
 
-        let mut dirty = false;
-        let stale: Vec<u64> = self
-            .chunks
+        let legacy = self.settled.is_empty() && !self.chunks.is_empty();
+        let live_set: HashSet<(String, i64)> = live.iter().cloned().collect();
+        let to_add: Vec<(String, i64)> = live
             .iter()
-            .filter(|(_, c)| {
-                live.get(c.key.as_str())
-                    .map_or(true, |doc| doc.text != c.text)
-            })
-            .map(|(id, _)| *id)
+            .filter(|key| !self.settled.contains_key(*key))
+            .cloned()
             .collect();
-        for id in stale {
-            self.remove_id(id);
-            dirty = true;
+        let to_remove: Vec<(String, i64)> = self
+            .settled
+            .keys()
+            .filter(|key| !live_set.contains(*key))
+            .cloned()
+            .collect();
+
+        let settled_changed = !to_add.is_empty() || !to_remove.is_empty();
+        let mut changed = false;
+        let mut derived_keys: HashSet<String> = HashSet::new();
+        // A row the corpus no longer holds gives its documents back, and its
+        // settled state goes with them. The row said what it owned when it was
+        // derived, so this needs no corpus read.
+        for key in &to_remove {
+            if let Some(previous) = self.settled.remove(key) {
+                for doc_key in &previous.doc_keys {
+                    changed |= self.remove_doc(doc_key);
+                }
+            }
         }
 
-        let mut to_add = Vec::new();
-        for doc in &docs {
-            if self.by_key.contains_key(doc.key.as_str()) {
+        if !to_add.is_empty() {
+            let rows = reader.searchable_rows_for_blocking(&to_add)?;
+            let mut staged: Vec<SessionChunk> = Vec::new();
+            let tk = super::tokenizer::shared()?;
+            let chunk_cfg = dense_chunk_cfg();
+            let slot_cfg = SlotCfg::default();
+            // The echo closure's seed: calls this index already settled as
+            // session reads. Without it a result whose call arrived in an earlier
+            // batch would be re-admitted as ordinary content.
+            let known: HashSet<(String, String)> = self
+                .settled
+                .values()
+                .filter(|row| row.session_read_call)
+                .filter_map(|row| {
+                    row.call_id
+                        .as_ref()
+                        .map(|call_id| (row.session_id.clone(), call_id.clone()))
+                })
+                .collect();
+            let echo_keys = echo::result_keys_with(&rows, reader.data_root(), &known)?;
+
+            // The dense corpus is the locked final policy: slot projection (人话 +
+            // 工具调用 + 工具产出，压缩总结剔除), echo removal, budget trim, then
+            // 448-token hard-cut chunks with a head+tail anchor for split rows —
+            // the same grid the sparse lane uses, so both agree on coordinates.
+            let mut last_session = String::new();
+            let mut last_tool: Option<String> = None;
+            for row in &rows {
+                if row.session_id != last_session {
+                    last_session = row.session_id.clone();
+                    last_tool = None;
+                }
+                let echo_excluded = echo_keys.contains(&(row.session_id.clone(), row.seq));
+                let derived = corpus::derive_doc_row(
+                    row,
+                    reader.data_root(),
+                    Policy::Final,
+                    &slot_cfg,
+                    &chunk_cfg,
+                    Some(&tk),
+                    echo_excluded,
+                    &mut last_tool,
+                )?;
+                let previous = self
+                    .settled
+                    .get(&(row.session_id.clone(), row.seq))
+                    .map(|settled| settled.doc_keys.clone())
+                    .unwrap_or_default();
+                if legacy {
+                    derived_keys.extend(derived.docs.iter().map(|doc| doc.key.clone()));
+                }
+                changed |= self.stage_row_docs(&previous, &derived.docs, &mut staged);
+                self.settled.insert(
+                    (row.session_id.clone(), row.seq),
+                    SettledRow {
+                        session_id: row.session_id.clone(),
+                        seq: row.seq,
+                        call_id: derived.call_id,
+                        session_read_call: derived.session_read_call,
+                        doc_keys: derived.docs.iter().map(|doc| doc.key.clone()).collect(),
+                    },
+                );
+            }
+            // One embed call per batch, not per document: the delta is small but
+            // the first pass over an existing index is not, and a session run per
+            // chunk is the difference between minutes and seconds.
+            for batch in staged.chunks(EMBED_BATCH) {
+                self.embed_and_add(batch.to_vec(), embedder)?;
+            }
+        }
+
+        if legacy {
+            // The pre-`settled` index is not evidence of anything: this pass read
+            // every row, so it alone decides which documents exist. Nothing the
+            // old index holds survives unless it was just derived.
+            let orphans: Vec<String> = self
+                .by_key
+                .keys()
+                .filter(|key| !derived_keys.contains(*key))
+                .cloned()
+                .collect();
+            for key in orphans {
+                changed |= self.remove_doc(&key);
+            }
+        }
+
+        self.last_change_id = latest;
+        self.keys_hash = keys_hash;
+        self.embedder_id = embedder.embedder_id().into();
+        // Nothing derived is not nothing to record: the watermark is what retires
+        // the pending hint, and rewriting the vectors for it would be the whole
+        // corpus of work for none of the corpus of change.
+        // Nothing derived is not nothing to record: a settled row that produced
+        // no document (an echo copy, a policy drop) still has to reach disk, and
+        // the watermark is what retires the pending hint. Rewriting the vectors
+        // for either would be the whole corpus of work for none of the corpus of
+        // change, so each artifact is written only when its own content moved.
+        if changed {
+            self.write_vectors(workspace_root)?;
+            self.write_chunks(workspace_root)?;
+        }
+        if changed || settled_changed {
+            self.write_settled(workspace_root)?;
+        }
+        self.save_meta(workspace_root)?;
+        write_session_pending_hint(workspace_root, 0);
+        Ok(changed)
+    }
+
+    /// Make the index hold exactly these documents for one row, staging the ones
+    /// that need a vector for the caller to embed in batches.
+    ///
+    /// A document whose key and text are unchanged keeps the vector it already
+    /// has: that is the whole difference between a reconcile and a rebuild. What
+    /// is left is new content only, which is why this can be batched.
+    fn stage_row_docs(
+        &mut self,
+        previous: &[String],
+        docs: &[SessionDoc],
+        staged: &mut Vec<SessionChunk>,
+    ) -> bool {
+        let mut changed = false;
+        // A row's document set can shrink (a row that used to be split now fits
+        // one chunk), so the keys it no longer claims are dropped first.
+        let wanted: HashSet<&str> = docs.iter().map(|doc| doc.key.as_str()).collect();
+        for key in previous {
+            if !wanted.contains(key.as_str()) {
+                changed |= self.remove_doc(key);
+            }
+        }
+        for doc in docs {
+            let unchanged = self
+                .by_key
+                .get(&doc.key)
+                .and_then(|id| self.chunks.get(id))
+                .is_some_and(|chunk| chunk.text == doc.text);
+            if unchanged {
                 continue;
             }
+            self.remove_doc(&doc.key);
             let id = self.next_id;
             self.next_id += 1;
-            to_add.push(SessionChunk {
+            staged.push(SessionChunk {
                 id,
                 key: doc.key.clone(),
                 session_id: doc.session_id.clone(),
@@ -424,40 +634,54 @@ impl SessionSemanticIndex {
                 char_end: doc.chunk_end,
                 anchor: doc.anchor,
             });
+            changed = true;
         }
-
-        for batch in to_add.chunks(EMBED_BATCH) {
-            self.embed_and_add(batch.to_vec(), embedder)?;
-            dirty = true;
-        }
-
-        // The change id is a scheduling watermark, not a correctness gate: the diff
-        // above already ran against the live corpus either way. Its only job is to
-        // retire the pending hint once the store stops moving, so the warmup pass
-        // can go quiet instead of re-walking the corpus every turn.
-        if dirty || self.last_change_id != latest || self.keys_hash != keys_hash {
-            self.embedder_id = embedder.embedder_id().into();
-            self.last_change_id = latest;
-            self.keys_hash = keys_hash;
-            self.save(workspace_root)?;
-            write_session_pending_hint(workspace_root, 0);
-            dirty = true;
-        }
-        Ok(dirty)
+        changed
     }
+
+    /// Drop one document by key. `false` when it was not there.
+    fn remove_doc(&mut self, key: &str) -> bool {
+        let Some(id) = self.by_key.remove(key) else {
+            return false;
+        };
+        self.remove_id(id);
+        true
+    }
+
 }
 
-/// The cheap half of a reconcile: one indexed query over the key columns and
-/// never a body. `searchable_keys` is already `ORDER BY session_id, seq`, so the
-/// hash covers a stable order and means the same thing across processes.
-fn hash_live_keys(reader: &SessionDataReader) -> Result<u64> {
-    let keys = reader.searchable_keys_blocking(None)?;
+/// Hash of the live key list.
+///
+/// `searchable_keys` is already `ORDER BY session_id, seq`, so the hash covers a
+/// stable order and means the same thing across processes.
+fn hash_keys(keys: &[(String, i64)]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for (session_id, seq) in &keys {
+    for (session_id, seq) in keys {
         session_id.hash(&mut hasher);
         seq.hash(&mut hasher);
     }
-    Ok(hasher.finish())
+    hasher.finish()
+}
+
+/// Read the settled state, one row per line. `Ok(empty)` when it was never
+/// written; an unreadable file is an error the caller may recover from.
+fn read_settled(workspace_root: &Path) -> Result<HashMap<(String, i64), SettledRow>> {
+    let path = settled_path(workspace_root);
+    if !path.is_file() {
+        return Ok(HashMap::new());
+    }
+    let file = File::open(&path).map_err(|e| LitecodeError::Config(e.to_string()))?;
+    let mut settled = HashMap::new();
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|e| LitecodeError::Config(e.to_string()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row: SettledRow = serde_json::from_str(&line)
+            .map_err(|e| LitecodeError::Config(format!("parse settled row: {e}")))?;
+        settled.insert((row.session_id.clone(), row.seq), row);
+    }
+    Ok(settled)
 }
 
 fn index_files_exist(workspace_root: &Path) -> bool {

@@ -21,6 +21,16 @@ use crate::serve::state::ServeState;
 use crate::session::manager::EMPTY_SESSION_TTL;
 use crate::workspace::{restart_watcher, workspace_router};
 
+/// How often the idle tick checks the session corpus for drift.
+///
+/// The tick is the **only** thing that refreshes the session semantic index: a
+/// session corpus moves on every turn, so an on-demand refresh would put a
+/// reconcile in front of the search that asked for it. The tick runs only while
+/// no turn is in progress (the same gate a settings write uses), so 30s costs
+/// one cheap watermark read per half-minute and bounds staleness to roughly the
+/// tail of the previous turn.
+const SESSION_INDEX_TICK: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub fn router(state: ServeState, web_dist: PathBuf) -> Router {
     let cors = if state.auth_token.is_some() {
         CorsLayer::new()
@@ -153,6 +163,27 @@ pub async fn listen(
             session_gc.gc_stale_empty_sessions(EMPTY_SESSION_TTL).await;
         }
     });
+    // Idle refresh of the session semantic index. Never on the search path: a
+    // search only reads whatever the ANN already holds (stale is fine, wrong is
+    // not — `build_agent_view` re-checks each hit against the store).
+    {
+        let engines = state.workspace_engines.clone();
+        let turn_guard = state.turn_guard.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(SESSION_INDEX_TICK);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                // Same gate as a settings write: never contend with a running turn.
+                if turn_guard.is_turn_in_progress() {
+                    continue;
+                }
+                // No-op unless the engine is desired, warm, and the store moved.
+                // Real failures are logged inside; nothing to surface here.
+                let _ = engines.consume_session_index_work();
+            }
+        });
+    }
     let app = router(state, web_dist);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;

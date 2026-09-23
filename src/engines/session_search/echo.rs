@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
-use crate::session::transcript_file::{SearchableRow, VIRTUAL_SESSION_DIR, load_blob_text};
+use crate::session::transcript_file::{SearchableRow, call_reads_sessions, load_blob_text};
 use serde_json::Value;
 
 /// Call linkage of one `item/tool_call` row: which result belongs to it, and
@@ -43,8 +43,8 @@ pub fn call_info(row: &SearchableRow, data_root: &Path) -> Option<CallInfo> {
     }
     let call_id = v.get("call_id").and_then(Value::as_str)?.to_string();
     let name = v.get("name").and_then(Value::as_str).unwrap_or("");
-    let session_read = name == "session_search"
-        || (matches!(name, "read" | "grep") && args_target_session(v.get("arguments")));
+    let session_read =
+        call_reads_sessions(name, v.get("arguments").and_then(Value::as_str));
     Some(CallInfo {
         call_id,
         session_read,
@@ -117,39 +117,6 @@ fn row_json(row: &SearchableRow, data_root: &Path) -> Option<Value> {
     serde_json::from_str::<Value>(&raw).ok()
 }
 
-/// `read`/`grep` arguments: any string value pointing into the session store.
-fn args_target_session(arguments: Option<&Value>) -> bool {
-    let Some(Value::String(raw)) = arguments else {
-        return false;
-    };
-    let Ok(v) = serde_json::from_str::<Value>(raw) else {
-        return false;
-    };
-    let mut found = Vec::new();
-    collect_strings(&v, &mut found);
-    found.iter().any(|s| is_session_target(s))
-}
-
-fn collect_strings<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
-    match v {
-        Value::String(s) => out.push(s),
-        Value::Array(a) => a.iter().for_each(|x| collect_strings(x, out)),
-        Value::Object(m) => m.values().for_each(|x| collect_strings(x, out)),
-        _ => {}
-    }
-}
-
-/// `.litecode/sessions` followed by `/` (a file below it) or end (the directory
-/// itself). `.litecode/sessions.db` is *not* a hit. Backslashes are folded.
-fn is_session_target(arg: &str) -> bool {
-    let norm = arg.replace('\\', "/");
-    let Some(pos) = norm.find(VIRTUAL_SESSION_DIR) else {
-        return false;
-    };
-    let rest = &norm[pos + VIRTUAL_SESSION_DIR.len()..];
-    rest.is_empty() || rest.starts_with('/')
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,16 +185,4 @@ mod tests {
         assert!(!keys.contains(&("s1".to_string(), 10)));
     }
 
-    #[test]
-    fn session_target_matching() {
-        assert!(is_session_target(
-            ".litecode/sessions/01ARZ3NDEKTSV4RRFFQ69G5FAV.md"
-        ));
-        assert!(is_session_target(
-            r"E:\ws\.litecode\sessions\01ARZ3NDEKTSV4RRFFQ69G5FAV.md"
-        ));
-        assert!(is_session_target(".litecode/sessions"));
-        assert!(!is_session_target(".litecode/sessions.db"));
-        assert!(!is_session_target("src/sessions/mod.rs"));
-    }
 }

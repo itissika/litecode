@@ -21,7 +21,7 @@
 //! change renumbers every line of every session at once. Never make it a
 //! per-call parameter.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::session::data::read_bytes;
@@ -84,6 +84,12 @@ pub struct TranscriptFile {
     /// session; rows that are neither, or whose call is not in this file, are
     /// absent rather than empty.
     pub tool_names: HashMap<i64, String>,
+    /// Call id of every `tool_result` row in this file, keyed by the row's seq.
+    pub result_call_ids: HashMap<i64, String>,
+    /// Call ids whose call reads the session store. A result answering one of
+    /// these is an echo copy: the corpus drops it, and a hit served from a stale
+    /// index has to be dropped for the same reason at read time.
+    pub session_read_calls: HashSet<String>,
 }
 
 impl TranscriptFile {
@@ -111,6 +117,18 @@ impl TranscriptFile {
     /// The tool a row is a call of (or the result of), when it is one.
     pub fn tool_name(&self, seq: i64) -> Option<&str> {
         self.tool_names.get(&seq).map(String::as_str)
+    }
+
+    /// True when this `tool_result` seq is an echo copy of session content.
+    ///
+    /// Answered from the parse the renderer already did, so a search hit can be
+    /// re-checked against the live store for free. That is what keeps "the index
+    /// is behind" from ever meaning "a copy is searchable again": staleness may
+    /// cost recall, never truth.
+    pub fn is_echo_result(&self, seq: i64) -> bool {
+        self.result_call_ids
+            .get(&seq)
+            .is_some_and(|call_id| self.session_read_calls.contains(call_id))
     }
 
     pub fn first_body_line(&self, seq: i64) -> Option<u32> {
@@ -263,14 +281,50 @@ fn row_item(row: &SearchableRow, data_root: &Path) -> Result<Option<Item>> {
     )))
 }
 
-/// `(call_id, name)` of a tool call, or `(call_id, None)` of a tool result: a
-/// result does not name its tool, only the call it answers.
-fn item_tool_link(item: &Item) -> Option<(String, Option<String>)> {
-    match item {
-        Item::FunctionCall(call) => Some((call.call_id.clone(), Some(call.name.clone()))),
-        Item::FunctionCallOutput(out) => Some((out.call_id.clone(), None)),
-        _ => None,
+/// Whether a call reads the session store: a `session_search`, or a `read` /
+/// `grep` whose arguments point into it.
+///
+/// The single rule for "is this call an echo call", shared by the index-time
+/// echo closure (`echo.rs`) and the read-time check — so the two can never
+/// disagree about what an echo is. Detection is structural (name plus arguments),
+/// not textual: a content signature catches only part of the copies and misfires
+/// on bash/glob output.
+pub fn call_reads_sessions(name: &str, arguments: Option<&str>) -> bool {
+    if name == "session_search" {
+        return true;
     }
+    if !matches!(name, "read" | "grep") {
+        return false;
+    }
+    let Some(raw) = arguments else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    let mut found = Vec::new();
+    collect_strings(&v, &mut found);
+    found.iter().any(|s| is_session_target(s))
+}
+
+fn collect_strings<'a>(v: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+    match v {
+        serde_json::Value::String(s) => out.push(s),
+        serde_json::Value::Array(a) => a.iter().for_each(|x| collect_strings(x, out)),
+        serde_json::Value::Object(m) => m.values().for_each(|x| collect_strings(x, out)),
+        _ => {}
+    }
+}
+
+/// `.litecode/sessions` followed by `/` (a file below it) or end (the directory
+/// itself). `.litecode/sessions.db` is *not* a hit. Backslashes are folded.
+fn is_session_target(arg: &str) -> bool {
+    let norm = arg.replace('\\', "/");
+    let Some(pos) = norm.find(VIRTUAL_SESSION_DIR) else {
+        return false;
+    };
+    let rest = &norm[pos + VIRTUAL_SESSION_DIR.len()..];
+    rest.is_empty() || rest.starts_with('/')
 }
 
 pub fn load_blob_text(body_ref: &str, data_root: &Path) -> Result<String> {
@@ -315,6 +369,8 @@ pub fn load_transcript_file(
     // `(seq, call_id, name)` of the tool rows, kept apart from the render loop
     // because a result resolves to a call that may only be read later on.
     let mut links: Vec<(i64, String, Option<String>)> = Vec::new();
+    let mut result_call_ids: HashMap<i64, String> = HashMap::new();
+    let mut session_read_calls: HashSet<String> = HashSet::new();
     for row in rows {
         if row.session_id != session_id {
             continue;
@@ -336,8 +392,22 @@ pub fn load_transcript_file(
         if text.trim().is_empty() {
             continue;
         }
-        if let Some((call_id, name)) = item_tool_link(&item) {
-            links.push((row.seq, call_id, name));
+        match &item {
+            // `(call_id, name)` of a tool call: the link a later result resolves
+            // against, plus the echo rule's own input.
+            Item::FunctionCall(call) => {
+                if call_reads_sessions(&call.name, Some(call.arguments.as_str())) {
+                    session_read_calls.insert(call.call_id.clone());
+                }
+                links.push((row.seq, call.call_id.clone(), Some(call.name.clone())));
+            }
+            // A result does not name its tool, only the call it answers — and it
+            // is the only row that can be an echo copy.
+            Item::FunctionCallOutput(out) => {
+                result_call_ids.insert(row.seq, out.call_id.clone());
+                links.push((row.seq, out.call_id.clone(), None));
+            }
+            _ => {}
         }
         push_item(
             &mut lines,
@@ -367,6 +437,8 @@ pub fn load_transcript_file(
         lines,
         line_index,
         tool_names,
+        result_call_ids,
+        session_read_calls,
     })
 }
 
@@ -577,6 +649,96 @@ mod tests {
         assert_eq!(file.tool_name(0), None, "a message is not a tool row");
         assert_eq!(file.tool_name(1), Some("bash"), "a call names its tool");
         assert_eq!(file.tool_name(2), Some("bash"), "a result names its call");
+    }
+
+    /// The read-time echo check: a hit served from a stale index must not make a
+    /// copy searchable again. It is answered from the same parse the renderer did.
+    #[test]
+    fn a_result_answering_a_session_read_is_an_echo_at_read_time() {
+        use crate::authority::responses::{
+            FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
+        };
+        use crate::types::Item;
+
+        let call = |name: &str, arguments: &str, call_id: &str| {
+            Item::FunctionCall(FunctionToolCall {
+                arguments: arguments.into(),
+                call_id: call_id.into(),
+                namespace: None,
+                name: name.into(),
+                id: None,
+                status: None,
+            })
+        };
+        let result = |call_id: &str| {
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                call_id: call_id.into(),
+                output: FunctionCallOutput::Text("copied page".into()),
+                id: None,
+                status: None,
+            })
+        };
+
+        let (data, sid) = seeded(&[
+            call("session_search", r#"{"query":"auth"}"#, "c1"),
+            result("c1"),
+            call("bash", r#"{"command":"ls"}"#, "c2"),
+            result("c2"),
+            call("read", r#"{"file_path":".litecode/sessions/01ARZ.md"}"#, "c3"),
+            result("c3"),
+        ]);
+        let reader = data.reader();
+        let rows = reader.searchable_rows_blocking(Some(&sid)).unwrap();
+        let file = load_transcript_file(&sid, &rows, reader.data_root()).unwrap();
+
+        assert!(file.is_echo_result(1), "a session_search result is a copy");
+        assert!(!file.is_echo_result(3), "a bash result is ordinary content");
+        assert!(
+            file.is_echo_result(5),
+            "a read into the session store is a copy"
+        );
+        assert!(
+            !file.is_echo_result(0),
+            "a call row is the intent, never the copy"
+        );
+    }
+
+    #[test]
+    fn the_session_read_rule_reads_name_and_arguments_only() {
+        assert!(call_reads_sessions(
+            "session_search",
+            Some(r#"{"query":"x"}"#)
+        ));
+        assert!(call_reads_sessions(
+            "read",
+            Some(r#"{"file_path":".litecode/sessions/01ARZ.md"}"#)
+        ));
+        assert!(call_reads_sessions(
+            "grep",
+            Some(r#"{"pattern":"x","path":".litecode/sessions"}"#)
+        ));
+        assert!(!call_reads_sessions(
+            "read",
+            Some(r#"{"file_path":"src/main.rs"}"#)
+        ));
+        assert!(!call_reads_sessions(
+            "bash",
+            Some(r#"{"command":"ls .litecode/sessions"}"#)
+        ));
+        assert!(!call_reads_sessions("read", None));
+    }
+
+    #[test]
+    fn session_target_matching() {
+        assert!(is_session_target(
+            ".litecode/sessions/01ARZ3NDEKTSV4RRFFQ69G5FAV.md"
+        ));
+        assert!(is_session_target(
+            r"E:\ws\.litecode\sessions\01ARZ3NDEKTSV4RRFFQ69G5FAV.md"
+        ));
+        assert!(is_session_target(".litecode/sessions"));
+        assert!(!is_session_target(".litecode/sessions.db"));
+        assert!(!is_session_target("src/sessions/mod.rs"));
     }
 
     #[test]

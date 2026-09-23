@@ -49,13 +49,12 @@ impl SessionSearchTool {
             _ => None,
         };
 
-        // Bring the semantic corpus up to date before the search reads it. The
-        // decision belongs to the engine, which compares the live store watermark
-        // when it can see the store; a hint file left by the last load cannot know
-        // about rows written since.
-        if self.engines.code_search().worker_alive() {
-            let _ = self.engines.consume_session_index_work();
-        }
+        // Read-only on purpose: the session ANN is refreshed by the idle tick in
+        // `serve::router::listen`, never by the search that needs it. Refreshing
+        // here put a reconcile in front of the query that asked for it, and left
+        // the lane unusable whenever the two overlapped — a session corpus moves
+        // on every turn, so "refresh on demand" meant "refresh always, right
+        // here". A stale index is the accepted price; being wrong is not.
         let bundle = match self.engines.search_sessions(
             query,
             0,

@@ -396,7 +396,7 @@ impl WorkspaceEngines {
         };
         let lexical = session_search::search_all(&reader, &text_q)?;
 
-        let semantic = if matches!(self.retrieval_job_gate(), CodeSearchCallGate::Ready) {
+        let semantic = if matches!(self.session_semantic_gate(), CodeSearchCallGate::Ready) {
             match self.code_search.search_sessions(
                 query,
                 session_search::SEMANTIC_WINDOW,
@@ -608,6 +608,26 @@ impl WorkspaceEngines {
             }
         }
         if self.is_warmed("code_search") {
+            CodeSearchCallGate::Ready
+        } else {
+            CodeSearchCallGate::Wait
+        }
+    }
+
+    /// Whether the session semantic lane may be read now.
+    ///
+    /// Deliberately narrower than [`Self::retrieval_job_gate`]: that one answers
+    /// "is the *code* corpus ready", and the session ANN shares nothing with it
+    /// but the worker process. Gating the session lane on the code corpus going
+    /// Stale/Building is how a code rebuild used to take session search with it.
+    /// A session read is allowed whenever the worker is warm; whether the ANN is
+    /// current is not this gate's question — staleness costs recall, not truth.
+    pub fn session_semantic_gate(&self) -> CodeSearchCallGate {
+        // `worker_pid` is an atomic load, not the client lock: asking this on the
+        // search path must never wait behind a refresh that holds that lock. A
+        // dead worker fails the call and degrades to text; a worker that is not
+        // there at all is not a search to attempt.
+        if self.is_warmed("code_search") && self.code_search.worker_pid().is_some() {
             CodeSearchCallGate::Ready
         } else {
             CodeSearchCallGate::Wait

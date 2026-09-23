@@ -7,6 +7,8 @@ mod corpus;
 mod derive;
 mod echo;
 #[cfg(test)]
+mod dense_parity;
+#[cfg(test)]
 mod golden;
 #[cfg(test)]
 mod parity;
@@ -376,6 +378,14 @@ fn hydrate_hits(
             cache.insert(hit.session_id.clone(), file);
         }
         let file = cache.get(&hit.session_id).unwrap();
+        // The index may be behind the store, and being behind is only ever
+        // allowed to cost recall — never to put a row back that the live rule
+        // keeps out. Both checks below are answered from the parse the renderer
+        // already did: a seq the store no longer renders, and an echo copy
+        // answering a session read (the lane that can go stale in practice).
+        if file.is_echo_result(hit.seq) {
+            continue;
+        }
         let Some(line) = file.line_for_hit(hit.seq, hit.char_start, hit.char_end) else {
             continue;
         };
