@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -6,11 +6,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::config::schema::{
     AgentProfile, AgentRole, AgentToolBinding, AuthSettings, CustomToolDefinition, GlobalSettings,
-    LogSettings, McpServerDefinition, McpTransport, ModelAdapterConfig, ModelDefinition,
-    ProviderConnectionConfig, ProviderDefinition, ToolPreset, WebSearchSettings,
+    LogSettings, McpServerDefinition, McpTransport, ToolPreset, WebSearchSettings,
 };
 use crate::types::{LitecodeError, Result};
 
+pub mod legacy;
 pub mod migrate;
 
 /// Current global DB schema version (exposed for tests/consumers to assert
@@ -208,6 +208,20 @@ pub fn import_into(path: &Path, settings: &GlobalSettings) -> Result<()> {
     with_conn(path, |conn| store::replace_all(conn, settings))
 }
 
+/// Read one `meta` marker (used by the provider catalog lifecycle).
+pub fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()?)
+}
+
+/// Write one `meta` marker.
+pub fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    store::upsert_meta(conn, key, Some(value))
+}
+
 pub fn agent_tools_for(
     conn: &Connection,
     agent_id: &str,
@@ -220,8 +234,8 @@ pub mod store {
 
     pub fn load(conn: &Connection) -> Result<GlobalSettings> {
         Ok(GlobalSettings {
-            providers: load_providers(conn)?,
-            models: load_models(conn)?,
+            provider_credentials: provider_credentials(conn)?,
+            disabled_models: disabled_models(conn)?,
             agents: load_agents(conn)?,
             custom_tools: load_custom_tools(conn)?,
             mcp_servers: load_mcp_servers(conn)?,
@@ -237,14 +251,17 @@ pub mod store {
         tx.execute("DELETE FROM agents", [])?;
         tx.execute("DELETE FROM custom_tools", [])?;
         tx.execute("DELETE FROM mcp_servers", [])?;
-        tx.execute("DELETE FROM models", [])?;
-        tx.execute("DELETE FROM providers", [])?;
+        tx.execute("DELETE FROM provider_credentials", [])?;
+        tx.execute("DELETE FROM disabled_models", [])?;
 
-        for provider in settings.providers.values() {
-            save_provider(&tx, provider)?;
+        for (provider_id, api_key) in &settings.provider_credentials {
+            set_provider_credential(&tx, provider_id, api_key)?;
         }
-        for model in settings.models.values() {
-            upsert_model(&tx, model)?;
+        for model_ref in &settings.disabled_models {
+            tx.execute(
+                "INSERT OR IGNORE INTO disabled_models (model_ref) VALUES (?1)",
+                params![model_ref],
+            )?;
         }
         for (id, profile) in &settings.agents {
             upsert_agent(
@@ -275,104 +292,56 @@ pub mod store {
         Ok(())
     }
 
-    fn load_providers(conn: &Connection) -> Result<HashMap<String, ProviderDefinition>> {
-        let mut stmt = conn.prepare("SELECT id, adapter_id, label, config_json FROM providers")?;
-        let rows = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let adapter_id: String = row.get(1)?;
-            let label: String = row.get(2)?;
-            let config_json: String = row.get(3)?;
-            let config: ProviderConnectionConfig =
-                serde_json::from_str(&config_json).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        3,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?;
-            Ok((
-                id.clone(),
-                ProviderDefinition {
-                    id,
-                    adapter_id,
-                    label,
-                    config,
-                },
-            ))
-        })?;
+    /// Credentials only. The one-shot legacy migration uses this instead of the
+    /// full settings load, so it never depends on tables it does not touch.
+    pub(crate) fn provider_credentials(conn: &Connection) -> Result<HashMap<String, String>> {
+        let mut stmt = conn.prepare("SELECT provider_id, api_key FROM provider_credentials")?;
+        let rows =
+            stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
         let mut map = HashMap::new();
         for row in rows {
-            let (id, def) = row?;
-            map.insert(id, def);
+            let (provider_id, api_key) = row?;
+            if !api_key.trim().is_empty() {
+                map.insert(provider_id, api_key);
+            }
         }
         Ok(map)
     }
 
-    pub fn save_provider(conn: &Connection, provider: &ProviderDefinition) -> Result<()> {
-        let config_json = serde_json::to_string(&provider.config)?;
+    /// Catalog model refs the user switched off. Stored as the exception, so an
+    /// empty table means "every catalog model is on".
+    pub(crate) fn disabled_models(conn: &Connection) -> Result<HashSet<String>> {
+        let mut stmt = conn.prepare("SELECT model_ref FROM disabled_models")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut set = HashSet::new();
+        for row in rows {
+            let model_ref = row?;
+            if !model_ref.trim().is_empty() {
+                set.insert(model_ref);
+            }
+        }
+        Ok(set)
+    }
+
+    /// Insert or replace one provider credential.
+    pub fn set_provider_credential(
+        conn: &Connection,
+        provider_id: &str,
+        api_key: &str,
+    ) -> Result<()> {
         conn.execute(
-            "INSERT INTO providers (id, adapter_id, label, config_json)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(id) DO UPDATE SET
-               adapter_id = excluded.adapter_id,
-               label = excluded.label,
-               config_json = excluded.config_json",
-            params![
-                provider.id,
-                provider.adapter_id,
-                provider.label,
-                config_json
-            ],
+            "INSERT INTO provider_credentials (provider_id, api_key) VALUES (?1, ?2)
+             ON CONFLICT(provider_id) DO UPDATE SET api_key = excluded.api_key",
+            params![provider_id, api_key],
         )?;
         Ok(())
     }
 
-    pub fn load_models(conn: &Connection) -> Result<HashMap<String, ModelDefinition>> {
-        let mut stmt =
-            conn.prepare("SELECT id, adapter_id, provider_ref, label, config_json FROM models")?;
-        let rows = stmt.query_map([], |row| {
-            let config_json: String = row.get(4)?;
-            let config: ModelAdapterConfig = serde_json::from_str(&config_json).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    4,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
-            Ok(ModelDefinition {
-                id: row.get(0)?,
-                adapter_id: row.get(1)?,
-                provider_ref: row.get(2)?,
-                label: row.get(3)?,
-                config,
-            })
-        })?;
-        let mut map = HashMap::new();
-        for row in rows {
-            let mut model = row?;
-            crate::llm::apply_owned_modality_capabilities(&mut model);
-            map.insert(model.id.clone(), model);
-        }
-        Ok(map)
-    }
-
-    pub fn upsert_model(conn: &Connection, model: &ModelDefinition) -> Result<()> {
-        let config_json = serde_json::to_string(&model.config)?;
+    /// Remove one provider credential. The catalog provider itself never goes away.
+    pub fn delete_provider_credential(conn: &Connection, provider_id: &str) -> Result<()> {
         conn.execute(
-            "INSERT INTO models (id, adapter_id, provider_ref, label, config_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(id) DO UPDATE SET
-               adapter_id = excluded.adapter_id,
-               provider_ref = excluded.provider_ref,
-               label = excluded.label,
-               config_json = excluded.config_json",
-            params![
-                model.id,
-                model.adapter_id,
-                model.provider_ref,
-                model.label,
-                config_json
-            ],
+            "DELETE FROM provider_credentials WHERE provider_id = ?1",
+            [provider_id],
         )?;
         Ok(())
     }
@@ -709,7 +678,7 @@ pub mod store {
         Ok(())
     }
 
-    fn upsert_meta(conn: &Connection, key: &str, value: Option<&str>) -> Result<()> {
+    pub(super) fn upsert_meta(conn: &Connection, key: &str, value: Option<&str>) -> Result<()> {
         if let Some(value) = value.filter(|s| !s.is_empty()) {
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES (?1, ?2)

@@ -81,7 +81,7 @@ fn workspace_with_lsp(root: &std::path::Path) -> litecode::config::resolved::Res
     let mut workspace = WorkspaceState::new(root);
     workspace.workspace_tool_readiness =
         litecode::config::workspace::workspace_readiness_from_engines(root);
-    ConfigManager::resolve(global, workspace)
+    ConfigManager::resolve(global, workspace, common::default_test_catalog())
 }
 
 async fn wait_lsp_warm(engines: &WorkspaceEngines) {
@@ -116,7 +116,11 @@ fn engines_json_off_no_lsp_tool() {
             ..Default::default()
         },
     );
-    let resolved = ConfigManager::resolve(global, WorkspaceState::new(root));
+    let resolved = ConfigManager::resolve(
+        global,
+        WorkspaceState::new(root),
+        common::default_test_catalog(),
+    );
     let engines = WorkspaceEngines::new();
     engines.reconcile(&resolved);
     assert!(!engines.is_warmed("lsp"));
@@ -1305,7 +1309,7 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
     let mut workspace = WorkspaceState::new(root);
     workspace.workspace_tool_readiness =
         litecode::config::workspace::workspace_readiness_from_engines(root);
-    let resolved = ConfigManager::resolve(global, workspace);
+    let resolved = ConfigManager::resolve(global, workspace, common::default_test_catalog());
 
     let engines = WorkspaceEngines::new();
     engines.reconcile(&resolved);

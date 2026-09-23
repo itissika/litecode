@@ -12,11 +12,11 @@ function seedSession(sessionId: string) {
     primaryAgents: [],
     availableModels: [
       {
-        id: "model-1",
+        id: "openai/model-1",
         api_model_id: "model-1",
+        provider_id: "openai",
         label: "Model 1",
         context_window: 1000,
-        adapter_id: "openai",
       },
     ],
     byId: new Map([
@@ -25,7 +25,7 @@ function seedSession(sessionId: string) {
         {
           activePrimary: "default",
           pendingPrimaryId: null,
-          modelId: "model-1",
+          modelId: "openai/model-1",
           apiModelId: "model-1",
           label: "Model 1",
           thinkingTier: "medium",
@@ -87,7 +87,7 @@ describe("refresh hydration repro", () => {
         project: "p",
         agent_id: "default",
         api_model_id: "model-1",
-        model_id: "model-1",
+        model_id: "openai/model-1",
         buffer: { last_seq: 0, next_seq: 10 },
         turn: RUNNING_TURN,
         context_window: 1000,

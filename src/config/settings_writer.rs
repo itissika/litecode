@@ -1,6 +1,6 @@
 //! Shared settings writer for REST and CLI (`litecode config set`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -15,34 +15,37 @@ use super::log_filter;
 use super::manager::ConfigManager;
 use super::schema::{
     AgentProfile, AgentToolBinding, CustomToolDefinition, GlobalSettings, LogSettings,
-    McpServerDefinition, McpTransport, ModelDefinition, PROTECTED_AGENT_IDS, ProviderDefinition,
-    ToolPreset, WebSearchSettings,
+    McpServerDefinition, McpTransport, PROTECTED_AGENT_IDS, ToolPreset, WebSearchSettings,
 };
 use super::turn_guard::TurnGuard;
 use super::workspace;
 use crate::optional::EngineManager;
+use crate::provider_catalog::ProviderCatalog;
 use crate::tool::agent_bindings::normalize_agent_profile;
 use crate::types::{LitecodeError, Result};
 
-/// One toast-ready string covering provider → model → required agent bindings.
-fn setup_guidance(settings: &GlobalSettings) -> Option<String> {
+/// One toast-ready string covering provider key → model → required agent bindings.
+fn setup_guidance(settings: &GlobalSettings, catalog: &ProviderCatalog) -> Option<String> {
     let mut steps = Vec::new();
-    if !settings.providers.values().any(crate::llm::provider_ready) {
-        steps.push(
-            "add a Provider in Settings → Connection (adapter, endpoint, API key) and Save"
-                .to_string(),
-        );
-    }
-    if settings.models.is_empty() {
-        steps.push("add at least one Model in Settings → Models and Save".to_string());
+    let keyed = |provider_id: &str| {
+        settings
+            .provider_credentials
+            .get(provider_id)
+            .is_some_and(|key| !key.trim().is_empty())
+    };
+    if !catalog.providers().iter().any(|p| keyed(&p.id)) {
+        steps.push("add a Provider API key in Settings → Providers".to_string());
     }
     let mut missing = Vec::new();
     for id in ["default", "compaction"] {
-        match settings.agents.get(id) {
-            Some(profile)
-                if !profile.model_ref.is_empty()
-                    && settings.models.contains_key(&profile.model_ref) => {}
-            _ => missing.push(id),
+        let ready = settings.agents.get(id).is_some_and(|profile| {
+            !profile.model_ref.trim().is_empty()
+                && catalog
+                    .model(&profile.model_ref)
+                    .is_some_and(|model| keyed(&model.provider_id))
+        });
+        if !ready {
+            missing.push(id);
         }
     }
     if !missing.is_empty() {
@@ -69,24 +72,15 @@ fn setup_guidance(settings: &GlobalSettings) -> Option<String> {
     }
 }
 
-fn fill_closed_provider_endpoint(def: &mut ProviderDefinition) {
-    if !def.config.endpoint.trim().is_empty() {
-        return;
-    }
-    if let Some(endpoint) = crate::llm::closed_default_endpoint(&def.adapter_id) {
-        def.config.endpoint = endpoint.to_string();
-    }
-}
-
 /// Sanitized settings view (no secrets).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingsSummary {
     pub revision: u64,
-    pub ready_provider_count: usize,
-    pub provider_endpoint: Option<String>,
-    pub model_count: usize,
+    /// Catalog providers that have a credential.
+    pub configured_provider_count: usize,
+    /// Catalog models that are selectable right now (provider has a credential).
+    pub active_model_count: usize,
     pub agent_count: usize,
-    pub catalog_count: usize,
     pub log_level: Option<String>,
     /// Most settings apply on the next agent turn without restarting serve.
     pub effective_next_turn: bool,
@@ -96,16 +90,132 @@ pub struct SettingsSummary {
     pub setup_guidance: Option<String>,
 }
 
-/// Provider view with masked api_key.
+/// One catalog model as the UI sees it.
+///
+/// The same DTO feeds the nested provider lists and `active_models`: one
+/// projection function, one shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderView {
+pub struct CatalogModelView {
+    /// Stable reference `{provider_id}/{model_id}`.
+    #[serde(rename = "ref")]
+    pub reference: String,
     pub id: String,
-    pub adapter_id: String,
     pub label: String,
-    pub endpoint: Option<String>,
-    pub api_key: Option<String>,
-    #[serde(default)]
-    pub auth: String,
+    pub provider_id: String,
+    pub provider_name: String,
+    pub context_window: usize,
+    pub context_window_max: usize,
+    pub max_output: u32,
+    pub modalities: Vec<String>,
+    /// `false` models are marked as unusable for agents in the picker.
+    pub tool_call: bool,
+    pub json_output: bool,
+    /// `false` keeps the model out of every picker; the catalog still lists it.
+    pub enabled: bool,
+}
+
+impl CatalogModelView {
+    pub fn from_model(model: &crate::provider_catalog::ResolvedModel, enabled: bool) -> Self {
+        Self {
+            reference: model.reference.clone(),
+            id: model.id.clone(),
+            label: model.display_label().to_string(),
+            provider_id: model.provider_id.clone(),
+            provider_name: model.provider_name.clone(),
+            context_window: model.context_window,
+            context_window_max: model.context_window_max,
+            max_output: model.max_output,
+            modalities: model
+                .modalities
+                .iter()
+                .map(|modality| modality.as_str().to_string())
+                .collect(),
+            tool_call: model.tool_call,
+            json_output: model.json_output,
+            enabled,
+        }
+    }
+}
+
+/// One catalog provider with its credential state and models.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmProviderView {
+    pub id: String,
+    pub name: String,
+    pub visible: bool,
+    pub configured: bool,
+    pub masked_api_key: Option<String>,
+    pub endpoint: String,
+    pub endpoint_type: String,
+    pub models: Vec<CatalogModelView>,
+}
+
+/// Read-only LLM projection for the Settings provider page and every model
+/// picker. Provider/model facts are catalog data; only `configured` and
+/// `masked_api_key` come from the database.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmSettingsView {
+    pub catalog_path: String,
+    pub revision: u64,
+    pub providers: Vec<LlmProviderView>,
+    pub active_models: Vec<CatalogModelView>,
+}
+
+impl LlmSettingsView {
+    pub fn project(
+        catalog: &ProviderCatalog,
+        credentials: &HashMap<String, String>,
+        disabled: &HashSet<String>,
+        revision: u64,
+    ) -> Self {
+        let key_for = |provider_id: &str| {
+            credentials
+                .get(provider_id)
+                .map(String::as_str)
+                .filter(|key| !key.trim().is_empty())
+        };
+        // Enablement is the exception: a ref that is not named is on.
+        let enabled_for = |reference: &str| !disabled.contains(reference);
+        let providers: Vec<LlmProviderView> = catalog
+            .providers()
+            .iter()
+            .map(|provider| {
+                let key = key_for(&provider.id);
+                LlmProviderView {
+                    id: provider.id.clone(),
+                    name: provider.name.clone(),
+                    visible: provider.visible,
+                    configured: key.is_some(),
+                    masked_api_key: SettingsWriter::mask_api_key(key),
+                    endpoint: provider.endpoint.clone(),
+                    endpoint_type: provider.endpoint_type.as_str().to_string(),
+                    models: catalog
+                        .models_of(&provider.id)
+                        .iter()
+                        .map(|model| {
+                            CatalogModelView::from_model(
+                                model,
+                                enabled_for(&model.reference),
+                            )
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        let active_models = catalog
+            .models()
+            .iter()
+            .filter(|model| key_for(&model.provider_id).is_some())
+            .filter(|model| enabled_for(&model.reference))
+            .map(|model| CatalogModelView::from_model(model, true))
+            .collect();
+        Self {
+            catalog_path: catalog.path().display().to_string(),
+            revision,
+            providers,
+            active_models,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,8 +290,9 @@ impl SettingsWriter {
             return Ok(());
         };
         let settings = self.load()?;
+        let catalog = self.catalog()?;
         let workspace = workspace::workspace_with_disk_readiness(workspace);
-        let resolved = ConfigManager::resolve(settings, workspace);
+        let resolved = ConfigManager::resolve(settings, workspace, catalog);
         engine_manager.reconcile(&resolved);
         Ok(())
     }
@@ -200,6 +311,11 @@ impl SettingsWriter {
 
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    /// Provider catalog for this database (loaded once per process).
+    pub fn catalog(&self) -> Result<Arc<ProviderCatalog>> {
+        crate::provider_catalog::shared_for_db(&self.db_path)
     }
 
     pub fn turn_guard(&self) -> &Arc<TurnGuard> {
@@ -243,7 +359,8 @@ impl SettingsWriter {
         store::replace_all(&conn, &settings)?;
         let generation = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
         let docs = docs.to_vec();
-        let summary = Self::summary_from(&settings, generation, restart_required);
+        let catalog = self.catalog()?;
+        let summary = Self::summary_from(&settings, &catalog, generation, restart_required);
         let _ = self.broadcast.send(SettingsChangedEvent {
             revision: generation,
             docs: docs.clone(),
@@ -268,7 +385,8 @@ impl SettingsWriter {
         let generation = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
         let settings = self.load()?;
         let docs = vec![doc];
-        let summary = Self::summary_from(&settings, generation, false);
+        let catalog = self.catalog()?;
+        let summary = Self::summary_from(&settings, &catalog, generation, false);
         let _ = self.broadcast.send(SettingsChangedEvent {
             revision: generation,
             docs: docs.clone(),
@@ -297,7 +415,8 @@ impl SettingsWriter {
         store::replace_all(&conn, &settings)?;
         let generation = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
         let docs = docs.to_vec();
-        let summary = Self::summary_from(&settings, generation, restart_required);
+        let catalog = self.catalog()?;
+        let summary = Self::summary_from(&settings, &catalog, generation, restart_required);
         let _ = self.broadcast.send(SettingsChangedEvent {
             revision: generation,
             docs: docs.clone(),
@@ -312,8 +431,10 @@ impl SettingsWriter {
 
     pub fn summary(&self) -> Result<SettingsSummary> {
         let settings = self.load()?;
+        let catalog = self.catalog()?;
         Ok(Self::summary_from(
             &settings,
+            &catalog,
             self.current_revision(),
             false,
         ))
@@ -321,29 +442,36 @@ impl SettingsWriter {
 
     pub fn summary_from(
         settings: &GlobalSettings,
+        catalog: &ProviderCatalog,
         revision: u64,
         restart_required: bool,
     ) -> SettingsSummary {
-        let ready: Vec<_> = settings
-            .providers
-            .values()
-            .filter(|p| crate::llm::provider_ready(p))
-            .collect();
+        let keyed = |provider_id: &str| {
+            settings
+                .provider_credentials
+                .get(provider_id)
+                .is_some_and(|key| !key.trim().is_empty())
+        };
+        let configured_provider_count = catalog
+            .providers()
+            .iter()
+            .filter(|provider| keyed(&provider.id))
+            .count();
+        let active_model_count = catalog
+            .models()
+            .iter()
+            .filter(|model| keyed(&model.provider_id))
+            .filter(|model| !settings.disabled_models.contains(&model.reference))
+            .count();
         SettingsSummary {
             revision,
-            ready_provider_count: ready.len(),
-            provider_endpoint: ready
-                .first()
-                .map(|p| p.config.endpoint.trim())
-                .filter(|s| !s.is_empty())
-                .map(str::to_string),
-            model_count: settings.models.len(),
+            configured_provider_count,
+            active_model_count,
             agent_count: settings.agents.len(),
-            catalog_count: 0,
             log_level: settings.log.level.clone(),
             effective_next_turn: !restart_required,
             restart_required,
-            setup_guidance: setup_guidance(settings),
+            setup_guidance: setup_guidance(settings, catalog),
         }
     }
 
@@ -357,115 +485,80 @@ impl SettingsWriter {
         })
     }
 
-    fn provider_view_entry(def: &ProviderDefinition) -> ProviderView {
-        ProviderView {
-            id: def.id.clone(),
-            adapter_id: def.adapter_id.clone(),
-            label: def.label.clone(),
-            endpoint: {
-                let filled = if def.config.endpoint.trim().is_empty() {
-                    crate::llm::closed_default_endpoint(&def.adapter_id)
-                        .unwrap_or("")
-                        .to_string()
-                } else {
-                    def.config.endpoint.trim().to_string()
-                };
-                if filled.is_empty() {
-                    None
-                } else {
-                    Some(filled)
-                }
-            },
-            api_key: Self::mask_api_key(Some(def.config.api_key.as_str())),
-            auth: match def.config.auth {
-                crate::config::schema::ProviderAuth::Bearer => "bearer".into(),
-                crate::config::schema::ProviderAuth::ApiKey => "api_key".into(),
-            },
+    /// The single LLM projection: catalog facts + credential state.
+    pub fn llm_view(&self) -> Result<LlmSettingsView> {
+        let settings = self.load()?;
+        let catalog = self.catalog()?;
+        Ok(LlmSettingsView::project(
+            &catalog,
+            &settings.provider_credentials,
+            &settings.disabled_models,
+            self.current_revision(),
+        ))
+    }
+
+    /// Store or replace the API key of a catalog provider.
+    pub fn write_provider_key(&self, provider_id: &str, api_key: &str) -> Result<CommitAck> {
+        let catalog = self.catalog()?;
+        if catalog.provider(provider_id).is_none() {
+            return Err(LitecodeError::Config(format!(
+                "provider '{provider_id}' is not declared in the provider catalog ({})",
+                catalog.path().display()
+            )));
         }
-    }
-
-    pub fn providers_view(&self) -> Result<HashMap<String, ProviderView>> {
-        let settings = self.load()?;
-        Ok(settings
-            .providers
-            .iter()
-            .map(|(id, def)| (id.clone(), Self::provider_view_entry(def)))
-            .collect())
-    }
-
-    /// First ready provider view (legacy convenience).
-    pub fn provider_view(&self) -> Result<ProviderView> {
-        let settings = self.load()?;
-        let ready = settings
-            .providers
-            .values()
-            .find(|p| crate::llm::provider_ready(p))
-            .or_else(|| settings.providers.values().next());
-        Ok(ready
-            .map(Self::provider_view_entry)
-            .unwrap_or(ProviderView {
-                id: String::new(),
-                adapter_id: String::new(),
-                label: String::new(),
-                endpoint: None,
-                api_key: None,
-                auth: "bearer".into(),
-            }))
-    }
-
-    pub fn write_provider(&self, provider: ProviderDefinition) -> Result<CommitAck> {
-        self.commit_partial(&[DocId::Providers], |settings| {
-            let id = provider.id.clone();
-            if id.is_empty() {
-                return Err(LitecodeError::Config(
-                    "provider id must not be empty".into(),
-                ));
-            }
-            settings.providers.insert(id.clone(), {
-                let mut next = ProviderDefinition { id, ..provider };
-                fill_closed_provider_endpoint(&mut next);
-                next
-            });
+        let key = api_key.trim();
+        if key.is_empty() {
+            return Err(LitecodeError::Config(
+                "api_key must not be empty (use DELETE to remove a credential)".into(),
+            ));
+        }
+        let provider_id = provider_id.to_string();
+        let key = key.to_string();
+        self.commit_partial(&[DocId::Llm], move |settings| {
+            settings
+                .provider_credentials
+                .insert(provider_id.clone(), key.clone());
             Ok(false)
         })
     }
 
-    pub fn write_providers(
-        &self,
-        providers: HashMap<String, ProviderDefinition>,
-    ) -> Result<CommitAck> {
-        self.commit_partial(&[DocId::Providers], |settings| {
-            let mut merged = HashMap::new();
-            for (map_key, mut def) in providers {
-                let id = if def.id.is_empty() {
-                    map_key.clone()
-                } else {
-                    def.id.clone()
-                };
-                if id.is_empty() {
-                    return Err(LitecodeError::Config(
-                        "provider id must not be empty".into(),
-                    ));
-                }
-                def.id = id.clone();
-                if let Some(existing) = settings.providers.get(&id) {
-                    let key = def.config.api_key.trim();
-                    if key.is_empty() || key.contains('*') {
-                        def.config.api_key = existing.config.api_key.clone();
-                    }
-                }
-                fill_closed_provider_endpoint(&mut def);
-                merged.insert(id, def);
-            }
-            settings.providers = merged;
+    /// Remove a provider credential. The catalog provider itself never goes away.
+    pub fn delete_provider_key(&self, provider_id: &str) -> Result<CommitAck> {
+        let catalog = self.catalog()?;
+        if catalog.provider(provider_id).is_none() {
+            return Err(LitecodeError::Config(format!(
+                "provider '{provider_id}' is not declared in the provider catalog ({})",
+                catalog.path().display()
+            )));
+        }
+        let provider_id = provider_id.to_string();
+        self.commit_partial(&[DocId::Llm], move |settings| {
+            settings.provider_credentials.remove(&provider_id);
             Ok(false)
         })
     }
 
-    pub fn websearch_view(&self) -> Result<WebSearchView> {
-        let settings = self.load()?;
-        Ok(WebSearchView {
-            api_key: Self::mask_api_key(settings.websearch.api_key.as_deref()),
+    /// Switch one catalog model on or off for every picker.
+    ///
+    /// Enablement belongs to the user, not to the catalog: a switched-off model
+    /// keeps existing and keeps its row under its provider, it only leaves
+    /// `active_models`.
+    pub fn set_model_enabled(&self, model_ref: &str, enabled: bool) -> Result<CommitAck> {
+        let catalog = self.catalog()?;
+        if catalog.model(model_ref).is_none() {
+            return Err(LitecodeError::Config(format!(
+                "model '{model_ref}' is not declared in the provider catalog ({})",
+                catalog.path().display()
+            )));
+        }
+        let model_ref = model_ref.to_string();
+        self.commit_partial(&[DocId::Llm], move |settings| {
+            if enabled {
+                settings.disabled_models.remove(&model_ref);
+            } else {
+                settings.disabled_models.insert(model_ref.clone());
+            }
+            Ok(false)
         })
     }
 
@@ -484,41 +577,17 @@ impl SettingsWriter {
         Some(trimmed.to_string())
     }
 
-    pub fn write_websearch(&self, websearch: WebSearchSettings) -> Result<CommitAck> {
-        self.commit_partial(&[DocId::Websearch], |settings| {
-            settings.websearch = websearch;
-            Ok(false)
+    /// Masked websearch key view.
+    pub fn websearch_view(&self) -> Result<WebSearchView> {
+        let settings = self.load()?;
+        Ok(WebSearchView {
+            api_key: Self::mask_api_key(settings.websearch.api_key.as_deref()),
         })
     }
 
-    pub fn write_models(&self, models: HashMap<String, ModelDefinition>) -> Result<CommitAck> {
-        if models.is_empty() {
-            let settings = self.load()?;
-            let agents_need_models = settings
-                .agents
-                .values()
-                .any(|profile| !profile.model_ref.is_empty());
-            if agents_need_models {
-                return Err(LitecodeError::Config(
-                    "refusing to wipe models registry while agents reference models; clear agent model_ref first or send at least one model entry".into(),
-                ));
-            }
-        }
-        // Orphan session model_id clear runs in serve/settings.rs after write
-        // (SessionManager has the DB handle; SettingsWriter stays config-only).
-        // Closed adapters are adapter-owned: their modality capabilities are the
-        // vendor's official matrix (e.g. mimo-v2.6-pro = full text/image/video/audio),
-        // so UI payloads cannot silently downgrade them to the ["text"] default.
-        let normalized: HashMap<String, ModelDefinition> = models
-            .into_iter()
-            .map(|(id, mut model)| {
-                crate::llm::apply_owned_modality_capabilities(&mut model);
-                (id, model)
-            })
-            .collect();
-        self.commit_partial(&[DocId::Models], |settings| {
-            // Full replace: PUT body is the desired registry (guards above + validate block orphans).
-            settings.models = normalized;
+    pub fn write_websearch(&self, websearch: WebSearchSettings) -> Result<CommitAck> {
+        self.commit_partial(&[DocId::Websearch], |settings| {
+            settings.websearch = websearch;
             Ok(false)
         })
     }
@@ -922,9 +991,12 @@ impl SettingsWriter {
     /// CLI `config set <key> <value>` — keys mirror REST resources.
     pub fn set_key(&self, key: &str, value: &str) -> Result<(u64, bool)> {
         match key {
-            "provider.endpoint" | "provider.api_key" => Err(LitecodeError::Config(
-                "deprecated settings key; configure providers via Web Settings (PUT /api/settings/providers) or providers.<id>.endpoint in the settings UI".into(),
-            )),
+            "provider.endpoint" | "provider.api_key" | "providers" | "models" => {
+                Err(LitecodeError::Config(
+                    "provider and model facts live in provider-catalog.toml; set a key in the Web                      Settings → Providers page or PUT /api/settings/providers/{provider_id}/key"
+                        .into(),
+                ))
+            }
             "log.level" => self
                 .write_log(LogSettings {
                     level: Some(value.to_string()),
@@ -1048,40 +1120,61 @@ fn validate_tool_id(id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{
-        ADAPTER_OPENAI_RESPONSES, LogSettings, ModelAdapterConfig, ModelCapability,
-        ModelDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition,
-    };
-    use std::collections::HashMap;
+    use crate::config::schema::LogSettings;
     use tempfile::TempDir;
 
-    fn ready_provider(id: &str) -> ProviderDefinition {
-        ProviderDefinition {
-            id: id.into(),
-            adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-            label: id.into(),
-            config: ProviderConnectionConfig {
-                endpoint: "https://api.example.com/v1".into(),
-                api_key: "sk-test".into(),
-                auth: ProviderAuth::Bearer,
-            },
-        }
+    const TEST_CATALOG: &str = r#"version = 1
+
+[[providers]]
+id = "main"
+name = "Main"
+endpoint = "https://api.example.com/v1"
+endpoint_type = "responses"
+tiers = { low = "low", medium = "medium", high = "high" }
+
+[[providers]]
+id = "other"
+name = "Other"
+endpoint = "https://other.example.com/v1"
+endpoint_type = "chat_completions"
+
+[[models]]
+id = "default"
+provider_id = "main"
+context_window = 128000
+max_output = 4096
+modalities = ["text", "image"]
+
+[[models]]
+id = "compact"
+provider_id = "main"
+context_window = 200000
+max_output = 4096
+
+[[models]]
+id = "small"
+provider_id = "other"
+context_window = 32000
+max_output = 1024
+"#;
+
+    /// Settings writer bound to a temp DB that already owns the test catalog.
+    fn writer_with_catalog() -> (TempDir, std::path::PathBuf, SettingsWriter) {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("litecode.db");
+        crate::provider_catalog::store::forget(&db);
+        std::fs::write(
+            crate::provider_catalog::catalog_path_for_db(&db),
+            TEST_CATALOG,
+        )
+        .unwrap();
+        crate::config::global_db::open(&db).unwrap();
+        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
+        (dir, db, writer)
     }
 
-    fn sample_model(id: &str, provider_ref: &str) -> ModelDefinition {
-        ModelDefinition {
-            id: id.into(),
-            adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-            provider_ref: provider_ref.into(),
-            label: id.into(),
-            config: ModelAdapterConfig {
-                api_model_id: "gpt-4".into(),
-                context_window: 128_000,
-                max_tokens: 4096,
-                json_output: false,
-                capabilities: vec![ModelCapability::Text],
-            },
-        }
+    fn project(writer: &SettingsWriter) -> crate::config::LlmSettingsView {
+        writer.llm_view().unwrap()
     }
 
     #[test]
@@ -1110,185 +1203,128 @@ mod tests {
     }
 
     #[test]
-    fn write_models_replaces_registry_and_drops_removed_entries() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("litecode.db");
-        let mut settings = global_db::load_global_from_path(&db).unwrap();
-        settings
+    fn provider_key_write_stores_the_credential_and_masks_it() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let ack = writer.write_provider_key("main", "sk-secret-value").unwrap();
+        assert_eq!(ack.docs, vec![DocId::Llm]);
+
+        let view = project(&writer);
+        let main = view.providers.iter().find(|p| p.id == "main").unwrap();
+        assert!(main.configured);
+        assert_eq!(main.masked_api_key.as_deref(), Some("sk-***alue"));
+        let serialized = serde_json::to_string(&view).unwrap();
+        assert!(
+            !serialized.contains("sk-secret-value"),
+            "the raw credential must never be projected: {serialized}"
+        );
+        assert_eq!(view.active_models.len(), 2, "main owns two models");
+        assert!(view.active_models.iter().all(|m| m.provider_id == "main"));
+    }
+
+    #[test]
+    fn provider_key_write_rejects_an_unknown_provider_and_an_empty_key() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let unknown = writer.write_provider_key("ghost", "sk").unwrap_err();
+        assert!(unknown.to_string().contains("ghost"), "{unknown}");
+        let empty = writer.write_provider_key("main", "   ").unwrap_err();
+        assert!(empty.to_string().contains("api_key"), "{empty}");
+        assert!(project(&writer).active_models.is_empty());
+    }
+
+    #[test]
+    fn switching_a_model_off_drops_it_from_the_pickers_only() {
+        let (_dir, db, writer) = writer_with_catalog();
+        writer.write_provider_key("main", "sk-one").unwrap();
+        let view = project(&writer);
+        assert_eq!(view.active_models.len(), 2);
+        assert!(view.active_models.iter().all(|m| m.enabled));
+
+        let reference = view.active_models[0].reference.clone();
+        let ack = writer.set_model_enabled(&reference, false).unwrap();
+        assert_eq!(ack.docs, vec![DocId::Llm]);
+
+        let view = project(&writer);
+        assert_eq!(view.active_models.len(), 1, "the off model leaves the pickers");
+        assert!(!view.active_models.iter().any(|m| m.reference == reference));
+        // It keeps existing under its provider: switched off, not gone.
+        let model = view
             .providers
-            .insert("main".into(), ready_provider("main"));
-        settings
+            .iter()
+            .find(|p| p.id == "main")
+            .unwrap()
             .models
-            .insert("default".into(), sample_model("default", "main"));
-        settings
-            .models
-            .insert("extra".into(), sample_model("extra", "main"));
-        settings.agents.get_mut("default").unwrap().model_ref = "default".into();
-        global_db::import_into(&db, &settings).unwrap();
-        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
+            .iter()
+            .find(|m| m.reference == reference)
+            .unwrap();
+        assert!(!model.enabled);
 
-        let mut kept = settings.models.clone();
-        kept.remove("extra");
-        writer.write_models(kept).unwrap();
+        // The exception is persisted as a row, so it survives a reopen.
+        let reopened = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
+        assert!(!project(&reopened)
+            .active_models
+            .iter()
+            .any(|m| m.reference == reference));
 
-        let loaded = global_db::load_global_from_path(&db).unwrap();
-        assert!(!loaded.models.contains_key("extra"));
-        assert!(loaded.models.contains_key("default"));
+        // On again removes the row rather than flipping a flag.
+        writer.set_model_enabled(&reference, true).unwrap();
+        let view = project(&writer);
+        assert_eq!(view.active_models.len(), 2);
+        assert!(view.active_models.iter().all(|m| m.enabled));
     }
 
     #[test]
-    fn write_models_normalizes_closed_adapter_capabilities() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("litecode.db");
-        let mut settings = global_db::load_global_from_path(&db).unwrap();
-        settings
-            .providers
-            .insert("main".into(), ready_provider("main"));
-        let mut mimo_provider = ready_provider("mimo");
-        mimo_provider.adapter_id = crate::config::schema::ADAPTER_MIMO_RESPONSES.into();
-        settings.providers.insert("mimo".into(), mimo_provider);
-
-        let mut mimo_v25 = sample_model("mimo25", "mimo");
-        mimo_v25.adapter_id = crate::config::schema::ADAPTER_MIMO_RESPONSES.into();
-        mimo_v25.config.api_model_id = "mimo-v2.5".into();
-        mimo_v25.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
-
-        let mut mimo_pro = sample_model("mimopro", "mimo");
-        mimo_pro.adapter_id = crate::config::schema::ADAPTER_MIMO_RESPONSES.into();
-        mimo_pro.config.api_model_id = "mimo-v2.5-pro".into();
-        mimo_pro.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
-
-        let mut mimo_v26 = sample_model("mimo26", "mimo");
-        mimo_v26.adapter_id = crate::config::schema::ADAPTER_MIMO_RESPONSES.into();
-        mimo_v26.config.api_model_id = "mimo-v2.6-pro".into();
-        mimo_v26.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
-
-        let mut open = sample_model("open", "main");
-        open.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
-
-        settings.models.insert("mimo25".into(), mimo_v25);
-        settings.models.insert("mimopro".into(), mimo_pro);
-        settings.models.insert("mimo26".into(), mimo_v26);
-        settings.models.insert("open".into(), open);
-        settings.agents.get_mut("default").unwrap().model_ref = "mimo25".into();
-        global_db::import_into(&db, &settings).unwrap();
-        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
-
-        let mut incoming = settings.models.clone();
-        // UI payloads send the ["text"] default; closed adapters must be normalized.
-        for model in incoming.values_mut() {
-            model.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
-        }
-        writer.write_models(incoming).unwrap();
-
-        let loaded = global_db::load_global_from_path(&db).unwrap();
-        use crate::config::schema::ModelCapability;
-        assert_eq!(
-            loaded.models["mimo25"].config.capabilities,
-            vec![
-                ModelCapability::Text,
-                ModelCapability::Image,
-                ModelCapability::Video,
-                ModelCapability::Audio,
-            ],
-            "mimo-v2.5 must default to full modality"
-        );
-        assert_eq!(
-            loaded.models["mimopro"].config.capabilities,
-            vec![ModelCapability::Text],
-            "mimo-v2.5-pro is text-only"
-        );
-        assert_eq!(
-            loaded.models["mimo26"].config.capabilities,
-            vec![
-                ModelCapability::Text,
-                ModelCapability::Image,
-                ModelCapability::Video,
-                ModelCapability::Audio,
-            ],
-            "mimo-v2.6-pro must default to full modality"
-        );
-        assert_eq!(
-            loaded.models["open"].config.capabilities,
-            vec![ModelCapability::Text],
-            "open adapters keep the payload as-is"
-        );
+    fn model_switch_rejects_a_reference_the_catalog_does_not_declare() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let unknown = writer.set_model_enabled("main/ghost", false).unwrap_err();
+        assert!(unknown.to_string().contains("main/ghost"), "{unknown}");
     }
 
     #[test]
-    fn write_models_normalizes_ark_turbo_image_capability() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("litecode.db");
-        let mut settings = global_db::load_global_from_path(&db).unwrap();
-        let mut ark_provider = ready_provider("ark");
-        ark_provider.adapter_id = crate::config::schema::ADAPTER_ARK_CODING.into();
-        settings.providers.insert("ark".into(), ark_provider);
+    fn deleting_a_credential_returns_the_provider_to_the_picker() {
+        let (_dir, db, writer) = writer_with_catalog();
+        writer.write_provider_key("main", "sk-one").unwrap();
+        writer.write_provider_key("other", "sk-two").unwrap();
+        assert_eq!(project(&writer).active_models.len(), 3);
 
-        let mut turbo = sample_model("turbo", "ark");
-        turbo.adapter_id = crate::config::schema::ADAPTER_ARK_CODING.into();
-        turbo.config.api_model_id = "doubao-seed-2.1-turbo".into();
-        turbo.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
+        let ack = writer.delete_provider_key("main").unwrap();
+        assert_eq!(ack.docs, vec![DocId::Llm]);
+        let view = project(&writer);
+        let main = view.providers.iter().find(|p| p.id == "main").unwrap();
+        assert!(!main.configured);
+        assert_eq!(main.masked_api_key, None);
+        assert_eq!(view.active_models.len(), 1);
+        assert_eq!(view.active_models[0].provider_id, "other");
 
-        let mut flash = sample_model("flash", "ark");
-        flash.adapter_id = crate::config::schema::ADAPTER_ARK_CODING.into();
-        flash.config.api_model_id = "deepseek-v4-flash".into();
-        flash.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
-
-        settings.models.insert("turbo".into(), turbo);
-        settings.models.insert("flash".into(), flash);
-        settings.agents.get_mut("default").unwrap().model_ref = "turbo".into();
-        global_db::import_into(&db, &settings).unwrap();
-        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
-
-        let mut incoming = settings.models.clone();
-        for model in incoming.values_mut() {
-            model.config.capabilities = vec![crate::config::schema::ModelCapability::Text];
-        }
-        writer.write_models(incoming).unwrap();
-
+        // The credential table is the only place the key ever lived.
         let loaded = global_db::load_global_from_path(&db).unwrap();
-        use crate::config::schema::ModelCapability;
-        assert_eq!(
-            loaded.models["turbo"].config.capabilities,
-            vec![ModelCapability::Text, ModelCapability::Image]
-        );
-        assert_eq!(
-            loaded.models["flash"].config.capabilities,
-            vec![ModelCapability::Text]
-        );
+        assert!(!loaded.provider_credentials.contains_key("main"));
+        assert!(loaded.provider_credentials.contains_key("other"));
     }
 
     #[test]
-    fn write_models_allows_empty_when_agents_have_no_model_ref() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("litecode.db");
-        let settings = global_db::load_global_from_path(&db).unwrap();
-        global_db::import_into(&db, &settings).unwrap();
-        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
-        writer.write_models(HashMap::new()).unwrap();
-        let loaded = global_db::load_global_from_path(&db).unwrap();
-        assert!(loaded.models.is_empty());
+    fn replacing_a_key_keeps_one_row_per_provider() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        writer.write_provider_key("main", "sk-first").unwrap();
+        writer.write_provider_key("main", "sk-second").unwrap();
+        let view = project(&writer);
+        let main = view.providers.iter().find(|p| p.id == "main").unwrap();
+        assert_eq!(main.masked_api_key.as_deref(), Some("sk-***cond"));
+        let serialized = serde_json::to_string(&view).unwrap();
+        assert!(!serialized.contains("sk-first"), "{serialized}");
     }
 
     #[test]
-    fn write_models_rejects_empty_wipe_when_agents_reference_models() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("litecode.db");
-        let mut settings = global_db::load_global_from_path(&db).unwrap();
-        settings
-            .providers
-            .insert("main".into(), ready_provider("main"));
-        settings
-            .models
-            .insert("default".into(), sample_model("default", "main"));
-        settings.agents.get_mut("default").unwrap().model_ref = "default".into();
-        global_db::import_into(&db, &settings).unwrap();
-        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
-        let err = writer.write_models(HashMap::new()).unwrap_err();
-        assert!(matches!(
-            err,
-            LitecodeError::Config(msg) if msg.contains("refusing to wipe models")
-        ));
+    fn summary_counts_configured_providers_and_active_models() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let empty = writer.summary().unwrap();
+        assert_eq!(empty.configured_provider_count, 0);
+        assert_eq!(empty.active_model_count, 0);
+        assert!(empty.setup_guidance.is_some());
+
+        writer.write_provider_key("main", "sk").unwrap();
+        let one = writer.summary().unwrap();
+        assert_eq!(one.configured_provider_count, 1);
+        assert_eq!(one.active_model_count, 2);
     }
 
     #[test]
@@ -1332,14 +1368,7 @@ mod tests {
 
     #[test]
     fn write_log_rejects_invalid_level() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("litecode.db");
-        let mut settings = crate::config::global_db::load_global_from_path(&db).unwrap();
-        settings
-            .providers
-            .insert("main".into(), ready_provider("main"));
-        global_db::import_into(&db, &settings).unwrap();
-        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
+        let (_dir, _db, writer) = writer_with_catalog();
         let err = writer
             .write_log(LogSettings {
                 level: Some("verbose".into()),
@@ -1353,25 +1382,13 @@ mod tests {
 
     #[test]
     fn turn_blocks_write() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("litecode.db");
-        let guard = Arc::new(TurnGuard::new());
-        let writer = SettingsWriter::with_path(&db, guard.clone());
+        let (_dir, _db, writer) = writer_with_catalog();
+        let guard = writer.turn_guard().clone();
         guard.begin_turn();
-        let err = writer
-            .write_provider(ProviderDefinition {
-                id: "main".into(),
-                adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-                label: "main".into(),
-                config: ProviderConnectionConfig {
-                    endpoint: "http://x".into(),
-                    api_key: "k".into(),
-                    auth: ProviderAuth::Bearer,
-                },
-            })
-            .unwrap_err();
+        let err = writer.write_provider_key("main", "sk").unwrap_err();
         assert!(matches!(err, LitecodeError::Config(msg) if msg == "turn_in_progress"));
         guard.end_turn();
+        writer.write_provider_key("main", "sk").unwrap();
     }
 
     #[test]
@@ -1384,32 +1401,25 @@ mod tests {
     }
 
     #[test]
-    fn setup_guidance_covers_provider_model_agents() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("litecode.db");
-        let settings = global_db::load_global_from_path(&db).unwrap();
-        let summary = SettingsWriter::summary_from(&settings, 1, false);
+    fn setup_guidance_covers_provider_key_and_agents() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let summary = writer.summary().unwrap();
         let guidance = summary.setup_guidance.expect("fresh seed should guide");
-        assert!(guidance.contains("Provider"), "{guidance}");
-        assert!(guidance.contains("Model"), "{guidance}");
+        assert!(guidance.contains("Providers"), "{guidance}");
         assert!(guidance.contains("default"), "{guidance}");
         assert!(guidance.contains("compaction"), "{guidance}");
     }
 
     #[test]
     fn setup_guidance_clears_when_ready() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("litecode.db");
-        let mut settings = global_db::load_global_from_path(&db).unwrap();
-        settings
-            .providers
-            .insert("main".into(), ready_provider("main"));
-        settings
-            .models
-            .insert("default".into(), sample_model("default", "main"));
-        settings.agents.get_mut("default").unwrap().model_ref = "default".into();
-        settings.agents.get_mut("compaction").unwrap().model_ref = "default".into();
-        let summary = SettingsWriter::summary_from(&settings, 1, false);
+        let (_dir, _db, writer) = writer_with_catalog();
+        writer.write_provider_key("main", "sk").unwrap();
+        let mut settings = writer.load_settings().unwrap();
+        settings.agents.get_mut("default").unwrap().model_ref = "main/default".into();
+        settings.agents.get_mut("compaction").unwrap().model_ref = "main/compact".into();
+        global_db::import_into(writer.db_path(), &settings).unwrap();
+
+        let summary = writer.summary().unwrap();
         assert_eq!(summary.setup_guidance, None);
     }
 }

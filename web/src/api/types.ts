@@ -193,10 +193,11 @@ export type ResponseStreamEvent =
 
 export interface SettingsSummary {
   revision: number;
-  provider_endpoint: string | null;
-  model_count: number;
+  /** Catalog providers that hold a credential. */
+  configured_provider_count: number;
+  /** Models selectable right now (their provider has a credential). */
+  active_model_count: number;
   agent_count: number;
-  catalog_count: number;
   log_level: string | null;
   effective_next_turn: boolean;
   restart_required: boolean;
@@ -214,7 +215,7 @@ export interface WireServerHello {
   settings_revision: number;
   active_primary: string;
   primary_agents: PrimaryAgentInfo[];
-  llm_ecosystem: string;
+  /** Active models only — a model is listed when its provider has a credential. */
   models?: ModelInfo[];
 }
 
@@ -306,11 +307,13 @@ export interface PrimaryAgentInfo {
 }
 
 export interface ModelInfo {
+  /** Stable composite reference `{provider_id}/{model_id}` — what sessions store. */
   id: string;
+  /** Wire model id; may contain `/`. */
   api_model_id: string;
+  provider_id: string;
   label: string;
   context_window: number;
-  adapter_id?: string;
 }
 
 export interface SettingsChanged {

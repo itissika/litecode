@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 
-import type { AdapterDescriptor } from "../../../api/settings";
 import { useSettingsStore, type PersistStatus } from "../../../stores/settingsStore";
 import type { PersistDocKey, SettingsSection } from "../../../stores/settingsDocuments";
 import { turnMapIsBusy, useTurnStore } from "../../../stores/turnStore";
@@ -52,8 +51,8 @@ const PERSIST_LABEL: Record<PersistStatus, string | null> = {
 };
 
 const SECTION_PERSIST_DOCS: Record<SettingsSection, PersistDocKey[]> = {
-  connection: ["providers"],
-  models: ["models"],
+  connection: ["llm"],
+  models: ["llm"],
   agents: ["agents"],
   "custom-tools": ["customTools"],
   mcp: ["mcp"],
@@ -125,11 +124,4 @@ export function SettingsPageShell({
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">{children}</div>
     </div>
   );
-}
-
-export function adapterDefaultEndpoint(
-  adapters: AdapterDescriptor[],
-  adapterId: string,
-): string {
-  return adapters.find((a) => a.id === adapterId)?.default_endpoint?.trim() ?? "";
 }

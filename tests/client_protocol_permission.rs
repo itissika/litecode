@@ -7,6 +7,7 @@ use tokio::sync::{mpsc, oneshot};
 #[test]
 fn server_hello_notification_serializes_correctly() {
     use litecode::client_protocol::project;
+    use litecode::client_protocol::protocol::{ModelInfo, PrimaryAgentInfo};
     let msg = project::server_hello(
         "0.1.0".into(),
         "dev".into(),
@@ -15,18 +16,34 @@ fn server_hello_notification_serializes_correctly() {
         "ws-id".into(),
         0,
         "default".into(),
-        vec![litecode::client_protocol::protocol::PrimaryAgentInfo {
+        vec![PrimaryAgentInfo {
             id: "default".into(),
             description: String::new(),
         }],
-        "openai".into(),
-        vec![],
+        vec![ModelInfo {
+            id: "test/test-primary-model".into(),
+            api_model_id: "test-primary-model".into(),
+            label: "Test Primary".into(),
+            context_window: 128_000,
+            provider_id: "test".into(),
+        }],
     );
     let json = serde_json::to_string(&msg).expect("json");
     assert!(json.contains("server/hello"));
     assert!(json.contains("workspace_id"));
     assert!(json.contains("jsonrpc"));
     assert!(json.contains("2.0"));
+    assert!(
+        !json.contains("llm_ecosystem"),
+        "server/hello must no longer carry the removed llm_ecosystem field: {json}"
+    );
+    let hello: litecode::client_protocol::protocol::ServerHello =
+        serde_json::from_value(msg["params"].clone()).expect("hello params deserialize");
+    assert_eq!(hello.models.len(), 1, "models carries the active-model projection");
+    assert_eq!(hello.models[0].id, "test/test-primary-model");
+    assert_eq!(hello.models[0].api_model_id, "test-primary-model");
+    assert_eq!(hello.models[0].provider_id, "test");
+    assert_eq!(hello.models[0].context_window, 128_000);
 }
 
 #[tokio::test]

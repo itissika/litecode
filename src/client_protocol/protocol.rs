@@ -94,15 +94,20 @@ pub enum WireTurnPhase {
 }
 
 /// Model summary sent in handshake for the model switcher UI.
+///
+/// Only models whose provider has a credential are sent: an unconfigured
+/// provider cannot serve a turn, so it must not appear in a picker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
+    /// Stable catalog reference `{provider_id}/{model_id}`.
     pub id: String,
+    /// Wire model id.
     pub api_model_id: String,
     pub label: String,
     pub context_window: usize,
-    /// Adapter id for the model's provider (e.g. deepseek_responses) — session UI ecosystem.
+    /// Catalog provider id; the UI groups by it and picks a logo.
     #[serde(default)]
-    pub adapter_id: String,
+    pub provider_id: String,
 }
 
 /// Wire handshake payload.
@@ -114,16 +119,9 @@ pub struct ServerHello {
     pub settings_revision: u64,
     pub active_primary: String,
     pub primary_agents: Vec<PrimaryAgentInfo>,
-    /// Provider ecosystem for chat-bar controls (`deepseek`, `openai`, …).
-    #[serde(default = "default_llm_ecosystem")]
-    pub llm_ecosystem: String,
-    /// Available models for the model switcher.
+    /// Selectable models for the model switcher (provider has a credential).
     #[serde(default)]
     pub models: Vec<ModelInfo>,
-}
-
-fn default_llm_ecosystem() -> String {
-    "openai".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -24,6 +24,7 @@ use litecode::tools::subagent::{
 use litecode::types::ToolCallResult;
 
 use super::bindings::binding_safe_for;
+use super::seed::{TEST_PRIMARY_MODEL_REF, default_test_catalog};
 use super::{test_resolved, test_workspace};
 
 pub const PARENT_AGENT: &str = "default";
@@ -63,14 +64,14 @@ impl SubagentHarness {
             SUBAGENT_AGENT.into(),
             AgentProfile {
                 role: AgentRole::Subagent,
-                model_ref: "default".into(),
+                model_ref: TEST_PRIMARY_MODEL_REF.into(),
                 system_prompt: "builtin:general".into(),
                 tools: HashMap::from([("read".into(), binding_safe_for("read"))]),
                 max_steps: subagent_max_steps,
                 ..Default::default()
             },
         );
-        let resolved = resolve(global, workspace.clone());
+        let resolved = resolve(global, workspace.clone(), default_test_catalog());
 
         let project = workspace.workspace_root.to_string_lossy().to_string();
         let sessions = Arc::new(SessionManager::new_for_test(
@@ -78,7 +79,7 @@ impl SubagentHarness {
             workspace.paths.sessions_db.to_string_lossy().to_string(),
         ));
         let parent_id = sessions
-            .open_session_sync(&project, PARENT_AGENT, Some("default"))
+            .open_session_sync(&project, PARENT_AGENT, Some(TEST_PRIMARY_MODEL_REF))
             .expect("parent session");
 
         let workspace_service =

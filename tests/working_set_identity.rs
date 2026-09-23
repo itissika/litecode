@@ -22,7 +22,7 @@ fn sessions() -> Arc<SessionManager> {
 fn open_with_users(texts: &[&str]) -> (Arc<SessionManager>, String) {
     let sessions = sessions();
     let sid = sessions
-        .open_session_sync("/p", "default", Some("m"))
+        .open_session_sync("/p", "default", Some("test/test-primary-model"))
         .unwrap();
     sessions
         .insert_detail_rows(

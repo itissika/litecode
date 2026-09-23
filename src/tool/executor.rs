@@ -706,7 +706,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let resolved = crate::config::resolved::resolve(
+        let resolved = crate::config::resolved::resolve_without_catalog(
             global,
             crate::config::resolved::WorkspaceState::new("/tmp/test"),
         );
@@ -874,7 +874,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let resolved = crate::config::resolved::resolve(
+        let resolved = crate::config::resolved::resolve_without_catalog(
             global,
             crate::config::resolved::WorkspaceState::new("/tmp/test"),
         );
@@ -1067,7 +1067,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let resolved = crate::config::resolved::resolve(
+        let resolved = crate::config::resolved::resolve_without_catalog(
             global,
             crate::config::resolved::WorkspaceState::new(cwd),
         );

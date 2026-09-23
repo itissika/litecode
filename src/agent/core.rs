@@ -18,7 +18,7 @@ use crate::types::{Item, LitecodeError, Transcript, item_text_preview};
 ///
 /// Cancellation is a seal, not a discard: once `call_model` returns Items they
 /// are extended and persisted. User abort mid-stream is sealed as incomplete
-/// Items by the adapter. Incomplete FunctionCalls are not executed; interrupted
+/// Items by the codec. Incomplete FunctionCalls are not executed; interrupted
 /// outputs are appended so the next turn never sees a dangling FunctionCall.
 pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> TurnOutcome {
     let mut final_text = String::new();

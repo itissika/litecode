@@ -1126,20 +1126,7 @@ impl SessionController {
                     },
                 )
                 .collect();
-        let models: Vec<ModelInfo> = self
-            .runtime
-            .resolved
-            .global()
-            .models
-            .iter()
-            .map(|(id, m)| ModelInfo {
-                id: id.clone(),
-                api_model_id: m.api_model_id().to_string(),
-                label: m.label.clone(),
-                context_window: m.context_window(),
-                adapter_id: m.adapter_id.clone(),
-            })
-            .collect();
+        let models: Vec<ModelInfo> = project::model_infos(&self.runtime.resolved);
         project::server_hello(
             crate::version::VERSION.into(),
             crate::version::channel().into(),
@@ -1149,7 +1136,6 @@ impl SessionController {
             self.runtime.settings_revision(),
             self.runtime.desired_primary_agent().to_string(),
             primary_agents,
-            self.runtime.llm_ecosystem().to_string(),
             models,
         )
     }

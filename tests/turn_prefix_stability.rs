@@ -287,7 +287,7 @@ fn setup_session(dir: &std::path::Path) -> (String, Arc<SessionManager>) {
     let db_path = ws.paths.sessions_db.to_string_lossy().to_string();
     let sessions = test_sessions(&db_path);
     let sid = sessions
-        .open_session_sync("/proj", "default", Some("test-model"))
+        .open_session_sync("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF))
         .expect("open");
     (sid, sessions)
 }
@@ -319,20 +319,11 @@ fn persist_roundtrip_preserves_item_json() {
 
 // ── prepare_step overlay ────────────────────────────────────────────────────
 
-fn test_model() -> litecode::config::schema::ModelDefinition {
-    litecode::config::schema::ModelDefinition {
-        id: "test-model".into(),
-        adapter_id: litecode::config::schema::ADAPTER_OPENAI_RESPONSES.into(),
-        provider_ref: "main".into(),
-        label: "Test".into(),
-        config: litecode::config::schema::ModelAdapterConfig {
-            api_model_id: "m".into(),
-            context_window: 128_000,
-            max_tokens: 1024,
-            json_output: false,
-            capabilities: vec![litecode::config::schema::ModelCapability::Text],
-        },
-    }
+fn test_model() -> std::sync::Arc<litecode::provider_catalog::ResolvedModel> {
+    common::default_test_catalog()
+        .model(common::TEST_PRIMARY_MODEL_REF)
+        .expect("fixture catalog primary model")
+        .clone()
 }
 
 async fn prepare_snapshot(

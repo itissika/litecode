@@ -268,13 +268,13 @@ fn should_run_engine(_resolved: &ResolvedConfig, tool_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::resolved::{WorkspaceState, resolve};
+    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
     use crate::config::schema::GlobalSettings;
 
     #[test]
     fn reconcile_starts_warmup_for_network_core() {
         let global = GlobalSettings::default();
-        let resolved = resolve(global, WorkspaceState::new("/tmp"));
+        let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
         let mgr = EngineManager::new();
         mgr.reconcile(&resolved);
         assert!(mgr.is_warmed("webfetch", &resolved));
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn stop_clears_warm_state() {
         let global = GlobalSettings::default();
-        let resolved = resolve(global, WorkspaceState::new("/tmp"));
+        let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
         let mgr = EngineManager::new();
         mgr.reconcile(&resolved);
         mgr.stop_all();

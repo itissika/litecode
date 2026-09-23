@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { LlmSettings } from "../api/settings";
 import {
   documentIsFresh,
   isWorkspaceCustomToolsPath,
@@ -8,16 +9,22 @@ import {
   mergeLayeredMcp,
   SECTION_DOCUMENTS,
   sectionNeedsSkeleton,
+  settingsDocsForEvent,
   splitMcpListing,
   type SettingsDataProbe,
 } from "./settingsDocuments";
 
+const llmDoc: LlmSettings = {
+  catalog_path: "C:\\x\\provider-catalog.toml",
+  revision: 1,
+  providers: [],
+  active_models: [],
+};
+
 function emptyProbe(patch: Partial<SettingsDataProbe> = {}): SettingsDataProbe {
   return {
     summary: null,
-    adapters: [],
-    providers: null,
-    models: null,
+    llm: null,
     availableTools: null,
     customTools: null,
     mcpDefs: null,
@@ -33,19 +40,54 @@ function emptyProbe(patch: Partial<SettingsDataProbe> = {}): SettingsDataProbe {
 }
 
 describe("SECTION_DOCUMENTS", () => {
-  it("does not attach engines or excludes to Provider", () => {
-    expect(SECTION_DOCUMENTS.connection).toEqual(["summary", "adapters", "providers"]);
+  it("has exactly one LLM document and never asks for adapters/providers/models", () => {
+    expect(SECTION_DOCUMENTS.connection).toEqual(["summary", "llm"]);
+    expect(SECTION_DOCUMENTS.agents).toContain("llm");
     expect(SECTION_DOCUMENTS.engines).toEqual(["engines"]);
     expect(SECTION_DOCUMENTS.files).toEqual(["excludes"]);
-    expect(SECTION_DOCUMENTS.models).not.toContain("agents");
+    const allDocs = Object.values(SECTION_DOCUMENTS).flat();
+    expect(allDocs).not.toContain("adapters");
+    expect(allDocs).not.toContain("providers");
+    expect(allDocs).not.toContain("models");
+  });
+});
+
+describe("settingsDocsForEvent", () => {
+  it("maps the single llm document id", () => {
+    expect(settingsDocsForEvent(["llm"])).toEqual(["llm"]);
+  });
+
+  it("ignores the deleted providers/models document ids", () => {
+    expect(settingsDocsForEvent(["providers"])).toEqual([]);
+    expect(settingsDocsForEvent(["models"])).toEqual([]);
+    expect(settingsDocsForEvent(["models", "llm"])).toEqual(["llm"]);
   });
 });
 
 describe("sectionNeedsSkeleton", () => {
-  it("treats Provider as ready once providers are present", () => {
+  it("treats Provider as ready once the llm document is present", () => {
     expect(sectionNeedsSkeleton("connection", emptyProbe())).toBe(true);
+    expect(sectionNeedsSkeleton("connection", emptyProbe({ llm: llmDoc }))).toBe(
+      false,
+    );
+  });
+
+  it("skeletons Agents until llm + agents are loaded", () => {
     expect(
-      sectionNeedsSkeleton("connection", emptyProbe({ providers: {} })),
+      sectionNeedsSkeleton("agents", emptyProbe({ agents: {} })),
+    ).toBe(true);
+    expect(
+      sectionNeedsSkeleton(
+        "agents",
+        emptyProbe({
+          agents: {},
+          docClock: { agents: 1 },
+          llm: llmDoc,
+          availableTools: [],
+          mcpDefs: { global: [], workspace: [] },
+          mcpRuntime: { global: {}, workspace: {} },
+        }),
+      ),
     ).toBe(false);
   });
 
@@ -68,12 +110,12 @@ describe("sectionNeedsSkeleton", () => {
 
 describe("documentIsFresh", () => {
   it("compares revisioned docs to settings revision and ignores it for excludes", () => {
-    expect(
-      documentIsFresh("providers", { revision: 2, docClock: { providers: 1 } }),
-    ).toBe(false);
-    expect(
-      documentIsFresh("providers", { revision: 2, docClock: { providers: 2 } }),
-    ).toBe(true);
+    expect(documentIsFresh("llm", { revision: 2, docClock: { llm: 1 } })).toBe(
+      false,
+    );
+    expect(documentIsFresh("llm", { revision: 2, docClock: { llm: 2 } })).toBe(
+      true,
+    );
     expect(
       documentIsFresh("excludes", { revision: 9, docClock: { excludes: 1 } }),
     ).toBe(true);

@@ -1,0 +1,184 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://litecode.dev/schemas/provider-catalog.json",
+  "title": "LiteCode Provider Catalog",
+  "description": "Providers and models known to LiteCode. This file is read once at startup; the Rust contract in src/provider_catalog is authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Structure version. Any other value is refused at startup."
+    },
+    "providers": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/provider" }
+    },
+    "models": {
+      "type": "array",
+      "description": "Every selectable model. A model that is not listed here does not exist.",
+      "items": { "$ref": "#/definitions/model" }
+    }
+  },
+
+  "definitions": {
+    "endpoint_kind": {
+      "type": "string",
+      "description": "Wire protocol. Closed set: a new value needs a new codec.",
+      "enum": ["responses", "chat_completions"]
+    },
+    "auth_kind": {
+      "type": "string",
+      "description": "bearer = Authorization: Bearer <key>; api_key = api-key: <key>.",
+      "enum": ["bearer", "api_key"]
+    },
+    "modality": {
+      "type": "string",
+      "description": "Declared input modality. It must be implemented by the endpoint_type codec, or the catalog is refused.",
+      "enum": ["text", "image", "video", "audio", "pdf"]
+    },
+    "usage_patch": {
+      "type": "string",
+      "description": "Named response repair. Every value here is implemented by a codec.",
+      "enum": ["none", "fill_empty_token_details", "map_max_effort_to_xhigh"]
+    },
+    "quirk": {
+      "type": "string",
+      "description": "Named non-universal protocol behavior, implemented by the codec for the provider's endpoint_type.",
+      "enum": ["omit_temperature_when_thinking", "thinking_type_switch", "reasoning_replay"]
+    },
+    "reasoning_key": {
+      "type": "string",
+      "description": "Field a Chat Completions replay writes reasoning back into.",
+      "enum": ["reasoning_content"]
+    },
+    "tiers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["low", "medium", "high"],
+      "description": "Platform low/medium/high mapped onto the vendor's own effort literals, plus the optional literal that means thinking OFF. All three levels are required; a vendor with fewer levels writes the clamp explicitly (low = \"high\").",
+      "properties": {
+        "off": {
+          "type": "string",
+          "description": "Literal sent for Thinking OFF (compaction). Omit for a vendor whose default is thinking off; write it (\"none\", \"disabled\") for a vendor whose default is thinking on."
+        },
+        "low": { "type": "string", "description": "Literal sent for the platform Low tier." },
+        "medium": { "type": "string", "description": "Literal sent for the platform Medium tier." },
+        "high": { "type": "string", "description": "Literal sent for the platform High tier." }
+      }
+    },
+    "reasoning": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tiers": { "$ref": "#/definitions/tiers" },
+        "key": { "$ref": "#/definitions/reasoning_key" }
+      }
+    },
+
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "endpoint"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable id, unique in this file, matching [a-z0-9][a-z0-9_-]*. Model references are \"<id>/<model id>\".",
+          "examples": ["openai", "opencode-go", "ark-coding"]
+        },
+        "name": { "type": "string", "description": "Display name." },
+        "visible": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show in the Settings provider picker."
+        },
+        "endpoint": {
+          "type": "string",
+          "description": "API base URL, without /responses or /chat/completions.",
+          "examples": ["https://api.deepseek.com", "https://opencode.ai/zen/v1"]
+        },
+        "endpoint_type": {
+          "allOf": [{ "$ref": "#/definitions/endpoint_kind" }],
+          "default": "chat_completions"
+        },
+        "auth": { "allOf": [{ "$ref": "#/definitions/auth_kind" }], "default": "bearer" },
+        "tiers": { "$ref": "#/definitions/tiers" },
+        "quirks": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/quirk" },
+          "description": "Opt into named vendor behaviors for this provider."
+        },
+        "headers": {
+          "type": "object",
+          "description": "Extra request headers. {{session_id}} is the only supported placeholder.",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provider_id"],
+      "properties": {
+        "id": { "type": "string", "description": "Wire model id, copied verbatim." },
+        "provider_id": { "type": "string", "description": "Id of a provider in this file." },
+        "label": { "type": "string", "description": "Display name; the wire id is used when omitted." },
+        "endpoint": { "type": "string", "description": "Overrides the provider base URL." },
+        "endpoint_type": {
+          "allOf": [{ "$ref": "#/definitions/endpoint_kind" }],
+          "description": "Overrides the provider protocol."
+        },
+        "context_window": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 256000,
+          "description": "Default context budget."
+        },
+        "context_window_max": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Upper bound used by context mode \"max\". Defaults to context_window."
+        },
+        "max_output": { "type": "integer", "minimum": 1, "default": 32768 },
+        "modalities": {
+          "type": "array",
+          "default": ["text"],
+          "items": { "$ref": "#/definitions/modality" }
+        },
+        "tool_call": {
+          "type": "boolean",
+          "default": true,
+          "description": "false marks the model as unusable for agents in the picker."
+        },
+        "json_output": {
+          "type": "boolean",
+          "default": false,
+          "description": "Responses: send text.format = {\"type\":\"json_object\"}."
+        },
+        "temperature": {
+          "type": "boolean",
+          "default": true,
+          "description": "false never sends temperature."
+        },
+        "stream_usage": {
+          "type": "boolean",
+          "default": true,
+          "description": "Chat Completions: stream_options.include_usage."
+        },
+        "usage_patch": { "$ref": "#/definitions/usage_patch" },
+        "reasoning": {
+          "allOf": [{ "$ref": "#/definitions/reasoning" }],
+          "description": "Omit for a model that takes no reasoning control."
+        },
+        "extra_body": {
+          "type": "object",
+          "description": "Merged into the request body. Codec-owned keys are rejected.",
+          "examples": [{ "store": false }]
+        }
+      }
+    }
+  }
+}

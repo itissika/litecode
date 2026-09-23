@@ -514,7 +514,13 @@ impl SessionController {
             return Ok(());
         }
         self.runtime.apply_non_engine()?;
-        if !self.runtime.resolved.global().models.contains_key(model_id) {
+        let selectable = self
+            .runtime
+            .resolved
+            .catalog()
+            .model(model_id)
+            .is_some_and(|model| self.runtime.resolved.provider_api_key(&model.provider_id).is_some());
+        if !selectable {
             let binding = self.session_binding(session_id);
             if let Some(proj) = self.projection_mut(session_id) {
                 proj.push_operation_error(

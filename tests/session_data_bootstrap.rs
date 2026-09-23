@@ -10,7 +10,7 @@ fn empty_workspace_opens_and_lists_nothing() {
     let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
     let data = SessionData::open(&lease, &db).unwrap();
     assert!(data.list_session_ids_blocking().unwrap().is_empty());
-    let sid = data.create_session("/proj", "default", Some("m")).unwrap();
+    let sid = data.create_session("/proj", "default", Some("test/test-primary-model")).unwrap();
     assert_eq!(data.list_session_ids_blocking().unwrap(), vec![sid.clone()]);
     data.shutdown();
     let data2 = SessionData::open(&lease, &db).unwrap();

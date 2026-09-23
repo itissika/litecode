@@ -1,0 +1,223 @@
+#:schema ./provider-catalog.schema.json
+#
+# LiteCode provider catalog - the single source of truth for LLM providers and
+# models. A provider or model that is not written here does not exist in the app.
+#
+# This file belongs to you: LiteCode seeds it once and never rewrites it, so your
+# comments and edits survive every upgrade. Edit it, then RESTART LiteCode - the
+# catalog is read exactly once, at process start.
+#
+# Rules worth knowing:
+#   * endpoint is the API base only. The path (/responses, /chat/completions) is
+#     chosen by endpoint_type, so never write it twice.
+#   * endpoint_type picks the codec: "responses" or "chat_completions".
+#   * reasoning.tiers maps LiteCode's three thinking levels onto the vendor's own
+#     effort literals: low = the vendor's lowest thinking level, medium = its mid
+#     level (or high when it has only two), high = its top level (up to "max").
+#     Leave it out for a model that takes no reasoning control.
+#     Thinking OFF (compaction) sends `tiers.off` when the vendor has such a
+#     literal (DeepSeek "none", Doubao "disabled") and nothing at all otherwise.
+#   * context_window is the default budget: 256000, or the model's own maximum
+#     when that is smaller. context_window_max is the model's own maximum.
+#   * max_output is capped at 128000, or the model's own maximum when smaller.
+#   * extra_body is the escape hatch: it is merged into the request body as-is.
+
+version = 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Providers
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[providers]]
+id = "openai"
+name = "OpenAI"
+endpoint = "https://api.openai.com/v1"
+endpoint_type = "responses"
+auth = "bearer"
+
+[[providers]]
+id = "deepseek"
+name = "DeepSeek"
+endpoint = "https://api.deepseek.com"
+endpoint_type = "responses"
+auth = "bearer"
+# DeepSeek ignores temperature while it thinks, and hard-requires every earlier
+# assistant turn's reasoning text to be passed back in thinking mode.
+quirks = ["omit_temperature_when_thinking", "reasoning_replay"]
+
+[[providers]]
+id = "mimo"
+name = "MiMo"
+endpoint = "https://api.xiaomimimo.com/v1"
+endpoint_type = "responses"
+auth = "bearer"
+# MiMo requires reasoning pass-back too (see Deep Thinking docs).
+quirks = ["reasoning_replay"]
+
+[[providers]]
+id = "ark-coding"
+name = "火山方舟 Coding Plan"
+endpoint = "https://ark.cn-beijing.volces.com/api/coding/v3"
+endpoint_type = "responses"
+auth = "bearer"
+# Doubao's Responses dialect carries an explicit thinking switch next to the
+# effort literal; the off literal is the switch value itself.
+quirks = ["thinking_type_switch"]
+
+[[providers]]
+id = "opencode"
+name = "OpenCode Zen"
+endpoint = "https://opencode.ai/zen/v1"
+endpoint_type = "chat_completions"
+auth = "bearer"
+headers = { "x-opencode-session" = "{{session_id}}" }
+
+[[providers]]
+id = "opencode-go"
+name = "OpenCode Go"
+endpoint = "https://opencode.ai/zen/go/v1"
+endpoint_type = "chat_completions"
+auth = "bearer"
+headers = { "x-opencode-session" = "{{session_id}}" }
+
+[[providers]]
+id = "commandcode"
+name = "Command Code Goat"
+endpoint = "https://api.commandcode.ai/provider/v1"
+endpoint_type = "chat_completions"
+auth = "bearer"
+# One effort vocabulary across the whole catalog, so it is declared once here.
+tiers = { low = "low", medium = "high", high = "max" }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Models
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── OpenAI ───────────────────────────────────────────────────────────────────
+# GPT-5.x reasoning models reject temperature (GPT-5.4 only accepts it when the
+# effort is "none"), so it is disabled instead of sent on every turn.
+
+[[models]]
+id = "gpt-5.6-sol"
+provider_id = "openai"
+label = "GPT-5.6 Sol"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "gpt-5.6-terra"
+provider_id = "openai"
+label = "GPT-5.6 Terra"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "gpt-5.6-luna"
+provider_id = "openai"
+label = "GPT-5.6 Luna"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+# ── DeepSeek (native Responses) ──────────────────────────────────────────────
+
+[[models]]
+id = "deepseek-flash"
+provider_id = "deepseek"
+label = "DeepSeek Flash"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
+
+# ── MiMo ─────────────────────────────────────────────────────────────────────
+
+[[models]]
+id = "mimo-v2.6-pro"
+provider_id = "mimo"
+label = "MiMo v2.6 Pro"
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text", "image", "video", "audio"]
+usage_patch = "fill_empty_token_details"
+# MiMo's ladder is none/low/medium/high: low/medium/high all enable thinking,
+# only "none" turns it off.
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "high" } }
+
+[[models]]
+id = "mimo-v2.6-flash"
+provider_id = "mimo"
+label = "MiMo v2.6 Flash"
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text", "image", "video", "audio"]
+usage_patch = "fill_empty_token_details"
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "high" } }
+
+# ── Ark Coding Plan ──────────────────────────────────────────────────────────
+
+[[models]]
+id = "doubao-seed-2.1-turbo"
+provider_id = "ark-coding"
+label = "Doubao Seed 2.1 Turbo"
+context_window = 256000
+max_output = 128000
+modalities = ["text", "image"]
+# Doubao's effort ladder is low/high; "disabled" is the thinking switch value.
+reasoning = { tiers = { off = "disabled", low = "low", medium = "high", high = "high" } }
+extra_body = { store = false }
+
+# ── OpenCode Zen ─────────────────────────────────────────────────────────────
+
+[[models]]
+id = "gpt-6-sol"
+provider_id = "opencode"
+label = "GPT-6 Sol"
+# Zen serves the GPT family over Responses while every other model on this
+# provider stays on Chat Completions, so the path is chosen per model.
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+# ── OpenCode Go ──────────────────────────────────────────────────────────────
+# The same id can declare a different vocabulary on each host, which is exactly
+# why tiers live on the model when the vendor differs per host.
+
+[[models]]
+id = "deepseek-flash"
+provider_id = "opencode-go"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+# ── Command Code Goat ───────────────────────────────────────────────────────
+
+[[models]]
+id = "gpt-5.6-sol"
+provider_id = "commandcode"
+label = "GPT-5.6 Sol"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+# Chat Completions only carries text parts in this codec.
+modalities = ["text"]

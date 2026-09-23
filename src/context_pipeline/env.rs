@@ -46,14 +46,14 @@ fn read_agents_md(workspace_root: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::resolved::{WorkspaceState, resolve};
+    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
     use crate::config::schema::GlobalSettings;
 
     #[test]
     fn build_context_maps_resolved_contract_to_claude_md() {
         let mut workspace = WorkspaceState::new("/tmp/project");
         workspace.contract = "# workspace contract\n\nFollow these rules.".into();
-        let resolved = resolve(GlobalSettings::default(), workspace);
+        let resolved = resolve_without_catalog(GlobalSettings::default(), workspace);
         let paths = WorkspacePaths::for_legacy_root(&std::path::PathBuf::from("/tmp/project"));
 
         let ctx = build_context(&resolved, std::path::Path::new("/tmp/project"), &paths);
@@ -66,7 +66,7 @@ mod tests {
 
     #[test]
     fn build_context_omits_claude_md_when_contract_empty() {
-        let resolved = resolve(GlobalSettings::default(), WorkspaceState::new("/tmp/empty"));
+        let resolved = resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp/empty"));
         let paths = WorkspacePaths::for_legacy_root(&std::path::PathBuf::from("/tmp/empty"));
 
         let ctx = build_context(&resolved, std::path::Path::new("/tmp/empty"), &paths);

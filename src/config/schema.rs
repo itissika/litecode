@@ -2,149 +2,10 @@
 //!
 //! Fields here are disjoint from [`super::resolved::WorkspaceState`] per CONFIG.md §1.4.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-/// Registered adapter ids (must match `llm::adapter::registry`).
-pub const ADAPTER_OPENAI_RESPONSES: &str = "openai_responses";
-pub const ADAPTER_DEEPSEEK_RESPONSES: &str = "deepseek_responses";
-pub const ADAPTER_MIMO_RESPONSES: &str = "mimo_responses";
-pub const ADAPTER_OPENCODE: &str = "opencode";
-pub const ADAPTER_ARK_CODING: &str = "ark_coding";
-pub const ADAPTER_COMMANDCODE: &str = "commandcode";
-
-/// LLM provider auth mode for HTTP requests.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderAuth {
-    #[default]
-    Bearer,
-    ApiKey,
-}
-
-/// Adapter-owned provider connection shape (serialized as `config_json`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderConnectionConfig {
-    #[serde(default)]
-    pub endpoint: String,
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default)]
-    pub auth: ProviderAuth,
-}
-
-/// Provider row — adapter instance link (`providers.<id>`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderDefinition {
-    #[serde(default)]
-    pub id: String,
-    /// Registry adapter id (`openai_responses` / `deepseek_responses` / `mimo_responses`).
-    pub adapter_id: String,
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub config: ProviderConnectionConfig,
-}
-/// Model input modality capability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelCapability {
-    Text,
-    Image,
-    Video,
-    Audio,
-}
-
-impl ModelCapability {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Text => "text",
-            Self::Image => "image",
-            Self::Video => "video",
-            Self::Audio => "audio",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "text" => Some(Self::Text),
-            "image" => Some(Self::Image),
-            "video" => Some(Self::Video),
-            "audio" => Some(Self::Audio),
-            _ => None,
-        }
-    }
-}
-
-/// Adapter-owned model config shape (serialized as `config_json`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelAdapterConfig {
-    pub api_model_id: String,
-    pub context_window: usize,
-    pub max_tokens: u32,
-    #[serde(default)]
-    pub json_output: bool,
-    #[serde(default = "default_capabilities")]
-    pub capabilities: Vec<ModelCapability>,
-}
-
-fn default_capabilities() -> Vec<ModelCapability> {
-    vec![ModelCapability::Text]
-}
-
-impl Default for ModelAdapterConfig {
-    fn default() -> Self {
-        Self {
-            api_model_id: String::new(),
-            context_window: 0,
-            max_tokens: 0,
-            json_output: false,
-            capabilities: default_capabilities(),
-        }
-    }
-}
-
-/// Model row — adapter instance + provider link (`models.<id>`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelDefinition {
-    pub id: String,
-    /// Must match the linked provider's `adapter_id`.
-    pub adapter_id: String,
-    /// Link to a provider row (same adapter); not the capability source.
-    pub provider_ref: String,
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub config: ModelAdapterConfig,
-}
-
-impl ModelDefinition {
-    pub fn api_model_id(&self) -> &str {
-        &self.config.api_model_id
-    }
-
-    pub fn context_window(&self) -> usize {
-        self.config.context_window
-    }
-
-    pub fn max_tokens(&self) -> u32 {
-        self.config.max_tokens
-    }
-
-    pub fn json_output(&self) -> bool {
-        self.config.json_output
-    }
-
-    pub fn capabilities(&self) -> &[ModelCapability] {
-        &self.config.capabilities
-    }
-
-    pub fn supports(&self, cap: &str) -> bool {
-        self.config.capabilities.iter().any(|c| c.as_str() == cap)
-    }
-}
 
 /// Agent role (`primary` / `subagent` / `hidden`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -470,13 +331,21 @@ pub struct WebSearchSettings {
     pub api_key: Option<String>,
 }
 
-/// Global settings — providers, models, agents, extensions, auth, log.
+/// Global settings — provider credentials, agents, extensions, auth, log.
+///
+/// Provider and model facts live in the provider catalog, never here: this map
+/// is the only thing the user owns per provider, and it is the only secret.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GlobalSettings {
+    /// Catalog provider id -> API key. Serialization is skipped so a secret can
+    /// never leak through a settings payload.
+    #[serde(default, skip_serializing)]
+    pub provider_credentials: HashMap<String, String>,
+    /// Catalog model refs the user switched off, stored as the exception rather
+    /// than the rule: a model is selectable unless it is named here, so a model
+    /// added to the catalog is on without any write.
     #[serde(default)]
-    pub providers: HashMap<String, ProviderDefinition>,
-    #[serde(default)]
-    pub models: HashMap<String, ModelDefinition>,
+    pub disabled_models: HashSet<String>,
     #[serde(default)]
     pub agents: HashMap<String, AgentProfile>,
     #[serde(default)]
@@ -494,8 +363,8 @@ pub struct GlobalSettings {
 impl GlobalSettings {
     /// Top-level field names owned exclusively by the global layer (for partition tests).
     pub const FIELD_NAMES: &'static [&'static str] = &[
-        "providers",
-        "models",
+        "provider_credentials",
+        "disabled_models",
         "agents",
         "custom_tools",
         "mcp_servers",

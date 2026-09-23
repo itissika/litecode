@@ -26,6 +26,9 @@ fn test_http_client() -> reqwest::Client {
 
 fn seed_global_db(path: &std::path::Path) {
     let settings = default_test_global();
+    // The catalog lives next to the global DB; seed it before the first load so
+    // the fixture provider (and its models) exist for this DB path.
+    common::seed_test_catalog(path, common::TEST_CATALOG_ENDPOINT, 128_000);
     write_global_db(path, &settings);
 }
 
@@ -57,7 +60,11 @@ fn test_state(
         litecode::config::workspace::workspace_with_disk_readiness(&workspace)
     };
     let settings = ConfigManager::load_global_from(&global_db_path).expect("load seeded global");
-    let resolved = ConfigManager::resolve(settings, workspace.clone());
+    let resolved = ConfigManager::resolve(
+        settings,
+        workspace.clone(),
+        common::catalog_for_db(&global_db_path),
+    );
     let turn_guard = Arc::new(TurnGuard::new());
     let (settings_writer, engine_manager) =
         test_serve_settings_with_db(turn_guard.clone(), &global_db_path);
@@ -318,8 +325,22 @@ fn settings_summary_masks_api_key() {
     let db = dir.path().join("litecode.db");
     seed_global_db(&db);
     let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
-    let view = writer.provider_view().expect("view");
-    assert!(view.api_key.as_ref().is_some_and(|k| k.contains("***")));
+    let view = writer.llm_view().expect("view");
+    let provider = view
+        .providers
+        .iter()
+        .find(|p| p.id == common::TEST_PROVIDER_ID)
+        .expect("fixture provider in the llm view");
+    assert!(provider.configured, "the seeded credential marks the provider configured");
+    let masked = provider
+        .masked_api_key
+        .as_deref()
+        .expect("configured provider carries a masked key");
+    assert!(masked.contains("***"), "mask keeps the *** shape: {masked}");
+    assert!(
+        !masked.contains("sk-test"),
+        "the mask must never leak the stored secret: {masked}"
+    );
 }
 
 #[test]
@@ -358,21 +379,17 @@ fn write_log_level_reloadable_from_db() {
 
 #[test]
 fn disabled_binding_changes_tools_count_after_reload() {
-    use litecode::llm::provider_from_definition;
     use litecode::runtime::RuntimeHandle;
     use litecode::tool::registry::build_tool_list;
 
-    use common::test_resolved;
 
     let dir = TempDir::new().expect("dir");
     let db = dir.path().join("litecode.db");
-    let mut baseline_global = test_resolved("default", &[]).global().clone();
-    common::insert_test_llm_registry(
-        &mut baseline_global,
-        "http://127.0.0.1:9",
-        "test-key",
-        128_000,
-    );
+    common::seed_test_catalog(&db, "http://127.0.0.1:9", 128_000);
+    // Seed the full default agent set (a partial document would be repaired
+    // into an invalid one), then point it at the fixture catalog.
+    let mut baseline_global = ConfigManager::load_global_from(&db).expect("seed default global");
+    common::insert_test_llm_registry(&mut baseline_global, "test-key");
     global_db::import_into(&db, &baseline_global).expect("seed db");
 
     let guard = Arc::new(TurnGuard::new());
@@ -386,7 +403,8 @@ fn disabled_binding_changes_tools_count_after_reload() {
 
     let settings = writer.load_settings().expect("load");
     let workspace = WorkspaceState::new("/tmp/p5-tools-count");
-    let resolved = ConfigManager::resolve(settings.clone(), workspace.clone());
+    let resolved =
+        ConfigManager::resolve(settings.clone(), workspace.clone(), common::catalog_for_db(&db));
     let workspace_engines = Arc::new(WorkspaceEngines::new());
     let ide = litecode::ide_base::IdeBaseHandle::open(
         workspace.workspace_root.clone(),
@@ -534,7 +552,7 @@ async fn settings_put_invalid_log_level_returns_400() {
 }
 
 #[tokio::test]
-async fn settings_put_empty_models_returns_400() {
+async fn settings_put_empty_provider_key_returns_400() {
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");
     let db_path = db_dir.path().join("litecode.db");
@@ -545,8 +563,11 @@ async fn settings_put_empty_models_returns_400() {
     let client = test_http_client();
 
     let resp = client
-        .put(format!("http://{addr}/api/settings/models"))
-        .json(&serde_json::json!({ "models": {} }))
+        .put(format!(
+            "http://{addr}/api/settings/providers/{}/key",
+            common::TEST_PROVIDER_ID
+        ))
+        .json(&serde_json::json!({ "api_key": "   " }))
         .send()
         .await
         .expect("put");
@@ -556,12 +577,13 @@ async fn settings_put_empty_models_returns_400() {
         body["error"]
             .as_str()
             .unwrap_or("")
-            .contains("refusing to wipe models")
+            .contains("must not be empty"),
+        "empty key must be refused with an actionable message: {body}"
     );
 }
 
 #[tokio::test]
-async fn settings_put_models_replaces_registry_and_drops_removed() {
+async fn settings_put_unknown_provider_key_returns_404() {
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");
     let db_path = db_dir.path().join("litecode.db");
@@ -571,41 +593,200 @@ async fn settings_put_models_replaces_registry_and_drops_removed() {
     let addr = spawn_server(state, web_dist).await;
     let client = test_http_client();
 
-    let mut settings = ConfigManager::load_global_from(&db_path).unwrap();
-    settings.models.insert(
-        "extra".into(),
-        common::ready_test_model("extra", common::TEST_PROVIDER_ID, "gpt-4", 128_000),
+    // The catalog is the only source of provider identity: an id it does not
+    // declare is a not-found, never an implicit provider creation.
+    let resp = client
+        .put(format!("http://{addr}/api/settings/providers/ghost/key"))
+        .json(&serde_json::json!({ "api_key": "sk-ghost" }))
+        .send()
+        .await
+        .expect("put");
+    assert_eq!(resp.status(), 404);
+    let body: Value = resp.json().await.expect("json");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("ghost"),
+        "404 must name the undeclared provider: {body}"
     );
-    let models_json: serde_json::Map<String, serde_json::Value> = settings
-        .models
-        .iter()
-        .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap()))
-        .collect();
+
     let resp = client
-        .put(format!("http://{addr}/api/settings/models"))
-        .json(&serde_json::json!({ "models": models_json }))
+        .delete(format!("http://{addr}/api/settings/providers/ghost/key"))
         .send()
         .await
-        .expect("put extra");
-    assert_eq!(resp.status(), 200);
-
-    settings.models.remove("extra");
-    let models_json: serde_json::Map<String, serde_json::Value> = settings
-        .models
-        .iter()
-        .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap()))
-        .collect();
-    let resp = client
-        .put(format!("http://{addr}/api/settings/models"))
-        .json(&serde_json::json!({ "models": models_json }))
-        .send()
-        .await
-        .expect("put without extra");
-    assert_eq!(resp.status(), 200);
-
+        .expect("delete");
+    assert_eq!(resp.status(), 404);
     let loaded = ConfigManager::load_global_from(&db_path).unwrap();
-    assert!(!loaded.models.contains_key("extra"));
-    assert!(loaded.models.contains_key("default"));
+    assert!(
+        !loaded.provider_credentials.contains_key("ghost"),
+        "an unknown provider id must never land in the credentials map"
+    );
+}
+
+#[tokio::test]
+async fn settings_provider_key_write_bumps_revision_and_masks_secret() {
+    let ws = TempDir::new().expect("ws");
+    let db_dir = TempDir::new().expect("db");
+    let db_path = db_dir.path().join("litecode.db");
+    seed_global_db(&db_path);
+
+    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
+    let addr = spawn_server(state, web_dist).await;
+    let client = test_http_client();
+    let llm_url = format!("http://{addr}/api/settings/llm");
+
+    let before: Value = client
+        .get(&llm_url)
+        .send()
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    let revision_before = before["revision"].as_u64().expect("llm view revision");
+
+    const SECRET: &str = "sk-super-secret-value";
+    let ack: Value = client
+        .put(format!(
+            "http://{addr}/api/settings/providers/{}/key",
+            common::TEST_PROVIDER_ID
+        ))
+        .json(&serde_json::json!({ "api_key": SECRET }))
+        .send()
+        .await
+        .expect("put")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(ack["ok"], serde_json::json!(true));
+    assert_eq!(
+        ack["revision"].as_u64(),
+        Some(revision_before + 1),
+        "a provider key write must bump the settings revision"
+    );
+    assert!(
+        ack["docs"]
+            .as_array()
+            .expect("docs")
+            .iter()
+            .any(|d| d.as_str() == Some("llm")),
+        "a provider key write commits the llm document: {ack}"
+    );
+
+    let after: Value = client
+        .get(&llm_url)
+        .send()
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        after["revision"].as_u64(),
+        Some(revision_before + 1),
+        "the projection revision follows the commit"
+    );
+    let provider = after["providers"]
+        .as_array()
+        .expect("providers")
+        .iter()
+        .find(|p| p["id"] == common::TEST_PROVIDER_ID)
+        .expect("fixture provider in the llm view")
+        .clone();
+    assert_eq!(provider["configured"], serde_json::json!(true));
+    let masked = provider["masked_api_key"]
+        .as_str()
+        .expect("configured provider carries a masked key");
+    assert!(masked.contains("***"), "mask keeps the *** shape: {masked}");
+    assert!(
+        !after.to_string().contains(SECRET),
+        "GET /api/settings/llm must never echo the raw key: {after}"
+    );
+}
+
+#[tokio::test]
+async fn settings_provider_key_delete_removes_models_from_active_models() {
+    let ws = TempDir::new().expect("ws");
+    let db_dir = TempDir::new().expect("db");
+    let db_path = db_dir.path().join("litecode.db");
+    seed_global_db(&db_path);
+
+    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
+    let addr = spawn_server(state, web_dist).await;
+    let client = test_http_client();
+    let llm_url = format!("http://{addr}/api/settings/llm");
+
+    let before: Value = client
+        .get(&llm_url)
+        .send()
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    let active_refs: Vec<&str> = before["active_models"]
+        .as_array()
+        .expect("active_models")
+        .iter()
+        .filter_map(|m| m["ref"].as_str())
+        .collect();
+    assert!(
+        active_refs.contains(&common::TEST_PRIMARY_MODEL_REF),
+        "a keyed provider makes its catalog models selectable: {before}"
+    );
+    let provider = before["providers"]
+        .as_array()
+        .expect("providers")
+        .iter()
+        .find(|p| p["id"] == common::TEST_PROVIDER_ID)
+        .expect("fixture provider")
+        .clone();
+    assert_eq!(
+        provider["models"].as_array().expect("provider models").len(),
+        2,
+        "the catalog lists every model regardless of credential state"
+    );
+
+    let resp = client
+        .delete(format!(
+            "http://{addr}/api/settings/providers/{}/key",
+            common::TEST_PROVIDER_ID
+        ))
+        .send()
+        .await
+        .expect("delete");
+    assert_eq!(resp.status(), 200);
+
+    let after: Value = client
+        .get(&llm_url)
+        .send()
+        .await
+        .expect("get")
+        .json()
+        .await
+        .expect("json");
+    assert!(
+        after["active_models"]
+            .as_array()
+            .expect("active_models")
+            .is_empty(),
+        "deleting the only credential must empty active_models: {after}"
+    );
+    let provider = after["providers"]
+        .as_array()
+        .expect("providers")
+        .iter()
+        .find(|p| p["id"] == common::TEST_PROVIDER_ID)
+        .expect("fixture provider")
+        .clone();
+    assert_eq!(provider["configured"], serde_json::json!(false));
+    assert!(
+        provider["masked_api_key"].is_null(),
+        "an unconfigured provider has no mask: {provider}"
+    );
+    assert_eq!(
+        provider["models"].as_array().expect("provider models").len(),
+        2,
+        "the catalog still declares the provider's models (only selectability changed)"
+    );
 }
 
 #[tokio::test]
@@ -662,19 +843,46 @@ async fn settings_put_orphan_model_ref_returns_400() {
             .unwrap_or("")
             .contains("does-not-exist")
     );
+
+    // A catalog-shaped reference the catalog does not declare is refused too.
+    profile.model_ref = "test/ghost-model".into();
+    let resp = client
+        .put(format!("http://{addr}/api/settings/agents/default"))
+        .json(&profile)
+        .send()
+        .await
+        .expect("put");
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.expect("json");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("test/ghost-model")
+    );
+    assert_eq!(
+        ConfigManager::load_global_from(&db_path)
+            .unwrap()
+            .agents
+            .get("default")
+            .unwrap()
+            .model_ref,
+        common::TEST_PRIMARY_MODEL_REF,
+        "a refused agent write must not persist the unknown reference"
+    );
 }
 
 #[test]
-fn apply_rebuilds_provider_endpoint_and_refreshes_api_key() {
-    use litecode::config::schema::{ProviderConnectionConfig, ProviderDefinition};
+fn apply_refreshes_provider_api_key_after_settings_write() {
     use litecode::runtime::RuntimeHandle;
 
-    use common::test_resolved;
 
     let dir = TempDir::new().expect("dir");
     let db = dir.path().join("litecode.db");
-    let mut baseline = test_resolved("default", &[]).global().clone();
-    common::insert_test_llm_registry(&mut baseline, "http://old.example/v1", "sk-old", 128_000);
+    common::seed_test_catalog(&db, "http://old.example/v1", 128_000);
+    // Seed the full default agent set, then point it at the fixture catalog.
+    let mut baseline = ConfigManager::load_global_from(&db).expect("seed default global");
+    common::insert_test_llm_registry(&mut baseline, "sk-old");
     global_db::import_into(&db, &baseline).expect("seed");
 
     let guard = Arc::new(TurnGuard::new());
@@ -688,7 +896,8 @@ fn apply_rebuilds_provider_endpoint_and_refreshes_api_key() {
 
     let settings = writer.load_settings().expect("load");
     let workspace = WorkspaceState::new("/tmp/reload-provider");
-    let resolved = ConfigManager::resolve(settings.clone(), workspace.clone());
+    let resolved =
+        ConfigManager::resolve(settings.clone(), workspace.clone(), common::catalog_for_db(&db));
     let workspace_engines = Arc::new(WorkspaceEngines::new());
     let ide = litecode::ide_base::IdeBaseHandle::open(
         workspace.workspace_root.clone(),
@@ -706,83 +915,55 @@ fn apply_rebuilds_provider_endpoint_and_refreshes_api_key() {
         &db,
     );
 
+    assert_eq!(
+        runtime.resolved.provider_api_key(common::TEST_PROVIDER_ID),
+        Some("sk-old")
+    );
     assert!(
         runtime
             .resolved
-            .providers()
-            .get(common::TEST_PROVIDER_ID)
-            .map(|p| p.config.endpoint.as_str())
-            .unwrap()
-            .contains("old.example")
-    );
-    assert_eq!(
-        runtime
-            .resolved
-            .providers()
-            .get(common::TEST_PROVIDER_ID)
-            .map(|p| p.config.api_key.as_str()),
-        Some("sk-old")
+            .catalog()
+            .provider(common::TEST_PROVIDER_ID)
+            .expect("fixture provider")
+            .endpoint
+            .contains("old.example"),
+        "the endpoint is a catalog fact"
     );
 
-    let mut updated = baseline
-        .providers
-        .get(common::TEST_PROVIDER_ID)
-        .cloned()
-        .unwrap();
-    updated.config.endpoint = "http://new.example/v1".into();
-    updated.config.api_key = "sk-new".into();
     writer
-        .write_provider(ProviderDefinition {
-            id: common::TEST_PROVIDER_ID.to_string(),
-            adapter_id: updated.adapter_id,
-            label: updated.label,
-            config: ProviderConnectionConfig {
-                endpoint: updated.config.endpoint,
-                api_key: updated.config.api_key,
-                auth: updated.config.auth,
-            },
-        })
-        .expect("write provider");
+        .write_provider_key(common::TEST_PROVIDER_ID, "sk-new")
+        .expect("write key");
 
     runtime.apply(litecode::config::DocId::ALL).expect("reload");
 
+    assert_eq!(
+        runtime.resolved.provider_api_key(common::TEST_PROVIDER_ID),
+        Some("sk-new"),
+        "reload must refresh api_key from global DB"
+    );
     assert!(
         runtime
             .resolved
-            .providers()
-            .get(common::TEST_PROVIDER_ID)
-            .map(|p| p.config.endpoint.as_str())
-            .unwrap()
-            .contains("new.example"),
-        "endpoint after reload: {:?}",
-        runtime
-            .resolved
-            .providers()
-            .get(common::TEST_PROVIDER_ID)
-            .map(|p| p.config.endpoint.as_str())
-    );
-    assert_eq!(
-        runtime
-            .resolved
-            .providers()
-            .get(common::TEST_PROVIDER_ID)
-            .map(|p| p.config.api_key.as_str()),
-        Some("sk-new"),
-        "reload must refresh api_key from global DB"
+            .catalog()
+            .provider(common::TEST_PROVIDER_ID)
+            .expect("fixture provider")
+            .endpoint
+            .contains("old.example"),
+        "catalog facts are process-static: an endpoint edit needs a restart, not a settings commit"
     );
 }
 
 #[test]
 fn runtime_clone_reloads_stale_provider_after_settings_write() {
-    use litecode::config::schema::{ProviderConnectionConfig, ProviderDefinition};
     use litecode::runtime::RuntimeHandle;
 
-    use common::test_resolved;
 
     let dir = TempDir::new().expect("dir");
     let db = dir.path().join("litecode.db");
-    let mut baseline = test_resolved("default", &[]).global().clone();
-    common::insert_test_llm_registry(&mut baseline, "http://old.example/v1", "sk-old", 128_000);
+    common::seed_test_catalog(&db, "http://old.example/v1", 128_000);
+    // Seed the full default agent set, then point it at the fixture catalog.
+    let mut baseline = ConfigManager::load_global_from(&db).expect("seed default global");
+    common::insert_test_llm_registry(&mut baseline, "sk-old");
     global_db::import_into(&db, &baseline).expect("seed");
 
     let guard = Arc::new(TurnGuard::new());
@@ -796,7 +977,8 @@ fn runtime_clone_reloads_stale_provider_after_settings_write() {
 
     let settings = writer.load_settings().expect("load");
     let workspace = WorkspaceState::new("/tmp/reload-provider-clone");
-    let resolved = ConfigManager::resolve(settings.clone(), workspace.clone());
+    let resolved =
+        ConfigManager::resolve(settings.clone(), workspace.clone(), common::catalog_for_db(&db));
     let workspace_engines = Arc::new(WorkspaceEngines::new());
     let ide = litecode::ide_base::IdeBaseHandle::open(
         workspace.workspace_root.clone(),
@@ -814,75 +996,35 @@ fn runtime_clone_reloads_stale_provider_after_settings_write() {
         &db,
     );
 
-    let mut updated = baseline
-        .providers
-        .get(common::TEST_PROVIDER_ID)
-        .cloned()
-        .unwrap();
-    updated.config.endpoint = "http://new.example/v1".into();
-    updated.config.api_key = "sk-new".into();
     writer
-        .write_provider(ProviderDefinition {
-            id: common::TEST_PROVIDER_ID.to_string(),
-            adapter_id: updated.adapter_id,
-            label: updated.label,
-            config: ProviderConnectionConfig {
-                endpoint: updated.config.endpoint,
-                api_key: updated.config.api_key,
-                auth: updated.config.auth,
-            },
-        })
-        .expect("write provider");
+        .write_provider_key(common::TEST_PROVIDER_ID, "sk-new")
+        .expect("write key");
 
     let mut active = runtime.clone();
     active
         .apply(litecode::config::DocId::ALL)
         .expect("active reload");
-    assert!(
-        active
-            .resolved
-            .providers()
-            .get(common::TEST_PROVIDER_ID)
-            .map(|p| p.config.endpoint.as_str())
-            .unwrap()
-            .contains("new.example")
+    assert_eq!(
+        active.resolved.provider_api_key(common::TEST_PROVIDER_ID),
+        Some("sk-new")
     );
 
     let mut fresh_ws = runtime.clone();
     fresh_ws
         .apply(litecode::config::DocId::ALL)
         .expect("ws clone reload");
-    assert!(
-        fresh_ws
-            .resolved
-            .providers()
-            .get(common::TEST_PROVIDER_ID)
-            .map(|p| p.config.endpoint.as_str())
-            .unwrap()
-            .contains("new.example"),
-        "ws clone must reload from DB: {:?}",
-        fresh_ws
-            .resolved
-            .providers()
-            .get(common::TEST_PROVIDER_ID)
-            .map(|p| p.config.endpoint.as_str())
-    );
     assert_eq!(
-        fresh_ws
-            .resolved
-            .providers()
-            .get(common::TEST_PROVIDER_ID)
-            .map(|p| p.config.api_key.as_str()),
-        Some("sk-new")
+        fresh_ws.resolved.provider_api_key(common::TEST_PROVIDER_ID),
+        Some("sk-new"),
+        "ws clone must reload the credential from the DB"
     );
 }
 
 #[tokio::test]
-async fn set_session_model_reloads_stale_catalog_after_model_write() {
+async fn set_session_model_persists_selectable_catalog_ref() {
     use litecode::client_protocol::controller::SessionController;
     use litecode::runtime::RuntimeHandle;
 
-    use common::{ready_test_model, test_resolved};
 
     let ws_dir = TempDir::new().expect("ws");
     let project = ws_dir.path().to_string_lossy().to_string();
@@ -893,8 +1035,10 @@ async fn set_session_model_reloads_stale_catalog_after_model_write() {
 
     let dir = TempDir::new().expect("dir");
     let db = dir.path().join("litecode.db");
-    let mut baseline = test_resolved("default", &[]).global().clone();
-    common::insert_test_llm_registry(&mut baseline, "http://127.0.0.1:9", "sk-test", 128_000);
+    common::seed_test_catalog(&db, common::TEST_CATALOG_ENDPOINT, 128_000);
+    // Seed the full default agent set, then point it at the fixture catalog.
+    let mut baseline = ConfigManager::load_global_from(&db).expect("seed default global");
+    common::insert_test_llm_registry(&mut baseline, "sk-test");
     global_db::import_into(&db, &baseline).expect("seed");
 
     let guard = Arc::new(TurnGuard::new());
@@ -916,7 +1060,11 @@ async fn set_session_model_reloads_stale_catalog_after_model_write() {
         workspace_mcp_servers: Default::default(),
         workspace_custom_tools: Default::default(),
     };
-    let resolved = ConfigManager::resolve(settings, workspace.clone());
+    let resolved = ConfigManager::resolve(
+        settings,
+        workspace.clone(),
+        common::catalog_for_db(&db),
+    );
     let workspace_engines = Arc::new(WorkspaceEngines::new());
     let ide = litecode::ide_base::IdeBaseHandle::open(
         workspace.workspace_root.clone(),
@@ -937,33 +1085,60 @@ async fn set_session_model_reloads_stale_catalog_after_model_write() {
         .apply(litecode::config::DocId::ALL)
         .expect("ws connect");
 
-    let mut models = writer.load_settings().expect("load").models;
-    models.insert(
-        "fast".into(),
-        ready_test_model("fast", common::TEST_PROVIDER_ID, "fast-wire", 128_000),
-    );
-    writer.write_models(models).expect("write models");
-
+    // Provider/model facts live in a process-wide catalog loaded once per DB
+    // path: no settings write can make the runtime's copy stale, and the lazy
+    // reload inside set_session_model must keep serving that same catalog.
     assert!(
-        !runtime.resolved.global().models.contains_key("fast"),
-        "runtime snapshot should be stale before set_model reload"
+        Arc::ptr_eq(
+            runtime.resolved.catalog(),
+            &writer.catalog().expect("writer catalog")
+        ),
+        "the runtime and the writer share one catalog instance"
+    );
+    assert!(
+        runtime
+            .resolved
+            .model_for_agent_ref(common::TEST_PRIMARY_MODEL_REF)
+            .is_some(),
+        "the seeded credential makes the fixture model selectable"
     );
 
     let sessions = common::test_sessions_manager(&session_db);
     let sid = sessions
-        .open_session_sync(&project, "default", None)
+        .open_session_sync(&project, "default", Some(common::TEST_PRIMARY_MODEL_REF))
         .expect("open");
 
     let mut ctrl =
         SessionController::with_turn_guard(runtime, None, sessions.clone()).expect("ctrl");
     ctrl.subscribe(&sid).await;
+    let _ = ctrl.take_outgoing_for(&sid);
 
-    ctrl.set_session_model(&sid, "fast").expect("set model");
-
+    ctrl.set_session_model(&sid, common::TEST_COMPACTION_MODEL_REF)
+        .expect("set model");
     assert_eq!(
         sessions.session_model_id(&sid).as_deref(),
-        Some("fast"),
-        "set_model should persist after lazy runtime reload"
+        Some(common::TEST_COMPACTION_MODEL_REF),
+        "set_model persists the composite catalog reference after the lazy reload"
+    );
+    let _ = ctrl.take_outgoing_for(&sid);
+
+    // A reference the catalog does not declare is refused on the wire and never
+    // overwrites the persisted session row.
+    ctrl.set_session_model(&sid, "test/ghost-model")
+        .expect("a refusal is reported on the wire, not as a hard error");
+    let frames = ctrl.take_outgoing_for(&sid);
+    let refusal = frames
+        .iter()
+        .find(|f| {
+            f["method"] == "agent/operation_result" && f["params"]["op"] == "set_model"
+        })
+        .unwrap_or_else(|| panic!("set_model answered on the wire: {frames:#?}"));
+    assert_eq!(refusal["params"]["ok"], false);
+    assert_eq!(refusal["params"]["error"]["code"], "invalid_request");
+    assert_eq!(
+        sessions.session_model_id(&sid).as_deref(),
+        Some(common::TEST_COMPACTION_MODEL_REF),
+        "a refused model must not overwrite the persisted reference"
     );
 }
 
@@ -1198,6 +1373,9 @@ async fn settings_put_agent_keeps_dormant_mcp_bind() {
         .unwrap()
         .tools
         .insert("mcp_dormant".into(), binding_all_for("mcp_dormant"));
+    // This test writes settings directly, so the fixture catalog must be seeded
+    // first: the agent's composite model_ref is validated against it.
+    common::seed_test_catalog(&db_path, common::TEST_CATALOG_ENDPOINT, 128_000);
     write_global_db(&db_path, &settings);
 
     let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path.clone());
@@ -1404,6 +1582,7 @@ async fn settings_custom_tool_crud_enable_bind_execute_and_delete() {
             litecode::config::workspace::workspace_with_disk_readiness(&WorkspaceState::new(
                 workspace,
             )),
+            litecode::provider_catalog::shared_for_db(db_path).expect("catalog"),
         );
         let workspace_engines = litecode::engines::WorkspaceEngines::new();
         let ide = litecode::ide_base::IdeBaseHandle::open(
@@ -1821,7 +2000,18 @@ async fn settings_retrieval_engine_init_and_stop_use_engine_api() {
         .await
         .expect("enable json");
     assert!(init["ok"].as_bool().unwrap_or(false));
-    assert_eq!(init["engines"]["retrieval"]["desired"], true);
+    let after_init: Value = client
+        .get(&engines_doc_url)
+        .send()
+        .await
+        .expect("engines get")
+        .json()
+        .await
+        .expect("engines json");
+    assert_eq!(
+        after_init["retrieval"]["desired"], true,
+        "retrieval desired must persist: {after_init}"
+    );
 
     let available_after_init: Value = client
         .get(&available_url)
@@ -1853,7 +2043,18 @@ async fn settings_retrieval_engine_init_and_stop_use_engine_api() {
         .await
         .expect("stop json");
     assert!(stop["ok"].as_bool().unwrap_or(false));
-    assert_eq!(stop["engines"]["retrieval"]["desired"], false);
+    let after_stop: Value = client
+        .get(&engines_doc_url)
+        .send()
+        .await
+        .expect("engines get after stop")
+        .json()
+        .await
+        .expect("engines json");
+    assert_eq!(
+        after_stop["retrieval"]["desired"], false,
+        "retrieval desired must clear: {after_stop}"
+    );
 
     let engines: Value = client
         .get(&engines_url)
@@ -2025,7 +2226,18 @@ async fn settings_lsp_stop_preserves_servers_and_clears_desired() {
         .await
         .expect("stop json");
     assert!(stop["ok"].as_bool().unwrap_or(false));
-    assert_eq!(stop["engines"]["lsp"]["desired"], false);
+    let engines_after_stop: Value = client
+        .get(format!("http://{addr}/api/settings/engines"))
+        .send()
+        .await
+        .expect("engines get")
+        .json()
+        .await
+        .expect("engines json");
+    assert_eq!(
+        engines_after_stop["lsp"]["desired"], false,
+        "lsp desired must clear: {engines_after_stop}"
+    );
 
     assert_eq!(
         litecode::config::workspace::lsp_servers_from_engines(ws.path()),
@@ -2054,7 +2266,7 @@ async fn settings_lsp_stop_preserves_servers_and_clears_desired() {
 }
 
 #[tokio::test]
-async fn settings_provider_put_returns_restart_required_false() {
+async fn settings_provider_key_write_is_effective_next_turn() {
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");
     let db_path = db_dir.path().join("litecode.db");
@@ -2064,29 +2276,41 @@ async fn settings_provider_put_returns_restart_required_false() {
     let addr = spawn_server(state, web_dist).await;
     let client = test_http_client();
 
-    let settings = ConfigManager::load_global_from(&db_path).unwrap();
-    let providers = settings.providers.clone();
-    let mut provider = providers
-        .get(common::TEST_PROVIDER_ID)
-        .cloned()
-        .expect("test provider");
-    provider.config.endpoint = "http://127.0.0.1:19999/v1".into();
-
-    let resp: Value = client
-        .put(format!("http://{addr}/api/settings/providers"))
-        .json(&serde_json::json!({
-            "providers": {
-                common::TEST_PROVIDER_ID: provider
-            }
-        }))
+    let resp = client
+        .put(format!(
+            "http://{addr}/api/settings/providers/{}/key",
+            common::TEST_PROVIDER_ID
+        ))
+        .json(&serde_json::json!({ "api_key": "sk-next-turn" }))
         .send()
         .await
-        .expect("put")
+        .expect("put");
+    assert_eq!(resp.status(), 200);
+
+    let summary: Value = client
+        .get(format!("http://{addr}/api/settings"))
+        .send()
+        .await
+        .expect("get")
         .json()
         .await
         .expect("json");
-    assert!(resp["ok"].as_bool().unwrap_or(false));
-    assert_eq!(resp["restart_required"], serde_json::json!(false));
+    assert_eq!(
+        summary["effective_next_turn"],
+        serde_json::json!(true),
+        "a credential write applies on the next turn: {summary}"
+    );
+    assert_eq!(summary["restart_required"], serde_json::json!(false));
+    assert_eq!(
+        summary["configured_provider_count"].as_u64(),
+        Some(1),
+        "the fixture DB configures exactly one provider: {summary}"
+    );
+    assert_eq!(
+        summary["active_model_count"].as_u64(),
+        Some(2),
+        "both fixture models become selectable: {summary}"
+    );
 }
 
 #[tokio::test]
@@ -2104,7 +2328,7 @@ async fn settings_put_new_agent_creates_profile() {
 
     let profile = AgentProfile {
         role: AgentRole::Subagent,
-        model_ref: "default".into(),
+        model_ref: common::TEST_PRIMARY_MODEL_REF.into(),
         system_prompt: "review helper".into(),
         description: "Reviewer".into(),
         ..Default::default()
@@ -2157,7 +2381,7 @@ async fn settings_put_subagent_strips_subagent_launch_binding() {
 
     let profile = AgentProfile {
         role: AgentRole::Subagent,
-        model_ref: "default".into(),
+        model_ref: common::TEST_PRIMARY_MODEL_REF.into(),
         tools: HashMap::from([("subagent_launch".into(), binding_none_tool())]),
         ..Default::default()
     };
@@ -2193,7 +2417,7 @@ async fn settings_put_subagent_strips_plan_and_todo_bindings() {
 
     let profile = AgentProfile {
         role: AgentRole::Subagent,
-        model_ref: "default".into(),
+        model_ref: common::TEST_PRIMARY_MODEL_REF.into(),
         tools: HashMap::from([
             ("plan".into(), binding_none_tool()),
             ("todo".into(), binding_none_tool()),

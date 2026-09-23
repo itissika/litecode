@@ -190,10 +190,13 @@ impl LlmProvider for CaptureProvider {
     }
 }
 
-fn api_model_id(resolved: &litecode::config::ResolvedConfig, model_id: &str) -> String {
-    litecode::platform_knobs::effective_api_model_id(
-        resolved.models().get(model_id).expect("model in test catalog"),
-    )
+fn api_model_id(resolved: &litecode::config::ResolvedConfig, model_ref: &str) -> String {
+    resolved
+        .catalog()
+        .model(model_ref)
+        .expect("model in test catalog")
+        .id
+        .clone()
 }
 
 /// A child turn is a session turn: model / thinking tier / context mode come from
@@ -210,13 +213,16 @@ async fn child_turn_reads_config_from_its_own_session_row() {
 
     let launch_calls = provider.captured();
     let seed_call = launch_calls.last().expect("launch turn called the provider");
-    assert_eq!(seed_call.0, api_model_id(&harness.resolved, "default"));
+    assert_eq!(
+        seed_call.0,
+        api_model_id(&harness.resolved, common::TEST_PRIMARY_MODEL_REF)
+    );
     assert_eq!(seed_call.1, ThinkingSpec::Tier(ThinkingTier::Medium));
 
     // Exactly the RPCs the subagent panel issues on a child session row.
     harness
         .sessions
-        .set_session_model_id(&child, Some("compaction".into()))
+        .set_session_model_id(&child, Some(common::TEST_COMPACTION_MODEL_REF.into()))
         .expect("set model");
     harness
         .sessions
@@ -240,7 +246,7 @@ async fn child_turn_reads_config_from_its_own_session_row() {
     let turn_call = all_calls.last().expect("second turn called the provider");
     assert_eq!(
         turn_call.0,
-        api_model_id(&harness.resolved, "compaction"),
+        api_model_id(&harness.resolved, common::TEST_COMPACTION_MODEL_REF),
         "child model comes from its own row"
     );
     assert_eq!(
@@ -257,14 +263,8 @@ fn child_binding(
     sessions: &Arc<litecode::session::manager::SessionManager>,
     session_id: &str,
 ) -> litecode::runtime::TurnLlmBinding {
-    resolve_session_llm(
-        resolved,
-        &mut ProviderRegistry::new(),
-        sessions,
-        session_id,
-        0,
-    )
-    .expect("child binding")
+    resolve_session_llm(resolved, &mut ProviderRegistry::new(), sessions, session_id)
+        .expect("child binding")
 }
 
 /// Display == execution: the window a child turn runs with is derived from its
@@ -283,7 +283,7 @@ async fn child_binding_window_follows_its_own_context_mode() {
     global.agents.insert(
         "default".into(),
         AgentProfile {
-            model_ref: "default".into(),
+            model_ref: common::TEST_PRIMARY_MODEL_REF.into(),
             ..Default::default()
         },
     );
@@ -291,30 +291,40 @@ async fn child_binding_window_follows_its_own_context_mode() {
         "compaction".into(),
         AgentProfile {
             role: AgentRole::Hidden,
-            model_ref: "compaction".into(),
+            model_ref: common::TEST_COMPACTION_MODEL_REF.into(),
             ..Default::default()
         },
     );
-    common::insert_test_llm_registry(&mut global, "http://127.0.0.1:9", "test-key", 1_000_000);
-    let resolved = resolve(global, workspace);
+    common::insert_test_llm_registry(&mut global, "test-key");
+    let resolved = resolve(
+        global,
+        workspace,
+        common::test_catalog_windows("http://127.0.0.1:9", 200_000, 1_000_000, 8192),
+    );
 
     let sessions = common::test_sessions_manager(
         resolved.paths().sessions_db.to_string_lossy().to_string(),
     );
     let project = cwd.to_string_lossy().to_string();
     let parent = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(common::TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent session");
     let child = sessions
-        .open_child_session(&project, "reviewer", Some("default"), &parent, "call-window")
+        .open_child_session(
+            &project,
+            "reviewer",
+            Some(common::TEST_PRIMARY_MODEL_REF),
+            &parent,
+            "call-window",
+        )
         .expect("child session");
 
     let standard = child_binding(&resolved, &sessions, &child);
     assert_eq!(standard.context_mode, ContextMode::Standard);
     assert_eq!(
-        standard.context_window,
-        litecode::platform_knobs::CONTEXT_STANDARD_OPEN
+        standard.context_window, 200_000,
+        "standard mode uses the catalog's standard context_window"
     );
 
     sessions

@@ -11,6 +11,12 @@
 #   ./scripts/serve_win.ps1 -WebOnly          # API must already be running
 #   ./scripts/serve_win.ps1 -Release
 #   ./scripts/serve_win.ps1 -NoAuth           # open serve without LITECODE_TOKEN
+#   ./scripts/serve_win.ps1 -Cuda             # API with the ort-cuda feature (ORT CUDA EP)
+#
+# -Cuda runs `cargo run --features ort-cuda` against target\cuda-accel (same
+# dir as dev_win.ps1 -Cuda), so toggling CUDA never invalidates the plain CPU
+# cache. Needs CUDA toolkit + cuDNN on PATH (ORT_CUDA_VERSION defaults to 12);
+# the worker falls back to CPU EP when the CUDA EP cannot open.
 #
 # One process = one workspace. Changing folder requires restarting this script
 # (no in-process hot switch). End-state Electron: ./scripts/dev_win.ps1
@@ -25,6 +31,7 @@ param(
   [switch]$WebOnly,
   [switch]$Release,
   [switch]$NoAuth,
+  [switch]$Cuda,
   [switch]$SkipNpmInstall,
   # Captures Unix-style leftovers like: --workspace C:\path (not bound as -Workspace)
   [Parameter(ValueFromRemainingArguments = $true)]
@@ -50,9 +57,15 @@ for ($i = 0; $i -lt $RemainingArgs.Count; $i++) {
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $WebDir = Join-Path $Root "web"
 $WebIndex = Join-Path $WebDir "dist\index.html"
+# CUDA builds live beside the CPU cache (same dir as dev_win.ps1 -Cuda) so
+# toggling the feature never forces a full recompile of the other profile.
+$CudaTargetDir = Join-Path $Root "target\cuda-accel"
 
 if ($ApiOnly -and $WebOnly) {
   throw "-ApiOnly and -WebOnly are mutually exclusive"
+}
+if ($Cuda -and $WebOnly) {
+  Write-Warning "-Cuda only affects the API process; ignored with -WebOnly"
 }
 
 function Test-Command([string]$Name) {
@@ -127,6 +140,10 @@ try {
   if (-not $WebOnly) {
     $cargoArgs = @("run")
     if ($Release) { $cargoArgs += "--release" }
+    if ($Cuda) {
+      if (-not $env:ORT_CUDA_VERSION) { $env:ORT_CUDA_VERSION = "12" }
+      $cargoArgs += @("--features", "ort-cuda", "--target-dir", $CudaTargetDir)
+    }
     $cargoArgs += @("--")
     if ($Workspace -and $Workspace.Trim().Length -gt 0) {
       $ws = (Resolve-Path -LiteralPath $Workspace.Trim()).Path
@@ -140,6 +157,10 @@ try {
 
     Write-Host "==> starting API via cargo $($cargoArgs -join ' ') (LITECODE_CHANNEL=dev)"
     Write-Host "    bind=$Bind agent=$Agent"
+    if ($Cuda) {
+      Write-Host "    cuda:  ort-cuda, ORT_CUDA_VERSION=$($env:ORT_CUDA_VERSION), target-dir=$CudaTargetDir"
+      Write-Host "           needs CUDA toolkit + cuDNN on PATH; falls back to CPU EP when CUDA cannot open"
+    }
     $savedChannel = $env:LITECODE_CHANNEL
     $env:LITECODE_CHANNEL = "dev"
     $api = Start-Process -FilePath "cargo" -ArgumentList $cargoArgs `
@@ -152,7 +173,8 @@ try {
     $procs += $api
 
     $health = "http://$Bind/health"
-    Wait-Health $health
+    # -Cuda compiles into a cold, separate target dir — allow a slower first build.
+    Wait-Health $health $(if ($Cuda) { 1800 } else { 600 })
   }
 
   if (-not $ApiOnly) {
@@ -188,6 +210,9 @@ try {
   Write-Host "============================================================"
   Write-Host "  API health: http://$Bind/health"
   Write-Host "  API ws:     ws://$Bind/ws"
+  if ($Cuda) {
+    Write-Host "  cuda:       ort-cuda (target\cuda-accel; LITECODE_ORT_FORCE_CPU=1 forces CPU EP)"
+  }
   if ($token) {
     Write-Host "  token:      $token"
     Write-Host "  (also injected as VITE_AUTH_TOKEN for this Vite process)"

@@ -11,6 +11,7 @@ import type {
   ServerStats,
   LogLine,
   SessionSnapshot,
+  ModelInfo,
   BufferLoaded,
   BufferItemNotification,
   CompactLifecycle,
@@ -98,7 +99,6 @@ interface ConnectionStore {
   serverVersionChannel: string;
   /** Stable workspace identity from server/hello. */
   workspaceId: string;
-  llmEcosystem: string;
   /** Sessions currently subscribed on the live socket. Cleared on every
       drop so AgentPanels re-subscribe themselves on (re)connect. */
   subscribedSessions: Set<string>;
@@ -122,7 +122,6 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
       serverVersion: "",
       serverVersionChannel: "",
       workspaceId: "",
-      llmEcosystem: "",
       subscribedSessions: new Set(),
 
       init: () => {
@@ -173,7 +172,6 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
           serverVersion: "",
           serverVersionChannel: "",
           workspaceId: "",
-          llmEcosystem: "",
           subscribedSessions: new Set(),
         });
       },
@@ -240,12 +238,17 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               serverVersion: hello.version ?? "",
               serverVersionChannel: hello.version_channel ?? "",
               workspaceId: hello.workspace_id ?? "",
-              llmEcosystem: hello.llm_ecosystem ?? "openai",
             });
             session?.onHello(hello);
             if (hello.project) {
               void window.litecode?.notifyWorkspace?.(hello.project);
             }
+            return;
+          }
+
+          case "models/changed": {
+            const payload = params as unknown as { models?: ModelInfo[] };
+            session?.onModelsChanged(payload.models ?? []);
             return;
           }
 

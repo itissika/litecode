@@ -185,13 +185,26 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
     });
 
     let settings_tx = response_tx.clone();
+    let models_runtime = state.runtime.clone();
     tokio::spawn(async move {
         loop {
             match settings_rx.recv().await {
                 Ok(event) => {
+                    let llm_changed = event.docs.contains(&crate::config::DocId::Llm);
                     let msg = project::settings_changed(event.revision, &event.docs, event.summary);
                     if settings_tx.send(msg).is_err() {
                         break;
+                    }
+                    // A credential change changes which models are selectable: push
+                    // the fresh list so open pickers update without a reconnect.
+                    if llm_changed {
+                        let models = {
+                            let runtime = models_runtime.read().expect("runtime lock");
+                            project::model_infos(&runtime.resolved)
+                        };
+                        if settings_tx.send(project::models_changed(models)).is_err() {
+                            break;
+                        }
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,

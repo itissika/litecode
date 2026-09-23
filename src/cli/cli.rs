@@ -94,26 +94,22 @@ fn load_runtime_bundle_from_cli(cli: &Cli) -> anyhow::Result<ResolvedConfig> {
     ConfigManager::load_runtime_bundle(workspace_override(cli)).map_err(Into::into)
 }
 
+/// Key of the provider the default agent's model belongs to, else the first
+/// configured provider.
 fn get_api_key(resolved: &ResolvedConfig) -> anyhow::Result<String> {
-    if let Some(agent) = resolved.agents().get("default")
-        && !agent.model_ref.is_empty()
-        && let Some(model) = resolved.models().get(&agent.model_ref)
-        && let Some(provider) = resolved.providers().get(&model.provider_ref)
+    if let Some(model) = resolved.declared_model_for_agent("default")
+        && let Some(key) = resolved.provider_api_key(&model.provider_id)
     {
-        let key = provider.config.api_key.trim();
-        if !key.is_empty() {
-            return Ok(key.to_string());
-        }
+        return Ok(key.to_string());
     }
     resolved
-        .providers()
-        .values()
-        .find(|p| crate::llm::provider_ready(p))
-        .map(|p| p.config.api_key.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .configured_providers()
+        .first()
+        .and_then(|provider| resolved.provider_api_key(&provider.id))
+        .map(str::to_string)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "no ready provider api_key; configure providers via Web Settings or `litecode config set`"
+                "no provider API key configured; add one in Settings → Providers"
             )
         })
 }

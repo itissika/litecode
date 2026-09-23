@@ -5,7 +5,7 @@ use crate::platform_knobs::ThinkingSpec;
 use crate::platform_knobs::ThinkingTier;
 use crate::types::{Item, user_text};
 
-/// Tool schema exposed to the model (product-level; wire encoding is adapter-private).
+/// Tool schema exposed to the model (product-level; wire encoding is codec-private).
 #[derive(Debug, Clone)]
 pub struct ToolDef {
     pub name: String,
@@ -15,7 +15,7 @@ pub struct ToolDef {
 
 /// Product-kernel model request — authority `Item` input only; no chat `messages[]`.
 ///
-/// Thinking is platform intent ([`ThinkingSpec`]). Adapters map it to vendor wire
+/// Thinking is platform intent ([`ThinkingSpec`]). Codecs map it to vendor wire
 /// in `build_body`; callers must not invent `disabled` / `none` strings.
 #[derive(Debug, Clone)]
 pub struct ModelRequest {

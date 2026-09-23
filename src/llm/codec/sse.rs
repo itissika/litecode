@@ -102,9 +102,7 @@ pub(super) fn sse_data_payload(line: &str) -> Option<&str> {
     if line.starts_with(':') {
         return None;
     }
-    let Some(rest) = line.strip_prefix("data:") else {
-        return None;
-    };
+    let rest = line.strip_prefix("data:")?;
     let data = rest.strip_prefix(' ').unwrap_or(rest);
     if data == "[DONE]" {
         return None;

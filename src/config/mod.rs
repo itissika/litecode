@@ -13,8 +13,8 @@ pub mod workspace;
 pub mod workspace_identity;
 
 pub use bridge::{
-    DEFAULT_CONTEXT_WINDOW, agent_config_for, agent_config_from_profile, api_model_id_for_agent,
-    context_window_for_agent, json_output_for_agent, max_tokens_for_agent, warn_bridge_fallbacks,
+    agent_config_for, agent_config_from_profile, primary_agent_infos,
+    warn_unresolved_agent_models,
 };
 pub use gate::{ApplyPlan, CommitAck, DocId, EvalView, PersistDoc};
 pub use manager::ConfigManager;
@@ -24,7 +24,8 @@ pub use path::{
 pub use resolved::{ResolvedConfig, WorkspacePaths, WorkspaceState, resolve};
 pub use schema::GlobalSettings;
 pub use settings_writer::{
-    ProviderView, SettingsChangedEvent, SettingsSummary, SettingsWriteError, SettingsWriter,
+    CatalogModelView, LlmProviderView, LlmSettingsView, SettingsChangedEvent, SettingsSummary,
+    SettingsWriteError, SettingsWriter,
 };
 pub use turn_guard::{TurnGuard, cli_turn_guard};
 pub use workspace::{

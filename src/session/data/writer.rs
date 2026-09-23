@@ -866,24 +866,5 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 CommitKind::Deleted,
             )
         }
-        SessionMutation::ClearOrphanedModelIds {
-            operation_id,
-            valid_ids,
-        } => {
-            Session::clear_orphaned_model_ids_on(
-                state.db.conn(),
-                &valid_ids.into_iter().collect(),
-            )?;
-            Ok(CommitReceipt {
-                session_id: String::new(),
-                operation_id: operation_id.0,
-                revision: 0,
-                change_id: 0,
-                outcome: CommitKind::MetaUpdated,
-                preview: None,
-                assistant_preview: None,
-                working_set: None,
-            })
-        }
     }
 }

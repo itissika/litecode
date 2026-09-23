@@ -1,22 +1,18 @@
 //! Platform semantics for thinking intensity and context window mode.
 //!
-//! See `docs/platform-knobs.md`. UI / session persist platform enums; adapters translate to vendor wire.
+//! See `docs/platform-knobs.md`. UI / session persist platform enums; the
+//! provider catalog maps them onto vendor wire literals.
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::schema::{
-    ADAPTER_COMMANDCODE, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES, ModelDefinition,
-};
-use crate::llm::closed_context_windows;
-
-/// System / OpenAI-compatible Default budget (economic).
-pub const CONTEXT_STANDARD_OPEN: usize = 200_000;
-pub const CLOSED_DEFAULT_MAX_TOKENS: u32 = 8192;
+use crate::provider_catalog::ResolvedModel;
 
 /// Platform thinking intent on [`crate::llm::ModelRequest`].
 ///
-/// Adapters map this to vendor wire in `build_body`. `Off` is compaction (and
-/// any other caller that must not think) — it is **not** `ThinkingTier::Low`.
+/// A codec maps this onto the resolved model's `reasoning.tiers`. `Off` is
+/// compaction (and any other caller that must not think): it is **not**
+/// `ThinkingTier::Low`, and it sends the model's declared `tiers.off` literal
+/// when the vendor has one, no reasoning control at all otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThinkingSpec {
     Off,
@@ -84,224 +80,65 @@ impl ContextMode {
     }
 }
 
-pub fn is_closed_adapter(adapter_id: &str) -> bool {
-    matches!(
-        adapter_id,
-        ADAPTER_DEEPSEEK_RESPONSES | ADAPTER_MIMO_RESPONSES
-    )
-}
-
-pub fn closed_wire_model(adapter_id: &str) -> Option<&'static str> {
-    crate::llm::closed_api_model_ids(adapter_id).and_then(|ids| ids.first().copied())
-}
-
-/// Wire model id for the LLM request — always the Settings-saved `api_model_id`.
+/// Context budget for one turn.
 ///
-/// Closed adapters pick the id in Settings (static enum or remote `/models`);
-/// open adapters are free text.
-pub fn effective_api_model_id(model: &ModelDefinition) -> String {
-    model.api_model_id().trim().to_string()
-}
-
-/// Effective context budget for `ContextPipeline`.
-///
-/// - **standard**: platform Default (closed = adapter default; open = 200K, never above declared max)
-/// - **max**: the model's declared maximum window (closed = adapter max; open = Settings `context_window`)
-pub fn effective_context_window(model: &ModelDefinition, mode: ContextMode) -> usize {
-    if let Some((default, max)) = closed_context_windows(&model.adapter_id) {
-        return match mode {
-            ContextMode::Standard => default,
-            ContextMode::Max => max,
-        };
-    }
-
-    // Open / OpenAI-compatible: Max = Settings-declared window; Default = system 200K capped by that.
-    let declared_max = model.context_window();
+/// Both numbers are catalog facts: `context_window` is the standard budget and
+/// `context_window_max` the ceiling the user opts into with
+/// [`ContextMode::Max`]. Nothing is clamped or guessed at request time.
+pub fn effective_context_window(model: &ResolvedModel, mode: ContextMode) -> usize {
     match mode {
-        ContextMode::Max => {
-            if declared_max > 0 {
-                declared_max
-            } else {
-                CONTEXT_STANDARD_OPEN
-            }
-        }
-        ContextMode::Standard => {
-            if declared_max > 0 {
-                CONTEXT_STANDARD_OPEN.min(declared_max)
-            } else {
-                CONTEXT_STANDARD_OPEN
-            }
-        }
-    }
-}
-
-pub fn effective_max_tokens(model: &ModelDefinition) -> u32 {
-    let configured = model.max_tokens();
-    if configured > 0 {
-        return configured;
-    }
-    if is_closed_adapter(&model.adapter_id) {
-        CLOSED_DEFAULT_MAX_TOKENS
-    } else {
-        0
-    }
-}
-
-/// Adapter-internal: map a platform **tier** to vendor `thinking_mode` / `effort` strings.
-///
-/// [`ThinkingSpec::Off`] is not a tier — each adapter's `build_body` maps Off
-/// itself (omit vs `none` vs `thinking.type=disabled`). Do not invent a fake
-/// universal `"none"` pair here.
-pub fn map_thinking_to_wire(
-    adapter_id: &str,
-    tier: ThinkingTier,
-) -> (Option<String>, Option<String>) {
-    match adapter_id {
-        ADAPTER_DEEPSEEK_RESPONSES => match tier {
-            ThinkingTier::Low => (None, Some("low".into())),
-            ThinkingTier::Medium => (None, Some("high".into())),
-            ThinkingTier::High => (None, Some("max".into())),
-        },
-        ADAPTER_MIMO_RESPONSES => match tier {
-            ThinkingTier::Low => (Some("disabled".into()), None),
-            ThinkingTier::Medium => (Some("enabled".into()), Some("medium".into())),
-            ThinkingTier::High => (Some("enabled".into()), Some("high".into())),
-        },
-        ADAPTER_COMMANDCODE => match tier {
-            ThinkingTier::Low => (None, Some("low".into())),
-            ThinkingTier::Medium => (None, Some("high".into())),
-            ThinkingTier::High => (None, Some("max".into())),
-        },
-        _ => match tier {
-            ThinkingTier::Low => (None, Some("low".into())),
-            ThinkingTier::Medium => (None, Some("medium".into())),
-            ThinkingTier::High => (None, Some("high".into())),
-        },
+        ContextMode::Standard => model.context_window,
+        ContextMode::Max => model.context_window_max,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{ADAPTER_OPENAI_RESPONSES, ModelAdapterConfig, ModelCapability};
+    use crate::provider_catalog::ProviderCatalog;
+    use std::path::Path;
+    use std::sync::Arc;
 
-    fn closed_model(adapter_id: &str) -> ModelDefinition {
-        ModelDefinition {
-            id: "x".into(),
-            adapter_id: adapter_id.into(),
-            provider_ref: "p".into(),
-            label: "X".into(),
-            config: ModelAdapterConfig {
-                api_model_id: String::new(),
-                context_window: 0,
-                max_tokens: 0,
-                json_output: false,
-                capabilities: vec![ModelCapability::Text],
-            },
+    fn model(entry: &str) -> Arc<ResolvedModel> {
+        let text = format!(
+            "version = 1\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\n{entry}\n"
+        );
+        let catalog = ProviderCatalog::parse(&text, Path::new("t.toml")).unwrap();
+        Arc::clone(catalog.model("p/m").unwrap())
+    }
+
+    #[test]
+    fn standard_and_max_are_catalog_facts() {
+        let resolved = model("context_window = 128000\ncontext_window_max = 1000000\n");
+        assert_eq!(
+            effective_context_window(&resolved, ContextMode::Standard),
+            128_000
+        );
+        assert_eq!(
+            effective_context_window(&resolved, ContextMode::Max),
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn max_defaults_to_the_standard_budget() {
+        let resolved = model("context_window = 128000\n");
+        assert_eq!(
+            effective_context_window(&resolved, ContextMode::Max),
+            128_000
+        );
+    }
+
+    #[test]
+    fn thinking_tiers_round_trip_through_strings() {
+        for tier in [ThinkingTier::Low, ThinkingTier::Medium, ThinkingTier::High] {
+            assert_eq!(ThinkingTier::parse(tier.as_str()), Some(tier));
         }
-    }
-
-    fn open_model(declared: usize) -> ModelDefinition {
-        ModelDefinition {
-            id: "o".into(),
-            adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-            provider_ref: "p".into(),
-            label: "O".into(),
-            config: ModelAdapterConfig {
-                api_model_id: "gpt".into(),
-                context_window: declared,
-                max_tokens: 8192,
-                json_output: false,
-                capabilities: vec![ModelCapability::Text],
-            },
-        }
-    }
-
-    #[test]
-    fn closed_default_and_max_come_from_adapter() {
-        let ds = closed_model(ADAPTER_DEEPSEEK_RESPONSES);
+        assert_eq!(ThinkingTier::parse("max"), None);
+        assert_eq!(ContextMode::parse("max"), Some(ContextMode::Max));
         assert_eq!(
-            effective_context_window(&ds, ContextMode::Standard),
-            256_000
+            ThinkingSpec::default(),
+            ThinkingSpec::Tier(ThinkingTier::Medium)
         );
-        assert_eq!(effective_context_window(&ds, ContextMode::Max), 1_000_000);
-
-        let mimo = closed_model(ADAPTER_MIMO_RESPONSES);
-        assert_eq!(
-            effective_context_window(&mimo, ContextMode::Standard),
-            256_000
-        );
-        assert_eq!(effective_context_window(&mimo, ContextMode::Max), 1_000_000);
-    }
-
-    #[test]
-    fn open_max_uses_settings_declared_window_not_1m() {
-        let m = open_model(128_000);
-        assert_eq!(effective_context_window(&m, ContextMode::Max), 128_000);
-        assert_eq!(effective_context_window(&m, ContextMode::Standard), 128_000);
-    }
-
-    #[test]
-    fn open_default_is_200k_when_declared_allows() {
-        let m = open_model(1_000_000);
-        assert_eq!(effective_context_window(&m, ContextMode::Standard), 200_000);
-        assert_eq!(effective_context_window(&m, ContextMode::Max), 1_000_000);
-    }
-
-    #[test]
-    fn deepseek_thinking_tiers_map_to_responses_effort() {
-        assert_eq!(
-            map_thinking_to_wire(ADAPTER_DEEPSEEK_RESPONSES, ThinkingTier::Low),
-            (None, Some("low".into()))
-        );
-        assert_eq!(
-            map_thinking_to_wire(ADAPTER_DEEPSEEK_RESPONSES, ThinkingTier::Medium),
-            (None, Some("high".into()))
-        );
-        assert_eq!(
-            map_thinking_to_wire(ADAPTER_DEEPSEEK_RESPONSES, ThinkingTier::High),
-            (None, Some("max".into()))
-        );
-    }
-
-    #[test]
-    fn commandcode_thinking_tiers_span_provider_effort_range() {
-        assert_eq!(
-            map_thinking_to_wire(ADAPTER_COMMANDCODE, ThinkingTier::Low),
-            (None, Some("low".into()))
-        );
-        assert_eq!(
-            map_thinking_to_wire(ADAPTER_COMMANDCODE, ThinkingTier::Medium),
-            (None, Some("high".into()))
-        );
-        assert_eq!(
-            map_thinking_to_wire(ADAPTER_COMMANDCODE, ThinkingTier::High),
-            (None, Some("max".into()))
-        );
-    }
-
-    #[test]
-    fn ark_coding_thinking_tiers_map_to_openai_effort() {
-        use crate::config::schema::ADAPTER_ARK_CODING;
-        assert_eq!(
-            map_thinking_to_wire(ADAPTER_ARK_CODING, ThinkingTier::Low),
-            (None, Some("low".into()))
-        );
-        assert_eq!(
-            map_thinking_to_wire(ADAPTER_ARK_CODING, ThinkingTier::Medium),
-            (None, Some("medium".into()))
-        );
-        assert_eq!(
-            map_thinking_to_wire(ADAPTER_ARK_CODING, ThinkingTier::High),
-            (None, Some("high".into()))
-        );
-    }
-
-    #[test]
-    fn closed_api_model_uses_saved_selection() {
-        let mut model = closed_model(ADAPTER_DEEPSEEK_RESPONSES);
-        model.config.api_model_id = "deepseek-v4-pro".into();
-        assert_eq!(effective_api_model_id(&model), "deepseek-v4-pro");
-        assert_eq!(effective_max_tokens(&model), 8192);
     }
 }

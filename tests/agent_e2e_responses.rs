@@ -5,19 +5,30 @@ mod common;
 use std::sync::Arc;
 
 use common::{
-    TEST_PROVIDER_ID, build_runtime_with_provider, fixture_responses_sse, ready_test_provider,
-    serve_responses_queue, test_agent,
+    TEST_PRIMARY_MODEL_REF, build_runtime_with_provider, fixture_responses_sse, serve_responses_queue,
+    test_agent, test_catalog,
 };
-use litecode::llm::provider_from_definition;
+use litecode::llm::provider_from_model;
+use litecode::provider_catalog::EndpointKind;
 use litecode::types::LitecodeError;
 
 fn responses_provider(endpoint: &str) -> Arc<dyn litecode::llm::LlmProvider> {
-    let def = ready_test_provider(TEST_PROVIDER_ID, endpoint, "test-key");
+    let catalog = test_catalog(endpoint, 128_000, 8192);
+    let model = catalog
+        .model(TEST_PRIMARY_MODEL_REF)
+        .expect("fixture catalog declares the primary model")
+        .clone();
     assert_eq!(
-        def.adapter_id, "openai_responses",
-        "e2e must wire openai_responses — Chat fixtures are not the product path"
+        model.endpoint_type,
+        EndpointKind::Responses,
+        "e2e must wire the Responses codec — Chat fixtures are not the product path"
     );
-    Arc::from(provider_from_definition(&def).expect("Responses provider"))
+    assert!(
+        model.request_url.ends_with("/responses"),
+        "request URL must hit the Responses codec path: {}",
+        model.request_url
+    );
+    Arc::from(provider_from_model(model).expect("Responses provider"))
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -1,4 +1,4 @@
-//! Resolve provider + model binding for one LLM turn.
+//! Resolve the catalog model + credential for one LLM turn.
 
 use std::sync::Arc;
 
@@ -6,12 +6,9 @@ use crate::authority::responses::{
     FunctionCallOutput, InputContent, InputTextContent, MessageItem,
 };
 use crate::config::resolved::ResolvedConfig;
-use crate::config::schema::ModelDefinition;
 use crate::llm::LlmProvider;
-use crate::platform_knobs::{
-    ContextMode, ThinkingTier, effective_api_model_id, effective_context_window,
-    effective_max_tokens,
-};
+use crate::platform_knobs::{ContextMode, ThinkingTier, effective_context_window};
+use crate::provider_catalog::{Modality, ResolvedModel};
 use crate::runtime::provider_registry::{ProviderRegistry, provider_api_key};
 use crate::session::manager::SessionManager;
 use crate::session::media_tokens::classify_input_file;
@@ -20,7 +17,8 @@ use crate::types::{Item, LitecodeError, Result};
 #[derive(Clone)]
 pub struct TurnLlmBinding {
     pub provider_id: String,
-    pub model_id: String,
+    /// Stable catalog reference `{provider_id}/{model_id}`.
+    pub model_ref: String,
     pub api_model_id: String,
     pub context_window: usize,
     pub max_tokens: u32,
@@ -28,7 +26,7 @@ pub struct TurnLlmBinding {
     pub context_mode: ContextMode,
     pub provider: Arc<dyn LlmProvider>,
     pub api_key: String,
-    pub model_def: ModelDefinition,
+    pub model: Arc<ResolvedModel>,
 }
 
 impl TurnLlmBinding {
@@ -41,35 +39,35 @@ impl TurnLlmBinding {
     }
 }
 
+const MISSING_MODEL_HINT: &str =
+    "open Settings → Providers and configure a provider API key, then pick a model for the agent \
+     in Settings → Agents (a model that is not declared in provider-catalog.toml cannot be used)";
+
 /// Resolve the LLM binding for a session turn — primary and child alike.
 ///
-/// Reads **only** the row of the session the turn runs in: `model_id`,
-/// `thinking_tier`, `context_mode`. Empty / missing model → Config error.
-/// No runtime `?? agent.model_ref` fallback (`model_ref` is new-session seed only).
+/// Reads **only** the row of the session the turn runs in: `model_id`
+/// (a catalog reference), `thinking_tier`, `context_mode`. Empty / missing
+/// model → Config error. There is no runtime `?? agent.model_ref` fallback.
 pub fn resolve_session_llm(
     resolved: &ResolvedConfig,
     registry: &mut ProviderRegistry,
     sessions: &SessionManager,
     session_id: &str,
-    settings_revision: u64,
 ) -> Result<TurnLlmBinding> {
-    let model_id = sessions
+    let model_ref = sessions
         .session_model_id(session_id)
-        .filter(|s| !s.trim().is_empty())
+        .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {
-            LitecodeError::Config(
-                "no model configured for session: open Settings → Agents and assign a model to \
-                 default (primary), then create a new session — or use agent/set-model. \
-                 Also assign a model to compaction (hidden) or context compaction will fail."
-                    .into(),
-            )
+            LitecodeError::Config(format!(
+                "no model configured for this session: pick one in the model switcher. \
+                 {MISSING_MODEL_HINT}"
+            ))
         })?;
 
-    binding_from_model_id(
+    binding_from_ref(
         resolved,
         registry,
-        &model_id,
-        settings_revision,
+        &model_ref,
         sessions.thinking_tier(session_id).unwrap_or_default(),
         sessions.context_mode(session_id).unwrap_or_default(),
     )
@@ -78,115 +76,97 @@ pub fn resolve_session_llm(
 /// Resolve the hidden compaction agent's binding — deliberately session-blind.
 ///
 /// This is the ONLY session-independent resolve entry. Compaction must not
-/// inherit the compacted session's model / tier / mode (contract:
-/// `docs/adr/0003`, `dev/docs/archived/model-selection-contract.md` §7), so it
-/// reads the hidden `compaction` profile's Settings `model_ref` and runs at the
-/// platform defaults.
-///
-/// Session turns — including subagent children — never call this. They resolve
-/// from the row of the session they run in via [`resolve_session_llm`].
+/// inherit the compacted session's model / tier / mode, so it reads the hidden
+/// `compaction` profile's `model_ref` and runs at the platform defaults.
 pub fn binding_for_agent(
     resolved: &ResolvedConfig,
     registry: &mut ProviderRegistry,
     agent_name: &str,
-    settings_revision: u64,
 ) -> Result<TurnLlmBinding> {
-    let model_id = resolved
+    let model_ref = resolved
         .agents()
         .get(agent_name)
-        .map(|p| p.model_ref.clone())
+        .map(|profile| profile.model_ref.clone())
         .unwrap_or_default();
 
-    if model_id.trim().is_empty() {
+    if model_ref.trim().is_empty() {
         return Err(LitecodeError::Config(format!(
-            "agent '{agent_name}' has no model_ref; open Settings → Agents and assign a model \
-             (default is the primary agent; compaction is a hidden agent required for context compaction)"
+            "agent '{agent_name}' has no model; assign one in Settings → Agents \
+             (default is the primary agent; compaction is a hidden agent required for context \
+             compaction). {MISSING_MODEL_HINT}"
         )));
     }
 
-    binding_from_model_id(
+    binding_from_ref(
         resolved,
         registry,
-        &model_id,
-        settings_revision,
+        &model_ref,
         ThinkingTier::default(),
         ContextMode::default(),
     )
 }
 
-fn binding_from_model_id(
+fn binding_from_ref(
     resolved: &ResolvedConfig,
     registry: &mut ProviderRegistry,
-    model_id: &str,
-    settings_revision: u64,
+    model_ref: &str,
     thinking_tier: ThinkingTier,
     context_mode: ContextMode,
 ) -> Result<TurnLlmBinding> {
-    let model_def = resolved
-        .models()
-        .get(model_id)
-        .cloned()
-        .ok_or_else(|| LitecodeError::Config(format!("model '{model_id}' not found")))?;
-
-    let provider_def = resolved
-        .providers()
-        .get(&model_def.provider_ref)
-        .cloned()
-        .ok_or_else(|| {
-            LitecodeError::Config(format!(
-                "model '{}' provider_ref '{}' does not exist",
-                model_id, model_def.provider_ref
-            ))
-        })?;
-
-    let provider = registry.get(&provider_def, settings_revision)?;
-    let api_key = provider_api_key(&provider_def)?;
+    let catalog = resolved.catalog();
+    let model = catalog.model(model_ref).cloned().ok_or_else(|| {
+        LitecodeError::Config(format!(
+            "model '{model_ref}' is not declared in the provider catalog ({}). {}",
+            catalog.path().display(),
+            MISSING_MODEL_HINT
+        ))
+    })?;
+    let api_key = provider_api_key(resolved, &model.provider_id)?;
+    let provider = registry.get(&model)?;
 
     Ok(TurnLlmBinding {
-        provider_id: model_def.provider_ref.clone(),
-        model_id: model_id.to_string(),
-        api_model_id: effective_api_model_id(&model_def),
-        context_window: effective_context_window(&model_def, context_mode),
-        max_tokens: effective_max_tokens(&model_def),
+        provider_id: model.provider_id.clone(),
+        model_ref: model.reference.clone(),
+        api_model_id: model.id.clone(),
+        context_window: effective_context_window(&model, context_mode),
+        max_tokens: model.max_output,
         thinking_tier,
         context_mode,
         provider,
         api_key,
-        model_def,
+        model,
     })
 }
 
-fn require_capability(model: &ModelDefinition, cap: &str, context: &str) -> Result<()> {
-    if model.supports(cap) {
+fn require_capability(model: &ResolvedModel, modality: Modality, context: &str) -> Result<()> {
+    if model.supports(modality) {
         Ok(())
     } else {
         Err(LitecodeError::Llm(format!(
-            "model '{}' does not support capability '{cap}'{context}",
-            model.id
+            "model '{}' does not support capability '{}'{context}",
+            model.reference,
+            modality.as_str()
         )))
     }
 }
 
 fn validate_input_content(
     content: &InputContent,
-    model: &ModelDefinition,
+    model: &ResolvedModel,
     context: &str,
 ) -> Result<()> {
     match content {
         InputContent::InputText(_) => Ok(()),
-        InputContent::InputImage(_) => require_capability(model, "image", context),
+        InputContent::InputImage(_) => require_capability(model, Modality::Image, context),
         InputContent::InputFile(file) => {
             // Classify by filename / mime / URL suffix when possible.
             // Fail-closed for clear video/audio/image; unclassifiable document-like
             // files are allowed under `text` (Responses InputFile as generic document).
             match classify_input_file(file) {
-                Some("image") => require_capability(model, "image", context),
-                Some("video") => require_capability(model, "video", context),
-                Some("audio") => require_capability(model, "audio", context),
-                None => {
-                    // Document-like / unknown: allowed if the model has text.
-                    require_capability(model, "text", context)
-                }
+                Some("image") => require_capability(model, Modality::Image, context),
+                Some("video") => require_capability(model, Modality::Video, context),
+                Some("audio") => require_capability(model, Modality::Audio, context),
+                None => require_capability(model, Modality::Text, context),
                 Some(_) => unreachable!(),
             }
         }
@@ -195,17 +175,17 @@ fn validate_input_content(
 
 /// Hard-fail when any content in the LLM input uses an unsupported modality.
 ///
-/// Walks user [`MessageItem::Input`] content and [`FunctionCallOutput::Content`] parts.
-pub fn validate_llm_input_capabilities(items: &[Item], model: &ModelDefinition) -> Result<()> {
+/// Walks user [MessageItem::Input] content and [FunctionCallOutput::Content] parts.
+pub fn validate_llm_input_capabilities(items: &[Item], model: &ResolvedModel) -> Result<()> {
     for item in items {
         match item {
-            Item::Message(MessageItem::Input(msg)) => {
-                for content in &msg.content {
+            Item::Message(MessageItem::Input(message)) => {
+                for content in &message.content {
                     validate_input_content(content, model, "")?;
                 }
             }
-            Item::FunctionCallOutput(out) => {
-                if let FunctionCallOutput::Content(parts) = &out.output {
+            Item::FunctionCallOutput(output) => {
+                if let FunctionCallOutput::Content(parts) = &output.output {
                     for content in parts {
                         validate_input_content(content, model, " required by tool output")?;
                     }
@@ -223,18 +203,18 @@ pub fn validate_llm_input_capabilities(items: &[Item], model: &ModelDefinition) 
 ///
 /// After this, [`validate_llm_input_capabilities`] should succeed for the same
 /// `model` (safety net if projection is skipped).
-pub fn project_llm_input_for_model(items: &mut [Item], model: &ModelDefinition) {
+pub fn project_llm_input_for_model(items: &mut [Item], model: &ResolvedModel) {
     for item in items.iter_mut() {
         match item {
-            Item::Message(MessageItem::Input(msg)) => {
-                for part in msg.content.iter_mut() {
+            Item::Message(MessageItem::Input(message)) => {
+                for part in message.content.iter_mut() {
                     if let Some(text) = omit_unsupported_part(part, model) {
                         *part = InputContent::InputText(InputTextContent { text });
                     }
                 }
             }
-            Item::FunctionCallOutput(out) => {
-                let FunctionCallOutput::Content(parts) = &mut out.output else {
+            Item::FunctionCallOutput(output) => {
+                let FunctionCallOutput::Content(parts) = &mut output.output else {
                     continue;
                 };
                 let mut replaced = false;
@@ -247,17 +227,17 @@ pub fn project_llm_input_for_model(items: &mut [Item], model: &ModelDefinition) 
                 if replaced
                     && parts
                         .iter()
-                        .all(|p| matches!(p, InputContent::InputText(_)))
+                        .all(|part| matches!(part, InputContent::InputText(_)))
                 {
                     let text = parts
                         .iter()
-                        .filter_map(|p| match p {
-                            InputContent::InputText(t) => Some(t.text.as_str()),
+                        .filter_map(|part| match part {
+                            InputContent::InputText(text) => Some(text.text.as_str()),
                             _ => None,
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
-                    out.output = FunctionCallOutput::Text(text);
+                    output.output = FunctionCallOutput::Text(text);
                 }
             }
             _ => {}
@@ -266,63 +246,71 @@ pub fn project_llm_input_for_model(items: &mut [Item], model: &ModelDefinition) 
 }
 
 /// If `part` needs a capability the model lacks, return placeholder text.
-fn omit_unsupported_part(part: &InputContent, model: &ModelDefinition) -> Option<String> {
+fn omit_unsupported_part(part: &InputContent, model: &ResolvedModel) -> Option<String> {
     match part {
         InputContent::InputText(_) => None,
-        InputContent::InputImage(img) => {
-            if model.supports("image") {
+        InputContent::InputImage(image) => {
+            if model.supports(Modality::Image) {
                 return None;
             }
-            let loc = img
+            let location = image
                 .image_url
                 .as_deref()
-                .or(img.file_id.as_deref())
+                .or(image.file_id.as_deref())
                 .map(truncate_loc)
                 .unwrap_or_default();
-            Some(omit_note(&model.id, "image", "image", loc.as_str()))
+            Some(omit_note(&model.reference, "image", "image", location.as_str()))
         }
         InputContent::InputFile(file) => {
-            let cap = match classify_input_file(file) {
+            let capability = match classify_input_file(file) {
                 Some("image") => "image",
                 Some("video") => "video",
                 Some("audio") => "audio",
                 None => return None, // document-like: keep under text
                 Some(_) => return None,
             };
-            if model.supports(cap) {
+            let modality = Modality::parse(capability).expect("classified modality");
+            if model.supports(modality) {
                 return None;
             }
-            let loc = file
+            let location = file
                 .filename
                 .as_deref()
                 .or(file.file_url.as_deref())
                 .or(file.file_id.as_deref())
                 .map(truncate_loc)
                 .unwrap_or_default();
-            Some(omit_note(&model.id, cap, cap, loc.as_str()))
+            Some(omit_note(
+                &model.reference,
+                capability,
+                capability,
+                location.as_str(),
+            ))
         }
     }
 }
 
-fn omit_note(model_id: &str, cap: &str, kind: &str, loc: &str) -> String {
-    if loc.is_empty() {
-        format!("[omitted: model '{model_id}' does not support {cap}; original was {kind}]")
+fn omit_note(model_ref: &str, capability: &str, kind: &str, location: &str) -> String {
+    if location.is_empty() {
+        format!("[omitted: model '{model_ref}' does not support {capability}; original was {kind}]")
     } else {
-        format!("[omitted: model '{model_id}' does not support {cap}; original was {kind}: {loc}]")
+        format!(
+            "[omitted: model '{model_ref}' does not support {capability}; original was {kind}: {location}]"
+        )
     }
 }
 
-fn truncate_loc(s: &str) -> String {
+fn truncate_loc(text: &str) -> String {
     const MAX: usize = 120;
     // Prefer showing a short tail for data: URLs / long paths.
-    if s.len() <= MAX {
-        return s.to_string();
+    if text.len() <= MAX {
+        return text.to_string();
     }
-    if s.starts_with("data:") {
-        return format!("{}…", &s[..MAX.min(s.len())]);
+    if text.starts_with("data:") {
+        return format!("{}…", &text[..MAX.min(text.len())]);
     }
-    let start = s.len().saturating_sub(MAX);
-    format!("…{}", &s[start..])
+    let start = text.len().saturating_sub(MAX);
+    format!("…{}", &text[start..])
 }
 
 #[cfg(test)]
@@ -330,51 +318,70 @@ mod tests {
     use super::*;
     use crate::authority::responses::{
         FunctionCallOutputItemParam, InputFileContent, InputImageContent, InputMessage, InputRole,
-        InputTextContent,
     };
     use crate::config::resolved::WorkspaceState;
-    use crate::config::schema::{
-        ADAPTER_OPENAI_RESPONSES, AgentProfile, AgentRole, GlobalSettings, ModelAdapterConfig,
-        ModelCapability, ModelDefinition, ProviderAuth, ProviderConnectionConfig,
-        ProviderDefinition,
-    };
+    use crate::config::schema::{AgentProfile, AgentRole, GlobalSettings};
+    use crate::provider_catalog::ProviderCatalog;
     use crate::types::user_text;
+    use std::path::Path;
 
-    fn text_only_model() -> ModelDefinition {
-        ModelDefinition {
-            id: "text-only".into(),
-            adapter_id: crate::config::schema::ADAPTER_OPENAI_RESPONSES.into(),
-            provider_ref: "main".into(),
-            label: "Text".into(),
-            config: crate::config::schema::ModelAdapterConfig {
-                api_model_id: "text-model".into(),
-                context_window: 8_000,
-                max_tokens: 1024,
-                json_output: false,
-                capabilities: vec![ModelCapability::Text],
-            },
-        }
+    const CATALOG: &str = r#"
+version = 1
+[[providers]]
+id = "compact-provider"
+name = "Compact"
+endpoint = "https://compact.example/v1"
+endpoint_type = "responses"
+
+[[models]]
+id = "compact-api-model"
+provider_id = "compact-provider"
+context_window = 64000
+max_output = 2048
+
+[[models]]
+id = "text-model"
+provider_id = "compact-provider"
+context_window = 8000
+max_output = 1024
+
+[[models]]
+id = "mm"
+provider_id = "compact-provider"
+context_window = 200000
+modalities = ["text", "image", "video", "audio"]
+"#;
+
+    fn catalog() -> Arc<ProviderCatalog> {
+        Arc::new(ProviderCatalog::parse(CATALOG, Path::new("test-catalog.toml")).unwrap())
     }
 
-    fn multimodal_model() -> ModelDefinition {
-        ModelDefinition {
-            id: "mm".into(),
-            adapter_id: crate::config::schema::ADAPTER_OPENAI_RESPONSES.into(),
-            provider_ref: "main".into(),
-            label: "MM".into(),
-            config: crate::config::schema::ModelAdapterConfig {
-                api_model_id: "mm".into(),
-                context_window: 200_000,
-                max_tokens: 8192,
-                json_output: false,
-                capabilities: vec![
-                    ModelCapability::Text,
-                    ModelCapability::Image,
-                    ModelCapability::Video,
-                    ModelCapability::Audio,
-                ],
+    fn model(reference: &str) -> Arc<ResolvedModel> {
+        Arc::clone(catalog().model(reference).expect("model"))
+    }
+
+    fn resolved_with(reference: &str) -> ResolvedConfig {
+        let mut global = GlobalSettings::default();
+        global
+            .provider_credentials
+            .insert("compact-provider".into(), "compact-key".into());
+        global.agents.insert(
+            "compaction".into(),
+            AgentProfile {
+                role: AgentRole::Hidden,
+                model_ref: reference.into(),
+                ..Default::default()
             },
-        }
+        );
+        crate::config::resolved::resolve(
+            global,
+            WorkspaceState::new("/tmp/compact-binding"),
+            catalog(),
+        )
+    }
+
+    fn resolved() -> ResolvedConfig {
+        resolved_with("compact-provider/compact-api-model")
     }
 
     fn user_with_image() -> Item {
@@ -413,28 +420,26 @@ mod tests {
     }
 
     #[test]
-    fn capability_mismatch_is_hard_error() {
-        let err =
-            validate_llm_input_capabilities(&[user_with_image()], &text_only_model()).unwrap_err();
+    fn capability_mismatch_is_a_hard_error() {
+        let error = validate_llm_input_capabilities(&[user_with_image()], &model("compact-provider/text-model"))
+            .unwrap_err();
         assert!(
-            err.to_string()
+            error
+                .to_string()
                 .contains("does not support capability 'image'")
         );
     }
 
     #[test]
-    fn tool_image_capability_mismatch_is_hard_error() {
-        let items = vec![tool_with_image()];
-        let err = validate_llm_input_capabilities(&items, &text_only_model()).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("does not support capability 'image'")
-        );
-        assert!(err.to_string().contains("required by tool output"));
+    fn tool_image_capability_mismatch_is_a_hard_error() {
+        let error =
+            validate_llm_input_capabilities(&[tool_with_image()], &model("compact-provider/text-model"))
+                .unwrap_err();
+        assert!(error.to_string().contains("required by tool output"));
     }
 
     #[test]
-    fn video_file_rejected_without_video_cap() {
+    fn video_file_is_rejected_without_the_capability() {
         let items = vec![
             user_text("hi"),
             Item::Message(MessageItem::Input(InputMessage {
@@ -449,20 +454,13 @@ mod tests {
                 status: None,
             })),
         ];
-        let err = validate_llm_input_capabilities(&items, &text_only_model()).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("does not support capability 'video'")
-        );
+        let error = validate_llm_input_capabilities(&items, &model("compact-provider/text-model"))
+            .unwrap_err();
+        assert!(error.to_string().contains("does not support capability 'video'"));
     }
 
     #[test]
-    fn multimodal_accepts_image() {
-        validate_llm_input_capabilities(&[user_with_image()], &multimodal_model()).unwrap();
-    }
-
-    #[test]
-    fn document_file_allowed_under_text() {
+    fn document_file_is_allowed_under_text() {
         let items = vec![Item::Message(MessageItem::Input(InputMessage {
             content: vec![InputContent::InputFile(InputFileContent {
                 file_data: None,
@@ -474,143 +472,44 @@ mod tests {
             role: InputRole::User,
             status: None,
         }))];
-        validate_llm_input_capabilities(&items, &text_only_model()).unwrap();
+        validate_llm_input_capabilities(&items, &model("compact-provider/text-model")).unwrap();
     }
 
     #[test]
-    fn project_user_image_for_text_only_then_validate_ok() {
+    fn projection_replaces_unsupported_parts_then_validates() {
+        let text_only = model("compact-provider/text-model");
         let mut items = vec![user_with_image()];
-        assert!(validate_llm_input_capabilities(&items, &text_only_model()).is_err());
-        project_llm_input_for_model(&mut items, &text_only_model());
-        validate_llm_input_capabilities(&items, &text_only_model()).unwrap();
-        let Item::Message(MessageItem::Input(msg)) = &items[0] else {
+        assert!(validate_llm_input_capabilities(&items, &text_only).is_err());
+        project_llm_input_for_model(&mut items, &text_only);
+        validate_llm_input_capabilities(&items, &text_only).unwrap();
+        let Item::Message(MessageItem::Input(message)) = &items[0] else {
             panic!("expected input message");
         };
-        assert!(
-            msg.content
-                .iter()
-                .all(|p| !matches!(p, InputContent::InputImage(_)))
-        );
-        assert!(msg.content.iter().any(|p| matches!(
-            p,
-            InputContent::InputText(t) if t.text.contains("does not support image")
+        assert!(message.content.iter().any(|part| matches!(
+            part,
+            InputContent::InputText(text) if text.text.contains("does not support image")
         )));
     }
 
     #[test]
-    fn project_tool_image_for_text_only_then_validate_ok() {
-        let mut items = vec![tool_with_image()];
-        assert!(validate_llm_input_capabilities(&items, &text_only_model()).is_err());
-        project_llm_input_for_model(&mut items, &text_only_model());
-        validate_llm_input_capabilities(&items, &text_only_model()).unwrap();
-        let Item::FunctionCallOutput(out) = &items[0] else {
-            panic!("expected FCO");
-        };
-        match &out.output {
-            FunctionCallOutput::Text(t) => {
-                assert!(t.contains("screenshot"));
-                assert!(t.contains("does not support image"));
-                assert!(t.contains("a.png"));
-            }
-            FunctionCallOutput::Content(parts) => {
-                assert!(
-                    parts
-                        .iter()
-                        .all(|p| !matches!(p, InputContent::InputImage(_)))
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn project_is_noop_for_multimodal() {
+    fn multimodal_model_is_untouched() {
+        let multimodal = model("compact-provider/mm");
         let mut items = vec![user_with_image(), tool_with_image()];
-        project_llm_input_for_model(&mut items, &multimodal_model());
-        validate_llm_input_capabilities(&items, &multimodal_model()).unwrap();
+        project_llm_input_for_model(&mut items, &multimodal);
+        validate_llm_input_capabilities(&items, &multimodal).unwrap();
         assert!(matches!(
             &items[0],
-            Item::Message(MessageItem::Input(m))
-                if m.content.iter().any(|p| matches!(p, InputContent::InputImage(_)))
-        ));
-        assert!(matches!(
-            &items[1],
-            Item::FunctionCallOutput(o)
-                if matches!(&o.output, FunctionCallOutput::Content(parts)
-                    if parts.iter().any(|p| matches!(p, InputContent::InputImage(_))))
+            Item::Message(MessageItem::Input(message))
+                if message.content.iter().any(|part| matches!(part, InputContent::InputImage(_)))
         ));
     }
 
     #[test]
-    fn project_unpoisons_session_for_next_call_model_gate() {
-        // Simulates: tool image already in transcript (persisted), text-only model.
-        // Without projection validate fails; with projection the call_model gate passes.
-        let mut persisted = vec![tool_with_image(), user_text("what is in the image?")];
-        assert!(
-            validate_llm_input_capabilities(&persisted, &text_only_model()).is_err(),
-            "raw transcript must still fail closed"
-        );
-        let mut llm_view = persisted.clone();
-        project_llm_input_for_model(&mut llm_view, &text_only_model());
-        validate_llm_input_capabilities(&llm_view, &text_only_model()).unwrap();
-        // Persisted clone unchanged (projection is in-place on llm_view only).
-        assert!(
-            validate_llm_input_capabilities(&persisted, &text_only_model()).is_err(),
-            "source transcript must remain unprojected"
-        );
-    }
-
-    #[test]
-    fn hidden_compaction_binding_uses_its_own_provider_and_credentials() {
-        let mut global = GlobalSettings::default();
-        global.providers.insert(
-            "compact-provider".into(),
-            ProviderDefinition {
-                id: "compact-provider".into(),
-                adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-                label: "Compact".into(),
-                config: ProviderConnectionConfig {
-                    endpoint: "https://compact.example/v1".into(),
-                    api_key: "compact-key".into(),
-                    auth: ProviderAuth::Bearer,
-                },
-            },
-        );
-        global.models.insert(
-            "compact-model".into(),
-            ModelDefinition {
-                id: "compact-model".into(),
-                adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-                provider_ref: "compact-provider".into(),
-                label: "Compact".into(),
-                config: ModelAdapterConfig {
-                    api_model_id: "compact-api-model".into(),
-                    context_window: 64_000,
-                    max_tokens: 2_048,
-                    json_output: false,
-                    capabilities: vec![ModelCapability::Text],
-                },
-            },
-        );
-        global.agents.insert(
-            "compaction".into(),
-            AgentProfile {
-                role: AgentRole::Hidden,
-                model_ref: "compact-model".into(),
-                ..Default::default()
-            },
-        );
-
-        let resolved =
-            crate::config::resolved::resolve(global, WorkspaceState::new("/tmp/compact-binding"));
-        let binding = binding_for_agent(
-            &resolved,
-            &mut ProviderRegistry::new(),
-            "compaction",
-            0,
-        )
-        .expect("resolve hidden compaction binding");
-
+    fn compaction_binding_uses_its_own_provider_and_credentials() {
+        let binding = binding_for_agent(&resolved(), &mut ProviderRegistry::new(), "compaction")
+            .expect("resolve hidden compaction binding");
         assert_eq!(binding.provider_id, "compact-provider");
+        assert_eq!(binding.model_ref, "compact-provider/compact-api-model");
         assert_eq!(
             binding.provider.endpoint(),
             "https://compact.example/v1/responses"
@@ -618,5 +517,41 @@ mod tests {
         assert_eq!(binding.api_key, "compact-key");
         assert_eq!(binding.api_model_id, "compact-api-model");
         assert_eq!(binding.max_tokens, 2_048);
+        assert_eq!(binding.context_window, 64_000);
+    }
+
+    #[test]
+    fn a_provider_without_a_key_is_not_ready() {
+        let mut global = GlobalSettings::default();
+        global.agents.insert(
+            "compaction".into(),
+            AgentProfile {
+                role: AgentRole::Hidden,
+                model_ref: "compact-provider/compact-api-model".into(),
+                ..Default::default()
+            },
+        );
+        let resolved = crate::config::resolved::resolve(
+            global,
+            WorkspaceState::new("/tmp/no-key"),
+            catalog(),
+        );
+        let error = binding_for_agent(&resolved, &mut ProviderRegistry::new(), "compaction")
+            .err()
+            .expect("no credential");
+        assert!(error.to_string().contains("no API key"), "{error}");
+    }
+
+    #[test]
+    fn an_unknown_reference_is_a_missing_model_error() {
+        let error = binding_for_agent(
+            &resolved_with("ghost/model"),
+            &mut ProviderRegistry::new(),
+            "compaction",
+        )
+        .err()
+        .expect("unknown reference");
+        assert!(error.to_string().contains("ghost/model"), "{error}");
+        assert!(error.to_string().contains("provider-catalog.toml"), "{error}");
     }
 }

@@ -1692,31 +1692,6 @@ impl SessionManager {
         Ok(())
     }
 
-    /// After catalog replace: clear sticky `model_id` when it no longer exists.
-    /// Updates DB for all sessions and in-memory records for loaded ones.
-    /// Does not touch `agent_id`. Returns cleared session ids.
-    pub fn clear_orphaned_model_ids(
-        &self,
-        valid_model_ids: &std::collections::HashSet<String>,
-    ) -> Result<Vec<String>> {
-        let receipt = self.mutate_blocking(SessionMutation::ClearOrphanedModelIds {
-            operation_id: MutationId::new(),
-            valid_ids: valid_model_ids.iter().cloned().collect(),
-        })?;
-        let _ = receipt;
-        let mut records = self.records.lock().unwrap();
-        let mut cleared = Vec::new();
-        for (id, record) in records.iter_mut() {
-            if let Some(mid) = record.model_id.as_ref()
-                && !valid_model_ids.contains(mid)
-            {
-                record.model_id = None;
-                cleared.push(id.clone());
-            }
-        }
-        Ok(cleared)
-    }
-
     /// Resolved primary for a turn: per-session binding, else workspace default.
     pub fn resolve_primary_agent(
         &self,

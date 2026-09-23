@@ -7,19 +7,15 @@ use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use serde::{Deserialize, Serialize};
 
 use crate::config::schema::{
-    AgentProfile, AvailableTool, CustomToolDefinition, LogSettings, McpServerDefinition,
-    ModelDefinition, ProviderAuth, ProviderDefinition, ToolOrigin, ToolPreset,
+    AgentProfile, AvailableTool, CustomToolDefinition, LogSettings, McpServerDefinition, ToolOrigin,
+    ToolPreset,
 };
 use crate::config::workspace::WorkspaceEnginesFile;
 use crate::config::{CommitAck, DocId};
-use crate::llm::{
-    catalog_supported_ids, chat_models_url, has_remote_model_catalog, list_adapters,
-    parse_chat_model_catalog,
-};
 use crate::mcp::{McpConnectionPool, McpRunState, McpServerSnapshot, McpToolSchema};
 use crate::serve::state::ServeState;
 use crate::tool::availability::available_tools;
@@ -47,26 +43,9 @@ struct RevisionBody {
     docs: Vec<DocId>,
 }
 
-#[derive(Serialize)]
-struct ProviderWriteResponse {
-    revision: u64,
-    docs: Vec<DocId>,
-    restart_required: bool,
-}
-
-#[derive(Deserialize)]
-struct ProvidersBody {
-    providers: HashMap<String, ProviderDefinition>,
-}
-
 #[derive(Deserialize)]
 struct WebSearchBody {
     api_key: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ModelsBody {
-    models: HashMap<String, ModelDefinition>,
 }
 
 #[derive(Deserialize)]
@@ -106,11 +85,12 @@ struct AgentsListBody {
 pub fn router() -> Router<ServeState> {
     Router::new()
         .route("/", get(get_settings))
-        .route("/adapters", get(get_adapters))
-        .route("/providers", get(get_providers).put(put_providers))
-        .route("/providers/{id}/models", get(get_provider_models))
+        .route("/llm", get(get_llm))
+        .route("/providers/{id}/key", put(put_provider_key).delete(delete_provider_key))
+        // The model ref travels in the body, never in the path: a ref carries two
+        // slashes (`commandcode/deepseek/deepseek-v4-flash`).
+        .route("/models/enabled", put(put_model_enabled))
         .route("/websearch", get(get_websearch).put(put_websearch))
-        .route("/models", get(get_models).put(put_models))
         .route("/agents", get(list_agents))
         .route(
             "/agents/{id}",
@@ -151,102 +131,98 @@ async fn get_settings(State(state): State<ServeState>) -> Response {
     }
 }
 
-async fn get_adapters(State(_state): State<ServeState>) -> Response {
-    ok_json(serde_json::json!({ "adapters": list_adapters() }))
-}
-
-async fn get_providers(State(state): State<ServeState>) -> Response {
-    match state.settings_writer.providers_view() {
-        Ok(providers) => ok_json(serde_json::json!({ "providers": providers })),
+/// The single LLM projection: catalog providers/models + credential state.
+async fn get_llm(State(state): State<ServeState>) -> Response {
+    match state.settings_writer.llm_view() {
+        Ok(view) => ok_json(view),
         Err(e) => settings_error(e),
     }
 }
 
-async fn put_providers(
+#[derive(Deserialize)]
+struct ProviderKeyBody {
+    api_key: String,
+}
+
+/// 404 unless the provider is declared in the catalog.
+///
+/// The catalog is the only place provider identity comes from, so an unknown id
+/// is a not-found rather than a validation error.
+fn require_catalog_provider(state: &ServeState, provider_id: &str) -> Option<Response> {
+    match state.settings_writer.catalog() {
+        Ok(catalog) if catalog.provider(provider_id).is_some() => None,
+        Ok(_) => Some(
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiErr {
+                    ok: false,
+                    error: format!("provider '{provider_id}' is not declared in the provider catalog"),
+                }),
+            )
+                .into_response(),
+        ),
+        Err(error) => Some(settings_error(error)),
+    }
+}
+
+async fn put_provider_key(
     State(state): State<ServeState>,
-    Json(body): Json<ProvidersBody>,
+    Path(provider_id): Path<String>,
+    Json(body): Json<ProviderKeyBody>,
 ) -> Response {
-    match state.settings_writer.write_providers(body.providers) {
+    if let Some(response) = require_catalog_provider(&state, &provider_id) {
+        return response;
+    }
+    match state
+        .settings_writer
+        .write_provider_key(&provider_id, &body.api_key)
+    {
         Ok(ack) => {
-            reload_runtime_after_settings_write(&state, &ack, "provider write");
-            ok_json(ProviderWriteResponse {
-                revision: ack.generation,
-                docs: ack.docs,
-                restart_required: ack.restart_required,
-            })
+            reload_runtime_after_settings_write(&state, &ack, "provider key write");
+            ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),
     }
 }
 
-async fn get_provider_models(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
-    let settings = match state.settings_writer.load_settings() {
-        Ok(s) => s,
-        Err(e) => return settings_error(e),
-    };
-    let Some(provider) = settings.providers.get(&id) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ApiErr {
-                ok: false,
-                error: format!("provider not found: {id}"),
-            }),
-        )
-            .into_response();
-    };
-    if !has_remote_model_catalog(&provider.adapter_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ApiErr {
-                ok: false,
-                error: format!("provider '{id}' has no remote model catalog"),
-            }),
-        )
-            .into_response();
+async fn delete_provider_key(
+    State(state): State<ServeState>,
+    Path(provider_id): Path<String>,
+) -> Response {
+    if let Some(response) = require_catalog_provider(&state, &provider_id) {
+        return response;
     }
-    let endpoint = crate::llm::closed_default_endpoint(&provider.adapter_id)
-        .filter(|_| provider.config.endpoint.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| provider.config.endpoint.clone());
-    // Strips a trailing `/responses` so Ark Coding Plan catalog stays `{v3}/models`.
-    let url = chat_models_url(&endpoint);
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return catalog_fetch_error(format!("catalog client: {e}")),
-    };
-    let mut req = client.get(&url);
-    let key = provider.config.api_key.trim();
-    if !key.is_empty() {
-        req = match provider.config.auth {
-            ProviderAuth::Bearer => req.header("Authorization", format!("Bearer {key}")),
-            ProviderAuth::ApiKey => req.header("api-key", key),
-        };
-    }
-    let response = match req.send().await {
-        Ok(r) => r,
-        Err(e) => return catalog_fetch_error(format!("catalog fetch failed: {e}")),
-    };
-    let status = response.status();
-    let body = match response.text().await {
-        Ok(t) => t,
-        Err(e) => return catalog_fetch_error(format!("catalog body: {e}")),
-    };
-    if !status.is_success() {
-        return catalog_fetch_error(format!("HTTP {status}: {body}"));
-    }
-    match parse_chat_model_catalog(&body) {
-        Ok(ids) => ok_json(
-            serde_json::json!({ "ids": catalog_supported_ids(&provider.adapter_id, ids) }),
-        ),
-        Err(e) => catalog_fetch_error(e.to_string()),
+    match state.settings_writer.delete_provider_key(&provider_id) {
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "provider key delete");
+            ok_json(revision_body(ack))
+        }
+        Err(e) => settings_write_error(e),
     }
 }
 
-fn catalog_fetch_error(error: String) -> Response {
-    (StatusCode::BAD_GATEWAY, Json(ApiErr { ok: false, error })).into_response()
+async fn put_model_enabled(
+    State(state): State<ServeState>,
+    Json(body): Json<ModelEnabledBody>,
+) -> Response {
+    match state
+        .settings_writer
+        .set_model_enabled(&body.reference, body.enabled)
+    {
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "model enable write");
+            ok_json(revision_body(ack))
+        }
+        Err(e) => settings_write_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ModelEnabledBody {
+    /// `ref` is a Rust keyword, so the field is named for the wire contract.
+    #[serde(rename = "ref")]
+    reference: String,
+    enabled: bool,
 }
 
 async fn get_websearch(State(state): State<ServeState>) -> Response {
@@ -271,27 +247,6 @@ async fn put_websearch(
     match state.settings_writer.write_websearch(current) {
         Ok(ack) => {
             reload_runtime_after_settings_write(&state, &ack, "websearch write");
-            ok_json(revision_body(ack))
-        }
-        Err(e) => settings_write_error(e),
-    }
-}
-
-async fn get_models(State(state): State<ServeState>) -> Response {
-    match state.settings_writer.load_settings() {
-        Ok(settings) => ok_json(serde_json::json!({ "models": settings.models })),
-        Err(e) => settings_error(e),
-    }
-}
-
-async fn put_models(State(state): State<ServeState>, Json(body): Json<ModelsBody>) -> Response {
-    let valid_ids: std::collections::HashSet<String> = body.models.keys().cloned().collect();
-    match state.settings_writer.write_models(body.models) {
-        Ok(ack) => {
-            reload_runtime_after_settings_write(&state, &ack, "model write");
-            if let Err(e) = state.sessions.clear_orphaned_model_ids(&valid_ids) {
-                tracing::warn!(error = %e, "failed to clear orphaned session model_id bindings");
-            }
             ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),
@@ -340,12 +295,20 @@ async fn put_agent(
     Path(id): Path<String>,
     Json(body): Json<AgentBody>,
 ) -> Response {
-    let workspace = state
-        .runtime
-        .read()
-        .expect("runtime lock")
-        .workspace
-        .clone();
+    let (workspace, resolved) = {
+        let runtime = state.runtime.read().expect("runtime lock");
+        (runtime.workspace.clone(), runtime.resolved.clone())
+    };
+    // An agent must point at a model that exists and whose provider has a key.
+    // This is the strict half of the rule: a turn would hard-fail anyway, so the
+    // write fails first with an actionable message.
+    let model_ref = body.profile.model_ref.trim().to_string();
+    if !model_ref.is_empty() && resolved.model_for_agent_ref(&model_ref).is_none() {
+        return validation_error(LitecodeError::Config(format!(
+            "model '{model_ref}' is not selectable: add the provider API key in Settings → Providers, \
+             or pick a model declared in the provider catalog"
+        )));
+    }
     match state
         .settings_writer
         .write_agent(&id, body.profile, &workspace)

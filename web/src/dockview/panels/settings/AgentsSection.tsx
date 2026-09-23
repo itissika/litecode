@@ -7,13 +7,15 @@ import {
   isHiddenSettingsAgent,
   isProtectedAgent,
   isSubagentBindableTool,
-  modelOptionLabel,
+  modelRefLabel,
+  splitModelRef,
   applyToolEnabled,
   withSyncedToolSeries,
   type AgentProfile,
   type AgentToolBinding,
   type AvailableTool,
-  type ModelDefinition,
+  type CatalogModelDto,
+  type CatalogProviderDto,
 } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { mergeLayeredMcp } from "../../../stores/settingsDocuments";
@@ -36,29 +38,74 @@ import {
   useSettingsPersist,
 } from "./persist";
 
+type ModelRefOption = { value: string; label: ReactNode; disabled?: boolean };
+
+/**
+ * Agent model picker over the **active** catalog models (their provider holds a
+ * credential), grouped by provider. A `model_ref` that is not in the catalog
+ * stays visible as a disabled "Missing: <ref>" row: the user re-picks
+ * explicitly, and an agent is never silently re-pointed at another model.
+ */
 function ModelRefSelect({
   value,
   models,
+  providers,
   onChange,
   disabled,
 }: {
   value: string;
-  models: Record<string, ModelDefinition> | null;
+  models: CatalogModelDto[];
+  providers: CatalogProviderDto[];
   onChange: (modelRef: string) => void;
   disabled?: boolean;
 }) {
-  const options = useMemo(
-    () => {
-      const entries = Object.values(models ?? {}).sort((a, b) =>
-        modelOptionLabel(a).localeCompare(modelOptionLabel(b)),
-      );
-      return [
-        { value: "", label: "— select —" as ReactNode },
-        ...entries.map((m) => ({ value: m.id, label: modelOptionLabel(m) as ReactNode })),
-      ];
-    },
-    [models],
-  );
+  const options = useMemo(() => {
+    const providerName = new Map(providers.map((p) => [p.id, p.name]));
+    const nameOf = (id: string) => providerName.get(id) ?? id;
+    const known = new Set(models.map((m) => m.ref));
+
+    const rows: ModelRefOption[] = [{ value: "", label: "— select —" as ReactNode }];
+    if (value && !known.has(value)) {
+      // Missing first, marked in amber: the current value must stay visible.
+      const { providerId } = splitModelRef(value);
+      const owner = providerId ? nameOf(providerId) : "";
+      rows.push({
+        value,
+        disabled: true,
+        label: (
+          <span className="flex items-center justify-between gap-2 text-(--_dk-amber-500)">
+            <span className="truncate">Missing: {value}</span>
+            {owner ? (
+              <span className="shrink-0 text-dk-xs opacity-70">{owner}</span>
+            ) : null}
+          </span>
+        ),
+      });
+    }
+
+    // Group by provider; catalog order is preserved inside each provider.
+    const groups = new Map<string, CatalogModelDto[]>();
+    for (const model of models) {
+      const bucket = groups.get(model.provider_id);
+      if (bucket) bucket.push(model);
+      else groups.set(model.provider_id, [model]);
+    }
+    for (const [providerId, list] of groups) {
+      rows.push({
+        value: `__provider__${providerId}`,
+        disabled: true,
+        label: (
+          <span className="text-dk-xs uppercase tracking-wide text-(--_dk-text-disabled)">
+            {nameOf(providerId)}
+          </span>
+        ),
+      });
+      for (const model of list) {
+        rows.push({ value: model.ref, label: modelRefLabel(model) as ReactNode });
+      }
+    }
+    return rows;
+  }, [models, providers, value]);
 
   const locked = disabled || options.length <= 1;
 
@@ -492,7 +539,9 @@ function agentPersistPayload(
 
 export function AgentsSection() {
   const availableTools = useSettingsStore((s) => s.availableTools);
-  const models = useSettingsStore((s) => s.models);
+  const llm = useSettingsStore((s) => s.llm);
+  const activeModels = useMemo(() => llm?.active_models ?? [], [llm]);
+  const catalogProviders = useMemo(() => llm?.providers ?? [], [llm]);
   const mcpDefs = useSettingsStore((s) => s.mcpDefs);
   const mcpRuntime = useSettingsStore((s) => s.mcpRuntime);
   const mcpList = useMemo(() => {
@@ -603,7 +652,8 @@ export function AgentsSection() {
     setNewAgentId("");
     setDraft({
       role: "subagent",
-      model_ref: Object.keys(models ?? {})[0] ?? "",
+      // A new agent starts on the first active catalog model.
+      model_ref: activeModels[0]?.ref ?? "",
       system_prompt: "",
       temperature: BUILTIN_TEMPERATURE,
       max_steps: 50,
@@ -738,10 +788,14 @@ export function AgentsSection() {
                 <FieldLabel>Model</FieldLabel>
                 <ModelRefSelect
                   value={draft.model_ref}
-                  models={models}
+                  models={activeModels}
+                  providers={catalogProviders}
                   onChange={(model_ref) => setDraft({ ...draft, model_ref })}
                   disabled={saveBlocked}
                 />
+                {activeModels.length === 0 ? (
+                  <p className="settings-field-hint">Configure a provider API key</p>
+                ) : null}
               </div>
               {!isHiddenAgent ? (
                 <div>

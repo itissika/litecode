@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 
 use crate::types::{LitecodeError, Result};
 
+use std::sync::Arc;
+
+use crate::provider_catalog::{self, ProviderCatalog};
+
 use super::global_db;
 use super::resolved::{ResolvedConfig, WorkspaceState, resolve};
 use super::schema::{AgentRole, GlobalSettings, PLAN_TODO_TOOL_IDS, SUBAGENT_SERIES_TOOL_IDS};
@@ -22,29 +26,45 @@ impl ConfigManager {
         global_db::load_global_from_path(path)
     }
 
-    /// Assemble read-only resolved view from disjoint global + workspace layers.
-    pub fn resolve(global: GlobalSettings, workspace: WorkspaceState) -> ResolvedConfig {
-        resolve(global, workspace)
+    /// Assemble read-only resolved view from disjoint global, workspace and
+    /// catalog layers.
+    pub fn resolve(
+        global: GlobalSettings,
+        workspace: WorkspaceState,
+        catalog: Arc<ProviderCatalog>,
+    ) -> ResolvedConfig {
+        resolve(global, workspace, catalog)
     }
 
-    /// Validate global settings: adapters, provider/model links, agent refs, log level.
+    /// Fixture helper: resolve with an empty catalog (no providers, no models).
+    ///
+    /// Only for code that exercises settings shape (tool availability, engine
+    /// reconcile) without touching an LLM binding.
+    pub fn resolve_without_catalog(
+        global: GlobalSettings,
+        workspace: WorkspaceState,
+    ) -> ResolvedConfig {
+        let catalog = Arc::new(
+            ProviderCatalog::parse("version = 1
+", Path::new("<empty-catalog>"))
+                .expect("an empty catalog is valid"),
+        );
+        Self::resolve(global, workspace, catalog)
+    }
+
+    /// Validate global settings: agent bindings, extensions, log level.
+    ///
+    /// Model references are validated where they are written (the settings API
+    /// refuses an unknown reference) and re-checked at turn resolve time; a stale
+    /// reference must never lock the Settings service.
     pub fn validate(global: &GlobalSettings) -> Result<()> {
         Self::validate_structural(global)
     }
 
-    /// Structural validation. Serve may start with empty providers/models and empty
-    /// agent `model_ref`; any present LLM rows must be adapter-consistent and ready.
     fn validate_structural(global: &GlobalSettings) -> Result<()> {
         validate_log_level(&global.log)?;
-        validate_llm_registry(global)?;
 
         for (agent_id, profile) in &global.agents {
-            if !profile.model_ref.is_empty() && !global.models.contains_key(&profile.model_ref) {
-                return Err(LitecodeError::Config(format!(
-                    "agent '{agent_id}' model_ref '{}' does not exist in models registry",
-                    profile.model_ref
-                )));
-            }
             for tool_id in profile.tools.keys() {
                 if tool_id.is_empty() {
                     return Err(LitecodeError::Config(format!(
@@ -100,13 +120,29 @@ impl ConfigManager {
         Ok(())
     }
 
-    /// Load global + workspace and assemble read-only resolved view.
+    /// Load global + workspace + catalog and assemble the read-only resolved view.
+    ///
+    /// Order matters: the database is opened (and migrated) by the catalog load,
+    /// the catalog is validated, and only then is the one-time legacy credential /
+    /// model-reference migration allowed to read the old tables.
     pub fn load_runtime_bundle(override_path: Option<&Path>) -> Result<ResolvedConfig> {
-        let global = Self::load_global()?;
+        Self::load_runtime_bundle_from(&global_db::default_db_path(), override_path)
+    }
+
+    pub fn load_runtime_bundle_from(
+        db_path: &Path,
+        override_path: Option<&Path>,
+    ) -> Result<ResolvedConfig> {
+        let catalog = provider_catalog::shared_for_db(db_path)?;
+        global_db::with_conn(db_path, |conn| {
+            global_db::legacy::migrate_once(conn, &catalog)
+        })?;
+        let global = Self::load_global_from(db_path)?;
         Self::validate_structural(&global)?;
-        super::bridge::warn_bridge_fallbacks(&global);
         let workspace = Self::load_workspace(override_path)?;
-        Ok(Self::resolve(global, workspace))
+        let resolved = Self::resolve(global, workspace, catalog);
+        super::bridge::warn_unresolved_agent_models(&resolved);
+        Ok(resolved)
     }
 
     /// Canonical workspace root from optional CLI override.
@@ -123,58 +159,6 @@ impl ConfigManager {
     pub fn load_workspace(override_path: Option<&Path>) -> Result<WorkspaceState> {
         load_workspace_state(override_path)
     }
-}
-
-fn validate_llm_registry(global: &GlobalSettings) -> Result<()> {
-    for (id, provider) in &global.providers {
-        if provider.id != *id {
-            return Err(LitecodeError::Config(format!(
-                "provider map key '{id}' does not match provider.id '{}'",
-                provider.id
-            )));
-        }
-        crate::llm::validate_provider_config(provider)?;
-        if !crate::llm::provider_ready(provider) {
-            return Err(LitecodeError::Config(format!(
-                "provider '{id}' is not ready (endpoint and api_key required)"
-            )));
-        }
-    }
-
-    for (model_id, model) in &global.models {
-        if model.id != *model_id {
-            return Err(LitecodeError::Config(format!(
-                "model map key '{model_id}' does not match model.id '{}'",
-                model.id
-            )));
-        }
-        crate::llm::validate_model_config(model_id, &model.adapter_id, &model.config)?;
-        if model.provider_ref.is_empty() {
-            return Err(LitecodeError::Config(format!(
-                "model '{model_id}' provider_ref must not be empty"
-            )));
-        }
-        let Some(provider) = global.providers.get(&model.provider_ref) else {
-            return Err(LitecodeError::Config(format!(
-                "model '{model_id}' provider_ref '{}' does not exist",
-                model.provider_ref
-            )));
-        };
-        if provider.adapter_id != model.adapter_id {
-            return Err(LitecodeError::Config(format!(
-                "model '{model_id}' adapter_id '{}' does not match provider '{}' adapter_id '{}'",
-                model.adapter_id, model.provider_ref, provider.adapter_id
-            )));
-        }
-        if !crate::llm::provider_ready(provider) {
-            return Err(LitecodeError::Config(format!(
-                "model '{model_id}' links to provider '{}' which is not ready",
-                model.provider_ref
-            )));
-        }
-    }
-
-    Ok(())
 }
 
 const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error", "off"];
@@ -244,48 +228,35 @@ fn validate_mcp_servers(global: &GlobalSettings) -> Result<()> {
 mod tests {
     use super::*;
     use crate::config::resolved::WorkspaceState;
-    use crate::config::schema::{
-        ADAPTER_OPENAI_RESPONSES, AgentProfile, AgentRole, AgentToolBinding, ModelAdapterConfig,
-        ModelCapability, ModelDefinition, ProviderAuth, ProviderConnectionConfig,
-        ProviderDefinition,
-    };
+    use crate::config::schema::{AgentProfile, AgentRole, AgentToolBinding};
     use std::collections::HashMap;
 
-    fn ready_provider(id: &str) -> ProviderDefinition {
-        ProviderDefinition {
-            id: id.into(),
-            adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-            label: id.into(),
-            config: ProviderConnectionConfig {
-                endpoint: "https://api.example.com/v1".into(),
-                api_key: "sk-test".into(),
-                auth: ProviderAuth::Bearer,
-            },
-        }
-    }
-
-    fn sample_model(id: &str, provider_ref: &str) -> ModelDefinition {
-        ModelDefinition {
-            id: id.into(),
-            adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-            provider_ref: provider_ref.into(),
-            label: id.into(),
-            config: ModelAdapterConfig {
-                api_model_id: "gpt-4".into(),
-                context_window: 200_000,
-                max_tokens: 4096,
-                json_output: false,
-                capabilities: vec![ModelCapability::Text],
-            },
-        }
-    }
-
     fn minimal_global() -> GlobalSettings {
-        GlobalSettings {
-            providers: HashMap::from([("main".into(), ready_provider("main"))]),
-            models: HashMap::from([("default".into(), sample_model("default", "main"))]),
-            ..Default::default()
+        let mut global = GlobalSettings::default();
+        global
+            .provider_credentials
+            .insert("main".into(), "sk-test".into());
+        global
+    }
+
+    fn binding() -> AgentToolBinding {
+        AgentToolBinding {
+            enabled: true,
+            policy: crate::permission::ToolPolicy::allow_all(),
+            path_mode: crate::permission::BindingPathMode::default(),
+            last_applied_preset: None,
+            allowed_tools: None,
         }
+    }
+
+    fn catalog() -> Arc<ProviderCatalog> {
+        Arc::new(
+            ProviderCatalog::parse(
+                "version = 1\n[[providers]]\nid = \"main\"\nname = \"Main\"\nendpoint = \"https://api.example.com/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"default\"\nprovider_id = \"main\"\n",
+                std::path::Path::new("t.toml"),
+            )
+            .unwrap(),
+        )
     }
 
     #[test]
@@ -293,7 +264,7 @@ mod tests {
         let global = minimal_global();
         let workspace = WorkspaceState::new("/tmp/ws");
 
-        let resolved = ConfigManager::resolve(global.clone(), workspace.clone());
+        let resolved = ConfigManager::resolve(global, workspace.clone(), catalog());
 
         let global_names: std::collections::HashSet<_> =
             GlobalSettings::FIELD_NAMES.iter().copied().collect();
@@ -307,15 +278,6 @@ mod tests {
             resolved_names.len(),
             global_names.len() + workspace_names.len()
         );
-        for name in global_names {
-            assert!(resolved_names.contains(name));
-        }
-        for name in workspace_names {
-            assert!(resolved_names.contains(name));
-        }
-
-        assert_eq!(resolved.providers(), &global.providers);
-        assert_eq!(resolved.models(), &global.models);
         assert_eq!(
             resolved.workspace_root(),
             workspace.workspace_root.as_path()
@@ -324,19 +286,19 @@ mod tests {
     }
 
     #[test]
-    fn validate_missing_endpoint_returns_error() {
+    fn validate_accepts_a_stale_agent_model_ref() {
+        // A reference left over from an older catalog must not lock Settings:
+        // the settings API refuses new invalid writes and a turn hard-fails.
         let mut global = minimal_global();
-        global.providers.get_mut("main").unwrap().config.endpoint = String::new();
-        let err = ConfigManager::validate(&global).unwrap_err();
-        assert!(matches!(err, LitecodeError::Config(msg) if msg.contains("endpoint")));
-    }
-
-    #[test]
-    fn validate_missing_api_key_returns_error() {
-        let mut global = minimal_global();
-        global.providers.get_mut("main").unwrap().config.api_key = String::new();
-        let err = ConfigManager::validate(&global).unwrap_err();
-        assert!(matches!(err, LitecodeError::Config(msg) if msg.contains("api_key")));
+        global.agents.insert(
+            "default".into(),
+            AgentProfile {
+                role: AgentRole::Primary,
+                model_ref: "ghost/model".into(),
+                ..Default::default()
+            },
+        );
+        ConfigManager::validate(&global).unwrap();
     }
 
     #[test]
@@ -347,35 +309,6 @@ mod tests {
             AgentProfile {
                 role: AgentRole::Primary,
                 model_ref: String::new(),
-                ..Default::default()
-            },
-        );
-        ConfigManager::validate(&global).unwrap();
-    }
-
-    #[test]
-    fn validate_dangling_model_ref_fails() {
-        let mut global = minimal_global();
-        global.agents.insert(
-            "default".into(),
-            AgentProfile {
-                role: AgentRole::Primary,
-                model_ref: "missing-model".into(),
-                ..Default::default()
-            },
-        );
-        let err = ConfigManager::validate(&global).unwrap_err();
-        assert!(matches!(err, LitecodeError::Config(msg) if msg.contains("missing-model")));
-    }
-
-    #[test]
-    fn validate_ok_with_valid_refs() {
-        let mut global = minimal_global();
-        global.agents.insert(
-            "default".into(),
-            AgentProfile {
-                role: AgentRole::Primary,
-                model_ref: "default".into(),
                 ..Default::default()
             },
         );
@@ -406,17 +339,8 @@ mod tests {
             "worker".into(),
             AgentProfile {
                 role: AgentRole::Subagent,
-                model_ref: "default".into(),
-                tools: HashMap::from([(
-                    "subagent_launch".into(),
-                    AgentToolBinding {
-                        enabled: true,
-                        policy: crate::permission::ToolPolicy::allow_all(),
-                        path_mode: crate::permission::BindingPathMode::default(),
-                        last_applied_preset: None,
-                        allowed_tools: None,
-                    },
-                )]),
+                model_ref: "main/default".into(),
+                tools: HashMap::from([("subagent_launch".into(), binding())]),
                 ..Default::default()
             },
         );
@@ -431,17 +355,8 @@ mod tests {
             "worker".into(),
             AgentProfile {
                 role: AgentRole::Subagent,
-                model_ref: "default".into(),
-                tools: HashMap::from([(
-                    "plan".into(),
-                    AgentToolBinding {
-                        enabled: true,
-                        policy: crate::permission::ToolPolicy::allow_all(),
-                        path_mode: crate::permission::BindingPathMode::default(),
-                        last_applied_preset: None,
-                        allowed_tools: None,
-                    },
-                )]),
+                model_ref: "main/default".into(),
+                tools: HashMap::from([("plan".into(), binding())]),
                 ..Default::default()
             },
         );
@@ -456,7 +371,7 @@ mod tests {
             "default".into(),
             AgentProfile {
                 role: AgentRole::Primary,
-                model_ref: "default".into(),
+                model_ref: "main/default".into(),
                 allowed_subagents: vec!["ghost".into()],
                 ..Default::default()
             },
@@ -472,7 +387,7 @@ mod tests {
             "default".into(),
             AgentProfile {
                 role: AgentRole::Primary,
-                model_ref: "default".into(),
+                model_ref: "main/default".into(),
                 allowed_subagents: vec!["worker".into()],
                 ..Default::default()
             },
@@ -481,7 +396,7 @@ mod tests {
             "worker".into(),
             AgentProfile {
                 role: AgentRole::Subagent,
-                model_ref: "default".into(),
+                model_ref: "main/default".into(),
                 ..Default::default()
             },
         );

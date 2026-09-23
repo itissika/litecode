@@ -201,10 +201,6 @@ pub enum SessionMutation {
         expected_revision: u64,
         operation_id: MutationId,
     },
-    ClearOrphanedModelIds {
-        operation_id: MutationId,
-        valid_ids: Vec<String>,
-    },
 }
 
 impl SessionMutation {
@@ -226,14 +222,13 @@ impl SessionMutation {
             | Self::SetModel { operation_id, .. }
             | Self::SetThinkingTier { operation_id, .. }
             | Self::SetContextMode { operation_id, .. }
-            | Self::Delete { operation_id, .. }
-            | Self::ClearOrphanedModelIds { operation_id, .. } => &operation_id.0,
+            | Self::Delete { operation_id, .. } => &operation_id.0,
         }
     }
 
     pub fn session_id(&self) -> Option<&str> {
         match self {
-            Self::Create { .. } | Self::ClearOrphanedModelIds { .. } => None,
+            Self::Create { .. } => None,
             Self::Apply { session_id, .. }
             | Self::InsertDetails { session_id, .. }
             | Self::PersistItem { session_id, .. }
@@ -255,7 +250,7 @@ impl SessionMutation {
 
     pub fn expected_revision(&self) -> Option<u64> {
         match self {
-            Self::Create { .. } | Self::ClearOrphanedModelIds { .. } => None,
+            Self::Create { .. } => None,
             Self::Apply {
                 expected_revision, ..
             }

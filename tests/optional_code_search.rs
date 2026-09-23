@@ -15,7 +15,6 @@ use litecode::engines::code_search::{
     write_meta,
 };
 use litecode::engines::{EngineState, WorkspaceEngines};
-use litecode::llm::provider_from_definition;
 use litecode::optional::EngineManager;
 use litecode::session::manager::SessionManager;
 use litecode::tool::catalog::should_include_in_llm_list;
@@ -54,6 +53,7 @@ fn workspace_with_code_search(
     ConfigManager::resolve(
         global,
         litecode::config::workspace::workspace_with_disk_readiness(&WorkspaceState::new(root)),
+        common::default_test_catalog(),
     )
 }
 

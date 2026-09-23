@@ -6,19 +6,18 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS providers (
-    id          TEXT PRIMARY KEY,
-    adapter_id  TEXT NOT NULL,
-    label       TEXT NOT NULL DEFAULT '',
-    config_json TEXT NOT NULL DEFAULT '{}'
+-- The only LLM state the database owns: one API key per catalog provider.
+-- Provider/model facts live in provider-catalog.toml, not here.
+CREATE TABLE IF NOT EXISTS provider_credentials (
+    provider_id TEXT PRIMARY KEY,
+    api_key     TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS models (
-    id           TEXT PRIMARY KEY,
-    adapter_id   TEXT NOT NULL,
-    provider_ref TEXT NOT NULL,
-    label        TEXT NOT NULL DEFAULT '',
-    config_json  TEXT NOT NULL DEFAULT '{}'
+-- The other half of LLM user state: catalog models the user switched off.
+-- Stored as the exception, so an empty table means "every catalog model is on"
+-- and a model added to the catalog needs no row to be selectable.
+CREATE TABLE IF NOT EXISTS disabled_models (
+    model_ref TEXT PRIMARY KEY
 );
 
 CREATE TABLE IF NOT EXISTS agents (
@@ -76,4 +75,4 @@ CREATE TABLE IF NOT EXISTS websearch (
     search_endpoint  TEXT
 );
 -- `search_endpoint` is leftover; live config is `meta.websearch.api_key`.
--- Keep this table so existing DBs (user_version 6) stay loadable without a bump.
+-- Keep this table so existing DBs stay loadable without a bump.

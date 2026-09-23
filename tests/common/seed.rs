@@ -9,13 +9,21 @@ use tempfile::TempDir;
 use litecode::config::ConfigManager;
 use litecode::config::global_db;
 use litecode::config::schema::{
-    ADAPTER_OPENAI_RESPONSES, CustomToolDefinition, GlobalSettings, McpServerDefinition,
-    ModelAdapterConfig, ModelCapability, ModelDefinition, ProviderAuth, ProviderConnectionConfig,
-    ProviderDefinition, ToolSchema,
+    CustomToolDefinition, GlobalSettings, McpServerDefinition, ToolSchema,
 };
+use litecode::provider_catalog::ProviderCatalog;
 
-/// Default provider id for integration test fixtures.
-pub const TEST_PROVIDER_ID: &str = "default";
+/// Provider id every integration fixture catalog declares.
+pub const TEST_PROVIDER_ID: &str = "test";
+
+/// Composite model reference of the fixture catalog's primary model.
+pub const TEST_PRIMARY_MODEL_REF: &str = "test/test-primary-model";
+
+/// Composite model reference of the fixture catalog's compaction model.
+pub const TEST_COMPACTION_MODEL_REF: &str = "test/test-compaction-model";
+
+/// Endpoint in-memory fixture catalogs use when no request is expected.
+pub const TEST_CATALOG_ENDPOINT: &str = "http://127.0.0.1:9";
 
 /// Keeps a tempfile-backed global DB alive for the duration of a test.
 pub struct TestGlobalDb {
@@ -23,88 +31,150 @@ pub struct TestGlobalDb {
     pub path: PathBuf,
 }
 
-/// Structurally-ready provider row for tests (`openai_responses` adapter).
-pub fn ready_test_provider(id: &str, endpoint: &str, api_key: &str) -> ProviderDefinition {
-    ProviderDefinition {
-        id: id.into(),
-        adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-        label: id.into(),
-        config: ProviderConnectionConfig {
-            endpoint: endpoint.into(),
-            api_key: api_key.into(),
-            auth: ProviderAuth::Bearer,
-        },
-    }
+/// The catalog text a test DB seeds with.
+///
+/// The catalog lives next to the global DB, so every fixture that wants a
+/// working LLM binding writes this file beside its temp database.
+pub fn test_catalog_toml(endpoint: &str, context_window: usize, max_output: u32) -> String {
+    format!(
+        r#"version = 1
+
+[[providers]]
+id = "{TEST_PROVIDER_ID}"
+name = "Test"
+endpoint = "{endpoint}"
+endpoint_type = "responses"
+tiers = {{ low = "low", medium = "medium", high = "high" }}
+
+[[models]]
+id = "test-primary-model"
+provider_id = "{TEST_PROVIDER_ID}"
+context_window = {context_window}
+context_window_max = {context_window}
+max_output = {max_output}
+
+[[models]]
+id = "test-compaction-model"
+provider_id = "{TEST_PROVIDER_ID}"
+context_window = 200000
+context_window_max = 200000
+max_output = 8192
+"#
+    )
 }
 
-/// Structurally-ready model row linked to a test provider.
-pub fn ready_test_model(
-    id: &str,
-    provider_ref: &str,
-    api_model_id: &str,
-    context_window: usize,
-) -> ModelDefinition {
-    ModelDefinition {
-        id: id.into(),
-        adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-        provider_ref: provider_ref.into(),
-        label: id.into(),
-        config: ModelAdapterConfig {
-            api_model_id: api_model_id.into(),
-            context_window,
-            max_tokens: 8192,
-            json_output: false,
-            capabilities: vec![ModelCapability::Text],
-        },
-    }
-}
-
-/// Insert ready provider + default/compaction models and wire agent `model_ref`s.
-pub fn insert_test_llm_registry(
-    settings: &mut GlobalSettings,
+/// Catalog text with a distinct standard window and Max ceiling (the two
+/// catalog facts [ContextMode](litecode::platform_knobs::ContextMode) selects between).
+pub fn test_catalog_toml_windows(
     endpoint: &str,
-    api_key: &str,
     context_window: usize,
-) {
-    settings.providers.insert(
-        TEST_PROVIDER_ID.into(),
-        ready_test_provider(TEST_PROVIDER_ID, endpoint, api_key),
-    );
-    settings.models.insert(
-        "default".into(),
-        ready_test_model(
-            "default",
-            TEST_PROVIDER_ID,
-            "test-primary-model",
-            context_window,
-        ),
-    );
-    settings.models.insert(
-        "compaction".into(),
-        ready_test_model(
-            "compaction",
-            TEST_PROVIDER_ID,
-            "test-compaction-model",
-            200_000,
-        ),
-    );
+    context_window_max: usize,
+    max_output: u32,
+) -> String {
+    format!(
+        r#"version = 1
+
+[[providers]]
+id = "{TEST_PROVIDER_ID}"
+name = "Test"
+endpoint = "{endpoint}"
+endpoint_type = "responses"
+tiers = {{ low = "low", medium = "medium", high = "high" }}
+
+[[models]]
+id = "test-primary-model"
+provider_id = "{TEST_PROVIDER_ID}"
+context_window = {context_window}
+context_window_max = {context_window_max}
+max_output = {max_output}
+
+[[models]]
+id = "test-compaction-model"
+provider_id = "{TEST_PROVIDER_ID}"
+context_window = 200000
+context_window_max = 200000
+max_output = 8192
+"#
+    )
+}
+
+/// In-memory catalog with distinct standard / Max context windows.
+pub fn test_catalog_windows(
+    endpoint: &str,
+    context_window: usize,
+    context_window_max: usize,
+    max_output: u32,
+) -> Arc<ProviderCatalog> {
+    Arc::new(
+        ProviderCatalog::parse(
+            &test_catalog_toml_windows(endpoint, context_window, context_window_max, max_output),
+            Path::new("<test-catalog-windows>"),
+        )
+        .expect("fixture provider catalog must parse"),
+    )
+}
+
+/// In-memory fixture catalog (no DB file needed) for fixtures that build a
+/// `ResolvedConfig` directly.
+pub fn test_catalog(endpoint: &str, context_window: usize, max_output: u32) -> Arc<ProviderCatalog> {
+    Arc::new(
+        ProviderCatalog::parse(
+            &test_catalog_toml(endpoint, context_window, max_output),
+            Path::new("<test-catalog>"),
+        )
+        .expect("fixture provider catalog must parse"),
+    )
+}
+
+/// In-memory fixture catalog at the standard unreachable test endpoint.
+pub fn default_test_catalog() -> Arc<ProviderCatalog> {
+    test_catalog(TEST_CATALOG_ENDPOINT, 128_000, 8192)
+}
+
+/// The process-shared catalog for a DB path the test itself seeded.
+pub fn catalog_for_db(db_path: &Path) -> Arc<ProviderCatalog> {
+    litecode::provider_catalog::shared_for_db(db_path).expect("provider catalog for test db")
+}
+
+/// Write the fixture catalog next to `db_path` (same directory as the DB).
+pub fn seed_test_catalog(db_path: &Path, endpoint: &str, context_window: usize) -> PathBuf {
+    seed_test_catalog_with(db_path, endpoint, context_window, 8192)
+}
+
+pub fn seed_test_catalog_with(
+    db_path: &Path,
+    endpoint: &str,
+    context_window: usize,
+    max_output: u32,
+) -> PathBuf {
+    let path = litecode::provider_catalog::catalog_path_for_db(db_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("catalog dir");
+    }
+    std::fs::write(&path, test_catalog_toml(endpoint, context_window, max_output))
+        .expect("write test catalog");
+    path
+}
+
+/// Credential for the fixture provider plus agent model references into the
+/// fixture catalog.
+pub fn insert_test_llm_registry(settings: &mut GlobalSettings, api_key: &str) {
+    settings
+        .provider_credentials
+        .insert(TEST_PROVIDER_ID.into(), api_key.into());
     if let Some(agent) = settings.agents.get_mut("default") {
-        agent.model_ref = "default".into();
+        agent.model_ref = format!("{TEST_PROVIDER_ID}/test-primary-model");
     }
     if let Some(agent) = settings.agents.get_mut("compaction") {
-        agent.model_ref = "compaction".into();
+        agent.model_ref = format!("{TEST_PROVIDER_ID}/test-compaction-model");
     }
 }
 
-/// Minimal provider definition for `provider_from_definition` in tool-list tests.
-pub fn stub_test_provider_def(endpoint: &str, api_key: &str) -> ProviderDefinition {
-    ready_test_provider(TEST_PROVIDER_ID, endpoint, api_key)
-}
-
-/// Fresh seeded global DB (never touches `~/.local/share/litecode/litecode.db`).
+/// Fresh seeded global DB + fixture catalog (never touches the user's data dir).
 pub fn fresh_test_global_db() -> TestGlobalDb {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("litecode.db");
+    seed_test_catalog(&path, "https://api.example.com/v1", 128_000);
     seed_global_db(&path, &default_test_global());
     TestGlobalDb { _dir: dir, path }
 }
@@ -138,17 +208,12 @@ pub fn test_serve_settings_with_db(
     (Arc::new(writer), engine_manager)
 }
 
-/// Programmatic global settings matching fresh DB seed + test provider credentials.
+/// Programmatic global settings matching a fresh DB seed plus test credentials.
 pub fn default_test_global() -> GlobalSettings {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = dir.path().join("litecode.db");
     let mut settings = ConfigManager::load_global_from(&db).expect("seed");
-    insert_test_llm_registry(
-        &mut settings,
-        "https://api.example.com/v1",
-        "sk-test",
-        128_000,
-    );
+    insert_test_llm_registry(&mut settings, "sk-test");
     settings
 }
 

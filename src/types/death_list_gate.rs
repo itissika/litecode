@@ -222,7 +222,13 @@ fn path_slash(path: &Path) -> String {
 }
 
 fn is_adapter_path(path: &Path) -> bool {
-    path_slash(path).contains("/llm/adapter/")
+    path_slash(path).contains("/llm/codec/")
+}
+
+/// The provider catalog states protocol facts (the request path, the replay key)
+/// as data; it never builds a Chat dialect.
+fn is_provider_catalog_path(path: &Path) -> bool {
+    path_slash(path).contains("/provider_catalog/")
 }
 
 fn is_client_protocol_path(path: &Path) -> bool {
@@ -246,7 +252,7 @@ fn check_file(path: &Path) -> Vec<String> {
         return vec![format!("{}: failed to read", path.display())];
     };
     let hard_rule_comments_ok = allow_hard_rule_comment_mentions(path);
-    let in_adapter = is_adapter_path(path);
+    let in_adapter = is_adapter_path(path) || is_provider_catalog_path(path);
     let in_client_protocol = is_client_protocol_path(path);
     let allow_role_user = allow_chat_role_user_json(path);
     let mut hits = Vec::new();
@@ -569,7 +575,7 @@ fn compact_llm_path_does_not_bypass_unified_provider() {
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        if rel.starts_with("src/llm/adapter/") || rel == "src/types/death_list_gate.rs" {
+        if rel.starts_with("src/llm/codec/") || rel == "src/types/death_list_gate.rs" {
             continue;
         }
         let Ok(text) = fs::read_to_string(&path) else {
@@ -588,14 +594,17 @@ fn compact_llm_path_does_not_bypass_unified_provider() {
         "non-adapter complete() leftover in {hits:?}"
     );
 
-    let registry = fs::read_to_string(root.join("src/llm/adapter/registry.rs")).expect("registry.rs");
+    // Thinking literals live in the catalog now: a codec may only know the named
+    // placements, never a vendor's field vocabulary.
+    let responses_codec =
+        fs::read_to_string(root.join("src/llm/codec/responses.rs")).expect("responses.rs");
     assert!(
-        !registry.contains("name: \"thinking_mode\""),
-        "Settings catalog must not advertise thinking_mode"
+        !responses_codec.contains("thinking_mode"),
+        "the responses codec must not know a vendor thinking field"
     );
     assert!(
-        !registry.contains("name: \"reasoning_effort\""),
-        "Settings catalog must not advertise reasoning_effort"
+        !responses_codec.contains("\"reasoning_effort\""),
+        "reasoning_effort belongs to the chat codec"
     );
 }
 
@@ -725,68 +734,248 @@ fn death_list_dialect_tokens_absent_from_src() {
     );
 }
 
-/// R9 DoD #1: adapter registry is the LLM product surface — no fake seed providers.
+/// The provider catalog is the only source of LLM provider/model facts.
+///
+/// Legacy knowledge is confined to the one-shot v6 migration module and to the
+/// archived schema comments; everything else must go through the catalog.
 #[test]
-fn death_list_adapter_registry_invariants() {
-    use crate::config::schema::{
-        ADAPTER_ARK_CODING, ADAPTER_COMMANDCODE, ADAPTER_DEEPSEEK_RESPONSES, ADAPTER_MIMO_RESPONSES,
-        ADAPTER_OPENAI_RESPONSES, ADAPTER_OPENCODE,
-    };
-    use crate::llm::list_adapters;
-
-    let adapters = list_adapters();
-    assert_eq!(
-        adapters.len(),
-        6,
-        "expected exactly six registered adapters"
-    );
-    let ids: Vec<_> = adapters.iter().map(|a| a.id).collect();
-    assert!(ids.contains(&ADAPTER_OPENAI_RESPONSES));
-    assert!(ids.contains(&ADAPTER_DEEPSEEK_RESPONSES));
-    assert!(ids.contains(&ADAPTER_MIMO_RESPONSES));
-    assert!(ids.contains(&ADAPTER_OPENCODE));
-    assert!(ids.contains(&ADAPTER_ARK_CODING));
-    assert!(ids.contains(&ADAPTER_COMMANDCODE));
-
+fn death_list_provider_catalog_is_the_only_llm_source() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let seed = fs::read_to_string(root.join("src/config/global_db/seed.rs")).expect("seed.rs");
-    let schema_sql =
-        fs::read_to_string(root.join("src/config/global_db/schema.sql")).expect("schema.sql");
-    let schema_rs = fs::read_to_string(root.join("src/config/schema.rs")).expect("schema.rs");
+    let mut files = Vec::new();
+    walk_rs_files(&root.join("src"), &mut files);
 
-    for line in seed.lines() {
-        if is_comment_line(line) {
-            continue;
-        }
-        if line.contains("LlmProtocol") {
-            panic!("seed must not reference removed LlmProtocol: {line}");
-        }
+    // Files allowed to know the removed provider/model registry.
+    fn legacy_exempt(rel: &str) -> bool {
+        matches!(
+            rel,
+            "src/config/global_db/legacy.rs"
+                | "src/config/global_db/migrate.rs"
+                | "src/types/death_list_gate.rs"
+        )
     }
 
-    assert!(
-        !schema_sql.contains("protocol"),
-        "schema.sql must not retain providers.protocol column"
-    );
-    assert!(
-        schema_sql.contains("adapter_id"),
-        "schema.sql providers must use adapter_id"
-    );
-
-    for const_name in [
+    const FORBIDDEN: &[&str] = &[
+        "adapter_id",
         "ADAPTER_OPENAI_RESPONSES",
         "ADAPTER_DEEPSEEK_RESPONSES",
         "ADAPTER_MIMO_RESPONSES",
         "ADAPTER_OPENCODE",
         "ADAPTER_ARK_CODING",
         "ADAPTER_COMMANDCODE",
+        "list_adapters",
+        "AdapterDescriptor",
+        "FieldSchema",
+        "ProviderDefinition",
+        "ProviderConnectionConfig",
+        "ProviderAuth",
+        "ModelDefinition",
+        "ModelAdapterConfig",
+        "ModelCapability",
+        "remote_model_catalog",
+        "has_remote_model_catalog",
+        "catalog_supported_ids",
+        "closed_api_model_ids",
+        "closed_context_windows",
+        "closed_default_endpoint",
+        "parse_provider_config",
+        "parse_model_config",
+        "apply_owned_modality_capabilities",
+        "provider_from_definition",
+        "chat_models_url",
+        "chat_post_url",
+        "parse_chat_model_catalog",
+        "map_thinking_to_wire",
+        "llm_ecosystem",
+        "catalog_count",
+        "DocId::Models",
+        "write_models",
+    ];
+
+    let mut hits = Vec::new();
+    for path in &files {
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if legacy_exempt(&rel) {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            if is_comment_line(line) {
+                continue;
+            }
+            for needle in FORBIDDEN {
+                if line.contains(needle) {
+                    hits.push(format!("{rel}:{}: {needle} -> {}", index + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "legacy LLM registry residuals under src/:\n{}",
+        hits.join("\n")
+    );
+}
+
+/// Vendor model-catalog fetching is gone: no HTTP call may target one.
+#[test]
+fn death_list_no_vendor_model_catalog_fetch() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    walk_rs_files(&root.join("src"), &mut files);
+
+    let mut hits = Vec::new();
+    for path in &files {
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            if is_comment_line(line) {
+                continue;
+            }
+            let lowered = line.to_ascii_lowercase();
+            let fetches = lowered.contains(".get(")
+                || lowered.contains("reqwest::client")
+                || lowered.contains("send().await");
+            if fetches && (lowered.contains("/models") || lowered.contains("models_get_url")) {
+                hits.push(format!("{rel}:{}: {}", index + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "vendor model-catalog fetch residuals:\n{}",
+        hits.join("\n")
+    );
+}
+
+/// A codec never branches on provider identity, and every EndpointKind has
+/// exactly one factory arm.
+#[test]
+fn death_list_codecs_are_provider_agnostic() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let codec_dir = root.join("src/llm/codec");
+    let mut files = Vec::new();
+    walk_rs_files(&codec_dir, &mut files);
+    assert!(!files.is_empty(), "codec directory must exist");
+
+    let mut hits = Vec::new();
+    for path in &files {
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            if is_comment_line(line) {
+                continue;
+            }
+            // Catalog fixtures in tests legitimately mention provider ids; the
+            // production shape we forbid is branching on one.
+            let branches = line.contains("provider_id ==")
+                || line.contains("provider_id.as_str()")
+                || line.contains("match provider_id")
+                || line.contains("match model.provider_id");
+            if branches {
+                hits.push(format!("{rel}:{}: {}", index + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "codec must not branch on provider id:\n{}",
+        hits.join("\n")
+    );
+
+    let factory = fs::read_to_string(root.join("src/llm/codec/mod.rs")).expect("codec/mod.rs");
+    for kind in crate::provider_catalog::EndpointKind::ALL {
+        let needle = format!("EndpointKind::{} =>", pascal_case(kind.as_str()));
+        assert!(
+            factory.contains(&needle),
+            "codec factory must select a codec for {kind:?} ({needle})"
+        );
+    }
+    // Only the factory match counts: the diagnostic prefix may switch on the
+    // kind too, but the codec selector must be a single exhaustive match.
+    let build = factory
+        .split("pub(crate) fn error_prefix")
+        .next()
+        .expect("factory section");
+    let arms = build.matches("EndpointKind::").count();
+    assert_eq!(
+        arms,
+        crate::provider_catalog::EndpointKind::ALL.len(),
+        "one codec factory arm per EndpointKind, no more"
+    );
+}
+
+fn pascal_case(snake: &str) -> String {
+    snake
+        .split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+/// The runtime store touches only the credential table; the legacy tables are
+/// readable exactly once, from the migration module.
+#[test]
+fn death_list_db_runtime_store_only_uses_provider_credentials() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let runtime_store =
+        fs::read_to_string(root.join("src/config/global_db/mod.rs")).expect("global_db/mod.rs");
+    for needle in [
+        "FROM providers",
+        "INTO providers",
+        "FROM models",
+        "INTO models",
+        "DELETE FROM providers",
+        "DELETE FROM models",
     ] {
         assert!(
-            schema_rs.contains(const_name),
-            "schema.rs must declare adapter id constant {const_name}"
+            !runtime_store.contains(needle),
+            "runtime store must not touch legacy tables: {needle}"
         );
     }
     assert!(
-        !schema_rs.contains("pub enum LlmProtocol"),
-        "schema.rs must not define removed LlmProtocol enum"
+        runtime_store.contains("provider_credentials"),
+        "runtime store must own the credential table"
+    );
+
+    let schema_sql =
+        fs::read_to_string(root.join("src/config/global_db/schema.sql")).expect("schema.sql");
+    assert!(
+        schema_sql.contains("provider_credentials"),
+        "fresh schema must create the credential table"
+    );
+    assert!(
+        !schema_sql.contains("CREATE TABLE IF NOT EXISTS providers")
+            && !schema_sql.contains("CREATE TABLE IF NOT EXISTS models"),
+        "fresh installs must not create the legacy LLM tables"
+    );
+
+    let legacy =
+        fs::read_to_string(root.join("src/config/global_db/legacy.rs")).expect("legacy.rs");
+    assert!(
+        legacy.contains("FROM providers") && legacy.contains("FROM models"),
+        "the one-shot migration is the only reader of the legacy tables"
     );
 }

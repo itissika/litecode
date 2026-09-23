@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use common::bindings::binding_safe_for;
 use common::scripted_provider::HangProvider;
-use common::{ScriptedProvider, test_resolved, test_workspace};
+use common::{ScriptedProvider, TEST_PRIMARY_MODEL_REF, default_test_catalog, test_resolved, test_workspace};
 use litecode::config::resolved::resolve;
 use litecode::config::schema::{AgentProfile, AgentRole};
 use litecode::config::{TurnGuard, workspace::set_runtime_paths};
@@ -45,14 +45,14 @@ fn reviewer_resolved(cwd: &std::path::Path) -> litecode::config::ResolvedConfig 
         "reviewer".into(),
         AgentProfile {
             role: AgentRole::Subagent,
-            model_ref: "default".into(),
+            model_ref: TEST_PRIMARY_MODEL_REF.into(),
             system_prompt: "builtin:general".into(),
             tools: HashMap::from([("read".into(), binding_safe_for("read"))]),
             max_steps: 2,
             ..Default::default()
         },
     );
-    resolve(global, workspace)
+    resolve(global, workspace, default_test_catalog())
 }
 
 fn launch_tool_with_hub(
@@ -233,7 +233,7 @@ async fn execute_returns_while_child_llm_runs_on_other_thread() {
         db_path,
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
 
@@ -286,7 +286,7 @@ async fn parent_cancel_does_not_stop_background_child_and_stop_tool_can() {
         db_path,
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
 
@@ -370,7 +370,7 @@ async fn background_launch_returns_while_child_keeps_running() {
         db_path,
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
 
@@ -428,7 +428,7 @@ async fn child_exit_fires_hub_exit_handler() {
         db_path,
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
 
@@ -477,7 +477,7 @@ async fn pipeline_runs_two_launches_concurrently() {
         db_path,
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
 
@@ -557,7 +557,7 @@ async fn worker_panic_finishes_job_and_releases_session() {
         db_path,
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
 

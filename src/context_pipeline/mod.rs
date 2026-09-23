@@ -226,7 +226,7 @@ impl ContextPipeline {
         step: u64,
         cancel: &CancellationToken,
         task_state: &TaskReminders,
-        model: &crate::config::schema::ModelDefinition,
+        model: &crate::provider_catalog::ResolvedModel,
     ) -> Result<bool> {
         // Returns whether a full compaction ran — single source of truth for
         // the caller's phase/compaction events (no duplicate budget math).

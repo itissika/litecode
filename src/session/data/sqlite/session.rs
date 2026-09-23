@@ -1127,35 +1127,6 @@ pub(crate) fn load_events_range_on(
     Ok(events)
 }
 
-pub(crate) fn clear_orphaned_model_ids_on(
-    conn: &Connection,
-    valid_model_ids: &std::collections::HashSet<String>,
-) -> Result<Vec<String>> {
-    let orphans: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT id, model_id FROM sessions WHERE model_id IS NOT NULL AND trim(model_id) != ''",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (id, model_id) = row?;
-            if !valid_model_ids.contains(&model_id) {
-                out.push(id);
-            }
-        }
-        out
-    };
-    for id in &orphans {
-        conn.execute(
-            "UPDATE sessions SET model_id = NULL WHERE id = ?1",
-            rusqlite::params![id],
-        )?;
-    }
-    Ok(orphans)
-}
-
 impl Session {
     /// Load the durable session metadata without leaking Live or catalog
     /// projection fields into the session domain.
@@ -1559,13 +1530,6 @@ impl Session {
 }
 
 impl Session {
-    pub(crate) fn clear_orphaned_model_ids_on(
-        conn: &Connection,
-        valid_model_ids: &std::collections::HashSet<String>,
-    ) -> Result<Vec<String>> {
-        clear_orphaned_model_ids_on(conn, valid_model_ids)
-    }
-
     pub fn load_transcript(&self) -> Result<Transcript> {
         Ok(self
             .load_working_set()?
@@ -2904,31 +2868,6 @@ mod tests {
                 || msg.contains("last_message"),
             "error must name a missing required column: {msg}"
         );
-    }
-
-    #[test]
-    fn clear_orphaned_model_ids_clears_missing_catalog_rows() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("sessions.db");
-        let lease = crate::session::WorkspaceWriteLease::acquire(dir.path()).unwrap();
-        let data = crate::session::SessionData::open(&lease, &db).unwrap();
-        data.create_session("/p", "default", Some("keep-me"))
-            .unwrap();
-        data.create_session("/p", "default", Some("drop-me"))
-            .unwrap();
-
-        let mut valid = std::collections::HashSet::new();
-        valid.insert("keep-me".into());
-        data.mutate_blocking(crate::session::SessionMutation::ClearOrphanedModelIds {
-            operation_id: crate::session::MutationId::new(),
-            valid_ids: valid.into_iter().collect(),
-        })
-        .unwrap();
-
-        let listed = data.list_sessions_blocking().unwrap();
-        let models: Vec<_> = listed.into_iter().map(|r| r.model_id).collect();
-        assert!(models.contains(&Some("keep-me".into())));
-        assert!(models.contains(&None));
     }
 
     #[test]

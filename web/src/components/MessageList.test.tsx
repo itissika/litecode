@@ -2,7 +2,7 @@ import React from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MessageList, NodeView, ProcessGroup, rowsToNodes } from "./MessageList";
+import { MessageList, NodeView, ProcessGroup, groupNodes, rowsToNodes } from "./MessageList";
 import type { HumanRow } from "../api/types";
 import { userTextItem } from "../api/adapter";
 import { useBashStore } from "../stores/bashStore";
@@ -422,6 +422,46 @@ describe("ProcessGroup header buckets", () => {
     expect(header.textContent).toContain("×1");
     expect(screen.queryByRole("button", { name: /wait_shell/i })).toBeNull();
     expect(screen.getByTestId("wait-elapsed")).toBeTruthy();
+  });
+});
+
+describe("MessageList whitespace-only assistant rows", () => {
+  const reasoning = liveReasoning;
+  const tool = liveTool;
+  const whitespaceMessage: HumanRow = {
+    seq: 1,
+    kind: "item/assistant",
+    streaming: false,
+    body: {
+      type: "message",
+      id: "cc_msg_ws",
+      role: "assistant",
+      status: "completed",
+      content: [{ type: "output_text", text: "\n\n", annotations: [] }],
+    },
+  };
+
+  it("drops an invisible whitespace message so the process group is not split", () => {
+    const nodes = rowsToNodes([reasoning, whitespaceMessage, tool]);
+    expect(nodes.map((node) => node.kind)).toEqual(["reasoning", "tool"]);
+    const groups = groupNodes(nodes);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.type).toBe("process");
+  });
+
+  it("keeps a real assistant message as its own output group", () => {
+    const real: HumanRow = {
+      ...whitespaceMessage,
+      body: {
+        type: "message",
+        id: "cc_msg_real",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: "done", annotations: [] }],
+      },
+    };
+    const groups = groupNodes(rowsToNodes([reasoning, real, tool]));
+    expect(groups.map((group) => group.type)).toEqual(["process", "output", "process"]);
   });
 });
 

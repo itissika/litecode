@@ -483,14 +483,22 @@ mod tests {
         migrate::migrate(&conn).unwrap();
         seed(&conn).unwrap();
 
-        let providers: i64 = conn
-            .query_row("SELECT COUNT(*) FROM providers", [], |r| r.get(0))
+        // A fresh install has no legacy LLM tables at all: provider/model facts
+        // live in provider-catalog.toml, credentials in provider_credentials.
+        for legacy in ["providers", "models"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [legacy],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "fresh schema must not create the '{legacy}' table");
+        }
+        let credentials: i64 = conn
+            .query_row("SELECT COUNT(*) FROM provider_credentials", [], |r| r.get(0))
             .unwrap();
-        let models: i64 = conn
-            .query_row("SELECT COUNT(*) FROM models", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(providers, 0);
-        assert_eq!(models, 0);
+        assert_eq!(credentials, 0);
 
         let default_ref: String = conn
             .query_row(

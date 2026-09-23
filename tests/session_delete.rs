@@ -20,7 +20,8 @@ fn controller(
 ) -> SessionController {
     let db = workspace_root.join("global-litecode.db");
     let mut baseline = common::test_resolved("default", &[]).global().clone();
-    common::insert_test_llm_registry(&mut baseline, "http://127.0.0.1:9", "test-key", 128_000);
+    common::insert_test_llm_registry(&mut baseline, "test-key");
+    common::seed_test_catalog(&db, "http://127.0.0.1:9", 128_000);
     global_db::import_into(&db, &baseline).expect("seed global db");
 
     let guard = Arc::new(TurnGuard::new());
@@ -30,7 +31,7 @@ fn controller(
     let revision = writer.revision_handle();
     let settings = writer.load_settings().expect("load");
     let workspace = WorkspaceState::new(workspace_root);
-    let resolved = ConfigManager::resolve(settings, workspace.clone());
+    let resolved = ConfigManager::resolve(settings, workspace.clone(), common::catalog_for_db(&db));
     let workspace_engines = Arc::new(WorkspaceEngines::new());
     let ide = litecode::ide_base::IdeBaseHandle::open(
         workspace.workspace_root.clone(),

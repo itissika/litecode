@@ -24,7 +24,6 @@ use tokio::sync::mpsc;
 
 use crate::agent::{AgentDeps, TurnOutcome};
 use crate::config::bridge::agent_config_for;
-use crate::config::schema::ADAPTER_DEEPSEEK_RESPONSES;
 use crate::config::workspace::set_runtime_paths;
 use crate::config::{AgentConfig, ConfigManager, ResolvedConfig, WorkspaceState, log_filter};
 use crate::context_pipeline::{Context, build_context};
@@ -125,7 +124,6 @@ impl RuntimeHandle {
             &self.resolved,
             &mut self.provider_registry.lock().unwrap(),
             "compaction",
-            self.settings_revision(),
         )?;
         if let Some(provider) = &self.test_llm_override {
             binding.provider = Arc::clone(provider);
@@ -169,7 +167,8 @@ impl RuntimeHandle {
             } else {
                 self.workspace.clone()
             };
-            self.resolved = ConfigManager::resolve(global, workspace.clone());
+            let catalog = crate::provider_catalog::shared_for_db(&self.global_db_path)?;
+            self.resolved = ConfigManager::resolve(global, workspace.clone(), catalog);
             self.workspace = workspace;
         }
         if docs.contains(&crate::config::DocId::Log) {
@@ -180,10 +179,6 @@ impl RuntimeHandle {
             self.workspace_engines.reconcile(&self.resolved);
         }
         self.ensure_valid_desired_primary();
-        self.provider_registry
-            .lock()
-            .unwrap()
-            .invalidate_if_stale(current);
         self.loaded_revision.store(current, Ordering::Release);
         Ok(())
     }
@@ -259,25 +254,6 @@ impl RuntimeHandle {
         &self.workspace.workspace_root
     }
 
-    pub fn llm_ecosystem(&self) -> &'static str {
-        let adapter_id = self
-            .resolved
-            .agents()
-            .get(&self.desired_primary_agent)
-            .and_then(|agent| {
-                if agent.model_ref.is_empty() {
-                    return None;
-                }
-                self.resolved.models().get(&agent.model_ref)
-            })
-            .and_then(|model| self.resolved.providers().get(&model.provider_ref))
-            .map(|provider| provider.adapter_id.as_str());
-        match adapter_id {
-            Some(id) if id == ADAPTER_DEEPSEEK_RESPONSES => "deepseek",
-            _ => "openai",
-        }
-    }
-
     pub fn build_runtime(
         &self,
         session_id: String,
@@ -287,13 +263,12 @@ impl RuntimeHandle {
         sink: Arc<dyn PermissionSink>,
         observer: Arc<dyn RuntimeObserver>,
     ) -> Result<AgentRuntime> {
-        let revision = self.settings_revision();
         // Config is session-owned, identity is not: every turn (human, subagent,
         // auto) reads model / tier / context mode from the row of the session it
         // runs in. The agent profile never supplies runtime config here.
         let mut binding = {
             let mut registry = self.provider_registry.lock().unwrap();
-            resolve_session_llm(&self.resolved, &mut registry, &sessions, &session_id, revision)?
+            resolve_session_llm(&self.resolved, &mut registry, &sessions, &session_id)?
         };
         if let Some(provider) = &self.test_llm_override {
             binding.provider = Arc::clone(provider);

@@ -271,7 +271,7 @@ mod tests {
     use super::*;
     use crate::config::WorkspacePaths;
     use crate::config::global_db::tools::{core_configurable_tools, core_none_tools};
-    use crate::config::resolved::{WorkspaceState, resolve};
+    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
     use crate::config::schema::{
         AgentProfile, AgentToolBinding, GlobalSettings, McpServerDefinition, ToolPreset,
     };
@@ -328,7 +328,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        resolve(global, WorkspaceState::new("/tmp"))
+        resolve_without_catalog(global, WorkspaceState::new("/tmp"))
     }
 
     fn dummy_sessions() -> Arc<SessionManager> {
@@ -506,7 +506,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let resolved = resolve(global, WorkspaceState::new("/tmp"));
+        let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
         let tools = list_tools(&resolved, 0);
         let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
         assert!(

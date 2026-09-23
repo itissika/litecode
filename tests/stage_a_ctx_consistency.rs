@@ -85,19 +85,7 @@ async fn prepare(
 ) -> litecode::types::Result<()> {
     let provider = ScriptedProvider::with_text("compact summary");
     let cancel = CancellationToken::new();
-    let model = litecode::config::schema::ModelDefinition {
-        id: "test-model".into(),
-        adapter_id: litecode::config::schema::ADAPTER_OPENAI_RESPONSES.into(),
-        provider_ref: "main".into(),
-        label: "Test".into(),
-        config: litecode::config::schema::ModelAdapterConfig {
-            api_model_id: "m".into(),
-            context_window: 128_000,
-            max_tokens: 1024,
-            json_output: false,
-            capabilities: vec![litecode::config::schema::ModelCapability::Text],
-        },
-    };
+    let model = test_model();
     let mut items = project_items(turn);
     let prompt_baseline = ProviderPromptBaseline::default();
     prompt_baseline.record(last_prompt_tokens, items.len());
@@ -125,6 +113,14 @@ async fn prepare(
     Ok(())
 }
 
+/// Catalog model the fixture turns prepare against.
+fn test_model() -> Arc<litecode::provider_catalog::ResolvedModel> {
+    common::default_test_catalog()
+        .model(common::TEST_PRIMARY_MODEL_REF)
+        .expect("fixture catalog primary model")
+        .clone()
+}
+
 fn commit_via_gate(
     pipeline: &ContextPipeline,
     sessions: &Arc<SessionManager>,
@@ -149,7 +145,7 @@ fn setup_workspace_and_session(
     let db_path = ws.paths.sessions_db.to_string_lossy().to_string();
     let sessions = test_sessions(&db_path);
     let sid = sessions
-        .open_session_sync("/proj", agent, Some("test-model"))
+        .open_session_sync("/proj", agent, Some(common::TEST_PRIMARY_MODEL_REF))
         .expect("open");
     (db_path, sid, sessions)
 }
@@ -370,19 +366,7 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
     // Empty ScriptedProvider: if compact/LLM ran, prepare would fail.
     let provider = ScriptedProvider::with_responses(vec![]);
     let cancel = CancellationToken::new();
-    let model = litecode::config::schema::ModelDefinition {
-        id: "test-model".into(),
-        adapter_id: litecode::config::schema::ADAPTER_OPENAI_RESPONSES.into(),
-        provider_ref: "main".into(),
-        label: "Test".into(),
-        config: litecode::config::schema::ModelAdapterConfig {
-            api_model_id: "m".into(),
-            context_window: 128_000,
-            max_tokens: 1024,
-            json_output: false,
-            capabilities: vec![litecode::config::schema::ModelCapability::Text],
-        },
-    };
+    let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
     let mut items = project_items(&turn);
     prompt_baseline.record(8_500, items.len());
@@ -499,19 +483,7 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
     let mut turn = pipeline.begin_turn(&sessions, &sid).unwrap();
     let provider = ScriptedProvider::with_text("compact summary");
     let cancel = CancellationToken::new();
-    let model = litecode::config::schema::ModelDefinition {
-        id: "test-model".into(),
-        adapter_id: litecode::config::schema::ADAPTER_OPENAI_RESPONSES.into(),
-        provider_ref: "main".into(),
-        label: "Test".into(),
-        config: litecode::config::schema::ModelAdapterConfig {
-            api_model_id: "m".into(),
-            context_window: 128_000,
-            max_tokens: 1024,
-            json_output: false,
-            capabilities: vec![litecode::config::schema::ModelCapability::Text],
-        },
-    };
+    let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
     let mut items = project_items(&turn);
     prompt_baseline.record(8_500, items.len());
@@ -821,9 +793,9 @@ use litecode::runtime::RuntimeHandle;
 use litecode::runtime::observer::RuntimeObserver;
 
 use common::runtime::{test_resolved_with_budget, test_turn_binding};
-use common::seed::{TEST_PROVIDER_ID, ready_test_provider};
+use common::seed::{TEST_CATALOG_ENDPOINT, TEST_PRIMARY_MODEL_REF, test_catalog};
 use common::serve_responses_queue;
-use litecode::llm::provider_from_definition;
+use litecode::llm::provider_from_model;
 
 /// Minimal text-only Responses SSE with token usage on `response.completed`.
 fn usage_text_sse() -> String {
@@ -932,8 +904,11 @@ impl RuntimeObserver for RecordingObserver {
 }
 
 fn responses_provider(endpoint: &str) -> Arc<dyn litecode::llm::LlmProvider> {
-    let def = ready_test_provider(TEST_PROVIDER_ID, endpoint, "test-key");
-    Arc::from(provider_from_definition(&def).expect("Responses provider"))
+    let model = test_catalog(endpoint, 128_000, 8192)
+        .model(TEST_PRIMARY_MODEL_REF)
+        .expect("fixture catalog primary model")
+        .clone();
+    Arc::from(provider_from_model(model).expect("Responses provider"))
 }
 
 /// Build an `AgentRuntime` with a recording observer (like `build_runtime_with_provider`).
@@ -951,7 +926,11 @@ fn build_runtime_with_observer(
         let resolved = test_resolved_with_budget("default", &tool_names, 128_000);
         resolved.global().clone()
     };
-    let resolved = litecode::config::resolved::resolve(global, ws.clone());
+    let resolved = litecode::config::resolved::resolve(
+        global,
+        ws.clone(),
+        test_catalog(TEST_CATALOG_ENDPOINT, 128_000, 8192),
+    );
 
     let project = cwd.to_string_lossy().to_string();
     let db_path = ws.paths.sessions_db.clone();
@@ -972,7 +951,7 @@ fn build_runtime_with_observer(
         .agents()
         .get("default")
         .map(|p| p.model_ref.as_str())
-        .unwrap_or("default");
+        .unwrap_or(TEST_PRIMARY_MODEL_REF);
     let binding = test_turn_binding(&resolved, provider, "test-key", model_id);
     let workspace_engines = WorkspaceEngines::new();
     let ide = IdeBaseHandle::open(cwd, Arc::new(workspace_engines.clone())).expect("ide base");

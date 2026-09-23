@@ -1,17 +1,18 @@
-﻿import { create } from "zustand";
+import { create } from "zustand";
 
 import { attachSiblingStores } from "./connectionStore";
 
 import {
   getAgent,
   getAvailableTools,
-  getAdapters,
   getLog,
   getExcludes,
   getEnginesDoc,
   putEnginesDoc,
-  getModels,
-  getProviders,
+  getLlmSettings,
+  putProviderKey,
+  deleteProviderKey,
+  putModelEnabled,
   getWebSearch,
   getSettingsSummary,
   loadSettingsAgentIds,
@@ -19,8 +20,6 @@ import {
   putAgent,
   putLog,
   putExcludes,
-  putModels,
-  putProviders,
   putWebSearch,
   getCustomTools,
   putCustomTool,
@@ -33,11 +32,11 @@ import {
   stopMcpServer as requestMcpStop,
   SettingsApiError,
   withSyncedToolSeries,
-  type AdapterDescriptor,
   type AgentProfile,
   type AvailableTool,
   type CustomToolDefinition,
   type LayeredList,
+  type LlmSettings,
   type McpProbeResult,
   type McpServerDefinition,
   type McpServerItem,
@@ -45,16 +44,12 @@ import {
   type WorkspaceExcludes,
   type WorkspaceExcludesLists,
   type WorkspaceEnginesDoc,
-  type ModelDefinition,
-  type ProviderDefinition,
-  type ProviderView,
   type WebSearchView,
   type SettingsSummary,
   type ToolScope,
 } from "../api/settings";
 import type { SettingsChanged } from "../api/types";
 import type { WorkspaceChangeKind } from "../api/workspace";
-import { useSessionStore } from "./sessionStore";
 import { anyTurnRunning } from "./turnStore";
 import { useToastStore } from "./toastStore";
 import {
@@ -86,10 +81,9 @@ interface SettingsStoreState {
   section: SettingsSection;
   revision: number;
   summary: SettingsSummary | null;
-  adapters: AdapterDescriptor[];
-  providers: Record<string, ProviderView> | null;
+  /** Catalog + credentials + active models, from `GET /api/settings/llm`. */
+  llm: LlmSettings | null;
   websearch: WebSearchView | null;
-  models: Record<string, ModelDefinition> | null;
   availableTools: AvailableTool[] | null;
   customTools: LayeredList<CustomToolDefinition> | null;
   mcpDefs: LayeredList<McpDefItem> | null;
@@ -118,9 +112,11 @@ interface SettingsStore extends SettingsStoreState {
   ensureSectionLoaded: (section: SettingsSection, force?: boolean) => Promise<void>;
   refreshAgents: () => Promise<void>;
   setSelectedAgentId: (id: string) => void;
-  saveProviders: (providers: Record<string, ProviderDefinition>) => Promise<void>;
+  saveProviderKey: (providerId: string, apiKey: string) => Promise<void>;
+  removeProviderKey: (providerId: string) => Promise<void>;
+  /** Switch one catalog model on or off for every picker. */
+  setModelEnabled: (modelRef: string, enabled: boolean) => Promise<void>;
   saveWebSearch: (body: { api_key?: string }) => Promise<void>;
-  saveModels: (models: Record<string, ModelDefinition>) => Promise<void>;
   saveCustomTool: (id: string, def: CustomToolDefinition, scope?: ToolScope) => Promise<void>;
   removeCustomTool: (id: string, scope?: ToolScope) => Promise<void>;
   saveMcpServer: (id: string, def: McpServerDefinition, scope?: ToolScope) => Promise<void>;
@@ -254,14 +250,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       patch.summary = summary;
       patch.revision = summary.revision;
     });
-    run("adapters", async () => {
-      patch.adapters = await getAdapters();
-    });
-    run("providers", async () => {
-      patch.providers = await getProviders();
-    });
-    run("models", async () => {
-      patch.models = await getModels();
+    run("llm", async () => {
+      patch.llm = await getLlmSettings();
     });
     run("availableTools", async () => {
       patch.availableTools = await getAvailableTools();
@@ -312,10 +302,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     section: "connection",
     revision: 0,
     summary: null,
-    adapters: [],
-    providers: null,
+    llm: null,
     websearch: null,
-    models: null,
     availableTools: null,
     customTools: null,
     mcpDefs: null,
@@ -385,7 +373,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
           .getState()
           .showToast("Settings changed — effective next turn", "success");
       }
-      void useSessionStore.getState().refreshAvailableModels();
       if (!get().open) return;
       const mapped = settingsDocsForEvent(event.docs);
       if (mapped.length === 0) return;
@@ -420,22 +407,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       const requested = section;
       try {
         await loadDocuments(docs, { forceRevisioned: force, forceExcludes: false });
-        if (section === "connection") {
-          void loadDocuments(["models"], {
-            forceRevisioned: false,
-            forceExcludes: false,
-          }).catch(() => {
-            /* referenced-provider check is best-effort */
-          });
-        }
-        if (section === "models") {
-          void loadDocuments(["agents"], {
-            forceRevisioned: false,
-            forceExcludes: false,
-          }).catch(() => {
-            /* referenced-model check is best-effort */
-          });
-        }
         if (get().section === requested && flight === loadFlight) {
           set({ loadError: null });
         }
@@ -453,14 +424,42 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
 
     setSelectedAgentId: (id) => set({ selectedAgentId: id }),
 
-    saveProviders: (providers) =>
+    saveProviderKey: (providerId, apiKey) =>
       withTurnGuard(async () => {
-        const { revision } = await putProviders(providers);
-        const next = await getProviders();
+        const key = apiKey.trim();
+        // Defense in depth: the section never schedules an empty draft, and the
+        // backend answers 400 for one — catch it before the request.
+        if (!key) {
+          throw new SettingsApiError(400, "empty_api_key", "API key must not be empty");
+        }
+        const { revision } = await putProviderKey(providerId, key);
+        const llm = await getLlmSettings();
         set({
           revision,
-          providers: next,
-          docClock: stampClock(get().docClock, ["providers"], revision),
+          llm,
+          docClock: stampClock(get().docClock, ["llm"], revision),
+        });
+      }),
+
+    removeProviderKey: (providerId) =>
+      withTurnGuard(async () => {
+        const { revision } = await deleteProviderKey(providerId);
+        const llm = await getLlmSettings();
+        set({
+          revision,
+          llm,
+          docClock: stampClock(get().docClock, ["llm"], revision),
+        });
+      }),
+
+    setModelEnabled: (modelRef, enabled) =>
+      withTurnGuard(async () => {
+        const { revision } = await putModelEnabled(modelRef, enabled);
+        const llm = await getLlmSettings();
+        set({
+          revision,
+          llm,
+          docClock: stampClock(get().docClock, ["llm"], revision),
         });
       }),
 
@@ -473,17 +472,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
           websearch,
           docClock: stampClock(get().docClock, ["websearch"], revision),
         });
-      }),
-
-    saveModels: (models) =>
-      withTurnGuard(async () => {
-        const { revision } = await putModels(models);
-        set({
-          revision,
-          models,
-          docClock: stampClock(get().docClock, ["models"], revision),
-        });
-        void useSessionStore.getState().refreshAvailableModels();
       }),
 
     saveCustomTool: (id, def, scope = "global") =>

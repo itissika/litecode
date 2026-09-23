@@ -36,13 +36,13 @@ impl AgentDeps for AgentRuntime {
             build_system_prompt(&self.agent_name, &self.agent_config, Some(&self.base_ctx))
         });
         // Fail closed before request build when Items require unsupported modalities.
-        crate::runtime::validate_llm_input_capabilities(&view.items, &self.turn_llm.model_def)?;
+        crate::runtime::validate_llm_input_capabilities(&view.items, &self.turn_llm.model)?;
         let token_count = view.token_count;
         let request = self.build_model_request(&instructions, view.items, token_count);
 
         // Default path: Responses SSE via complete_with_stream_events → authority
         // ResponseStreamEvent; observer forwards InternalEvent::StreamEvent.
-        // Chat opt-in wire may emit adapter-projected ResponseStreamEvent with
+        // The Chat Completions codec emits projected ResponseStreamEvents with
         // turn-stable ids; preferred path remains Responses SSE (R2).
         self.call_model_complete(&request, token_count).await
     }
@@ -103,7 +103,7 @@ impl AgentDeps for AgentRuntime {
                 step,
                 &self.cancel,
                 &task_state,
-                &self.turn_llm.model_def,
+                &self.turn_llm.model,
             )
             .await?;
 
@@ -336,7 +336,9 @@ impl AgentRuntime {
             tools: tool_schemas,
             thinking: crate::platform_knobs::ThinkingSpec::Tier(self.turn_llm.thinking_tier),
             // Session binding only — never agent.model_ref (decoupled sticky model).
-            json_output: self.turn_llm.model_def.json_output(),
+            // No turn-level JSON intent: `model.json_output` is a capability the
+            // codec gates on, not a per-turn instruction.
+            json_output: false,
             session_id: Some(self.session_id.clone()),
         }
     }
@@ -470,7 +472,7 @@ fn instructions_fingerprint(instructions: &str) -> u64 {
 }
 
 /// Approximate wire body size in bytes for `request` (Items + tools JSON +
-/// instructions). Close to the adapter's serialized body — envelope overhead is
+/// instructions). Close to the codec's serialized body — envelope overhead is
 /// a few hundred bytes — so it is enough to tell "request dropped mid-send
 /// because the body was huge" apart from provider/network faults.
 fn estimate_request_body_bytes(request: &ModelRequest) -> usize {

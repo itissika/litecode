@@ -19,10 +19,11 @@ pub enum EvalView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DocId {
-    #[serde(rename = "providers")]
-    Providers,
-    #[serde(rename = "models")]
-    Models,
+    /// The single LLM document: provider credentials from the database plus the
+    /// provider catalog projection. Provider/model facts themselves need a
+    /// restart, never a settings commit.
+    #[serde(rename = "llm")]
+    Llm,
     #[serde(rename = "agents")]
     Agents,
     #[serde(rename = "log")]
@@ -45,8 +46,7 @@ pub enum DocId {
 
 impl DocId {
     pub const ALL: &'static [DocId] = &[
-        DocId::Providers,
-        DocId::Models,
+        DocId::Llm,
         DocId::Agents,
         DocId::Log,
         DocId::Websearch,
@@ -61,8 +61,7 @@ impl DocId {
     pub fn reloads_global(self) -> bool {
         matches!(
             self,
-            DocId::Providers
-                | DocId::Models
+            DocId::Llm
                 | DocId::Agents
                 | DocId::Log
                 | DocId::Websearch

@@ -3,9 +3,11 @@
 mod common;
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use common::bindings::{binding_all_for, binding_safe_for};
 use common::permission::recording_sink;
+use common::seed::TEST_PRIMARY_MODEL_REF;
 use litecode::config::WorkspacePaths;
 use litecode::config::resolved::{WorkspaceState, resolve};
 use litecode::config::schema::{AgentProfile, AgentRole, GlobalSettings};
@@ -18,6 +20,15 @@ use litecode::tool::authorize::{AuthResult, authorize};
 use litecode::tools::write::WriteTool;
 use litecode::types::FunctionToolCall;
 use tempfile::TempDir;
+
+/// Serializes tests that touch the process-global runtime-grant registry:
+/// `clear_runtime_grants()` (all agents) racing a scoped grant is the only
+/// cross-test interference in this file.
+static GRANT_LOCK: Mutex<()> = Mutex::new(());
+
+fn grant_lock() -> std::sync::MutexGuard<'static, ()> {
+    GRANT_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn tool_call(name: &str, args: serde_json::Value) -> FunctionToolCall {
     FunctionToolCall {
@@ -50,12 +61,16 @@ fn engine_for(
         agent_id.into(),
         AgentProfile {
             role,
-            model_ref: "default".into(),
+            model_ref: TEST_PRIMARY_MODEL_REF.into(),
             tools,
             ..Default::default()
         },
     );
-    let resolved = resolve(global, WorkspaceState::new("/tmp/test"));
+    let resolved = resolve(
+        global,
+        WorkspaceState::new("/tmp/test"),
+        common::default_test_catalog(),
+    );
     PermissionEngine::resolver(resolved, agent_id, depth)
 }
 
@@ -73,6 +88,7 @@ fn all_tools(ids: &[&str]) -> HashMap<String, litecode::config::schema::AgentToo
 
 #[test]
 fn safe_bash_matrix_readonly_allow_others_deny_floor_hard_deny() {
+    let _grants = grant_lock();
     let dir = TempDir::new().unwrap();
     let engine = engine_for("default", AgentRole::Primary, 0, safe_tools(&["bash"]));
 
@@ -99,6 +115,7 @@ fn safe_bash_matrix_readonly_allow_others_deny_floor_hard_deny() {
 
 #[test]
 fn floor_sensitive_write_blocks_even_under_all_and_always_grant() {
+    let _grants = grant_lock();
     clear_runtime_grants();
     let dir = TempDir::new().unwrap();
     let engine = engine_for("default", AgentRole::Primary, 0, all_tools(&["write"]));
@@ -136,6 +153,7 @@ fn safe_glob_outside_workspace_denies_via_path_arg() {
 
 #[test]
 fn floor_blocks_sensitive_commands_under_unrestricted_all_preset() {
+    let _grants = grant_lock();
     clear_runtime_grants();
     let dir = TempDir::new().unwrap();
     // All preset → Unrestricted path mode (presets.rs ALL→Unrestricted). The floor
@@ -202,6 +220,7 @@ fn none_tools_always_allow() {
 
 #[test]
 fn grant_is_rule_and_agent_scoped() {
+    let _grants = grant_lock();
     clear_runtime_grants();
     grant_runtime("a", "write", DEFAULT_RULE_ID, PermissionAction::Allow);
     assert!(litecode::permission::check_runtime_grant("a", "write", DEFAULT_RULE_ID).is_some());
@@ -213,6 +232,7 @@ fn grant_is_rule_and_agent_scoped() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn authorize_ask_denied_by_sink() {
+    let _grants = grant_lock();
     clear_runtime_grants_for("ask_deny");
     let dir = TempDir::new().unwrap();
     let ctx = ctx_for(&dir);
@@ -238,6 +258,7 @@ async fn authorize_ask_denied_by_sink() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn authorize_ask_always_grants_same_rule_only() {
+    let _grants = grant_lock();
     clear_runtime_grants_for("ask_always");
     let dir = TempDir::new().unwrap();
     let ctx = ctx_for(&dir);
@@ -280,6 +301,7 @@ async fn authorize_ask_always_grants_same_rule_only() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn authorize_floor_deny_ignores_always_grant() {
+    let _grants = grant_lock();
     clear_runtime_grants_for("floor_agent");
     let dir = TempDir::new().unwrap();
     let ctx = ctx_for(&dir);
@@ -312,6 +334,7 @@ async fn authorize_floor_deny_ignores_always_grant() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn authorize_subagent_ask_denied_without_sink() {
+    let _grants = grant_lock();
     clear_runtime_grants_for("reviewer");
     let dir = TempDir::new().unwrap();
     let ctx = ctx_for(&dir);
@@ -337,6 +360,7 @@ async fn authorize_subagent_ask_denied_without_sink() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn authorize_ask_aborted_is_not_deny() {
+    let _grants = grant_lock();
     clear_runtime_grants_for("ask_abort");
     let dir = TempDir::new().unwrap();
     let ctx = ctx_for(&dir);

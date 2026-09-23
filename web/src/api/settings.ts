@@ -22,11 +22,11 @@ export interface EngineStatus {
 
 export interface SettingsSummary {
   revision: number;
-  ready_provider_count?: number;
-  provider_endpoint: string | null;
-  model_count: number;
+  /** Catalog providers that hold a credential. */
+  configured_provider_count: number;
+  /** Models selectable right now (their provider has a credential). */
+  active_model_count: number;
   agent_count: number;
-  catalog_count: number;
   log_level: string | null;
   effective_next_turn: boolean;
   restart_required: boolean;
@@ -34,73 +34,70 @@ export interface SettingsSummary {
   setup_guidance?: string | null;
 }
 
-export type FieldType =
-  | "string"
-  | "secret"
-  | "number"
-  | "boolean"
-  | "enum"
-  | "string_list";
+/** Wire shape of one entry from `provider-catalog.toml` (backend-owned). */
+export interface CatalogModelDto {
+  /** Stable composite reference `{provider_id}/{model_id}`; sessions store this. */
+  ref: string;
+  /** Wire model id — may itself contain `/` (e.g. `deepseek/deepseek-v4-flash`). */
+  id: string;
+  /** Display label; falls back to `id` in the catalog. */
+  label: string;
+  provider_id: string;
+  provider_name: string;
+  context_window: number;
+  context_window_max: number;
+  modalities: string[];
+  tool_call: boolean;
+  json_output: boolean;
+  /** The Models page switched it on. Off models stay out of every picker. */
+  enabled: boolean;
+}
 
-export interface FieldSchema {
+export type EndpointType = "responses" | "chat_completions";
+
+export interface CatalogProviderDto {
+  id: string;
   name: string;
-  label: string;
-  type: FieldType;
-  required: boolean;
-  options?: string[] | null;
-}
-
-export interface AdapterDescriptor {
-  id: string;
-  label: string;
-  provider_fields: FieldSchema[];
-  model_fields: FieldSchema[];
-  /** Official host for closed adapters (DeepSeek / MiMo). Open adapters omit this. */
-  default_endpoint?: string | null;
-  /** When true, Settings can refresh model ids from this provider's `/models`. */
-  remote_model_catalog?: boolean;
-}
-
-export interface ProviderView {
-  id: string;
-  adapter_id: string;
-  label: string;
+  /** Catalog providers the user may add a credential for. */
+  visible: boolean;
+  /** A credential exists. */
+  configured: boolean;
+  masked_api_key: string | null;
   endpoint: string | null;
-  api_key: string | null;
-  auth: string;
+  endpoint_type: EndpointType;
+  models: CatalogModelDto[];
 }
 
-export interface ProviderConnectionConfig {
-  endpoint: string;
-  api_key: string;
-  auth: "bearer" | "api_key";
+/** `GET /api/settings/llm` — the single read model for every LLM surface. */
+export interface LlmSettings {
+  /** Absolute path of the user-editable catalog, for diagnostics. */
+  catalog_path: string;
+  revision: number;
+  providers: CatalogProviderDto[];
+  /** Only models whose provider holds a credential. */
+  active_models: CatalogModelDto[];
 }
 
-export interface ProviderDefinition {
-  id: string;
-  adapter_id: string;
-  label: string;
-  config: ProviderConnectionConfig;
+/**
+ * Split a composite `{provider_id}/{model_id}` ref on the **first** `/` only:
+ * model ids may legitimately contain `/`, so a naive `split("/")` would
+ * mis-attribute `commandcode/deepseek/deepseek-v4-flash`.
+ */
+export function splitModelRef(ref: string): {
+  providerId: string;
+  modelId: string;
+} {
+  const at = ref.indexOf("/");
+  if (at <= 0) return { providerId: "", modelId: ref };
+  return { providerId: ref.slice(0, at), modelId: ref.slice(at + 1) };
+}
+
+export function modelRefLabel(model: CatalogModelDto): string {
+  return model.label.trim() || model.id;
 }
 
 export interface WebSearchView {
   api_key: string | null;
-}
-
-export interface ModelAdapterConfig {
-  api_model_id: string;
-  context_window: number;
-  max_tokens: number;
-  json_output?: boolean;
-  capabilities: string[];
-}
-
-export interface ModelDefinition {
-  id: string;
-  adapter_id: string;
-  provider_ref: string;
-  label: string;
-  config: ModelAdapterConfig;
 }
 
 export interface AgentToolBinding {
@@ -225,12 +222,6 @@ export interface RevisionResponse {
   docs: string[];
 }
 
-export interface ProviderWriteResponse {
-  revision: number;
-  docs: string[];
-  restart_required: boolean;
-}
-
 export interface WorkspaceEnginesDoc {
   version: number;
   lsp: { desired: boolean; servers: string[] };
@@ -310,34 +301,51 @@ export async function getSettingsSummary(): Promise<SettingsSummary> {
   return requestJson<SettingsSummary>("/api/settings");
 }
 
-export async function getAdapters(): Promise<AdapterDescriptor[]> {
-  const data = await requestJson<{ adapters: AdapterDescriptor[] }>(
-    "/api/settings/adapters",
-  );
-  return data.adapters;
+/** Catalog + credential state; the only LLM read model in the UI. */
+export async function getLlmSettings(): Promise<LlmSettings> {
+  return requestJson<LlmSettings>("/api/settings/llm");
 }
 
-export async function getProviders(): Promise<Record<string, ProviderView>> {
-  const data = await requestJson<{ providers: Record<string, ProviderView> }>(
-    "/api/settings/providers",
+/** Store (or replace) one provider credential. Never writes the catalog file. */
+export async function putProviderKey(
+  providerId: string,
+  apiKey: string,
+): Promise<RevisionResponse> {
+  return requestJson<RevisionResponse>(
+    `/api/settings/providers/${encodeURIComponent(providerId)}/key`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: apiKey }),
+    },
   );
-  return data.providers;
 }
 
-export async function getProviderModels(providerId: string): Promise<string[]> {
-  const data = await requestJson<{ ids: string[] }>(
-    `/api/settings/providers/${encodeURIComponent(providerId)}/models`,
+/** Drop one provider credential; the catalog provider is never deleted. */
+export async function deleteProviderKey(
+  providerId: string,
+): Promise<RevisionResponse> {
+  return requestJson<RevisionResponse>(
+    `/api/settings/providers/${encodeURIComponent(providerId)}/key`,
+    { method: "DELETE" },
   );
-  return data.ids ?? [];
 }
 
-export async function putProviders(
-  providers: Record<string, ProviderDefinition>,
-): Promise<ProviderWriteResponse> {
-  return requestJson<ProviderWriteResponse>("/api/settings/providers", {
+/**
+ * Switch one catalog model on or off for every picker.
+ *
+ * The catalog file is untouched: enablement is user state, and the model ref
+ * travels in the body because a ref contains `/` twice over
+ * (`commandcode/deepseek/deepseek-v4-flash`).
+ */
+export async function putModelEnabled(
+  modelRef: string,
+  enabled: boolean,
+): Promise<RevisionResponse> {
+  return requestJson<RevisionResponse>("/api/settings/models/enabled", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ providers }),
+    body: JSON.stringify({ ref: modelRef, enabled }),
   });
 }
 
@@ -352,23 +360,6 @@ export async function putWebSearch(body: {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
-}
-
-export async function getModels(): Promise<Record<string, ModelDefinition>> {
-  const data = await requestJson<{ models: Record<string, ModelDefinition> }>(
-    "/api/settings/models",
-  );
-  return data.models;
-}
-
-export async function putModels(
-  models: Record<string, ModelDefinition>,
-): Promise<RevisionResponse> {
-  return requestJson<RevisionResponse>("/api/settings/models", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ models }),
   });
 }
 
@@ -700,10 +691,6 @@ export async function deleteAgent(id: string): Promise<RevisionResponse> {
     }
   }
   return parseJson<RevisionResponse>(res);
-}
-
-export function modelOptionLabel(model: ModelDefinition): string {
-  return model.label.trim() || model.id;
 }
 
 export async function listAgents(): Promise<AgentListItem[]> {

@@ -153,7 +153,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let resolved = ConfigManager::resolve(global, workspace);
+        let resolved = ConfigManager::resolve_without_catalog(global, workspace);
         assert_eq!(
             resolved.mcp_servers().get("echo").unwrap().command,
             "workspace-cmd"
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn core_webfetch_available_without_bind() {
         let resolved =
-            ConfigManager::resolve(GlobalSettings::default(), WorkspaceState::new("/tmp/core"));
+            ConfigManager::resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp/core"));
         assert!(is_available(&resolved, "webfetch"));
         assert!(is_available(&resolved, "websearch"));
         assert!(!agent_tool_enabled(&resolved, "default", "webfetch"));

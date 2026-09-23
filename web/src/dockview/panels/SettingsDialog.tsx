@@ -3,7 +3,7 @@ import { Link, Cube, Robot, GearSix, Cpu, Code, PlugsConnected, Tree } from "@ph
 import { useSettingsStore, sectionNeedsSkeleton, type SettingsSection } from "../../stores/settingsStore";
 import { SettingsSkeleton } from "../../components/ui/Skeleton";
 import { FloatingDialog } from "../components/FloatingDialog";
-import { ConnectionSection } from "./settings/ConnectionSection";
+import { ProvidersSection } from "./settings/ProvidersSection";
 import { ModelsSection } from "./settings/ModelsSection";
 import { CustomToolsSection } from "./settings/CustomToolsSection";
 import { McpServersSection } from "./settings/McpServersSection";
@@ -55,7 +55,7 @@ function TurnBlockedBanner() {
 function SectionContent({ section }: { section: SettingsSection }) {
   switch (section) {
     case "connection":
-      return <ConnectionSection />;
+      return <ProvidersSection />;
     case "models":
       return <ModelsSection />;
     case "engines":

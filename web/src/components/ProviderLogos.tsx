@@ -4,23 +4,45 @@ import { DeepSeekLogo } from "./providerLogos/DeepSeekLogo";
 import { OpenAILogo } from "./providerLogos/OpenAILogo";
 import { XiaomiLogo } from "./providerLogos/XiaomiLogo";
 
-const LOGOS: Record<string, () => JSX.Element> = {
-  deepseek_responses: DeepSeekLogo,
-  openai_responses: OpenAILogo,
-  mimo_responses: XiaomiLogo,
+/** Catalog provider id → brand mark. */
+export const PROVIDER_LOGOS: Record<string, () => JSX.Element> = {
+  openai: OpenAILogo,
+  deepseek: DeepSeekLogo,
+  mimo: XiaomiLogo,
 };
 
-/**
- * 14px provider logo. Inline SVG with fill="currentColor", so the
- * mark inherits the surrounding text color (theme tokens) — no mask
- * tint needed, follows dark/light theme and hover states automatically.
- */
-export function ProviderLogo({ adapterId }: { adapterId?: string }) {
-  const Logo = adapterId ? LOGOS[adapterId] : undefined;
-  if (!Logo) return null;
+/** Neutral mark for providers without a brand asset (ark-coding, opencode, …). */
+function NeutralLogo(): JSX.Element {
   return (
-    <span className="inline-block h-3.5 w-3.5 shrink-0">
-      <Logo />
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      aria-hidden="true"
+    >
+      <circle cx="7" cy="7" r="5.25" strokeWidth="1.25" />
+      <circle cx="7" cy="7" r="1.75" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+/**
+ * 14px provider logo keyed by **catalog provider id** (`openai`, `deepseek`,
+ * `mimo`, …). Inline SVG with fill="currentColor", so the mark inherits the
+ * surrounding text color (theme tokens) — follows dark/light and hover states.
+ * Unknown ids fall back to a neutral mark rather than rendering nothing.
+ */
+export function ProviderLogo({ providerId }: { providerId?: string }) {
+  const Logo = providerId ? PROVIDER_LOGOS[providerId] : undefined;
+  return (
+    <span
+      className="inline-block h-3.5 w-3.5 shrink-0"
+      title={providerId || undefined}
+      data-provider-logo={Logo ? "brand" : "neutral"}
+    >
+      {Logo ? <Logo /> : <NeutralLogo />}
     </span>
   );
 }

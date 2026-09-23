@@ -21,8 +21,8 @@ use tokio::net::TcpListener;
 
 mod common;
 use common::{
-    ScriptedProvider, test_agent, test_auto_approve_sink, test_resolved, test_serve_settings,
-    test_turn_binding, test_workspace,
+    ScriptedProvider, TEST_PRIMARY_MODEL_REF, test_agent, test_auto_approve_sink, test_resolved,
+    test_serve_settings, test_turn_binding, test_workspace,
 };
 
 static CONTRACT_LOCK: Mutex<()> = Mutex::new(());
@@ -196,7 +196,8 @@ fn agent_runtime_cwd_uses_resolved_workspace_not_process_cwd() {
     let expected = workspace.workspace_root.clone();
 
     let global = test_resolved("default", &[]).global().clone();
-    let resolved = litecode::config::resolved::resolve(global, workspace.clone());
+    let resolved =
+        litecode::config::resolved::resolve(global, workspace.clone(), common::default_test_catalog());
 
     let db_path = workspace.paths.sessions_db.clone();
     let sessions = Arc::new(SessionManager::new_for_test(
@@ -204,11 +205,15 @@ fn agent_runtime_cwd_uses_resolved_workspace_not_process_cwd() {
         db_path.to_string_lossy().to_string(),
     ));
     let session_id = sessions
-        .open_session_sync(&expected.to_string_lossy(), "default", Some("default"))
+        .open_session_sync(
+            &expected.to_string_lossy(),
+            "default",
+            Some(TEST_PRIMARY_MODEL_REF),
+        )
         .expect("session");
 
     let provider = Arc::new(ScriptedProvider::with_text("ok"));
-    let binding = test_turn_binding(&resolved, provider, "test-key", "default");
+    let binding = test_turn_binding(&resolved, provider, "test-key", TEST_PRIMARY_MODEL_REF);
     let workspace_engines = WorkspaceEngines::new();
     let ide = IdeBaseHandle::open(&expected, Arc::new(workspace_engines.clone())).expect("ide");
 

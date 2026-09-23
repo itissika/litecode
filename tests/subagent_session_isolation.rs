@@ -12,7 +12,9 @@ use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use common::bindings::binding_safe_for;
-use common::{ScriptedProvider, test_resolved, test_workspace};
+use common::{
+    ScriptedProvider, TEST_PRIMARY_MODEL_REF, default_test_catalog, test_resolved, test_workspace,
+};
 use litecode::config::resolved::resolve;
 use litecode::config::schema::{AgentProfile, AgentRole};
 use litecode::config::{TurnGuard, workspace::set_runtime_paths};
@@ -43,14 +45,14 @@ fn reviewer_resolved(cwd: &std::path::Path) -> litecode::config::ResolvedConfig 
         "reviewer".into(),
         AgentProfile {
             role: AgentRole::Subagent,
-            model_ref: "default".into(),
+            model_ref: TEST_PRIMARY_MODEL_REF.into(),
             system_prompt: "builtin:general".into(),
             tools: HashMap::from([("read".into(), binding_safe_for("read"))]),
             max_steps: 2,
             ..Default::default()
         },
     );
-    resolve(global, workspace)
+    resolve(global, workspace, default_test_catalog())
 }
 
 fn launch_tool_on_sessions(
@@ -171,7 +173,7 @@ async fn launch_ignores_model_and_max_steps_input() {
         db_path.clone(),
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
     let tool = launch_tool(
@@ -206,7 +208,7 @@ async fn launch_ignores_model_and_max_steps_input() {
     wait_child_turn(&sessions, child_id);
     assert_eq!(
         sessions.session_model_id(child_id).as_deref(),
-        Some("default"),
+        Some(TEST_PRIMARY_MODEL_REF),
         "child must keep the agent's Settings model_ref"
     );
 }
@@ -224,7 +226,7 @@ async fn subagent_launch_creates_durable_child_with_parent_link() {
         db_path.clone(),
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
 
@@ -315,7 +317,7 @@ async fn parent_event_channel_does_not_receive_child_turn_events() {
         db_path.clone(),
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
 
@@ -379,7 +381,7 @@ async fn subagent_bound_arrives_on_parent_before_tool_returns() {
         db_path.clone(),
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
 
@@ -481,7 +483,7 @@ async fn child_lifecycle_is_broadcast_to_workspace() {
         db_path,
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
 
@@ -548,7 +550,7 @@ async fn failed_binding_aborts_orphan_child_session() {
     if let Some(reviewer) = global.agents.get_mut("reviewer") {
         reviewer.model_ref.clear();
     }
-    let resolved = resolve(global, workspace);
+    let resolved = resolve(global, workspace, default_test_catalog());
     let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
     let project = cwd.to_string_lossy().to_string();
 
@@ -557,7 +559,7 @@ async fn failed_binding_aborts_orphan_child_session() {
         db_path.clone(),
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
 
@@ -609,7 +611,7 @@ fn missing_call_id_scope_errors_without_creating_child() {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(sessions.open_session(&project, "default", Some("default")))
+        .block_on(sessions.open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF)))
         .expect("parent");
 
     let tool = launch_tool(
@@ -713,7 +715,7 @@ async fn remove_parent_after_child_turn_cascades_physically() {
         db_path.clone(),
     ));
     let parent_id = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
 
@@ -785,7 +787,11 @@ async fn subagent_list_reports_raw_session_statuses() {
     let idle = tool.call_inner(serde_json::json!({}));
     assert!(idle.content.contains(&first), "{}", idle.content);
     assert!(idle.content.contains(&second), "{}", idle.content);
-    assert!(idle.content.contains(" idle "), "{}", idle.content);
+    assert!(
+        child_block(&idle.content, &first).contains("  state: idle\n"),
+        "{}",
+        idle.content
+    );
 
     let cancel = CancellationToken::new();
     sessions
@@ -797,9 +803,7 @@ async fn subagent_list_reports_raw_session_statuses() {
     );
     let running = tool.call_inner(serde_json::json!({}));
     assert!(
-        running
-            .content
-            .contains(&format!("{first}  reviewer  -  running ")),
+        child_block(&running.content, &first).contains("  state: running\n"),
         "{}",
         running.content
     );
@@ -807,9 +811,7 @@ async fn subagent_list_reports_raw_session_statuses() {
     assert!(sessions.cancel_turn_sync(&first));
     let stopping = tool.call_inner(serde_json::json!({}));
     assert!(
-        stopping
-            .content
-            .contains(&format!("{first}  reviewer  -  stopping ")),
+        child_block(&stopping.content, &first).contains("  state: stopping\n"),
         "{}",
         stopping.content
     );
@@ -817,13 +819,25 @@ async fn subagent_list_reports_raw_session_statuses() {
     assert!(sessions.finish_turn(&first, "t-list").is_some());
     let settled = tool.call_inner(serde_json::json!({}));
     assert!(
-        settled
-            .content
-            .contains(&format!("{first}  reviewer  -  idle ")),
+        child_block(&settled.content, &first).contains("  state: idle\n"),
         "{}",
         settled.content
     );
     assert_eq!(sessions.session_status(&parent), Some(SessionStatus::Idle));
+}
+
+/// One child's block in `subagent_list` output (from its `- id:` line to the next).
+fn child_block<'a>(content: &'a str, id: &str) -> &'a str {
+    let marker = format!("- id: {id}\n");
+    let start = content
+        .find(&marker)
+        .unwrap_or_else(|| panic!("child {id} not listed: {content}"));
+    let rest = &content[start + marker.len()..];
+    match rest.find("\n- id: ") {
+        // Keep the block's trailing newline so per-status assertions can anchor on it.
+        Some(offset) => &rest[..offset + 1],
+        None => rest,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -840,7 +854,7 @@ async fn child_exit_triggers_parent_auto_turn_reminder() {
         db_path,
     ));
     let parent = sessions
-        .open_session(&project, "default", Some("default"))
+        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
         .await
         .expect("parent");
     // Attach acts as the UI subscriber that makes idle completion wake real.

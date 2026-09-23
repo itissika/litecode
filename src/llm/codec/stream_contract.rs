@@ -10,7 +10,7 @@
 //! (name may be empty; a later non-empty name triggers a patch `added`).
 //! Empty name is **not** fail-closed — some providers deliver name late.
 //!
-//! All adapters that emit authority [`ResponseStreamEvent`]s must route through
+//! Every codec that emits authority [`ResponseStreamEvent`]s must route through
 //! [`forward_stream_event`] — never call `on_event` directly for live stream.
 //!
 //! Terminal outcomes: `response.completed` and `response.incomplete` both yield

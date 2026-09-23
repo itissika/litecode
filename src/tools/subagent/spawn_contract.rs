@@ -11,10 +11,8 @@ use crate::config::SettingsWriter;
 use crate::config::TurnGuard;
 use crate::config::global_db;
 use crate::config::resolved::{WorkspaceState, resolve};
-use crate::config::schema::{
-    ADAPTER_OPENAI_RESPONSES, AgentProfile, AgentRole, GlobalSettings, ModelAdapterConfig,
-    ModelCapability, ModelDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition,
-};
+use crate::config::schema::{AgentProfile, AgentRole, GlobalSettings};
+use crate::provider_catalog;
 use crate::engines::WorkspaceEngines;
 use crate::ide_base::IdeBaseHandle;
 use crate::optional::EngineManager;
@@ -23,54 +21,53 @@ use crate::session::manager::SessionManager;
 use crate::session::model::TurnResult;
 use crate::tools::subagent::{LaunchSpec, SpawnDeps, spawn_child_job};
 
-/// Provider on a closed local port: any LLM call fails fast, and the error
+/// Two providers on closed local ports: any LLM call fails fast, and the error
 /// text names the port — which lets tests assert WHICH provider was called.
-fn provider(id: &str, port: u16) -> ProviderDefinition {
-    ProviderDefinition {
-        id: id.into(),
-        adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-        label: id.into(),
-        config: ProviderConnectionConfig {
-            endpoint: format!("http://127.0.0.1:{port}/v1"),
-            api_key: "sk-test".into(),
-            auth: ProviderAuth::Bearer,
-        },
-    }
-}
+const CATALOG: &str = r#"version = 1
 
-fn model(id: &str, provider_ref: &str) -> ModelDefinition {
-    ModelDefinition {
-        id: id.into(),
-        adapter_id: ADAPTER_OPENAI_RESPONSES.into(),
-        provider_ref: provider_ref.into(),
-        label: id.into(),
-        config: ModelAdapterConfig {
-            api_model_id: format!("api-{id}"),
-            context_window: 8_000,
-            max_tokens: 1_024,
-            json_output: false,
-            capabilities: vec![ModelCapability::Text],
-        },
-    }
-}
+[[providers]]
+id = "p1"
+name = "P1"
+endpoint = "http://127.0.0.1:60001/v1"
+endpoint_type = "responses"
+
+[[providers]]
+id = "p2"
+name = "P2"
+endpoint = "http://127.0.0.1:60002/v1"
+endpoint_type = "responses"
+
+[[models]]
+id = "m1"
+provider_id = "p1"
+context_window = 8000
+max_output = 1024
+
+[[models]]
+id = "m2"
+provider_id = "p2"
+context_window = 8000
+max_output = 1024
+
+[[models]]
+id = "m3"
+provider_id = "p2"
+context_window = 8000
+max_output = 1024
+"#;
 
 fn settings_with_explore_model(explore_model: &str) -> GlobalSettings {
     GlobalSettings {
-        providers: HashMap::from([
-            ("p1".into(), provider("p1", 60001)),
-            ("p2".into(), provider("p2", 60002)),
-        ]),
-        models: HashMap::from([
-            ("m1".into(), model("m1", "p1")),
-            ("m2".into(), model("m2", "p2")),
-            ("m3".into(), model("m3", "p2")),
+        provider_credentials: HashMap::from([
+            ("p1".into(), "sk-test".into()),
+            ("p2".into(), "sk-test".into()),
         ]),
         agents: HashMap::from([
             (
                 "default".into(),
                 AgentProfile {
                     role: AgentRole::Primary,
-                    model_ref: "m1".into(),
+                    model_ref: "p1/m1".into(),
                     allowed_subagents: vec!["explore".into()],
                     ..Default::default()
                 },
@@ -87,7 +84,7 @@ fn settings_with_explore_model(explore_model: &str) -> GlobalSettings {
                 "compaction".into(),
                 AgentProfile {
                     role: AgentRole::Hidden,
-                    model_ref: "m1".into(),
+                    model_ref: "p1/m1".into(),
                     ..Default::default()
                 },
             ),
@@ -116,13 +113,15 @@ async fn spawn_env(explore_model: &str) -> SpawnEnv {
     let db_path = dir.path().join("litecode.db");
 
     let global = settings_with_explore_model(explore_model);
+    std::fs::write(provider_catalog::catalog_path_for_db(&db_path), CATALOG).unwrap();
     {
         let conn = global_db::open(&db_path).unwrap();
         global_db::store::replace_all(&conn, &global).unwrap();
     }
 
     let workspace = WorkspaceState::new(dir.path());
-    let resolved = resolve(global, workspace.clone());
+    let catalog = provider_catalog::shared_for_db(&db_path).unwrap();
+    let resolved = resolve(global, workspace.clone(), catalog);
 
     let turn_guard = Arc::new(TurnGuard::new());
     let sessions = Arc::new(SessionManager::new_for_test(
@@ -201,7 +200,7 @@ async fn spawn_and_wait(env: &SpawnEnv, deps: SpawnDeps) -> (String, TurnResult)
 /// the parent's tool list was built against.
 #[tokio::test]
 async fn spawn_reads_fresh_agent_model_ref_from_live_config() {
-    let env = spawn_env("m2").await;
+    let env = spawn_env("p2/m2").await;
 
     // Simulate: parent tool list built against v1, then the human edits the
     // explore agent's model in Settings (same global DB, revision advances).
@@ -210,7 +209,7 @@ async fn spawn_reads_fresh_agent_model_ref_from_live_config() {
             "explore",
             AgentProfile {
                 role: AgentRole::Subagent,
-                model_ref: "m3".into(),
+                model_ref: "p2/m3".into(),
                 ..Default::default()
             },
             &WorkspaceState::new(std::path::Path::new("/tmp")),
@@ -222,7 +221,7 @@ async fn spawn_reads_fresh_agent_model_ref_from_live_config() {
     let (child, _result) = spawn_and_wait(&env, deps).await;
     assert_eq!(
         env.sessions.session_model_id(&child).as_deref(),
-        Some("m3"),
+        Some("p2/m3"),
         "child session must be seeded from the live config, not the parent snapshot"
     );
 }
@@ -232,9 +231,9 @@ async fn spawn_reads_fresh_agent_model_ref_from_live_config() {
 /// provider. Locked as a regression test for the parent-provider clobber bug.
 #[tokio::test]
 async fn child_calls_agent_provider_endpoint_not_parent_provider() {
-    // Parent runs m1 on p1 (port 60001); explore is configured with m2 on p2
-    // (port 60002). The child's failing request must name p2's port.
-    let env = spawn_env("m2").await;
+    // Parent runs p1/m1 on p1 (port 60001); explore is configured with p2/m2 on
+    // p2 (port 60002). The child's failing request must name p2's port.
+    let env = spawn_env("p2/m2").await;
 
     let deps = make_deps(&env);
     let (_child, result) = spawn_and_wait(&env, deps).await;

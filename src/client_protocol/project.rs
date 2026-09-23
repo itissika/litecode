@@ -1,5 +1,5 @@
 use crate::config::resolved::ResolvedConfig;
-use crate::platform_knobs::{ContextMode, effective_api_model_id, effective_context_window};
+use crate::platform_knobs::{ContextMode, effective_context_window};
 use crate::runtime::observer::{
     CompactionFailKind, CompactionStage, CompactionTrigger, FailReason, InternalEvent,
     TurnEndReason, TurnPhase,
@@ -62,9 +62,9 @@ pub fn binding_projection(
         .to_string();
     let context_mode_enum = ContextMode::parse(&context_mode).unwrap_or_default();
     let (api_model_id, label, context_window) = match model_id.as_deref() {
-        Some(id) => match resolved.models().get(id) {
+        Some(id) => match resolved.catalog().model(id) {
             Some(m) => (
-                effective_api_model_id(m),
+                m.id.clone(),
                 m.label.clone(),
                 effective_context_window(m, context_mode_enum),
             ),
@@ -111,9 +111,9 @@ pub fn list_binding_projection(
         .to_string();
     let context_mode_enum = ContextMode::parse(&context_mode).unwrap_or_default();
     let (api_model_id, label, context_window) = match model_id.as_deref() {
-        Some(id) => match resolved.models().get(id) {
+        Some(id) => match resolved.catalog().model(id) {
             Some(m) => (
-                effective_api_model_id(m),
+                m.id.clone(),
                 m.label.clone(),
                 effective_context_window(m, context_mode_enum),
             ),
@@ -563,7 +563,6 @@ pub fn server_hello(
     settings_revision: u64,
     active_primary: String,
     primary_agents: Vec<super::protocol::PrimaryAgentInfo>,
-    llm_ecosystem: String,
     models: Vec<ModelInfo>,
 ) -> serde_json::Value {
     notification(
@@ -577,10 +576,33 @@ pub fn server_hello(
             "settings_revision": settings_revision,
             "active_primary": active_primary,
             "primary_agents": primary_agents,
-            "llm_ecosystem": llm_ecosystem,
             "models": models,
         }),
     )
+}
+
+/// Active models for every model picker.
+///
+/// The single projection: `server/hello` and `models/changed` both use it, so a
+/// credential change can never produce a different list than a reconnect.
+pub fn model_infos(resolved: &crate::config::ResolvedConfig) -> Vec<ModelInfo> {
+    resolved
+        .active_models()
+        .iter()
+        .map(|model| ModelInfo {
+            id: model.reference.clone(),
+            api_model_id: model.id.clone(),
+            label: model.display_label().to_string(),
+            context_window: model.context_window,
+            provider_id: model.provider_id.clone(),
+        })
+        .collect()
+}
+
+/// Pushed whenever the LLM document changes, so an open model switcher
+/// refreshes without a reconnect.
+pub fn models_changed(models: Vec<ModelInfo>) -> serde_json::Value {
+    notification("models/changed", serde_json::json!({ "models": models }))
 }
 
 pub fn settings_changed(

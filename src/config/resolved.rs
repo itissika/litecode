@@ -1,4 +1,4 @@
-//! Resolved configuration: `GlobalSettings` ∪ `WorkspaceState`.
+//! Resolved configuration: `GlobalSettings` ∪ `WorkspaceState` ∪ provider catalog.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -7,9 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::snapshot_paths::{snapshots_dir_for_id, workspace_snapshot_id};
 
+use std::sync::Arc;
+
+use crate::provider_catalog::ProviderCatalog;
+
 use super::schema::{
     AgentProfile, CustomToolDefinition, GlobalSettings, LogSettings, McpServerDefinition,
-    ModelDefinition, ProviderDefinition, ToolOrigin, ToolReadiness, WebSearchSettings,
+    ToolOrigin, ToolReadiness, WebSearchSettings,
 };
 
 /// Workspace runtime paths: session/plan/logs under `<workspace>/.litecode/`;
@@ -103,18 +107,29 @@ impl WorkspaceState {
     }
 }
 
-/// Read-only resolved view. Global settings are immutable after construction;
-/// workspace-scoped readiness is the only mutable layer.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Read-only resolved view. Global settings and the catalog are immutable after
+/// construction; workspace-scoped readiness is the only mutable layer.
+#[derive(Debug, Clone, Serialize)]
 pub struct ResolvedConfig {
     global: GlobalSettings,
     workspace: WorkspaceState,
+    /// Provider/model facts for this process lifetime (edits need a restart).
+    #[serde(skip)]
+    catalog: Arc<ProviderCatalog>,
+}
+
+impl PartialEq for ResolvedConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.global == other.global
+            && self.workspace == other.workspace
+            && Arc::ptr_eq(&self.catalog, &other.catalog)
+    }
 }
 
 impl ResolvedConfig {
     pub const FIELD_NAMES: &'static [&'static str] = &[
-        "providers",
-        "models",
+        "provider_credentials",
+        "disabled_models",
         "agents",
         "custom_tools",
         "mcp_servers",
@@ -130,8 +145,16 @@ impl ResolvedConfig {
         "workspace_custom_tools",
     ];
 
-    pub fn new(global: GlobalSettings, workspace: WorkspaceState) -> Self {
-        Self { global, workspace }
+    pub fn new(
+        global: GlobalSettings,
+        workspace: WorkspaceState,
+        catalog: Arc<ProviderCatalog>,
+    ) -> Self {
+        Self {
+            global,
+            workspace,
+            catalog,
+        }
     }
 
     pub fn global(&self) -> &GlobalSettings {
@@ -142,16 +165,78 @@ impl ResolvedConfig {
         &self.workspace
     }
 
-    pub fn providers(&self) -> &HashMap<String, ProviderDefinition> {
-        &self.global.providers
+    /// The single source of provider/model facts.
+    pub fn catalog(&self) -> &Arc<ProviderCatalog> {
+        &self.catalog
     }
 
-    pub fn models(&self) -> &HashMap<String, ModelDefinition> {
-        &self.global.models
+    /// API key for a catalog provider, when the user configured one.
+    pub fn provider_api_key(&self, provider_id: &str) -> Option<&str> {
+        self.global
+            .provider_credentials
+            .get(provider_id)
+            .map(String::as_str)
+            .filter(|key| !key.trim().is_empty())
+    }
+
+    /// Providers that have a credential, in catalog order.
+    pub fn configured_providers(&self) -> Vec<Arc<crate::provider_catalog::ResolvedProvider>> {
+        self.catalog
+            .providers()
+            .iter()
+            .filter(|provider| self.provider_api_key(&provider.id).is_some())
+            .cloned()
+            .collect()
+    }
+
+    /// Models that are selectable right now: their provider has a key and the
+    /// user has not switched the model off. A reference that is already in use
+    /// (an agent's `model_ref` or a stored session) keeps working — the switch
+    /// governs the pickers, not the resolver.
+    pub fn active_models(&self) -> Vec<Arc<crate::provider_catalog::ResolvedModel>> {
+        self.catalog
+            .models()
+            .iter()
+            .filter(|model| self.provider_api_key(&model.provider_id).is_some())
+            .filter(|model| !self.global.disabled_models.contains(&model.reference))
+            .cloned()
+            .collect()
     }
 
     pub fn agents(&self) -> &HashMap<String, AgentProfile> {
         &self.global.agents
+    }
+
+    /// Catalog model for a reference that is selectable right now.
+    pub fn model_for_agent_ref(
+        &self,
+        reference: &str,
+    ) -> Option<Arc<crate::provider_catalog::ResolvedModel>> {
+        let model = self.catalog.model(reference.trim())?;
+        self.provider_api_key(&model.provider_id)?;
+        Some(Arc::clone(model))
+    }
+
+    /// Catalog model an agent points at, whether or not its provider has a key.
+    pub fn declared_model_for_agent(
+        &self,
+        agent_name: &str,
+    ) -> Option<Arc<crate::provider_catalog::ResolvedModel>> {
+        let reference = self.agents().get(agent_name)?.model_ref.trim().to_string();
+        if reference.is_empty() {
+            return None;
+        }
+        self.catalog.model(&reference).cloned()
+    }
+
+    /// Agent model that is usable right now: declared and keyed.
+    pub fn model_for_agent(
+        &self,
+        agent_name: &str,
+    ) -> Option<Arc<crate::provider_catalog::ResolvedModel>> {
+        let model = self.declared_model_for_agent(agent_name)?;
+        self.provider_api_key(&model.provider_id)?;
+        Some(model)
     }
 
     pub fn global_custom_tools(&self) -> &[CustomToolDefinition] {
@@ -260,15 +345,34 @@ impl ResolvedConfig {
     }
 }
 
-/// Assemble `ResolvedConfig` from disjoint global and workspace inputs.
-pub fn resolve(global: GlobalSettings, workspace: WorkspaceState) -> ResolvedConfig {
-    ResolvedConfig::new(global, workspace)
+/// Fixture helper: assemble a resolved view with an empty catalog.
+///
+/// For code that exercises settings shape (permission resolution, tool
+/// availability) without an LLM binding.
+pub fn resolve_without_catalog(global: GlobalSettings, workspace: WorkspaceState) -> ResolvedConfig {
+    let catalog = Arc::new(
+        ProviderCatalog::parse("version = 1
+", Path::new("<empty-catalog>"))
+            .expect("an empty catalog is valid"),
+    );
+    resolve(global, workspace, catalog)
+}
+
+/// Assemble `ResolvedConfig` from disjoint global, workspace and catalog inputs.
+pub fn resolve(
+    global: GlobalSettings,
+    workspace: WorkspaceState,
+    catalog: Arc<ProviderCatalog>,
+) -> ResolvedConfig {
+    ResolvedConfig::new(global, workspace, catalog)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::schema::GlobalSettings;
+    use crate::provider_catalog::ProviderCatalog;
+    use std::path::Path;
 
     #[test]
     fn global_and_workspace_partitions_are_disjoint() {
@@ -290,43 +394,98 @@ mod tests {
         assert_eq!(ResolvedConfig::FIELD_NAMES, expected.as_slice());
     }
 
-    #[test]
-    fn resolve_preserves_both_layers() {
-        let mut global = GlobalSettings::default();
-        global.providers.insert(
-            "main".into(),
-            crate::config::schema::ProviderDefinition {
-                id: "main".into(),
-                adapter_id: crate::config::schema::ADAPTER_OPENAI_RESPONSES.into(),
-                label: "main".into(),
-                config: crate::config::schema::ProviderConnectionConfig {
-                    endpoint: "https://api.example.com/v1".into(),
-                    api_key: "sk-test".into(),
-                    auth: crate::config::schema::ProviderAuth::Bearer,
-                },
-            },
-        );
+    const CATALOG: &str = r#"
+version = 1
+[[providers]]
+id = "p"
+name = "P"
+endpoint = "https://api.example.com/v1"
+endpoint_type = "responses"
 
+[[models]]
+id = "m"
+provider_id = "p"
+"#;
+
+    fn catalog() -> Arc<ProviderCatalog> {
+        Arc::new(ProviderCatalog::parse(CATALOG, Path::new("t.toml")).unwrap())
+    }
+
+    #[test]
+    fn resolve_preserves_layers_and_catalog() {
+        let mut global = GlobalSettings::default();
+        global
+            .provider_credentials
+            .insert("p".into(), "sk-test".into());
         let mut workspace = WorkspaceState::new("/tmp/project");
         workspace.contract = "# contract".into();
+        let catalog = catalog();
 
-        let resolved = resolve(global.clone(), workspace.clone());
+        let resolved = resolve(global, workspace.clone(), Arc::clone(&catalog));
 
-        assert_eq!(
-            resolved
-                .providers()
-                .get("main")
-                .map(|p| p.config.endpoint.as_str()),
-            global
-                .providers
-                .get("main")
-                .map(|p| p.config.endpoint.as_str())
-        );
-        assert_eq!(
-            resolved.workspace_root(),
-            workspace.workspace_root.as_path()
-        );
+        assert!(Arc::ptr_eq(resolved.catalog(), &catalog));
+        assert_eq!(resolved.workspace_root(), workspace.workspace_root.as_path());
         assert_eq!(resolved.contract(), "# contract");
         assert_eq!(resolved.paths().sessions_db, workspace.paths.sessions_db);
+    }
+
+    #[test]
+    fn credentials_are_serialization_safe() {
+        let mut global = GlobalSettings::default();
+        global
+            .provider_credentials
+            .insert("p".into(), "sk-secret-value".into());
+        let json = serde_json::to_string(&global).unwrap();
+        assert!(
+            !json.contains("sk-secret-value"),
+            "a credential must never reach a settings payload: {json}"
+        );
+    }
+
+    #[test]
+    fn active_models_follow_the_credential_map() {
+        let workspace = WorkspaceState::new("/tmp/ws");
+        let without = resolve(GlobalSettings::default(), workspace.clone(), catalog());
+        assert!(without.active_models().is_empty());
+        assert!(without.configured_providers().is_empty());
+
+        let mut global = GlobalSettings::default();
+        global.provider_credentials.insert("p".into(), "  ".into());
+        let blank = resolve(global, workspace.clone(), catalog());
+        assert!(
+            blank.active_models().is_empty(),
+            "a blank key is not a credential"
+        );
+
+        let mut global = GlobalSettings::default();
+        global.provider_credentials.insert("p".into(), "sk".into());
+        let ready = resolve(global, workspace, catalog());
+        assert_eq!(ready.active_models().len(), 1);
+        assert_eq!(ready.configured_providers().len(), 1);
+        assert_eq!(ready.provider_api_key("p"), Some("sk"));
+        assert_eq!(ready.provider_api_key("ghost"), None);
+    }
+
+    #[test]
+    fn model_lookup_helpers_distinguish_declared_from_selectable() {
+        let mut global = GlobalSettings::default();
+        global.agents.insert(
+            "default".into(),
+            crate::config::schema::AgentProfile {
+                model_ref: "p/m".into(),
+                ..Default::default()
+            },
+        );
+        let without_key = resolve(global.clone(), WorkspaceState::new("/tmp/ws"), catalog());
+        assert!(without_key.declared_model_for_agent("default").is_some());
+        assert!(without_key.model_for_agent("default").is_none());
+        assert!(without_key.model_for_agent_ref("p/m").is_none());
+
+        global.provider_credentials.insert("p".into(), "sk".into());
+        let ready = resolve(global, WorkspaceState::new("/tmp/ws"), catalog());
+        assert!(ready.model_for_agent("default").is_some());
+        assert!(ready.model_for_agent_ref("p/m").is_some());
+        assert!(ready.model_for_agent_ref("p/ghost").is_none());
+        assert!(ready.model_for_agent("ghost").is_none());
     }
 }

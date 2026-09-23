@@ -10,9 +10,9 @@ vi.mock("../api/settings", async (importOriginal) => {
   return {
     ...actual,
     getSettingsSummary: vi.fn(),
-    getAdapters: vi.fn(),
-    getProviders: vi.fn(),
-    getModels: vi.fn(),
+    getLlmSettings: vi.fn(),
+    putProviderKey: vi.fn(),
+    deleteProviderKey: vi.fn(),
     getAgent: vi.fn(),
     loadSettingsAgentIds: vi.fn(),
     getMcpServers: vi.fn(),
@@ -35,24 +35,26 @@ vi.mock("../api/workspace", async (importOriginal) => {
 });
 
 import {
-  getAdapters,
+  SettingsApiError,
+  deleteProviderKey,
   getAgent,
   getAvailableTools,
   getCustomTools,
-  getExcludes,
   getEnginesDoc,
+  getExcludes,
+  getLlmSettings,
   getMcpServers,
-  getModels,
-  getProviders,
   getSettingsSummary,
   loadSettingsAgentIds,
+  putProviderKey,
 } from "../api/settings";
+import type { CatalogProviderDto, LlmSettings } from "../api/settings";
 import { getEnginesDetail } from "../api/workspace";
 
 const mockedSummary = vi.mocked(getSettingsSummary);
-const mockedAdapters = vi.mocked(getAdapters);
-const mockedProviders = vi.mocked(getProviders);
-const mockedModels = vi.mocked(getModels);
+const mockedLlm = vi.mocked(getLlmSettings);
+const mockedPutKey = vi.mocked(putProviderKey);
+const mockedDeleteKey = vi.mocked(deleteProviderKey);
 const mockedAgent = vi.mocked(getAgent);
 const mockedAgentIds = vi.mocked(loadSettingsAgentIds);
 const mockedMcp = vi.mocked(getMcpServers);
@@ -65,15 +67,35 @@ const mockedDetail = vi.mocked(getEnginesDetail);
 function summary(revision: number) {
   return {
     revision,
-    provider_endpoint: null,
-    model_count: 0,
+    configured_provider_count: 0,
+    active_model_count: 0,
     agent_count: 1,
-    catalog_count: 0,
     log_level: "info",
     effective_next_turn: true,
     restart_required: false,
   };
 }
+
+function provider(patch: Partial<CatalogProviderDto> = {}): CatalogProviderDto {
+  return {
+    id: "openai",
+    name: "OpenAI",
+    visible: true,
+    configured: false,
+    masked_api_key: null,
+    endpoint: "https://api.openai.com/v1",
+    endpoint_type: "responses",
+    models: [],
+    ...patch,
+  };
+}
+
+const llmDoc: LlmSettings = {
+  catalog_path: "C:\\x\\provider-catalog.toml",
+  revision: 1,
+  providers: [provider()],
+  active_models: [],
+};
 
 const emptyExcludes = {
   files_exclude: [] as string[],
@@ -96,9 +118,7 @@ beforeEach(() => {
     section: "connection",
     revision: 0,
     summary: null,
-    adapters: [],
-    providers: null,
-    models: null,
+    llm: null,
     availableTools: null,
     customTools: null,
     mcpDefs: null,
@@ -111,9 +131,9 @@ beforeEach(() => {
   });
   useToastStore.setState({ toasts: [] });
   mockedSummary.mockReset().mockResolvedValue(summary(1));
-  mockedAdapters.mockReset().mockResolvedValue([]);
-  mockedProviders.mockReset().mockResolvedValue({});
-  mockedModels.mockReset().mockResolvedValue({});
+  mockedLlm.mockReset().mockResolvedValue(llmDoc);
+  mockedPutKey.mockReset().mockResolvedValue({ revision: 2, docs: ["llm"] });
+  mockedDeleteKey.mockReset().mockResolvedValue({ revision: 2, docs: ["llm"] });
   mockedAgent.mockReset();
   mockedAgentIds.mockReset().mockResolvedValue(["default"]);
   mockedMcp.mockReset().mockResolvedValue({ global: [], workspace: [] });
@@ -133,25 +153,24 @@ afterEach(() => {
 });
 
 describe("ensureSectionLoaded", () => {
-  it("opens Provider without fetching agents, MCP, or engines/detail", async () => {
+  it("opens Provider with summary + llm only", async () => {
     useSettingsStore.getState().openSettings("connection");
     await waitFor(() => {
-      expect(useSettingsStore.getState().providers).toEqual({});
+      expect(useSettingsStore.getState().llm).not.toBeNull();
     });
 
     expect(useSettingsStore.getState().open).toBe(true);
-    expect(mockedProviders).toHaveBeenCalled();
-    await waitFor(() => {
-      expect(mockedModels).toHaveBeenCalled();
-    });
+    expect(mockedLlm).toHaveBeenCalled();
     expect(mockedAgent).not.toHaveBeenCalled();
     expect(mockedMcp).not.toHaveBeenCalled();
     expect(mockedCustom).not.toHaveBeenCalled();
     expect(mockedDetail).not.toHaveBeenCalled();
-    expect(useSettingsStore.getState().providers).toEqual({});
+    expect(useSettingsStore.getState().llm?.catalog_path).toContain(
+      "provider-catalog.toml",
+    );
   });
 
-  it("does not fetch agents when opening Models — only after the models docs land", async () => {
+  it("loads llm + agents when opening Agents", async () => {
     mockedAgent.mockResolvedValue({
       role: "primary",
       model_ref: "",
@@ -162,49 +181,43 @@ describe("ensureSectionLoaded", () => {
       tools: {},
       allowed_subagents: [],
     });
-    useSettingsStore.getState().openSettings("models");
-    await waitFor(() => {
-      expect(useSettingsStore.getState().models).toEqual({});
-    });
-    expect(mockedModels).toHaveBeenCalled();
+    useSettingsStore.getState().openSettings("agents");
     await waitFor(() => {
       expect(mockedAgentIds).toHaveBeenCalled();
     });
+    expect(mockedLlm).toHaveBeenCalled();
   });
 
-  it("refreshes the current section after a remote change even while persistStatus is saving", async () => {
+  it("refreshes the llm document after a remote change while the dialog is open", async () => {
     useSettingsStore.setState({
       open: true,
       section: "connection",
-      persistByDoc: { providers: "saving" },
-      providers: {},
-      docClock: { providers: 1, adapters: 1, summary: 1 },
+      persistByDoc: { llm: "saving" },
+      llm: llmDoc,
+      docClock: { llm: 1, summary: 1 },
       revision: 1,
     });
-    mockedProviders.mockResolvedValue({
-      p1: {
-        id: "p1",
-        adapter_id: "openai",
-        label: "Remote",
-        endpoint: "https://api.openai.com/v1",
-        api_key: "sk-…",
-        auth: "bearer",
-      },
+    mockedLlm.mockResolvedValue({
+      ...llmDoc,
+      revision: 2,
+      providers: [provider({ configured: true, masked_api_key: "sk-***remote" })],
     });
     useSettingsStore.getState().onRemoteSettingsChanged({
       revision: 2,
-      docs: ["providers"],
+      docs: ["llm"],
       summary: summary(2),
     });
     await waitFor(() => {
-      expect(useSettingsStore.getState().providers?.p1?.label).toBe("Remote");
+      expect(useSettingsStore.getState().llm?.providers[0]?.masked_api_key).toBe(
+        "sk-***remote",
+      );
     });
 
-    expect(mockedProviders).toHaveBeenCalled();
+    expect(mockedLlm).toHaveBeenCalled();
   });
 
   it("does not paint a failed Provider load onto Files after switching tabs", async () => {
-    mockedProviders.mockRejectedValue(new Error("provider boom"));
+    mockedLlm.mockRejectedValue(new Error("catalog boom"));
     useSettingsStore.getState().openSettings("connection");
     await useSettingsStore.getState().setSection("files");
     await waitFor(() => {
@@ -260,9 +273,9 @@ describe("reopen settings rereads gate docs", () => {
     useSettingsStore.setState({
       open: false,
       revision: 1,
-      providers: {},
+      llm: llmDoc,
       customTools: { global: [], workspace: [] },
-      docClock: { providers: 1, customTools: 1, summary: 1, adapters: 1 },
+      docClock: { llm: 1, customTools: 1, summary: 1 },
     });
     mockedCustom.mockResolvedValue({
       global: [],
@@ -353,7 +366,7 @@ describe("workspace excludes clock", () => {
 describe("settings persist toasts", () => {
   it("does not success-toast settings/changed while the dialog is open", () => {
     useToastStore.setState({ toasts: [] });
-    useSettingsStore.setState({ open: true, persistByDoc: { providers: "saving" } });
+    useSettingsStore.setState({ open: true, persistByDoc: { llm: "saving" } });
     useSettingsStore.getState().onRemoteSettingsChanged({
       revision: 99,
       docs: [],
@@ -372,3 +385,50 @@ describe("settings persist toasts", () => {
     unreg();
   });
 });
+
+describe("provider credential actions", () => {
+  it("saves a key through the key API and reloads the llm document", async () => {
+    mockedPutKey.mockResolvedValue({ revision: 4, docs: ["llm"] });
+    mockedLlm.mockResolvedValue({
+      ...llmDoc,
+      revision: 4,
+      providers: [provider({ configured: true, masked_api_key: "sk-***test" })],
+    });
+
+    await useSettingsStore.getState().saveProviderKey("openai", "sk-test");
+
+    expect(mockedPutKey).toHaveBeenCalledTimes(1);
+    expect(mockedPutKey).toHaveBeenCalledWith("openai", "sk-test");
+    const state = useSettingsStore.getState();
+    expect(state.revision).toBe(4);
+    expect(state.llm?.providers[0]?.configured).toBe(true);
+    expect(state.docClock.llm).toBe(4);
+  });
+
+  it("never issues a PUT for an empty key", async () => {
+    await expect(
+      useSettingsStore.getState().saveProviderKey("openai", "   "),
+    ).rejects.toBeInstanceOf(SettingsApiError);
+    expect(mockedPutKey).not.toHaveBeenCalled();
+  });
+
+  it("deletes a credential and returns the provider to the add list", async () => {
+    useSettingsStore.setState({
+      llm: {
+        ...llmDoc,
+        providers: [provider({ configured: true, masked_api_key: "sk-***x" })],
+      },
+    });
+    mockedDeleteKey.mockResolvedValue({ revision: 5, docs: ["llm"] });
+    mockedLlm.mockResolvedValue({ ...llmDoc, revision: 5, providers: [provider()] });
+
+    await useSettingsStore.getState().removeProviderKey("openai");
+
+    expect(mockedDeleteKey).toHaveBeenCalledWith("openai");
+    const state = useSettingsStore.getState();
+    expect(state.revision).toBe(5);
+    expect(state.llm?.providers[0]?.configured).toBe(false);
+    expect(state.llm?.providers[0]?.masked_api_key).toBeNull();
+  });
+});
+

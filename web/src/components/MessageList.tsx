@@ -159,7 +159,10 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
     }
     if ((row.kind === "item/user" || row.kind === "item/assistant") && isMessageItem(item)) {
       const text = itemPlainText(item);
-      if (text) {
+      // Vendors emit whitespace-only content (e.g. "\n\n" before a tool call).
+      // Such a message renders as nothing, but as an `output` node it would cut
+      // the surrounding process group in half.
+      if (text.trim()) {
         nodes.push({
           kind: "text",
           text,

@@ -12,25 +12,12 @@ import type {
   ThinkingTier,
   ContextMode,
 } from "../api/types";
-import { getModels, type ModelDefinition } from "../api/settings";
 import { useConnectionStore, attachSiblingStores, getDockviewApi } from "./connectionStore";
 import { useBashStore } from "./bashStore";
 import { useToastStore } from "./toastStore";
 import { useTurnStore } from "./turnStore";
 import { useMessageStore } from "./messageStore";
 import { openSessionPanel } from "../lib/sessionPanelNav";
-
-function definitionsToModelInfo(models: Record<string, ModelDefinition>): ModelInfo[] {
-  return Object.entries(models)
-    .map(([id, m]) => ({
-      id,
-      api_model_id: m.config.api_model_id,
-      label: m.label,
-      context_window: m.config.context_window,
-      adapter_id: m.adapter_id,
-    }))
-    .sort((a, b) => a.label.localeCompare(b.label));
-}
 
 /**
  * Most-recently-updated first (event order). The backend returns the list
@@ -52,7 +39,7 @@ export interface SessionSlice {
   /** Sticky primary agent id — hydrated from snapshot.agent_id. */
   activePrimary: string;
   pendingPrimaryId: string | null;
-  /** Sticky catalog config id — hydrated from snapshot.model_id; null = unset. */
+  /** Sticky composite model ref (`{provider_id}/{model_id}`) from the snapshot. */
   modelId: string | null;
   /** Effective wire id from snapshot.api_model_id. */
   apiModelId: string;
@@ -112,6 +99,7 @@ interface SessionState {
 interface SessionStore extends SessionState {
   // Server notification handlers
   onHello: (hello: WireServerHello) => void;
+  onModelsChanged: (models: ModelInfo[]) => void;
   applySnapshot: (snap: SessionSnapshot) => void;
   onSessionList: (sessions: SessionInfo[]) => void;
   onSessionLifecycle: (params: SessionLifecycle) => void;
@@ -126,7 +114,6 @@ interface SessionStore extends SessionState {
   setModel: (sessionId: string, modelId: string) => void;
   setThinkingTier: (sessionId: string, tier: ThinkingTier) => void;
   setContextMode: (sessionId: string, mode: ContextMode) => void;
-  refreshAvailableModels: () => Promise<void>;
 
   // UI actions
   setShowSessionList: (open: boolean) => void;
@@ -328,6 +315,8 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     availableModels: [],
 
     onHello: (hello: WireServerHello) => {
+      // server/hello carries only ACTIVE models (provider holds a credential);
+      // the catalog itself is backend-owned and never edited from the Web app.
       set((s) => ({
         activePrimary: hello.active_primary ?? s.activePrimary,
         primaryAgents: hello.primary_agents ?? s.primaryAgents,
@@ -335,9 +324,12 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         availableModels: hello.models ?? [],
         project: hello.project || s.project,
       }));
-      // REST catalog is authoritative after Settings edits; hello may be stale
-      // until the next reconnect — refresh so the switcher never goes empty.
-      void get().refreshAvailableModels();
+    },
+
+    onModelsChanged: (models: ModelInfo[]) => {
+      // Credential change: the same projection the handshake uses, pushed live
+      // so an open model switcher never shows a stale list.
+      set({ availableModels: models });
     },
 
     applySnapshot,
@@ -607,28 +599,6 @@ export const useSessionStore = create<SessionStore>((set, get) => {
           patch(sessionId, { pendingContextMode: null });
           useToastStore.getState().showToast("Failed to set context mode", "error");
         });
-    },
-
-    refreshAvailableModels: async () => {
-      try {
-        const models = await getModels();
-        const availableModels = definitionsToModelInfo(models);
-        const valid = new Set(Object.keys(models));
-        const byId = new Map(get().byId);
-        for (const [sid, slice] of byId) {
-          if (slice.modelId && !valid.has(slice.modelId)) {
-            byId.set(sid, {
-              ...slice,
-              modelId: null,
-              apiModelId: "",
-              label: "",
-            });
-          }
-        }
-        set({ availableModels, byId });
-      } catch {
-        /* keep existing list */
-      }
     },
 
     setShowSessionList: (open: boolean) => {

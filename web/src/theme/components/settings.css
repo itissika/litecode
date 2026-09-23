@@ -291,7 +291,7 @@
   opacity: 0.45;
 }
 
-/* Provider rows reuse FoldCard for collapsible收纳, but without the
+/* Models page rows reuse FoldCard for collapsible收纳, but without the
    chat-specific editor background / 30vh scroll cap / edge-blur bands.
    Horizontal indent is intentionally NOT overridden here — settings now uses
    the same --_dk-indent-card-* tokens as chat (the old 0.75rem override existed
@@ -313,11 +313,54 @@
 
 .settings-foldcard .foldcard-scroll {
   max-height: none;
+  /* Settings cards live inside the panel's own scroller — never cap, and do
+     not trap the wheel inside the card (chat's overscroll-behavior: contain
+     would stop chaining to the panel). Same fix as .git-foldcard and
+     .search-foldcard. */
+  overflow: visible;
+  overscroll-behavior: auto;
   /* Compact vertical rhythm only; left inset inherits the default
      --_dk-indent-card-body token so settings matches chat exactly. */
   padding-top: 0.375rem;
   padding-right: 0.375rem;
   padding-bottom: 0.5rem;
+}
+
+/* Providers page: one hollow card per credential — no background, just a
+   short left rule that reads as an accent rather than a box edge. The rule is
+   a pseudo-element because a border can only span the full box height. A card
+   that holds no key is dimmed as a whole; the configured card stays at full
+   strength. Opacity is the only animated property, so storing a key visibly
+   lights the card up. Dimming lifts while the field is focused: a card being
+   typed into must not read as disabled. */
+.settings-provider-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.625rem 0.75rem 0.75rem;
+  background: transparent;
+  transition: opacity 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.settings-provider-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 2px;
+  height: 90%;
+  transform: translateY(-50%);
+  background: var(--_dk-border-visible);
+}
+
+.settings-provider-card[data-configured="false"] {
+  opacity: 0.38;
+}
+
+.settings-provider-card[data-configured="false"]:focus-within {
+  opacity: 1;
 }
 
 .engine-icon-static {

@@ -13,11 +13,11 @@ function seedSession(sessionId: string) {
     primaryAgents: [],
     availableModels: [
       {
-        id: "model-1",
+        id: "openai/model-1",
         api_model_id: "model-1",
+        provider_id: "openai",
         label: "Model 1",
         context_window: 1000,
-        adapter_id: "openai",
       },
     ],
     byId: new Map([
@@ -26,7 +26,7 @@ function seedSession(sessionId: string) {
         {
           activePrimary: "default",
           pendingPrimaryId: null,
-          modelId: "model-1",
+          modelId: "openai/model-1",
           apiModelId: "model-1",
           label: "Model 1",
           thinkingTier: "medium",

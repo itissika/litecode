@@ -5,6 +5,8 @@ import { Dropdown, dropdownItemClass, dropdownItemActiveClass } from "./Dropdown
 interface Option {
   value: string;
   label: ReactNode;
+  /** Rendered but not selectable (e.g. a "Missing: <ref>" placeholder row). */
+  disabled?: boolean;
 }
 
 interface SelectProps {
@@ -72,8 +74,13 @@ export function Select({
         <button
           key={opt.value}
           type="button"
-          className={`${dropdownItemClass} ${opt.value === value ? dropdownItemActiveClass : ""}`}
-          onClick={() => onChange(opt.value)}
+          disabled={opt.disabled}
+          className={`${dropdownItemClass} ${opt.value === value ? dropdownItemActiveClass : ""} ${
+            opt.disabled ? "cursor-default opacity-70" : ""
+          }`}
+          onClick={() => {
+            if (!opt.disabled) onChange(opt.value);
+          }}
         >
           {opt.label}
         </button>

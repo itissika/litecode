@@ -1,27 +1,52 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentProfile, AgentToolBinding, AvailableTool, ModelDefinition } from "../../../api/settings";
+import type {
+  AgentProfile,
+  AgentToolBinding,
+  AvailableTool,
+  CatalogModelDto,
+  LlmSettings,
+} from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { AgentsSection } from "./AgentsSection";
 
-const model: ModelDefinition = {
-  id: "m1",
-  adapter_id: "openai",
-  provider_ref: "prov",
+const model: CatalogModelDto = {
+  ref: "prov/m1",
+  id: "gpt-4o",
   label: "GPT",
-  config: {
-    api_model_id: "gpt-4o",
-    context_window: 200_000,
-    max_tokens: 8192,
-    capabilities: ["text"],
-  },
+  provider_id: "prov",
+  provider_name: "Prov",
+  context_window: 200_000,
+  context_window_max: 400_000,
+  modalities: ["text"],
+  tool_call: true,
+  json_output: false,
+  enabled: true,
+};
+
+const llmDoc: LlmSettings = {
+  catalog_path: "C:\\x\\provider-catalog.toml",
+  revision: 1,
+  providers: [
+    {
+      id: "prov",
+      name: "Prov",
+      visible: true,
+      configured: true,
+      masked_api_key: "sk-***x",
+      endpoint: "https://prov.example/v1",
+      endpoint_type: "responses",
+      models: [model],
+    },
+  ],
+  active_models: [model],
 };
 
 function profile(patch: Partial<AgentProfile> = {}): AgentProfile {
   return {
     role: "primary",
-    model_ref: "m1",
+    model_ref: "prov/m1",
     system_prompt: "",
     temperature: 0.7,
     max_steps: 50,
@@ -44,7 +69,7 @@ describe("AgentsSection persist UX", () => {
     removeAgent.mockClear();
     refreshAgents.mockClear();
     useSettingsStore.setState({
-      models: { m1: model },
+      llm: llmDoc,
       availableTools: [],
       mcpDefs: { global: [], workspace: [] },
       mcpRuntime: { global: {}, workspace: {} },
@@ -156,7 +181,7 @@ describe("AgentsSection subagent tool cards", () => {
   beforeEach(() => {
     saveAgent.mockClear();
     useSettingsStore.setState({
-      models: { m1: model },
+      llm: llmDoc,
       availableTools: [readTool, lspTool, mcpDemoTool],
       mcpDefs: { global: [], workspace: [] },
       mcpRuntime: { global: {}, workspace: {} },
@@ -215,7 +240,7 @@ describe("AgentsSection LSP bind persist loop", () => {
   beforeEach(() => {
     saveAgent.mockReset();
     useSettingsStore.setState({
-      models: { m1: model },
+      llm: llmDoc,
       availableTools: [readTool, lspTool],
       mcpDefs: { global: [], workspace: [] },
       mcpRuntime: { global: {}, workspace: {} },
@@ -379,3 +404,134 @@ describe("AgentsSection LSP bind persist loop", () => {
     expect(saveAgent.mock.calls.length).toBeLessThan(3);
   });
 });
+
+describe("AgentsSection model picker", () => {
+  const saveAgent = vi.fn(async () => undefined);
+  const createAgent = vi.fn(async () => undefined);
+
+  const secondModel: CatalogModelDto = {
+    ref: "other/m1",
+    id: "m1",
+    label: "Same Wire Id",
+    provider_id: "other",
+    provider_name: "Other",
+    context_window: 100_000,
+    context_window_max: 100_000,
+    modalities: ["text", "image"],
+    tool_call: false,
+    json_output: true,
+    enabled: false,
+  };
+
+  beforeEach(() => {
+    saveAgent.mockClear();
+    createAgent.mockClear();
+    useSettingsStore.setState({
+      llm: {
+        ...llmDoc,
+        providers: [
+          ...llmDoc.providers,
+          {
+            id: "other",
+            name: "Other",
+            visible: true,
+            configured: true,
+            masked_api_key: "sk-***y",
+            endpoint: null,
+            endpoint_type: "chat_completions",
+            models: [secondModel],
+          },
+        ],
+        active_models: [model, secondModel],
+      },
+      availableTools: [],
+      mcpDefs: { global: [], workspace: [] },
+      mcpRuntime: { global: {}, workspace: {} },
+      agentIds: ["default"],
+      selectedAgentId: "default",
+      agents: { default: profile() },
+      persistByDoc: {},
+      revision: 1,
+      saveAgent,
+      createAgent,
+      removeAgent: vi.fn(async () => undefined),
+      refreshAgents: vi.fn(async () => undefined),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  function openModelDropdown() {
+    // The Select trigger shows the current option's label ("GPT").
+    fireEvent.click(screen.getByRole("button", { name: /^GPT$/ }));
+    const panel = document.querySelector("[data-dropdown-panel]");
+    expect(panel).toBeTruthy();
+    return panel as HTMLElement;
+  }
+
+  it("groups active models by provider and keeps a duplicate wire id independently selectable", async () => {
+    vi.useFakeTimers();
+    render(<AgentsSection />);
+    const panel = openModelDropdown();
+
+    // Provider group headers, then one option per composite ref — both
+    // providers expose the wire id `m1`, yet each keeps its own ref.
+    expect(within(panel).getByText("Prov")).toBeTruthy();
+    expect(within(panel).getByText("Other")).toBeTruthy();
+    fireEvent.click(within(panel).getByRole("button", { name: /Same Wire Id/ }));
+    await vi.advanceTimersByTimeAsync(400);
+    expect(saveAgent).toHaveBeenCalledWith(
+      "default",
+      expect.objectContaining({ model_ref: "other/m1" }),
+    );
+  });
+
+  it("keeps an unknown model_ref as a disabled Missing option instead of re-pointing the agent", async () => {
+    vi.useFakeTimers();
+    useSettingsStore.setState({
+      agents: { default: profile({ model_ref: "ghost/gone-model" }) },
+    });
+    render(<AgentsSection />);
+
+    const trigger = screen.getByRole("button", { name: /Missing: ghost\/gone-model/ });
+    fireEvent.click(trigger);
+    const panel = document.querySelector("[data-dropdown-panel]") as HTMLElement;
+    const missing = within(panel).getAllByRole("button", {
+      name: /Missing: ghost\/gone-model/,
+    })[0];
+    expect(missing.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(missing);
+    await vi.advanceTimersByTimeAsync(400);
+    // The ref is still the missing one — nothing was silently selected.
+    expect(screen.getByRole("button", { name: /Missing: ghost\/gone-model/ })).toBeTruthy();
+    expect(saveAgent).not.toHaveBeenCalled();
+  });
+
+  it("defaults a new agent to the first active model", async () => {
+    render(<AgentsSection />);
+    fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
+    fireEvent.change(screen.getByPlaceholderText("my_agent"), {
+      target: { value: "helper" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => {
+      expect(createAgent).toHaveBeenCalledWith(
+        "helper",
+        expect.objectContaining({ model_ref: "prov/m1" }),
+      );
+    });
+  });
+
+  it("tells the user to configure a provider API key when no model is active", () => {
+    useSettingsStore.setState({
+      llm: { ...llmDoc, active_models: [] },
+    });
+    render(<AgentsSection />);
+    expect(screen.getByText("Configure a provider API key")).toBeTruthy();
+  });
+});
+

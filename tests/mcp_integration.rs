@@ -253,8 +253,7 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
     use litecode::config::TurnGuard;
     use litecode::config::resolved::{WorkspaceState, resolve};
     use litecode::config::schema::{
-        ADAPTER_OPENAI_RESPONSES, AgentProfile, AgentToolBinding, GlobalSettings,
-        McpServerDefinition, ProviderAuth, ProviderConnectionConfig, ProviderDefinition,
+        AgentProfile, AgentToolBinding, GlobalSettings, McpServerDefinition,
     };
     use litecode::engines::WorkspaceEngines;
     use litecode::ide_base::IdeBaseHandle;
@@ -295,7 +294,12 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
     );
 
     let ws = tempfile::TempDir::new().expect("ws");
-    let resolved = resolve(global, WorkspaceState::new(ws.path()));
+    let resolved = resolve(
+        global,
+        WorkspaceState::new(ws.path()),
+        litecode::provider_catalog::shared_for_db(&ws.path().join("global.db"))
+            .expect("catalog"),
+    );
 
     let workspace_engines = WorkspaceEngines::new();
     let ide = IdeBaseHandle::open(ws.path(), Arc::new(workspace_engines.clone())).expect("ide");

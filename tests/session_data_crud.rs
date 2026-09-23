@@ -20,7 +20,7 @@ fn open() -> (
 #[test]
 fn create_append_meta_delete() {
     let (_dir, data) = open();
-    let sid = data.create_session("/proj", "default", Some("m")).unwrap();
+    let sid = data.create_session("/proj", "default", Some("test/test-primary-model")).unwrap();
     assert_eq!(data.revision_blocking(&sid).unwrap(), 1);
     data.insert_items(&sid, &[user_text("one"), user_text("two")])
         .unwrap();

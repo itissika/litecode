@@ -27,7 +27,7 @@ fn session_transcript_roundtrip_and_revert_on_workspace_db() {
     let data = SessionData::open(&lease, &db_path).expect("open SessionData");
     let sessions = SessionManager::from_data(Arc::new(TurnGuard::new()), data.clone());
     let session_id = sessions
-        .open_session_sync("/tmp/proj", "default", Some("test-model"))
+        .open_session_sync("/tmp/proj", "default", Some("test/test-primary-model"))
         .expect("open");
 
     let user = user_text("user-hello");
@@ -82,7 +82,7 @@ fn transcript_items_table_exists_after_session_data_bootstrap() {
     .expect("lease");
     let data = SessionData::open(&lease, &workspace.paths.sessions_db).expect("open");
     let _ = data
-        .create_session("/tmp/proj", "default", Some("m"))
+        .create_session("/tmp/proj", "default", Some("test/test-primary-model"))
         .unwrap();
     let listed = data.list_sessions_blocking().expect("list");
     assert_eq!(listed.len(), 1);

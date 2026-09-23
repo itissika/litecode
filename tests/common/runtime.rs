@@ -19,7 +19,10 @@ use litecode::session::manager::SessionManager;
 
 use super::bindings::{binding_all_for, binding_none_tool};
 use super::permission::test_auto_approve_sink;
-use super::seed::{TEST_PROVIDER_ID, insert_test_llm_registry, ready_test_model};
+use super::seed::{
+    TEST_CATALOG_ENDPOINT, TEST_COMPACTION_MODEL_REF, TEST_PRIMARY_MODEL_REF,
+    insert_test_llm_registry, test_catalog,
+};
 use super::workspace_fixture::test_workspace;
 
 thread_local! {
@@ -46,8 +49,8 @@ fn test_context_window() -> usize {
     TEST_CONTEXT_WINDOW.with(|c| c.get())
 }
 
-fn seed_models(global: &mut GlobalSettings, context_window: usize) {
-    insert_test_llm_registry(global, "http://127.0.0.1:9", "test-key", context_window);
+fn seed_models(global: &mut GlobalSettings) {
+    insert_test_llm_registry(global, "test-key");
 }
 
 /// Build a test `ResolvedConfig` with core catalog + per-tool bindings.
@@ -61,7 +64,7 @@ pub fn test_resolved_with_budget(
     context_window: usize,
 ) -> ResolvedConfig {
     let mut global = GlobalSettings::default();
-    seed_models(&mut global, context_window);
+    seed_models(&mut global);
 
     let all_core = tool_names.is_empty() || tool_names.iter().any(|t| t == "*");
     let mut bindings = HashMap::new();
@@ -88,7 +91,7 @@ pub fn test_resolved_with_budget(
     global.agents.insert(
         agent_name.into(),
         AgentProfile {
-            model_ref: "default".into(),
+            model_ref: TEST_PRIMARY_MODEL_REF.into(),
             tools: bindings,
             ..Default::default()
         },
@@ -97,13 +100,17 @@ pub fn test_resolved_with_budget(
         "compaction".into(),
         AgentProfile {
             role: AgentRole::Hidden,
-            model_ref: "compaction".into(),
+            model_ref: TEST_COMPACTION_MODEL_REF.into(),
             system_prompt: "builtin:compaction".into(),
             ..Default::default()
         },
     );
 
-    resolve(global, WorkspaceState::new("/tmp/test"))
+    resolve(
+        global,
+        WorkspaceState::new("/tmp/test"),
+        test_catalog(TEST_CATALOG_ENDPOINT, context_window, 8192),
+    )
 }
 
 /// Empty `SessionManager` for tests that only need tool catalog assembly.
@@ -114,26 +121,32 @@ pub fn test_sessions_manager(db_path: impl Into<String>) -> Arc<SessionManager> 
     ))
 }
 
+/// Build a turn binding for a catalog model reference (composite
+/// \`{provider_id}/{model_id}\`) against a caller-supplied provider.
 pub fn test_turn_binding(
     resolved: &ResolvedConfig,
     provider: Arc<dyn LlmProvider>,
     api_key: &str,
-    model_id: &str,
+    model_ref: &str,
 ) -> TurnLlmBinding {
-    let model_def = resolved.models().get(model_id).cloned().unwrap_or_else(|| {
-        ready_test_model(model_id, TEST_PROVIDER_ID, model_id, test_context_window())
-    });
+    let model = resolved
+        .catalog()
+        .model(model_ref)
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!("fixture catalog does not declare model '{model_ref}'");
+        });
     TurnLlmBinding {
-        provider_id: model_def.provider_ref.clone(),
-        model_id: model_id.to_string(),
-        api_model_id: model_def.api_model_id().to_string(),
-        context_window: model_def.context_window(),
-        max_tokens: model_def.max_tokens(),
+        provider_id: model.provider_id.clone(),
+        model_ref: model.reference.clone(),
+        api_model_id: model.id.clone(),
+        context_window: model.context_window,
+        max_tokens: model.max_output,
         thinking_tier: Default::default(),
         context_mode: Default::default(),
         provider,
         api_key: api_key.to_string(),
-        model_def,
+        model,
     }
 }
 
@@ -157,7 +170,11 @@ pub fn build_runtime_with_provider(
     if let Some(p) = global.agents.get_mut("default") {
         p.max_steps = spec.agent.max_steps;
     }
-    let resolved = resolve(global, workspace.clone());
+    let resolved = resolve(
+        global,
+        workspace.clone(),
+        test_catalog(TEST_CATALOG_ENDPOINT, test_context_window(), 8192),
+    );
 
     let project = cwd.to_string_lossy().to_string();
     let db_path = workspace.paths.sessions_db.clone();
@@ -174,12 +191,12 @@ pub fn build_runtime_with_provider(
         .open_session_sync(&project, "default", model_ref)
         .unwrap();
 
-    let model_id = resolved
+    let model_ref = resolved
         .agents()
         .get("default")
         .map(|p| p.model_ref.as_str())
-        .unwrap_or("default");
-    let binding = test_turn_binding(&resolved, provider, "test-key", model_id);
+        .unwrap_or(TEST_PRIMARY_MODEL_REF);
+    let binding = test_turn_binding(&resolved, provider, "test-key", model_ref);
     let workspace_engines = WorkspaceEngines::new();
     let ide = litecode::ide_base::IdeBaseHandle::open(cwd, Arc::new(workspace_engines.clone()))
         .expect("ide base");

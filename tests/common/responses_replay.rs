@@ -100,7 +100,7 @@ pub fn tool_call_completed_sse() -> String {
 
 /// Serve a queue of Responses SSE bodies over HTTP/1.1 (`text/event-stream`).
 /// Returns base endpoint `http://127.0.0.1:PORT/v1` suitable for
-/// `ProviderDefinition.endpoint` / `provider_from_definition` (normalizes to `/responses`).
+/// catalog provider `endpoint` + `provider_from_model` (normalizes to `/responses`).
 pub async fn serve_responses_queue(bodies: Vec<String>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");

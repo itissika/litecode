@@ -31,7 +31,7 @@ fn sessions() -> Arc<SessionManager> {
 fn setup_with_details(texts: &[&str]) -> (Projection, String, Arc<SessionManager>) {
     let sessions = sessions();
     let sid = sessions
-        .open_session_sync("/p", "default", Some("m"))
+        .open_session_sync("/p", "default", Some("test/test-primary-model"))
         .unwrap();
     sessions
         .insert_detail_rows(
@@ -148,7 +148,7 @@ fn stream_delta(n: u64) -> InternalEvent {
 fn empty_session_cursor_is_minus_one_zero() {
     let sessions = sessions();
     let sid = sessions
-        .open_session_sync("/p", "default", Some("m"))
+        .open_session_sync("/p", "default", Some("test/test-primary-model"))
         .unwrap();
     let proj = Projection::new(sid.clone(), sessions.clone(), 0);
     assert_eq!(sessions.entry_wire_seq_cursor(&sid), (-1, 0));

@@ -33,7 +33,11 @@ fn build_state(project: std::path::PathBuf, global_db_path: std::path::PathBuf) 
         workspace_custom_tools: Default::default(),
     };
     let settings = ConfigManager::load_global_from(&global_db_path).expect("load global");
-    let resolved = ConfigManager::resolve(settings, workspace.clone());
+    let resolved = ConfigManager::resolve(
+        settings,
+        workspace.clone(),
+        litecode::provider_catalog::shared_for_db(&global_db_path).expect("catalog"),
+    );
     let turn_guard = Arc::new(TurnGuard::new());
     let (settings_writer, engine_manager) =
         test_serve_settings_with_db(turn_guard.clone(), &global_db_path);

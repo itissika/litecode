@@ -57,10 +57,9 @@ fn config_global_db_migration_and_seed() {
     let settings = ConfigManager::load_global_from(&db).expect("load seeds fresh db");
 
     assert!(
-        settings.providers.is_empty(),
-        "seed must not plant providers"
+        settings.provider_credentials.is_empty(),
+        "seed must not plant provider credentials"
     );
-    assert!(settings.models.is_empty(), "seed must not plant models");
 
     assert!(settings.agents.contains_key("default"));
     assert!(settings.agents.contains_key("compaction"));

@@ -1,16 +1,14 @@
 import type {
-  AdapterDescriptor,
   AgentProfile,
   AvailableTool,
   CustomToolDefinition,
   LayeredList,
+  LlmSettings,
   LogSettings,
   McpServerDefinition,
   McpServerItem,
   McpRunState,
   McpToolInfo,
-  ModelDefinition,
-  ProviderView,
   SettingsSummary,
   ToolOrigin,
   WebSearchView,
@@ -31,9 +29,8 @@ export type SettingsSection =
 /** Fetchable settings documents. `mcp` is one GET split into defs + runtime. */
 export type SettingsDocument =
   | "summary"
-  | "adapters"
-  | "providers"
-  | "models"
+  /** The single LLM document: catalog providers + credentials + active models. */
+  | "llm"
   | "agents"
   | "availableTools"
   | "customTools"
@@ -44,9 +41,11 @@ export type SettingsDocument =
   | "engines";
 
 export const SECTION_DOCUMENTS: Record<SettingsSection, readonly SettingsDocument[]> = {
-  connection: ["summary", "adapters", "providers"],
-  models: ["adapters", "providers", "models"],
-  agents: ["models", "availableTools", "agents", "mcp"],
+  // Both LLM pages read the same document: Provider edits credentials, Models
+  // reads the projection those credentials unlock.
+  connection: ["summary", "llm"],
+  models: ["summary", "llm"],
+  agents: ["llm", "availableTools", "agents", "mcp"],
   "custom-tools": ["customTools"],
   mcp: ["mcp"],
   files: ["excludes"],
@@ -72,14 +71,14 @@ export type LayeredMcpRuntime = {
 
 export type PersistDocKey = Exclude<
   SettingsDocument,
-  "summary" | "adapters" | "availableTools"
+  "summary" | "availableTools"
 >;
 
 export type SettingsDocClock = Partial<Record<SettingsDocument, number>>;
 
 export const EVENT_DOC_TO_SETTINGS: Record<string, SettingsDocument[]> = {
-  providers: ["providers"],
-  models: ["models"],
+  // One LLM document id: catalog + providers + credentials + models.
+  llm: ["llm"],
   agents: ["agents"],
   log: ["log"],
   websearch: ["websearch"],
@@ -111,9 +110,7 @@ export const EXCLUDES_CLOCK = 1;
 
 export interface SettingsDataProbe {
   summary: SettingsSummary | null;
-  adapters: AdapterDescriptor[];
-  providers: Record<string, ProviderView> | null;
-  models: Record<string, ModelDefinition> | null;
+  llm: LlmSettings | null;
   availableTools: AvailableTool[] | null;
   customTools: LayeredList<CustomToolDefinition> | null;
   mcpDefs: LayeredList<McpDefItem> | null;
@@ -130,12 +127,8 @@ export function documentHasData(doc: SettingsDocument, state: SettingsDataProbe)
   switch (doc) {
     case "summary":
       return state.summary !== null;
-    case "adapters":
-      return state.docClock.adapters != null;
-    case "providers":
-      return state.providers !== null;
-    case "models":
-      return state.models !== null;
+    case "llm":
+      return state.llm !== null;
     case "agents":
       return state.docClock.agents != null;
     case "availableTools":
@@ -161,7 +154,7 @@ export function sectionNeedsSkeleton(
   state: SettingsDataProbe,
 ): boolean {
   return SECTION_DOCUMENTS[section].some((doc) => {
-    if (doc === "summary" || doc === "adapters") return false;
+    if (doc === "summary") return false;
     return !documentHasData(doc, state);
   });
 }

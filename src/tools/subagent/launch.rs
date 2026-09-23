@@ -402,7 +402,7 @@ impl Tool for SubagentLaunchTool {
 #[cfg(test)]
 mod tests {
     use super::format_available_subagents;
-    use crate::config::resolved::{WorkspaceState, resolve};
+    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
     use crate::config::schema::{AgentProfile, AgentRole, GlobalSettings};
 
     #[test]
@@ -432,7 +432,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let resolved = resolve(global, WorkspaceState::new("/tmp"));
+        let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
         let catalog = format_available_subagents(&resolved, &["reviewer".into(), "worker".into()])
             .expect("catalog");
         assert_eq!(catalog, "reviewer (Reviews code for bugs), worker");
@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn format_available_empty_allowlist_is_none() {
-        let resolved = resolve(GlobalSettings::default(), WorkspaceState::new("/tmp"));
+        let resolved = resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"));
         assert!(format_available_subagents(&resolved, &[]).is_none());
     }
 }

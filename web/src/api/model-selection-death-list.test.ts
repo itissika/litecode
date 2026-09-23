@@ -44,7 +44,7 @@ describe("model-selection death list", () => {
     expect(violations, violations.join("\n")).toEqual([]);
   });
 
-  it("ModelSwitcher has no unknown label and no connectionStore model fallback", () => {
+  it("ModelSwitcher has no unknown label, no connectionStore fallback, and surfaces a missing ref", () => {
     const src = readFileSync(
       join(WEB_SRC, "components/ModelSwitcher.tsx"),
       "utf8",
@@ -52,6 +52,8 @@ describe("model-selection death list", () => {
     expect(src.includes('"unknown"')).toBe(false);
     expect(src.includes("useConnectionStore")).toBe(false);
     expect(src.includes("modelId")).toBe(true);
+    // A ref the active catalog doesn't know is shown, never silently replaced.
+    expect(src.includes("Missing: ")).toBe(true);
   });
 
   it("connectionStore has no session model field", () => {

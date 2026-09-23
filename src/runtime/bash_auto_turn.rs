@@ -214,7 +214,7 @@ pub fn install_idle_auto_turn(
 mod tests {
     use super::*;
     use crate::config::TurnGuard;
-    use crate::config::resolved::{WorkspaceState, resolve};
+    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
     use crate::config::schema::{AgentProfile, AgentRole, GlobalSettings};
     use crate::engines::WorkspaceEngines;
     use crate::ide_base::IdeBaseHandle;
@@ -236,7 +236,7 @@ mod tests {
             },
         );
         let workspace_state = WorkspaceState::new(root);
-        let resolved = resolve(global, workspace_state.clone());
+        let resolved = resolve_without_catalog(global, workspace_state.clone());
         let workspace = WorkspaceService::new(root.to_path_buf()).unwrap();
         let engines = Arc::new(WorkspaceEngines::new());
         let hub = Arc::new(TerminalHub::new());

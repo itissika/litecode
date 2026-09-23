@@ -1,19 +1,25 @@
 //! LLM product surface — authority `Item` / `ModelRequest` only.
 //!
-//! Wire dialects live exclusively under private `adapter/`. Adapter registry is the
-//! single source of truth for provider/model config shapes.
+//! Wire dialects live exclusively under private `codec/`. There are exactly two
+//! codecs, selected by the catalog's [EndpointKind](crate::provider_catalog::EndpointKind);
+//! providers themselves are data.
 
-mod adapter;
+mod codec;
 mod provider;
 mod request;
+
+use std::sync::Arc;
 
 pub use provider::LlmProvider;
 pub use request::{ModelRequest, ToolDef};
 
-/// Compact request context: provider + credentials + wire model id.
+use crate::provider_catalog::ResolvedModel;
+use crate::types::Result;
+
+/// Compact request context: codec + credentials + wire model id.
 ///
-/// No vendor thinking strings. Callers map a [`crate::runtime::TurnLlmBinding`]
-/// via `compact_call()`; [`ModelRequest::compact`] always sets thinking Off.
+/// No vendor thinking strings. Callers map a [crate::runtime::TurnLlmBinding]
+/// via `compact_call()`; [ModelRequest::compact] always sets thinking Off.
 #[derive(Clone, Copy)]
 pub struct CompactLlmCall<'a> {
     pub provider: &'a dyn LlmProvider,
@@ -21,20 +27,7 @@ pub struct CompactLlmCall<'a> {
     pub model: &'a str,
 }
 
-pub use adapter::public::{
-    AdapterDescriptor, FieldSchema, FieldType, adapter_default_capabilities,
-    apply_owned_modality_capabilities, catalog_supported_ids, closed_api_model_ids,
-    closed_context_windows, closed_default_endpoint, has_remote_model_catalog, is_known_adapter,
-    list_adapters, parse_model_config, parse_provider_config, provider_ready,
-    validate_model_config, validate_provider_config,
-};
-
-pub(crate) use adapter::{chat_models_url, parse_chat_model_catalog};
-
-use crate::config::schema::ProviderDefinition;
-use crate::types::Result;
-
-/// Construct a boxed provider from a provider row. Registry / tests must not name adapter types.
-pub fn provider_from_definition(def: &ProviderDefinition) -> Result<Box<dyn LlmProvider>> {
-    adapter::from_definition(def)
+/// Construct the codec that serves a resolved catalog model.
+pub fn provider_from_model(model: Arc<ResolvedModel>) -> Result<Box<dyn LlmProvider>> {
+    codec::build(model)
 }

@@ -7,7 +7,7 @@ use crate::types::{Item, Result, StreamEvents};
 
 use super::request::ModelRequest;
 
-/// Product-facing LLM provider — dialect stays inside `llm::adapter`.
+/// Product-facing LLM provider — dialect stays inside `llm::codec`.
 pub trait LlmProvider: Send + Sync {
     fn endpoint(&self) -> &str;
     fn box_clone(&self) -> Box<dyn LlmProvider>;

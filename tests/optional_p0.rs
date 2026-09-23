@@ -8,7 +8,6 @@ use litecode::config::{
     workspace::{read_workspace_engines, workspace_engines_path, workspace_readiness_from_engines},
 };
 use litecode::engines::WorkspaceEngines;
-use litecode::llm::{LlmProvider, provider_from_definition};
 use litecode::optional::{EngineManager, EngineWarmupState};
 use litecode::runtime::RuntimeHandle;
 use litecode::session::manager::SessionManager;
@@ -20,13 +19,9 @@ mod common;
 
 fn test_global_with_provider(dir: &TempDir) -> litecode::config::schema::GlobalSettings {
     let db = dir.path().join("litecode.db");
+    common::seed_test_catalog(&db, "https://api.example.com/v1", 128_000);
     let mut global = ConfigManager::load_global_from(&db).expect("seed");
-    common::insert_test_llm_registry(
-        &mut global,
-        "https://api.example.com/v1",
-        "sk-test",
-        128_000,
-    );
+    common::insert_test_llm_registry(&mut global, "sk-test");
     global
 }
 
@@ -41,7 +36,11 @@ fn seed_optional_builtins_are_engines_only() {
 fn webfetch_list_requires_bind_not_warmup() {
     let dir = TempDir::new().expect("dir");
     let mut global = test_global_with_provider(&dir);
-    let resolved = ConfigManager::resolve(global.clone(), WorkspaceState::new("/tmp/gate"));
+    let resolved = ConfigManager::resolve(
+        global.clone(),
+        WorkspaceState::new("/tmp/gate"),
+        common::default_test_catalog(),
+    );
     let engines = EngineManager::new();
     let workspace_engines = WorkspaceEngines::new();
     assert!(!should_include_in_llm_list(
@@ -62,7 +61,11 @@ fn webfetch_list_requires_bind_not_warmup() {
             ..Default::default()
         },
     );
-    let resolved = ConfigManager::resolve(global, WorkspaceState::new("/tmp/gate"));
+    let resolved = ConfigManager::resolve(
+        global,
+        WorkspaceState::new("/tmp/gate"),
+        common::default_test_catalog(),
+    );
     engines.reconcile(&resolved);
     assert!(should_include_in_llm_list(
         &resolved,
@@ -78,7 +81,7 @@ fn network_core_engines_always_warmup() {
     let dir = TempDir::new().expect("dir");
     let global = test_global_with_provider(&dir);
     let workspace = WorkspaceState::new("/tmp/catalog-off");
-    let resolved = ConfigManager::resolve(global, workspace);
+    let resolved = ConfigManager::resolve(global, workspace, common::default_test_catalog());
     let engines = EngineManager::new();
     engines.reconcile(&resolved);
     assert!(engines.is_warmed("webfetch", &resolved));
@@ -122,7 +125,11 @@ fn enable_code_search_engine_writes_engines_json_and_reload_restores_readiness()
         workspace_custom_tools: Default::default(),
     };
     let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
-    let resolved = ConfigManager::resolve(writer.load_settings().expect("load"), workspace);
+    let resolved = ConfigManager::resolve(
+        writer.load_settings().expect("load"),
+        workspace,
+        common::catalog_for_db(&db),
+    );
     assert_eq!(resolved.workspace_tool_readiness().get("lsp"), None);
     assert_eq!(
         resolved.workspace_tool_readiness().get("code_search"),
@@ -169,7 +176,11 @@ fn settings_reload_reconciles_engine_manager() {
     let revision = writer.revision_handle();
 
     let workspace = WorkspaceState::new("/tmp/reload-reconcile");
-    let resolved = ConfigManager::resolve(writer.load_settings().expect("load"), workspace.clone());
+    let resolved = ConfigManager::resolve(
+        writer.load_settings().expect("load"),
+        workspace.clone(),
+        common::catalog_for_db(&db),
+    );
     let workspace_engines = Arc::new(WorkspaceEngines::new());
     let ide = litecode::ide_base::IdeBaseHandle::open(
         workspace.workspace_root.clone(),
