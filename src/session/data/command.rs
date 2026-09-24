@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::session::data::sqlite::session::{SessionApply, SessionContextMeter};
-use crate::session::event::{EventDraft, Seq};
+use crate::session::event::Seq;
 use crate::session::task_state::TaskReminders;
 use crate::session::working::WorkingRow;
 use crate::types::Item;
@@ -120,6 +120,40 @@ pub enum SessionMutation {
         operation_id: MutationId,
         item: Item,
     },
+    /// Open the log row for a streaming provider item and return its `seq`.
+    ///
+    /// This is the **only** way a row enters the log un-settled. The row's
+    /// lifecycle state comes from this command, never from the item payload: a
+    /// provider's optional `status` field is content, not storage state, and a
+    /// dialect that omits it must not be mistaken for "already settled".
+    BeginStreamItem {
+        session_id: String,
+        expected_revision: u64,
+        operation_id: MutationId,
+        item: Item,
+        turn_id: String,
+    },
+    /// Replace the payload of a row opened by [`Self::BeginStreamItem`].
+    ///
+    /// Refused once the row is settled: a final row is immutable, so late
+    /// content has to be a new row or nothing at all.
+    UpdateStreamItem {
+        session_id: String,
+        expected_revision: u64,
+        operation_id: MutationId,
+        seq: Seq,
+        item: Item,
+    },
+    /// Settle a row opened by [`Self::BeginStreamItem`] with its **authoritative**
+    /// payload — the terminal response's copy of the item, which is the only
+    /// version the provider will accept back on replay.
+    SealStreamItem {
+        session_id: String,
+        expected_revision: u64,
+        operation_id: MutationId,
+        seq: Seq,
+        item: Item,
+    },
     AppendJobExit {
         session_id: String,
         expected_revision: u64,
@@ -210,6 +244,9 @@ impl SessionMutation {
             | Self::Apply { operation_id, .. }
             | Self::InsertDetails { operation_id, .. }
             | Self::PersistItem { operation_id, .. }
+            | Self::BeginStreamItem { operation_id, .. }
+            | Self::UpdateStreamItem { operation_id, .. }
+            | Self::SealStreamItem { operation_id, .. }
             | Self::AppendJobExit { operation_id, .. }
             | Self::AppendPlanReminder { operation_id, .. }
             | Self::AppendPlanExecute { operation_id, .. }
@@ -232,6 +269,9 @@ impl SessionMutation {
             Self::Apply { session_id, .. }
             | Self::InsertDetails { session_id, .. }
             | Self::PersistItem { session_id, .. }
+            | Self::BeginStreamItem { session_id, .. }
+            | Self::UpdateStreamItem { session_id, .. }
+            | Self::SealStreamItem { session_id, .. }
             | Self::AppendJobExit { session_id, .. }
             | Self::AppendPlanReminder { session_id, .. }
             | Self::AppendPlanExecute { session_id, .. }
@@ -258,6 +298,15 @@ impl SessionMutation {
                 expected_revision, ..
             }
             | Self::PersistItem {
+                expected_revision, ..
+            }
+            | Self::BeginStreamItem {
+                expected_revision, ..
+            }
+            | Self::UpdateStreamItem {
+                expected_revision, ..
+            }
+            | Self::SealStreamItem {
                 expected_revision, ..
             }
             | Self::AppendJobExit {
@@ -377,6 +426,12 @@ pub enum SessionRead {
     SearchableKeys {
         session_id: Option<String>,
     },
+    /// `request/header` control-plane rows: `(seq, body)` per recorded request.
+    /// The body is the request's origin record — the only durable answer to
+    /// "which service minted the items in this turn/step".
+    RequestOrigins {
+        session_id: String,
+    },
     /// Bodies for exactly these rows, so an incremental refresh decodes only what
     /// is new instead of the whole corpus.
     SearchableRowsFor {
@@ -422,6 +477,10 @@ pub enum ReadValue {
     Revision(u64),
     Searchable(Vec<crate::session::transcript_file::SearchableRow>),
     SearchableKeys(Vec<(String, i64)>),
+    /// `request/header` rows as `(seq, body)` — the durable origin record of
+    /// each LLM request, used to decide whether a replayed item identity still
+    /// belongs to the endpoint being called.
+    RequestOrigins(Vec<(i64, serde_json::Value)>),
     Changes(Vec<SessionChange>),
     Empty,
 }

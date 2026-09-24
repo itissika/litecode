@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar};
 use std::time::Duration;
 
 use tokio::sync::broadcast;
@@ -10,10 +10,9 @@ use crate::config::TurnGuard;
 use crate::runtime::RuntimeHandle;
 use crate::runtime::TurnHandle;
 use crate::runtime::observer::{InternalEnvelope, InternalEvent, TurnPhase};
-use crate::session::data::command::{
-    CommitKind, MutationId, ReadValue, SessionMutation, SessionRead,
-};
+use crate::session::data::command::{MutationId, ReadValue, SessionMutation, SessionRead};
 use crate::session::data::{SessionData, SessionDataReader};
+use crate::session::event::{EventDraft, EventType};
 use crate::session::live::{LifecycleEvent, TurnProgress};
 use crate::session::store::{Session, SessionApply, SessionContextMeter};
 use crate::session::task_state::{TaskReminders, prune_stale_active_plan};
@@ -138,6 +137,9 @@ pub struct SessionRecord {
     pub revision: u64,
     pub task_state: TaskReminders,
     activity: SessionActivity,
+    /// Revert requested while a turn is winding down. `finish_turn` transfers
+    /// ownership directly to this exclusive operation without exposing Idle.
+    pending_revert: Option<String>,
     /// Always present so L2 can subscribe before a turn starts.
     event_tx: broadcast::Sender<InternalEnvelope>,
     /// Ring buffer for reconnect replay (cleared on next start_turn).
@@ -170,6 +172,7 @@ impl SessionRecord {
             revision,
             task_state,
             activity: SessionActivity::Idle,
+            pending_revert: None,
             event_tx,
             event_buffer: VecDeque::new(),
             subscriber_count: 0,
@@ -190,6 +193,7 @@ impl SessionRecord {
 /// Process-level manager: registry of sessions (durable + live). No wire types.
 pub struct SessionManager {
     records: std::sync::Mutex<HashMap<String, SessionRecord>>,
+    activity_changed: Condvar,
     pub turn_guard: Arc<TurnGuard>,
     data: Arc<SessionData>,
     /// Keeps a test-created lease alive for the manager's writer lifetime.
@@ -223,6 +227,7 @@ impl SessionManager {
         let (lifecycle_tx, _) = broadcast::channel(256);
         Self {
             records: std::sync::Mutex::new(HashMap::new()),
+            activity_changed: Condvar::new(),
             turn_guard,
             data,
             _test_lease: test_lease,
@@ -234,6 +239,7 @@ impl SessionManager {
         let (lifecycle_tx, _) = broadcast::channel(256);
         let manager = Self {
             records: std::sync::Mutex::new(HashMap::new()),
+            activity_changed: Condvar::new(),
             turn_guard,
             data,
             _test_lease: None,
@@ -411,7 +417,12 @@ impl SessionManager {
         parent_call_id: &str,
     ) -> Result<String> {
         self.open_child_session_with_responsibility(
-            project, agent_id, model_id, parent_session_id, parent_call_id, "",
+            project,
+            agent_id,
+            model_id,
+            parent_session_id,
+            parent_call_id,
+            "",
         )
     }
 
@@ -869,7 +880,8 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Finish a turn (Running 锟?Idle). Sole path that clears running; emits lifecycle TurnFinished.
+    /// Finish a turn. This is the sole path that clears `RunningTurn`; normally
+    /// it becomes Idle, but a queued revert receives the exclusive lease directly.
     ///
     /// Idempotent when already Idle or turn_id mismatches a different live turn.
     pub fn finish_turn(&self, session_id: &str, turn_id: &str) -> Option<TurnProgress> {
@@ -886,6 +898,12 @@ impl SessionManager {
             let SessionActivity::RunningTurn(live) = activity else {
                 unreachable!("activity checked as RunningTurn");
             };
+            if let Some(operation_id) = record.pending_revert.take() {
+                record.activity = SessionActivity::Exclusive {
+                    operation_id,
+                    kind: SessionOperationKind::Revert,
+                };
+            }
             let mut progress = live.progress;
             progress.awaiting_permission = false;
             progress
@@ -902,6 +920,7 @@ impl SessionManager {
             progress: progress.clone(),
             reason,
         });
+        self.activity_changed.notify_all();
         Some(progress)
     }
 
@@ -1083,45 +1102,83 @@ impl SessionManager {
         cancelled
     }
 
-    /// Exclusive compact (or other exclusive ops) is the only busy reject.
-    /// Idle takes a lease; a running turn is cancelled and truncate proceeds
-    /// without one; StartingTurn becomes Exclusive Revert under the same lock.
+    /// Acquire the revert lease. If a turn is running, signal cancellation and
+    /// wait until `finish_turn` atomically hands this request exclusive ownership.
+    /// No Idle state is observable between the old turn and the truncate.
     pub fn try_begin_revert(
         self: &Arc<Self>,
         session_id: &str,
     ) -> Result<Option<SessionOperationLease>> {
         self.cancel_descendant_turns(session_id);
+        let operation_id = uuid::Uuid::new_v4().to_string();
         let mut records = self.records.lock().unwrap();
-        let record = records.get_mut(session_id).ok_or_else(|| {
-            LitecodeError::ToolExecution(format!("session {session_id} not found"))
-        })?;
-        match &record.activity {
-            SessionActivity::Idle => {}
-            SessionActivity::RunningTurn(live) => {
-                live.cancel.cancel();
-                return Ok(None);
+        loop {
+            let record = records.get_mut(session_id).ok_or_else(|| {
+                LitecodeError::ToolExecution(format!("session {session_id} not found"))
+            })?;
+            match &mut record.activity {
+                SessionActivity::Idle => {
+                    record.activity = SessionActivity::Exclusive {
+                        operation_id: operation_id.clone(),
+                        kind: SessionOperationKind::Revert,
+                    };
+                    return Ok(Some(SessionOperationLease {
+                        manager: Arc::clone(self),
+                        session_id: session_id.to_string(),
+                        operation_id,
+                    }));
+                }
+                SessionActivity::RunningTurn(live) => {
+                    match &record.pending_revert {
+                        Some(pending) if pending != &operation_id => {
+                            return Err(LitecodeError::AgentAlreadyRunning);
+                        }
+                        Some(_) => {}
+                        None => record.pending_revert = Some(operation_id.clone()),
+                    }
+                    live.stopping = true;
+                    live.cancel.cancel();
+                }
+                SessionActivity::StartingTurn { .. } => {
+                    record.activity = SessionActivity::Exclusive {
+                        operation_id: operation_id.clone(),
+                        kind: SessionOperationKind::Revert,
+                    };
+                    drop(records);
+                    self.turn_guard.end_turn();
+                    return Ok(Some(SessionOperationLease {
+                        manager: Arc::clone(self),
+                        session_id: session_id.to_string(),
+                        operation_id,
+                    }));
+                }
+                SessionActivity::Exclusive { .. } => {
+                    return Err(LitecodeError::AgentAlreadyRunning);
+                }
             }
-            SessionActivity::StartingTurn { .. } => {
-                let operation_id = uuid::Uuid::new_v4().to_string();
-                record.activity = SessionActivity::Exclusive {
-                    operation_id: operation_id.clone(),
+            records = self
+                .activity_changed
+                .wait(records)
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(record) = records.get(session_id) else {
+                return Err(LitecodeError::ToolExecution(format!(
+                    "session {session_id} not found"
+                )));
+            };
+            if matches!(
+                &record.activity,
+                SessionActivity::Exclusive {
+                    operation_id: active,
                     kind: SessionOperationKind::Revert,
-                };
-                drop(records);
-                self.turn_guard.end_turn();
+                } if active == &operation_id
+            ) {
                 return Ok(Some(SessionOperationLease {
                     manager: Arc::clone(self),
                     session_id: session_id.to_string(),
                     operation_id,
                 }));
             }
-            SessionActivity::Exclusive { .. } => {
-                return Err(LitecodeError::AgentAlreadyRunning);
-            }
         }
-        drop(records);
-        self.try_begin_operation(session_id, SessionOperationKind::Revert)
-            .map(Some)
     }
 
     pub async fn is_turn_running(&self, session_id: &str) -> bool {
@@ -1205,6 +1262,7 @@ impl SessionManager {
         );
         if matches {
             record.activity = SessionActivity::Idle;
+            self.activity_changed.notify_all();
         }
     }
 
@@ -1316,9 +1374,11 @@ impl SessionManager {
             return false;
         }
         let records = self.records.lock().unwrap();
-        children
-            .iter()
-            .any(|id| records.get(id).is_some_and(|record| record.activity.is_busy()))
+        children.iter().any(|id| {
+            records
+                .get(id)
+                .is_some_and(|record| record.activity.is_busy())
+        })
     }
     /// Delete child sessions whose durable parent row is gone. This is the
     /// startup repair for databases written by pre-convergence builds.
@@ -1347,14 +1407,13 @@ impl SessionManager {
         queue.push_back(session_id.to_string());
         let mut out = Vec::new();
         while let Some(parent) = queue.pop_front() {
-            let mut children: Vec<String> = match self.data.read_blocking(
-                SessionRead::ListChildIds {
+            let mut children: Vec<String> =
+                match self.data.read_blocking(SessionRead::ListChildIds {
                     parent_session_id: parent.clone(),
-                },
-            ) {
-                Ok(ReadValue::Ids(ids)) => ids,
-                _ => Vec::new(),
-            };
+                }) {
+                    Ok(ReadValue::Ids(ids)) => ids,
+                    _ => Vec::new(),
+                };
             {
                 let records = self.records.lock().unwrap();
                 for (id, record) in records.iter() {
@@ -1379,11 +1438,7 @@ impl SessionManager {
     /// Remove root + descendants from the in-memory registry and release exactly
     /// one turn-guard slot for each removed turn. Must be called only after the
     /// durable delete has been accepted (or was already gone).
-    fn take_removed_sessions(
-        &self,
-        session_id: &str,
-        known_children: &[String],
-    ) -> Vec<String> {
+    fn take_removed_sessions(&self, session_id: &str, known_children: &[String]) -> Vec<String> {
         let mut records = self.records.lock().unwrap();
         let mut remove_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         remove_ids.insert(session_id.to_string());
@@ -1763,6 +1818,68 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Open the log row for a streaming provider item; returns its `seq`.
+    ///
+    /// The returned seq is the item's identity for the rest of its life: every
+    /// later update and the final seal address it, and the client orders by it.
+    pub fn begin_stream_item(
+        &self,
+        session_id: &str,
+        item: &crate::types::Item,
+        turn_id: &str,
+    ) -> crate::types::Result<crate::session::event::Seq> {
+        let expected = self.expected_revision(session_id);
+        let receipt = self.mutate_blocking(SessionMutation::BeginStreamItem {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            item: item.clone(),
+            turn_id: turn_id.to_string(),
+        })?;
+        match receipt.outcome {
+            crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
+            other => Err(crate::types::LitecodeError::InvalidSessionEvent(format!(
+                "begin_stream_item: unexpected commit outcome {other:?}"
+            ))),
+        }
+    }
+
+    /// Replace the payload of a row that is still in flight.
+    pub fn update_stream_item(
+        &self,
+        session_id: &str,
+        seq: crate::session::event::Seq,
+        item: &crate::types::Item,
+    ) -> crate::types::Result<()> {
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::UpdateStreamItem {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            seq,
+            item: item.clone(),
+        })?;
+        Ok(())
+    }
+
+    /// Settle a streaming row with its authoritative (terminal) payload.
+    pub fn seal_stream_item(
+        &self,
+        session_id: &str,
+        seq: crate::session::event::Seq,
+        item: &crate::types::Item,
+    ) -> crate::types::Result<()> {
+        let expected = self.expected_revision(session_id);
+        self.mutate_blocking(SessionMutation::SealStreamItem {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            seq,
+            item: item.clone(),
+        })?;
+        Ok(())
+    }
+
     pub fn append_job_exit(
         &self,
         session_id: &str,
@@ -1776,6 +1893,58 @@ impl SessionManager {
             item: item.clone(),
         })?;
         Ok(())
+    }
+
+    /// Record the origin of one LLM request (`request/header`).
+    ///
+    /// Control-plane only: the row never enters the spine, the UI transcript, or
+    /// model input. It exists so a later request can ask "did the endpoint I am
+    /// now calling mint the identities in this history?" without guessing from an
+    /// id's shape, and without rewriting any existing item.
+    ///
+    /// Returns the seq the record landed on, which is what later items of the same
+    /// request are attributed to.
+    pub fn append_request_origin(
+        &self,
+        session_id: &str,
+        record: &serde_json::Value,
+    ) -> crate::types::Result<crate::session::event::Seq> {
+        let receipt = self.apply(
+            session_id,
+            SessionApply::Append(EventDraft {
+                time: chrono::Utc::now().timestamp_millis(),
+                event_type: EventType::RequestHeader,
+                data: record.clone(),
+                surface_op: None,
+                source_seqs: None,
+                ignorable: false,
+                state: crate::session::model::LogState::Final,
+            }),
+        )?;
+        match receipt.outcome {
+            crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
+            other => Err(crate::types::LitecodeError::InvalidSessionEvent(format!(
+                "append_request_origin: unexpected commit outcome {other:?}"
+            ))),
+        }
+    }
+
+    /// `(seq, body)` of every recorded request origin, oldest first.
+    pub fn request_origins(
+        &self,
+        session_id: &str,
+    ) -> crate::types::Result<Vec<(crate::session::event::Seq, serde_json::Value)>> {
+        match self.data.read_blocking(SessionRead::RequestOrigins {
+            session_id: session_id.to_string(),
+        })? {
+            ReadValue::RequestOrigins(rows) => Ok(rows
+                .into_iter()
+                .map(|(seq, body)| (seq.max(0) as crate::session::event::Seq, body))
+                .collect()),
+            _ => Err(crate::types::LitecodeError::SessionStorage(
+                "unexpected request origins read".into(),
+            )),
+        }
     }
 
     /// Persist a plan-review reminder as a dedicated `reminder/plan` spine Item.
@@ -2056,6 +2225,72 @@ fn turn_step_from_stream(
             Some((e.item_id.clone(), TurnStepKind::Toolcall))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod request_origin_tests {
+    use super::*;
+
+    /// The origin record is the only durable answer to "did this endpoint mint
+    /// this history". It is control-plane: it must never enter the model view.
+    #[test]
+    fn request_origin_round_trips_as_a_control_plane_row() {
+        let manager = SessionManager::ephemeral_registry();
+        let session_id = manager
+            .open_session_sync("", "default", None)
+            .expect("session opens");
+
+        let record = serde_json::json!({
+            "schema": 1,
+            "turn": "turn-1",
+            "step": 2,
+            "issuer": "opencode@https://opencode.ai",
+        });
+        let seq = manager
+            .append_request_origin(&session_id, &record)
+            .expect("origin record appends");
+
+        let origins = manager.request_origins(&session_id).expect("origins read");
+        assert_eq!(origins.len(), 1, "{origins:?}");
+        assert_eq!(origins[0].0, seq);
+        assert_eq!(
+            origins[0]
+                .1
+                .get("issuer")
+                .and_then(serde_json::Value::as_str),
+            Some("opencode@https://opencode.ai")
+        );
+
+        // Control plane: present in the log, absent from the model's view.
+        let events = manager.data.events_blocking(&session_id).expect("events");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == EventType::RequestHeader),
+            "the record is durable"
+        );
+        let messages = crate::session::surface::derive_messages(&events).expect("derive");
+        assert!(
+            messages.is_empty(),
+            "a request origin must never reach the model: {messages:?}"
+        );
+    }
+
+    /// History written before origins were recorded reads as empty, which the
+    /// projection treats as unproven ownership rather than as a guess.
+    #[test]
+    fn a_session_without_records_reports_no_origin() {
+        let manager = SessionManager::ephemeral_registry();
+        let session_id = manager
+            .open_session_sync("", "default", None)
+            .expect("session opens");
+        assert!(
+            manager
+                .request_origins(&session_id)
+                .expect("read")
+                .is_empty()
+        );
     }
 }
 
@@ -2436,7 +2671,7 @@ mod child_session_tests {
     }
 
     #[tokio::test]
-    async fn revert_during_running_turn_cancels_without_exclusive_lease() {
+    async fn revert_during_running_turn_waits_for_finish_and_holds_exclusive_lease() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sessions.db");
         let mgr = Arc::new(SessionManager::new_for_test(
@@ -2464,24 +2699,46 @@ mod child_session_tests {
         )
         .unwrap();
 
-        let lease = mgr
-            .try_begin_revert(&sid)
-            .expect("revert during turn must proceed");
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let waiter = {
+            let mgr = Arc::clone(&mgr);
+            let sid = sid.clone();
+            std::thread::spawn(move || {
+                let lease = mgr
+                    .try_begin_revert(&sid)
+                    .expect("revert during turn must proceed")
+                    .expect("revert must acquire a lease");
+                acquired_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                drop(lease);
+            })
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), cancel.cancelled())
+            .await
+            .expect("revert must signal cancellation");
+        assert_eq!(mgr.session_status(&sid), Some(SessionStatus::Stopping));
         assert!(
-            lease.is_none(),
-            "running turn keeps activity; revert must not take Exclusive"
+            acquired_rx.try_recv().is_err(),
+            "revert must not acquire before the old turn finishes"
         );
-        assert!(
-            cancel.is_cancelled(),
-            "revert must signal the turn cancel token"
-        );
-        assert!(mgr.is_turn_running_blocking(&sid));
-        assert_eq!(mgr.entry_user_detail_count(&sid).unwrap(), 3);
-        assert_eq!(mgr.entry_snapshot_stem_for_user_k(&sid, 0).unwrap(), 1);
+
+        assert!(mgr.finish_turn(&sid, "t-revert").is_some());
+        acquired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("finish_turn must hand ownership to revert");
+        assert!(mgr.is_session_busy_blocking(&sid));
+        let sneak = mgr
+            .reserve_turn(&sid, "sneak".into(), 5, "default", "/proj")
+            .unwrap_err();
+        assert!(matches!(sneak, LitecodeError::AgentAlreadyRunning));
 
         mgr.entry_revert_to_user_anchor(&sid, 1).unwrap();
-        let len = mgr.data().transcript_blocking(&sid).unwrap().len();
-        assert_eq!(len, 1, "running-turn revert must truncate the log");
+        assert_eq!(mgr.data().transcript_blocking(&sid).unwrap().len(), 1);
+        release_tx.send(()).unwrap();
+        waiter.join().unwrap();
+        assert!(!mgr.is_session_busy_blocking(&sid));
     }
 
     #[tokio::test]
@@ -2844,7 +3101,6 @@ mod child_session_tests {
         assert_eq!(mgr.child_counts(&idle).total, 0);
     }
 
-
     #[tokio::test]
     async fn revert_cancels_descendant_turn_but_keeps_child_session() {
         let dir = tempfile::tempdir().unwrap();
@@ -2864,12 +3120,17 @@ mod child_session_tests {
             .unwrap();
 
         let cancel = CancellationToken::new();
-        mgr.begin_turn(&child, "t-revert-child".into(), cancel.clone(), 5, "reviewer", "/proj")
-            .unwrap();
+        mgr.begin_turn(
+            &child,
+            "t-revert-child".into(),
+            cancel.clone(),
+            5,
+            "reviewer",
+            "/proj",
+        )
+        .unwrap();
 
-        let lease = mgr
-            .try_begin_revert(&parent)
-            .expect("idle parent revert");
+        let lease = mgr.try_begin_revert(&parent).expect("idle parent revert");
         assert!(lease.is_some());
         assert!(cancel.is_cancelled(), "revert must cancel child turn");
         assert_eq!(mgr.session_status(&child), Some(SessionStatus::Stopping));
@@ -2882,7 +3143,6 @@ mod child_session_tests {
         drop(lease);
         let _ = mgr.finish_turn(&child, "t-revert-child");
     }
-
 
     #[tokio::test]
     async fn orphan_child_sessions_are_cleaned() {

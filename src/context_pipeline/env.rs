@@ -66,7 +66,8 @@ mod tests {
 
     #[test]
     fn build_context_omits_claude_md_when_contract_empty() {
-        let resolved = resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp/empty"));
+        let resolved =
+            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp/empty"));
         let paths = WorkspacePaths::for_legacy_root(&std::path::PathBuf::from("/tmp/empty"));
 
         let ctx = build_context(&resolved, std::path::Path::new("/tmp/empty"), &paths);

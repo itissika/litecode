@@ -463,7 +463,7 @@ fn session_seq_g1_envelope_vocab_matches_mental_model() {
     let Some(doc) = mental_model_or_spec_text() else {
         panic!("session domain documentation must exist for G1 vocab");
     };
-    for needle in ["SessionLog", "kind", "cites"] {
+    for needle in ["SessionEvent", "type", "source_seqs"] {
         assert!(
             doc.contains(needle),
             "domain doc must name `{needle}` so types stay aligned"
@@ -672,6 +672,43 @@ fn session_seq_g6_derived_paths_use_surface_not_pointers() {
         }
     }
 }
+
+/// Source lines that ship, with `#[cfg(test)]` bodies removed.
+///
+/// A gate about the production path must not be satisfied or tripped by a test
+/// that happens to mention the same name.
+fn production_lines(contents: &str) -> String {
+    let mut out = String::new();
+    let mut test_depth: i32 = 0;
+    let mut pending_test_mod = false;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#[cfg(test)]") {
+            pending_test_mod = true;
+            continue;
+        }
+        if pending_test_mod && trimmed.starts_with("mod ") {
+            pending_test_mod = false;
+            if trimmed.ends_with(';') {
+                continue;
+            }
+            test_depth = 1;
+            continue;
+        }
+        if test_depth > 0 {
+            test_depth += trimmed.matches('{').count() as i32;
+            test_depth -= trimmed.matches('}').count() as i32;
+            if test_depth <= 0 {
+                test_depth = 0;
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 #[test]
 fn session_seq_g4_wire_speaks_seq() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -977,5 +1014,86 @@ fn death_list_db_runtime_store_only_uses_provider_credentials() {
     assert!(
         legacy.contains("FROM providers") && legacy.contains("FROM models"),
         "the one-shot migration is the only reader of the legacy tables"
+    );
+}
+
+/// A streamed item's row is opened, updated and settled — never appended.
+///
+/// The generic item write is the one that produced two rows for one provider
+/// item: a snapshot appended at `output_item.added` and the settled copy appended
+/// again by the commit. The projection must reach the log only through the
+/// lifecycle commands, so this gate trips the moment the append comes back.
+#[test]
+fn stream_projection_uses_only_the_lifecycle_writes() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/runtime/stream_projection.rs");
+    let contents = fs::read_to_string(&path).expect("stream_projection.rs");
+    let body = production_lines(&contents);
+
+    assert!(
+        body.contains("begin_stream_item")
+            && body.contains("update_stream_item")
+            && body.contains("seal_stream_item"),
+        "the projection must drive the explicit lifecycle commands"
+    );
+
+    let hits: Vec<String> = body
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| identifier_boundary_contains(line, "persist_item"))
+        .map(|(i, _)| format!("{}:{}: `persist_item`", path.display(), i + 1))
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "a streamed item must not go through the generic append:
+{}",
+        hits.join(
+            "
+"
+        )
+    );
+}
+
+/// Storage state comes from the command, never from the payload.
+///
+/// Reading an item's optional `status` as its lifecycle is what made every
+/// reasoning row "already settled" (reasoning items carry no `status` at all), so
+/// the commit could not settle them in place. The inference must not come back.
+#[test]
+fn session_never_infers_log_state_from_the_payload() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/session/data/sqlite/session.rs");
+    let contents = fs::read_to_string(&path).expect("session.rs");
+    let body = production_lines(&contents);
+
+    assert!(
+        !identifier_boundary_contains(&body, "log_state_of_item"),
+        "`log_state_of_item` is the inference this contract removed"
+    );
+    assert!(
+        body.contains("EventDraft::stream_item"),
+        "an in-flight row must say so explicitly when it is opened"
+    );
+    assert!(
+        body.contains("fn assert_stream_row_identity"),
+        "a streaming row's identity must be enforced on every rewrite"
+    );
+}
+
+/// The wire carries a row's lifecycle, so a client never has to guess it.
+#[test]
+fn buffer_rows_carry_their_own_state() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let wire = fs::read_to_string(root.join("src/client_protocol/project.rs")).expect("project.rs");
+    assert!(
+        wire.contains(r#""state": event.state.as_str()"#),
+        "every projected row must ship the log's own state"
+    );
+
+    let types = fs::read_to_string(root.join("../web/src/api/types.ts")).unwrap_or_default();
+    if types.is_empty() {
+        return;
+    }
+    assert!(
+        types.contains("state: LogRowState;"),
+        "the client type must require it rather than treat it as optional"
     );
 }

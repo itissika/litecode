@@ -1,4 +1,3 @@
-use litecode::authority::responses::{ResponseStreamEvent, ResponseTextDeltaEvent};
 use litecode::client_protocol::project;
 use litecode::client_protocol::protocol::{
     TurnEndReason, TurnTokenStats, WireEvent, WireTurnPhase, methods,
@@ -74,33 +73,22 @@ fn method_is(msg: &serde_json::Value, expected: &str) -> bool {
     msg.get("method").and_then(|m| m.as_str()) == Some(expected)
 }
 
-fn sample_stream_event() -> ResponseStreamEvent {
-    ResponseStreamEvent::ResponseOutputTextDelta(ResponseTextDeltaEvent {
-        sequence_number: 1,
-        item_id: "msg_1".into(),
-        output_index: 0,
-        content_index: 0,
-        delta: "hi".into(),
-        logprobs: None,
-    })
-}
-
 #[test]
-fn stream_event_projects_to_turn_event() {
+fn stream_event_is_runtime_only_and_not_projected_to_wire() {
     let snap = sample_snapshot();
-    let msg = project::project(&InternalEvent::StreamEvent(sample_stream_event()), &snap).unwrap();
-    assert!(method_is(&msg, "agent/turn_event"));
-    let params = &msg["params"];
-    assert_eq!(params["session_id"], "s1");
-    assert_eq!(params["turn_id"], "t1");
-    let event: WireEvent = serde_json::from_value(params["event"].clone()).unwrap();
-    match event {
-        WireEvent::StreamEvent { event } => match event {
-            ResponseStreamEvent::ResponseOutputTextDelta(e) => assert_eq!(e.delta, "hi"),
-            other => panic!("unexpected stream event: {:?}", other),
-        },
-        other => panic!("unexpected wire event: {:?}", other),
-    }
+    let event = serde_json::from_value(serde_json::json!({
+        "type": "response.output_text.delta",
+        "sequence_number": 1,
+        "item_id": "msg_1",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": "hi"
+    }))
+    .expect("response stream event");
+    assert!(
+        project::project(&InternalEvent::StreamEvent(event), &snap).is_none(),
+        "raw provider deltas must not be a second wire body source"
+    );
 }
 
 fn buffer_event(

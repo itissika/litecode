@@ -4,7 +4,6 @@
 
 use std::sync::Arc;
 
-use litecode::authority::responses::{ResponseStreamEvent, ResponseTextDeltaEvent};
 use litecode::client_protocol::controller::Projection;
 use litecode::client_protocol::observer::InternalEvent;
 use litecode::client_protocol::protocol::{SessionBindingProjection, methods};
@@ -129,19 +128,6 @@ fn succeeded(trigger: CompactionTrigger) -> InternalEvent {
         fail_kind: None,
         error: None,
     }
-}
-
-fn stream_delta(n: u64) -> InternalEvent {
-    InternalEvent::StreamEvent(ResponseStreamEvent::ResponseOutputTextDelta(
-        ResponseTextDeltaEvent {
-            sequence_number: n,
-            item_id: "msg_1".into(),
-            output_index: 0,
-            content_index: 0,
-            delta: "x".into(),
-            logprobs: None,
-        },
-    ))
 }
 
 #[test]
@@ -378,7 +364,7 @@ fn revert_then_append_does_not_reuse_deleted_seq() {
 }
 
 #[test]
-fn stream_events_do_not_emit_snapshot_or_grow_seq() {
+fn runtime_only_stream_events_do_not_emit_snapshot_or_grow_seq() {
     let (mut proj, sid, sessions) = setup_with_details(&["a"]);
     let before = sessions.entry_wire_seq_cursor(&sid);
     proj.on_event(
@@ -392,9 +378,16 @@ fn stream_events_do_not_emit_snapshot_or_grow_seq() {
     );
     let _ = proj.take_outgoing();
 
-    for n in 1..=8 {
-        proj.on_event(stream_delta(n), "/p", &binding());
-    }
+    let event = serde_json::from_value(serde_json::json!({
+        "type": "response.output_text.delta",
+        "sequence_number": 1,
+        "item_id": "msg_1",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": "x"
+    }))
+    .expect("response stream event");
+    proj.on_event(InternalEvent::StreamEvent(event), "/p", &binding());
     let out = proj.take_outgoing();
     assert!(
         out.iter()

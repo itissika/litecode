@@ -1716,12 +1716,16 @@ async fn compact_then_send_message_matches_run_with_turn() {
         status: OutputStatus::InProgress,
         phase: None,
     }));
-    sessions
-        .persist_item(&sid, &live)
-        .expect("BLAST-added: persist_item at output_item.added");
-    let added_seq = sessions.entry_wire_seq_cursor(&sid).0 as u64;
+    // The stream opens the row and settles it from the call's own copy, which is
+    // what the runtime projection does; the turn then commits the same item.
+    let added_seq = sessions
+        .begin_stream_item(&sid, &live, "t-blast")
+        .expect("BLAST-added: open the row at output_item.added");
     let sealed = assistant_text_item("hello after compact", "asst_after_compact");
-    items.push(WorkingRow::pending(sealed.clone()));
+    sessions
+        .seal_stream_item(&sid, added_seq, &sealed)
+        .expect("BLAST-added: settle from the call's own copy");
+    items.push(WorkingRow::persisted(added_seq, sealed.clone()));
     let seal_commit = pipeline
         .commit_step(&sessions, &sid, &mut items)
         .expect("BLAST-seal-commit: commit_step returned Err");
@@ -1731,10 +1735,10 @@ async fn compact_then_send_message_matches_run_with_turn() {
         pipeline.persisted_prefix_len(),
         items.len()
     );
-    assert_eq!(
-        seal_commit.sealed_seqs,
-        vec![added_seq],
-        "BLAST-seal-commit: persist then commit must return sealed seqs for BufferRestamp"
+    assert!(
+        seal_commit.sealed_seqs.is_empty(),
+        "BLAST-seal-commit: the stream settled the row, so the commit seals nothing          (the restamp came from the settle), got {:?}",
+        seal_commit.sealed_seqs
     );
     assert!(
         seal_commit.committed,

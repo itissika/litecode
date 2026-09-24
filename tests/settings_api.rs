@@ -331,7 +331,10 @@ fn settings_summary_masks_api_key() {
         .iter()
         .find(|p| p.id == common::TEST_PROVIDER_ID)
         .expect("fixture provider in the llm view");
-    assert!(provider.configured, "the seeded credential marks the provider configured");
+    assert!(
+        provider.configured,
+        "the seeded credential marks the provider configured"
+    );
     let masked = provider
         .masked_api_key
         .as_deref()
@@ -382,7 +385,6 @@ fn disabled_binding_changes_tools_count_after_reload() {
     use litecode::runtime::RuntimeHandle;
     use litecode::tool::registry::build_tool_list;
 
-
     let dir = TempDir::new().expect("dir");
     let db = dir.path().join("litecode.db");
     common::seed_test_catalog(&db, "http://127.0.0.1:9", 128_000);
@@ -403,8 +405,11 @@ fn disabled_binding_changes_tools_count_after_reload() {
 
     let settings = writer.load_settings().expect("load");
     let workspace = WorkspaceState::new("/tmp/p5-tools-count");
-    let resolved =
-        ConfigManager::resolve(settings.clone(), workspace.clone(), common::catalog_for_db(&db));
+    let resolved = ConfigManager::resolve(
+        settings.clone(),
+        workspace.clone(),
+        common::catalog_for_db(&db),
+    );
     let workspace_engines = Arc::new(WorkspaceEngines::new());
     let ide = litecode::ide_base::IdeBaseHandle::open(
         workspace.workspace_root.clone(),
@@ -740,7 +745,10 @@ async fn settings_provider_key_delete_removes_models_from_active_models() {
         .expect("fixture provider")
         .clone();
     assert_eq!(
-        provider["models"].as_array().expect("provider models").len(),
+        provider["models"]
+            .as_array()
+            .expect("provider models")
+            .len(),
         2,
         "the catalog lists every model regardless of credential state"
     );
@@ -783,7 +791,10 @@ async fn settings_provider_key_delete_removes_models_from_active_models() {
         "an unconfigured provider has no mask: {provider}"
     );
     assert_eq!(
-        provider["models"].as_array().expect("provider models").len(),
+        provider["models"]
+            .as_array()
+            .expect("provider models")
+            .len(),
         2,
         "the catalog still declares the provider's models (only selectability changed)"
     );
@@ -876,7 +887,6 @@ async fn settings_put_orphan_model_ref_returns_400() {
 fn apply_refreshes_provider_api_key_after_settings_write() {
     use litecode::runtime::RuntimeHandle;
 
-
     let dir = TempDir::new().expect("dir");
     let db = dir.path().join("litecode.db");
     common::seed_test_catalog(&db, "http://old.example/v1", 128_000);
@@ -896,8 +906,11 @@ fn apply_refreshes_provider_api_key_after_settings_write() {
 
     let settings = writer.load_settings().expect("load");
     let workspace = WorkspaceState::new("/tmp/reload-provider");
-    let resolved =
-        ConfigManager::resolve(settings.clone(), workspace.clone(), common::catalog_for_db(&db));
+    let resolved = ConfigManager::resolve(
+        settings.clone(),
+        workspace.clone(),
+        common::catalog_for_db(&db),
+    );
     let workspace_engines = Arc::new(WorkspaceEngines::new());
     let ide = litecode::ide_base::IdeBaseHandle::open(
         workspace.workspace_root.clone(),
@@ -957,7 +970,6 @@ fn apply_refreshes_provider_api_key_after_settings_write() {
 fn runtime_clone_reloads_stale_provider_after_settings_write() {
     use litecode::runtime::RuntimeHandle;
 
-
     let dir = TempDir::new().expect("dir");
     let db = dir.path().join("litecode.db");
     common::seed_test_catalog(&db, "http://old.example/v1", 128_000);
@@ -977,8 +989,11 @@ fn runtime_clone_reloads_stale_provider_after_settings_write() {
 
     let settings = writer.load_settings().expect("load");
     let workspace = WorkspaceState::new("/tmp/reload-provider-clone");
-    let resolved =
-        ConfigManager::resolve(settings.clone(), workspace.clone(), common::catalog_for_db(&db));
+    let resolved = ConfigManager::resolve(
+        settings.clone(),
+        workspace.clone(),
+        common::catalog_for_db(&db),
+    );
     let workspace_engines = Arc::new(WorkspaceEngines::new());
     let ide = litecode::ide_base::IdeBaseHandle::open(
         workspace.workspace_root.clone(),
@@ -1025,7 +1040,6 @@ async fn set_session_model_persists_selectable_catalog_ref() {
     use litecode::client_protocol::controller::SessionController;
     use litecode::runtime::RuntimeHandle;
 
-
     let ws_dir = TempDir::new().expect("ws");
     let project = ws_dir.path().to_string_lossy().to_string();
     init_workspace(ws_dir.path()).expect("init");
@@ -1060,11 +1074,7 @@ async fn set_session_model_persists_selectable_catalog_ref() {
         workspace_mcp_servers: Default::default(),
         workspace_custom_tools: Default::default(),
     };
-    let resolved = ConfigManager::resolve(
-        settings,
-        workspace.clone(),
-        common::catalog_for_db(&db),
-    );
+    let resolved = ConfigManager::resolve(settings, workspace.clone(), common::catalog_for_db(&db));
     let workspace_engines = Arc::new(WorkspaceEngines::new());
     let ide = litecode::ide_base::IdeBaseHandle::open(
         workspace.workspace_root.clone(),
@@ -1129,9 +1139,7 @@ async fn set_session_model_persists_selectable_catalog_ref() {
     let frames = ctrl.take_outgoing_for(&sid);
     let refusal = frames
         .iter()
-        .find(|f| {
-            f["method"] == "agent/operation_result" && f["params"]["op"] == "set_model"
-        })
+        .find(|f| f["method"] == "agent/operation_result" && f["params"]["op"] == "set_model")
         .unwrap_or_else(|| panic!("set_model answered on the wire: {frames:#?}"));
     assert_eq!(refusal["params"]["ok"], false);
     assert_eq!(refusal["params"]["error"]["code"], "invalid_request");

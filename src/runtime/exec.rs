@@ -38,7 +38,12 @@ impl AgentDeps for AgentRuntime {
         // Fail closed before request build when Items require unsupported modalities.
         crate::runtime::validate_llm_input_capabilities(&view.items, &self.turn_llm.model)?;
         let token_count = view.token_count;
-        let request = self.build_model_request(&instructions, view.items, token_count);
+        let request = self.build_model_request(
+            &instructions,
+            view.items,
+            view.item_seqs,
+            token_count,
+        )?;
 
         // Default path: Responses SSE via complete_with_stream_events → authority
         // ResponseStreamEvent; observer forwards InternalEvent::StreamEvent.
@@ -306,18 +311,26 @@ impl AgentRuntime {
         &self,
         instructions: &str,
         input: Vec<Item>,
+        item_seqs: Vec<Option<crate::session::event::Seq>>,
         token_count: usize,
-    ) -> ModelRequest {
+    ) -> Result<ModelRequest> {
         let tool_schemas = self.rctx().tool_defs();
 
         let tool_names: Vec<&str> = tool_schemas.iter().map(|t| t.name.as_str()).collect();
         let model = self.turn_llm.api_model_id.clone();
+        let issuer = crate::llm::issuer_of_model(&self.turn_llm.model);
+        // Origin is an append-only control-plane row written before the request.
+        // If it fails, do not send items whose future issuer could not be proven.
+        let origin_seq = self.record_request_origin(&issuer)?;
+        let input_origins = self.llm_input_origins(&input, &item_seqs);
         tracing::info!(
             target: "litecode.debug.llm_request",
             session_id = %self.session_id,
             step = self.current_step_value(),
             model = %model,
             endpoint = %self.provider().endpoint(),
+            issuer = %issuer,
+            origin_seq,
             tools_count = tool_names.len(),
             tools = ?tool_names,
             item_count = input.len(),
@@ -327,20 +340,104 @@ impl AgentRuntime {
             "LLM request built"
         );
 
-        ModelRequest {
+        let mut request = ModelRequest {
             model,
             instructions: instructions.to_string(),
             input,
+            tools: tool_schemas,
             max_output_tokens: self.turn_llm.max_tokens,
             temperature: self.agent_config.temperature,
-            tools: tool_schemas,
             thinking: crate::platform_knobs::ThinkingSpec::Tier(self.turn_llm.thinking_tier),
             // Session binding only — never agent.model_ref (decoupled sticky model).
             // No turn-level JSON intent: `model.json_output` is a capability the
             // codec gates on, not a per-turn instruction.
             json_output: false,
             session_id: Some(self.session_id.clone()),
+            input_origins,
+            issuer,
+        };
+        let store = crate::llm::StoreMode::of_model(&self.turn_llm.model);
+        let report = request.project_replay(store);
+        if !report.is_empty() {
+            tracing::debug!(
+                target: "litecode.debug.llm_request",
+                session_id = %self.session_id,
+                step = self.current_step_value(),
+                issuer = %request.issuer,
+                identities_kept = report.identities_kept,
+                identities_stripped = report.identities_stripped,
+                items_dropped = report.items_dropped,
+                "replay identities projected for this endpoint"
+            );
         }
+        Ok(request)
+    }
+
+    /// Resolve item ownership only through each item's durable source seq.
+    /// Provider IDs are used below only to find active cross-request collisions,
+    /// never to map an item back to its session row.
+    fn llm_input_origins(
+        &self,
+        input: &[Item],
+        item_seqs: &[Option<crate::session::event::Seq>],
+    ) -> Vec<crate::llm::ItemOrigin> {
+        let known = self
+            .sessions
+            .request_origins(&self.session_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(seq, body)| crate::llm::RequestOrigin {
+                seq,
+                issuer: body
+                    .get("issuer")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                request_key: body
+                    .get("request_key")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+            .collect::<Vec<_>>();
+        let mut origins = crate::llm::origins_for_seqs(item_seqs, &known);
+        let active_rows = self
+            .context_pipeline
+            .working_set()
+            .into_iter()
+            .map(|row| {
+                let origin = crate::llm::origin_for_seq(&known, row.log_seq);
+                (row.item, origin)
+            })
+            .collect::<Vec<_>>();
+        crate::llm::mark_cross_call_reuse(input, &mut origins, &active_rows);
+        origins
+    }
+
+    /// Append the request boundary before sending, so the next durable Item row
+    /// inherits exactly this turn/step's issuer. Failed provenance writes fail the
+    /// turn before the provider sees a request; guessing would be unsafe.
+    fn record_request_origin(
+        &self,
+        issuer: &str,
+    ) -> Result<crate::session::event::Seq> {
+        let turn_id = self.context_pipeline.current_turn_id().ok_or_else(|| {
+            crate::types::LitecodeError::Llm(
+                "request origin cannot be recorded without a turn id".into(),
+            )
+        })?;
+        let step = self.current_step_value();
+        let record = serde_json::json!({
+            "schema": 1,
+            "turn": turn_id,
+            "step": step,
+            "request_key": format!("{turn_id}:{step}"),
+            "issuer": issuer,
+            "endpoint_type": self.turn_llm.model.endpoint_type.as_str(),
+            "provider_id": self.turn_llm.provider_id,
+            "model_ref": self.turn_llm.model_ref,
+        });
+        self.sessions.append_request_origin(&self.session_id, &record)
     }
 
     /// Items in/out via `complete_with_stream_events` (Responses SSE by default).
@@ -366,15 +463,29 @@ impl AgentRuntime {
         let totals = &mut self.turn_usage_totals;
         let prompt_usage_baseline = &self.prompt_usage_baseline;
         let request_item_count = request.input.len();
+        // The stream and the terminal payload describe the same items. This is
+        // the only thing that decides which `seq` they share, so an item that
+        // streams and then completes stays one row in the log.
+        let turn_id = self.context_pipeline.current_turn_id().ok_or_else(|| {
+            crate::types::LitecodeError::Llm(
+                "call_model_complete without a turn id: a streamed row must belong to a turn"
+                    .into(),
+            )
+        })?;
+        let projection = super::stream_projection::StreamProjection::new(
+            Arc::clone(&sessions),
+            Arc::clone(&observer),
+            session_id.clone(),
+            turn_id,
+        );
+        let stream_projection = Arc::clone(&projection);
         let on_event: Option<Box<dyn FnMut(crate::types::StreamEvents) + Send + '_>> =
             Some(Box::new(move |ev| {
-                if let crate::types::StreamEvents::ResponseOutputItemAdded(added) = &ev {
-                    let item = Item::from(added.item.clone());
-                    match sessions.persist_item(&session_id, &item) {
-                        Ok(()) => observer.on_internal(InternalEvent::StepCommitted),
-                        Err(e) => tracing::warn!(%e, "persist Item at output_item.added failed"),
-                    }
-                }
+                // The raw event stays on the runtime bus for turn progress and
+                // diagnosis. It is not a second body: what the client shows is the
+                // row this fold writes, so the fold is what has to be durable.
+                observer.on_internal(InternalEvent::StreamEvent(ev.clone()));
+                stream_projection.observe(&ev);
                 if let crate::types::StreamEvents::ResponseCompleted(cev) = &ev {
                     if let Some(usage) = &cev.response.usage {
                         let prompt = usage.input_tokens as u64;
@@ -431,13 +542,36 @@ impl AgentRuntime {
                         );
                     }
                 }
-                observer.on_internal(InternalEvent::StreamEvent(ev));
             }));
-        match provider
+        let outcome = provider
             .as_ref()
             .complete_with_stream_events(request, api_key, on_event, &self.cancel)
-            .await
-        {
+            .await;
+        // Settle the rows the stream opened from the call's own copy of its
+        // items — the same bytes the turn is about to commit. A failure to settle
+        // is the call's failure: the log and the model's output would otherwise
+        // disagree about what this call produced.
+        match &outcome {
+            Ok(items) => projection.settle(Some(items))?,
+            Err(error) => {
+                // Its partial items are still what the agent will persist, so they
+                // are what the rows settle with. A lifecycle failure is combined
+                // with the provider failure rather than downgraded to a warning:
+                // both are part of the failed call's boundary contract.
+                let fallback = match error {
+                    crate::types::LitecodeError::LlmStreamInterrupted { partial, .. } => {
+                        Some(partial.as_slice())
+                    }
+                    _ => None,
+                };
+                if let Err(settle_error) = projection.settle(fallback) {
+                    return Err(crate::types::LitecodeError::Llm(format!(
+                        "{error}; streamed rows could not be settled: {settle_error}"
+                    )));
+                }
+            }
+        }
+        match outcome {
             Ok(items) => Ok(items),
             Err(crate::types::LitecodeError::Canceled) => {
                 Err(crate::types::LitecodeError::Canceled)
@@ -593,6 +727,8 @@ mod estimate_body_bytes_tests {
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: None,
+            input_origins: vec![],
+            issuer: String::new(),
         }
     }
 

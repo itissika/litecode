@@ -7,7 +7,7 @@ use crate::types::{Item, LitecodeError, Result, item_text_preview};
 
 use super::model::{CompactedBody, LogState};
 use super::surface::{Surface, SurfaceOp, apply_plan, plan_surface};
-use crate::authority::responses::{MessageItem, OutputStatus};
+use crate::authority::responses::MessageItem;
 
 /// Monotonic log position. Never rewritten, never reused.
 pub type Seq = u64;
@@ -158,7 +158,37 @@ pub struct EventDraft {
 }
 
 impl EventDraft {
+    /// A surface event whose payload is complete when it is appended.
+    ///
+    /// Appending is a statement about content, not about the provider: the
+    /// caller hands over an item it considers whole (a user turn, a tool result,
+    /// a compacted summary, a synthesised assistant message). The row therefore
+    /// settles on arrival. Streaming uses [`Self::stream_item`] instead.
     pub fn surface_item(event_type: EventType, item: &Item, surface_op: SurfaceOp) -> Result<Self> {
+        Self::item_with_state(event_type, item, surface_op, LogState::Final)
+    }
+
+    /// A surface event opening (or re-writing) a row that is still streaming.
+    ///
+    /// The state is passed in rather than inferred from the payload: `Item`
+    /// `status` is provider content, and dialects disagree about whether they
+    /// send it at all. Only the streaming lifecycle knows whether a row is still
+    /// in flight.
+    pub fn stream_item(
+        event_type: EventType,
+        item: &Item,
+        surface_op: SurfaceOp,
+        state: LogState,
+    ) -> Result<Self> {
+        Self::item_with_state(event_type, item, surface_op, state)
+    }
+
+    fn item_with_state(
+        event_type: EventType,
+        item: &Item,
+        surface_op: SurfaceOp,
+        state: LogState,
+    ) -> Result<Self> {
         Ok(Self {
             time: 0,
             event_type,
@@ -166,7 +196,7 @@ impl EventDraft {
             surface_op: Some(surface_op),
             source_seqs: None,
             ignorable: false,
-            state: log_state_of_item(item),
+            state,
         })
     }
 }
@@ -257,20 +287,6 @@ pub fn finalize_draft(seq: Seq, draft: EventDraft) -> Result<SessionEvent> {
         ignorable: draft.ignorable,
         state: draft.state,
     })
-}
-
-pub fn log_state_of_item(item: &Item) -> LogState {
-    let in_progress = match item {
-        Item::Message(MessageItem::Output(m)) => m.status == OutputStatus::InProgress,
-        Item::FunctionCall(fc) => matches!(fc.status, Some(OutputStatus::InProgress)),
-        Item::Reasoning(r) => matches!(r.status, Some(OutputStatus::InProgress)),
-        _ => false,
-    };
-    if in_progress {
-        LogState::InProgress
-    } else {
-        LogState::Final
-    }
 }
 
 pub fn item_from_event(event: &SessionEvent) -> Result<Item> {

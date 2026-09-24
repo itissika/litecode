@@ -24,7 +24,6 @@ use crate::authority::responses::{
     AssistantRole, MessageItem, OutputMessage, OutputMessageContent, OutputStatus,
     OutputTextContent,
 };
-use crate::session::working::WorkingRow;
 use crate::session::{SessionData, WorkspaceWriteLease};
 use crate::types::{Item, assistant_text, user_text};
 
@@ -110,8 +109,10 @@ impl Fixture {
         it.collect::<rusqlite::Result<Vec<_>>>().expect("collect")
     }
 
+    /// Open a row the way the streaming path does: in flight because the caller
+    /// says so, not because the payload happens to carry `status`.
     fn streaming(&self, id: &str, text: &str) -> SessionMutation {
-        SessionMutation::PersistItem {
+        SessionMutation::BeginStreamItem {
             session_id: self.sid.clone(),
             expected_revision: 0,
             operation_id: MutationId::new(),
@@ -126,6 +127,7 @@ impl Fixture {
                 status: OutputStatus::InProgress,
                 phase: None,
             })),
+            turn_id: "t-stream".into(),
         }
     }
 
@@ -143,6 +145,27 @@ impl Fixture {
         }))
     }
 
+    /// More text for a row that is already streaming.
+    fn streaming_more(&self, seq: i64, id: &str, text: &str) -> SessionMutation {
+        SessionMutation::UpdateStreamItem {
+            session_id: self.sid.clone(),
+            expected_revision: 0,
+            operation_id: MutationId::new(),
+            seq: seq as u64,
+            item: Item::Message(MessageItem::Output(OutputMessage {
+                id: id.into(),
+                role: AssistantRole::Assistant,
+                content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                    text: text.into(),
+                    annotations: vec![],
+                    logprobs: None,
+                })],
+                status: OutputStatus::InProgress,
+                phase: None,
+            })),
+        }
+    }
+
     fn seal_all(&self) {
         self.mutate(self.with_rev(SessionMutation::SealInProgress {
             session_id: self.sid.clone(),
@@ -156,6 +179,15 @@ impl Fixture {
         let rev = self.rev();
         match &mut m {
             SessionMutation::PersistItem {
+                expected_revision, ..
+            }
+            | SessionMutation::BeginStreamItem {
+                expected_revision, ..
+            }
+            | SessionMutation::UpdateStreamItem {
+                expected_revision, ..
+            }
+            | SessionMutation::SealStreamItem {
                 expected_revision, ..
             }
             | SessionMutation::InsertDetails {
@@ -220,17 +252,24 @@ fn a_finalised_row_is_never_rewritten() {
     // InProgress -> Final transition the projection must never observe.
     f.mutate(f.with_rev(f.streaming("asst_1", "Hel")));
     assert_eq!(f.in_progress_seqs().len(), 1, "the row is in flight");
-    f.mutate(f.with_rev(f.streaming("asst_1", "Hello wor")));
+    let stream_seq = f.in_progress_seqs()[0];
+    f.mutate(f.with_rev(f.streaming_more(stream_seq, "asst_1", "Hello wor")));
     check(&f, &mut ledger, "stream again");
 
+    // Commit carries the seq allocated by BeginStreamItem. Session lifecycle
+    // transitions are addressed by seq; provider ids are only call-scoped
+    // association keys owned by StreamProjection.
+    let mut rows = f.data.working_set_blocking(&f.sid).expect("working set");
+    let streamed = rows
+        .iter_mut()
+        .find(|row| row.log_seq == Some(stream_seq as u64))
+        .expect("streamed row");
+    streamed.item = f.finished("asst_1", "Hello world");
     f.mutate(f.with_rev(SessionMutation::CommitTurnDelta {
         session_id: f.sid.clone(),
         expected_revision: 0,
         operation_id: MutationId::new(),
-        rows: vec![
-            WorkingRow::pending(user_text("first turn")),
-            WorkingRow::pending(f.finished("asst_1", "Hello world")),
-        ],
+        rows,
         expected_max_seq: -1,
         turn_id: "t1".into(),
     }));
@@ -260,12 +299,12 @@ fn a_finalised_row_is_never_rewritten() {
         "sealing again touches nothing"
     );
 
-    // Appends and a revert.
+    // Append a second user turn so `k=1` is a real revert anchor.
     f.mutate(f.with_rev(SessionMutation::InsertDetails {
         session_id: f.sid.clone(),
         expected_revision: 0,
         operation_id: MutationId::new(),
-        items: vec![assistant_text("tail")],
+        items: vec![user_text("second turn"), assistant_text("tail")],
         turn_id: "t2".into(),
     }));
     check(&f, &mut ledger, "append after seal");
@@ -385,7 +424,7 @@ fn a_restart_seals_rows_the_previous_run_left_in_flight() {
         let sid = data.create_session("/p", "default", None).expect("create");
         // A turn starts streaming and the process dies mid-sentence: nothing
         // cancels it, nothing seals it, and the row keeps its `in_progress`.
-        data.mutate_blocking(SessionMutation::PersistItem {
+        data.mutate_blocking(SessionMutation::BeginStreamItem {
             session_id: sid.clone(),
             expected_revision: 1,
             operation_id: MutationId::new(),
@@ -400,6 +439,7 @@ fn a_restart_seals_rows_the_previous_run_left_in_flight() {
                 status: OutputStatus::InProgress,
                 phase: None,
             })),
+            turn_id: "t-crash".into(),
         })
         .expect("persist");
         sid

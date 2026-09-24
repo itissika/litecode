@@ -56,6 +56,32 @@ pub struct ContextPipeline {
     state: Mutex<PipelineState>,
 }
 
+/// Map a padded LLM view back to durable rows without treating a provider item ID
+/// as unique across requests. The pad operation preserves the original item order;
+/// synthetic outputs have no matching source item and receive `None`.
+fn align_padded_item_seqs(
+    source_items: &[Item],
+    source_seqs: &[Option<crate::session::event::Seq>],
+    view_items: &[Item],
+) -> Vec<Option<crate::session::event::Seq>> {
+    debug_assert_eq!(source_items.len(), source_seqs.len());
+    let mut source_index = 0usize;
+    let aligned: Vec<_> = view_items
+        .iter()
+        .map(|item| {
+            if source_items.get(source_index) == Some(item) {
+                let seq = source_seqs[source_index];
+                source_index += 1;
+                seq
+            } else {
+                None
+            }
+        })
+        .collect();
+    debug_assert_eq!(source_index, source_items.len());
+    aligned
+}
+
 impl ContextPipeline {
     pub fn new(context_window: usize, _ctx: Context, data_root: PathBuf) -> Self {
         Self {
@@ -107,6 +133,18 @@ impl ContextPipeline {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .working
+            .clone()
+    }
+
+    /// The turn this pipeline is currently running, if any.
+    ///
+    /// Rows written while a turn is running belong to it; nothing may be written
+    /// without one.
+    pub fn current_turn_id(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .turn_id
             .clone()
     }
 
@@ -316,20 +354,31 @@ impl ContextPipeline {
         // Crash / force-kill recovery: dangling FunctionCalls must be padded on
         // the ephemeral LLM view so Chat providers accept the request. Do not
         // persist synthetic outputs as `detail` — the disk keeps the hanging
-        // FunctionCall until a real result or abort seal.
-        *turn_items = project_items(&self.state.lock().unwrap_or_else(|e| e.into_inner()).working);
+        // FunctionCall until a real result or abort seal. Keep the source seq
+        // sidecar aligned by preserving original order and assigning `None` only
+        // to inserted pads; do not use provider IDs as a history index.
+        let (turn_view, source_seqs) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                project_items(&state.working),
+                state.working.iter().map(|row| row.log_seq).collect::<Vec<_>>(),
+            )
+        };
+        *turn_items = turn_view.clone();
 
-        let mut llm_items = turn_items.clone();
+        let mut llm_items = turn_view.clone();
         Session::pad_unanswered_calls(&mut llm_items);
+        let item_seqs = align_padded_item_seqs(&turn_view, &source_seqs, &llm_items);
         crate::runtime::project_llm_input_for_model(&mut llm_items, model);
 
         let token_count = self
             .budget
             .token_count_with_baseline(&llm_items, prompt_baseline);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.hot.replace(turn_items.clone());
+        state.hot.replace(turn_view);
         state.prepared = Some(PreparedView {
             items: llm_items,
+            item_seqs,
             token_count,
             instructions: None,
         });
@@ -356,12 +405,13 @@ impl ContextPipeline {
         session_id: &str,
         items: &mut Vec<Item>,
     ) -> Result<CommitStepOutcome> {
-        let mut rows = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .working
-            .clone();
+        // The log's own working set is the authority on what is already durable.
+        // The stream projector writes rows as items arrive, so `state.working` is
+        // stale by the time the agent hands its items back — a pending row for an
+        // item that already has a `seq` is what appends a second copy of it.
+        // Starting from the reloaded rows binds every item to the row it owns, in
+        // output order, and leaves only genuinely new items pending.
+        let mut rows = sessions.data().working_set_blocking(session_id)?;
         align_working(&mut rows, items);
         let outcome = self.commit_step(sessions, session_id, &mut rows)?;
         *items = project_items(&rows);
@@ -459,5 +509,119 @@ mod turn_window_tests {
         assert_eq!(rows[0].log_seq, Some(0));
         assert_eq!(rows[1].log_seq, Some(1));
         assert_eq!(rows[2].log_seq, None);
+    }
+
+    #[test]
+    fn padding_alignment_uses_order_not_provider_ids() {
+        let source = vec![user_text("same"), user_text("same")];
+        let padded = vec![
+            user_text("same"),
+            crate::types::assistant_text("host pad"),
+            user_text("same"),
+        ];
+        assert_eq!(
+            align_padded_item_seqs(&source, &[Some(10), Some(20)], &padded),
+            vec![Some(10), None, Some(20)]
+        );
+    }
+}
+
+/// A streamed item already owns a row; the commit that follows must find it.
+///
+/// The projector writes rows while the model is still talking, so the pipeline's
+/// cached working set is stale by the time the agent hands the same items back.
+/// Treating them as new is what appends a second copy of every streamed item —
+/// the duplicate the reader sees as repeated reasoning and repeated tool calls.
+#[cfg(test)]
+mod stream_commit_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::authority::responses::{AssistantRole, OutputMessage, OutputStatus};
+    use crate::config::TurnGuard;
+    use crate::session::SessionManager;
+    use crate::types::user_text;
+
+    fn assistant(id: &str, text: &str) -> Item {
+        Item::Message(crate::authority::responses::MessageItem::Output(
+            OutputMessage {
+                id: id.to_string(),
+                role: AssistantRole::Assistant,
+                content: vec![
+                    crate::authority::responses::OutputMessageContent::OutputText(
+                        crate::authority::responses::OutputTextContent {
+                            text: text.to_string(),
+                            annotations: vec![],
+                            logprobs: None,
+                        },
+                    ),
+                ],
+                status: OutputStatus::Completed,
+                phase: None,
+            },
+        ))
+    }
+
+    fn test_context() -> Context {
+        let root = PathBuf::from("/p");
+        Context {
+            workspace_paths: crate::config::WorkspacePaths::for_legacy_root(&root),
+            cwd: root,
+            agents_md: None,
+            claude_md: None,
+        }
+    }
+
+    fn persisted_seqs(sessions: &SessionManager, sid: &str) -> Vec<u64> {
+        sessions
+            .data()
+            .events_blocking(sid)
+            .expect("events")
+            .into_iter()
+            .map(|event| event.seq)
+            .collect()
+    }
+
+    #[test]
+    fn committing_a_streamed_item_does_not_append_a_second_copy() {
+        let sessions = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            String::new(),
+        ));
+        let sid = sessions
+            .open_session_sync("/p", "default", Some("m"))
+            .expect("session");
+        sessions
+            .insert_detail_rows(&sid, &[user_text("go")])
+            .expect("user row");
+
+        // What the stream projector does as the model talks: open, then settle.
+        let streamed = assistant("asst_stream", "hello");
+        let seq = sessions
+            .begin_stream_item(&sid, &streamed, "turn-1")
+            .expect("open");
+        sessions
+            .seal_stream_item(&sid, seq, &streamed)
+            .expect("seal");
+
+        let before = persisted_seqs(&sessions, &sid);
+        assert_eq!(
+            before.len(),
+            2,
+            "user row plus one streamed row: {before:?}"
+        );
+
+        let pipeline = ContextPipeline::new(0, test_context(), PathBuf::from("/p"));
+        let mut items = vec![user_text("go"), streamed];
+        pipeline
+            .commit_step_from_items(&sessions, &sid, &mut items)
+            .expect("commit");
+
+        let after = persisted_seqs(&sessions, &sid);
+        assert_eq!(
+            after, before,
+            "the commit must bind the streamed item to the row it already owns"
+        );
+        assert_eq!(items.len(), 2);
     }
 }

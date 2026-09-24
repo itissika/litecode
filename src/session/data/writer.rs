@@ -580,21 +580,73 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             operation_id,
             item,
         } => {
-            let (seq, sealed) = {
+            let seq = {
                 let session = ensure_live(state, &session_id)?;
-                session.persist_item_outcome(&item)?
-            };
-            let outcome = if sealed {
-                CommitKind::Sealed { seqs: vec![seq] }
-            } else {
-                CommitKind::Appended { seq }
+                session.persist_item(&item)?
             };
             bump_receipt(
                 state,
                 &session_id,
                 &operation_id.0,
                 expected_revision,
-                outcome,
+                CommitKind::Appended { seq },
+            )
+        }
+        SessionMutation::BeginStreamItem {
+            session_id,
+            expected_revision,
+            operation_id,
+            item,
+            turn_id,
+        } => {
+            let seq = {
+                let session = ensure_live(state, &session_id)?;
+                session.begin_stream_item(&item, &turn_id)?
+            };
+            bump_receipt(
+                state,
+                &session_id,
+                &operation_id.0,
+                expected_revision,
+                CommitKind::Appended { seq },
+            )
+        }
+        SessionMutation::UpdateStreamItem {
+            session_id,
+            expected_revision,
+            operation_id,
+            seq,
+            item,
+        } => {
+            {
+                let session = ensure_live(state, &session_id)?;
+                session.update_stream_item(seq, &item)?;
+            }
+            bump_receipt(
+                state,
+                &session_id,
+                &operation_id.0,
+                expected_revision,
+                CommitKind::MetaUpdated,
+            )
+        }
+        SessionMutation::SealStreamItem {
+            session_id,
+            expected_revision,
+            operation_id,
+            seq,
+            item,
+        } => {
+            {
+                let session = ensure_live(state, &session_id)?;
+                session.seal_stream_item(seq, &item)?;
+            }
+            bump_receipt(
+                state,
+                &session_id,
+                &operation_id.0,
+                expected_revision,
+                CommitKind::Sealed { seqs: vec![seq] },
             )
         }
         SessionMutation::AppendJobExit {

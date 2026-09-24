@@ -163,9 +163,9 @@ pub async fn listen(
             session_gc.gc_stale_empty_sessions(EMPTY_SESSION_TTL).await;
         }
     });
-    // Idle refresh of the session semantic index. Never on the search path: a
-    // search only reads whatever the ANN already holds (stale is fine, wrong is
-    // not — `build_agent_view` re-checks each hit against the store).
+    // Idle refresh of both session indexes. Never on the search path: a search
+    // only reads whatever the index already holds (stale is fine, wrong is not —
+    // `build_agent_view` re-checks each hit against the store).
     {
         let engines = state.workspace_engines.clone();
         let turn_guard = state.turn_guard.clone();
@@ -174,7 +174,16 @@ pub async fn listen(
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
-                // Same gate as a settings write: never contend with a running turn.
+                // The sparse ledger is refreshed every tick, turn or not: it is a
+                // key diff over its own file, a search never waits for it, and a
+                // corpus written by parallel sessions would otherwise only ever
+                // move in front of a query. Frequent passes are the cheap ones —
+                // each covers a smaller delta.
+                if let Some(reader) = engines.session_reader() {
+                    crate::engines::session_search::spawn_sparse_refresh(&reader);
+                }
+                // The dense lane is still turn-gated: its pass embeds, and its
+                // worker call holds the client lock.
                 if turn_guard.is_turn_in_progress() {
                     continue;
                 }

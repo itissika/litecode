@@ -108,9 +108,7 @@ fn get_api_key(resolved: &ResolvedConfig) -> anyhow::Result<String> {
         .and_then(|provider| resolved.provider_api_key(&provider.id))
         .map(str::to_string)
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no provider API key configured; add one in Settings → Providers"
-            )
+            anyhow::anyhow!("no provider API key configured; add one in Settings → Providers")
         })
 }
 
@@ -185,6 +183,7 @@ fn run_turn_streaming(
         }))
         .map_err(|_| anyhow::anyhow!("connection closed"))?;
 
+    let mut text_cursor = TextCursor::default();
     rt.block_on(async {
         loop {
             let Some(msg) = conn.next_envelope().await else {
@@ -208,6 +207,7 @@ fn run_turn_streaming(
             // Otherwise treat as notification
             match classify_incoming(&msg) {
                 IncomingWire::TurnEvent(ev) => print_wire_event(&ev),
+                IncomingWire::AssistantText { seq, text } => text_cursor.absorb(seq, &text),
                 IncomingWire::PermissionRequest {
                     request_id,
                     tool,
@@ -235,23 +235,44 @@ fn run_turn_streaming(
     })
 }
 
-/// Print streaming wire events to stdout.
+/// Print the answer as it lands in the log.
+///
+/// One row holds the whole answer and grows in place, so the cursor prints a
+/// `seq`'s text once and afterwards only what was appended to it — the log is the
+/// only body, which is why a resumed or reconnected run prints the same text a
+/// reload would show rather than re-printing or losing a chunk.
+#[derive(Default)]
+struct TextCursor {
+    seq: Option<u64>,
+    printed: usize,
+}
+
+impl TextCursor {
+    fn absorb(&mut self, seq: u64, text: &str) {
+        if self.seq != Some(seq) {
+            self.seq = Some(seq);
+            self.printed = 0;
+        }
+        if text.len() <= self.printed {
+            return;
+        }
+        let Some(suffix) = text.get(self.printed..) else {
+            // The row was rewritten rather than appended to; print it whole.
+            self.printed = 0;
+            print!("{text}");
+            std::io::stdout().flush().ok();
+            self.printed = text.len();
+            return;
+        };
+        print!("{suffix}");
+        std::io::stdout().flush().ok();
+        self.printed = text.len();
+    }
+}
+
+/// Print control-plane wire events to stdout.
 fn print_wire_event(event: &WireEvent) {
     match event {
-        WireEvent::StreamEvent { event: stream } => {
-            use crate::authority::responses::ResponseStreamEvent;
-            match stream {
-                ResponseStreamEvent::ResponseOutputTextDelta(e) => {
-                    print!("{}", e.delta);
-                    std::io::stdout().flush().ok();
-                }
-                ResponseStreamEvent::ResponseReasoningSummaryTextDelta(e) => {
-                    // Reasoning stream: ignore for CLI stdout (text only).
-                    let _ = e;
-                }
-                _ => {}
-            }
-        }
         WireEvent::Error { message, .. } => {
             tracing::error!(error = %message, "agent error");
             eprintln!("\n[error: {}]", message);
@@ -459,7 +480,10 @@ pub fn run() -> anyhow::Result<()> {
             } else {
                 &format!("  |  {}", row.preview)
             };
-            println!("{}  {}  {}{}", row.id, row.project, row.updated_at, preview_str);
+            println!(
+                "{}  {}  {}{}",
+                row.id, row.project, row.updated_at, preview_str
+            );
         }
         data.shutdown();
         return Ok(());

@@ -69,15 +69,19 @@ mod tests {
 
     #[test]
     fn builtin_orchestrator_marker_loads_orchestrator_pack() {
-        let prompt =
-            build_system_prompt("orchestrator", &cfg("primary", "builtin:orchestrator"), None);
+        let prompt = build_system_prompt(
+            "orchestrator",
+            &cfg("primary", "builtin:orchestrator"),
+            None,
+        );
         assert!(prompt.starts_with("You are LiteCode's Orchestrator."));
         assert_eq!(prompt, ORCHESTRATOR_PROMPT.trim());
     }
 
     #[test]
     fn user_override_replaces_builtin() {
-        let prompt = build_system_prompt("default", &cfg("primary", "You are a custom agent."), None);
+        let prompt =
+            build_system_prompt("default", &cfg("primary", "You are a custom agent."), None);
         assert_eq!(prompt, "You are a custom agent.");
         assert!(!prompt.contains("General Purpose Agent"));
     }

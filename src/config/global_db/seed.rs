@@ -493,10 +493,15 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "fresh schema must not create the '{legacy}' table");
+            assert_eq!(
+                count, 0,
+                "fresh schema must not create the '{legacy}' table"
+            );
         }
         let credentials: i64 = conn
-            .query_row("SELECT COUNT(*) FROM provider_credentials", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM provider_credentials", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(credentials, 0);
 

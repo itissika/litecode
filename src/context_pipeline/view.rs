@@ -36,6 +36,12 @@ impl HotView {
 #[derive(Debug, Clone)]
 pub struct PreparedView {
     pub items: Transcript,
+    /// Source Session seq per item, parallel to `items`.
+    ///
+    /// A `None` entry is a host-synthesized view-only item (e.g. an unanswered
+    /// tool-call pad). The mapping is carried positionally; provider IDs are not
+    /// used to recover it because providers may reuse IDs across requests.
+    pub item_seqs: Vec<Option<crate::session::event::Seq>>,
     pub token_count: usize,
     /// Optional system / instructions string for this step (set by prepare or caller).
     pub instructions: Option<String>,

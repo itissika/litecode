@@ -410,15 +410,9 @@ impl CompactPolicy {
         let discarded = &transcript[..cut];
         let kept = transcript[cut..].to_vec();
         let prompt = build_compaction_prompt(discarded);
-        let summary = Self::call_llm_compact(
-            llm,
-            system_prompt,
-            &prompt,
-            max_tokens,
-            session_id,
-            cancel,
-        )
-        .await?;
+        let summary =
+            Self::call_llm_compact(llm, system_prompt, &prompt, max_tokens, session_id, cancel)
+                .await?;
 
         if cancel.is_cancelled() {
             return Err(LitecodeError::Canceled);
@@ -648,7 +642,9 @@ mod tests {
             _on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
             _cancel: &'a CancellationToken,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-            Box::pin(async move { Ok::<_, LitecodeError>(vec![assistant_text("## summary\nkept")]) })
+            Box::pin(
+                async move { Ok::<_, LitecodeError>(vec![assistant_text("## summary\nkept")]) },
+            )
         }
     }
 

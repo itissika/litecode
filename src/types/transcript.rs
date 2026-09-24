@@ -72,21 +72,37 @@ pub fn item_text_preview(item: &Item) -> String {
             })
             .collect::<Vec<_>>()
             .join("\n"),
-        Item::Reasoning(r) => r
-            .content
-            .as_ref()
-            .map(|parts| {
-                parts
-                    .iter()
-                    .filter_map(|p| match p {
-                        crate::authority::responses::ReasoningItemContent::ReasoningText(t) => {
-                            Some(t.text.as_str())
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default(),
+        // OpenAI-family reasoning arrives as `summary` parts and carries no
+        // `content`; dialects that stream raw reasoning text do the opposite.
+        // Either one is this item's text, so fall back rather than report empty.
+        Item::Reasoning(r) => {
+            let from_content = r
+                .content
+                .as_ref()
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            crate::authority::responses::ReasoningItemContent::ReasoningText(t) => {
+                                Some(t.text.as_str())
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            if !from_content.is_empty() {
+                return from_content;
+            }
+            r.summary
+                .iter()
+                .map(|part| match part {
+                    crate::authority::responses::SummaryPart::SummaryText(t) => t.text.as_str(),
+                })
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
         Item::FunctionCall(fc) => format!("{}({})", fc.name, fc.arguments),
         Item::FunctionCallOutput(out) => match &out.output {
             crate::authority::responses::FunctionCallOutput::Text(s) => s.clone(),

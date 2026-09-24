@@ -116,6 +116,9 @@ pub fn execute(
         SessionRead::ChangeLogSince { last_change_id } => {
             Ok(ReadValue::Changes(change_log_since(conn, last_change_id)?))
         }
+        SessionRead::RequestOrigins { session_id } => {
+            Ok(ReadValue::RequestOrigins(request_origins(conn, &session_id)?))
+        }
         SessionRead::LatestChangeId => Ok(ReadValue::Count(latest_change_id(conn)?)),
     }
 }
@@ -151,6 +154,32 @@ fn load_events_range(
     data_root: &std::path::Path,
 ) -> Result<Vec<SessionEvent>> {
     session::load_events_range_on(conn, session_id, from, to, data_root)
+}
+
+/// `request/header` rows for one session, oldest first.
+///
+/// `body` is the request's origin record. A row whose body is absent or not JSON
+/// is skipped rather than failing the read: this is a compatibility input, and an
+/// unreadable header must degrade to "origin unknown", never to a broken turn.
+fn request_origins(conn: &Connection, session_id: &str) -> Result<Vec<(i64, serde_json::Value)>> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, body FROM transcript_items
+         WHERE session_id = ?1 AND event_type = 'request/header'
+         ORDER BY seq ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+    let mut origins = Vec::new();
+    for row in rows {
+        let (seq, body) = row?;
+        let value = body
+            .as_deref()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            .unwrap_or(serde_json::Value::Null);
+        origins.push((seq, value));
+    }
+    Ok(origins)
 }
 
 fn load_transcript(

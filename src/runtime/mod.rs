@@ -5,6 +5,7 @@ pub mod llm_resolve;
 pub mod observer;
 pub(crate) mod phase;
 pub mod provider_registry;
+mod stream_projection;
 pub mod subagent_auto_turn;
 
 pub use context::RuntimeContext;
@@ -746,27 +747,40 @@ impl AgentRuntime {
         }
     }
 
+    /// Nothing a turn opened may survive it.
+    ///
+    /// The stream projector settles every row it opens, so this is a backstop —
+    /// and it runs for every end reason, because "the turn is over" is the whole
+    /// trigger. A cancelled turn, a failed one, a step limit and a clean finish all
+    /// leave the session at rest; otherwise a storage fault or a row opened by an
+    /// older writer would stay in flight with nothing left to close it.
+    fn seal_rows_still_in_flight(&mut self) {
+        match self.sessions.seal_in_progress_items(&self.session_id) {
+            Ok(seqs) if !seqs.is_empty() => {
+                self.emit_internal(InternalEvent::BufferRestamp { seqs });
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    %error,
+                    "failed to seal rows the turn left in flight"
+                );
+            }
+        }
+    }
+
     fn finalize_agent_outcome(&mut self, turn_id: &str, outcome: TurnOutcome) -> Result<String> {
+        self.seal_rows_still_in_flight();
         match outcome {
             TurnOutcome::Completed { final_text } => {
                 self.emit_turn_completed(turn_id, TurnEndReason::Completed, Some(final_text))
             }
-            TurnOutcome::Cancelled { final_text } => {
-                match self.sessions.seal_in_progress_items(&self.session_id) {
-                    Ok(seqs) if !seqs.is_empty() => {
-                        self.emit_internal(InternalEvent::BufferRestamp { seqs });
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::warn!(session_id = %self.session_id, %error, "failed to seal in_progress rows on cancel");
-                    }
-                }
-                self.emit_turn_completed(
-                    turn_id,
-                    TurnEndReason::Cancelled,
-                    (!final_text.is_empty()).then_some(final_text),
-                )
-            }
+            TurnOutcome::Cancelled { final_text } => self.emit_turn_completed(
+                turn_id,
+                TurnEndReason::Cancelled,
+                (!final_text.is_empty()).then_some(final_text),
+            ),
             TurnOutcome::MaxSteps { final_text } => {
                 self.emit_turn_completed(
                     turn_id,
@@ -776,15 +790,6 @@ impl AgentRuntime {
                 Err(LitecodeError::MaxStepsReached)
             }
             TurnOutcome::Error(err) => {
-                match self.sessions.seal_in_progress_items(&self.session_id) {
-                    Ok(seqs) if !seqs.is_empty() => {
-                        self.emit_internal(InternalEvent::BufferRestamp { seqs });
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::warn!(session_id = %self.session_id, %error, "failed to seal in_progress rows on error");
-                    }
-                }
                 let msg = err.to_string();
                 self.emit_turn_completed(turn_id, TurnEndReason::Error, Some(msg))
             }

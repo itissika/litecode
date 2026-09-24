@@ -16,7 +16,7 @@ use crate::platform_knobs::{ContextMode, ThinkingTier};
 use crate::session::data::command::SessionListPreview;
 use crate::session::estimate::compute_token_estimate;
 use crate::session::event::{
-    EventDraft, EventType, Seq, SessionEvent, finalize_draft, item_from_event, log_state_of_item,
+    EventDraft, EventType, Seq, SessionEvent, finalize_draft, item_from_event,
     skip_empty_assistant_item, spine_agent_item,
 };
 use crate::session::model::{CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION};
@@ -208,8 +208,10 @@ struct LogProjection {
     surface: Surface,
     next_seq: Seq,
     active_max_seq: i64,
-    id_to_seq: HashMap<String, Seq>,
     items_by_seq: HashMap<Seq, Item>,
+    /// Seqs whose row is still in flight. Tracked from the log's own lifecycle
+    /// state, never from the payload's `status` field.
+    in_progress: HashSet<Seq>,
 }
 
 impl Default for LogProjection {
@@ -218,8 +220,8 @@ impl Default for LogProjection {
             surface: Surface::default(),
             next_seq: 0,
             active_max_seq: -1,
-            id_to_seq: HashMap::new(),
             items_by_seq: HashMap::new(),
+            in_progress: HashSet::new(),
         }
     }
 }
@@ -242,10 +244,12 @@ impl LogProjection {
         }
         self.next_seq = self.next_seq.max(event.seq.saturating_add(1));
         self.active_max_seq = self.active_max_seq.max(event.seq as i64);
+        if event.state == LogState::InProgress {
+            self.in_progress.insert(event.seq);
+        } else {
+            self.in_progress.remove(&event.seq);
+        }
         if let Some(item) = item {
-            if let Some(id) = item_log_id(item) {
-                self.id_to_seq.insert(id, event.seq);
-            }
             if self.surface.nodes.contains(&event.seq) {
                 self.items_by_seq.insert(event.seq, item.clone());
             }
@@ -259,19 +263,18 @@ impl LogProjection {
     }
 
     fn seal_item(&mut self, seq: Seq, item: &Item) {
-        if let Some(id) = item_log_id(item) {
-            self.id_to_seq.insert(id, seq);
-        }
         if self.surface.nodes.contains(&seq) {
             self.items_by_seq.insert(seq, item.clone());
         }
+        self.in_progress.remove(&seq);
     }
 
-    /// Provider id is a hint for an open InProgress shell, not log identity.
-    fn in_progress_seq_for_id(&self, id: &str) -> Option<Seq> {
-        let seq = *self.id_to_seq.get(id)?;
-        let item = self.items_by_seq.get(&seq)?;
-        (log_state_of_item(item) == LogState::InProgress).then_some(seq)
+    /// Replace the cached payload of a row that is still in flight.
+    fn touch_item(&mut self, seq: Seq, item: &Item) {
+        if self.surface.nodes.contains(&seq) {
+            self.items_by_seq.insert(seq, item.clone());
+        }
+        self.in_progress.insert(seq);
     }
 }
 
@@ -292,7 +295,6 @@ pub struct Session {
     ephemeral: bool,
     persisted_max_seq: Cell<i64>,
     write_gate: Mutex<()>,
-    truncated_item_ids: RefCell<HashSet<String>>,
     projection: RefCell<LogProjection>,
 }
 
@@ -472,36 +474,35 @@ fn row_is_settled(tx: &Connection, session_id: &str, seq: Seq) -> Result<bool> {
     Ok(state.as_deref() == Some(LogState::Final.as_str()))
 }
 
-fn seal_event_row(
+/// Guards shared by every rewrite of a streaming row.
+///
+/// Rewriting a row is the one write that changes content at an existing `seq`, so
+/// it is allowed only while the row is in flight: `final` means the content at
+/// this `(session_id, seq)` is fixed for good, and the derived index is built on
+/// that with no mechanism for noticing a change after projection. A late rewrite
+/// of a settled row would therefore not fail loudly — it would leave the index
+/// quietly serving text that no longer exists.
+fn assert_stream_row_rewritable(
     tx: &Connection,
     session_id: &str,
-    data_root: &Path,
     seq: Seq,
-    item: &Item,
+    op: &str,
 ) -> Result<()> {
-    let seq_i = seq as i64;
     let current: Option<(String, String)> = tx
         .query_row(
             "SELECT event_type, state FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
-            rusqlite::params![session_id, seq_i],
+            rusqlite::params![session_id, seq as i64],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
     let Some((current_kind, current_state)) = current else {
         return Err(LitecodeError::InvalidSessionEvent(format!(
-            "seal_item: no row at seq {seq}"
+            "{op}: no row at seq {seq}"
         )));
     };
-    // Sealing is the one write that changes the content at an existing `seq`, and
-    // it is allowed exactly once, while the row is still in flight. `final` means
-    // the content at this `(session_id, seq)` is fixed for good; the derived index
-    // is built on that and no longer carries any mechanism for noticing a row that
-    // changed after it was projected. Rewriting a final row would therefore not
-    // fail loudly, it would leave the index quietly serving text that no longer
-    // exists. Refuse instead.
-    if current_state == LogState::Final.as_str() {
+    if current_state != LogState::InProgress.as_str() {
         return Err(LitecodeError::InvalidSessionEvent(format!(
-            "seal_item: row {seq} is already final; settled rows never change"
+            "{op}: row {seq} is `{current_state}`; only a row in flight may be rewritten"
         )));
     }
     if !matches!(
@@ -509,9 +510,64 @@ fn seal_event_row(
         EventType::ItemAssistant | EventType::ItemToolCall
     ) {
         return Err(LitecodeError::InvalidSessionEvent(format!(
-            "seal_item: kind `{current_kind}` is not sealable"
+            "{op}: kind `{current_kind}` is not streamable"
         )));
     }
+    Ok(())
+}
+
+/// A streaming row's identity is fixed when it opens.
+///
+/// Update and seal may replace the payload — that is what streaming is — but they
+/// may not re-point the row at a different item. Without this, a mis-addressed
+/// write would merge two provider items into one `seq`, which is the very thing
+/// "one item, one row" exists to prevent, and it would do it silently.
+fn assert_stream_row_identity(
+    tx: &Connection,
+    session_id: &str,
+    data_root: &Path,
+    seq: Seq,
+    item: &Item,
+    op: &str,
+) -> Result<()> {
+    let events = load_events_range_on(tx, session_id, seq as i64, seq as i64 + 1, data_root)?;
+    let Some(event) = events.into_iter().next() else {
+        return Err(LitecodeError::InvalidSessionEvent(format!(
+            "{op}: no row at seq {seq}"
+        )));
+    };
+    // A body that is not an Item (a compaction checkpoint) is already refused by
+    // the kind check; there is no identity to compare.
+    let Ok(existing) = spine_agent_item(&event) else {
+        return Ok(());
+    };
+    let held = item_type_of(&existing);
+    let written = item_type_of(item);
+    if held != written {
+        return Err(LitecodeError::InvalidSessionEvent(format!(
+            "{op}: row {seq} holds a `{held}` item; a `{written}` item may not overwrite it"
+        )));
+    }
+    if let (Some(held), Some(written)) = (item_log_id(&existing), item_log_id(item))
+        && held != written
+    {
+        return Err(LitecodeError::InvalidSessionEvent(format!(
+            "{op}: row {seq} belongs to `{held}`, not `{written}`"
+        )));
+    }
+    Ok(())
+}
+
+/// Write `item` over the row at `seq`, keeping the row's lifecycle state.
+fn rewrite_event_row_body(
+    tx: &Connection,
+    session_id: &str,
+    data_root: &Path,
+    seq: Seq,
+    item: &Item,
+    state: LogState,
+) -> Result<()> {
+    let seq_i = seq as i64;
     let item_type = item_type_of(item);
     let (body, body_ref, token_estimate) =
         encode_detail_row(item, data_root, DEFAULT_SPILL_THRESHOLD)?;
@@ -526,14 +582,14 @@ fn seal_event_row(
             body_ref,
             token_estimate,
             event_type,
-            log_state_of_item(item).as_str(),
+            state.as_str(),
             session_id,
             seq_i,
         ],
     )?;
-    // Re-sealing re-encodes the row: the blob ref for this seq must track the
-    // new body_ref, otherwise startup GC treats the spilled blob as orphaned
-    // and deletes a body the transcript still references.
+    // Re-encoding moves the body: the blob ref for this seq must track the new
+    // body_ref, otherwise startup GC treats the spilled blob as orphaned and
+    // deletes a body the transcript still references.
     tx.execute(
         "DELETE FROM session_blob_refs WHERE session_id = ?1 AND seq = ?2",
         rusqlite::params![session_id, seq_i],
@@ -547,28 +603,31 @@ fn seal_event_row(
     Ok(())
 }
 
-/// The body of the row at `seq`, for identity comparison during commit.
-///
-/// The projection cache is consulted first, but it only holds rows still on the
-/// surface: a replace (compaction) shadows a row by dropping it from
-/// `items_by_seq` while the row itself survives in the log. Identity checks must
-/// therefore fall back to the database so a shadowed row is still recognised —
-/// and never resurrected as a duplicate append.
-fn persisted_item_at_seq(
-    projection: &LogProjection,
+/// Replace the payload of a row that is still in flight, leaving it in flight.
+fn update_event_row(
     tx: &Connection,
     session_id: &str,
     data_root: &Path,
     seq: Seq,
-) -> Result<Option<Item>> {
-    if let Some(item) = projection.items_by_seq.get(&seq) {
-        return Ok(Some(item.clone()));
-    }
-    let events = load_events_range_on(tx, session_id, seq as i64, seq as i64 + 1, data_root)?;
-    match events.into_iter().next() {
-        Some(event) => Ok(spine_agent_item(&event).ok()),
-        None => Ok(None),
-    }
+    item: &Item,
+) -> Result<()> {
+    assert_stream_row_rewritable(tx, session_id, seq, "update_stream_item")?;
+    assert_stream_row_identity(tx, session_id, data_root, seq, item, "update_stream_item")?;
+    rewrite_event_row_body(tx, session_id, data_root, seq, item, LogState::InProgress)
+}
+
+fn seal_event_row(
+    tx: &Connection,
+    session_id: &str,
+    data_root: &Path,
+    seq: Seq,
+    item: &Item,
+) -> Result<()> {
+    assert_stream_row_rewritable(tx, session_id, seq, "seal_item")?;
+    assert_stream_row_identity(tx, session_id, data_root, seq, item, "seal_item")?;
+    // Settling is what this write *is*; the payload's `status` field is provider
+    // content and cannot decide storage state.
+    rewrite_event_row_body(tx, session_id, data_root, seq, item, LogState::Final)
 }
 
 fn replace_op_for_keep(
@@ -1252,7 +1311,6 @@ impl Session {
             ephemeral,
             persisted_max_seq: Cell::new(0),
             write_gate: Mutex::new(()),
-            truncated_item_ids: RefCell::new(HashSet::new()),
             projection: RefCell::new(LogProjection::default()),
         };
         session.hydrate_projection()?;
@@ -1388,7 +1446,6 @@ impl Session {
             ephemeral: false,
             persisted_max_seq: Cell::new(0),
             write_gate: Mutex::new(()),
-            truncated_item_ids: RefCell::new(HashSet::new()),
             projection: RefCell::new(LogProjection::default()),
         };
         session.hydrate_projection()?;
@@ -1565,17 +1622,17 @@ impl Session {
         let events = self.load_events()?;
         let surface = fold_surface(&events)?;
         let node_set: HashSet<Seq> = surface.nodes.iter().copied().collect();
-        let mut id_to_seq = HashMap::new();
         let mut items_by_seq = HashMap::new();
+        let mut in_progress = HashSet::new();
         for event in &events {
+            if event.state == LogState::InProgress {
+                in_progress.insert(event.seq);
+            }
             let item = spine_agent_item(event).ok();
-            if let Some(item) = item {
-                if let Some(id) = item_log_id(&item) {
-                    id_to_seq.insert(id, event.seq);
-                }
-                if node_set.contains(&event.seq) {
-                    items_by_seq.insert(event.seq, item);
-                }
+            if let Some(item) = item
+                && node_set.contains(&event.seq)
+            {
+                items_by_seq.insert(event.seq, item);
             }
         }
         let active_max_seq = events.last().map(|e| e.seq as i64).unwrap_or(-1);
@@ -1588,8 +1645,8 @@ impl Session {
             surface,
             next_seq,
             active_max_seq,
-            id_to_seq,
             items_by_seq,
+            in_progress,
         };
         self.persisted_max_seq.set(projection.active_max_seq());
         *self.projection.borrow_mut() = projection;
@@ -1640,11 +1697,6 @@ impl Session {
         } else {
             None
         };
-        if let Some(id) = item.as_ref().and_then(item_log_id)
-            && self.truncated_item_ids.borrow().contains(&id)
-        {
-            return Err(LitecodeError::Canceled);
-        }
         let seq = projection.next_seq;
         let event = finalize_draft(seq, draft)?;
         plan_surface(&projection.surface, &event)?;
@@ -1818,45 +1870,6 @@ impl Session {
             })
             .map_err(|_| LitecodeError::InvalidRevertAnchor(format!("k={k}")))?;
 
-        let mut stmt = tx.prepare(
-            "SELECT event_type, kind, body, body_ref FROM transcript_items
-             WHERE session_id = ?1 AND seq >= ?2",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![self.id, anchor_seq], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        })?;
-        let mut tombstones = HashSet::new();
-        for row in rows {
-            let (event_type, kind, body, body_ref) = row?;
-            if !EventType::from_str_name(&event_type).is_surface_eligible() {
-                continue;
-            }
-            if let Ok(item) = row_to_item(
-                &TranscriptRow {
-                    session_id: self.id.clone(),
-                    seq: 0,
-                    turn_id: String::new(),
-                    turn_seq: 0,
-                    item_type: String::new(),
-                    kind,
-                    body,
-                    body_ref,
-                    token_estimate: 0,
-                    created_at: 0,
-                },
-                &self.data_root,
-            ) && let Some(id) = item_log_id(&item)
-            {
-                tombstones.insert(id);
-            }
-        }
-        drop(stmt);
-
         tx.execute(
             "DELETE FROM transcript_items WHERE session_id = ?1 AND seq >= ?2",
             rusqlite::params![self.id, anchor_seq],
@@ -1905,7 +1918,6 @@ impl Session {
         )?;
         refresh_compact_pointers_from_log(&tx, &self.id)?;
 
-        self.truncated_item_ids.borrow_mut().extend(tombstones);
         // Remaining log is 0..anchor-1. A deleted replace must unshadow earlier
         // nodes; dropping `nodes >= anchor` from the live surface is not enough.
         self.hydrate_projection()?;
@@ -1971,31 +1983,92 @@ impl Session {
         })
     }
 
-    /// Append one Item (including `in_progress`) and return its `seq`.
+    /// Append one settled Item and return its `seq`.
+    ///
+    /// Appending states that the item is complete as handed over. A caller that
+    /// is streaming must open the row with [`Self::begin_stream_item`] first and
+    /// settle it with [`Self::seal_stream_item`], so that the item's identity and
+    /// its lifecycle are both explicit.
     pub fn persist_item(&self, item: &Item) -> Result<Seq> {
-        Ok(self.persist_item_outcome(item)?.0)
-    }
-
-    /// `(seq, sealed)` — `sealed` means an InProgress row was 封口 in place.
-    /// Provider id only matches an open InProgress shell; a Final collision appends.
-    pub(crate) fn persist_item_outcome(&self, item: &Item) -> Result<(Seq, bool)> {
         let _gate = self.lock_write();
-        if let Some(id) = item_log_id(item) {
-            if self.truncated_item_ids.borrow().contains(&id) {
-                return Err(LitecodeError::Canceled);
-            }
-            let open = self.projection.borrow().in_progress_seq_for_id(&id);
-            if let Some(seq) = open {
-                self.seal_unlocked(seq, item)?;
-                return Ok((seq, true));
-            }
-        }
         let mut draft =
             EventDraft::surface_item(surface_event_type_of(item), item, SurfaceOp::Append)?;
         draft.time = message_timestamp(item);
         let kind = draft.event_type.as_str().to_owned();
-        let seq = self.append_unlocked(draft, "", 0, &kind)?;
-        Ok((seq, false))
+        self.append_unlocked(draft, "", 0, &kind)
+    }
+
+    /// Open the row for a streaming item and return its `seq`.
+    ///
+    /// The row is `in_progress` because this command says so — never because the
+    /// payload happened to carry `status: in_progress`.
+    ///
+    /// Nothing here checks whether the provider has used this `item_id` before.
+    /// A provider id is the caller's association key for **one** model call, not a
+    /// log identity: dialects are free to reuse an id in a later call, and that is
+    /// a different item which must get its own row. "One item, one row" is
+    /// enforced where the association actually exists — inside a single stream
+    /// projection, which refuses to open the same id twice.
+    pub fn begin_stream_item(&self, item: &Item, turn_id: &str) -> Result<Seq> {
+        if turn_id.is_empty() {
+            return Err(LitecodeError::InvalidSessionEvent(
+                "begin_stream_item: a streaming row needs a real turn id".into(),
+            ));
+        }
+        let _gate = self.lock_write();
+        let mut draft = EventDraft::stream_item(
+            surface_event_type_of(item),
+            item,
+            SurfaceOp::Append,
+            LogState::InProgress,
+        )?;
+        draft.time = message_timestamp(item);
+        let kind = draft.event_type.as_str().to_owned();
+        self.append_unlocked(draft, turn_id, 0, &kind)
+    }
+
+    /// Replace the payload of a row that is still in flight.
+    ///
+    /// Late content for an already-settled row is refused rather than written:
+    /// the derived index watched the row settle and carries no way to notice it
+    /// changing afterwards.
+    pub fn update_stream_item(&self, seq: Seq, item: &Item) -> Result<()> {
+        let _gate = self.lock_write();
+        let tx = self.conn();
+        update_event_row(&tx, &self.id, &self.data_root, seq, item)?;
+        self.projection.borrow_mut().touch_item(seq, item);
+        self.bump_stream_preview(&tx, item)
+    }
+
+    /// Settle a row opened by [`Self::begin_stream_item`].
+    ///
+    /// The payload must be the **authoritative** one: the copy the terminal
+    /// response carries and that a later replay will send back upstream. Sealing
+    /// with an intermediate copy is what leaves a settled row whose content no
+    /// longer matches the transcript's own replay, and the mismatch then has to
+    /// be absorbed somewhere downstream.
+    pub fn seal_stream_item(&self, seq: Seq, item: &Item) -> Result<()> {
+        let _gate = self.lock_write();
+        let tx = self.conn();
+        seal_event_row(&tx, &self.id, &self.data_root, seq, item)?;
+        self.projection.borrow_mut().seal_item(seq, item);
+        self.bump_stream_preview(&tx, item)
+    }
+
+    /// Session-list preview and `updated_at` for a streaming row that just moved.
+    fn bump_stream_preview(&self, tx: &Connection, item: &Item) -> Result<()> {
+        let user = Self::last_user_message_preview(std::slice::from_ref(item));
+        let assistant = Self::last_assistant_message_preview(std::slice::from_ref(item));
+        if !user.is_empty() || !assistant.is_empty() {
+            let _ = write_session_list_previews(tx, &self.id, std::slice::from_ref(item))?;
+        } else {
+            let now = chrono::Utc::now().timestamp_millis();
+            tx.execute(
+                "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, self.id],
+            )?;
+        }
+        Ok(())
     }
 
     /// Append a job-exit reminder as a normal spine Item with kind `reminder/job_exit`.
@@ -2128,6 +2201,19 @@ impl Session {
                     .and_then(|existing| serde_json::to_value(existing).ok())
                     == serde_json::to_value(msg).ok();
                 if same {
+                    // The bytes are already what the turn is committing. If the row
+                    // settled, this is the idempotent case and nothing is written.
+                    // If it is still in flight, these same bytes are still its
+                    // seal: a streamed row must not survive its own commit as
+                    // `in_progress`.
+                    if row_is_settled(&tx, &self.id, seq)? {
+                        continue;
+                    }
+                    seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
+                    projection.seal_item(seq, msg);
+                    sealed_seqs.push(seq);
+                    sealed_items.push(msg.clone());
+                    mutated = true;
                     continue;
                 }
                 // Different content at a seq this row already owns. If the row
@@ -2135,12 +2221,8 @@ impl Session {
                 // already settled it may not be rewritten (see `seal_event_row`),
                 // and the text still has to land — so it becomes a new row.
                 //
-                // That is the same rule the id lookup below applies when it finds
-                // a settled row, and it is what makes resume-after-crash work:
-                // the startup repair seals the orphan as `Incomplete`, the pipeline
-                // reloads the working set, and the rest of the text arrives as a
-                // continuation rather than as a rewrite of history the index has
-                // already projected.
+                // A settled row is immutable. The remaining text becomes a new
+                // continuation row; there is no provider-id lookup in Session.
                 if row_is_settled(&tx, &self.id, seq)? {
                     row.log_seq = None;
                 } else {
@@ -2150,43 +2232,6 @@ impl Session {
                     sealed_items.push(msg.clone());
                     mutated = true;
                     continue;
-                }
-            }
-            if let Some(id) = item_log_id(msg) {
-                if self.truncated_item_ids.borrow().contains(&id) {
-                    continue;
-                }
-                // A logical identity may already own a row: either an open
-                // `in_progress` shell, or a row that already settled — including
-                // one a later replace shadowed off the surface. The identity map
-                // keeps every surviving event (`items_by_seq` does not), so
-                // consult it and the database, never the surface cache alone.
-                let existing_seq = projection
-                    .in_progress_seq_for_id(&id)
-                    .or_else(|| projection.id_to_seq.get(&id).copied());
-                if let Some(seq) = existing_seq
-                    && let Some(existing) =
-                        persisted_item_at_seq(&projection, &tx, &self.id, &self.data_root, seq)?
-                {
-                    if serde_json::to_value(&existing).ok() == serde_json::to_value(msg).ok() {
-                        // Identical content: bind the pending row to the row that
-                        // is already persisted and skip the append.
-                        row.log_seq = Some(seq);
-                        continue;
-                    }
-                    // Different content at an existing seq. Seal in place only
-                    // while the row is still in flight; a settled row is
-                    // immutable and the new content lands as a continuation
-                    // appended below (never a rewrite of the old seq).
-                    if !row_is_settled(&tx, &self.id, seq)? {
-                        row.log_seq = Some(seq);
-                        seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
-                        projection.seal_item(seq, msg);
-                        sealed_seqs.push(seq);
-                        sealed_items.push(msg.clone());
-                        mutated = true;
-                        continue;
-                    }
                 }
             }
             let kind = surface_event_type_of(msg).as_str().to_owned();
@@ -3940,7 +3985,7 @@ mod tests {
             status: OutputStatus::InProgress,
             phase: None,
         }));
-        let seq = session.persist_item(&live).unwrap();
+        let seq = session.begin_stream_item(&live, "t1").unwrap();
         let events = session.load_events().unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].seq, seq);
@@ -3994,7 +4039,7 @@ mod tests {
             status: OutputStatus::InProgress,
             phase: None,
         }));
-        session.persist_item(&live).unwrap();
+        session.begin_stream_item(&live, "t1").unwrap();
         assert_eq!(session.seal_in_progress_items().unwrap(), vec![0]);
         assert!(session.seal_in_progress_items().unwrap().is_empty());
         let events = session.load_events().unwrap();
@@ -4039,11 +4084,12 @@ mod tests {
             phase: None,
         }));
         let receipt = data
-            .mutate_blocking(crate::session::SessionMutation::PersistItem {
+            .mutate_blocking(crate::session::SessionMutation::BeginStreamItem {
                 session_id: id.clone(),
                 expected_revision: data.revision_blocking(&id).unwrap(),
                 operation_id: crate::session::MutationId::new(),
                 item: live,
+                turn_id: "t-crash".into(),
             })
             .unwrap();
         let seq = match receipt.outcome {
@@ -4134,7 +4180,7 @@ mod tests {
             status: OutputStatus::InProgress,
             phase: None,
         }));
-        session.persist_item(&live).unwrap();
+        let seq = session.begin_stream_item(&live, "t1").unwrap();
         let sealed = Item::Message(MessageItem::Output(OutputMessage {
             id: "asst_dup".into(),
             role: AssistantRole::Assistant,
@@ -4146,7 +4192,7 @@ mod tests {
             status: OutputStatus::Completed,
             phase: None,
         }));
-        let mut items = vec![WorkingRow::pending(sealed.clone())];
+        let mut items = vec![WorkingRow::persisted(seq, sealed.clone())];
         let outcome = session
             .commit_turn_delta_with_orphan_cleanup(&mut items, &[sealed], 0, "t1")
             .unwrap();
@@ -4169,6 +4215,41 @@ mod tests {
     }
 
     #[test]
+    fn commit_of_unchanged_in_progress_payload_still_seals_the_row() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let item = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_unchanged".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "complete bytes".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::Completed,
+            phase: None,
+        }));
+        let seq = session.begin_stream_item(&item, "t1").unwrap();
+        let mut rows = vec![WorkingRow::persisted(seq, item.clone())];
+
+        let outcome = session
+            .commit_turn_delta_with_orphan_cleanup(&mut rows, &[], seq as i64, "t1")
+            .unwrap();
+
+        assert!(matches!(
+            outcome,
+            CommitDeltaOutcome::Applied {
+                sealed_seqs,
+                appended_seqs,
+                mutated: true,
+                ..
+            } if sealed_seqs == vec![seq] && appended_seqs.is_empty()
+        ));
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].state, LogState::Final);
+    }
+
+    #[test]
     fn persist_item_then_commit_does_not_duplicate_assistant() {
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         session.insert_detail_rows(&[user_text("hi")]).unwrap();
@@ -4183,7 +4264,7 @@ mod tests {
             status: OutputStatus::InProgress,
             phase: None,
         }));
-        session.persist_item(&live).unwrap();
+        session.begin_stream_item(&live, "t1").unwrap();
         let sealed = Item::Message(MessageItem::Output(OutputMessage {
             id: "asst_once".into(),
             role: AssistantRole::Assistant,
@@ -4205,9 +4286,21 @@ mod tests {
     }
 
     #[test]
-    fn persist_item_in_progress_then_completed_same_id_seals_same_seq() {
+    fn stream_lifecycle_keeps_one_row_at_one_seq() {
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         let live = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_seal".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: String::new(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::InProgress,
+            phase: None,
+        }));
+        let seq = session.begin_stream_item(&live, "t1").unwrap();
+        let partial = Item::Message(MessageItem::Output(OutputMessage {
             id: "asst_seal".into(),
             role: AssistantRole::Assistant,
             content: vec![OutputMessageContent::OutputText(OutputTextContent {
@@ -4218,7 +4311,7 @@ mod tests {
             status: OutputStatus::InProgress,
             phase: None,
         }));
-        let seq = session.persist_item(&live).unwrap();
+        session.update_stream_item(seq, &partial).unwrap();
         let sealed = Item::Message(MessageItem::Output(OutputMessage {
             id: "asst_seal".into(),
             role: AssistantRole::Assistant,
@@ -4230,23 +4323,202 @@ mod tests {
             status: OutputStatus::Completed,
             phase: None,
         }));
-        let (again, did_seal) = session.persist_item_outcome(&sealed).unwrap();
-        assert!(did_seal, "same-id completed must 封口 the InProgress row");
-        assert_eq!(again, seq);
-        assert_eq!(session.load_events().unwrap().len(), 1);
-        let loaded =
-            crate::session::event::item_from_event(&session.load_events().unwrap()[0]).unwrap();
+        session.seal_stream_item(seq, &sealed).unwrap();
+
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), 1, "begin/update/seal must not append rows");
+        assert_eq!(events[0].seq, seq);
+        assert_eq!(events[0].state, LogState::Final);
+        let loaded = crate::session::event::item_from_event(&events[0]).unwrap();
         assert_eq!(item_text_preview(&loaded), "hello");
     }
 
+    /// The row is open because `begin_stream_item` said so, not because the
+    /// payload carried `status`. A provider whose `added` snapshot omits `status`
+    /// (as every reasoning item does) must still get an updatable row.
     #[test]
-    fn persist_item_after_truncate_does_not_restore_tail() {
+    fn begin_stream_item_opens_in_flight_without_payload_status() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let shell: Item = serde_json::from_value(serde_json::json!({
+            "type": "reasoning",
+            "id": "rs_nostatus",
+            "summary": [],
+            "encrypted_content": "enc-shell"
+        }))
+        .unwrap();
+        let seq = session.begin_stream_item(&shell, "t1").unwrap();
+        assert_eq!(
+            session.load_events().unwrap()[0].state,
+            LogState::InProgress
+        );
+
+        let full: Item = serde_json::from_value(serde_json::json!({
+            "type": "reasoning",
+            "id": "rs_nostatus",
+            "summary": [{"type": "summary_text", "text": "what I thought"}],
+            "encrypted_content": "enc-final"
+        }))
+        .unwrap();
+        session.seal_stream_item(seq, &full).unwrap();
+
+        let events = session.load_events().unwrap();
+        assert_eq!(events.len(), 1, "the reasoning item owns exactly one row");
+        let loaded = crate::session::event::item_from_event(&events[0]).unwrap();
+        assert_eq!(item_text_preview(&loaded), "what I thought");
+    }
+
+    /// A provider id is the caller's association key for one model call, not a log
+    /// identity. A later call is therefore free to reuse it, and that is a new item
+    /// which gets a new row.
+    ///
+    /// "One item, one row" is enforced where the association actually exists — the
+    /// stream projection for a single call — because only that layer knows which
+    /// items belong to the same call.
+    #[test]
+    fn a_later_call_may_reuse_a_provider_id() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let shell = |text: &str| -> Item {
+            serde_json::from_value(serde_json::json!({
+                "type": "message",
+                "id": "msg_reused",
+                "role": "assistant",
+                "status": "in_progress",
+                "content": [{"type": "output_text", "text": text, "annotations": []}]
+            }))
+            .unwrap()
+        };
+        let first = session
+            .begin_stream_item(&shell("first call"), "t1")
+            .unwrap();
+        session
+            .seal_stream_item(first, &shell("first call"))
+            .unwrap();
+        let second = session
+            .begin_stream_item(&shell("second call"), "t2")
+            .unwrap();
+        session
+            .seal_stream_item(second, &shell("second call"))
+            .unwrap();
+
+        assert_ne!(first, second, "a reused id is a different item");
+        let events = session.load_events().unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "the earlier row is never rewritten for a later call's item"
+        );
+        let texts: Vec<String> = events
+            .iter()
+            .map(|event| item_text_preview(&crate::session::event::item_from_event(event).unwrap()))
+            .collect();
+        assert_eq!(texts, vec!["first call", "second call"]);
+    }
+
+    /// A streaming row's identity is fixed when it opens. Update and seal replace
+    /// the payload; they may not re-point the row at a different item.
+    #[test]
+    fn a_streaming_row_cannot_be_re_pointed_at_another_item() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let reasoning = |id: &str, text: &str| -> Item {
+            serde_json::from_value(serde_json::json!({
+                "type": "reasoning",
+                "id": id,
+                "summary": [{"type": "summary_text", "text": text}]
+            }))
+            .unwrap()
+        };
+        let message = |id: &str, text: &str| -> Item {
+            serde_json::from_value(serde_json::json!({
+                "type": "message",
+                "id": id,
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text, "annotations": []}]
+            }))
+            .unwrap()
+        };
+
+        let seq = session
+            .begin_stream_item(&reasoning("rs_1", "thinking"), "t1")
+            .unwrap();
+        let wrong_id = session
+            .update_stream_item(seq, &reasoning("rs_other", "thinking"))
+            .unwrap_err();
+        assert!(
+            wrong_id.to_string().contains("belongs to"),
+            "got {wrong_id}"
+        );
+        let wrong_type = session
+            .update_stream_item(seq, &message("rs_1", "thinking"))
+            .unwrap_err();
+        assert!(
+            wrong_type.to_string().contains("may not overwrite"),
+            "got {wrong_type}"
+        );
+
+        // The row is untouched and still settleable with its own identity.
+        session
+            .seal_stream_item(seq, &reasoning("rs_1", "thought it through"))
+            .unwrap();
+        let loaded =
+            crate::session::event::item_from_event(&session.load_events().unwrap()[0]).unwrap();
+        assert_eq!(item_text_preview(&loaded), "thought it through");
+    }
+
+    /// A streaming row needs the turn it belongs to: an unattributed row would be
+    /// an `orphan-*` row, and an active turn must never produce one.
+    #[test]
+    fn begin_stream_item_requires_a_turn_id() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let shell: Item = serde_json::from_value(serde_json::json!({
+            "type": "reasoning",
+            "id": "rs_orphan",
+            "summary": []
+        }))
+        .unwrap();
+        let err = session.begin_stream_item(&shell, "").unwrap_err();
+        assert!(
+            err.to_string().contains("turn id"),
+            "error should say why, got {err}"
+        );
+        assert!(session.load_events().unwrap().is_empty());
+    }
+
+    /// Settling twice is refused: the derived index relies on a settled row never
+    /// changing again.
+    #[test]
+    fn seal_stream_item_is_refused_on_a_settled_row() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let item = |text: &str| -> Item {
+            serde_json::from_value(serde_json::json!({
+                "type": "message",
+                "id": "msg_once",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text, "annotations": []}]
+            }))
+            .unwrap()
+        };
+        let seq = session.begin_stream_item(&item("first"), "t1").unwrap();
+        session.seal_stream_item(seq, &item("first")).unwrap();
+        let err = session.seal_stream_item(seq, &item("second")).unwrap_err();
+        assert!(
+            err.to_string().contains("only a row in flight"),
+            "got {err}"
+        );
+        let loaded =
+            crate::session::event::item_from_event(&session.load_events().unwrap()[0]).unwrap();
+        assert_eq!(item_text_preview(&loaded), "first");
+    }
+
+    #[test]
+    fn a_new_call_may_reuse_an_id_removed_by_truncate() {
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         session
             .insert_detail_rows(&[user_text("u0"), user_text("u1")])
             .unwrap();
-        let live = Item::Message(MessageItem::Output(OutputMessage {
-            id: "asst_stale".into(),
+        let item = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_reused".into(),
             role: AssistantRole::Assistant,
             content: vec![OutputMessageContent::OutputText(OutputTextContent {
                 text: "tail".into(),
@@ -4256,11 +4528,17 @@ mod tests {
             status: OutputStatus::InProgress,
             phase: None,
         }));
-        session.persist_item(&live).unwrap();
+        session.begin_stream_item(&item, "old-turn").unwrap();
         session.revert_to_user_anchor(1).unwrap();
-        let err = session.persist_item(&live).unwrap_err();
-        assert!(matches!(err, LitecodeError::Canceled));
-        assert_eq!(session.load_transcript().unwrap().len(), 1);
+
+        let seq = session.begin_stream_item(&item, "new-turn").unwrap();
+        let mut completed = item.clone();
+        if let Item::Message(MessageItem::Output(message)) = &mut completed {
+            message.status = OutputStatus::Completed;
+        }
+        session.seal_stream_item(seq, &completed).unwrap();
+        assert!(seq > 2, "seq allocation must not reuse the truncated row");
+        assert_eq!(session.load_transcript().unwrap().len(), 2);
         assert_eq!(
             item_text_preview(&session.load_transcript().unwrap()[0]),
             "u0"
@@ -4691,7 +4969,7 @@ mod tests {
     }
 
     #[test]
-    fn persist_then_commit_idless_tool_result_does_not_duplicate() {
+    fn a_pending_tool_result_is_a_new_append_even_when_an_older_result_matches() {
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         let fc = Item::FunctionCall(FunctionToolCall {
             arguments: "{}".into(),
@@ -4749,8 +5027,8 @@ mod tests {
             .collect();
         assert_eq!(
             results.len(),
-            1,
-            "same call_id must not append a second result; persisted rows: {diagnostics:?}"
+            2,
+            "a pending row explicitly means a new append; Session does not infer identity from call_id: {diagnostics:?}"
         );
         let mut rows = session.load_working_set().unwrap();
         rows.push(WorkingRow::pending(other));
@@ -4765,7 +5043,7 @@ mod tests {
             .collect();
         assert_eq!(
             results.len(),
-            2,
+            3,
             "distinct call_id results must both persist"
         );
     }
@@ -4822,7 +5100,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_shadowed_row_with_same_identity_is_not_resurrected() {
+    fn a_compaction_shadowed_identity_may_be_reused_as_a_new_row() {
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         let fc = Item::FunctionCall(FunctionToolCall {
             arguments: "{}".into(),
@@ -4853,11 +5131,13 @@ mod tests {
             .collect();
         assert_eq!(
             calls.len(),
-            1,
-            "a shadowed row with the same identity must not be resurrected"
+            2,
+            "a provider id is scoped to one call; a shadowed prior row cannot block a later call"
         );
         assert_eq!(calls[0].seq, fc_seq);
         assert_eq!(calls[0].data, serde_json::to_value(&fc).unwrap());
+        assert!(calls[1].seq > fc_seq);
+        assert_eq!(calls[1].data, serde_json::to_value(&fc).unwrap());
     }
 
     #[test]

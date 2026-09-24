@@ -265,9 +265,11 @@ mod tests {
             .unwrap();
         assert_eq!(models, 1);
         let agents: String = conn
-            .query_row("SELECT model_ref FROM agents WHERE id='default'", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT model_ref FROM agents WHERE id='default'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(agents, "zen-flash");
     }
@@ -285,7 +287,9 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA user_version = 4;").unwrap();
 
-        let message = migrate(&conn).expect_err("wrong version must fail").to_string();
+        let message = migrate(&conn)
+            .expect_err("wrong version must fail")
+            .to_string();
         assert!(message.contains("incompatible"), "{message}");
         assert!(message.contains("user_version"), "{message}");
     }

@@ -409,19 +409,31 @@ async fn prepare_after_stream_persist_seal_keeps_prior_prefix() {
 
     let first = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 1).await;
 
+    // The stream opens the row and settles it from the call's own copy, exactly
+    // as the runtime projection does; the turn then commits the same item.
+    let streamed = sessions
+        .begin_stream_item(&sid, &in_progress_fc("c1", "read", "fc_1"), "t1")
+        .expect("stream open");
+    let completed_fc = function_call_item("c1", "read", r#"{"file_path":"a.rs"}"#, "fc_1");
     sessions
-        .persist_item(&sid, &in_progress_fc("c1", "read", "fc_1"))
-        .expect("stream persist_item");
-    turn.push(WorkingRow::pending(function_call_item(
-        "c1",
-        "read",
-        r#"{"file_path":"a.rs"}"#,
-        "fc_1",
-    )));
-    let seal = pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+        .seal_stream_item(&sid, streamed, &completed_fc)
+        .expect("stream seal");
+    turn.push(WorkingRow::persisted(streamed, completed_fc));
+    let commit = pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
     assert!(
-        !seal.sealed_seqs.is_empty(),
-        "completed FunctionCall must seal the in_progress row, got {seal:?}"
+        commit.sealed_seqs.is_empty(),
+        "a row the stream already settled is not sealed again, got {commit:?}"
+    );
+    assert_eq!(
+        sessions
+            .data()
+            .working_set_blocking(&sid)
+            .unwrap()
+            .iter()
+            .filter(|row| matches!(&row.item, Item::FunctionCall(fc) if fc.call_id == "c1"))
+            .count(),
+        1,
+        "one provider item keeps one row"
     );
     turn.push(WorkingRow::pending(fco("c1", "ok")));
     pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
@@ -429,15 +441,14 @@ async fn prepare_after_stream_persist_seal_keeps_prior_prefix() {
     let second = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 2).await;
     assert_json_prefix(&first, &second, "after first tool round");
 
+    let streamed2 = sessions
+        .begin_stream_item(&sid, &in_progress_fc("c2", "read", "fc_2"), "t1")
+        .expect("stream open 2");
+    let completed_fc2 = function_call_item("c2", "read", r#"{"file_path":"b.rs"}"#, "fc_2");
     sessions
-        .persist_item(&sid, &in_progress_fc("c2", "read", "fc_2"))
-        .expect("stream persist_item 2");
-    turn.push(WorkingRow::pending(function_call_item(
-        "c2",
-        "read",
-        r#"{"file_path":"b.rs"}"#,
-        "fc_2",
-    )));
+        .seal_stream_item(&sid, streamed2, &completed_fc2)
+        .expect("stream seal 2");
+    turn.push(WorkingRow::persisted(streamed2, completed_fc2));
     pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
     turn.push(WorkingRow::pending(fco("c2", "ok2")));
     pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
