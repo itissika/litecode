@@ -8,11 +8,16 @@ describe("shader shiki grammars", () => {
   it("tokenizes HLSL keywords", async () => {
     const highlighter = await getMarkdownHighlighter();
     const grammar = highlighter.getLanguage("hlsl");
-    const result = grammar.tokenizeLine("float4 color = lerp(a, b, t);", INITIAL);
-    const scopes = result.tokens.flatMap((token) => token.scopes);
-    expect(scopes.some((scope) => scope.includes("storage") || scope.includes("keyword"))).toBe(
-      true,
+    const result = grammar.tokenizeLine(
+      "float4 color = lerp(a, b, t);",
+      INITIAL,
     );
+    const scopes = result.tokens.flatMap((token) => token.scopes);
+    expect(
+      scopes.some(
+        (scope) => scope.includes("storage") || scope.includes("keyword"),
+      ),
+    ).toBe(true);
     expect(scopes.some((scope) => scope.includes("hlsl"))).toBe(true);
   });
 

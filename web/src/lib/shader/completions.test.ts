@@ -6,7 +6,9 @@ describe("shaderSuggests", () => {
   const labels = () => shaderSuggests().map((item) => item.label);
 
   it("includes HLSL intrinsics and types", () => {
-    expect(labels()).toEqual(expect.arrayContaining(["lerp", "saturate", "float4"]));
+    expect(labels()).toEqual(
+      expect.arrayContaining(["lerp", "saturate", "float4"]),
+    );
   });
 
   it("includes ShaderLab and Unity built-ins", () => {
@@ -17,7 +19,11 @@ describe("shaderSuggests", () => {
 
   it("includes URP helpers", () => {
     expect(labels()).toEqual(
-      expect.arrayContaining(["TransformObjectToHClip", "GetMainLight", "SAMPLE_TEXTURE2D"]),
+      expect.arrayContaining([
+        "TransformObjectToHClip",
+        "GetMainLight",
+        "SAMPLE_TEXTURE2D",
+      ]),
     );
   });
 });

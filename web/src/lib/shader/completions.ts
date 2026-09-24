@@ -42,7 +42,11 @@ export type ShaderSuggest = {
 
 let cached: ShaderSuggest[] | null = null;
 
-function hlslDetail(name: string, entry: IEntry, kind: string): string | undefined {
+function hlslDetail(
+  name: string,
+  entry: IEntry,
+  kind: string,
+): string | undefined {
   if (!entry.parameters?.length) return kind;
   const params = entry.parameters.map((p) => p.label).join(", ");
   return `(${kind}) ${name}(${params})`;

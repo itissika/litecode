@@ -34,7 +34,9 @@ class TokenizerState implements Monaco.languages.IState {
     return new TokenizerState(this.ruleStack);
   }
   equals(other: Monaco.languages.IState): boolean {
-    return other instanceof TokenizerState && this.ruleStack.equals(other.ruleStack);
+    return (
+      other instanceof TokenizerState && this.ruleStack.equals(other.ruleStack)
+    );
   }
 }
 
@@ -85,7 +87,17 @@ function shikiTokensProvider(
 export function registerShaderSupport(monaco: typeof Monaco): void {
   monaco.languages.register({
     id: "hlsl",
-    extensions: [".hlsl", ".hlsli", ".fx", ".fxh", ".compute", ".cginc", ".usf", ".ush", ".cg"],
+    extensions: [
+      ".hlsl",
+      ".hlsli",
+      ".fx",
+      ".fxh",
+      ".compute",
+      ".cginc",
+      ".usf",
+      ".ush",
+      ".cg",
+    ],
     aliases: ["HLSL"],
   });
   monaco.languages.register({
@@ -132,7 +144,10 @@ export function registerShaderSupport(monaco: typeof Monaco): void {
   void getMarkdownHighlighter()
     .then((highlighter) => {
       for (const id of SHADER_LANGUAGE_IDS) {
-        monaco.languages.setTokensProvider(id, shikiTokensProvider(highlighter, id));
+        monaco.languages.setTokensProvider(
+          id,
+          shikiTokensProvider(highlighter, id),
+        );
       }
     })
     .catch((err) => {
