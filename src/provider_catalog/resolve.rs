@@ -60,6 +60,8 @@ pub struct ResolvedModel {
     pub reasoning: Option<ReasoningTiers>,
     /// Literal that means "thinking off" for this model, when the vendor has one.
     pub reasoning_off: Option<String>,
+    /// Vendor literal that opts into reasoning summaries, when declared.
+    pub reasoning_summary: Option<String>,
     pub reasoning_key: ReasoningKey,
     pub extra_body: Map<String, serde_json::Value>,
 }
@@ -123,8 +125,9 @@ impl ProviderCatalog {
         let mut providers = Vec::with_capacity(raw.providers.len());
         let mut providers_by_id: HashMap<String, Arc<ResolvedProvider>> = HashMap::new();
         for (index, provider) in raw.providers.iter().enumerate() {
-            validate_provider(provider)
-                .map_err(|message| at(format!("providers[{index}] ({}): {message}", provider.id)))?;
+            validate_provider(provider).map_err(|message| {
+                at(format!("providers[{index}] ({}): {message}", provider.id))
+            })?;
             if providers_by_id.contains_key(&provider.id) {
                 return Err(at(format!(
                     "providers[{index}]: duplicate provider id '{}'",
@@ -291,6 +294,17 @@ fn resolve_model(
         validate_tiers(tiers)?;
     }
     let reasoning_off = reasoning.as_ref().and_then(|tiers| tiers.off.clone());
+    let reasoning_summary = model.reasoning.as_ref().and_then(|raw| raw.summary.clone());
+    if let Some(summary) = &reasoning_summary {
+        if summary.trim().is_empty() {
+            return Err("reasoning.summary must not be empty when present".into());
+        }
+        if reasoning.is_none() {
+            return Err(
+                "reasoning.summary requires a reasoning tier mapping (model or provider)".into(),
+            );
+        }
+    }
 
     Ok(ResolvedModel {
         provider_id: provider.id.clone(),
@@ -315,6 +329,7 @@ fn resolve_model(
         usage_patch: model.usage_patch,
         reasoning,
         reasoning_off,
+        reasoning_summary,
         reasoning_key: model
             .reasoning
             .as_ref()

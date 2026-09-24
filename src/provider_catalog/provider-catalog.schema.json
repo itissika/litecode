@@ -74,6 +74,11 @@
       "additionalProperties": false,
       "properties": {
         "tiers": { "$ref": "#/definitions/tiers" },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Vendor literal opting into reasoning summaries (OpenAI-family Responses hosts: auto / concise / detailed; they never expose raw reasoning and emit nothing unless asked). Absent = no summary is requested."
+        },
         "key": { "$ref": "#/definitions/reasoning_key" }
       }
     },

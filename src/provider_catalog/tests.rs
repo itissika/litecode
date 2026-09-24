@@ -3,11 +3,11 @@
 use std::path::Path;
 
 use super::resolve::{
-    validate_endpoint, validate_headers, validate_provider, ProviderCatalog, is_valid_provider_id,
+    ProviderCatalog, is_valid_provider_id, validate_endpoint, validate_headers, validate_provider,
 };
 use super::schema::{
-    EndpointKind, Modality, ProviderQuirk, ReasoningKey, UsagePatch, RESERVED_BODY_KEYS,
-    RESERVED_HEADER_NAMES,
+    EndpointKind, Modality, ProviderQuirk, RESERVED_BODY_KEYS, RESERVED_HEADER_NAMES, ReasoningKey,
+    UsagePatch,
 };
 use super::store;
 
@@ -44,7 +44,10 @@ fn embedded_catalog_is_valid_and_complete() {
 fn references_are_provider_slash_model_and_lookup_splits_once() {
     let catalog = seeded();
     for model in catalog.models() {
-        assert_eq!(model.reference, format!("{}/{}", model.provider_id, model.id));
+        assert_eq!(
+            model.reference,
+            format!("{}/{}", model.provider_id, model.id)
+        );
         assert_eq!(
             catalog.model(&model.reference).map(|m| m.id.as_str()),
             Some(model.id.as_str())
@@ -76,7 +79,10 @@ fn reasoning_tiers_inherit_from_provider_and_override_per_model() {
     // commandcode declares one vocabulary for the whole provider; its models
     // carry no block of their own and inherit it.
     let commandcode = catalog.model("commandcode/gpt-5.6-sol").unwrap();
-    let tiers = commandcode.reasoning.as_ref().expect("provider tiers inherit");
+    let tiers = commandcode
+        .reasoning
+        .as_ref()
+        .expect("provider tiers inherit");
     assert_eq!(tiers.medium, "high");
     // opencode declares none, so each Zen model states its own.
     let zen = catalog.model("opencode/gpt-6-sol").unwrap();
@@ -109,7 +115,10 @@ fn default_catalog_declares_off_where_the_vendor_defaults_to_thinking() {
         Some("disabled")
     );
     // Vendors whose ladder has no off literal keep sending nothing for Off.
-    for reference in ["opencode-go/deepseek-flash", "opencode-go/deepseek-v4.1-flash"] {
+    for reference in [
+        "opencode-go/deepseek-flash",
+        "opencode-go/deepseek-v4.1-flash",
+    ] {
         assert_eq!(
             catalog.model(reference).unwrap().reasoning_off,
             None,
@@ -118,9 +127,56 @@ fn default_catalog_declares_off_where_the_vendor_defaults_to_thinking() {
     }
     // OpenAI's "none" is a real effort literal, so compaction uses it.
     assert_eq!(
-        catalog.model("openai/gpt-5.6-sol").unwrap().reasoning_off.as_deref(),
+        catalog
+            .model("openai/gpt-5.6-sol")
+            .unwrap()
+            .reasoning_off
+            .as_deref(),
         Some("none")
     );
+}
+
+#[test]
+fn seed_declares_reasoning_summaries_only_for_the_gpt_family() {
+    let catalog = seeded();
+    // OpenAI never exposes raw reasoning and emits a summary only when the
+    // request opts in, so every GPT entry on a Responses host declares the
+    // literal; every other model stays silent.
+    for reference in [
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5.6-terra",
+        "openai/gpt-5.6-luna",
+        "opencode/gpt-6-sol",
+        "opencode/gpt-6-luna",
+    ] {
+        assert_eq!(
+            catalog
+                .model(reference)
+                .unwrap()
+                .reasoning_summary
+                .as_deref(),
+            Some("auto"),
+            "{reference} must opt in to reasoning summaries"
+        );
+    }
+    for model in catalog.models() {
+        let gpt_on_responses =
+            model.id.starts_with("gpt-") && model.endpoint_type == EndpointKind::Responses;
+        if gpt_on_responses {
+            assert_eq!(
+                model.reasoning_summary.as_deref(),
+                Some("auto"),
+                "{}: GPT models on Responses hosts declare the summary literal",
+                model.reference
+            );
+        } else {
+            assert_eq!(
+                model.reasoning_summary, None,
+                "{}: only the GPT family declares a summary literal",
+                model.reference
+            );
+        }
+    }
 }
 
 #[test]
@@ -203,13 +259,17 @@ fn unknown_version_is_refused() {
 
 #[test]
 fn unknown_field_is_refused() {
-    let message = err("version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\ntypo_field = 1\n");
+    let message = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\ntypo_field = 1\n",
+    );
     assert!(message.contains("typo_field"), "{message}");
 }
 
 #[test]
 fn unknown_enum_value_is_refused() {
-    let message = err("version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"grpc\"\n");
+    let message = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"grpc\"\n",
+    );
     assert!(message.contains("grpc"), "{message}");
 }
 
@@ -234,19 +294,25 @@ fn dangling_provider_reference_is_refused() {
 
 #[test]
 fn partial_tiers_are_refused() {
-    let message = err("version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\ntiers = { low = \"low\", medium = \"medium\" }\n");
+    let message = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\ntiers = { low = \"low\", medium = \"medium\" }\n",
+    );
     assert!(message.contains("high"), "{message}");
 }
 
 #[test]
 fn empty_tier_literal_is_refused() {
-    let message = err("version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\ntiers = { low = \"\", medium = \"medium\", high = \"high\" }\n");
+    let message = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\ntiers = { low = \"\", medium = \"medium\", high = \"high\" }\n",
+    );
     assert!(message.contains("tiers.low"), "{message}");
 }
 
 #[test]
 fn empty_off_literal_is_refused_and_off_inherits_from_the_provider() {
-    let message = err("version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\ntiers = { off = \"  \", low = \"low\", medium = \"medium\", high = \"high\" }\n");
+    let message = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\ntiers = { off = \"  \", low = \"low\", medium = \"medium\", high = \"high\" }\n",
+    );
     assert!(message.contains("tiers.off"), "{message}");
 
     let text = "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\ntiers = { off = \"none\", low = \"low\", medium = \"medium\", high = \"high\" }\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\n";
@@ -268,6 +334,27 @@ fn empty_off_literal_is_refused_and_off_inherits_from_the_provider() {
 }
 
 #[test]
+fn reasoning_summary_must_be_non_empty_and_ride_on_tiers() {
+    let message = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { summary = \"  \", tiers = { low = \"low\", medium = \"medium\", high = \"high\" } }\n",
+    );
+    assert!(message.contains("reasoning.summary"), "{message}");
+
+    // Without any tier mapping the literal would silently request nothing.
+    let message = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { summary = \"auto\" }\n",
+    );
+    assert!(message.contains("reasoning.summary requires"), "{message}");
+
+    // Provider-declared tiers satisfy the requirement for every model under them.
+    let catalog = parse("version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\ntiers = { low = \"low\", medium = \"medium\", high = \"high\" }\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { summary = \"auto\" }\n").expect("provider tiers satisfy the summary");
+    assert_eq!(
+        catalog.model("p/m").unwrap().reasoning_summary.as_deref(),
+        Some("auto")
+    );
+}
+
+#[test]
 fn endpoint_must_be_a_bare_absolute_url() {
     assert!(validate_endpoint("https://api.example.com/v1").is_ok());
     for bad in [
@@ -285,37 +372,41 @@ fn endpoint_must_be_a_bare_absolute_url() {
 
 #[test]
 fn reserved_body_keys_and_headers_are_refused() {
-    let message = err("version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nextra_body = { model = \"other\" }\n");
+    let message = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nextra_body = { model = \"other\" }\n",
+    );
     assert!(message.contains("extra_body key 'model'"), "{message}");
 
-    let message = err("version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\nheaders = { authorization = \"secret\" }\n");
+    let message = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\nheaders = { authorization = \"secret\" }\n",
+    );
     assert!(message.contains("owned by the codec"), "{message}");
 }
 
 #[test]
 fn header_templates_only_allow_session_id() {
-    let ok = std::collections::BTreeMap::from([(
-        "x-session".to_string(),
-        "{{session_id}}".to_string(),
-    )]);
+    let ok =
+        std::collections::BTreeMap::from([("x-session".to_string(), "{{session_id}}".to_string())]);
     assert!(validate_headers(&ok).is_ok());
-    let bad = std::collections::BTreeMap::from([(
-        "x-session".to_string(),
-        "{{api_key}}".to_string(),
-    )]);
+    let bad =
+        std::collections::BTreeMap::from([("x-session".to_string(), "{{api_key}}".to_string())]);
     let message = validate_headers(&bad).unwrap_err();
     assert!(message.contains("{{api_key}}"), "{message}");
 }
 
 #[test]
 fn codec_capability_mismatch_is_refused_not_trimmed() {
-    let message = err("version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"chat_completions\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nmodalities = [\"text\", \"image\"]\n");
+    let message = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"chat_completions\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nmodalities = [\"text\", \"image\"]\n",
+    );
     assert!(message.contains("not implemented"), "{message}");
 }
 
 #[test]
 fn text_modality_is_mandatory() {
-    let message = err("version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nmodalities = [\"image\"]\n");
+    let message = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nmodalities = [\"image\"]\n",
+    );
     assert!(message.contains("include 'text'"), "{message}");
 }
 
@@ -331,9 +422,7 @@ fn context_and_output_bounds_are_enforced() {
         "version = 1\n{provider}\n{model}context_window = 100\ncontext_window_max = 50\n"
     ));
     assert!(inverted.contains("context_window_max"), "{inverted}");
-    let no_output = err(&format!(
-        "version = 1\n{provider}\n{model}max_output = 0\n"
-    ));
+    let no_output = err(&format!("version = 1\n{provider}\n{model}max_output = 0\n"));
     assert!(no_output.contains("max_output must be > 0"), "{no_output}");
 }
 

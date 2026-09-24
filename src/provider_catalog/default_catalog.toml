@@ -17,6 +17,10 @@
 #     Leave it out for a model that takes no reasoning control.
 #     Thinking OFF (compaction) sends `tiers.off` when the vendor has such a
 #     literal (DeepSeek "none", Doubao "disabled") and nothing at all otherwise.
+#   * reasoning.summary is the opt-in a reasoning model needs before it emits a
+#     summary of its thinking: the OpenAI family never exposes raw reasoning and
+#     returns nothing unless asked ("auto" / "concise" / "detailed"). Declare it
+#     only for a host whose dialect is verified to accept the field.
 #   * context_window is the default budget: 256000, or the model's own maximum
 #     when that is smaller. context_window_max is the model's own maximum.
 #   * max_output is capped at 128000, or the model's own maximum when smaller.
@@ -107,7 +111,7 @@ max_output = 128000
 temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
-reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 [[models]]
 id = "gpt-5.6-terra"
@@ -119,7 +123,7 @@ max_output = 128000
 temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
-reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 [[models]]
 id = "gpt-5.6-luna"
@@ -131,7 +135,7 @@ max_output = 128000
 temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
-reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 # ── DeepSeek (native Responses) ──────────────────────────────────────────────
 
@@ -200,7 +204,7 @@ max_output = 128000
 temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
-reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 [[models]]
 id = "gpt-6-luna"
@@ -213,7 +217,7 @@ max_output = 128000
 temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
-reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 # ── OpenCode Go ──────────────────────────────────────────────────────────────
 # The same id can declare a different vocabulary on each host, which is exactly
@@ -235,6 +239,35 @@ context_window = 256000
 context_window_max = 1000000
 max_output = 128000
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+# Go serves the GPT family over Responses, like Zen, while the rest of the plan
+# stays on Chat Completions.
+
+[[models]]
+id = "gpt-6-luna"
+provider_id = "opencode-go"
+label = "GPT-6 Luna"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "gpt-5.6-luna"
+provider_id = "opencode-go"
+label = "GPT-5.6 Luna"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 # ── Command Code Goat ───────────────────────────────────────────────────────
 

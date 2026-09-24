@@ -56,11 +56,7 @@ impl EndpointKind {
 
     /// Request URL for a base endpoint (trailing slashes tolerated).
     pub fn request_url(self, endpoint: &str) -> String {
-        format!(
-            "{}{}",
-            endpoint.trim_end_matches('/'),
-            self.request_path()
-        )
+        format!("{}{}", endpoint.trim_end_matches('/'), self.request_path())
     }
 
     /// Input modalities this codec actually serializes.
@@ -128,13 +124,8 @@ impl Modality {
         }
     }
 
-    pub const ALL: &'static [Modality] = &[
-        Self::Text,
-        Self::Image,
-        Self::Video,
-        Self::Audio,
-        Self::Pdf,
-    ];
+    pub const ALL: &'static [Modality] =
+        &[Self::Text, Self::Image, Self::Video, Self::Audio, Self::Pdf];
 }
 
 /// Named response repair implemented by a codec.
@@ -235,6 +226,11 @@ pub struct RawReasoning {
     /// Tier mapping. Absent = inherit the provider's tiers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiers: Option<ReasoningTiers>,
+    /// Vendor literal opting into reasoning summaries (`auto` / `concise` /
+    /// `detailed` on OpenAI-family Responses hosts, which never expose raw
+    /// reasoning and emit nothing unless asked). Absent = request no summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// Replay write-back key (Chat Completions codec).
     #[serde(default)]
     pub key: ReasoningKey,
@@ -370,8 +366,14 @@ pub const RESERVED_BODY_KEYS: &[&str] = &[
 ];
 
 /// Header names a codec owns; catalog headers must not shadow them.
-pub const RESERVED_HEADER_NAMES: &[&str] =
-    &["authorization", "api-key", "x-api-key", "content-type", "accept", "user-agent"];
+pub const RESERVED_HEADER_NAMES: &[&str] = &[
+    "authorization",
+    "api-key",
+    "x-api-key",
+    "content-type",
+    "accept",
+    "user-agent",
+];
 
 /// The only template placeholder allowed in catalog header values.
 pub const SESSION_ID_PLACEHOLDER: &str = "{{session_id}}";
