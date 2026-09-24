@@ -1191,8 +1191,18 @@ async fn settings_put_agent_empty_model_ref_ok() {
         .await
         .expect("put");
     assert_eq!(resp.status(), 200);
-    let loaded = ConfigManager::load_global_from(&db_path).unwrap();
-    assert!(loaded.agents.get("default").unwrap().model_ref.is_empty());
+    // The empty write is accepted (unlike an unknown reference), and the commit
+    // then hands the agent the first runnable model: an agent that cannot run is
+    // not a state the writer leaves behind.
+    assert_eq!(
+        ConfigManager::load_global_from(&db_path)
+            .unwrap()
+            .agents
+            .get("default")
+            .unwrap()
+            .model_ref,
+        common::TEST_PRIMARY_MODEL_REF
+    );
 }
 
 #[tokio::test]

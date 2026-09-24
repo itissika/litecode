@@ -92,6 +92,7 @@ fn default_catalog_declares_off_where_the_vendor_defaults_to_thinking() {
         "mimo/mimo-v2.6-flash",
         "mimo/mimo-v2.6-pro",
         "opencode/gpt-6-sol",
+        "opencode/gpt-6-luna",
     ] {
         assert_eq!(
             catalog.model(reference).unwrap().reasoning_off.as_deref(),
@@ -108,10 +109,13 @@ fn default_catalog_declares_off_where_the_vendor_defaults_to_thinking() {
         Some("disabled")
     );
     // Vendors whose ladder has no off literal keep sending nothing for Off.
-    assert_eq!(
-        catalog.model("opencode-go/deepseek-flash").unwrap().reasoning_off,
-        None
-    );
+    for reference in ["opencode-go/deepseek-flash", "opencode-go/deepseek-v4.1-flash"] {
+        assert_eq!(
+            catalog.model(reference).unwrap().reasoning_off,
+            None,
+            "{reference} must send nothing for Off"
+        );
+    }
     // OpenAI's "none" is a real effort literal, so compaction uses it.
     assert_eq!(
         catalog.model("openai/gpt-5.6-sol").unwrap().reasoning_off.as_deref(),
@@ -131,6 +135,31 @@ fn seed_provider_quirks_land_on_their_models() {
         ark.extra_body.get("store").and_then(|v| v.as_bool()),
         Some(false)
     );
+}
+
+#[test]
+fn seed_responses_models_that_send_max_declare_the_effort_patch() {
+    let catalog = seeded();
+    for model in catalog.models() {
+        if model.endpoint_type != EndpointKind::Responses {
+            continue;
+        }
+        let Some(tiers) = &model.reasoning else {
+            continue;
+        };
+        if ![&tiers.low, &tiers.medium, &tiers.high]
+            .iter()
+            .any(|literal| literal.as_str() == "max")
+        {
+            continue;
+        }
+        assert_eq!(
+            model.usage_patch,
+            UsagePatch::MapMaxEffortToXhigh,
+            "{}: sends the `max` effort literal, so its response echo must be normalized",
+            model.reference
+        );
+    }
 }
 
 #[test]

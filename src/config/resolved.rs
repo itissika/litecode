@@ -207,6 +207,19 @@ impl ResolvedConfig {
         &self.global.agents
     }
 
+    /// First model a user can actually run right now (catalog order, keyed
+    /// provider, not switched off; tool-calling models first).
+    ///
+    /// This is the auto-assign source for agents and sessions whose stored
+    /// model was never set or can no longer run.
+    pub fn fallback_model_ref(&self) -> Option<String> {
+        crate::config::bridge::fallback_model_ref(
+            self.catalog.as_ref(),
+            &self.global.provider_credentials,
+            &self.global.disabled_models,
+        )
+    }
+
     /// Catalog model for a reference that is selectable right now.
     pub fn model_for_agent_ref(
         &self,

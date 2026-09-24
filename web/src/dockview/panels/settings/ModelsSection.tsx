@@ -50,7 +50,7 @@ function ModelToggle({
               disabled={disabled}
               aria-pressed={selected}
               onClick={() => onToggle(value)}
-              className={`group relative flex h-7 min-w-[48px] items-center justify-center rounded border border-transparent px-2 text-[11px] leading-none text-(--_dk-text-muted) transition-transform duration-100 hover:text-(--_dk-ix-fg-hover) hover:brightness-110 active:scale-90 active:brightness-90 disabled:pointer-events-none disabled:opacity-40 ${
+              className={`group relative flex h-6 min-w-[48px] items-center justify-center rounded border border-transparent px-2 text-dk-xs leading-none text-(--_dk-text-muted) transition-transform duration-100 hover:text-(--_dk-ix-fg-hover) hover:brightness-110 active:scale-90 active:brightness-90 disabled:pointer-events-none disabled:opacity-40 ${
                 selected
                   ? "text-(--_dk-accent-hover) hover:text-(--_dk-accent-hover)"
                   : ""
@@ -95,14 +95,14 @@ function ModelRow({
   return (
     <div
       role="listitem"
-      className="flex min-w-0 items-center justify-between gap-2 px-3 py-1.5"
+      className="flex min-w-0 items-center justify-between gap-2 py-0.5 pr-3 pl-2"
       title={
         model.tool_call
           ? undefined
           : `${label} can't call tools — agents can't run on it`
       }
     >
-      <span className="min-w-0 truncate text-sm text-(--_dk-text-secondary)">
+      <span className="min-w-0 truncate text-dk-sm text-(--_dk-text-secondary)">
         {label}
       </span>
       <ModelToggle
@@ -132,7 +132,7 @@ function ProviderModels({ provider, ...rest }: {
           </span>
         </span>
       }
-      className="settings-foldcard"
+      className="settings-foldcard settings-foldcard-compact"
     >
       <div className="settings-card overflow-hidden p-0" role="list" aria-label={`Models for ${provider.name}`}>
         {provider.models.map((model) => (

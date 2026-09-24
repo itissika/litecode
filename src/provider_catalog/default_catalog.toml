@@ -106,6 +106,7 @@ context_window_max = 1050000
 max_output = 128000
 temperature = false
 modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
 reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 [[models]]
@@ -117,6 +118,7 @@ context_window_max = 1050000
 max_output = 128000
 temperature = false
 modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
 reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 [[models]]
@@ -128,6 +130,7 @@ context_window_max = 1050000
 max_output = 128000
 temperature = false
 modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
 reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 # ── DeepSeek (native Responses) ──────────────────────────────────────────────
@@ -196,6 +199,20 @@ context_window_max = 1050000
 max_output = 128000
 temperature = false
 modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "gpt-6-luna"
+provider_id = "opencode"
+label = "GPT-6 Luna"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
 reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 # ── OpenCode Go ──────────────────────────────────────────────────────────────
@@ -205,6 +222,15 @@ reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "ma
 [[models]]
 id = "deepseek-flash"
 provider_id = "opencode-go"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "deepseek-v4.1-flash"
+provider_id = "opencode-go"
+label = "DeepSeek V4.1 Flash"
 context_window = 256000
 context_window_max = 1000000
 max_output = 128000

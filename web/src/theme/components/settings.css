@@ -326,6 +326,19 @@
   padding-bottom: 0.5rem;
 }
 
+/* Compact variant used by the Models page: every row is a single line, so the
+   card body hugs the list — a 2px gutter instead of the shared 6/8px vertical
+   rhythm, and the body starts closer to the card edge (1.25rem instead of the
+   shared --_dk-indent-card-body, which the model row then pads a further 8px).
+   The nesting hairline is anchored to the header arrow, not to this inset, so
+   1.25rem keeps the rows comfortably right of the guide line. Scoped to the
+   cards carrying this class — the other settings pages keep the shared rhythm. */
+.settings-foldcard-compact .foldcard-scroll {
+  padding-top: 0.125rem;
+  padding-left: 1.25rem;
+  padding-bottom: 0.125rem;
+}
+
 /* Providers page: one hollow card per credential — no background, just a
    short left rule that reads as an accent rather than a box edge. The rule is
    a pseudo-element because a border can only span the full box height. A card

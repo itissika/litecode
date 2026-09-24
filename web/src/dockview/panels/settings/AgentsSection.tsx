@@ -43,8 +43,8 @@ type ModelRefOption = { value: string; label: ReactNode; disabled?: boolean };
 /**
  * Agent model picker over the **active** catalog models (their provider holds a
  * credential), grouped by provider. A `model_ref` that is not in the catalog
- * stays visible as a disabled "Missing: <ref>" row: the user re-picks
- * explicitly, and an agent is never silently re-pointed at another model.
+ * stays visible as a disabled "Missing: <ref>" row so the user can re-pick it;
+ * the backend may meanwhile auto-heal the agent to the first runnable model.
  */
 function ModelRefSelect({
   value,

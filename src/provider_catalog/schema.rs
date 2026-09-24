@@ -150,7 +150,9 @@ pub enum UsagePatch {
     None,
     /// MiMo: fill empty `usage.*_tokens_details` objects before deserialization.
     FillEmptyTokenDetails,
-    /// DeepSeek: normalize the vendor `max` effort literal to authority `xhigh`.
+    /// Vendor `max` effort literal: normalize it to authority `xhigh` (the
+    /// authority enum has none), and fill the token-detail and total-token
+    /// members the same payloads omit.
     MapMaxEffortToXhigh,
 }
 

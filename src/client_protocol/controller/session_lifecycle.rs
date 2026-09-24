@@ -90,6 +90,17 @@ impl SessionController {
             .resolve_primary_agent(session_id, default_primary, &self.runtime.resolved)
             .map_err(|e| StartTurnError::Runtime(anyhow::anyhow!("{e}")))?;
 
+        // Keep the session runnable before it is reserved: a sticky model that was
+        // never set (agent had none) or that can no longer run (model dropped from
+        // the catalog, provider key removed) is replaced in place. sessions.db
+        // writes are not turn-guarded, so this holds even while another session runs.
+        crate::runtime::ensure_session_model(
+            &self.runtime.resolved,
+            &self.sessions,
+            session_id,
+            &primary_agent,
+        );
+
         let binding = self.session_binding(session_id);
         if let Some(proj) = self.projection_mut(session_id) {
             proj.context_window = binding.context_window;
@@ -259,16 +270,12 @@ impl SessionController {
 
     pub async fn new_session(&mut self) -> anyhow::Result<String> {
         let agent_id = self.runtime.desired_primary_agent().to_string();
-        let model_id = self
-            .runtime
-            .resolved
-            .agents()
-            .get(&agent_id)
-            .map(|p| p.model_ref.as_str())
-            .filter(|s| !s.is_empty());
+        // Seed the sticky model: the agent's own when it can run, else the first
+        // model the user can run — a new session is never born unrunnable.
+        let model_id = crate::runtime::seed_model_ref(&self.runtime.resolved, &agent_id);
         let sid = self
             .sessions
-            .open_session(&self.project, &agent_id, model_id)
+            .open_session(&self.project, &agent_id, model_id.as_deref())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 

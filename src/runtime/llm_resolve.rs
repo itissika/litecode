@@ -43,6 +43,62 @@ const MISSING_MODEL_HINT: &str =
     "open Settings → Providers and configure a provider API key, then pick a model for the agent \
      in Settings → Agents (a model that is not declared in provider-catalog.toml cannot be used)";
 
+/// The model a session should start on: the agent's declared model when it is
+/// usable, else the first model a user can run right now.
+///
+/// `None` means no model is selectable at all (no provider holds a credential);
+/// the turn then reports the usual pick-a-model error.
+pub fn seed_model_ref(resolved: &ResolvedConfig, agent_id: &str) -> Option<String> {
+    resolved
+        .model_for_agent(agent_id)
+        .map(|model| model.reference.clone())
+        .or_else(|| resolved.fallback_model_ref())
+}
+
+/// Keep a session runnable before its next turn reads it.
+///
+/// A session's `model_id` is the only model fact a turn resolves (see
+/// [`resolve_session_llm`]), so an empty one (agent had none when the session
+/// was opened), a lost one (model dropped from the catalog) or an unusable one
+/// (provider key removed) is replaced in place — the catalog is the source of
+/// truth and the stored ref is derived state. The agent's declared model wins
+/// over the generic fallback when it is usable.
+///
+/// This writes `sessions.db`, which is not turn-guarded: unlike settings writes
+/// (global DB), it succeeds while another session is running. Returns the model
+/// the session should run with, or `None` when nothing is selectable.
+pub fn ensure_session_model(
+    resolved: &ResolvedConfig,
+    sessions: &SessionManager,
+    session_id: &str,
+    agent_id: &str,
+) -> Option<String> {
+    let current = sessions.session_model_id(session_id);
+    if current
+        .as_deref()
+        .is_some_and(|reference| resolved.model_for_agent_ref(reference).is_some())
+    {
+        return current;
+    }
+    let model_ref = seed_model_ref(resolved, agent_id)?;
+    if current.as_deref() != Some(model_ref.as_str()) {
+        match sessions.set_session_model_id(session_id, Some(model_ref.clone())) {
+            Ok(()) => tracing::info!(
+                session_id,
+                model_ref = %model_ref,
+                "auto-assigned a runnable model to a session whose model could not run"
+            ),
+            Err(error) => tracing::warn!(
+                session_id,
+                model_ref = %model_ref,
+                %error,
+                "could not persist the auto-assigned session model"
+            ),
+        }
+    }
+    Some(model_ref)
+}
+
 /// Resolve the LLM binding for a session turn — primary and child alike.
 ///
 /// Reads **only** the row of the session the turn runs in: `model_id`
@@ -553,5 +609,76 @@ modalities = ["text", "image", "video", "audio"]
         .expect("unknown reference");
         assert!(error.to_string().contains("ghost/model"), "{error}");
         assert!(error.to_string().contains("provider-catalog.toml"), "{error}");
+    }
+
+    fn ephemeral_session() -> (Arc<SessionManager>, String) {
+        let sessions = Arc::new(SessionManager::ephemeral_registry());
+        let sid = sessions.open_session_sync("/p", "default", None).unwrap();
+        (sessions, sid)
+    }
+
+    #[test]
+    fn a_session_without_a_model_is_repaired_before_the_turn_reads_it() {
+        let resolved = resolved_with("compact-provider/compact-api-model");
+        let (sessions, sid) = ephemeral_session();
+
+        let model = ensure_session_model(&resolved, &sessions, &sid, "default");
+        assert_eq!(model.as_deref(), Some("compact-provider/compact-api-model"));
+        assert_eq!(
+            sessions.session_model_id(&sid).as_deref(),
+            Some("compact-provider/compact-api-model"),
+            "the repair is persisted for the turn that reads the row"
+        );
+
+        // A usable ref is never re-pointed.
+        sessions
+            .set_session_model_id(&sid, Some("compact-provider/text-model".into()))
+            .unwrap();
+        assert_eq!(
+            ensure_session_model(&resolved, &sessions, &sid, "default").as_deref(),
+            Some("compact-provider/text-model")
+        );
+
+        // A ref the catalog no longer declares is replaced in place.
+        sessions
+            .set_session_model_id(&sid, Some("compact-provider/gone".into()))
+            .unwrap();
+        assert_eq!(
+            ensure_session_model(&resolved, &sessions, &sid, "default").as_deref(),
+            Some("compact-provider/compact-api-model")
+        );
+        assert_eq!(
+            sessions.session_model_id(&sid).as_deref(),
+            Some("compact-provider/compact-api-model")
+        );
+    }
+
+    #[test]
+    fn a_session_is_left_alone_when_no_model_is_selectable() {
+        let mut global = GlobalSettings::default();
+        global.agents.insert(
+            "compaction".into(),
+            AgentProfile {
+                role: AgentRole::Hidden,
+                model_ref: "compact-provider/compact-api-model".into(),
+                ..Default::default()
+            },
+        );
+        let keyless = crate::config::resolved::resolve(
+            global,
+            WorkspaceState::new("/tmp/keyless"),
+            catalog(),
+        );
+        let (sessions, sid) = ephemeral_session();
+        sessions
+            .set_session_model_id(&sid, Some("compact-provider/gone".into()))
+            .unwrap();
+
+        assert_eq!(ensure_session_model(&keyless, &sessions, &sid, "default"), None);
+        assert_eq!(
+            sessions.session_model_id(&sid).as_deref(),
+            Some("compact-provider/gone"),
+            "nothing selectable means nothing to substitute"
+        );
     }
 }

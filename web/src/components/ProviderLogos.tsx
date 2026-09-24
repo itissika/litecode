@@ -1,7 +1,10 @@
 import type { JSX } from "react";
 
+import { CommandCodeLogo } from "./providerLogos/CommandCodeLogo";
 import { DeepSeekLogo } from "./providerLogos/DeepSeekLogo";
 import { OpenAILogo } from "./providerLogos/OpenAILogo";
+import { OpenCodeLogo } from "./providerLogos/OpenCodeLogo";
+import { VolcengineLogo } from "./providerLogos/VolcengineLogo";
 import { XiaomiLogo } from "./providerLogos/XiaomiLogo";
 
 /** Catalog provider id → brand mark. */
@@ -9,9 +12,14 @@ export const PROVIDER_LOGOS: Record<string, () => JSX.Element> = {
   openai: OpenAILogo,
   deepseek: DeepSeekLogo,
   mimo: XiaomiLogo,
+  // 火山方舟 Coding Plan — Volcengine (parent brand of Doubao/Ark).
+  "ark-coding": VolcengineLogo,
+  opencode: OpenCodeLogo,
+  "opencode-go": OpenCodeLogo,
+  commandcode: CommandCodeLogo,
 };
 
-/** Neutral mark for providers without a brand asset (ark-coding, opencode, …). */
+/** Neutral mark for providers without a brand asset. */
 function NeutralLogo(): JSX.Element {
   return (
     <svg

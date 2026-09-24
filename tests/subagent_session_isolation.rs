@@ -550,6 +550,10 @@ async fn failed_binding_aborts_orphan_child_session() {
     if let Some(reviewer) = global.agents.get_mut("reviewer") {
         reviewer.model_ref.clear();
     }
+    // Nothing is selectable at all: no provider holds a credential, so neither the
+    // agent's own ref nor the runnable fallback can seed the child. (An empty or
+    // stale ref on its own would be auto-healed before the turn reads it.)
+    global.provider_credentials.clear();
     let resolved = resolve(global, workspace, default_test_catalog());
     let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
     let project = cwd.to_string_lossy().to_string();
@@ -563,7 +567,7 @@ async fn failed_binding_aborts_orphan_child_session() {
         .await
         .expect("parent");
 
-    // Force LLM binding failure via empty agent model_ref (no launch override).
+    // The child cannot resolve a model, so its turn fails before it ever runs.
     let tool = launch_tool(
         resolved,
         Arc::clone(&sessions),

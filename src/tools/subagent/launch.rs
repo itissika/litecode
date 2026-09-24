@@ -60,12 +60,7 @@ pub async fn spawn_child_job(
             .to_string_lossy()
             .to_string()
     });
-    let seed_model = runtime
-        .resolved
-        .agents()
-        .get(&spec.agent_name)
-        .map(|profile| profile.model_ref.clone())
-        .filter(|model| !model.is_empty());
+    let seed_model = crate::runtime::seed_model_ref(&runtime.resolved, &spec.agent_name);
     let child_session_id = deps
         .sessions
         .open_child_session_with_responsibility(

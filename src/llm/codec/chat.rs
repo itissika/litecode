@@ -3,6 +3,7 @@
 //! Provider differences arrive as catalog data: tiers, headers, extra_body,
 //! `stream_usage`, `reasoning.key`. Nothing here reads a provider id.
 
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -63,17 +64,27 @@ impl ChatCompletionsCodec {
             }));
         }
 
+        // A transcript can contain an early stream snapshot and a completed
+        // copy of the same item. Translate one logical item only.
+        let input = normalize_input_items(&params.input);
+        if input.len() != params.input.len() {
+            tracing::info!(
+                session = params.session_id.as_deref().unwrap_or_default(),
+                model = %params.model,
+                input_items = params.input.len(),
+                emitted_items = input.len(),
+                collapsed_items = params.input.len() - input.len(),
+                "chat input collapsed repeated item ids"
+            );
+        }
         let reasoning_key = model.reasoning_key.as_str();
         // Tools and reasoning both mean the vendor reasons about this turn, so
         // the key is written on every assistant message of the replay.
-        let replay_reasoning = !params.tools.is_empty()
-            || params
-                .input
-                .iter()
-                .any(|item| matches!(item, Item::Reasoning(_)));
+        let replay_reasoning =
+            !params.tools.is_empty() || input.iter().any(|item| matches!(item, Item::Reasoning(_)));
         let mut turn = AssistantTurn::default();
 
-        for item in &params.input {
+        for item in input {
             match item {
                 Item::Reasoning(_) => {
                     let text = crate::types::item_text_preview(item);
@@ -372,6 +383,40 @@ impl LlmProvider for ChatCompletionsCodec {
     }
 }
 
+/// Keep the last payload of each non-empty item id at its first position.
+/// Items without ids remain distinct; tool call ids are pairing keys, not item ids.
+fn normalize_input_items(input: &[Item]) -> Vec<&Item> {
+    let mut last = HashMap::new();
+    for (index, item) in input.iter().enumerate() {
+        if let Some(id) = input_item_id(item) {
+            last.insert(id, index);
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(input.len());
+    for item in input {
+        if let Some(id) = input_item_id(item) {
+            if seen.insert(id) {
+                out.push(&input[last[id]]);
+            }
+        } else {
+            out.push(item);
+        }
+    }
+    out
+}
+
+fn input_item_id(item: &Item) -> Option<&str> {
+    let id = match item {
+        Item::Reasoning(reasoning) => reasoning.id.as_deref(),
+        Item::Message(MessageItem::Output(message)) => Some(message.id.as_str()),
+        Item::FunctionCall(call) => call.id.as_deref(),
+        Item::FunctionCallOutput(output) => output.id.as_deref(),
+        _ => None,
+    };
+    id.map(str::trim).filter(|id| !id.is_empty())
+}
+
 #[derive(Default)]
 struct AssistantTurn {
     reasoning: String,
@@ -652,6 +697,121 @@ headers = { "x-opencode-session" = "{{session_id}}" }
         assert_eq!(messages[2]["role"], "tool");
         assert_eq!(messages[2]["content"], "ok");
         assert_eq!(body["tools"][0]["function"]["name"], "read");
+    }
+
+    #[test]
+    fn stream_snapshots_keep_final_reasoning_and_tool_call_in_original_order() {
+        use crate::authority::responses::{
+            FunctionCallOutputItemParam, FunctionToolCall, OutputStatus, ReasoningItem,
+            ReasoningItemContent, ReasoningTextContent,
+        };
+
+        let reasoning = |text: &str| {
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_1".into()),
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent { text: text.into() },
+                )]),
+                encrypted_content: None,
+                status: Some(OutputStatus::Completed),
+            })
+        };
+        let call = |arguments: &str| {
+            Item::FunctionCall(FunctionToolCall {
+                id: Some("fc_1".into()),
+                call_id: "call_1".into(),
+                name: "read".into(),
+                arguments: arguments.into(),
+                status: Some(OutputStatus::Completed),
+                namespace: None,
+            })
+        };
+        let mut request = sample_request();
+        request.input = vec![
+            user_text("hi"),
+            reasoning("partial"),
+            call("{"),
+            reasoning("complete reasoning"),
+            call("{\"path\":\"file\"}"),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                id: None,
+                call_id: "call_1".into(),
+                output: FunctionCallOutput::Text("file contents".into()),
+                status: None,
+            }),
+            user_text("continue"),
+        ];
+
+        let body = codec("").encode_body(&request, true).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 5, "{body}");
+        assert_eq!(messages[2]["role"], "assistant");
+        assert_eq!(messages[2]["reasoning_content"], "complete reasoning");
+        assert_eq!(messages[2]["tool_calls"].as_array().unwrap().len(), 1);
+        assert_eq!(messages[2]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(
+            messages[2]["tool_calls"][0]["function"]["arguments"],
+            "{\"path\":\"file\"}"
+        );
+        assert_eq!(messages[3]["role"], "tool");
+        assert_eq!(messages[3]["tool_call_id"], "call_1");
+        assert_eq!(messages[4]["role"], "user");
+    }
+
+    #[test]
+    fn repeated_assistant_message_keeps_completed_content_once() {
+        use crate::authority::responses::{AssistantRole, OutputStatus, OutputTextContent};
+
+        let message = |text: &str| {
+            Item::Message(MessageItem::Output(OutputMessage {
+                id: "msg_1".into(),
+                role: AssistantRole::Assistant,
+                status: OutputStatus::Completed,
+                phase: None,
+                content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                    text: text.into(),
+                    annotations: vec![],
+                    logprobs: None,
+                })],
+            }))
+        };
+        let mut request = sample_request();
+        request.input = vec![user_text("hi"), message("hel"), message("hello")];
+
+        let body = codec("").encode_body(&request, true).unwrap();
+        assert_eq!(body["messages"].as_array().unwrap().len(), 3, "{body}");
+        assert_eq!(body["messages"][2]["content"], "hello");
+    }
+
+    #[test]
+    fn idless_items_remain_distinct_even_with_the_same_call_id() {
+        use crate::authority::responses::FunctionCallOutputItemParam;
+
+        let mut request = sample_request();
+        request.input = vec![
+            crate::types::assistant_text("first"),
+            crate::types::assistant_text("second"),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                id: None,
+                call_id: "call_1".into(),
+                output: FunctionCallOutput::Text("one".into()),
+                status: None,
+            }),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                id: None,
+                call_id: "call_1".into(),
+                output: FunctionCallOutput::Text("two".into()),
+                status: None,
+            }),
+        ];
+
+        let body = codec("").encode_body(&request, true).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 4, "{body}");
+        assert_eq!(messages[1]["content"], "first\nsecond");
+        assert_eq!(messages[2]["content"], "one");
+        assert_eq!(messages[3]["content"], "two");
     }
 
     #[test]

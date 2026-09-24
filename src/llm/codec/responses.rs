@@ -4,7 +4,13 @@
 //! `endpoint_type = "responses"`. Vendor differences arrive as catalog data
 //! (tiers, headers, extra_body) or as named quirks; there is no provider id
 //! branch anywhere in this file.
+//!
+//! The codec also owns the transcript-to-wire boundary: the session log is free
+//! to hold lifecycle markers and repeated snapshots of one provider item, and
+//! [`normalize_input_items`] reduces that to the single clean copy the dialect
+//! accepts before anything is serialized.
 
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -73,6 +79,13 @@ impl ResponsesCodec {
         let thinking_active = self.thinking_active(params.thinking);
 
         let mut input_items = params.input.clone();
+        // Chat Completions synthesizes reasoning shells for the transcript, but
+        // their cc_rs IDs do not identify replayable Responses reasoning. Drop
+        // them before vendor-specific reasoning replay can fill any required gap.
+        input_items.retain(|item| {
+            !matches!(item, Item::Reasoning(reasoning)
+                if reasoning.id.as_deref().is_some_and(|id| id.starts_with("cc_rs_")))
+        });
         if model.has_quirk(ProviderQuirk::ReasoningReplay) {
             // Replay whenever this request thinks: a vendor whose default is
             // thinking-on must never see a reasoning-less assistant turn.
@@ -85,8 +98,9 @@ impl ResponsesCodec {
         let input: Vec<Value> = input_items
             .iter()
             .map(serialize_input_item)
-            .collect::<std::result::Result<_, _>>()
+            .collect::<std::result::Result<Vec<Value>, _>>()
             .map_err(|error| LitecodeError::Llm(format!("serialize input items: {error}")))?;
+        let input = normalize_input_items(input);
 
         let tools: Vec<Value> = params
             .tools
@@ -222,6 +236,78 @@ fn map_input_content(content: &InputContent) -> serde_json::Result<Value> {
     Ok(Value::Object(mapped))
 }
 
+/// Normalize the replayed `input` array for the Responses wire.
+///
+/// The transcript is a session-owned log: it keeps lifecycle markers and it may
+/// legitimately hold one provider item twice (a live `output_item.added`
+/// snapshot persisted while the stream ran, then the authoritative terminal
+/// payload appended after it — a reasoning item's `encrypted_content` only
+/// completes at the end of the stream, so the two copies are not byte-equal).
+/// What the wire accepts is narrower, and that boundary is this codec's job:
+///
+/// * A provider item `id` is a logical identity and may appear **once** in
+///   `input`; a second copy is rejected (OpenAI: `Duplicate item found with id
+///   rs_…`). The last copy carries the complete payload, so it wins — at the
+///   position of the first copy, which is where the item was produced relative
+///   to its surrounding tool call/output pair.
+/// * `status` is populated when items are returned *from* the API and is not
+///   accepted back on input (OpenAI: `Unknown parameter: 'input[1].status'`).
+///   Whatever the vendor's dialect, the field carries no model-visible
+///   information, so it never goes out.
+///
+/// Items without an id are passed through without collapsing: host-built parts,
+/// `function_call_output`, and synthesized assistant text (empty id) are not
+/// identities. Empty ids and Chat Completions' synthetic message/function-call
+/// ids are omitted from the wire rather than presented as Responses identities.
+fn normalize_input_items(items: Vec<Value>) -> Vec<Value> {
+    // The complete copy of every provider id — the last one in the transcript.
+    let mut complete: HashMap<String, Value> = HashMap::new();
+    for item in &items {
+        if let Some(id) = wire_item_id(item) {
+            complete.insert(id.to_string(), item.clone());
+        }
+    }
+    let mut emitted: HashSet<String> = HashSet::new();
+    let mut input: Vec<Value> = Vec::with_capacity(items.len());
+    for mut item in items {
+        if let Some(id) = wire_item_id(&item).map(str::to_string) {
+            if !emitted.insert(id.clone()) {
+                continue;
+            }
+            // First copy keeps the slot; the complete payload goes out.
+            if let Some(complete_item) = complete.get(&id) {
+                item = complete_item.clone();
+            }
+        }
+        if let Value::Object(map) = &mut item {
+            map.remove("status");
+            if map
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| {
+                    id.trim().is_empty()
+                        || (map.get("type").and_then(Value::as_str) == Some("message")
+                            && id.starts_with("cc_msg_"))
+                        || (map.get("type").and_then(Value::as_str) == Some("function_call")
+                            && id.starts_with("cc_fc_"))
+                })
+            {
+                map.remove("id");
+            }
+        }
+        input.push(item);
+    }
+    input
+}
+
+/// The provider-assigned identity of a wire item, when it has one.
+fn wire_item_id(item: &Value) -> Option<&str> {
+    item.get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
 impl LlmProvider for ResponsesCodec {
     // The trait names this "endpoint"; the catalog calls the same thing the
     // request URL (base + protocol path).
@@ -349,7 +435,7 @@ mod tests {
     };
     use crate::llm::request::ToolDef;
     use crate::provider_catalog::ProviderCatalog;
-    use crate::types::user_text;
+    use crate::types::{assistant_text, user_text};
     use std::path::Path;
     use std::sync::Mutex;
 
@@ -578,6 +664,218 @@ endpoint_type = "responses"
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["name"], "read");
         assert!(body["tools"][0].get("function").is_none());
+    }
+
+    /// A provider id is one logical item: when the transcript holds a live
+    /// snapshot plus the completed payload, one clean copy goes out — the
+    /// complete payload, at the position where the item was first produced.
+    #[test]
+    fn repeated_item_ids_collapse_to_the_complete_copy_in_place() {
+        use crate::authority::responses::{
+            FunctionCallOutputItemParam, FunctionToolCall, ReasoningItem, ReasoningItemContent,
+            ReasoningTextContent,
+        };
+
+        fn reasoning(encrypted: &str) -> Item {
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_1".into()),
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "think".into(),
+                    },
+                )]),
+                encrypted_content: Some(encrypted.into()),
+                status: Some(OutputStatus::Completed),
+            })
+        }
+
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.input = vec![
+            user_text("hi"),
+            reasoning("gAAAA-live-snapshot"),
+            Item::FunctionCall(FunctionToolCall {
+                arguments: "{}".into(),
+                call_id: "call_1".into(),
+                namespace: None,
+                name: "read".into(),
+                id: Some("fc_1".into()),
+                status: Some(OutputStatus::Completed),
+            }),
+            reasoning("gAAAA-complete"),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                call_id: "call_1".into(),
+                output: FunctionCallOutput::Text("ok".into()),
+                id: None,
+                status: Some(OutputStatus::Completed),
+            }),
+        ];
+
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 4, "{input:?}");
+        assert_eq!(input[1]["type"], "reasoning");
+        assert_eq!(input[1]["id"], "rs_1");
+        assert_eq!(input[1]["encrypted_content"], "gAAAA-complete");
+        assert_eq!(input[2]["id"], "fc_1");
+        assert_eq!(input[3]["type"], "function_call_output");
+    }
+
+    /// `status` is populated when items are returned *from* the API; a replay
+    /// that carries it is rejected as an unknown parameter.
+    #[test]
+    fn output_only_status_never_reaches_the_wire() {
+        use crate::authority::responses::ReasoningItem;
+
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.input = vec![
+            user_text("hi"),
+            assistant_text("done"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_1".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: None,
+                status: Some(OutputStatus::InProgress),
+            }),
+        ];
+
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3, "{input:?}");
+        for item in input {
+            assert!(item.get("status").is_none(), "{item}");
+        }
+    }
+
+    /// An empty id is not an identity: synthesized assistant turns and host-built
+    /// outputs must never collapse into each other or send an invalid id.
+    #[test]
+    fn items_without_ids_are_never_collapsed() {
+        use crate::authority::responses::FunctionCallOutputItemParam;
+
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.input = vec![
+            assistant_text("one"),
+            assistant_text("two"),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                call_id: "call_1".into(),
+                output: FunctionCallOutput::Text("ok".into()),
+                id: None,
+                status: None,
+            }),
+        ];
+
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3, "{body}");
+        for item in input {
+            assert!(item.get("id").is_none(), "{item}");
+        }
+        assert_eq!(input[0]["content"][0]["text"], "one");
+        assert_eq!(input[1]["content"][0]["text"], "two");
+    }
+
+    #[test]
+    fn compact_summary_does_not_send_an_empty_id() {
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.input = vec![
+            crate::context_pipeline::summary::compact_summary_message("decisions", false),
+            user_text("continue"),
+        ];
+
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2, "{body}");
+        assert!(input[0].get("id").is_none(), "{}", input[0]);
+        assert_eq!(input[0]["role"], "assistant");
+    }
+
+    #[test]
+    fn chat_history_does_not_replay_synthetic_responses_ids() {
+        use crate::authority::responses::{
+            FunctionCallOutputItemParam, FunctionToolCall, ReasoningItem,
+        };
+
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("cc_rs_fbef1944fce743688ba5cd474a3f35f6".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: None,
+                status: Some(OutputStatus::Completed),
+            }),
+            Item::Message(MessageItem::Output(OutputMessage {
+                id: "cc_msg_123".into(),
+                role: crate::authority::responses::AssistantRole::Assistant,
+                status: OutputStatus::Completed,
+                phase: None,
+                content: vec![crate::authority::responses::OutputMessageContent::OutputText(
+                    OutputTextContent {
+                        text: "I'll use a tool".into(),
+                        annotations: vec![],
+                        logprobs: None,
+                    },
+                )],
+            })),
+            Item::FunctionCall(FunctionToolCall {
+                id: Some("cc_fc_123".into()),
+                call_id: "call_123".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                status: Some(OutputStatus::Completed),
+                namespace: None,
+            }),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                id: None,
+                call_id: "call_123".into(),
+                output: FunctionCallOutput::Text("ok".into()),
+                status: None,
+            }),
+            user_text("continue"),
+        ];
+
+        let input = request_body(&codec, &request)["input"].as_array().unwrap().clone();
+        assert_eq!(input.len(), 5, "{input:?}");
+        assert_eq!(input[1]["content"][0]["text"], "I'll use a tool");
+        assert!(input[1].get("id").is_none(), "{input:?}");
+        assert_eq!(input[2]["type"], "function_call");
+        assert!(input[2].get("id").is_none(), "{input:?}");
+        assert_eq!(input[2]["call_id"], input[3]["call_id"]);
+        assert_eq!(input[4]["role"], "user");
+    }
+
+    #[test]
+    fn reasoning_replay_quirk_fills_the_gap_after_chat_reasoning_is_removed() {
+        use crate::authority::responses::ReasoningItem;
+
+        let codec = ResponsesCodec::new(deepseek("reasoning = { tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }")).unwrap();
+        let mut request = sample_request();
+        request.tools = vec![tool("read")];
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("cc_rs_123".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: None,
+                status: Some(OutputStatus::Completed),
+            }),
+            assistant_text("done"),
+        ];
+
+        let input = request_body(&codec, &request)["input"].as_array().unwrap().clone();
+        assert_eq!(input.len(), 3, "{input:?}");
+        assert_eq!(input[1]["type"], "reasoning");
+        assert_eq!(input[1]["id"], "rs_replay_0");
+        assert_eq!(input[2]["role"], "assistant");
     }
 
     #[test]

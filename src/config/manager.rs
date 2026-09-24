@@ -135,7 +135,8 @@ impl ConfigManager {
     ) -> Result<ResolvedConfig> {
         let catalog = provider_catalog::shared_for_db(db_path)?;
         global_db::with_conn(db_path, |conn| {
-            global_db::legacy::migrate_once(conn, &catalog)
+            global_db::legacy::migrate_once(conn, &catalog)?;
+            repair_agent_models_on_boot(conn, &catalog)
         })?;
         let global = Self::load_global_from(db_path)?;
         Self::validate_structural(&global)?;
@@ -159,6 +160,44 @@ impl ConfigManager {
     pub fn load_workspace(override_path: Option<&Path>) -> Result<WorkspaceState> {
         load_workspace_state(override_path)
     }
+}
+
+/// Boot-time sibling of the per-commit repair in `SettingsWriter`.
+///
+/// A provider-catalog edit (needs a restart) or a provider key removed while the
+/// app was closed leaves agents pointing at a model that cannot run, and no
+/// settings write happens at startup to heal it. Writes only the repaired agent
+/// rows: the catalog is the source of truth, a stored ref is derived state.
+fn repair_agent_models_on_boot(
+    conn: &rusqlite::Connection,
+    catalog: &ProviderCatalog,
+) -> Result<()> {
+    let mut settings = global_db::store::load(conn)?;
+    let repaired = super::bridge::repair_agent_models(&mut settings, catalog);
+    if repaired.is_empty() {
+        return Ok(());
+    }
+    tracing::info!(
+        agents = ?repaired,
+        "boot: auto-assigned a runnable model to agents whose model_ref could not run"
+    );
+    for id in repaired {
+        let Some(profile) = settings.agents.get(&id) else {
+            continue;
+        };
+        global_db::store::upsert_agent(
+            conn,
+            &id,
+            profile.role,
+            &profile.model_ref,
+            &profile.system_prompt,
+            profile.temperature,
+            profile.max_steps,
+            &profile.description,
+            &profile.allowed_subagents,
+        )?;
+    }
+    Ok(())
 }
 
 const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error", "off"];
@@ -286,9 +325,49 @@ mod tests {
     }
 
     #[test]
+    fn boot_hands_a_stale_agent_a_model_that_can_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("litecode.db");
+        let ws = tempfile::tempdir().unwrap();
+        crate::provider_catalog::store::forget(&db);
+        std::fs::write(
+            crate::provider_catalog::catalog_path_for_db(&db),
+            "version = 1\n[[providers]]\nid = \"main\"\nname = \"Main\"\nendpoint = \"https://api.example.com/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"default\"\nprovider_id = \"main\"\n",
+        )
+        .unwrap();
+        // Seed through the normal load path first (agents + bindings), then strand
+        // the default agent on a ref the catalog does not declare.
+        ConfigManager::load_global_from(&db).unwrap();
+        let conn = crate::config::global_db::open(&db).unwrap();
+        crate::config::global_db::store::set_provider_credential(&conn, "main", "sk-test")
+            .unwrap();
+        crate::config::global_db::store::upsert_agent(
+            &conn,
+            "default",
+            AgentRole::Primary,
+            "main/gone",
+            "",
+            0.7,
+            50,
+            "",
+            &[],
+        )
+        .unwrap();
+        drop(conn);
+
+        let resolved = ConfigManager::load_runtime_bundle_from(&db, Some(ws.path())).unwrap();
+        assert_eq!(resolved.agents()["default"].model_ref, "main/default");
+
+        // Persisted, not just resolved: the next boot already reads a runnable ref.
+        let reloaded = ConfigManager::load_global_from(&db).unwrap();
+        assert_eq!(reloaded.agents["default"].model_ref, "main/default");
+    }
+
+    #[test]
     fn validate_accepts_a_stale_agent_model_ref() {
         // A reference left over from an older catalog must not lock Settings:
-        // the settings API refuses new invalid writes and a turn hard-fails.
+        // the settings API refuses new invalid writes, and the boot/commit repair
+        // hands the agent a runnable model.
         let mut global = minimal_global();
         global.agents.insert(
             "default".into(),

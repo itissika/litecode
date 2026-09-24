@@ -9,8 +9,8 @@ pub mod subagent_auto_turn;
 
 pub use context::RuntimeContext;
 pub use llm_resolve::{
-    TurnLlmBinding, project_llm_input_for_model, resolve_session_llm,
-    validate_llm_input_capabilities,
+    TurnLlmBinding, ensure_session_model, project_llm_input_for_model, resolve_session_llm,
+    seed_model_ref, validate_llm_input_capabilities,
 };
 pub use provider_registry::ProviderRegistry;
 

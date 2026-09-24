@@ -168,7 +168,9 @@ fn fill_total_tokens(value: &mut Value) {
     });
 }
 
-/// The authority reasoning-effort enum has no `max`; DeepSeek sends one.
+/// The authority reasoning-effort enum has no `max`, but the catalog sends that
+/// literal for the top tier of several vendors, so the response echo of it must
+/// still be readable.
 fn normalize_max_effort(value: &mut Value) {
     walk(value, &mut |map| {
         if matches!(map.get("effort"), Some(Value::String(s)) if s == "max") {

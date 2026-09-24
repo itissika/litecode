@@ -354,12 +354,27 @@ impl SettingsWriter {
             .map_err(|e| LitecodeError::Config(e.to_string()))?;
         let mut settings = self.load()?;
         let restart_required = mutate(&mut settings)?;
+        // Auto-heal agent model refs in the same commit: adding or removing a
+        // provider key, and switching a model off, can strand an agent on a ref
+        // that can no longer run. Repaired in place, no shadow field — the
+        // catalog (plus the credential map) is the source of truth and the
+        // stored ref is derived state.
+        let catalog = self.catalog()?;
+        let mut docs = docs.to_vec();
+        let repaired = crate::config::bridge::repair_agent_models(&mut settings, &catalog);
+        if !repaired.is_empty() {
+            tracing::info!(
+                agents = ?repaired,
+                "auto-assigned a runnable model to agents whose model_ref could not run"
+            );
+            if !docs.contains(&DocId::Agents) {
+                docs.push(DocId::Agents);
+            }
+        }
         ConfigManager::validate(&settings)?;
         let conn = global_db::open(&self.db_path)?;
         store::replace_all(&conn, &settings)?;
         let generation = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
-        let docs = docs.to_vec();
-        let catalog = self.catalog()?;
         let summary = Self::summary_from(&settings, &catalog, generation, restart_required);
         let _ = self.broadcast.send(SettingsChangedEvent {
             revision: generation,
@@ -1206,7 +1221,8 @@ max_output = 1024
     fn provider_key_write_stores_the_credential_and_masks_it() {
         let (_dir, _db, writer) = writer_with_catalog();
         let ack = writer.write_provider_key("main", "sk-secret-value").unwrap();
-        assert_eq!(ack.docs, vec![DocId::Llm]);
+        // The same commit heals the seeded agents' empty model_ref.
+        assert_eq!(ack.docs, vec![DocId::Llm, DocId::Agents]);
 
         let view = project(&writer);
         let main = view.providers.iter().find(|p| p.id == "main").unwrap();
@@ -1287,7 +1303,8 @@ max_output = 1024
         assert_eq!(project(&writer).active_models.len(), 3);
 
         let ack = writer.delete_provider_key("main").unwrap();
-        assert_eq!(ack.docs, vec![DocId::Llm]);
+        // The agents that pointed at `main` are handed to `other` in the same commit.
+        assert_eq!(ack.docs, vec![DocId::Llm, DocId::Agents]);
         let view = project(&writer);
         let main = view.providers.iter().find(|p| p.id == "main").unwrap();
         assert!(!main.configured);
@@ -1311,6 +1328,31 @@ max_output = 1024
         assert_eq!(main.masked_api_key.as_deref(), Some("sk-***cond"));
         let serialized = serde_json::to_string(&view).unwrap();
         assert!(!serialized.contains("sk-first"), "{serialized}");
+    }
+
+    #[test]
+    fn settings_writes_hand_agents_a_runnable_model() {
+        let (_dir, db, writer) = writer_with_catalog();
+        // Seeded agents start with an empty model_ref and stay that way while no
+        // provider is keyed: there is nothing to hand them.
+        let seeded = global_db::load_global_from_path(&db).unwrap();
+        assert!(!seeded.agents.is_empty());
+        assert!(seeded.agents.values().all(|a| a.model_ref.is_empty()));
+
+        writer.write_provider_key("main", "sk-one").unwrap();
+        let healed = global_db::load_global_from_path(&db).unwrap();
+        for (id, profile) in &healed.agents {
+            assert_eq!(profile.model_ref, "main/default", "agent {id}");
+        }
+
+        // A second provider only matters once the first one loses its credential.
+        writer.write_provider_key("other", "sk-two").unwrap();
+        let ack = writer.delete_provider_key("main").unwrap();
+        assert!(ack.docs.contains(&DocId::Agents), "{:?}", ack.docs);
+        let moved = global_db::load_global_from_path(&db).unwrap();
+        for (id, profile) in &moved.agents {
+            assert_eq!(profile.model_ref, "other/small", "agent {id}");
+        }
     }
 
     #[test]
