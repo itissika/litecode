@@ -526,7 +526,12 @@ impl SessionController {
             .resolved
             .catalog()
             .model(model_id)
-            .is_some_and(|model| self.runtime.resolved.provider_api_key(&model.provider_id).is_some());
+            .is_some_and(|model| {
+                self.runtime
+                    .resolved
+                    .provider_api_key(&model.provider_id)
+                    .is_some()
+            });
         if !selectable {
             let binding = self.session_binding(session_id);
             if let Some(proj) = self.projection_mut(session_id) {

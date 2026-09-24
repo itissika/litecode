@@ -1602,7 +1602,7 @@ mod compact_item_wire_tests {
 
         let (proj, sid, sessions) = setup_with_details(&["u0", "u1"]);
         sessions
-            .persist_item(
+            .begin_stream_item(
                 &sid,
                 &Item::Message(MessageItem::Output(OutputMessage {
                     id: "asst_live".into(),
@@ -1615,6 +1615,7 @@ mod compact_item_wire_tests {
                     status: OutputStatus::InProgress,
                     phase: None,
                 })),
+                "t-live",
             )
             .unwrap();
         let range = proj.materialize_range(0, 10).unwrap();
@@ -1690,7 +1691,7 @@ mod compact_item_wire_tests {
 
         let (mut proj, sid, sessions) = setup_with_details(&["u0"]);
         sessions
-            .persist_item(
+            .begin_stream_item(
                 &sid,
                 &Item::Message(MessageItem::Output(OutputMessage {
                     id: "asst_live".into(),
@@ -1703,10 +1704,11 @@ mod compact_item_wire_tests {
                     status: OutputStatus::InProgress,
                     phase: None,
                 })),
+                "t-live",
             )
             .unwrap();
         sessions
-            .persist_item(
+            .begin_stream_item(
                 &sid,
                 &Item::FunctionCall(FunctionToolCall {
                     arguments: "{\"cmd\":\"ls\"}".into(),
@@ -1716,6 +1718,7 @@ mod compact_item_wire_tests {
                     id: Some("fc_live".into()),
                     status: Some(OutputStatus::InProgress),
                 }),
+                "t-live",
             )
             .unwrap();
         proj.bump_buffer_revision("/p", &binding());
@@ -1780,8 +1783,11 @@ mod compact_item_wire_tests {
         assert_eq!(again[1]["params"]["body"]["status"], "incomplete");
     }
 
+    /// The stream settles its own rows, so by the time the turn commits there is
+    /// nothing left to seal: the commit finds every row already in place. It must
+    /// neither append a second copy nor claim a seal it did not perform.
     #[test]
-    fn commit_delta_seal_restamps_completed_body_without_next_seq_growth() {
+    fn commit_after_the_stream_settled_finds_nothing_to_seal_or_append() {
         use crate::authority::responses::{
             AssistantRole, MessageItem, OutputMessage, OutputMessageContent, OutputStatus,
             OutputTextContent,
@@ -1791,28 +1797,25 @@ mod compact_item_wire_tests {
         use crate::types::Item;
 
         let (mut proj, sid, sessions) = setup_with_details(&["u0"]);
-        sessions
-            .persist_item(
-                &sid,
-                &Item::Message(MessageItem::Output(OutputMessage {
-                    id: "asst_live".into(),
-                    role: AssistantRole::Assistant,
-                    content: vec![OutputMessageContent::OutputText(OutputTextContent {
-                        text: "hel".into(),
-                        annotations: vec![],
-                        logprobs: None,
-                    })],
-                    status: OutputStatus::InProgress,
-                    phase: None,
-                })),
-            )
+        let live = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_live".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hel".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::InProgress,
+            phase: None,
+        }));
+        let live_seq = sessions
+            .begin_stream_item(&sid, &live, "t-complete")
             .unwrap();
         proj.bump_buffer_revision("/p", &binding());
         let _ = proj.take_outgoing();
         let next_before_seal = proj.next_seq;
-        let live_seq = next_before_seal.saturating_sub(1);
 
-        let sealed = Item::Message(MessageItem::Output(OutputMessage {
+        let settled = Item::Message(MessageItem::Output(OutputMessage {
             id: "asst_live".into(),
             role: AssistantRole::Assistant,
             content: vec![OutputMessageContent::OutputText(OutputTextContent {
@@ -1823,32 +1826,45 @@ mod compact_item_wire_tests {
             status: OutputStatus::Completed,
             phase: None,
         }));
+        sessions.seal_stream_item(&sid, live_seq, &settled).unwrap();
         let (kind, _, _) = sessions
             .commit_turn_delta(
                 &sid,
                 vec![
                     WorkingRow::persisted(0, user_text("u0")),
-                    WorkingRow::persisted(live_seq, sealed),
+                    WorkingRow::persisted(live_seq, settled.clone()),
                 ],
                 live_seq as i64,
                 "t-complete",
             )
             .unwrap();
-        let seqs = match kind {
-            CommitKind::Sealed { seqs } => seqs,
-            other => panic!("commit-seal must return Sealed seqs, got {other:?}"),
-        };
-        assert_eq!(seqs, vec![live_seq]);
+        assert!(
+            !matches!(kind, CommitKind::Sealed { .. }),
+            "a row the stream already settled must not be sealed again: {kind:?}"
+        );
+        assert_eq!(
+            sessions.data().events_blocking(&sid).unwrap().len(),
+            2,
+            "the commit must not append a second copy"
+        );
 
+        // The stream's settle shipped the row, so a forward-only revision has
+        // nothing left to deliver.
         proj.bump_buffer_revision("/p", &binding());
         let after_bump = proj.take_outgoing();
         assert!(
             buffer_item_frames(&after_bump).is_empty(),
-            "in-place commit seal must not be shipped by next_seq-only revision"
+            "an already-delivered row is not shipped again by a revision bump"
         );
         assert_eq!(proj.next_seq, next_before_seal);
 
-        proj.on_event(InternalEvent::BufferRestamp { seqs }, "/p", &binding());
+        proj.on_event(
+            InternalEvent::BufferRestamp {
+                seqs: vec![live_seq],
+            },
+            "/p",
+            &binding(),
+        );
         let restamp_out = proj.take_outgoing();
         let restamp = buffer_item_frames(&restamp_out);
         assert_eq!(restamp.len(), 1);
@@ -1861,9 +1877,8 @@ mod compact_item_wire_tests {
     #[test]
     fn revert_then_append_delivers_new_seq_using_persisted_high_water() {
         // Rows 0..8 (nine user messages); the persisted high-water is 9.
-        let (mut proj, sid, sessions) = setup_with_details(&[
-            "m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8",
-        ]);
+        let (mut proj, sid, sessions) =
+            setup_with_details(&["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"]);
         proj.bump_buffer_revision("/p", &binding());
         let _ = proj.take_outgoing();
         assert_eq!(proj.next_seq, 9, "high-water after nine appends");
@@ -1877,7 +1892,10 @@ mod compact_item_wire_tests {
             .iter()
             .find(|m| m["method"] == "buffer/reverted")
             .expect("buffer/reverted notification");
-        assert_eq!(reverted["params"]["last_seq"], 5, "active tail dropped to 5");
+        assert_eq!(
+            reverted["params"]["last_seq"], 5,
+            "active tail dropped to 5"
+        );
         assert_eq!(
             reverted["params"]["next_seq"], 9,
             "high-water did not move back"

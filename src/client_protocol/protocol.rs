@@ -274,7 +274,6 @@ pub struct WireBufferEvent {
     pub body: serde_json::Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cites: Vec<crate::session::event::Seq>,
-    #[serde(default)]
     pub state: crate::session::model::LogState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_op: Option<crate::session::surface::SurfaceOp>,
@@ -453,10 +452,6 @@ pub struct PermissionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WireEvent {
-    /// Authority Responses stream event (passthrough projection of `InternalEvent::StreamEvent`).
-    StreamEvent {
-        event: crate::types::StreamEvents,
-    },
     TodoProgress {
         pending: usize,
         in_progress: usize,

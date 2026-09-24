@@ -283,11 +283,6 @@ fn project_with(
                 step_max: *step_max,
             },
         ),
-        InternalEvent::StreamEvent(ev) => turn_event_ids(
-            session_id,
-            turn_id,
-            WireEvent::StreamEvent { event: ev.clone() },
-        ),
         InternalEvent::TodoProgress {
             pending,
             in_progress,
@@ -399,6 +394,10 @@ fn project_with(
             },
         ),
         InternalEvent::PermissionAwaiting { .. } => None,
+        // The provider's raw stream stays on the runtime bus: turn progress and
+        // diagnosis read it. It is not a body — the row the projection writes is
+        // the only thing a client renders, and that row is already durable.
+        InternalEvent::StreamEvent(_) => None,
         InternalEvent::SnapshotNotice { level, message } => turn_event_ids(
             session_id,
             turn_id,
@@ -870,6 +869,13 @@ pub fn session_attached(session_id: &str, turn: &TurnSnapshot) -> serde_json::Va
 #[derive(Debug)]
 pub enum IncomingWire {
     TurnEvent(WireEvent),
+    /// Assistant text just landed in the durable log. Consumers that print the
+    /// answer as it arrives read it from here rather than from the provider
+    /// stream, so what they show is what a reload shows.
+    AssistantText {
+        seq: u64,
+        text: String,
+    },
     PermissionRequest {
         session_id: String,
         turn_id: String,
@@ -900,6 +906,31 @@ pub fn classify_incoming(msg: &serde_json::Value) -> IncomingWire {
                 && let Ok(ev) = serde_json::from_value::<WireEvent>(event.clone())
             {
                 return IncomingWire::TurnEvent(ev);
+            }
+            IncomingWire::Ignored
+        }
+        "buffer/item" => {
+            // Only the answer is printed: reasoning items are log rows too, and
+            // announcing them on stdout would mix thinking into the reply.
+            if let Some(params) = params
+                && let Some(seq) = params.get("seq").and_then(serde_json::Value::as_u64)
+                && let Ok(item) = serde_json::from_value::<crate::types::Item>(
+                    params
+                        .get("body")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                )
+                && matches!(
+                    item,
+                    crate::types::Item::Message(crate::authority::responses::MessageItem::Output(
+                        _
+                    ))
+                )
+            {
+                return IncomingWire::AssistantText {
+                    seq,
+                    text: crate::types::item_text_preview(&item),
+                };
             }
             IncomingWire::Ignored
         }
