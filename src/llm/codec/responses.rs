@@ -6,11 +6,9 @@
 //! branch anywhere in this file.
 //!
 //! The codec also owns the transcript-to-wire boundary: the session log is free
-//! to hold lifecycle markers and repeated snapshots of one provider item, and
-//! [`normalize_input_items`] reduces that to the single clean copy the dialect
-//! accepts before anything is serialized.
+//! to hold lifecycle markers, and [`normalize_input_items`] reduces it to exactly
+//! what the dialect accepts before anything is serialized.
 
-use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -79,21 +77,11 @@ impl ResponsesCodec {
         let thinking_active = self.thinking_active(params.thinking);
 
         let mut input_items = params.input.clone();
-        // Chat Completions synthesizes reasoning shells for the transcript, but
-        // their cc_rs IDs do not identify replayable Responses reasoning. Drop
-        // them before vendor-specific reasoning replay can fill any required gap.
-        input_items.retain(|item| {
-            !matches!(item, Item::Reasoning(reasoning)
-                if reasoning.id.as_deref().is_some_and(|id| id.starts_with("cc_rs_")))
-        });
         if model.has_quirk(ProviderQuirk::ReasoningReplay) {
             // Replay whenever this request thinks: a vendor whose default is
             // thinking-on must never see a reasoning-less assistant turn.
-            input_items = ensure_reasoning_replay(
-                &input_items,
-                !params.tools.is_empty(),
-                thinking_active,
-            );
+            input_items =
+                ensure_reasoning_replay(&input_items, !params.tools.is_empty(), thinking_active);
         }
         let input: Vec<Value> = input_items
             .iter()
@@ -129,12 +117,13 @@ impl ResponsesCodec {
                 // a thinking control enables the switch and carries its effort.
                 if thinking_active {
                     body["thinking"] = serde_json::json!({ "type": "enabled" });
-                    body["reasoning"] = serde_json::json!({ "effort": effort });
+                    body["reasoning"] =
+                        reasoning_control(effort, model.reasoning_summary.as_deref());
                 } else {
                     body["thinking"] = serde_json::json!({ "type": effort });
                 }
             } else {
-                body["reasoning"] = serde_json::json!({ "effort": effort });
+                body["reasoning"] = reasoning_control(effort, model.reasoning_summary.as_deref());
             }
         }
 
@@ -177,7 +166,12 @@ impl ResponsesCodec {
         })
     }
 
-    fn request(&self, body: &Value, api_key: &str, session_id: Option<&str>) -> reqwest::RequestBuilder {
+    fn request(
+        &self,
+        body: &Value,
+        api_key: &str,
+        session_id: Option<&str>,
+    ) -> reqwest::RequestBuilder {
         let mut builder = self
             .client
             .post(&self.model.request_url)
@@ -188,6 +182,16 @@ impl ResponsesCodec {
             builder = builder.header(name, value);
         }
         builder.json(body)
+    }
+}
+
+/// The `reasoning` request object: the effort literal always, plus the summary
+/// opt-in when the model declares one. A model without the declaration never
+/// sees the key - vendors whose dialect does not document `summary` stay clean.
+fn reasoning_control(effort: &str, summary: Option<&str>) -> Value {
+    match summary {
+        Some(summary) => serde_json::json!({ "effort": effort, "summary": summary }),
+        None => serde_json::json!({ "effort": effort }),
     }
 }
 
@@ -236,76 +240,34 @@ fn map_input_content(content: &InputContent) -> serde_json::Result<Value> {
     Ok(Value::Object(mapped))
 }
 
-/// Normalize the replayed `input` array for the Responses wire.
+/// Final wire-shape cleanup only. Replay provenance and cross-call ID collisions
+/// were handled on the request copy by `replay_compat`; this codec never collapses
+/// or rejects an entire history because two rows happen to share an ID.
 ///
-/// The transcript is a session-owned log: it keeps lifecycle markers and it may
-/// legitimately hold one provider item twice (a live `output_item.added`
-/// snapshot persisted while the stream ran, then the authoritative terminal
-/// payload appended after it — a reasoning item's `encrypted_content` only
-/// completes at the end of the stream, so the two copies are not byte-equal).
-/// What the wire accepts is narrower, and that boundary is this codec's job:
-///
-/// * A provider item `id` is a logical identity and may appear **once** in
-///   `input`; a second copy is rejected (OpenAI: `Duplicate item found with id
-///   rs_…`). The last copy carries the complete payload, so it wins — at the
-///   position of the first copy, which is where the item was produced relative
-///   to its surrounding tool call/output pair.
-/// * `status` is populated when items are returned *from* the API and is not
-///   accepted back on input (OpenAI: `Unknown parameter: 'input[1].status'`).
-///   Whatever the vendor's dialect, the field carries no model-visible
-///   information, so it never goes out.
-///
-/// Items without an id are passed through without collapsing: host-built parts,
-/// `function_call_output`, and synthesized assistant text (empty id) are not
-/// identities. Empty ids and Chat Completions' synthetic message/function-call
-/// ids are omitted from the wire rather than presented as Responses identities.
+/// `status` comes from API output and is not accepted on input. An ID whose prefix
+/// cannot describe its item kind is omitted, never renamed; tool `call_id` remains
+/// untouched so the call/output pair is intact.
 fn normalize_input_items(items: Vec<Value>) -> Vec<Value> {
-    // The complete copy of every provider id — the last one in the transcript.
-    let mut complete: HashMap<String, Value> = HashMap::new();
-    for item in &items {
-        if let Some(id) = wire_item_id(item) {
-            complete.insert(id.to_string(), item.clone());
-        }
-    }
-    let mut emitted: HashSet<String> = HashSet::new();
-    let mut input: Vec<Value> = Vec::with_capacity(items.len());
+    let mut input = Vec::with_capacity(items.len());
     for mut item in items {
-        if let Some(id) = wire_item_id(&item).map(str::to_string) {
-            if !emitted.insert(id.clone()) {
-                continue;
-            }
-            // First copy keeps the slot; the complete payload goes out.
-            if let Some(complete_item) = complete.get(&id) {
-                item = complete_item.clone();
-            }
-        }
         if let Value::Object(map) = &mut item {
             map.remove("status");
-            if map
-                .get("id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| {
-                    id.trim().is_empty()
-                        || (map.get("type").and_then(Value::as_str) == Some("message")
-                            && id.starts_with("cc_msg_"))
-                        || (map.get("type").and_then(Value::as_str) == Some("function_call")
-                            && id.starts_with("cc_fc_"))
-                })
-            {
+            if map.get("id").and_then(Value::as_str).is_some_and(|id| {
+                id.trim().is_empty()
+                    || match map.get("type").and_then(Value::as_str) {
+                        Some("reasoning") => !id.starts_with("rs_"),
+                        Some("message") => !id.starts_with("msg_"),
+                        Some("function_call") => !id.starts_with("fc_"),
+                        Some("function_call_output") => true,
+                        _ => false,
+                    }
+            }) {
                 map.remove("id");
             }
         }
         input.push(item);
     }
     input
-}
-
-/// The provider-assigned identity of a wire item, when it has one.
-fn wire_item_id(item: &Value) -> Option<&str> {
-    item.get("id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
 }
 
 impl LlmProvider for ResponsesCodec {
@@ -521,6 +483,8 @@ endpoint_type = "responses"
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: None,
+            input_origins: vec![],
+            issuer: String::new(),
         }
     }
 
@@ -579,6 +543,24 @@ endpoint_type = "responses"
         assert!(body.get("reasoning").is_none(), "{body}");
     }
 
+    /// The summary opt-in rides the declared literal: a model that never
+    /// declares one does not grow a `summary` key on the wire.
+    #[test]
+    fn reasoning_summary_rides_the_declared_literal() {
+        let declared = ResponsesCodec::new(openai(
+            "reasoning = { summary = \"auto\", tiers = { off = \"none\", low = \"low\", medium = \"medium\", high = \"max\" } }",
+        ))
+        .unwrap();
+        let body = request_body(&declared, &sample_request());
+        assert_eq!(body["reasoning"]["effort"], "medium");
+        assert_eq!(body["reasoning"]["summary"], "auto");
+
+        let bare = ResponsesCodec::new(openai("")).unwrap();
+        let body = request_body(&bare, &sample_request());
+        assert_eq!(body["reasoning"]["effort"], "medium");
+        assert!(body["reasoning"].get("summary").is_none(), "{body}");
+    }
+
     #[test]
     fn tiers_map_each_platform_level_to_its_own_literal() {
         let codec = ResponsesCodec::new(deepseek(
@@ -592,7 +574,10 @@ endpoint_type = "responses"
         ] {
             let mut request = sample_request();
             request.thinking = ThinkingSpec::Tier(tier);
-            assert_eq!(request_body(&codec, &request)["reasoning"]["effort"], literal);
+            assert_eq!(
+                request_body(&codec, &request)["reasoning"]["effort"],
+                literal
+            );
         }
     }
 
@@ -603,7 +588,10 @@ endpoint_type = "responses"
         ))
         .unwrap();
         let with_thinking = request_body(&codec, &sample_request());
-        assert!(with_thinking.get("temperature").is_none(), "{with_thinking}");
+        assert!(
+            with_thinking.get("temperature").is_none(),
+            "{with_thinking}"
+        );
         let mut request = sample_request();
         request.thinking = ThinkingSpec::Off;
         assert_eq!(request_body(&codec, &request)["temperature"], 0.0);
@@ -666,25 +654,19 @@ endpoint_type = "responses"
         assert!(body["tools"][0].get("function").is_none());
     }
 
-    /// A provider id is one logical item: when the transcript holds a live
-    /// snapshot plus the completed payload, one clean copy goes out — the
-    /// complete payload, at the position where the item was first produced.
+    /// A repeated provider id is not decided here anymore. Cross-call reuse is
+    /// de-identified by the request projection (`replay_compat`), and a
+    /// same-call duplicate is refused by the stream projection that owns the
+    /// one-row-per-item invariant. The codec keeps wire-shape cleanup only.
     #[test]
-    fn repeated_item_ids_collapse_to_the_complete_copy_in_place() {
-        use crate::authority::responses::{
-            FunctionCallOutputItemParam, FunctionToolCall, ReasoningItem, ReasoningItemContent,
-            ReasoningTextContent,
-        };
+    fn repeated_item_ids_are_not_rewritten_by_the_codec() {
+        use crate::authority::responses::{FunctionToolCall, ReasoningItem};
 
         fn reasoning(encrypted: &str) -> Item {
             Item::Reasoning(ReasoningItem {
                 id: Some("rs_1".into()),
                 summary: vec![],
-                content: Some(vec![ReasoningItemContent::ReasoningText(
-                    ReasoningTextContent {
-                        text: "think".into(),
-                    },
-                )]),
+                content: None,
                 encrypted_content: Some(encrypted.into()),
                 status: Some(OutputStatus::Completed),
             })
@@ -692,6 +674,7 @@ endpoint_type = "responses"
 
         let codec = ResponsesCodec::new(openai("")).unwrap();
         let mut request = sample_request();
+        request.session_id = Some("s1".into());
         request.input = vec![
             user_text("hi"),
             reasoning("gAAAA-live-snapshot"),
@@ -704,22 +687,14 @@ endpoint_type = "responses"
                 status: Some(OutputStatus::Completed),
             }),
             reasoning("gAAAA-complete"),
-            Item::FunctionCallOutput(FunctionCallOutputItemParam {
-                call_id: "call_1".into(),
-                output: FunctionCallOutput::Text("ok".into()),
-                id: None,
-                status: Some(OutputStatus::Completed),
-            }),
         ];
 
-        let body = request_body(&codec, &request);
+        let body = codec
+            .build_body(&request, true)
+            .expect("the codec no longer rejects repeated ids");
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 4, "{input:?}");
-        assert_eq!(input[1]["type"], "reasoning");
-        assert_eq!(input[1]["id"], "rs_1");
-        assert_eq!(input[1]["encrypted_content"], "gAAAA-complete");
-        assert_eq!(input[2]["id"], "fc_1");
-        assert_eq!(input[3]["type"], "function_call_output");
+        assert_eq!(request.input.len(), 4, "session-owned copy unchanged");
     }
 
     /// `status` is populated when items are returned *from* the API; a replay
@@ -796,6 +771,63 @@ endpoint_type = "responses"
     }
 
     #[test]
+    fn foreign_reasoning_uuid_is_not_replayed_or_written_back() {
+        use crate::authority::responses::ReasoningItem;
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.input = vec![user_text("earlier"); 50];
+        request.input.push(Item::Reasoning(ReasoningItem {
+            id: Some("60102752-7590-49a2-92bf-cd3e631b96bf".into()),
+            summary: vec![],
+            content: None,
+            encrypted_content: None,
+            status: None,
+        }));
+        request.input.push(assistant_text("answer"));
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 52, "{input:?}");
+        assert_eq!(input[50]["type"], "reasoning");
+        assert!(input[50].get("id").is_none(), "{}", input[50]);
+        assert_eq!(input[51]["role"], "assistant");
+        assert!(matches!(&request.input[50], Item::Reasoning(r) if r.id.is_some()));
+    }
+
+    #[test]
+    fn foreign_item_ids_do_not_break_tool_pairing() {
+        use crate::authority::responses::{FunctionCallOutputItemParam, FunctionToolCall};
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        let mut message = assistant_text("calling tool");
+        if let Item::Message(MessageItem::Output(ref mut out)) = message {
+            out.id = "foreign-uuid".into();
+        }
+        request.input = vec![
+            message,
+            Item::FunctionCall(FunctionToolCall {
+                id: Some("foreign-call-id".into()),
+                call_id: "call_1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                status: None,
+                namespace: None,
+            }),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                id: Some("foreign-output-id".into()),
+                call_id: "call_1".into(),
+                output: FunctionCallOutput::Text("ok".into()),
+                status: None,
+            }),
+        ];
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3);
+        assert!(input.iter().all(|item| item.get("id").is_none()));
+        assert_eq!(input[1]["call_id"], input[2]["call_id"]);
+        assert_eq!(request.input.len(), 3);
+    }
+
+    #[test]
     fn chat_history_does_not_replay_synthetic_responses_ids() {
         use crate::authority::responses::{
             FunctionCallOutputItemParam, FunctionToolCall, ReasoningItem,
@@ -817,13 +849,15 @@ endpoint_type = "responses"
                 role: crate::authority::responses::AssistantRole::Assistant,
                 status: OutputStatus::Completed,
                 phase: None,
-                content: vec![crate::authority::responses::OutputMessageContent::OutputText(
-                    OutputTextContent {
-                        text: "I'll use a tool".into(),
-                        annotations: vec![],
-                        logprobs: None,
-                    },
-                )],
+                content: vec![
+                    crate::authority::responses::OutputMessageContent::OutputText(
+                        OutputTextContent {
+                            text: "I'll use a tool".into(),
+                            annotations: vec![],
+                            logprobs: None,
+                        },
+                    ),
+                ],
             })),
             Item::FunctionCall(FunctionToolCall {
                 id: Some("cc_fc_123".into()),
@@ -842,18 +876,23 @@ endpoint_type = "responses"
             user_text("continue"),
         ];
 
-        let input = request_body(&codec, &request)["input"].as_array().unwrap().clone();
-        assert_eq!(input.len(), 5, "{input:?}");
-        assert_eq!(input[1]["content"][0]["text"], "I'll use a tool");
+        let input = request_body(&codec, &request)["input"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(input.len(), 6, "{input:?}");
+        assert_eq!(input[1]["type"], "reasoning");
         assert!(input[1].get("id").is_none(), "{input:?}");
-        assert_eq!(input[2]["type"], "function_call");
+        assert_eq!(input[2]["content"][0]["text"], "I'll use a tool");
         assert!(input[2].get("id").is_none(), "{input:?}");
-        assert_eq!(input[2]["call_id"], input[3]["call_id"]);
-        assert_eq!(input[4]["role"], "user");
+        assert_eq!(input[3]["type"], "function_call");
+        assert!(input[3].get("id").is_none(), "{input:?}");
+        assert_eq!(input[3]["call_id"], input[4]["call_id"]);
+        assert_eq!(input[5]["role"], "user");
     }
 
     #[test]
-    fn reasoning_replay_quirk_fills_the_gap_after_chat_reasoning_is_removed() {
+    fn chat_reasoning_keeps_its_slot_and_is_patched_for_replay() {
         use crate::authority::responses::ReasoningItem;
 
         let codec = ResponsesCodec::new(deepseek("reasoning = { tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }")).unwrap();
@@ -871,11 +910,45 @@ endpoint_type = "responses"
             assistant_text("done"),
         ];
 
-        let input = request_body(&codec, &request)["input"].as_array().unwrap().clone();
+        let input = request_body(&codec, &request)["input"]
+            .as_array()
+            .unwrap()
+            .clone();
         assert_eq!(input.len(), 3, "{input:?}");
         assert_eq!(input[1]["type"], "reasoning");
-        assert_eq!(input[1]["id"], "rs_replay_0");
+        assert!(input[1].get("id").is_none(), "{input:?}");
+        assert_eq!(
+            input[1]["content"][0]["text"],
+            super::super::replay::REPLAY_REASONING_PLACEHOLDER
+        );
         assert_eq!(input[2]["role"], "assistant");
+    }
+
+    #[test]
+    fn reasoning_replay_patches_a_foreign_uuid_item_in_place() {
+        use crate::authority::responses::ReasoningItem;
+        let codec = ResponsesCodec::new(deepseek("reasoning = { tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }")).unwrap();
+        let mut request = sample_request();
+        request.tools = vec![tool("read")];
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("60102752-7590-49a2-92bf-cd3e631b96bf".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: None,
+                status: None,
+            }),
+            assistant_text("done"),
+        ];
+        let body = request_body(&codec, &request);
+        assert_eq!(body["input"].as_array().unwrap().len(), 3);
+        assert_eq!(body["input"][1]["type"], "reasoning");
+        assert!(body["input"][1].get("id").is_none(), "{}", body["input"][1]);
+        assert_eq!(
+            body["input"][1]["content"][0]["text"],
+            super::super::replay::REPLAY_REASONING_PLACEHOLDER
+        );
     }
 
     #[test]
@@ -890,13 +963,15 @@ endpoint_type = "responses"
                     role: crate::authority::responses::AssistantRole::Assistant,
                     status: OutputStatus::Completed,
                     phase: None,
-                    content: vec![crate::authority::responses::OutputMessageContent::OutputText(
-                        OutputTextContent {
-                            text: "hello".into(),
-                            annotations: vec![],
-                            logprobs: None,
-                        },
-                    )],
+                    content: vec![
+                        crate::authority::responses::OutputMessageContent::OutputText(
+                            OutputTextContent {
+                                text: "hello".into(),
+                                annotations: vec![],
+                                logprobs: None,
+                            },
+                        ),
+                    ],
                 })),
             ];
             request
@@ -932,9 +1007,8 @@ endpoint_type = "responses"
 quirks = ["reasoning_replay"]
 "#;
         let entry = "reasoning = { tiers = { off = \"none\", low = \"none\", medium = \"medium\", high = \"high\" } }";
-        let text = format!(
-            "{MIMO_PROVIDER}\n[[models]]\nid = \"m\"\nprovider_id = \"mimo\"\n{entry}\n"
-        );
+        let text =
+            format!("{MIMO_PROVIDER}\n[[models]]\nid = \"m\"\nprovider_id = \"mimo\"\n{entry}\n");
         let catalog = ProviderCatalog::parse(&text, Path::new("test-catalog.toml")).unwrap();
         let codec = ResponsesCodec::new(Arc::clone(catalog.model("mimo/m").unwrap())).unwrap();
 
@@ -947,26 +1021,34 @@ quirks = ["reasoning_replay"]
                 role: crate::authority::responses::AssistantRole::Assistant,
                 status: OutputStatus::Completed,
                 phase: None,
-                content: vec![crate::authority::responses::OutputMessageContent::OutputText(
-                    OutputTextContent {
-                        text: "hello".into(),
-                        annotations: vec![],
-                        logprobs: None,
-                    },
-                )],
+                content: vec![
+                    crate::authority::responses::OutputMessageContent::OutputText(
+                        OutputTextContent {
+                            text: "hello".into(),
+                            annotations: vec![],
+                            logprobs: None,
+                        },
+                    ),
+                ],
             })),
         ];
 
         request.thinking = ThinkingSpec::Tier(ThinkingTier::Low);
         assert_eq!(
-            request_body(&codec, &request)["input"].as_array().unwrap().len(),
+            request_body(&codec, &request)["input"]
+                .as_array()
+                .unwrap()
+                .len(),
             2,
             "low maps to the off literal: no replay"
         );
 
         request.thinking = ThinkingSpec::Tier(ThinkingTier::Medium);
         assert_eq!(
-            request_body(&codec, &request)["input"].as_array().unwrap().len(),
+            request_body(&codec, &request)["input"]
+                .as_array()
+                .unwrap()
+                .len(),
             3,
             "medium thinks: replay is synthesized"
         );
@@ -998,7 +1080,10 @@ quirks = ["reasoning_replay"]
         });
         let value = serialize_input_item(&item).unwrap();
         assert_eq!(value["output"][0]["type"], "input_video");
-        assert_eq!(value["output"][0]["video_url"], "https://example.com/clip.mp4");
+        assert_eq!(
+            value["output"][0]["video_url"],
+            "https://example.com/clip.mp4"
+        );
         assert_eq!(value["output"][1]["type"], "input_audio");
         assert_eq!(value["output"][2]["type"], "input_image");
         assert_eq!(value["output"][3]["type"], "input_file");
@@ -1242,8 +1327,12 @@ provider_id = "p"
             "content_index": 0,
             "delta": "recover me"
         });
-        let endpoint = serve_once(format!("data: {delta}\n\n"), "text/event-stream", Some(4096))
-            .await;
+        let endpoint = serve_once(
+            format!("data: {delta}\n\n"),
+            "text/event-stream",
+            Some(4096),
+        )
+        .await;
         let codec = codec_at(OPENAI_PROVIDER, &endpoint);
         let error = codec
             .complete_with_stream_events(

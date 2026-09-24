@@ -21,7 +21,8 @@ use std::collections::HashMap;
 use crate::authority::responses::{
     AssistantRole, FunctionToolCall, Item, MessageItem, OutputItem, OutputMessage,
     OutputMessageContent, OutputStatus, OutputTextContent, ReasoningItem, ReasoningItemContent,
-    ReasoningTextContent, Response, ResponseOutputItemAddedEvent, ResponseStreamEvent,
+    ReasoningTextContent, Response, ResponseOutputItemAddedEvent, ResponseStreamEvent, SummaryPart,
+    SummaryTextContent,
 };
 use crate::types::{LitecodeError, Result, StreamEvents};
 
@@ -186,20 +187,37 @@ fn output_items_to_items(output: Vec<OutputItem>) -> Vec<Item> {
 }
 
 /// Live Item shells opened by this step's stream (`output_item.added` and deltas).
-/// Used to seal `incomplete` Items when the stream stops without `response.completed`.
+///
+/// The accumulator mirrors the provider's own item lifecycle so that a stream
+/// that ends without `response.completed` still yields the same items the
+/// terminal payload would have carried:
+///
+/// * `output_item.added` opens a shell (or a later `added` re-opens one).
+/// * deltas mutate that shell — `output_text`, `reasoning_text`, function-call
+///   arguments, and reasoning **summary parts** keyed by `summary_index`.
+/// * `*.done` / `output_item.done` are that item's terminal payload and replace
+///   the shell outright.
+///
+/// Nothing here assigns Session identity: the same item id always denotes one
+/// item, in `order`, for the whole step.
 #[derive(Debug, Default)]
-pub(super) struct StreamItemAccumulator {
+pub(crate) struct StreamItemAccumulator {
     order: Vec<String>,
     items: HashMap<String, Item>,
 }
 
 impl StreamItemAccumulator {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub(super) fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.items.is_empty()
+    }
+
+    /// The payload accumulated for `item_id` so far, if the stream opened it.
+    pub(crate) fn get(&self, item_id: &str) -> Option<&Item> {
+        self.items.get(item_id)
     }
 
     fn upsert(&mut self, id: String, item: Item) {
@@ -209,9 +227,15 @@ impl StreamItemAccumulator {
         self.items.insert(id, item);
     }
 
-    fn observe(&mut self, event: &ResponseStreamEvent) {
+    pub(crate) fn observe(&mut self, event: &ResponseStreamEvent) {
         match event {
             ResponseStreamEvent::ResponseOutputItemAdded(ev) => {
+                let item = Item::from(ev.item.clone());
+                if let Some(id) = item_id_of(&item) {
+                    self.upsert(id, item);
+                }
+            }
+            ResponseStreamEvent::ResponseOutputItemDone(ev) => {
                 let item = Item::from(ev.item.clone());
                 if let Some(id) = item_id_of(&item) {
                     self.upsert(id, item);
@@ -220,8 +244,34 @@ impl StreamItemAccumulator {
             ResponseStreamEvent::ResponseOutputTextDelta(ev) if !ev.item_id.is_empty() => {
                 self.append_message_text(&ev.item_id, &ev.delta);
             }
+            ResponseStreamEvent::ResponseOutputTextDone(ev) if !ev.item_id.is_empty() => {
+                self.set_message_text(&ev.item_id, &ev.text);
+            }
             ResponseStreamEvent::ResponseReasoningTextDelta(ev) if !ev.item_id.is_empty() => {
                 self.append_reasoning_text(&ev.item_id, &ev.delta);
+            }
+            ResponseStreamEvent::ResponseReasoningTextDone(ev) if !ev.item_id.is_empty() => {
+                self.set_reasoning_text(&ev.item_id, &ev.text);
+            }
+            ResponseStreamEvent::ResponseReasoningSummaryTextDelta(ev)
+                if !ev.item_id.is_empty() =>
+            {
+                self.append_reasoning_summary(&ev.item_id, ev.summary_index, &ev.delta);
+            }
+            ResponseStreamEvent::ResponseReasoningSummaryTextDone(ev) if !ev.item_id.is_empty() => {
+                self.set_reasoning_summary(&ev.item_id, ev.summary_index, &ev.text);
+            }
+            ResponseStreamEvent::ResponseReasoningSummaryPartAdded(ev)
+                if !ev.item_id.is_empty() =>
+            {
+                let SummaryPart::SummaryText(part) = &ev.part;
+                if !part.text.is_empty() {
+                    self.set_reasoning_summary(&ev.item_id, ev.summary_index, &part.text);
+                }
+            }
+            ResponseStreamEvent::ResponseReasoningSummaryPartDone(ev) if !ev.item_id.is_empty() => {
+                let SummaryPart::SummaryText(part) = &ev.part;
+                self.set_reasoning_summary(&ev.item_id, ev.summary_index, &part.text);
             }
             ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(ev)
                 if !ev.item_id.is_empty() =>
@@ -241,6 +291,107 @@ impl StreamItemAccumulator {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// One `summary_text` slot per `summary_index`, padded so a part that
+    /// arrives out of order still lands in its own place.
+    fn reasoning_summary_slot<'a>(r: &'a mut ReasoningItem, index: u32) -> &'a mut String {
+        while r.summary.len() <= index as usize {
+            r.summary.push(SummaryPart::SummaryText(SummaryTextContent {
+                text: String::new(),
+            }));
+        }
+        match &mut r.summary[index as usize] {
+            SummaryPart::SummaryText(part) => &mut part.text,
+        }
+    }
+
+    fn append_reasoning_summary(&mut self, item_id: &str, index: u32, delta: &str) {
+        match self.items.get_mut(item_id) {
+            Some(Item::Reasoning(r)) => {
+                Self::reasoning_summary_slot(r, index).push_str(delta);
+            }
+            Some(_) => {}
+            None => {
+                let mut r = ReasoningItem {
+                    id: Some(item_id.to_string()),
+                    summary: vec![],
+                    content: None,
+                    encrypted_content: None,
+                    status: Some(OutputStatus::InProgress),
+                };
+                Self::reasoning_summary_slot(&mut r, index).push_str(delta);
+                self.upsert(item_id.to_string(), Item::Reasoning(r));
+            }
+        }
+    }
+
+    fn set_reasoning_summary(&mut self, item_id: &str, index: u32, text: &str) {
+        match self.items.get_mut(item_id) {
+            Some(Item::Reasoning(r)) => {
+                *Self::reasoning_summary_slot(r, index) = text.to_string();
+            }
+            Some(_) => {}
+            None => {
+                let mut r = ReasoningItem {
+                    id: Some(item_id.to_string()),
+                    summary: vec![],
+                    content: None,
+                    encrypted_content: None,
+                    status: Some(OutputStatus::InProgress),
+                };
+                *Self::reasoning_summary_slot(&mut r, index) = text.to_string();
+                self.upsert(item_id.to_string(), Item::Reasoning(r));
+            }
+        }
+    }
+
+    fn set_message_text(&mut self, item_id: &str, text: &str) {
+        match self.items.get_mut(item_id) {
+            Some(Item::Message(MessageItem::Output(msg))) => {
+                set_output_text(msg, text);
+            }
+            Some(_) => {}
+            None => {
+                self.upsert(
+                    item_id.to_string(),
+                    Item::Message(MessageItem::Output(OutputMessage {
+                        id: item_id.to_string(),
+                        role: AssistantRole::Assistant,
+                        status: OutputStatus::InProgress,
+                        phase: None,
+                        content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                            text: text.to_string(),
+                            annotations: vec![],
+                            logprobs: None,
+                        })],
+                    })),
+                );
+            }
+        }
+    }
+
+    fn set_reasoning_text(&mut self, item_id: &str, text: &str) {
+        match self.items.get_mut(item_id) {
+            Some(Item::Reasoning(r)) => set_reasoning_text(r, text),
+            Some(_) => {}
+            None => {
+                self.upsert(
+                    item_id.to_string(),
+                    Item::Reasoning(ReasoningItem {
+                        id: Some(item_id.to_string()),
+                        summary: vec![],
+                        content: Some(vec![ReasoningItemContent::ReasoningText(
+                            ReasoningTextContent {
+                                text: text.to_string(),
+                            },
+                        )]),
+                        encrypted_content: None,
+                        status: Some(OutputStatus::InProgress),
+                    }),
+                );
+            }
         }
     }
 
@@ -329,7 +480,7 @@ impl StreamItemAccumulator {
         }
     }
 
-    pub(super) fn seal_incomplete(&self) -> Vec<Item> {
+    pub(crate) fn seal_incomplete(&self) -> Vec<Item> {
         let mut out: Vec<Item> = self
             .order
             .iter()
@@ -340,7 +491,11 @@ impl StreamItemAccumulator {
     }
 }
 
-fn item_id_of(item: &Item) -> Option<String> {
+/// The provider's own id for an item, when it has one.
+///
+/// This is the key the stream and the terminal payload agree on; it is not log
+/// identity (the log's identity is `seq`).
+pub(crate) fn item_id_of(item: &Item) -> Option<String> {
     match item {
         Item::Message(MessageItem::Output(m)) if !m.id.is_empty() => Some(m.id.clone()),
         Item::Reasoning(r) => r.id.clone().filter(|s| !s.is_empty()),
@@ -368,6 +523,21 @@ fn append_output_text(msg: &mut OutputMessage, delta: &str) {
         }));
 }
 
+fn set_output_text(msg: &mut OutputMessage, text: &str) {
+    for part in &mut msg.content {
+        if let OutputMessageContent::OutputText(t) = part {
+            t.text = text.to_string();
+            return;
+        }
+    }
+    msg.content
+        .push(OutputMessageContent::OutputText(OutputTextContent {
+            text: text.to_string(),
+            annotations: vec![],
+            logprobs: None,
+        }));
+}
+
 fn append_reasoning_text(r: &mut ReasoningItem, delta: &str) {
     let parts = r.content.get_or_insert_with(Vec::new);
     if let Some(p) = parts.iter_mut().next() {
@@ -380,7 +550,20 @@ fn append_reasoning_text(r: &mut ReasoningItem, delta: &str) {
     }));
 }
 
-pub(super) fn mark_items_incomplete(items: &mut [Item]) {
+fn set_reasoning_text(r: &mut ReasoningItem, text: &str) {
+    match r.content.as_mut().and_then(|parts| parts.first_mut()) {
+        Some(ReasoningItemContent::ReasoningText(t)) => t.text = text.to_string(),
+        _ => {
+            r.content = Some(vec![ReasoningItemContent::ReasoningText(
+                ReasoningTextContent {
+                    text: text.to_string(),
+                },
+            )]);
+        }
+    }
+}
+
+pub(crate) fn mark_items_incomplete(items: &mut [Item]) {
     for item in items {
         match item {
             Item::Message(MessageItem::Output(m)) => m.status = OutputStatus::Incomplete,
@@ -435,10 +618,33 @@ fn emit(
 fn provider_seq_of(ev: &ResponseStreamEvent) -> u64 {
     match ev {
         ResponseStreamEvent::ResponseOutputItemAdded(e) => e.sequence_number,
+        ResponseStreamEvent::ResponseOutputItemDone(e) => e.sequence_number,
         ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(e) => e.sequence_number,
         ResponseStreamEvent::ResponseFunctionCallArgumentsDone(e) => e.sequence_number,
         _ => 0,
     }
+}
+
+/// Enforce that one provider item id denotes one item in the terminal payload.
+///
+/// The whole session log is built on that: an item that arrives twice under the
+/// same id would either shadow or duplicate a row downstream. The provider is
+/// the only place that can get this wrong, so it fails loudly here rather than
+/// being de-duplicated silently and surfacing as two rows later.
+fn assert_unique_item_ids(items: &[Item]) -> Result<()> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for item in items {
+        let Some(id) = item_id_of(item) else {
+            continue;
+        };
+        *seen.entry(id).or_insert(0) += 1;
+    }
+    if let Some((id, count)) = seen.into_iter().find(|(_, n)| *n > 1) {
+        return Err(LitecodeError::Llm(format!(
+            "stream terminal carries item id `{id}` {count} times; one provider item must appear once"
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn forward_stream_event(
@@ -482,7 +688,9 @@ pub(super) fn forward_stream_event(
 
     match event {
         ResponseStreamEvent::ResponseCompleted(ev) => {
-            Ok(Some(output_items_to_items(ev.response.output)))
+            let items = output_items_to_items(ev.response.output);
+            assert_unique_item_ids(&items)?;
+            Ok(Some(items))
         }
         ResponseStreamEvent::ResponseFailed(ev) => Err(LitecodeError::Llm(terminal_error_message(
             "response.failed",
@@ -490,6 +698,7 @@ pub(super) fn forward_stream_event(
         ))),
         ResponseStreamEvent::ResponseIncomplete(ev) => {
             let mut items = output_items_to_items(ev.response.output);
+            assert_unique_item_ids(&items)?;
             if items.is_empty() {
                 items = acc.seal_incomplete();
             } else {
@@ -801,5 +1010,252 @@ mod tests {
         let acc = StreamItemAccumulator::new();
         let err = resolve_stream_outcome(None, &acc, true).unwrap_err();
         assert!(matches!(err, LitecodeError::Canceled));
+    }
+
+    /// Upstream streams one reasoning summary as several parts. Each part owns a
+    /// `summary_index` slot, and a part finishing must not disturb the others —
+    /// the interrupted stream has to yield exactly what `response.completed`
+    /// would have carried.
+    #[test]
+    fn reasoning_summary_parts_accumulate_by_index_without_dropping_earlier_parts() {
+        let mut acc = StreamItemAccumulator::new();
+        for ev in [
+            json_event(
+                "response.reasoning_summary_part.added",
+                serde_json::json!({"sequence_number": 1, "item_id": "rs_1", "output_index": 0, "summary_index": 0, "part": {"type": "summary_text", "text": ""}}),
+            ),
+            json_event(
+                "response.reasoning_summary_text.delta",
+                serde_json::json!({"sequence_number": 2, "item_id": "rs_1", "output_index": 0, "summary_index": 0, "delta": "first "}),
+            ),
+            json_event(
+                "response.reasoning_summary_text.delta",
+                serde_json::json!({"sequence_number": 3, "item_id": "rs_1", "output_index": 0, "summary_index": 0, "delta": "part"}),
+            ),
+            json_event(
+                "response.reasoning_summary_text.done",
+                serde_json::json!({"sequence_number": 4, "item_id": "rs_1", "output_index": 0, "summary_index": 0, "text": "first part"}),
+            ),
+            json_event(
+                "response.reasoning_summary_part.added",
+                serde_json::json!({"sequence_number": 5, "item_id": "rs_1", "output_index": 0, "summary_index": 1, "part": {"type": "summary_text", "text": ""}}),
+            ),
+            json_event(
+                "response.reasoning_summary_text.delta",
+                serde_json::json!({"sequence_number": 6, "item_id": "rs_1", "output_index": 0, "summary_index": 1, "delta": "second part"}),
+            ),
+            json_event(
+                "response.reasoning_summary_part.done",
+                serde_json::json!({"sequence_number": 7, "item_id": "rs_1", "output_index": 0, "summary_index": 1, "part": {"type": "summary_text", "text": "second part"}}),
+            ),
+        ] {
+            acc.observe(&ev);
+        }
+        let sealed = acc.seal_incomplete();
+        assert_eq!(sealed.len(), 1, "one reasoning item, not one per part");
+        match &sealed[0] {
+            Item::Reasoning(r) => {
+                assert_eq!(summary_texts(r), vec!["first part", "second part"]);
+            }
+            other => panic!("expected reasoning, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn summary_text_done_lands_on_its_own_index() {
+        let mut acc = StreamItemAccumulator::new();
+        for ev in [
+            json_event(
+                "response.reasoning_summary_text.delta",
+                serde_json::json!({"sequence_number": 1, "item_id": "rs_2", "output_index": 0, "summary_index": 0, "delta": "zero"}),
+            ),
+            json_event(
+                "response.reasoning_summary_text.done",
+                serde_json::json!({"sequence_number": 2, "item_id": "rs_2", "output_index": 0, "summary_index": 1, "text": "one"}),
+            ),
+        ] {
+            acc.observe(&ev);
+        }
+        let sealed = acc.seal_incomplete();
+        match &sealed[0] {
+            Item::Reasoning(r) => assert_eq!(summary_texts(r), vec!["zero", "one"]),
+            other => panic!("expected reasoning, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_item_done_replaces_the_streamed_shell() {
+        let mut acc = StreamItemAccumulator::new();
+        acc.observe(&json_event(
+            "response.reasoning_summary_text.delta",
+            serde_json::json!({"sequence_number": 1, "item_id": "rs_3", "output_index": 0, "summary_index": 0, "delta": "partial"}),
+        ));
+        acc.observe(&json_event(
+            "response.output_item.done",
+            serde_json::json!({
+                "sequence_number": 2,
+                "output_index": 0,
+                "item": {
+                    "type": "reasoning",
+                    "id": "rs_3",
+                    "summary": [{"type": "summary_text", "text": "the whole thing"}],
+                    "encrypted_content": "enc",
+                }
+            }),
+        ));
+        let sealed = acc.seal_incomplete();
+        assert_eq!(sealed.len(), 1);
+        match &sealed[0] {
+            Item::Reasoning(r) => {
+                assert_eq!(summary_texts(r), vec!["the whole thing"]);
+                assert_eq!(r.encrypted_content.as_deref(), Some("enc"));
+            }
+            other => panic!("expected reasoning, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_text_done_replaces_streamed_text() {
+        let mut acc = StreamItemAccumulator::new();
+        acc.observe(&json_event(
+            "response.output_text.delta",
+            serde_json::json!({"sequence_number": 1, "item_id": "msg_9", "output_index": 0, "content_index": 0, "delta": "half"}),
+        ));
+        acc.observe(&json_event(
+            "response.output_text.done",
+            serde_json::json!({"sequence_number": 2, "item_id": "msg_9", "output_index": 0, "content_index": 0, "text": "full text"}),
+        ));
+        let sealed = acc.seal_incomplete();
+        assert_eq!(crate::types::item_text_preview(&sealed[0]), "full text");
+    }
+
+    /// One provider item id denotes one item: a terminal that carries the same id
+    /// twice is an upstream contract violation and must not be silently merged
+    /// downstream (that is what produced two transcript rows).
+    #[test]
+    fn duplicate_item_id_in_completed_output_is_refused() {
+        let mut gate = StreamContractGate::new();
+        let mut acc = StreamItemAccumulator::new();
+        let completed: ResponseStreamEvent = serde_json::from_value(serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 9,
+            "response": {
+                "id": "resp_dup",
+                "object": "response",
+                "created_at": 1,
+                "model": "gpt-4o",
+                "status": "completed",
+                "output": [
+                    {"type": "reasoning", "id": "rs_dup", "summary": []},
+                    {"type": "reasoning", "id": "rs_dup", "summary": [{"type": "summary_text", "text": "x"}]}
+                ]
+            }
+        }))
+        .expect("completed event");
+        let err = forward_stream_event(&mut gate, &mut acc, completed, &mut None)
+            .expect_err("duplicate ids are refused");
+        assert!(
+            err.to_string().contains("rs_dup"),
+            "error should name the offending id, got {err}"
+        );
+    }
+
+    fn json_event(event_type: &str, mut fields: serde_json::Value) -> ResponseStreamEvent {
+        let map = fields.as_object_mut().expect("object");
+        map.insert("type".into(), serde_json::Value::String(event_type.into()));
+        serde_json::from_value(fields).expect("stream event")
+    }
+
+    fn fixture_events(name: &str) -> Vec<ResponseStreamEvent> {
+        let raw = match name {
+            "reasoning_summary_parts" => {
+                include_str!("../../../tests/fixtures/sse/responses/reasoning_summary_parts.txt")
+            }
+            other => panic!("unknown fixture {other}"),
+        };
+        raw.lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(|json| serde_json::from_str(json).expect("fixture event"))
+            .collect()
+    }
+
+    /// The real shape of a GPT-family response: every item announces itself, streams
+    /// its content, and then arrives a second time in the terminal payload with a
+    /// **different** `encrypted_content`. Normalizing it must yield each item once,
+    /// in the order the model produced them, with the terminal copy as the value.
+    #[test]
+    fn real_stream_shape_normalizes_to_one_item_per_id_in_order() {
+        let mut gate = StreamContractGate::new();
+        let mut acc = StreamItemAccumulator::new();
+        let mut terminal: Option<Vec<Item>> = None;
+        for ev in fixture_events("reasoning_summary_parts") {
+            if let Some(items) = forward_stream_event(&mut gate, &mut acc, ev, &mut None).unwrap() {
+                terminal = Some(items);
+            }
+        }
+        let items = terminal.expect("the fixture ends with response.completed");
+        assert_eq!(items.len(), 13, "12 reasoning items and one message");
+
+        // Order is the model's, not the payload's: reasoning first, text last.
+        let kinds: Vec<&str> = items
+            .iter()
+            .map(|item| match item {
+                Item::Reasoning(_) => "reasoning",
+                Item::Message(_) => "message",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(&kinds[..12], &["reasoning"; 12]);
+        assert_eq!(kinds[12], "message");
+
+        // Every id once: the streamed copies were replaced, not appended to.
+        let ids: Vec<String> = items.iter().filter_map(item_id_of).collect();
+        assert_eq!(ids.len(), 13);
+        let unique: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(unique.len(), 13, "ids: {ids:?}");
+
+        // Multi-part summaries survive whole, and the terminal copy is the one kept.
+        let parts = |idx: usize| -> Vec<String> {
+            match &items[idx] {
+                Item::Reasoning(r) => r
+                    .summary
+                    .iter()
+                    .map(|p| match p {
+                        SummaryPart::SummaryText(t) => t.text.clone(),
+                    })
+                    .collect(),
+                other => panic!("expected reasoning at {idx}, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            parts(0).len(),
+            3,
+            "first reasoning item streams three parts"
+        );
+        assert_eq!(parts(1).len(), 2);
+        assert_eq!(parts(7).len(), 2);
+        for i in [2, 3, 4, 5, 6, 8, 9, 10, 11] {
+            assert!(parts(i).is_empty(), "item {i} carries no summary text");
+        }
+        let enc = |idx: usize| -> Option<String> {
+            match &items[idx] {
+                Item::Reasoning(r) => r.encrypted_content.clone(),
+                other => panic!("expected reasoning at {idx}, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            enc(0).as_deref(),
+            Some("TERMINAL0"),
+            "the terminal copy is authoritative, not the streamed one"
+        );
+    }
+
+    fn summary_texts(r: &ReasoningItem) -> Vec<&str> {
+        r.summary
+            .iter()
+            .map(|part| match part {
+                SummaryPart::SummaryText(t) => t.text.as_str(),
+            })
+            .collect()
     }
 }

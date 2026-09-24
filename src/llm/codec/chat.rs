@@ -3,7 +3,6 @@
 //! Provider differences arrive as catalog data: tiers, headers, extra_body,
 //! `stream_usage`, `reasoning.key`. Nothing here reads a provider id.
 
-use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -64,19 +63,7 @@ impl ChatCompletionsCodec {
             }));
         }
 
-        // A transcript can contain an early stream snapshot and a completed
-        // copy of the same item. Translate one logical item only.
-        let input = normalize_input_items(&params.input);
-        if input.len() != params.input.len() {
-            tracing::info!(
-                session = params.session_id.as_deref().unwrap_or_default(),
-                model = %params.model,
-                input_items = params.input.len(),
-                emitted_items = input.len(),
-                collapsed_items = params.input.len() - input.len(),
-                "chat input collapsed repeated item ids"
-            );
-        }
+        let input = &params.input;
         let reasoning_key = model.reasoning_key.as_str();
         // Tools and reasoning both mean the vendor reasons about this turn, so
         // the key is written on every assistant message of the replay.
@@ -268,10 +255,10 @@ impl LlmProvider for ChatCompletionsCodec {
             let mut cancelled = cancel.is_cancelled();
 
             let ingest = |value: &Value,
-                              synth: &mut ChatSynth,
-                              gate: &mut StreamContractGate,
-                              acc: &mut StreamItemAccumulator,
-                              on_event: &mut Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>|
+                          synth: &mut ChatSynth,
+                          gate: &mut StreamContractGate,
+                          acc: &mut StreamItemAccumulator,
+                          on_event: &mut Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>|
              -> Result<Option<Vec<Item>>> {
                 let mut events = Vec::new();
                 synth.ingest_chunk(value, &mut events);
@@ -383,40 +370,6 @@ impl LlmProvider for ChatCompletionsCodec {
     }
 }
 
-/// Keep the last payload of each non-empty item id at its first position.
-/// Items without ids remain distinct; tool call ids are pairing keys, not item ids.
-fn normalize_input_items(input: &[Item]) -> Vec<&Item> {
-    let mut last = HashMap::new();
-    for (index, item) in input.iter().enumerate() {
-        if let Some(id) = input_item_id(item) {
-            last.insert(id, index);
-        }
-    }
-    let mut seen = HashSet::new();
-    let mut out = Vec::with_capacity(input.len());
-    for item in input {
-        if let Some(id) = input_item_id(item) {
-            if seen.insert(id) {
-                out.push(&input[last[id]]);
-            }
-        } else {
-            out.push(item);
-        }
-    }
-    out
-}
-
-fn input_item_id(item: &Item) -> Option<&str> {
-    let id = match item {
-        Item::Reasoning(reasoning) => reasoning.id.as_deref(),
-        Item::Message(MessageItem::Output(message)) => Some(message.id.as_str()),
-        Item::FunctionCall(call) => call.id.as_deref(),
-        Item::FunctionCallOutput(output) => output.id.as_deref(),
-        _ => None,
-    };
-    id.map(str::trim).filter(|id| !id.is_empty())
-}
-
 #[derive(Default)]
 struct AssistantTurn {
     reasoning: String,
@@ -521,6 +474,8 @@ headers = { "x-opencode-session" = "{{session_id}}" }
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: Some("ses_1".into()),
+            input_origins: vec![],
+            issuer: String::new(),
         }
     }
 
@@ -549,7 +504,8 @@ headers = { "x-opencode-session" = "{{session_id}}" }
 
     #[test]
     fn reasoning_effort_uses_the_models_own_literals() {
-        let with_tiers = codec("reasoning = { tiers = { low = \"low\", medium = \"high\", high = \"max\" } }");
+        let with_tiers =
+            codec("reasoning = { tiers = { low = \"low\", medium = \"high\", high = \"max\" } }");
         for (tier, literal) in [
             (ThinkingTier::Low, "low"),
             (ThinkingTier::Medium, "high"),
@@ -578,7 +534,8 @@ headers = { "x-opencode-session" = "{{session_id}}" }
 
     #[test]
     fn thinking_off_omits_reasoning_effort() {
-        let codec = codec("reasoning = { tiers = { low = \"low\", medium = \"high\", high = \"max\" } }");
+        let codec =
+            codec("reasoning = { tiers = { low = \"low\", medium = \"high\", high = \"max\" } }");
         let mut request = sample_request();
         request.thinking = ThinkingSpec::Off;
         assert!(
@@ -609,9 +566,7 @@ headers = { "x-opencode-session" = "{{session_id}}" }
         let mut request = sample_request();
         request.json_output = true;
         assert_eq!(
-            json_capable
-                .encode_body(&request, true)
-                .unwrap()["response_format"]["type"],
+            json_capable.encode_body(&request, true).unwrap()["response_format"]["type"],
             "json_object"
         );
 
@@ -700,67 +655,7 @@ headers = { "x-opencode-session" = "{{session_id}}" }
     }
 
     #[test]
-    fn stream_snapshots_keep_final_reasoning_and_tool_call_in_original_order() {
-        use crate::authority::responses::{
-            FunctionCallOutputItemParam, FunctionToolCall, OutputStatus, ReasoningItem,
-            ReasoningItemContent, ReasoningTextContent,
-        };
-
-        let reasoning = |text: &str| {
-            Item::Reasoning(ReasoningItem {
-                id: Some("rs_1".into()),
-                summary: vec![],
-                content: Some(vec![ReasoningItemContent::ReasoningText(
-                    ReasoningTextContent { text: text.into() },
-                )]),
-                encrypted_content: None,
-                status: Some(OutputStatus::Completed),
-            })
-        };
-        let call = |arguments: &str| {
-            Item::FunctionCall(FunctionToolCall {
-                id: Some("fc_1".into()),
-                call_id: "call_1".into(),
-                name: "read".into(),
-                arguments: arguments.into(),
-                status: Some(OutputStatus::Completed),
-                namespace: None,
-            })
-        };
-        let mut request = sample_request();
-        request.input = vec![
-            user_text("hi"),
-            reasoning("partial"),
-            call("{"),
-            reasoning("complete reasoning"),
-            call("{\"path\":\"file\"}"),
-            Item::FunctionCallOutput(FunctionCallOutputItemParam {
-                id: None,
-                call_id: "call_1".into(),
-                output: FunctionCallOutput::Text("file contents".into()),
-                status: None,
-            }),
-            user_text("continue"),
-        ];
-
-        let body = codec("").encode_body(&request, true).unwrap();
-        let messages = body["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 5, "{body}");
-        assert_eq!(messages[2]["role"], "assistant");
-        assert_eq!(messages[2]["reasoning_content"], "complete reasoning");
-        assert_eq!(messages[2]["tool_calls"].as_array().unwrap().len(), 1);
-        assert_eq!(messages[2]["tool_calls"][0]["id"], "call_1");
-        assert_eq!(
-            messages[2]["tool_calls"][0]["function"]["arguments"],
-            "{\"path\":\"file\"}"
-        );
-        assert_eq!(messages[3]["role"], "tool");
-        assert_eq!(messages[3]["tool_call_id"], "call_1");
-        assert_eq!(messages[4]["role"], "user");
-    }
-
-    #[test]
-    fn repeated_assistant_message_keeps_completed_content_once() {
+    fn repeated_assistant_item_ids_preserve_both_messages() {
         use crate::authority::responses::{AssistantRole, OutputStatus, OutputTextContent};
 
         let message = |text: &str| {
@@ -781,7 +676,7 @@ headers = { "x-opencode-session" = "{{session_id}}" }
 
         let body = codec("").encode_body(&request, true).unwrap();
         assert_eq!(body["messages"].as_array().unwrap().len(), 3, "{body}");
-        assert_eq!(body["messages"][2]["content"], "hello");
+        assert_eq!(body["messages"][2]["content"], "hel\nhello");
     }
 
     #[test]
@@ -935,7 +830,10 @@ headers = { "x-opencode-session" = "{{session_id}}" }
 
     #[tokio::test]
     async fn stream_text_only_becomes_an_assistant_message() {
-        let body = format!("{}data: [DONE]\n\n", chunk(serde_json::json!({"content": "hi"})));
+        let body = format!(
+            "{}data: [DONE]\n\n",
+            chunk(serde_json::json!({"content": "hi"}))
+        );
         let address = serve_once(body, "text/event-stream").await;
         let items = local_codec(&address)
             .complete_with_stream_events(
@@ -950,7 +848,10 @@ headers = { "x-opencode-session" = "{{session_id}}" }
         match &items[0] {
             Item::Message(MessageItem::Output(message)) => {
                 assert_eq!(crate::types::item_text_preview(&items[0]), "hi");
-                assert_eq!(message.role, crate::authority::responses::AssistantRole::Assistant);
+                assert_eq!(
+                    message.role,
+                    crate::authority::responses::AssistantRole::Assistant
+                );
             }
             other => panic!("expected message, got {other:?}"),
         }

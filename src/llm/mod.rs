@@ -6,12 +6,28 @@
 
 mod codec;
 mod provider;
+mod replay_compat;
 mod request;
 
 use std::sync::Arc;
 
 pub use provider::LlmProvider;
 pub use request::{ModelRequest, ToolDef};
+
+/// Per-request replay projection: a session's provider-minted item identities
+/// only go back to the service that minted them. Nothing here is a catalog
+/// declaration — providers stay data, policy stays code.
+pub(crate) use replay_compat::{
+    ItemOrigin, ProjectionReport, RequestOrigin, StoreMode, issuer_of_model, mark_cross_call_reuse,
+    origin_for_seq, origins_for_seqs, project_for_target,
+};
+
+/// Folding a provider's stream into canonical `Item`s.
+///
+/// The dialect stays inside `codec`; what crosses the boundary is the product
+/// concept: the stream and the terminal payload describe the same items, and
+/// this is how one becomes the other.
+pub(crate) use codec::stream_contract::{StreamItemAccumulator, item_id_of, mark_items_incomplete};
 
 use crate::provider_catalog::ResolvedModel;
 use crate::types::Result;

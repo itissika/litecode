@@ -449,41 +449,51 @@ impl ChatSynth {
     }
 
     fn output_values(&self) -> Vec<Value> {
-        let mut out = Vec::new();
+        let mut out: Vec<(u32, Value)> = Vec::new();
         if let Some(id) = &self.rs_id {
-            out.push(serde_json::json!({
-                "type": "reasoning",
-                "id": id,
-                "summary": [],
-                "content": [{"type": "reasoning_text", "text": self.rs_text}],
-                "status": "completed"
-            }));
+            out.push((
+                self.rs_index,
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": id,
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": self.rs_text}],
+                    "status": "completed"
+                }),
+            ));
         }
         if let Some(id) = &self.msg_id {
-            out.push(serde_json::json!({
-                "type": "message",
-                "id": id,
-                "role": "assistant",
-                "status": "completed",
-                "content": [{"type": "output_text", "text": self.msg_text, "annotations": []}]
-            }));
+            out.push((
+                self.msg_index,
+                serde_json::json!({
+                    "type": "message",
+                    "id": id,
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": self.msg_text, "annotations": []}]
+                }),
+            ));
         }
-        for tool in self.tools.values() {
+        for tool in self.tools.values().filter(|tool| tool.opened) {
             let call_id = if tool.call_id.is_empty() {
                 tool.item_id.clone()
             } else {
                 tool.call_id.clone()
             };
-            out.push(serde_json::json!({
-                "type": "function_call",
-                "id": tool.item_id,
-                "call_id": call_id,
-                "name": tool.name,
-                "arguments": tool.arguments,
-                "status": "completed"
-            }));
+            out.push((
+                tool.output_index,
+                serde_json::json!({
+                    "type": "function_call",
+                    "id": tool.item_id,
+                    "call_id": call_id,
+                    "name": tool.name,
+                    "arguments": tool.arguments,
+                    "status": "completed"
+                }),
+            ));
         }
-        out
+        out.sort_by_key(|(index, _)| *index);
+        out.into_iter().map(|(_, item)| item).collect()
     }
 }
 
@@ -673,5 +683,12 @@ mod tests {
         let items = completed_output(&done);
         assert_eq!(reasoning_text(&items).as_deref(), Some("resumed thinking"));
         assert_eq!(message_text(&items).as_deref(), Some("hi"));
+        assert!(
+            matches!(
+                items.as_slice(),
+                [OutputItem::Message(_), OutputItem::Reasoning(_)]
+            ),
+            "terminal output must preserve the output-index/arrival order: {items:?}"
+        );
     }
 }
