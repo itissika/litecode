@@ -82,11 +82,67 @@ impl GrepShape {
 
 #[derive(Debug)]
 struct GrepOptions {
-    regex: String,
+    pattern: String,
+    mode: PatternMode,
     glob: Option<String>,
     include: Option<String>,
     exclude: Option<String>,
     case_sensitive: bool,
+}
+
+/// How the raw `pattern` is read by the search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatternMode {
+    /// The pattern compiled as written.
+    Regex,
+    /// The pattern does not compile, but escaping its unescaped `{` does: code
+    /// text such as `ModelRequest {`, `println!("{}")` or `${VAR}`.
+    BraceText,
+    /// Nothing compiled: the whole pattern matches literal text.
+    Literal,
+}
+
+impl GrepOptions {
+    /// Whether the engine runs `pattern` as regex. `Literal` hands the raw
+    /// pattern to the engine, which escapes it for `is_regex: false`.
+    fn is_regex(&self) -> bool {
+        self.mode != PatternMode::Literal
+    }
+
+    /// Pattern handed to the engine. `BraceText` hands over the brace-escaped
+    /// source; `Literal` stays raw, since the engine escapes it for
+    /// `is_regex: false`.
+    fn query_pattern(&self) -> String {
+        match self.mode {
+            PatternMode::Regex | PatternMode::Literal => self.pattern.clone(),
+            PatternMode::BraceText => escape_bare_braces(&self.pattern),
+        }
+    }
+
+    /// Pattern handed to the in-process regex matcher (virtual session lines).
+    fn regex_source(&self) -> String {
+        match self.mode {
+            PatternMode::Regex => self.pattern.clone(),
+            PatternMode::BraceText => escape_bare_braces(&self.pattern),
+            PatternMode::Literal => regex::escape(&self.pattern),
+        }
+    }
+
+    /// One clause naming a reading that is not the pattern as written, so a
+    /// repaired or literal search is never silent.
+    fn note(&self) -> Option<String> {
+        match self.mode {
+            PatternMode::Regex => None,
+            PatternMode::BraceText => Some(format!(
+                "pattern '{}' has no valid regex reading; unescaped '{{' matched as literal text",
+                self.pattern
+            )),
+            PatternMode::Literal => Some(format!(
+                "pattern '{}' is not valid regex; matched as literal text",
+                self.pattern
+            )),
+        }
+    }
 }
 
 pub struct GrepTool;
@@ -174,11 +230,11 @@ impl Tool for GrepTool {
 }
 
 fn parse_grep_options(input: &Value) -> Result<GrepOptions> {
-    let regex = crate::tool::require_nonempty_string(input, "pattern")
+    let pattern = crate::tool::require_nonempty_string(input, "pattern")
         .map_err(LitecodeError::ToolExecution)?
         .to_string();
     let case_sensitive = optional_bool(input, "case_sensitive")?.unwrap_or(true);
-    compile_line_regex(&regex, case_sensitive)?;
+    let mode = pattern_mode(&pattern, case_sensitive);
 
     let glob = optional_string(input, "glob")?;
     let (include, exclude) = match glob.as_deref() {
@@ -187,12 +243,45 @@ fn parse_grep_options(input: &Value) -> Result<GrepOptions> {
     };
 
     Ok(GrepOptions {
-        regex,
+        pattern,
+        mode,
         glob,
         include,
         exclude,
         case_sensitive,
     })
+}
+
+/// Read the pattern the way the search will use it. A pattern that compiles is
+/// regex as written. One that does not is usually code text carrying a bare `{`,
+/// so try escaping every unescaped `{` and nothing else first: `needle\d+ {`
+/// keeps its regex reading, `ModelRequest {` becomes text. Only when that still
+/// does not compile is the whole pattern literal text.
+fn pattern_mode(pattern: &str, case_sensitive: bool) -> PatternMode {
+    if compile_line_regex(pattern, case_sensitive).is_ok() {
+        return PatternMode::Regex;
+    }
+    let escaped_braces = escape_bare_braces(pattern);
+    if escaped_braces != pattern && compile_line_regex(&escaped_braces, case_sensitive).is_ok() {
+        return PatternMode::BraceText;
+    }
+    PatternMode::Literal
+}
+
+/// `\{` for every `{` that is not already escaped. Only `{` is touched: the rest
+/// of the pattern keeps whatever regex reading it had.
+fn escape_bare_braces(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut backslashes = 0usize;
+    for ch in pattern.chars() {
+        if ch == '{' && backslashes % 2 == 0 {
+            out.push_str("\\{");
+        } else {
+            out.push(ch);
+        }
+        backslashes = if ch == '\\' { backslashes + 1 } else { 0 };
+    }
+    out
 }
 
 fn optional_string(input: &Value, name: &str) -> Result<Option<String>> {
@@ -240,6 +329,22 @@ impl GrepTool {
 
 fn run_grep_page(input: &Value, execution: &ToolExecutionContext) -> Result<GrepPage> {
     let options = parse_grep_options(input)?;
+    let mut page = search_page(input, &options, execution)?;
+    if let Some(note) = options.note() {
+        page.warning = Some(match page.warning {
+            Some(degraded) => format!("{note}. {degraded}"),
+            None => note,
+        });
+    }
+    Ok(page)
+}
+
+/// The page one parsed search produces; `run_grep_page` adds the reading note.
+fn search_page(
+    input: &Value,
+    options: &GrepOptions,
+    execution: &ToolExecutionContext,
+) -> Result<GrepPage> {
     let workspace_root = &execution.workspace_root;
     let path_mode = execution.path_mode;
 
@@ -249,10 +354,10 @@ fn run_grep_page(input: &Value, execution: &ToolExecutionContext) -> Result<Grep
         .filter(|s| !s.is_empty())
     {
         if crate::session::transcript_file::is_virtual_session_path(raw_path) {
-            return grep_virtual_session(raw_path, &options, execution);
+            return grep_virtual_session(raw_path, options, execution);
         }
         if crate::session::transcript_file::is_virtual_session_dir(raw_path) {
-            return grep_virtual_session_dir(&options, execution);
+            return grep_virtual_session_dir(options, execution);
         }
     }
 
@@ -299,12 +404,12 @@ fn run_grep_page(input: &Value, execution: &ToolExecutionContext) -> Result<Grep
     }
 
     let query = LexicalQuery {
-        pattern: options.regex.clone(),
+        pattern: options.query_pattern(),
         root: root.clone(),
         path: file_scope,
         case_sensitive: options.case_sensitive,
         whole_word: false,
-        is_regex: true,
+        is_regex: options.is_regex(),
         include: options.include.clone(),
         exclude: options.exclude.clone(),
         multiline: false,
@@ -587,7 +692,7 @@ fn grep_virtual_session_dir(
 }
 
 fn compile_virtual_grep_regex(options: &GrepOptions) -> Result<regex::Regex> {
-    compile_line_regex(&options.regex, options.case_sensitive)
+    compile_line_regex(&options.regex_source(), options.case_sensitive)
 }
 
 fn grep_transcript_file(
@@ -1277,14 +1382,75 @@ mod tests {
     }
 
     #[test]
-    fn invalid_regex_fails_loudly() {
+    fn a_bare_brace_matches_code_text_and_says_so() {
         let dir = tempfile::tempdir().unwrap();
-        let err = GrepTool
-            .validate_input(&serde_json::json!({"pattern": "["}))
-            .unwrap_err();
-        assert!(err.contains("invalid regular expression"), "{err}");
-        let out = call_in(dir.path(), serde_json::json!({"pattern": "[" }));
-        assert!(out.contains("invalid regular expression"), "got: {out}");
+        write(
+            dir.path(),
+            "a.rs",
+            "pub struct ModelRequest {\n    model: String,\n}\n",
+        );
+        assert!(
+            GrepTool
+                .validate_input(&serde_json::json!({"pattern": "ModelRequest {"}))
+                .is_ok(),
+            "a code-shaped pattern must not fail the call"
+        );
+        let result = call_result(dir.path(), serde_json::json!({"pattern": "ModelRequest {"}));
+        assert!(
+            result.content.contains("pub struct ModelRequest {"),
+            "got: {}",
+            result.content
+        );
+        let warning = result.warning_status.expect("the reading must be named");
+        assert!(warning.contains("unescaped '{'"), "got: {warning}");
+    }
+
+    #[test]
+    fn a_bare_brace_leaves_the_rest_of_the_pattern_as_regex() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.rs", "needle_42 {\n");
+        write(dir.path(), "b.rs", "needle_x {\nother_42 {\n");
+        let out = call_in(dir.path(), serde_json::json!({"pattern": "needle_\\d+ {"}));
+        assert!(out.contains("needle_42 {"), "got: {out}");
+        assert!(
+            !out.contains("needle_x") && !out.contains("other_42"),
+            "the digit class must stay regex, got: {out}"
+        );
+    }
+
+    #[test]
+    fn a_pattern_with_no_regex_reading_becomes_literal_text() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.rs", "let hit = found[0];\n");
+        assert!(
+            GrepTool
+                .validate_input(&serde_json::json!({"pattern": "found["}))
+                .is_ok(),
+            "an unreadable pattern must not fail the call"
+        );
+        let result = call_result(dir.path(), serde_json::json!({"pattern": "found["}));
+        assert!(
+            result.content.contains("found[0]"),
+            "got: {}",
+            result.content
+        );
+        let warning = result.warning_status.expect("the reading must be named");
+        assert!(warning.contains("literal text"), "got: {warning}");
+    }
+
+    #[test]
+    fn a_valid_pattern_keeps_its_regex_reading() {
+        assert_eq!(pattern_mode("needle", true), PatternMode::Regex);
+        assert_eq!(pattern_mode(r"a{2,3}", true), PatternMode::Regex);
+        assert_eq!(pattern_mode(r"ModelRequest \{", true), PatternMode::Regex);
+        assert_eq!(pattern_mode("ModelRequest {", true), PatternMode::BraceText);
+        assert_eq!(pattern_mode(r"needle\d+ {", true), PatternMode::BraceText);
+        assert_eq!(pattern_mode("println!(\"{}\")", true), PatternMode::BraceText);
+        assert_eq!(pattern_mode("found[", true), PatternMode::Literal);
+        assert_eq!(escape_bare_braces("ModelRequest {"), "ModelRequest \\{");
+        assert_eq!(escape_bare_braces(r"a{2,3}"), r"a\{2,3}");
+        assert_eq!(escape_bare_braces(r"a\{"), r"a\{");
+        assert_eq!(escape_bare_braces(r"a\\{"), r"a\\\{");
     }
 
     #[test]
@@ -1315,21 +1481,28 @@ mod tests {
     fn outside_workspace_path_is_denied_under_safe() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "a.rs", "needle\n");
+        // A second tempdir stands in for any tree outside the workspace: the
+        // point is the mode gate, not the size of the target.
+        let outside = tempfile::tempdir().unwrap();
+        write(outside.path(), "b.rs", "absent_token\n");
+        let outside_path = outside.path().join("b.rs").display().to_string();
         let out = call_in(
             dir.path(),
-            serde_json::json!({"pattern": "needle", "path": "C:/Windows"}),
+            serde_json::json!({"pattern": "needle", "path": outside_path}),
         );
         assert!(
             out.contains("SAFE mode only permits paths under the workspace"),
             "Safe must refuse an outside path, got: {out}"
         );
-        // The same tool admits it once the binding is unrestricted.
+        // The same tool admits it once the binding is unrestricted, and answers
+        // from the outside file.
         let admitted = call_in_mode(
             dir.path(),
-            serde_json::json!({"pattern": "absent_token", "path": "C:/Windows"}),
+            serde_json::json!({"pattern": "absent_token", "path": outside_path}),
             crate::workspace::ToolPathMode::All,
         );
         assert!(!admitted.contains("SAFE mode"), "got: {admitted}");
+        assert!(admitted.contains("b.rs"), "got: {admitted}");
     }
 
     #[test]

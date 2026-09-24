@@ -696,19 +696,20 @@ fn row_hit(
     } else {
         format!("{row_key}#{chunk}")
     };
-    // The span is in row coordinates; the snippet comes from the chunk text, so
-    // shift it into the chunk first.
-    let local_start = span.0.saturating_sub(chunk_start);
-    let local_end = span.1.saturating_sub(chunk_start);
-    let summary = super::snippet_from_span(text, local_start, local_end);
+    // The span is in the chunk's own coordinates — every producer runs over the
+    // chunk text (`highlight_span`, `like_match_span`). A hit carries row
+    // coordinates, because that is what the renderer resolves to a physical
+    // line, so shift the span up by the chunk's start. The snippet is taken
+    // from the chunk text, which is exactly the span's own coordinates.
+    let summary = super::snippet_from_span(text, span.0, span.1);
     Ok(SparseHit {
         key,
         row_key,
         session_id,
         seq,
         chunk: chunk as usize,
-        char_start: span.0,
-        char_end: span.1,
+        char_start: span.0 + chunk_start,
+        char_end: span.1 + chunk_start,
         score,
         item_type,
         summary,
@@ -1539,6 +1540,52 @@ mod tests {
         let (ms, me) = highlight_span(text, &marked);
         let got: String = text.chars().skip(ms).take(me - ms).collect();
         assert!(got.contains("重试三次"), "cluster landed on {got:?}");
+    }
+
+    #[test]
+    fn chunked_hit_carries_row_coordinates() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(ROWS_DDL).unwrap();
+        let head = "alpha ".repeat(30);
+        let needle = "needle_literal";
+        let tail = format!("prefix {needle} suffix");
+        let cut = head.chars().count();
+        let row_end = cut + tail.chars().count();
+        conn.execute(
+            "INSERT INTO rows(session_id, seq, chunk, single, char_start, char_end,
+                              text_norm, text)
+             VALUES ('s', 1, 0, 0, 0, ?1, ?2, ?3)",
+            params![cut as i64, normalize(&head), head],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO rows(session_id, seq, chunk, single, char_start, char_end,
+                              text_norm, text)
+             VALUES ('s', 1, 1, 0, ?1, ?2, ?3, ?4)",
+            params![cut as i64, row_end as i64, normalize(&tail), tail],
+        )
+        .unwrap();
+        conn.execute_batch(FTS_DDL).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tri(tri) VALUES('rebuild'); INSERT INTO uni(uni) VALUES('rebuild');",
+        )
+        .unwrap();
+        let index = SparseIndex {
+            conn,
+            path: PathBuf::from(":memory:"),
+            scope: None,
+        };
+        let hits = index.search(Lane::Like, needle, 10).unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].chunk, 1);
+        // The span is reported in row coordinates, not in the chunk's own: a
+        // hit whose offset ignored `chunk_start` resolved to a line thousands
+        // of chars above the match.
+        let at = cut + tail.find(needle).unwrap();
+        assert_eq!(hits[0].char_start, at, "{hits:?}");
+        assert_eq!(hits[0].char_end, at + needle.chars().count(), "{hits:?}");
+        // The snippet is cut from the chunk text, so it still holds the match.
+        assert!(hits[0].summary.contains(needle), "{hits:?}");
     }
 
     #[test]

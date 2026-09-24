@@ -5,7 +5,8 @@
 //! with `|` alternatives and an exact match span per hit. The index lives at
 //! `<data_root>/session-index/sparse.db`; this module owns its lifecycle:
 //! rebuild when the file is missing or incompatible, otherwise reconcile the
-//! final source key set before every search.
+//! final source key set behind every search — dispatched by the query, run on a
+//! background thread, and never waited on.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -40,8 +41,10 @@ const INLINE_BUILD_MAX_ROWS: usize = 2_000;
 /// merely late.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaneState {
-    /// The index was current and the query ran against it. An empty hit list is
-    /// now a fact about the corpus.
+    /// The index was answerable and the query ran against it. An empty hit list is
+    /// now a fact about the corpus as the index holds it: the index may be behind
+    /// the store (the refresh for that runs behind the query, never in front of
+    /// it), but nothing was skipped and nothing was guessed.
     Ready,
     /// No index could be produced in time to answer, so a build is running in the
     /// background. The query did **not** run.
@@ -110,7 +113,13 @@ pub fn search_lexical(
     Ok((filter_hits(ranked, query), LaneState::Ready))
 }
 
-/// Bring the index up to date, and say whether the lane is now allowed to answer.
+/// Answer from the index, and say whether the lane can answer at all.
+///
+/// The delta is never applied in front of the query: a usable index is answered
+/// from as it stands, and a refresh is dispatched behind it. A session corpus
+/// moves on every turn, so "catch up first" meant every search in a live
+/// workspace waited for the turn that never pauses — the same reason the
+/// semantic lane never refreshes on demand.
 ///
 /// Everything that can go wrong here is reported as a state rather than as a
 /// silent empty result, including the case that used to matter most: a corpus too
@@ -134,18 +143,21 @@ fn prepare_index(reader: &SessionDataReader, data_root: &std::path::Path) -> Lan
         spawn_background_build(reader.clone(), data_root.to_path_buf());
         return LaneState::Building;
     }
+    if !must_rebuild {
+        // The index is answerable as it stands. Nothing above this line waits,
+        // and neither does the caller: the refresh runs behind the query.
+        spawn_sparse_refresh(reader);
+        return LaneState::Ready;
+    }
     let prepared = with_refresh_lock(|| -> Result<LaneState> {
-        // Re-checked inside the lock, not before it. Two searches arriving during
-        // one stale index would otherwise both reconcile, and the loser of the
-        // race would redo work the winner had just finished. The lock makes them
-        // take turns; a reconcile over an already-current index is a no-op.
-        //
-        // A rebuild is only for a missing or incompatible file. Everything else —
-        // including "the store moved on" — is a key-set reconcile that runs on
-        // every prepare before the query. There is no change-id gate: a missed
-        // notification must never be able to skip the diff.
+        // Re-checked inside the lock, not before it: another build may have
+        // landed while this one waited, and building over it would redo work
+        // that was already done. Nothing here reconciles — that is the
+        // background refresh's job, and a search must not wait for it. The diff
+        // itself is never skipped, only deferred: the refresh runs it on every
+        // pass, so a missed notification cannot hide a row.
         if !sparse::needs_rebuild(&path)? {
-            sparse::refresh_from_source(reader, data_root)?;
+            spawn_sparse_refresh(reader);
             return Ok(LaneState::Ready);
         }
 
@@ -182,10 +194,17 @@ fn prepare_index(reader: &SessionDataReader, data_root: &std::path::Path) -> Lan
 }
 
 /// Build or reconcile the sparse index, blocking. Warmup paths and the eval
-/// boards call this; agent searches self-heal lazily (inline for small corpora,
-/// background for large ones, which answer `Building` until it lands).
+/// boards call this; agent searches never do — they answer from the index as it
+/// stands and let the refresh run behind them.
 pub fn ensure_sparse_index(reader: &SessionDataReader) -> Result<()> {
-    match prepare_index(reader, reader.data_root()) {
+    let data_root = reader.data_root();
+    if !sparse::needs_rebuild(&sparse::sparse_index_path(data_root)).unwrap_or(true) {
+        // Already usable: this caller asked for a catch-up, so the delta is
+        // applied here, on its thread, under the one refresh lock.
+        with_refresh_lock(|| sparse::refresh_from_source(reader, data_root))?;
+        return Ok(());
+    }
+    match prepare_index(reader, data_root) {
         // `Building` is a real answer to "is it ready" — it is not — even though a
         // build was just set going. Reporting success here would let a caller
         // believe an index it cannot query yet is in place.
@@ -198,24 +217,44 @@ pub fn ensure_sparse_index(reader: &SessionDataReader) -> Result<()> {
 }
 
 /// One writer at a time: builds and reconciles are rare but must not race each
-/// other (or two agent searches).
-fn with_refresh_lock<T, E>(f: impl FnOnce() -> std::result::Result<T, E>) -> std::result::Result<T, E> {
+/// other. Searches only take it to build, never to check for a delta.
+fn with_refresh_lock<T, E>(
+    f: impl FnOnce() -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let lock = LOCK.get_or_init(|| Mutex::new(()));
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
     f()
 }
 
+/// One background worker per data root. A build and a refresh are never both
+/// wanted at once (a build makes the file compatible, a refresh only runs when
+/// it already is), and a pile of searches must not pile up work: the second
+/// caller is answered by the first caller's pass.
+fn begin_background(data_root: &std::path::Path) -> bool {
+    in_flight()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(data_root.to_path_buf())
+}
+
+fn end_background(data_root: &std::path::Path) {
+    in_flight()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(data_root);
+}
+
+fn in_flight() -> &'static Mutex<HashSet<PathBuf>> {
+    static IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
 /// Full build for a corpus too large to build inline: one background thread per
 /// workspace, fire-and-forget. The next search finds the finished index.
 fn spawn_background_build(reader: SessionDataReader, data_root: PathBuf) {
-    static BUILDING: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
-    let building = BUILDING.get_or_init(|| Mutex::new(HashSet::new()));
-    {
-        let mut guard = building.lock().unwrap_or_else(|e| e.into_inner());
-        if !guard.insert(data_root.clone()) {
-            return;
-        }
+    if !begin_background(&data_root) {
+        return;
     }
     std::thread::spawn(move || {
         let result = with_refresh_lock(|| {
@@ -226,11 +265,30 @@ fn spawn_background_build(reader: SessionDataReader, data_root: PathBuf) {
             Ok(()) => tracing::info!(path = %data_root.display(), "sparse session index ready"),
             Err(error) => tracing::warn!(error = %error, "sparse session index build failed"),
         }
-        let building = BUILDING.get_or_init(|| Mutex::new(HashSet::new()));
-        building
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&data_root);
+        end_background(&data_root);
+    });
+}
+
+/// Bring the final source key set to the index, behind whoever asked.
+///
+/// Fire-and-forget by design: the caller is a search that must not wait, or the
+/// idle tick that keeps the window small. One pass at a time per data root — the
+/// diff is never skipped, only deferred, so a missed notification cannot hide a
+/// row.
+pub fn spawn_sparse_refresh(reader: &SessionDataReader) {
+    let data_root = reader.data_root().to_path_buf();
+    if !begin_background(&data_root) {
+        return;
+    }
+    let reader = reader.clone();
+    std::thread::spawn(move || {
+        let result = with_refresh_lock(|| sparse::refresh_from_source(&reader, reader.data_root()));
+        match result {
+            Ok(0) => {}
+            Ok(changed) => tracing::debug!(changed, "sparse session index refreshed"),
+            Err(error) => tracing::warn!(error = %error, "sparse session index refresh failed"),
+        }
+        end_background(&data_root);
     });
 }
 
@@ -261,6 +319,34 @@ mod tests {
             prepare_index(&reader, reader.data_root()),
             LaneState::Building,
             "the caller is answered now, not after the build"
+        );
+    }
+
+    /// A usable index answers now; the delta is refreshed behind the query, not
+    /// in front of it. `Ready` here is what keeps a search in a moving corpus
+    /// from waiting for the turn that never pauses.
+    #[test]
+    fn a_usable_index_is_answered_without_waiting_for_the_delta() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("first row")]).unwrap();
+        let reader = SessionDataReader::open(&db);
+        assert_eq!(
+            prepare_index(&reader, reader.data_root()),
+            LaneState::Ready,
+            "a small corpus is built inline on the first search"
+        );
+
+        data.insert_items(&id, &[user_text("second row")]).unwrap();
+
+        assert_eq!(
+            prepare_index(&reader, reader.data_root()),
+            LaneState::Ready,
+            "a moved store is answered from the index as it stands"
         );
     }
 }

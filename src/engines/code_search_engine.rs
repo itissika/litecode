@@ -172,38 +172,50 @@ impl CodeSearchEngine {
     }
 
     /// Session corpus ANN-only search (requires warmed worker; same lifecycle as code search).
+    ///
+    /// Reads never wait on the worker: a refresh holds the client lock for its
+    /// whole pass, and a search queued behind one would be the very stall this
+    /// lane avoids. When the lock is taken the lane is skipped and the caller
+    /// degrades to text — the same answer a cold worker gets.
     pub fn search_sessions(
         &self,
         query: &str,
         top_k: usize,
         session_id: Option<&str>,
     ) -> Result<Vec<crate::engines::session_search::SessionTextHit>> {
-        if !self.worker_alive() {
-            self.notify_worker_failed();
+        let Ok(mut guard) = self.client.try_lock() else {
             return Err(LitecodeError::ToolExecution(
-                "code_search worker is not running; enable the retrieval engine or restart litecode with this workspace"
-                    .into(),
+                "code_search worker is busy; the session semantic lane was skipped".into(),
             ));
-        }
-
-        let mut guard = self
-            .client
-            .lock()
-            .map_err(|e| LitecodeError::Config(format!("code_search client lock: {e}")))?;
-        let client = guard
-            .as_mut()
-            .ok_or_else(|| LitecodeError::Config("code_search engine not warmed".into()))?;
+        };
+        let Some(client) = guard.as_mut() else {
+            return Err(LitecodeError::Config(
+                "code_search engine not warmed".into(),
+            ));
+        };
         match client.session_search(query, top_k, session_id) {
             Ok(hits) => Ok(hits),
             Err(e) => {
                 tracing::warn!(tool = "session_search", error = %e, "worker session_search failed");
                 drop(guard);
-                if !self.worker_alive() {
+                if self.worker_gone_try() {
                     self.notify_worker_failed();
                 }
                 Err(e)
             }
         }
+    }
+
+    /// Whether the worker child is known to be gone, answered without waiting on
+    /// the client lock: a held lock means a call is in flight (the refresh that
+    /// must not stall us), not a dead worker.
+    fn worker_gone_try(&self) -> bool {
+        let Ok(mut guard) = self.client.try_lock() else {
+            return false;
+        };
+        guard
+            .as_mut()
+            .is_some_and(|client| !matches!(client.try_wait(), Ok(None)))
     }
 
     /// True when the worker child process is still running.

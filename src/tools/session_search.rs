@@ -50,11 +50,13 @@ impl SessionSearchTool {
         };
 
         // Read-only on purpose: the session ANN is refreshed by the idle tick in
-        // `serve::router::listen`, never by the search that needs it. Refreshing
-        // here put a reconcile in front of the query that asked for it, and left
-        // the lane unusable whenever the two overlapped — a session corpus moves
-        // on every turn, so "refresh on demand" meant "refresh always, right
-        // here". A stale index is the accepted price; being wrong is not.
+        // `serve::router::listen`, and the sparse ledger by the refresh a search
+        // dispatches behind it — never in front of the query that needs it.
+        // Refreshing inline put a reconcile in front of the query that asked for
+        // it, and left the lane unusable whenever the two overlapped — a session
+        // corpus moves on every turn, so "refresh on demand" meant "refresh
+        // always, right here". A stale index is the accepted price; being wrong
+        // is not.
         let bundle = match self.engines.search_sessions(
             query,
             0,

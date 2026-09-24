@@ -136,7 +136,7 @@ impl Fixture {
     }
 
     fn stream(&self, id: &str, text: &str) {
-        self.mutate(SessionMutation::PersistItem {
+        self.mutate(SessionMutation::BeginStreamItem {
             session_id: self.sid.clone(),
             expected_revision: self.rev(),
             operation_id: MutationId::new(),
@@ -144,17 +144,20 @@ impl Fixture {
                 crate::authority::responses::OutputMessage {
                     id: id.into(),
                     role: crate::authority::responses::AssistantRole::Assistant,
-                    content: vec![crate::authority::responses::OutputMessageContent::OutputText(
-                        crate::authority::responses::OutputTextContent {
-                            text: text.into(),
-                            annotations: vec![],
-                            logprobs: None,
-                        },
-                    )],
+                    content: vec![
+                        crate::authority::responses::OutputMessageContent::OutputText(
+                            crate::authority::responses::OutputTextContent {
+                                text: text.into(),
+                                annotations: vec![],
+                                logprobs: None,
+                            },
+                        ),
+                    ],
                     status: crate::authority::responses::OutputStatus::InProgress,
                     phase: None,
                 },
             )),
+            turn_id: "t-stream".into(),
         });
     }
 
@@ -216,7 +219,9 @@ fn open() -> Fixture {
     let dir = tempfile::tempdir().expect("tempdir");
     let lease = WorkspaceWriteLease::acquire(dir.path()).expect("lease");
     let data = SessionData::open(&lease, &dir.path().join("sessions.db")).expect("open");
-    let sid = data.create_session("/p", "default", None).expect("create session");
+    let sid = data
+        .create_session("/p", "default", None)
+        .expect("create session");
     Fixture {
         dir,
         data,
@@ -314,8 +319,8 @@ fn incremental_derive_matches_a_full_build_field_by_field() {
     );
 
     // The incremental side: start from an index that has never seen these rows,
-    // then apply them through `refresh_index` — the same reconcile the search path
-    // uses.
+    // then apply them through `refresh_index` — the same reconcile the background
+    // refresh runs for the search path.
     let incr_root = f.dir.path().join("incr");
     std::fs::create_dir_all(&incr_root).expect("dir");
     build_fresh(&incr_root, &[]);
@@ -351,7 +356,10 @@ fn incremental_derive_from_a_partial_index_matches_a_full_build() {
     sparse::refresh_index(&rows, &incr_root).expect("refresh");
     let actual = snapshot(&incr_root);
 
-    assert_eq!(actual.0, expected.0, "rows diverged after a partial rebuild");
+    assert_eq!(
+        actual.0, expected.0,
+        "rows diverged after a partial rebuild"
+    );
     assert_eq!(
         actual.1, expected.1,
         "source_state diverged after a partial rebuild"
@@ -631,7 +639,10 @@ fn a_rebuild_replaces_the_whole_index() {
     let f = open();
     let root = f.index_root();
     f.insert(
-        vec![user_text("first UNIQUE_ONE"), user_text("second UNIQUE_TWO")],
+        vec![
+            user_text("first UNIQUE_ONE"),
+            user_text("second UNIQUE_TWO"),
+        ],
         "t1",
     );
     let rows = f
@@ -805,4 +816,3 @@ fn a_reverted_tail_leaves_the_index() {
         "a reverted row must leave the index: {rows:?}"
     );
 }
-

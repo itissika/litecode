@@ -4,26 +4,26 @@
 
 mod chunk;
 mod corpus;
+#[cfg(test)]
+mod dense_parity;
 mod derive;
 mod echo;
 #[cfg(test)]
-mod dense_parity;
-#[cfg(test)]
 mod golden;
+mod lexical;
 #[cfg(test)]
 mod parity;
-mod lexical;
 mod semantic_index;
 mod slots;
 mod sparse;
 mod tokenizer;
 
+pub use lexical::{ensure_sparse_index, spawn_sparse_refresh};
 pub use semantic_index::{
     SessionSemanticIndex, consume_session_index, ensure_session_index, load_session_index,
     queue_session_dirty, read_session_pending_hint, session_index_status, session_should_rebuild,
     session_work_from_disk, session_work_now, write_session_pending_hint,
 };
-pub use lexical::ensure_sparse_index;
 pub use sparse::sparse_index_path;
 
 use std::collections::{HashMap, HashSet};
@@ -1274,7 +1274,10 @@ mod tests {
 
             // A first search builds the index, so the missing one below is a real
             // rebuild rather than a first run.
-            assert_eq!(search(&reader, &q("UNIQUE_SESSION_PHRASE")).unwrap().len(), 1);
+            assert_eq!(
+                search(&reader, &q("UNIQUE_SESSION_PHRASE")).unwrap().len(),
+                1
+            );
 
             plant_unreadable_row(dir.path(), &id_a);
             std::fs::remove_file(sparse::sparse_index_path(dir.path())).unwrap();
@@ -1305,11 +1308,14 @@ mod tests {
             ));
         }
 
-        /// The reconcile happens *before* the query, not after it. A search that
-        /// answered from a stale index and tidied up afterwards would return the
-        /// hits of yesterday and look perfectly healthy doing it.
+        /// The delta is applied *behind* the query, not in front of it. A search
+        /// in a live corpus never waits for it — every turn writes rows, so
+        /// "catch up first" meant "wait for the turn that never pauses". It must
+        /// not answer the wait as if the window closed, though: the row has to
+        /// arrive on its own, without a second explicit refresh, and the search
+        /// has to keep answering while it does.
         #[test]
-        fn a_stale_index_is_caught_up_before_the_query_runs() {
+        fn a_stale_index_is_caught_up_behind_the_query() {
             let dir = TempDir::new().unwrap();
             let (reader, id_a, _) = seed_db(dir.path());
             assert!(
@@ -1324,19 +1330,27 @@ mod tests {
                     .unwrap();
             }
 
-            let hits = search(&reader, &q("zqxjvkjv")).unwrap();
-            assert_eq!(
-                hits.len(),
-                1,
-                "the row written before the search is in its results"
-            );
+            // The first search dispatches the refresh and answers from the index
+            // as it stands, so this first answer may or may not hold the row. It
+            // may never be an error, and the row must land without a second kick.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let hits = search(&reader, &q("zqxjvkjv"))
+                    .expect("a delta is never reported as a failed search");
+                if hits.len() == 1 {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the row written before the search never reached the index"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
         }
 
-        /// Searches that arrive together take turns. The lock is what keeps two of
-        /// them from rebuilding the same index at once; equally important is that
-        /// the second one, on its turn, finds the work already done rather than
-        /// repeating it. Either way the answers must agree with each other and with
-        /// what a single search would have said.
+        /// Searches that arrive together all answer, and all answer the same way.
+        /// Nothing on that path waits: each reads the index as it stands, and the
+        /// refresh those reads dispatch is one pass, not four.
         #[test]
         fn concurrent_searches_agree_and_none_is_left_unanswered() {
             let dir = TempDir::new().unwrap();
@@ -1345,13 +1359,12 @@ mod tests {
             let expected = expected.unwrap();
             assert_eq!(expected.len(), 1);
 
-            let readers: Vec<SessionDataReader> =
-                (0..4).map(|_| SessionDataReader::open(&dir.path().join("sessions.db"))).collect();
+            let readers: Vec<SessionDataReader> = (0..4)
+                .map(|_| SessionDataReader::open(&dir.path().join("sessions.db")))
+                .collect();
             let handles: Vec<_> = readers
                 .into_iter()
-                .map(|r| {
-                    std::thread::spawn(move || search(&r, &q("UNIQUE_SESSION_PHRASE")))
-                })
+                .map(|r| std::thread::spawn(move || search(&r, &q("UNIQUE_SESSION_PHRASE"))))
                 .collect();
 
             for handle in handles {
