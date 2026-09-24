@@ -30,7 +30,10 @@ export const useToastStore = create<ToastStore>((set, get) => ({
     const prevTimer = channelTimers.get(id);
     if (prevTimer !== undefined) window.clearTimeout(prevTimer);
     set((s) => ({
-      toasts: [...s.toasts.filter((t) => t.id !== id), { id, message, variant }],
+      toasts: [
+        ...s.toasts.filter((t) => t.id !== id),
+        { id, message, variant },
+      ],
     }));
     const timer = window.setTimeout(() => {
       channelTimers.delete(id);

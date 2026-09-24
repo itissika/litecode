@@ -9,14 +9,13 @@ const waitLineClass = "font-mono text-dk-sm";
  * Single-line `subagent_wait`: ids/count while pending, settled N once the
  * Session barrier returns. Full reports stay in the log for the agent.
  */
-export function SubagentWaitToolView({
-  input,
-  output,
-  status,
-}: ToolViewProps) {
+export function SubagentWaitToolView({ input, output, status }: ToolViewProps) {
   if (status === "failed") {
     return (
-      <div className={`${waitLineClass} text-(--_dk-red-500)`} data-testid="subagent-wait-line">
+      <div
+        className={`${waitLineClass} text-(--_dk-red-500)`}
+        data-testid="subagent-wait-line"
+      >
         wait failed
       </div>
     );
@@ -24,7 +23,10 @@ export function SubagentWaitToolView({
 
   if (output) {
     return (
-      <div className={`${waitLineClass} text-(--_dk-text-muted)`} data-testid="subagent-wait-line">
+      <div
+        className={`${waitLineClass} text-(--_dk-text-muted)`}
+        data-testid="subagent-wait-line"
+      >
         {waitSettledLine(functionCallOutputText(output))}
       </div>
     );

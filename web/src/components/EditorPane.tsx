@@ -1,6 +1,13 @@
 import Editor from "@monaco-editor/react";
 import { CodeIcon, MarkdownLogoIcon } from "@phosphor-icons/react";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { DockviewPanelApi } from "dockview-react";
 import type { editor } from "monaco-editor";
 
@@ -34,12 +41,18 @@ const MilkdownMarkdownEditor = lazy(async () => {
   return { default: mod.MilkdownMarkdownEditor };
 });
 
-export function EditorPane({ filePath, api }: { filePath: string; api?: DockviewPanelApi }) {
-  const tab = useEditorStore((s) => s.tabs.find((t) => t.path === filePath) ?? null);
-  const project = useSessionStore((s) => s.project);
-  const wsConnected = useConnectionStore(
-    (s) => s.state === "connected",
+export function EditorPane({
+  filePath,
+  api,
+}: {
+  filePath: string;
+  api?: DockviewPanelApi;
+}) {
+  const tab = useEditorStore(
+    (s) => s.tabs.find((t) => t.path === filePath) ?? null,
   );
+  const project = useSessionStore((s) => s.project);
+  const wsConnected = useConnectionStore((s) => s.state === "connected");
   const lspDesired = useEngineStore((s) => {
     return s.engineStatuses.lsp?.desired === true;
   });
@@ -54,8 +67,10 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const milkdownHostRef = useRef<HTMLDivElement | null>(null);
   const lspBindRef = useRef<(() => void) | null>(null);
-  const [monacoTheme, setMonacoTheme] = useState(
-    () => getTheme() === "light" ? LITECODE_MONACO_THEME_LIGHT : LITECODE_MONACO_THEME_DARK
+  const [monacoTheme, setMonacoTheme] = useState(() =>
+    getTheme() === "light"
+      ? LITECODE_MONACO_THEME_LIGHT
+      : LITECODE_MONACO_THEME_DARK,
   );
 
   const mdView = resolveMdEditorView(
@@ -63,8 +78,9 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
     tab?.content.length ?? 0,
     mdViewOverride,
   );
-  const showMdToggle = isWysiwygMarkdownPath(filePath)
-    && (tab?.content.length ?? 0) <= WYSIWYG_MARKDOWN_MAX_CHARS;
+  const showMdToggle =
+    isWysiwygMarkdownPath(filePath) &&
+    (tab?.content.length ?? 0) <= WYSIWYG_MARKDOWN_MAX_CHARS;
   const useWysiwyg = mdView === "wysiwyg";
 
   useEffect(() => {
@@ -72,7 +88,10 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
   }, [useWysiwyg]);
 
   const bindEditorToLsp = useCallback(
-    (monaco: typeof import("monaco-editor"), ed: editor.IStandaloneCodeEditor) => {
+    (
+      monaco: typeof import("monaco-editor"),
+      ed: editor.IStandaloneCodeEditor,
+    ) => {
       lspBindRef.current?.();
       lspBindRef.current = null;
       if (!lspDesired || !wsConnected) return;
@@ -112,9 +131,8 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
           // so workbench-level Ctrl+S targets the file the user is looking at.
           useEditorStore.setState({ activePath: filePath });
           editorRef.current?.focus();
-          const prose = milkdownHostRef.current?.querySelector<HTMLElement>(
-            ".ProseMirror",
-          );
+          const prose =
+            milkdownHostRef.current?.querySelector<HTMLElement>(".ProseMirror");
           prose?.focus();
         }
       }),
@@ -129,7 +147,9 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
     const handler = (e: Event) => {
       const theme = (e as CustomEvent<string>).detail;
       const next =
-        theme === "light" ? LITECODE_MONACO_THEME_LIGHT : LITECODE_MONACO_THEME_DARK;
+        theme === "light"
+          ? LITECODE_MONACO_THEME_LIGHT
+          : LITECODE_MONACO_THEME_DARK;
       setMonacoTheme(next);
       const monaco = monacoRef.current;
       if (!monaco) return;
@@ -219,87 +239,91 @@ export function EditorPane({ filePath, api }: { filePath: string; api?: Dockview
             )}
             {useWysiwyg ? (
               tab.loading ? null : (
-              <div ref={milkdownHostRef} className="h-full">
-                <Suspense
-                  fallback={
-                    <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-muted)">
-                      Loading editor…
-                    </div>
-                  }
-                >
-                  <MilkdownMarkdownEditor
-                    filePath={filePath}
-                    content={tab.content ?? ""}
-                    onChange={(markdown) => setContent(filePath, markdown)}
-                  />
-                </Suspense>
-              </div>
+                <div ref={milkdownHostRef} className="h-full">
+                  <Suspense
+                    fallback={
+                      <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-muted)">
+                        Loading editor…
+                      </div>
+                    }
+                  >
+                    <MilkdownMarkdownEditor
+                      filePath={filePath}
+                      content={tab.content ?? ""}
+                      onChange={(markdown) => setContent(filePath, markdown)}
+                    />
+                  </Suspense>
+                </div>
               )
             ) : (
-            <Editor
-              path={tab.path ?? filePath}
-              height="100%"
-              language={tab.language ?? languageFromPath(filePath)}
-              value={tab.content ?? ""}
-              theme={monacoTheme}
-              beforeMount={defineAllMonacoThemes}
-              onMount={(_editor, monaco) => {
-                monacoRef.current = monaco;
-                editorRef.current = _editor;
-                _editor.layout();
-                const model = monaco.editor.getModel(monaco.Uri.parse(filePath));
-                if (model) {
-                  _editor.setModel(model);
-                }
-                syncLspRegistration(monaco);
-                bindEditorToLsp(monaco, _editor);
-                const pending = useEditorStore.getState().pendingReveal;
-                if (pending && pending.path === filePath) {
-                  const reveal = useEditorStore.getState().consumePendingReveal();
-                  if (reveal) {
-                    const line = Math.max(1, reveal.line);
-                    const column = Math.max(1, reveal.column ?? 1);
-                    _editor.revealLineInCenter(line);
-                    _editor.setPosition({ lineNumber: line, column });
-                    _editor.focus();
+              <Editor
+                path={tab.path ?? filePath}
+                height="100%"
+                language={tab.language ?? languageFromPath(filePath)}
+                value={tab.content ?? ""}
+                theme={monacoTheme}
+                beforeMount={defineAllMonacoThemes}
+                onMount={(_editor, monaco) => {
+                  monacoRef.current = monaco;
+                  editorRef.current = _editor;
+                  _editor.layout();
+                  const model = monaco.editor.getModel(
+                    monaco.Uri.parse(filePath),
+                  );
+                  if (model) {
+                    _editor.setModel(model);
                   }
-                }
-              }}
-              onChange={(value) =>
-                setContent(filePath, value ?? "")
-              }
-              options={{
-                padding: { top: 12, bottom: 12 },
-                minimap: { enabled: false },
-                fontSize: 14,
-                fontFamily: '"JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
-                lineNumbers: "on",
-                scrollBeyondLastLine: false,
-                automaticLayout: true,
-                tabSize: 2,
-                autoClosingBrackets: "languageDefined",
-                autoClosingQuotes: "languageDefined",
-                autoSurround: "languageDefined",
-                autoIndent: "full",
-                matchBrackets: "always",
-                formatOnType: false,
-                formatOnPaste: false,
-                wordBasedSuggestions: "off",
-                parameterHints: { enabled: true },
-                codeLens: true,
-                linkedEditing: true,
-                inlayHints: { enabled: "on" },
-                bracketPairColorization: { enabled: true },
-                guides: { indentation: true, bracketPairs: true },
-                "semanticHighlighting.enabled": true,
-                gotoLocation: {
-                  multiple: "goto",
-                  multipleDefinitions: "goto",
-                  multipleReferences: "peek",
-                  alternativeDefinitionCommand: "editor.action.goToReferences",
-                },
-              }}
-            />
+                  syncLspRegistration(monaco);
+                  bindEditorToLsp(monaco, _editor);
+                  const pending = useEditorStore.getState().pendingReveal;
+                  if (pending && pending.path === filePath) {
+                    const reveal = useEditorStore
+                      .getState()
+                      .consumePendingReveal();
+                    if (reveal) {
+                      const line = Math.max(1, reveal.line);
+                      const column = Math.max(1, reveal.column ?? 1);
+                      _editor.revealLineInCenter(line);
+                      _editor.setPosition({ lineNumber: line, column });
+                      _editor.focus();
+                    }
+                  }
+                }}
+                onChange={(value) => setContent(filePath, value ?? "")}
+                options={{
+                  padding: { top: 12, bottom: 12 },
+                  minimap: { enabled: false },
+                  fontSize: 14,
+                  fontFamily:
+                    '"JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
+                  lineNumbers: "on",
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  tabSize: 2,
+                  autoClosingBrackets: "languageDefined",
+                  autoClosingQuotes: "languageDefined",
+                  autoSurround: "languageDefined",
+                  autoIndent: "full",
+                  matchBrackets: "always",
+                  formatOnType: false,
+                  formatOnPaste: false,
+                  wordBasedSuggestions: "off",
+                  parameterHints: { enabled: true },
+                  codeLens: true,
+                  linkedEditing: true,
+                  inlayHints: { enabled: "on" },
+                  bracketPairColorization: { enabled: true },
+                  guides: { indentation: true, bracketPairs: true },
+                  "semanticHighlighting.enabled": true,
+                  gotoLocation: {
+                    multiple: "goto",
+                    multipleDefinitions: "goto",
+                    multipleReferences: "peek",
+                    alternativeDefinitionCommand:
+                      "editor.action.goToReferences",
+                  },
+                }}
+              />
             )}
           </>
         ) : (

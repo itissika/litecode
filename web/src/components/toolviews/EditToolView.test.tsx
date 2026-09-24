@@ -64,7 +64,11 @@ describe("EditToolView", () => {
           file_path: "src/a.rs",
           edits: [
             { old_string: "foo", new_string: "bar" },
-            { old_string: "old_api(", new_string: "new_api(", replace_all: true },
+            {
+              old_string: "old_api(",
+              new_string: "new_api(",
+              replace_all: true,
+            },
           ],
         }}
         output={{
@@ -122,7 +126,9 @@ describe("EditToolView", () => {
         }}
       />,
     );
-    expect(screen.getByText(/No sufficiently similar region was found/)).toBeTruthy();
+    expect(
+      screen.getByText(/No sufficiently similar region was found/),
+    ).toBeTruthy();
     expect(screen.queryByText("Tool warning")).toBeNull();
   });
 
@@ -138,7 +144,8 @@ describe("EditToolView", () => {
         output={{
           type: "function_call_output",
           call_id: "c1",
-          output: "Edited src/a.rs (1 applied / 0 warning / 0 failed). File updated.\n\nHint: LSP note — rust-analyzer",
+          output:
+            "Edited src/a.rs (1 applied / 0 warning / 0 failed). File updated.\n\nHint: LSP note — rust-analyzer",
         }}
       />,
     );

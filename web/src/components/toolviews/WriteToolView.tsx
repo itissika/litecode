@@ -18,7 +18,8 @@ export function WriteToolView({ name, input, status, output }: ToolViewProps) {
     input && typeof input === "object" && !Array.isArray(input)
       ? (input as Record<string, unknown>)
       : {};
-  const filePath = typeof obj.file_path === "string" ? obj.file_path : undefined;
+  const filePath =
+    typeof obj.file_path === "string" ? obj.file_path : undefined;
   const content = typeof obj.content === "string" ? obj.content : "";
 
   const primary = TOOL_PARAM_META[name]?.primary ?? ["file_path", "content"];

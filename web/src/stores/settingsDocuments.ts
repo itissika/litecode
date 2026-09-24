@@ -40,7 +40,10 @@ export type SettingsDocument =
   | "excludes"
   | "engines";
 
-export const SECTION_DOCUMENTS: Record<SettingsSection, readonly SettingsDocument[]> = {
+export const SECTION_DOCUMENTS: Record<
+  SettingsSection,
+  readonly SettingsDocument[]
+> = {
   // Both LLM pages read the same document: Provider edits credentials, Models
   // reads the projection those credentials unlock.
   connection: ["summary", "llm"],
@@ -90,7 +93,9 @@ export const EVENT_DOC_TO_SETTINGS: Record<string, SettingsDocument[]> = {
   excludes: ["excludes"],
 };
 
-export function settingsDocsForEvent(docs: string[] | undefined): SettingsDocument[] {
+export function settingsDocsForEvent(
+  docs: string[] | undefined,
+): SettingsDocument[] {
   if (!docs?.length) return [];
   const out: SettingsDocument[] = [];
   for (const id of docs) {
@@ -98,9 +103,7 @@ export function settingsDocsForEvent(docs: string[] | undefined): SettingsDocume
       if (!out.includes(mapped)) out.push(mapped);
     }
   }
-  if (
-    docs.some((d) => d.startsWith("mcp.") || d.startsWith("custom_tools."))
-  ) {
+  if (docs.some((d) => d.startsWith("mcp.") || d.startsWith("custom_tools."))) {
     if (!out.includes("availableTools")) out.push("availableTools");
   }
   return out;
@@ -123,7 +126,10 @@ export interface SettingsDataProbe {
   docClock: SettingsDocClock;
 }
 
-export function documentHasData(doc: SettingsDocument, state: SettingsDataProbe): boolean {
+export function documentHasData(
+  doc: SettingsDocument,
+  state: SettingsDataProbe,
+): boolean {
   switch (doc) {
     case "summary":
       return state.summary !== null;
@@ -225,6 +231,9 @@ export function mergeLayeredMcp(
   const rt = runtime ?? { global: {}, workspace: {} };
   return {
     global: defs.global.map((d) => ({ ...d, ...(rt.global[d.id] ?? {}) })),
-    workspace: defs.workspace.map((d) => ({ ...d, ...(rt.workspace[d.id] ?? {}) })),
+    workspace: defs.workspace.map((d) => ({
+      ...d,
+      ...(rt.workspace[d.id] ?? {}),
+    })),
   };
 }

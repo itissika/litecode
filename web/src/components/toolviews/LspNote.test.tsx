@@ -9,11 +9,15 @@ afterEach(() => {
 
 describe("splitLspNote", () => {
   it("splits at Warning, Hint, and Error tails", () => {
-    expect(splitLspNote("Edited a.rs\n\nWarning: some edits were not applied")).toEqual({
+    expect(
+      splitLspNote("Edited a.rs\n\nWarning: some edits were not applied"),
+    ).toEqual({
       body: "Edited a.rs",
       lsp: "Warning: some edits were not applied",
     });
-    expect(splitLspNote("Edited a.rs\n\nHint: LSP note — rust-analyzer")).toEqual({
+    expect(
+      splitLspNote("Edited a.rs\n\nHint: LSP note — rust-analyzer"),
+    ).toEqual({
       body: "Edited a.rs",
       lsp: "Hint: LSP note — rust-analyzer",
     });

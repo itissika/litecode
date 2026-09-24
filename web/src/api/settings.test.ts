@@ -50,7 +50,9 @@ describe("settings helpers", () => {
 
   it("labels a catalog model from its label, falling back to the wire id", async () => {
     const { modelRefLabel } = await import("./settings");
-    expect(modelRefLabel({ ...catalogModel(), label: "Sonnet" })).toBe("Sonnet");
+    expect(modelRefLabel({ ...catalogModel(), label: "Sonnet" })).toBe(
+      "Sonnet",
+    );
     expect(modelRefLabel({ ...catalogModel(), label: "" })).toBe(
       "deepseek/deepseek-v4-flash",
     );
@@ -74,7 +76,8 @@ describe("settings helpers", () => {
   });
 
   it("identifies subagent bindable tools excluding subagent series", async () => {
-    const { isSubagentBindableTool, SUBAGENT_SERIES_TOOL_IDS } = await import("./settings");
+    const { isSubagentBindableTool, SUBAGENT_SERIES_TOOL_IDS } =
+      await import("./settings");
     const webfetch: AvailableTool = {
       id: "webfetch",
       kind: "core",
@@ -93,9 +96,17 @@ describe("settings helpers", () => {
     expect(isSubagentBindableTool(webfetch)).toBe(true);
     expect(isSubagentBindableTool(launch)).toBe(false);
     expect(isSubagentBindableTool(plan)).toBe(false);
-    expect((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_launch")).toBe(true);
-    expect((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_wait")).toBe(true);
-    expect((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_stop")).toBe(true);
+    expect(
+      (SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes(
+        "subagent_launch",
+      ),
+    ).toBe(true);
+    expect(
+      (SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_wait"),
+    ).toBe(true);
+    expect(
+      (SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_stop"),
+    ).toBe(true);
   });
 
   it("links bash wait_shell kill_shell as one enable series", async () => {
@@ -106,8 +117,16 @@ describe("settings helpers", () => {
       toolEnableSeries,
       withSyncedToolSeries,
     } = await import("./settings");
-    expect([...BASH_SERIES_TOOL_IDS]).toEqual(["bash", "wait_shell", "kill_shell"]);
-    expect(toolEnableSeries("wait_shell")).toEqual(["bash", "wait_shell", "kill_shell"]);
+    expect([...BASH_SERIES_TOOL_IDS]).toEqual([
+      "bash",
+      "wait_shell",
+      "kill_shell",
+    ]);
+    expect(toolEnableSeries("wait_shell")).toEqual([
+      "bash",
+      "wait_shell",
+      "kill_shell",
+    ]);
     expect(toolEnableSeries("read")).toBeNull();
 
     const enabled = applyToolEnabled({}, "kill_shell", true);
@@ -195,7 +214,6 @@ describe("settings helpers", () => {
     expect(isProtectedAgent("compaction")).toBe(true);
     expect(isProtectedAgent("reviewer")).toBe(false);
   });
-
 });
 
 describe("settings API response parsing", () => {

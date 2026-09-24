@@ -16,11 +16,15 @@ export function EdgeTab(props: IDockviewPanelProps) {
   // inside the side edge's vertical tab strip (writing-mode: vertical-rl) →
   // "vertical English" text. Track it in state and update on location change.
   const [isBottom, setIsBottom] = useState(
-    () => props.api.location.type === "edge" && props.api.location.position === "bottom",
+    () =>
+      props.api.location.type === "edge" &&
+      props.api.location.position === "bottom",
   );
 
   useEffect(() => {
-    const d1 = groupApi.onDidCollapsedChange((e) => setIsCollapsed(e.isCollapsed));
+    const d1 = groupApi.onDidCollapsedChange((e) =>
+      setIsCollapsed(e.isCollapsed),
+    );
     const d2 = props.api.onDidLocationChange(() => {
       const loc = props.api.location;
       setIsBottom(loc.type === "edge" && loc.position === "bottom");
@@ -37,8 +41,14 @@ export function EdgeTab(props: IDockviewPanelProps) {
   if (isBottom) {
     return (
       <div className="flex items-center gap-1.5 px-1.5 h-full transition-colors duration-120 hover:brightness-125 active:brightness-75">
-        <span className="flex-shrink-0 transition-all duration-120" style={{ filter: glow }}>
-          <Icon size={14} weight={isExpanded ? ("fill" as "regular") : "regular"} />
+        <span
+          className="flex-shrink-0 transition-all duration-120"
+          style={{ filter: glow }}
+        >
+          <Icon
+            size={14}
+            weight={isExpanded ? ("fill" as "regular") : "regular"}
+          />
         </span>
         <span className="text-xs truncate select-none">{title}</span>
       </div>
@@ -51,7 +61,10 @@ export function EdgeTab(props: IDockviewPanelProps) {
       title={title}
     >
       <span className="transition-all duration-120" style={{ filter: glow }}>
-        <Icon size={16} weight={isExpanded ? ("fill" as "regular") : "regular"} />
+        <Icon
+          size={16}
+          weight={isExpanded ? ("fill" as "regular") : "regular"}
+        />
       </span>
     </div>
   );

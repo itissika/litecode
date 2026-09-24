@@ -14,6 +14,7 @@ import {
 const userRow: HumanRow = {
   seq: 0,
   kind: "item/user",
+  state: "final",
 
   body: {
     type: "message",
@@ -27,8 +28,7 @@ const userRow: HumanRow = {
 const liveReasoning: HumanRow = {
   seq: 1,
   kind: "item/assistant",
-
-  streaming: true,
+  state: "final",
   body: {
     type: "reasoning",
     id: "rs_1",
@@ -41,14 +41,13 @@ const liveReasoning: HumanRow = {
 const liveTool: HumanRow = {
   seq: 2,
   kind: "item/tool_call",
-
-  streaming: true,
+  state: "final",
   body: {
     type: "function_call",
     id: "fc_1",
     call_id: "call_1",
     name: "grep",
-    arguments: "{\"pattern\":\"foo\"}",
+    arguments: '{"pattern":"foo"}',
     status: "in_progress",
   },
 };
@@ -56,14 +55,13 @@ const liveTool: HumanRow = {
 const sealedTool: HumanRow = {
   seq: 2,
   kind: "item/tool_call",
-
-  streaming: false,
+  state: "final",
   body: {
     type: "function_call",
     id: "fc_1",
     call_id: "call_1",
     name: "grep",
-    arguments: "{\"pattern\":\"foo\"}",
+    arguments: '{"pattern":"foo"}',
     status: "completed",
   },
 };
@@ -89,6 +87,7 @@ describe("bubbleIdentity", () => {
     const reminder: HumanRow = {
       seq: 9,
       kind: "item/user",
+      state: "final",
 
       body: {
         type: "message",
@@ -113,23 +112,30 @@ describe("bubbleIdentity", () => {
     const unknown = {
       seq: 1,
       kind: "future/widget",
+      state: "final",
       body: {
         type: "message",
         role: "assistant",
         id: "ghost",
         status: "completed",
-        content: [{ type: "output_text", text: "do not render", annotations: [] }],
+        content: [
+          { type: "output_text", text: "do not render", annotations: [] },
+        ],
       },
     } as unknown as HumanRow;
     const grouped = groupRowsForBubbles([userRow, unknown, liveReasoning]);
     expect(grouped).toHaveLength(2);
-    expect(grouped.flat().map((r) => r.kind)).toEqual(["item/user", "item/assistant"]);
+    expect(grouped.flat().map((r) => r.kind)).toEqual([
+      "item/user",
+      "item/assistant",
+    ]);
   });
 
   it("does not collide keys across a reminder split", () => {
     const reminder: HumanRow = {
       seq: 9,
       kind: "item/user",
+      state: "final",
 
       body: {
         type: "message",
@@ -164,6 +170,7 @@ describe("bubbleIdentity", () => {
 const compactCut = (seq: number): HumanRow => ({
   seq,
   kind: "compacted",
+  state: "final",
   body: { summary: "hidden", from: 0, to: seq },
 });
 
@@ -210,8 +217,7 @@ describe("locateBashTool", () => {
     const bashRow: HumanRow = {
       seq: 3,
       kind: "item/tool_call",
-
-      streaming: true,
+      state: "final",
       body: {
         type: "function_call",
         id: "fc_bash",

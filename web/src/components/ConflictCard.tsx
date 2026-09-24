@@ -19,7 +19,9 @@ export function ConflictCard({
       className="flex items-center justify-between gap-3 border-b border-(--_dk-amber-500)/40 bg-(--_dk-amber-500)/10 px-3 py-2 text-xs text-(--_dk-text-primary)"
     >
       <div className="min-w-0">
-        <span className="font-medium">Unsaved changes conflicted with {source}</span>
+        <span className="font-medium">
+          Unsaved changes conflicted with {source}
+        </span>
         <span className="ml-1 break-all font-mono text-(--_dk-text-secondary)">
           {path}
         </span>

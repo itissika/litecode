@@ -83,7 +83,11 @@ export function StatusBar({ sessionMode = "local" }: StatusBarProps) {
   return (
     <div className="status-bar-root">
       {logsExpanded ? (
-        <div ref={scrollRef} className="status-log-panel" aria-label="Server logs">
+        <div
+          ref={scrollRef}
+          className="status-log-panel"
+          aria-label="Server logs"
+        >
           {logLines.length === 0 ? (
             <p className="status-log-empty">Waiting for log events…</p>
           ) : (
@@ -111,7 +115,9 @@ export function StatusBar({ sessionMode = "local" }: StatusBarProps) {
           className="status-bar-toggle"
           onClick={() => setExpanded(!logsExpanded)}
           aria-expanded={logsExpanded}
-          aria-label={logsExpanded ? "Collapse server logs" : "Expand server logs"}
+          aria-label={
+            logsExpanded ? "Collapse server logs" : "Expand server logs"
+          }
         >
           <span>Logs</span>
           {logsExpanded ? (

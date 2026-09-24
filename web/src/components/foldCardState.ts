@@ -31,7 +31,10 @@ export function getFoldCardOpenIntent(id: string): FoldCardOpenIntent {
   return openIntent.get(id) ?? "none";
 }
 
-export function setFoldCardOpenIntent(id: string, intent: FoldCardOpenIntent): void {
+export function setFoldCardOpenIntent(
+  id: string,
+  intent: FoldCardOpenIntent,
+): void {
   if (intent === "none") openIntent.delete(id);
   else openIntent.set(id, intent);
 }
@@ -44,7 +47,9 @@ export function requestFoldCardOpen(id: string): void {
   for (const notify of openRequests) notify(id);
 }
 
-export function subscribeFoldCardOpenRequest(notify: (id: string) => void): () => void {
+export function subscribeFoldCardOpenRequest(
+  notify: (id: string) => void,
+): () => void {
   openRequests.add(notify);
   return () => {
     openRequests.delete(notify);

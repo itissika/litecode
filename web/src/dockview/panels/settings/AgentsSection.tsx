@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Plus, ArrowClockwise, ListChecks } from "@phosphor-icons/react";
 
@@ -22,6 +28,7 @@ import { mergeLayeredMcp } from "../../../stores/settingsDocuments";
 import { Select } from "../../../components/ui/Select";
 import { Dropdown } from "../../../components/ui/Dropdown";
 import { FoldCard } from "../../../components/FoldCard";
+import { ProviderLogo } from "../../../components/ProviderLogos";
 import { AgentTypeIcon, agentColor } from "../../../components/agentIdentity";
 import {
   FieldLabel,
@@ -64,7 +71,9 @@ function ModelRefSelect({
     const nameOf = (id: string) => providerName.get(id) ?? id;
     const known = new Set(models.map((m) => m.ref));
 
-    const rows: ModelRefOption[] = [{ value: "", label: "— select —" as ReactNode }];
+    const rows: ModelRefOption[] = [
+      { value: "", label: "— select —" as ReactNode },
+    ];
     if (value && !known.has(value)) {
       // Missing first, marked in amber: the current value must stay visible.
       const { providerId } = splitModelRef(value);
@@ -74,7 +83,10 @@ function ModelRefSelect({
         disabled: true,
         label: (
           <span className="flex items-center justify-between gap-2 text-(--_dk-amber-500)">
-            <span className="truncate">Missing: {value}</span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <ProviderLogo providerId={providerId} />
+              <span className="truncate">Missing: {value}</span>
+            </span>
             {owner ? (
               <span className="shrink-0 text-dk-xs opacity-70">{owner}</span>
             ) : null}
@@ -101,7 +113,18 @@ function ModelRefSelect({
         ),
       });
       for (const model of list) {
-        rows.push({ value: model.ref, label: modelRefLabel(model) as ReactNode });
+        // The brand mark rides on every row so two providers offering the same
+        // wire model id stay distinguishable (also in the collapsed trigger,
+        // which renders the selected option's label).
+        rows.push({
+          value: model.ref,
+          label: (
+            <span className="flex min-w-0 items-center gap-1.5">
+              <ProviderLogo providerId={model.provider_id} />
+              <span className="truncate">{modelRefLabel(model)}</span>
+            </span>
+          ),
+        });
       }
     }
     return rows;
@@ -140,13 +163,18 @@ function McpToolVisibilityControl({
   disabled: boolean;
   onChange: (allowed_tools: string[]) => void;
 }) {
-  const selected = binding.allowed_tools == null ? new Set(tools.map((tool) => tool.name)) : new Set(binding.allowed_tools);
+  const selected =
+    binding.allowed_tools == null
+      ? new Set(tools.map((tool) => tool.name))
+      : new Set(binding.allowed_tools);
 
   const toggleTool = (name: string) => {
     const next = new Set(selected);
     if (next.has(name)) next.delete(name);
     else next.add(name);
-    onChange(tools.filter((tool) => next.has(tool.name)).map((tool) => tool.name));
+    onChange(
+      tools.filter((tool) => next.has(tool.name)).map((tool) => tool.name),
+    );
   };
 
   // Virtualize the tool list: MCP servers can expose hundreds of tools, so
@@ -178,7 +206,9 @@ function McpToolVisibilityControl({
           className={[
             disabled ? "" : "tool-binding-action",
             "btn btn-ghost btn-xs",
-          ].filter(Boolean).join(" ")}
+          ]
+            .filter(Boolean)
+            .join(" ")}
           onClick={(event) => {
             event.stopPropagation();
             toggle();
@@ -224,7 +254,7 @@ function McpToolVisibilityControl({
                     }}
                   >
                     <FoldCard
-                      label={(
+                      label={
                         <label
                           className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
                           onClick={(event) => event.stopPropagation()}
@@ -240,12 +270,13 @@ function McpToolVisibilityControl({
                             {tool.name}
                           </span>
                         </label>
-                      )}
+                      }
                       headerAriaLabel={`Show details for MCP tool ${tool.name}`}
                       className="border-b border-(--_dk-line)"
                       contentClassName="px-5 pb-2 text-xs text-(--_dk-text-secondary)"
                     >
-                      {tool.description || "No description provided by this MCP server."}
+                      {tool.description ||
+                        "No description provided by this MCP server."}
                     </FoldCard>
                   </div>
                 );
@@ -282,7 +313,9 @@ function AgentProfileFields({
         <TextArea
           rows={4}
           value={draft.system_prompt}
-          onChange={(e) => onChange({ ...draft, system_prompt: e.target.value })}
+          onChange={(e) =>
+            onChange({ ...draft, system_prompt: e.target.value })
+          }
           disabled={saveBlocked}
         />
       </div>
@@ -330,19 +363,24 @@ function AllowedSubagentsSelect({
 
   return (
     <div className="space-y-2">
-        <h3 className="settings-section-title">Allowed subagents</h3>
-        {launchEnabled && subagentIds.length > 0 && allowed.size === 0 ? (
+      <h3 className="settings-section-title">Allowed subagents</h3>
+      {launchEnabled && subagentIds.length > 0 && allowed.size === 0 ? (
         <p className="text-xs text-(--_dk-amber-500)">
-          subagent_launch is enabled but no subagents are allowed — launches will fail until you
-          select at least one.
+          subagent_launch is enabled but no subagents are allowed — launches
+          will fail until you select at least one.
         </p>
       ) : null}
       {subagentIds.length === 0 ? (
-        <p className="text-sm text-(--_dk-text-disabled)">No subagent profiles defined yet.</p>
+        <p className="text-sm text-(--_dk-text-disabled)">
+          No subagent profiles defined yet.
+        </p>
       ) : (
         <div className="settings-card max-h-48 space-y-1 overflow-y-auto p-3">
           {subagentIds.map((id) => (
-            <label key={id} className="flex cursor-pointer items-start gap-2 text-sm">
+            <label
+              key={id}
+              className="flex cursor-pointer items-start gap-2 text-sm"
+            >
               <input
                 type="checkbox"
                 checked={allowed.has(id)}
@@ -351,9 +389,13 @@ function AllowedSubagentsSelect({
                 className="mt-0.5 accent-(--_dk-accent-hover)"
               />
               <span>
-                <span className="font-mono text-(--_dk-text-secondary)">{id}</span>
+                <span className="font-mono text-(--_dk-text-secondary)">
+                  {id}
+                </span>
                 {agents[id]?.description ? (
-                  <span className="ml-2 text-xs text-(--_dk-text-disabled)">{agents[id].description}</span>
+                  <span className="ml-2 text-xs text-(--_dk-text-disabled)">
+                    {agents[id].description}
+                  </span>
                 ) : null}
               </span>
             </label>
@@ -387,8 +429,12 @@ export function AgentToolsGrid({
     return (
       <div className="space-y-2">
         <h3 className="settings-section-title">Tool bindings</h3>
-        {note ? <p className="text-xs text-(--_dk-text-muted)">{note}</p> : null}
-        <p className="text-sm text-(--_dk-amber-500)">No bindable tools in this workspace.</p>
+        {note ? (
+          <p className="text-xs text-(--_dk-text-muted)">{note}</p>
+        ) : null}
+        <p className="text-sm text-(--_dk-amber-500)">
+          No bindable tools in this workspace.
+        </p>
       </div>
     );
   }
@@ -409,9 +455,11 @@ export function AgentToolsGrid({
           const enabled = binding.enabled;
           const preset = binding.last_applied_preset ?? "ALL";
           const serverId = entry.id.slice("mcp_".length);
-          const mcpTools = entry.kind === "mcp"
-            ? mcpServers.find((server) => server.id === serverId)?.tools ?? []
-            : [];
+          const mcpTools =
+            entry.kind === "mcp"
+              ? (mcpServers.find((server) => server.id === serverId)?.tools ??
+                [])
+              : [];
 
           const toggleEnabled = () => {
             if (saveBlocked) return;
@@ -435,13 +483,17 @@ export function AgentToolsGrid({
               <div className="tool-binding-content flex flex-col">
                 <div className="flex w-full items-start justify-between gap-2 p-3">
                   <div className="min-w-0">
-                    <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">{entry.id}</p>
+                    <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">
+                      {entry.id}
+                    </p>
                     <p className="mt-0.5 text-dk-xs text-(--_dk-text-disabled)">
                       {entry.kind}
                       {entry.overridden ? " · workspace override" : ""}
                     </p>
                   </div>
-                  <span className={`tag ${enabled ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}>
+                  <span
+                    className={`tag ${enabled ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}
+                  >
                     {enabled ? "On" : "Off"}
                   </span>
                 </div>
@@ -461,13 +513,19 @@ export function AgentToolsGrid({
                           aria-pressed={preset === value}
                           onClick={(event) => {
                             event.stopPropagation();
-                            onBindingChange(entry.id, { last_applied_preset: value });
+                            onBindingChange(entry.id, {
+                              last_applied_preset: value,
+                            });
                           }}
                           className={[
                             // Only intercept hits when the control is live; disabled
                             // buttons stay click-through so the full-card toggle works.
-                            enabled && !saveBlocked ? "tool-binding-action" : "",
-                            preset === value ? "btn-primary btn-xs" : "btn-ghost btn-xs",
+                            enabled && !saveBlocked
+                              ? "tool-binding-action"
+                              : "",
+                            preset === value
+                              ? "btn-primary btn-xs"
+                              : "btn-ghost btn-xs",
                           ]
                             .filter(Boolean)
                             .join(" ")}
@@ -479,7 +537,9 @@ export function AgentToolsGrid({
                   ) : (
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-xs text-(--_dk-text-disabled)">
-                        {entry.kind === "mcp" ? "No preset" : "Not configurable"}
+                        {entry.kind === "mcp"
+                          ? "No preset"
+                          : "Not configurable"}
                       </p>
                       {entry.kind === "mcp" ? (
                         <McpToolVisibilityControl
@@ -487,7 +547,9 @@ export function AgentToolsGrid({
                           binding={binding}
                           tools={mcpTools}
                           disabled={saveBlocked || !enabled}
-                          onChange={(allowed_tools) => onBindingChange(entry.id, { allowed_tools })}
+                          onChange={(allowed_tools) =>
+                            onBindingChange(entry.id, { allowed_tools })
+                          }
                         />
                       ) : null}
                     </div>
@@ -567,7 +629,9 @@ export function AgentsSection() {
 
   const subagentIds = useMemo(
     () =>
-      agentIds.filter((id) => agents[id]?.role === "subagent").sort((a, b) => a.localeCompare(b)),
+      agentIds
+        .filter((id) => agents[id]?.role === "subagent")
+        .sort((a, b) => a.localeCompare(b)),
     [agentIds, agents],
   );
 
@@ -667,7 +731,10 @@ export function AgentsSection() {
     setCreating(false);
     setNewAgentId("");
     if (profile) {
-      setDraft({ ...profile, allowed_subagents: profile.allowed_subagents ?? [] });
+      setDraft({
+        ...profile,
+        allowed_subagents: profile.allowed_subagents ?? [],
+      });
     }
   };
 
@@ -707,7 +774,11 @@ export function AgentsSection() {
             <button
               type="button"
               onClick={onCreate}
-              disabled={saveBlocked || !newAgentId.trim() || isPersistBusy(persistStatus)}
+              disabled={
+                saveBlocked ||
+                !newAgentId.trim() ||
+                isPersistBusy(persistStatus)
+              }
               className="btn-primary btn-sm"
             >
               Create
@@ -736,142 +807,155 @@ export function AgentsSection() {
       }
     >
       <div className="space-y-6">
-      <div className="space-y-3">
-        {creating ? (
-          <div className="settings-card space-y-3 p-3">
-            <div>
-              <FieldLabel required>New agent id</FieldLabel>
-              <TextInput
-                value={newAgentId}
-                onChange={(e) => setNewAgentId(e.target.value.toLowerCase())}
-                placeholder="my_agent"
-                disabled={saveBlocked}
-                className="font-mono"
-              />
-              <p className="settings-field-hint">Lowercase letters, digits, and underscores.</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={cancelCreate} className="btn-ghost">
-                Cancel
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="settings-card space-y-3 p-3">
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="min-w-[160px] flex-1">
-                <FieldLabel>Agent</FieldLabel>
-                <Select
-                  value={selectedAgentId}
-                  onChange={(id) => {
-                    void flushRegisteredSettings().then(() => setSelectedAgentId(id));
-                  }}
-                  options={agentIds.map((id) => {
-                    const role = agents[id]?.role ?? "primary";
-                    return {
-                      value: id,
-                      label: (
-                        <span className="flex items-center gap-1.5">
-                          <AgentTypeIcon role={role} color={agentColor(id)} />
-                          <span>{id}</span>
-                          {role === "hidden" ? (
-                            <span className="text-(--_dk-text-disabled)">(hidden)</span>
-                          ) : null}
-                        </span>
-                      ),
-                    };
-                  })}
-                  className="w-full"
-                />
-              </div>
-              <div className="min-w-[160px] flex-1">
-                <FieldLabel>Model</FieldLabel>
-                <ModelRefSelect
-                  value={draft.model_ref}
-                  models={activeModels}
-                  providers={catalogProviders}
-                  onChange={(model_ref) => setDraft({ ...draft, model_ref })}
+        <div className="space-y-3">
+          {creating ? (
+            <div className="settings-card space-y-3 p-3">
+              <div>
+                <FieldLabel required>New agent id</FieldLabel>
+                <TextInput
+                  value={newAgentId}
+                  onChange={(e) => setNewAgentId(e.target.value.toLowerCase())}
+                  placeholder="my_agent"
                   disabled={saveBlocked}
+                  className="font-mono"
                 />
-                {activeModels.length === 0 ? (
-                  <p className="settings-field-hint">Configure a provider API key</p>
+                <p className="settings-field-hint">
+                  Lowercase letters, digits, and underscores.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={cancelCreate}
+                  className="btn-ghost"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="settings-card space-y-3 p-3">
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="min-w-[160px] flex-1">
+                  <FieldLabel>Agent</FieldLabel>
+                  <Select
+                    value={selectedAgentId}
+                    onChange={(id) => {
+                      void flushRegisteredSettings().then(() =>
+                        setSelectedAgentId(id),
+                      );
+                    }}
+                    options={agentIds.map((id) => {
+                      const role = agents[id]?.role ?? "primary";
+                      return {
+                        value: id,
+                        label: (
+                          <span className="flex items-center gap-1.5">
+                            <AgentTypeIcon role={role} color={agentColor(id)} />
+                            <span>{id}</span>
+                            {role === "hidden" ? (
+                              <span className="text-(--_dk-text-disabled)">
+                                (hidden)
+                              </span>
+                            ) : null}
+                          </span>
+                        ),
+                      };
+                    })}
+                    className="w-full"
+                  />
+                </div>
+                <div className="min-w-[160px] flex-1">
+                  <FieldLabel>Model</FieldLabel>
+                  <ModelRefSelect
+                    value={draft.model_ref}
+                    models={activeModels}
+                    providers={catalogProviders}
+                    onChange={(model_ref) => setDraft({ ...draft, model_ref })}
+                    disabled={saveBlocked}
+                  />
+                  {activeModels.length === 0 ? (
+                    <p className="settings-field-hint">
+                      Configure a provider API key
+                    </p>
+                  ) : null}
+                </div>
+                {!isHiddenAgent ? (
+                  <div>
+                    <FieldLabel>Type</FieldLabel>
+                    <div className="flex gap-2">
+                      {(["primary", "subagent"] as const).map((role) => (
+                        <button
+                          key={role}
+                          type="button"
+                          disabled={saveBlocked}
+                          onClick={() => setDraft({ ...draft, role })}
+                          className={`flex items-center gap-1 ${draft.role === role ? "btn-primary btn-xs" : "btn-ghost btn-xs"}`}
+                        >
+                          <AgentTypeIcon role={role} />
+                          {role === "primary" ? "Primary" : "Subagent"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 ) : null}
               </div>
-              {!isHiddenAgent ? (
-                <div>
-                  <FieldLabel>Type</FieldLabel>
-                  <div className="flex gap-2">
-                    {(["primary", "subagent"] as const).map((role) => (
-                      <button
-                        key={role}
-                        type="button"
-                        disabled={saveBlocked}
-                        onClick={() => setDraft({ ...draft, role })}
-                        className={`flex items-center gap-1 ${draft.role === role ? "btn-primary btn-xs" : "btn-ghost btn-xs"}`}
-                      >
-                        <AgentTypeIcon role={role} />
-                        {role === "primary" ? "Primary" : "Subagent"}
-                      </button>
-                    ))}
-                  </div>
+              {!isProtectedAgent(selectedAgentId) ? (
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={onDelete}
+                    disabled={saveBlocked || isPersistBusy(persistStatus)}
+                    className="btn-danger btn-xs"
+                  >
+                    Delete
+                  </button>
                 </div>
               ) : null}
             </div>
-            {!isProtectedAgent(selectedAgentId) ? (
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  onClick={onDelete}
-                  disabled={saveBlocked || isPersistBusy(persistStatus)}
-                  className="btn-danger btn-xs"
-                >
-                  Delete
-                </button>
-              </div>
-            ) : null}
-          </div>
-        )}
+          )}
 
-        {creating || !isHiddenAgent ? (
-          <AgentProfileFields
-            draft={draft}
-            saveBlocked={saveBlocked}
-            onChange={setDraft}
-          />
-        ) : null}
-      </div>
+          {creating || !isHiddenAgent ? (
+            <AgentProfileFields
+              draft={draft}
+              saveBlocked={saveBlocked}
+              onChange={setDraft}
+            />
+          ) : null}
+        </div>
 
-      {!isHiddenAgent && draft.role === "primary" ? (
-        <>
-          <AllowedSubagentsSelect
-            draft={draft}
-            subagentIds={subagentIds}
-            agents={agents}
-            saveBlocked={saveBlocked}
-            onChange={setDraft}
-          />
-          <AgentToolsGrid
+        {!isHiddenAgent && draft.role === "primary" ? (
+          <>
+            <AllowedSubagentsSelect
+              draft={draft}
+              subagentIds={subagentIds}
+              agents={agents}
+              saveBlocked={saveBlocked}
+              onChange={setDraft}
+            />
+            <AgentToolsGrid
               draft={draft}
               bindableTools={bindableToolsPrimary}
               mcpServers={mcpList}
               saveBlocked={saveBlocked}
               onBindingChange={updateBinding}
             />
-        </>
-      ) : !isHiddenAgent && draft.role === "subagent" ? (
-        <AgentToolsGrid
-          draft={draft}
-          bindableTools={bindableToolsSubagent}
-          mcpServers={mcpList}
-          saveBlocked={saveBlocked}
-          onBindingChange={updateBinding}
-          note="Subagents can't ask for approval — a binding that would prompt the user (SAFE on write/edit, web, or custom tools) is denied at runtime instead. SAFE on read/grep/glob/bash keeps them workspace-safe; use the MCP Tools picker to expose only chosen tools of a server."
-        />
-      ) : isHiddenAgent ? (
-        <p className="text-xs text-(--_dk-text-disabled)">
-          Compaction only assigns a model. Prompt, tools, and max steps are built in.
-        </p>
-      ) : null}
+          </>
+        ) : !isHiddenAgent && draft.role === "subagent" ? (
+          <AgentToolsGrid
+            draft={draft}
+            bindableTools={bindableToolsSubagent}
+            mcpServers={mcpList}
+            saveBlocked={saveBlocked}
+            onBindingChange={updateBinding}
+            note="Subagents can't ask for approval — a binding that would prompt the user (SAFE on write/edit, web, or custom tools) is denied at runtime instead. SAFE on read/grep/glob/bash keeps them workspace-safe; use the MCP Tools picker to expose only chosen tools of a server."
+          />
+        ) : isHiddenAgent ? (
+          <p className="text-xs text-(--_dk-text-disabled)">
+            Compaction only assigns a model. Prompt, tools, and max steps are
+            built in.
+          </p>
+        ) : null}
       </div>
     </SettingsPageShell>
   );

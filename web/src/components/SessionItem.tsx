@@ -72,7 +72,11 @@ export const SessionItem = memo(function SessionItem({
     const id = setInterval(() => setToggled((v) => !v), DEBUG_CYCLE_MS);
     return () => clearInterval(id);
   }, []);
-  const shown: SessionStatus = DEBUG_CYCLE ? (toggled ? "running" : "pending") : status;
+  const shown: SessionStatus = DEBUG_CYCLE
+    ? toggled
+      ? "running"
+      : "pending"
+    : status;
 
   const preview = session.preview?.trim();
   const relative = formatRelative(session.updated_at, now);
@@ -94,7 +98,9 @@ export const SessionItem = memo(function SessionItem({
           title={preview || undefined}
         >
           <span className="block truncate text-[11px]">
-            {preview || <span className="text-(--_dk-text-disabled)">No preview</span>}
+            {preview || (
+              <span className="text-(--_dk-text-disabled)">No preview</span>
+            )}
           </span>
         </span>
         {/* Live summary — real-time step label when active, else a triggered emoji. */}

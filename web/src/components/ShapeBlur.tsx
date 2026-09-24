@@ -108,7 +108,10 @@ export function ShapeBlur({
           WebkitMaskImage: mask,
           opacity,
           ...(debug
-            ? { border: "1px dashed rgba(255,255,255,0.5)", borderRadius: shape === "linear" ? 0 : 9999 }
+            ? {
+                border: "1px dashed rgba(255,255,255,0.5)",
+                borderRadius: shape === "linear" ? 0 : 9999,
+              }
             : {}),
         }}
       />

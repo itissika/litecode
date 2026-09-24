@@ -82,7 +82,8 @@ describe("deriveToolStatus", () => {
     const output: FunctionCallOutputItem = {
       type: "function_call_output",
       call_id: "c1",
-      output: "Created: a.rs\n\nWarning: language engine is still warming. Hint: retry",
+      output:
+        "Created: a.rs\n\nWarning: language engine is still warming. Hint: retry",
     };
     expect(deriveToolStatus(output, false)).toBe("warning");
   });
@@ -107,33 +108,50 @@ describe("deriveToolStatus", () => {
 
 describe("isToolCallLive", () => {
   it("stays live after the call seq is sealed until output arrives", () => {
-    expect(isToolCallLive({ callStatus: "completed", hasOutput: false })).toBe(true);
+    expect(isToolCallLive({ callStatus: "completed", hasOutput: false })).toBe(
+      true,
+    );
   });
 
   it("stays live while the call seq itself is in_progress", () => {
-    expect(isToolCallLive({ callStatus: "in_progress", hasOutput: false })).toBe(true);
+    expect(
+      isToolCallLive({ callStatus: "in_progress", hasOutput: false }),
+    ).toBe(true);
   });
 
   it("stays live while the output seq is still in_progress", () => {
     expect(
-      isToolCallLive({ callStatus: "completed", hasOutput: true, outputInProgress: true }),
+      isToolCallLive({
+        callStatus: "completed",
+        hasOutput: true,
+        outputInProgress: true,
+      }),
     ).toBe(true);
   });
 
   it("is not live once the output seq exists and is sealed", () => {
-    expect(isToolCallLive({ callStatus: "completed", hasOutput: true })).toBe(false);
+    expect(isToolCallLive({ callStatus: "completed", hasOutput: true })).toBe(
+      false,
+    );
   });
 
   it("is not live when the call failed or is incomplete (no output expected)", () => {
-    expect(isToolCallLive({ callStatus: "failed", hasOutput: false })).toBe(false);
-    expect(isToolCallLive({ callStatus: "incomplete", hasOutput: false })).toBe(false);
+    expect(isToolCallLive({ callStatus: "failed", hasOutput: false })).toBe(
+      false,
+    );
+    expect(isToolCallLive({ callStatus: "incomplete", hasOutput: false })).toBe(
+      false,
+    );
   });
 });
 
 describe("processGroupAutoOpen", () => {
   it("stays open between completed tool-loop steps", () => {
     expect(
-      processGroupAutoOpen({ followedByMessage: false, hasTerminalStop: false }),
+      processGroupAutoOpen({
+        followedByMessage: false,
+        hasTerminalStop: false,
+      }),
     ).toBe(true);
   });
 
@@ -165,11 +183,13 @@ describe("ToolCallCard open state", () => {
     output: "Created a.txt",
   };
 
-  function renderCard(props: {
-    call?: FunctionCallItem;
-    output?: FunctionCallOutputItem;
-    streaming?: boolean;
-  } = {}) {
+  function renderCard(
+    props: {
+      call?: FunctionCallItem;
+      output?: FunctionCallOutputItem;
+      streaming?: boolean;
+    } = {},
+  ) {
     return render(
       <ToolCallCard
         call={props.call ?? sealedWriteCall}

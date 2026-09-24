@@ -36,6 +36,8 @@ describe("SubagentSendToolView", () => {
         input={{ id: "child-a", message: "continue" }}
       />,
     );
-    expect(screen.getByTestId("subagent-send-line").textContent).toContain("failed");
+    expect(screen.getByTestId("subagent-send-line").textContent).toContain(
+      "failed",
+    );
   });
 });

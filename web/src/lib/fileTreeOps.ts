@@ -53,10 +53,15 @@ async function refreshParents(paths: string[]): Promise<void> {
   const reloads = [...keys].filter(
     (key) => key === "" || tree.expanded.has(key),
   );
-  await Promise.all(reloads.map((key) => useTreeStore.getState().loadChildren(key)));
+  await Promise.all(
+    reloads.map((key) => useTreeStore.getState().loadChildren(key)),
+  );
 }
 
-async function withBusy<T>(paths: string[], fn: () => Promise<T>): Promise<T | undefined> {
+async function withBusy<T>(
+  paths: string[],
+  fn: () => Promise<T>,
+): Promise<T | undefined> {
   const explorer = useExplorerStore.getState();
   explorer.markBusy(paths);
   try {
@@ -69,7 +74,10 @@ async function withBusy<T>(paths: string[], fn: () => Promise<T>): Promise<T | u
   }
 }
 
-export async function createNewFile(parent: string, name: string): Promise<string | undefined> {
+export async function createNewFile(
+  parent: string,
+  name: string,
+): Promise<string | undefined> {
   const dest = joinWorkspacePath(parent, name);
   return withBusy([dest], async () => {
     await createFile(dest, "");
@@ -80,7 +88,10 @@ export async function createNewFile(parent: string, name: string): Promise<strin
   });
 }
 
-export async function createNewFolder(parent: string, name: string): Promise<string | undefined> {
+export async function createNewFolder(
+  parent: string,
+  name: string,
+): Promise<string | undefined> {
   const dest = joinWorkspacePath(parent, name);
   return withBusy([dest], async () => {
     await mkdir(dest);
@@ -91,7 +102,10 @@ export async function createNewFolder(parent: string, name: string): Promise<str
   });
 }
 
-export async function renameEntry(from: string, toName: string): Promise<string | undefined> {
+export async function renameEntry(
+  from: string,
+  toName: string,
+): Promise<string | undefined> {
   const dest = joinWorkspacePath(parentPath(from), toName);
   if (dest === from) return from;
   return withBusy([from, dest], async () => {
@@ -105,10 +119,7 @@ export async function renameEntry(from: string, toName: string): Promise<string 
 export async function deleteEntries(paths: string[]): Promise<void> {
   const unique = [...new Set(paths)].filter(Boolean);
   if (unique.length === 0) return;
-  const label =
-    unique.length === 1
-      ? unique[0]
-      : `${unique.length} items`;
+  const label = unique.length === 1 ? unique[0] : `${unique.length} items`;
   const ok = window.confirm(
     unique.length === 1
       ? `Delete "${label}"?\n\nOn Windows this is sent to the Recycle Bin.`
@@ -119,8 +130,9 @@ export async function deleteEntries(paths: string[]): Promise<void> {
   await withBusy(unique, async () => {
     for (const path of unique) {
       const tree = useTreeStore.getState();
-      const isDir = tree.children[parentPath(path)]?.find((e) => e.path === path)?.kind === "dir"
-        || Boolean(tree.children[path]);
+      const isDir =
+        tree.children[parentPath(path)]?.find((e) => e.path === path)?.kind ===
+          "dir" || Boolean(tree.children[path]);
       await deletePath(path, isDir);
       useEditorStore.getState().closeDeleted(path);
     }
@@ -145,7 +157,11 @@ export async function duplicateEntries(paths: string[]): Promise<void> {
   });
 }
 
-function destForPaste(from: string, targetDir: string, existing: string[]): string {
+function destForPaste(
+  from: string,
+  targetDir: string,
+  existing: string[],
+): string {
   const name = uniqueChildName(existing, fileNameFromPath(from));
   return joinWorkspacePath(targetDir, name);
 }
@@ -162,7 +178,9 @@ export async function pasteEntries(targetDir: string): Promise<void> {
   await withBusy([...clip.paths, targetDir], async () => {
     for (const from of clip.paths) {
       if (clip.mode === "cut" && isSelfOrDescendant(from, targetDir)) {
-        useToastStore.getState().showToast("Cannot move a folder into itself", "error");
+        useToastStore
+          .getState()
+          .showToast("Cannot move a folder into itself", "error");
         continue;
       }
       const sameParent = parentPath(from) === targetDir;
@@ -173,7 +191,9 @@ export async function pasteEntries(targetDir: string): Promise<void> {
         const collision = existing().some(
           (n) => n.toLowerCase() === fileNameFromPath(from).toLowerCase(),
         );
-        const dest = collision ? destForPaste(from, targetDir, existing()) : exact;
+        const dest = collision
+          ? destForPaste(from, targetDir, existing())
+          : exact;
         const result = await renamePath(from, dest, false);
         remapAfterMove(result.from, result.to);
       } else {
@@ -182,7 +202,10 @@ export async function pasteEntries(targetDir: string): Promise<void> {
           await copyPath(from, to, false);
         } catch (err) {
           if (isConflict(err)) {
-            to = destForPaste(from, targetDir, [...existing(), fileNameFromPath(to)]);
+            to = destForPaste(from, targetDir, [
+              ...existing(),
+              fileNameFromPath(to),
+            ]);
             await copyPath(from, to, false);
           } else {
             throw err;
@@ -209,7 +232,10 @@ export async function moveOrCopyEntries(
   await withBusy([...filtered, targetDir], async () => {
     for (const from of filtered) {
       if (parentPath(from) === targetDir && !copy) continue;
-      const existing = childNamesAt(useTreeStore.getState().children, targetDir);
+      const existing = childNamesAt(
+        useTreeStore.getState().children,
+        targetDir,
+      );
       const collision = existing.some(
         (n) => n.toLowerCase() === fileNameFromPath(from).toLowerCase(),
       );
@@ -248,7 +274,10 @@ export async function importOsFiles(
           .showToast(`"${file.name}" exceeds the 10 MB upload limit`, "error");
         continue;
       }
-      const existing = childNamesAt(useTreeStore.getState().children, targetDir);
+      const existing = childNamesAt(
+        useTreeStore.getState().children,
+        targetDir,
+      );
       const name = uniqueChildName(existing, file.name);
       const dest = joinWorkspacePath(targetDir, name);
       const bytes = new Uint8Array(await file.arrayBuffer());
@@ -262,7 +291,10 @@ export function copyRelativePaths(paths: string[]): Promise<void> {
   return navigator.clipboard.writeText(paths.join("\n"));
 }
 
-export function copyAbsolutePaths(paths: string[], projectRoot: string): Promise<void> {
+export function copyAbsolutePaths(
+  paths: string[],
+  projectRoot: string,
+): Promise<void> {
   const isWin = /\\/.test(projectRoot) || /^[A-Za-z]:/.test(projectRoot);
   const sep = isWin ? "\\" : "/";
   const root = projectRoot.replace(/[\\/]+$/, "");

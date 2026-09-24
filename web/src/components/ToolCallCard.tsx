@@ -50,16 +50,23 @@ export function ToolCallCard({
   const input = parseFunctionArguments(call.arguments);
   const status = deriveToolStatus(output, streaming, call.status);
   const rawOutput = output ? functionCallOutputText(output) : "";
-  const activePlanPath = useTurnStore(
-    (s) => (sessionId ? s.byId.get(sessionId)?.activePlanPath : null),
+  const activePlanPath = useTurnStore((s) =>
+    sessionId ? s.byId.get(sessionId)?.activePlanPath : null,
   );
-  const inputSummary = toolTitle(toolName, input, rawOutput, { activePlanPath }).summary;
+  const inputSummary = toolTitle(toolName, input, rawOutput, {
+    activePlanPath,
+  }).summary;
 
   // edit header: file + line-level +N/−M, summed from edits[] (or historical
   // top-level old_string/new_string). Request preview only — not apply status.
   const isEdit = toolName === "edit";
   const editDiff = useMemo(() => {
-    if (!isEdit || !input || typeof input !== "object" || Array.isArray(input)) {
+    if (
+      !isEdit ||
+      !input ||
+      typeof input !== "object" ||
+      Array.isArray(input)
+    ) {
       return null;
     }
     const rec = input as Record<string, unknown>;
@@ -98,8 +105,12 @@ export function ToolCallCard({
   // file-editing tools expose an "Open file" action; more can be added per
   // tool as needed.
   const actions = useMemo(() => {
-    const acts: { id: string; label: string; kind: string; payload: unknown }[] =
-      [];
+    const acts: {
+      id: string;
+      label: string;
+      kind: string;
+      payload: unknown;
+    }[] = [];
     if (
       FILE_TOOLS.has(toolName) &&
       input &&
@@ -133,22 +144,34 @@ export function ToolCallCard({
       icon={<ToolIcon name={toolName} status={status} streaming={streaming} />}
       label={
         <span className="flex min-w-0 flex-1 items-center gap-2">
-          <span className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-xs font-medium text-(--_dk-text-primary)`}>
+          <span
+            className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-xs font-medium text-(--_dk-text-primary)`}
+          >
             {toolName}
           </span>
           {isEdit && editDiff ? (
             <>
-              <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}>
+              <span
+                className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}
+              >
                 {editDiff.filePath ?? "(unknown file)"}
               </span>
-              <span className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-2xs`}>
-                <span className="text-(--_dk-emerald-500)">+{editDiff.added}</span>
-                <span className="text-(--_dk-red-500)">−{editDiff.removed}</span>
+              <span
+                className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-2xs`}
+              >
+                <span className="text-(--_dk-emerald-500)">
+                  +{editDiff.added}
+                </span>
+                <span className="text-(--_dk-red-500)">
+                  −{editDiff.removed}
+                </span>
               </span>
             </>
           ) : (
             inputSummary && (
-              <span className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}>
+              <span
+                className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}
+              >
                 {inputSummary}
               </span>
             )
@@ -177,7 +200,9 @@ export function ToolCallCard({
           )}
           {bashJob && (
             <span className="ml-auto flex shrink-0 items-center gap-2">
-              <span className={`${FOLDCARD_HEADER_TONE} font-mono text-dk-2xs text-(--_dk-text-muted)`}>
+              <span
+                className={`${FOLDCARD_HEADER_TONE} font-mono text-dk-2xs text-(--_dk-text-muted)`}
+              >
                 {formatElapsed(now - bashJob.started_at_ms)}
               </span>
               <button

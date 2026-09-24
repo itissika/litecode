@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { getEnginesDetail, type EnginesDetail } from "../../../../api/workspace";
-import { setEngineDetailPolling, useEngineStore } from "../../../../stores/engineStore";
+import {
+  getEnginesDetail,
+  type EnginesDetail,
+} from "../../../../api/workspace";
+import {
+  setEngineDetailPolling,
+  useEngineStore,
+} from "../../../../stores/engineStore";
 import { EngineView } from "./EngineView";
 import { EnginesSkeleton } from "../../../../components/ui/Skeleton";
 import { SettingsPageShell } from "../shared";
@@ -22,7 +28,9 @@ export function EnginesSection() {
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
   useEffect(() => {
     if (!detail) return;
     const indexStatus = detail.retrieval.index.status;

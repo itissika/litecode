@@ -12,9 +12,9 @@ describe("toolTitle", () => {
         offset: 20,
       }).summary,
     ).toBe("/TODO/ · in web/src");
-    expect(
-      toolTitle("glob", { pattern: "**/*.rs", path: "src" }).summary,
-    ).toBe("**/*.rs · in src");
+    expect(toolTitle("glob", { pattern: "**/*.rs", path: "src" }).summary).toBe(
+      "**/*.rs · in src",
+    );
     expect(
       toolTitle("code_search", {
         query: "terminal status indicator",
@@ -39,7 +39,8 @@ describe("toolTitle", () => {
       }).summary,
     ).toBe("def · src/main.rs:42 run_server");
     expect(
-      toolTitle("lsp", { action: "diagnostics", file_path: "web/src/App.tsx" }).summary,
+      toolTitle("lsp", { action: "diagnostics", file_path: "web/src/App.tsx" })
+        .summary,
     ).toBe("diag · web/src/App.tsx");
   });
 
@@ -67,24 +68,30 @@ describe("toolTitle", () => {
 
   it("uses the command as the bash title (description is optional)", () => {
     expect(
-      toolTitle("bash", { command: "cargo test --workspace", workdir: "web" }).summary,
+      toolTitle("bash", { command: "cargo test --workspace", workdir: "web" })
+        .summary,
     ).toBe("cargo test --workspace");
     // description is not in the bash schema; the command wins even if present.
     expect(
-      toolTitle("bash", { command: "git status", description: "Check repo state" }).summary,
+      toolTitle("bash", {
+        command: "git status",
+        description: "Check repo state",
+      }).summary,
     ).toBe("git status");
   });
 
   it("keeps a deterministic readable fallback", () => {
-    expect(toolTitle("custom", { offset: 0, query: "later" }).summary).toBe('query="later"');
+    expect(toolTitle("custom", { offset: 0, query: "later" }).summary).toBe(
+      'query="later"',
+    );
   });
 
   it("surfaces the MCP server id and first string arg", () => {
-    expect(toolTitle("mcp_filesystem", { path: "/tmp", recursive: true }).summary).toBe(
-      "filesystem · /tmp",
-    );
-    expect(toolTitle("mcp_filesystem", { recursive: true, depth: 2 }).summary).toBe(
-      "filesystem",
-    );
+    expect(
+      toolTitle("mcp_filesystem", { path: "/tmp", recursive: true }).summary,
+    ).toBe("filesystem · /tmp");
+    expect(
+      toolTitle("mcp_filesystem", { recursive: true, depth: 2 }).summary,
+    ).toBe("filesystem");
   });
 });

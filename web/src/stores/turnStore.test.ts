@@ -1,13 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { isCompactCutRow, itemPlainText } from "../api/adapter";
+import { isCompactCutRow } from "../api/adapter";
 import type { SessionSnapshot, TurnFinished, TurnSnapshot } from "../api/types";
 import { useConnectionStore } from "./connectionStore";
 import { useMessageStore } from "./messageStore";
 import { useNotificationStore } from "./notificationStore";
 import { useToastStore } from "./toastStore";
-import { useSessionStore } from "./sessionStore";
-import { EMPTY_SLICE, OPTIMISTIC_USER_SEAL_MS, shouldApplyTurnEnd, useTurnStore } from "./turnStore";
+import {
+  EMPTY_SLICE,
+  OPTIMISTIC_USER_SEAL_MS,
+  shouldApplyTurnEnd,
+  useTurnStore,
+} from "./turnStore";
 
 vi.stubGlobal(
   "window",
@@ -55,7 +59,10 @@ describe("turnStore convergence", () => {
 
   it("starts manual compact only when the server marks the session eligible", () => {
     const sessionId = "s-compact";
-    const sendRpc = vi.fn(async () => ({ accepted: true, operation_id: "op-1" }));
+    const sendRpc = vi.fn(async () => ({
+      accepted: true,
+      operation_id: "op-1",
+    }));
     useConnectionStore.setState({ sendRpc } as never);
     useTurnStore.setState({
       byId: new Map([
@@ -121,7 +128,9 @@ describe("turnStore convergence", () => {
       snapshot: { ...snap, compacting: false },
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(true);
-    expect(useTurnStore.getState().byId.get(sessionId)?.turnPhase).toBe("compacting");
+    expect(useTurnStore.getState().byId.get(sessionId)?.turnPhase).toBe(
+      "compacting",
+    );
 
     useTurnStore.getState().onCompactLifecycle({
       session_id: sessionId,
@@ -188,14 +197,18 @@ describe("turnStore convergence", () => {
         ],
       ]),
     });
-    useMessageStore.getState().applyStreamEvent(sessionId, "t1", 1, {
-      type: "response.reasoning_text.delta",
-      sequence_number: 1,
-      item_id: "rs_half",
-      output_index: 0,
-      content_index: 0,
-      delta: "half",
-    });
+    useMessageStore.getState().onBufferItem(sessionId, {
+      session_id: sessionId,
+      seq: 1,
+      kind: "item/assistant",
+      state: "in_progress",
+      body: {
+        type: "reasoning",
+        id: "rs_half",
+        summary: [],
+        content: [{ type: "reasoning_text", text: "half" }],
+      },
+    } as never);
 
     useTurnStore.getState().onTurnFinished({
       turn_id: "t1",
@@ -243,6 +256,7 @@ describe("turnStore convergence", () => {
         {
           seq: 0,
           kind: "item/user",
+          state: "final",
           body: {
             type: "message",
             role: "user",
@@ -252,6 +266,7 @@ describe("turnStore convergence", () => {
         {
           seq: 1,
           kind: "item/assistant",
+          state: "final",
           body: {
             type: "message",
             role: "assistant",
@@ -287,7 +302,9 @@ describe("turnStore convergence", () => {
   it("applySnapshotTurn with null forces idle", () => {
     const sessionId = "s2";
     useTurnStore.getState().applySnapshotTurn(sessionId, turnSnap("t1"));
-    expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe("running");
+    expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe(
+      "running",
+    );
 
     useTurnStore.getState().applySnapshotTurn(sessionId, null);
     const slice = useTurnStore.getState().byId.get(sessionId)!;
@@ -470,7 +487,9 @@ describe("turnStore convergence", () => {
       ...snapshot(sessionId),
       active_plan_path: null,
     });
-    expect(useTurnStore.getState().byId.get(sessionId)?.activePlanPath).toBeNull();
+    expect(
+      useTurnStore.getState().byId.get(sessionId)?.activePlanPath,
+    ).toBeNull();
   });
 
   it("applySnapshotMeter without todos leaves existing overlay", () => {
@@ -565,7 +584,10 @@ describe("turnStore convergence", () => {
     const sessionId = "s-todo-empty";
     useTurnStore.setState({
       byId: new Map([
-        [sessionId, { ...EMPTY_SLICE, currentTurnId: "t1", runState: "running" }],
+        [
+          sessionId,
+          { ...EMPTY_SLICE, currentTurnId: "t1", runState: "running" },
+        ],
       ]),
     });
     useTurnStore.getState().onTurnEvent({
@@ -588,7 +610,10 @@ describe("turnStore convergence", () => {
     const sessionId = "s-plan-live";
     useTurnStore.setState({
       byId: new Map([
-        [sessionId, { ...EMPTY_SLICE, currentTurnId: "t1", runState: "running" }],
+        [
+          sessionId,
+          { ...EMPTY_SLICE, currentTurnId: "t1", runState: "running" },
+        ],
       ]),
     });
     useTurnStore.getState().onTurnEvent({
@@ -609,9 +634,9 @@ describe("turnStore convergence", () => {
     const sendRpc = vi.fn(async () => ({ started: true }));
     useConnectionStore.setState({ sendRpc } as never);
 
-    expect(useTurnStore.getState().start(sessionId, "execute the plan", true)).toBe(
-      true,
-    );
+    expect(
+      useTurnStore.getState().start(sessionId, "execute the plan", true),
+    ).toBe(true);
     await vi.waitFor(() => {
       expect(sendRpc).toHaveBeenCalledWith(
         "agent/run",
@@ -634,13 +659,21 @@ describe("turnStore convergence", () => {
 
     const started = useTurnStore.getState().start(sessionId, "hello");
     expect(started).toBe(true);
-    expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe("running");
-    expect(useMessageStore.getState().bySession.get(sessionId)!.pendingUser).toBeTruthy();
+    expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe(
+      "running",
+    );
+    expect(
+      useMessageStore.getState().bySession.get(sessionId)!.pendingUser,
+    ).toBeTruthy();
 
     await vi.waitFor(() => {
-      expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe("idle");
+      expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe(
+        "idle",
+      );
     });
-    expect(useMessageStore.getState().bySession.get(sessionId)?.pendingUser).toBeNull();
+    expect(
+      useMessageStore.getState().bySession.get(sessionId)?.pendingUser,
+    ).toBeNull();
   });
 
   it("agent/run ack without buffer/item toasts once the optimistic user stays unsealed", async () => {
@@ -654,19 +687,25 @@ describe("turnStore convergence", () => {
       await Promise.resolve();
 
       const slice = useMessageStore.getState().bySession.get(sessionId)!;
-      expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe("running");
-      expect(slice.pendingUser).toBeTruthy();
-      expect(slice.display.some((row) => row.seq < 0 && row.kind === "item/user")).toBe(
-        true,
+      expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe(
+        "running",
       );
+      expect(slice.pendingUser).toBeTruthy();
+      expect(
+        slice.display.some((row) => row.seq < 0 && row.kind === "item/user"),
+      ).toBe(true);
       expect(useToastStore.getState().toasts).toEqual([]);
       expect(useTurnStore.getState().start(sessionId, "again")).toBe(false);
       expect(sendRpc).toHaveBeenCalledTimes(1);
 
       await vi.advanceTimersByTimeAsync(OPTIMISTIC_USER_SEAL_MS);
 
-      expect(useMessageStore.getState().bySession.get(sessionId)?.pendingUser).toBeNull();
-      expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe("idle");
+      expect(
+        useMessageStore.getState().bySession.get(sessionId)?.pendingUser,
+      ).toBeNull();
+      expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe(
+        "idle",
+      );
       expect(useToastStore.getState().toasts.map((t) => t.message)).toContain(
         "Message was not saved. Try sending again.",
       );
@@ -719,11 +758,15 @@ describe("grantPermission receipt (FE-04)", () => {
 
     useTurnStore.getState().grantPermission(sessionId, true, false);
     // Card is still open while awaiting the receipt.
-    expect(useTurnStore.getState().byId.get(sessionId)!.pendingPermission).not.toBeNull();
+    expect(
+      useTurnStore.getState().byId.get(sessionId)!.pendingPermission,
+    ).not.toBeNull();
 
     resolve({ ok: true });
     await vi.waitFor(() => {
-      expect(useTurnStore.getState().byId.get(sessionId)!.pendingPermission).toBeNull();
+      expect(
+        useTurnStore.getState().byId.get(sessionId)!.pendingPermission,
+      ).toBeNull();
     });
   });
 
@@ -736,13 +779,16 @@ describe("grantPermission receipt (FE-04)", () => {
     pendingSlice(sessionId);
 
     useTurnStore.getState().grantPermission(sessionId, true, false);
-    expect(useTurnStore.getState().byId.get(sessionId)!.pendingPermission).not.toBeNull();
+    expect(
+      useTurnStore.getState().byId.get(sessionId)!.pendingPermission,
+    ).not.toBeNull();
 
     reject(new Error("permission rejected"));
     await vi.waitFor(() => {
       // Card is restored (rollback) and the error is not silently swallowed.
       expect(
-        useTurnStore.getState().byId.get(sessionId)!.pendingPermission?.request_id,
+        useTurnStore.getState().byId.get(sessionId)!.pendingPermission
+          ?.request_id,
       ).toBe("req-1");
     });
   });
@@ -788,23 +834,31 @@ describe("grantPermission receipt (FE-04)", () => {
     const slice = useTurnStore.getState().byId.get(sessionId)!;
     expect(slice.runState).toBe("running");
     expect(slice.currentTurnId).toBe("t-idle");
-    const rows = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
+    const rows =
+      useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
     expect(rows).toHaveLength(0);
-    expect(useMessageStore.getState().bySession.get(sessionId)?.pendingUser).toBeNull();
+    expect(
+      useMessageStore.getState().bySession.get(sessionId)?.pendingUser,
+    ).toBeNull();
   });
 
   it("onTurnStarted does not duplicate an optimistic start() user row", () => {
     const sessionId = "s-human-run";
-    expect(useTurnStore.getState().start(sessionId, "hello from composer")).toBe(true);
+    expect(
+      useTurnStore.getState().start(sessionId, "hello from composer"),
+    ).toBe(true);
     useTurnStore.getState().onTurnStarted({
       session_id: sessionId,
       turn_id: "t-human",
       input: "hello from composer",
       step_max: 5,
     });
-    const rows = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
+    const rows =
+      useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
     expect(rows.filter((m) => m.seq < 0)).toHaveLength(0);
-    expect(useMessageStore.getState().bySession.get(sessionId)?.pendingUser).toBeTruthy();
+    expect(
+      useMessageStore.getState().bySession.get(sessionId)?.pendingUser,
+    ).toBeTruthy();
   });
 
   it("onTurnStarted does not treat a compact checkpoint as a user message", () => {
@@ -814,7 +868,12 @@ describe("grantPermission receipt (FE-04)", () => {
       from_seq: 0,
       to_seq: 1,
       events: [
-        { seq: 0, kind: "compacted", body: { summary: "rolled-up", from: 0, to: 0 } },
+        {
+          seq: 0,
+          kind: "compacted",
+          state: "final",
+          body: { summary: "rolled-up", from: 0, to: 0 },
+        },
       ],
     });
     useTurnStore.getState().onTurnStarted({
@@ -823,135 +882,12 @@ describe("grantPermission receipt (FE-04)", () => {
       input: "rolled-up",
       step_max: 5,
     });
-    const rows = useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
+    const rows =
+      useMessageStore.getState().bySession.get(sessionId)?.messages ?? [];
     expect(rows).toHaveLength(1);
     expect(isCompactCutRow(rows[0]!)).toBe(true);
-    expect(useMessageStore.getState().bySession.get(sessionId)?.pendingUser).toBeNull();
-  });
-});
-
-describe("queued stream deltas vs snapshot", () => {
-  const callbacks: Array<{ id: number; fn: FrameRequestCallback }> = [];
-  const cancelled = new Set<number>();
-  let nextId = 0;
-
-  function flushQueuedFrames(): void {
-    const pending = [...callbacks];
-    callbacks.length = 0;
-    for (const { id, fn } of pending) {
-      if (!cancelled.has(id)) fn(id);
-    }
-  }
-
-  beforeEach(() => {
-    callbacks.length = 0;
-    cancelled.clear();
-    nextId = 0;
-    vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => {
-      nextId += 1;
-      const id = nextId;
-      callbacks.push({ id, fn });
-      return id;
-    });
-    vi.stubGlobal("cancelAnimationFrame", (id: number) => {
-      cancelled.add(id);
-    });
-    useTurnStore.setState({ byId: new Map() });
-    useMessageStore.setState({ bySession: new Map() });
-    useConnectionStore.setState({
-      sendRpc: vi.fn(async () => ({
-        session_id: "s-raf",
-        from_seq: 0,
-        to_seq: 0,
-        events: [],
-      })),
-    } as never);
-  });
-
-  function seedLive(sessionId: string, turnId: string): void {
-    useTurnStore.getState().applySnapshotTurn(sessionId, {
-      turn_id: turnId,
-      phase: "streaming",
-      step: 1,
-      step_max: 5,
-      started_at_ms: 1,
-    });
-    useMessageStore.getState().onBufferItem(sessionId, {
-      session_id: sessionId,
-      seq: 1,
-      kind: "item/assistant",
-      body: {
-        type: "message",
-        role: "assistant",
-        id: "msg_live",
-        status: "in_progress",
-        content: [{ type: "output_text", text: "hello", annotations: [] }],
-      },
-    });
-  }
-
-  function enqueueDelta(sessionId: string, turnId: string, delta: string): void {
-    useTurnStore.getState().onTurnEvent({
-      session_id: sessionId,
-      turn_id: turnId,
-      event: {
-        type: "stream_event",
-        event: {
-          type: "response.output_text.delta",
-          sequence_number: 1,
-          item_id: "msg_live",
-          output_index: 0,
-          content_index: 0,
-          delta,
-        },
-      },
-    });
-  }
-
-  it("does not flush stale rAF deltas after a fresh-transcript snapshot", () => {
-    const sid = "s-raf-stale";
-    seedLive(sid, "t1");
-    enqueueDelta(sid, "t1", " stale");
-    expect(itemPlainText(useMessageStore.getState().bySession.get(sid)!.messages[0]!.body as import("../api/types").Item)).toBe("hello");
-
-    useSessionStore.getState().applySnapshot({
-      session_id: sid,
-      project: "/p",
-      agent_id: "default",
-      api_model_id: "m",
-      buffer: { last_seq: -1, next_seq: 0, revision: 1 },
-      turn: {
-        turn_id: "t1",
-        phase: "streaming",
-        step: 1,
-        step_max: 5,
-        started_at_ms: 1,
-      },
-      context_window: 0,
-    });
-
-    flushQueuedFrames();
-    const row = useMessageStore.getState().bySession.get(sid)!.messages[0];
-    expect(row ? itemPlainText(row.body as import("../api/types").Item) : "").not.toContain("stale");
-  });
-
-  it("still flushes in-progress deltas when snapshot keeps the existing window", () => {
-    const sid = "s-raf-keep";
-    seedLive(sid, "t1");
-    enqueueDelta(sid, "t1", " there");
-
-    useSessionStore.getState().applySnapshot({
-      session_id: sid,
-      project: "/p",
-      agent_id: "default",
-      api_model_id: "m",
-      buffer: { last_seq: 1, next_seq: 2, revision: 1 },
-      turn: null,
-      compacting: false,
-      context_window: 0,
-    });
-
-    flushQueuedFrames();
-    expect(itemPlainText(useMessageStore.getState().bySession.get(sid)!.messages[0]!.body as import("../api/types").Item)).toBe("hello there");
+    expect(
+      useMessageStore.getState().bySession.get(sessionId)?.pendingUser,
+    ).toBeNull();
   });
 });

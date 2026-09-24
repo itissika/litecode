@@ -2,7 +2,10 @@ import type * as Monaco from "monaco-editor";
 
 import type { LspResult } from "../api/types";
 import type { WireEnvelope } from "../api/agentWs";
-import { useConnectionStore, attachSiblingStores } from "../stores/connectionStore";
+import {
+  useConnectionStore,
+  attachSiblingStores,
+} from "../stores/connectionStore";
 import { useEditorStore } from "../stores/editorStore";
 import { useEngineStore } from "../stores/engineStore";
 
@@ -41,7 +44,12 @@ export type LspTextEdit = {
   text: string;
 };
 
-function rememberApply(uri: string, text: string, rev: unknown, version?: unknown): void {
+function rememberApply(
+  uri: string,
+  text: string,
+  rev: unknown,
+  version?: unknown,
+): void {
   lastAppliedTextByUri.set(uri, text);
   if (typeof rev === "number") {
     lastHubRevByUri.set(uri, rev);
@@ -200,7 +208,11 @@ const INLAY_DEBOUNCE_MS = 250;
 
 function isCanceledError(err: unknown): boolean {
   if (!err) return false;
-  if (typeof err === "object" && "name" in err && (err as { name?: string }).name === "Canceled") {
+  if (
+    typeof err === "object" &&
+    "name" in err &&
+    (err as { name?: string }).name === "Canceled"
+  ) {
     return true;
   }
   const msg = err instanceof Error ? err.message : String(err);
@@ -213,7 +225,10 @@ function canceledError(): Error {
   return err;
 }
 
-function sleepCancellable(ms: number, token?: Monaco.CancellationToken): Promise<void> {
+function sleepCancellable(
+  ms: number,
+  token?: Monaco.CancellationToken,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     if (token?.isCancellationRequested) {
       reject(canceledError());
@@ -255,11 +270,13 @@ function sendLsp(
       cancel();
       return;
     }
-    useConnectionStore.getState().sendRpc<{ result: unknown }>("lsp/request", {
-      method,
-      params,
-      rpc_id: rpcId,
-    })
+    useConnectionStore
+      .getState()
+      .sendRpc<{ result: unknown }>("lsp/request", {
+        method,
+        params,
+        rpc_id: rpcId,
+      })
       .then((response) => {
         sub?.dispose();
         const waiter = pending.get(id);
@@ -276,7 +293,13 @@ function sendLsp(
         const waiter = pending.get(id);
         if (!waiter) return;
         pending.delete(id);
-        waiter.reject(isCanceledError(e) ? canceledError() : e instanceof Error ? e : new Error(String(e)));
+        waiter.reject(
+          isCanceledError(e)
+            ? canceledError()
+            : e instanceof Error
+              ? e
+              : new Error(String(e)),
+        );
       });
     setTimeout(() => {
       if (!pending.has(id)) return;
@@ -309,7 +332,9 @@ function assertNoVerbatim(p: string, label: string): void {
     raw.includes(slashQ) ||
     raw.startsWith(`//${"?"}/`)
   ) {
-    throw new Error(`${label} is not Litecode Absolute Path (LAP); refused verbatim form: ${p}`);
+    throw new Error(
+      `${label} is not Litecode Absolute Path (LAP); refused verbatim form: ${p}`,
+    );
   }
 }
 
@@ -423,8 +448,7 @@ function parseLocation(
 
   const rel = relPathFromLspUri(uri, projectRoot);
   const modelUri =
-    sourceModel &&
-    rel === relPathFromModel(sourceModel, projectRoot)
+    sourceModel && rel === relPathFromModel(sourceModel, projectRoot)
       ? sourceModel.uri
       : monacoUriForRelPath(monaco, rel);
   return { uri: modelUri, range };
@@ -449,7 +473,8 @@ function parseHover(result: unknown): {
   contents: Monaco.IMarkdownString[];
   range: Monaco.IRange | null;
 } {
-  if (!result || typeof result !== "object") return { contents: [], range: null };
+  if (!result || typeof result !== "object")
+    return { contents: [], range: null };
   const raw = result as { contents?: unknown; range?: unknown };
   const range = lspRangeToMonaco(raw.range);
   const contents = raw.contents;
@@ -506,7 +531,8 @@ function applyRawDiagnostics(
     const startLine = (range.start.line ?? 0) + 1;
     const startCol = (range.start.character ?? 0) + 1;
     const endLine = (range.end?.line ?? range.start.line ?? 0) + 1;
-    const endCol = (range.end?.character ?? (range.start.character ?? 0) + 1) + 1;
+    const endCol =
+      (range.end?.character ?? (range.start.character ?? 0) + 1) + 1;
     const sev = d.severity ?? 1;
     const severity =
       sev === 1
@@ -536,13 +562,18 @@ export function handleLspDiagnosticsNotification(params: {
   if (!workspaceLsp) return;
   const uri = typeof params.uri === "string" ? params.uri : "";
   if (!uri) return;
-  const publishedVersion = typeof params.version === "number" ? params.version : undefined;
+  const publishedVersion =
+    typeof params.version === "number" ? params.version : undefined;
   const sentKey = uriKeyInMap(lastLspVersionByUri, uri);
   const sentVersion = sentKey ? lastLspVersionByUri.get(sentKey) : undefined;
   if (!shouldApplyPublishedDiagnostics(publishedVersion, sentVersion)) {
     return;
   }
-  const model = findModelForLspUri(workspaceLsp.monaco, workspaceLsp.project, uri);
+  const model = findModelForLspUri(
+    workspaceLsp.monaco,
+    workspaceLsp.project,
+    uri,
+  );
   if (!model) return;
   applyRawDiagnostics(workspaceLsp.monaco, model, params.diagnostics ?? []);
 }
@@ -568,10 +599,15 @@ function findModelForLspUri(
 }
 
 function urisMatch(a: string, b: string): boolean {
-  return a.replace(/\\/g, "/").toLowerCase() === b.replace(/\\/g, "/").toLowerCase();
+  return (
+    a.replace(/\\/g, "/").toLowerCase() === b.replace(/\\/g, "/").toLowerCase()
+  );
 }
 
-function queueContentChanges(uri: string, changes: readonly Monaco.editor.IModelContentChange[]): void {
+function queueContentChanges(
+  uri: string,
+  changes: readonly Monaco.editor.IModelContentChange[],
+): void {
   if (changes.length === 0) return;
   const pending = pendingContentChangesByUri.get(uri) ?? [];
   for (const change of changes) {
@@ -609,7 +645,11 @@ async function flushDidChange(
   const text = model.getValue();
   const changes = pendingContentChangesByUri.get(uri) ?? [];
   pendingContentChangesByUri.delete(uri);
-  if (lastAppliedTextByUri.get(uri) === text && isDocServerReady(uri) && changes.length === 0) {
+  if (
+    lastAppliedTextByUri.get(uri) === text &&
+    isDocServerReady(uri) &&
+    changes.length === 0
+  ) {
     return {
       rev: lastHubRevByUri.get(uri) ?? null,
       version: lastLspVersionByUri.get(uri) ?? null,
@@ -761,7 +801,9 @@ function parseCompletionItems(
 ): Monaco.languages.CompletionList {
   const itemsRaw = Array.isArray(result)
     ? result
-    : result && typeof result === "object" && Array.isArray((result as { items?: unknown }).items)
+    : result &&
+        typeof result === "object" &&
+        Array.isArray((result as { items?: unknown }).items)
       ? (result as { items: unknown[] }).items
       : [];
   const word = model.getWordUntilPosition(position);
@@ -811,7 +853,10 @@ function parseCompletionItems(
   return { suggestions, incomplete };
 }
 
-function lspPosition(position: Monaco.IPosition): { line: number; character: number } {
+function lspPosition(position: Monaco.IPosition): {
+  line: number;
+  character: number;
+} {
   return { line: position.lineNumber - 1, character: position.column - 1 };
 }
 
@@ -855,7 +900,10 @@ function parseSignatureHelp(
       documentation: markupDoc(sig.documentation),
       parameters: (sig.parameters ?? []).flatMap((p) => {
         if (!p || typeof p !== "object") return [];
-        const param = p as { label?: string | [number, number]; documentation?: unknown };
+        const param = p as {
+          label?: string | [number, number];
+          documentation?: unknown;
+        };
         if (param.label === undefined) return [];
         return [
           {
@@ -887,14 +935,15 @@ function parseDocumentHighlights(
     const h = item as { range?: unknown; kind?: number };
     const range = lspRangeToMonaco(h.range);
     if (!range) continue;
-    const kind =
-      h.kind === 2 ? K.Read : h.kind === 3 ? K.Write : K.Text;
+    const kind = h.kind === 2 ? K.Read : h.kind === 3 ? K.Write : K.Text;
     out.push({ range, kind });
   }
   return out;
 }
 
-function parseSelectionRangeChains(result: unknown): Monaco.languages.SelectionRange[][] {
+function parseSelectionRangeChains(
+  result: unknown,
+): Monaco.languages.SelectionRange[][] {
   if (!Array.isArray(result)) return [];
   return result.map((node) => {
     const chain: Monaco.languages.SelectionRange[] = [];
@@ -1085,7 +1134,8 @@ export function registerWorkspaceLsp(
         { token },
       );
       if (res.error) {
-        if (!isCanceledError(res.error.message)) warnLsp(method, res.error.message);
+        if (!isCanceledError(res.error.message))
+          warnLsp(method, res.error.message);
         return null;
       }
       if (res.result === null || res.result === undefined) return null;
@@ -1124,9 +1174,14 @@ export function registerWorkspaceLsp(
 
   const referenceProvider: Monaco.languages.ReferenceProvider = {
     provideReferences: async (model, position) => {
-      const got = await requestAtPosition("textDocument/references", model, position, {
-        context: { includeDeclaration: true },
-      });
+      const got = await requestAtPosition(
+        "textDocument/references",
+        model,
+        position,
+        {
+          context: { includeDeclaration: true },
+        },
+      );
       if (!got) return [];
       return parseLocations(monaco, got.result, got.projectRoot, model);
     },
@@ -1203,17 +1258,26 @@ export function registerWorkspaceLsp(
     },
   };
 
-  const documentHighlightProvider: Monaco.languages.DocumentHighlightProvider = {
-    provideDocumentHighlights: async (model, position) => {
-      const got = await requestAtPosition("textDocument/documentHighlight", model, position);
-      if (!got) return [];
-      return parseDocumentHighlights(monaco, got.result);
-    },
-  };
+  const documentHighlightProvider: Monaco.languages.DocumentHighlightProvider =
+    {
+      provideDocumentHighlights: async (model, position) => {
+        const got = await requestAtPosition(
+          "textDocument/documentHighlight",
+          model,
+          position,
+        );
+        if (!got) return [];
+        return parseDocumentHighlights(monaco, got.result);
+      },
+    };
 
   const linkedEditingProvider: Monaco.languages.LinkedEditingRangeProvider = {
     provideLinkedEditingRanges: async (model, position) => {
-      const got = await requestAtPosition("textDocument/linkedEditingRange", model, position);
+      const got = await requestAtPosition(
+        "textDocument/linkedEditingRange",
+        model,
+        position,
+      );
       if (!got) return null;
       return parseLinkedEditing(got.result);
     },
@@ -1250,12 +1314,17 @@ export function registerWorkspaceLsp(
     let tokenTypes = DEFAULT_TOKEN_TYPES;
     let tokenModifiers = DEFAULT_TOKEN_MODIFIERS;
     try {
-      const res = await sendLsp("litecode/serverCapabilities", { uri: fileUri });
+      const res = await sendLsp("litecode/serverCapabilities", {
+        uri: fileUri,
+      });
       const raw =
         res.result && typeof res.result === "object"
           ? (res.result as { tokenTypes?: unknown; tokenModifiers?: unknown })
           : {};
-      if (Array.isArray(raw.tokenTypes) && raw.tokenTypes.every((t) => typeof t === "string")) {
+      if (
+        Array.isArray(raw.tokenTypes) &&
+        raw.tokenTypes.every((t) => typeof t === "string")
+      ) {
         tokenTypes = raw.tokenTypes as string[];
       }
       if (
@@ -1279,7 +1348,8 @@ export function registerWorkspaceLsp(
         const uri = lspFileUri(model, projectRoot);
         if (!uri) throw canceledError();
         const ack = await flushDidChange(monaco, model, uri);
-        if (!ack?.serverReady || token.isCancellationRequested) throw canceledError();
+        if (!ack?.serverReady || token.isCancellationRequested)
+          throw canceledError();
         try {
           const res = await sendLsp(
             "textDocument/semanticTokens/full",
@@ -1302,7 +1372,10 @@ export function registerWorkspaceLsp(
     const parts: Monaco.IDisposable[] = [];
     for (const langId of LSP_LANGUAGES) {
       parts.push(
-        monaco.languages.registerDocumentSemanticTokensProvider(langId, provider),
+        monaco.languages.registerDocumentSemanticTokensProvider(
+          langId,
+          provider,
+        ),
       );
     }
     semanticDisposable = {
@@ -1367,7 +1440,11 @@ export function registerWorkspaceLsp(
         if (!ack?.serverReady || token.isCancellationRequested) {
           return { lenses: [], dispose: () => {} };
         }
-        const res = await sendLsp("textDocument/codeLens", { textDocument: { uri } }, { token });
+        const res = await sendLsp(
+          "textDocument/codeLens",
+          { textDocument: { uri } },
+          { token },
+        );
         if (res.error || token.isCancellationRequested) {
           return { lenses: [], dispose: () => {} };
         }
@@ -1383,16 +1460,37 @@ export function registerWorkspaceLsp(
   for (const langId of LSP_LANGUAGES) {
     disposables.push(
       monaco.languages.registerDefinitionProvider(langId, definitionProvider),
-      monaco.languages.registerTypeDefinitionProvider(langId, typeDefinitionProvider),
-      monaco.languages.registerImplementationProvider(langId, implementationProvider),
+      monaco.languages.registerTypeDefinitionProvider(
+        langId,
+        typeDefinitionProvider,
+      ),
+      monaco.languages.registerImplementationProvider(
+        langId,
+        implementationProvider,
+      ),
       monaco.languages.registerDeclarationProvider(langId, declarationProvider),
       monaco.languages.registerReferenceProvider(langId, referenceProvider),
       monaco.languages.registerHoverProvider(langId, hoverProvider),
-      monaco.languages.registerCompletionItemProvider(langId, completionProvider),
-      monaco.languages.registerSignatureHelpProvider(langId, signatureHelpProvider),
-      monaco.languages.registerDocumentHighlightProvider(langId, documentHighlightProvider),
-      monaco.languages.registerLinkedEditingRangeProvider(langId, linkedEditingProvider),
-      monaco.languages.registerSelectionRangeProvider(langId, selectionRangeProvider),
+      monaco.languages.registerCompletionItemProvider(
+        langId,
+        completionProvider,
+      ),
+      monaco.languages.registerSignatureHelpProvider(
+        langId,
+        signatureHelpProvider,
+      ),
+      monaco.languages.registerDocumentHighlightProvider(
+        langId,
+        documentHighlightProvider,
+      ),
+      monaco.languages.registerLinkedEditingRangeProvider(
+        langId,
+        linkedEditingProvider,
+      ),
+      monaco.languages.registerSelectionRangeProvider(
+        langId,
+        selectionRangeProvider,
+      ),
       monaco.languages.registerInlayHintsProvider(langId, inlayHintsProvider),
       monaco.languages.registerCodeLensProvider(langId, codeLensProvider),
     );
@@ -1402,7 +1500,9 @@ export function registerWorkspaceLsp(
     monaco.editor.registerEditorOpener({
       openCodeEditor: async (_input, resource, selectionOrPosition) => {
         const projectRoot = getProjectRoot();
-        const focused = monaco.editor.getEditors().find((ed) => ed.hasTextFocus());
+        const focused = monaco.editor
+          .getEditors()
+          .find((ed) => ed.hasTextFocus());
         if (focused && projectRoot) {
           const from = jumpFromEditor(focused, projectRoot);
           if (from) useEditorStore.getState().pushJump(from);
@@ -1520,11 +1620,15 @@ export function bindEditorLsp(
 
   editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.LeftArrow, () => {
     const loc = useEditorStore.getState().goJumpBack(jumpHere() ?? undefined);
-    if (loc) void useEditorStore.getState().openFileAt(loc.path, loc.line, loc.column);
+    if (loc)
+      void useEditorStore.getState().openFileAt(loc.path, loc.line, loc.column);
   });
   editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.RightArrow, () => {
-    const loc = useEditorStore.getState().goJumpForward(jumpHere() ?? undefined);
-    if (loc) void useEditorStore.getState().openFileAt(loc.path, loc.line, loc.column);
+    const loc = useEditorStore
+      .getState()
+      .goJumpForward(jumpHere() ?? undefined);
+    if (loc)
+      void useEditorStore.getState().openFileAt(loc.path, loc.line, loc.column);
   });
 
   return {

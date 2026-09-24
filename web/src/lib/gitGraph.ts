@@ -52,7 +52,11 @@ export function graphWidth(laneCount: number, maxLanes: number): number {
 }
 
 export function laneX(lane: number, maxLanes: number): number {
-  return GIT_GRAPH_PAD_X + clipLane(lane, maxLanes) * GIT_GRAPH_LANE_WIDTH + GIT_GRAPH_LANE_WIDTH / 2;
+  return (
+    GIT_GRAPH_PAD_X +
+    clipLane(lane, maxLanes) * GIT_GRAPH_LANE_WIDTH +
+    GIT_GRAPH_LANE_WIDTH / 2
+  );
 }
 
 /** Newest-first topo log → column assignment (VS Code-style lanes). */

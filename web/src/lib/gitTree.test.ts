@@ -31,7 +31,12 @@ describe("buildGitTree", () => {
 
   it("skips collapsed directories in visible file ids", () => {
     const tree = buildGitTree([file("src/a.ts"), file("root.ts")]);
-    const ids = visibleFileIds(tree, "changes", new Set(["src"]), (s, p) => `${s}:${p}`);
+    const ids = visibleFileIds(
+      tree,
+      "changes",
+      new Set(["src"]),
+      (s, p) => `${s}:${p}`,
+    );
     expect(ids).toEqual(["changes:root.ts"]);
   });
 });

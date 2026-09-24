@@ -1,4 +1,10 @@
-import { type FormEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 
 import type { ContextMode, ThinkingTier } from "../api/types";
@@ -8,7 +14,11 @@ import { useSessionStore } from "../stores/sessionStore";
 import { useToastStore } from "../stores/toastStore";
 import { useTurnStore } from "../stores/turnStore";
 import { ContextUsageRing } from "./ContextUsageRing";
-import { Dropdown, dropdownItemClass, dropdownItemActiveClass } from "./ui/Dropdown";
+import {
+  Dropdown,
+  dropdownItemClass,
+  dropdownItemActiveClass,
+} from "./ui/Dropdown";
 import { ModelSwitcher } from "./ModelSwitcher";
 import { NotificationBell } from "./NotificationBell";
 import { ShapeBlur } from "./ShapeBlur";
@@ -100,37 +110,39 @@ export function ThinkSlider({
   ];
   return (
     <LayoutGroup id={`think-${sessionId}`}>
-    <div className="flex w-[124px] shrink-0 justify-between">
-      {segments.map(({ label, tier }) => {
-        const selected = value === tier;
-        return (
-          <button
-            key={tier}
-            type="button"
-            disabled={disabled}
-            onClick={() => onChange(tier)}
-            className={`group ${CTRL_BASE} relative ${
-              selected ? "text-(--_dk-accent-hover) hover:text-(--_dk-accent-hover)" : ""
-            }`}
-          >
-            {selected ? (
-              <motion.span
-                layoutId={`think-pill-${sessionId}`}
-                className="absolute inset-0 rounded-md bg-(--_dk-accent-halo)"
-                transition={
-                  reduceMotion
-                    ? { duration: 0 }
-                    : { type: "spring", stiffness: 420, damping: 34 }
-                }
-              />
-            ) : (
-              <span className="pointer-events-none absolute inset-0 rounded-md border border-transparent group-hover:border-(--_dk-line)" />
-            )}
-            <span className="relative z-10">{label}</span>
-          </button>
-        );
-      })}
-    </div>
+      <div className="flex w-[124px] shrink-0 justify-between">
+        {segments.map(({ label, tier }) => {
+          const selected = value === tier;
+          return (
+            <button
+              key={tier}
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange(tier)}
+              className={`group ${CTRL_BASE} relative ${
+                selected
+                  ? "text-(--_dk-accent-hover) hover:text-(--_dk-accent-hover)"
+                  : ""
+              }`}
+            >
+              {selected ? (
+                <motion.span
+                  layoutId={`think-pill-${sessionId}`}
+                  className="absolute inset-0 rounded-md bg-(--_dk-accent-halo)"
+                  transition={
+                    reduceMotion
+                      ? { duration: 0 }
+                      : { type: "spring", stiffness: 420, damping: 34 }
+                  }
+                />
+              ) : (
+                <span className="pointer-events-none absolute inset-0 rounded-md border border-transparent group-hover:border-(--_dk-line)" />
+              )}
+              <span className="relative z-10">{label}</span>
+            </button>
+          );
+        })}
+      </div>
     </LayoutGroup>
   );
 }
@@ -160,7 +172,9 @@ export function ContextModeToggle({
       {isMax ? (
         <span className="absolute inset-0 rounded-md bg-(--_dk-accent-halo)" />
       ) : null}
-      <span className="relative z-10 whitespace-nowrap">{isMax ? "Max" : "Default"}</span>
+      <span className="relative z-10 whitespace-nowrap">
+        {isMax ? "Max" : "Default"}
+      </span>
     </button>
   );
 }
@@ -270,7 +284,8 @@ export function AgentChatInput({
       rafRef.current = null;
     }
     const el = e.currentTarget as HTMLElement;
-    if (el.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    if (el.hasPointerCapture?.(e.pointerId))
+      el.releasePointerCapture(e.pointerId);
     document.body.style.userSelect = "";
     document.body.style.cursor = "";
   };
@@ -285,7 +300,8 @@ export function AgentChatInput({
 
   const isRunning = runState === "running" || runState === "cancelling";
   const hasModel = Boolean(sessionModelId);
-  const connBlocked = connection !== "connected" || isRunning || compacting || replaying;
+  const connBlocked =
+    connection !== "connected" || isRunning || compacting || replaying;
   const isBlocked = connBlocked || !hasModel;
 
   const submit = (e?: FormEvent) => {
@@ -372,7 +388,7 @@ export function AgentChatInput({
   return (
     <form
       onSubmit={submit}
-      className={`${composerCardClass} focus-within:border-(--_dk-line-visible)`}
+      className={`${composerCardClass} shrink-0 focus-within:border-(--_dk-line-visible)`}
     >
       <div className="flex min-w-0 items-center gap-1 overflow-hidden px-1.5 py-1">
         <div className="flex min-w-0 flex-1 items-center gap-1">
@@ -493,12 +509,33 @@ export function AgentChatInput({
               title="Cancel"
             >
               {runState === "cancelling" ? (
-                <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.25" />
-                  <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                <svg
+                  className="h-4 w-4 animate-spin"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                >
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    opacity="0.25"
+                  />
+                  <path
+                    d="M12 2a10 10 0 0 1 10 10"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                  />
                 </svg>
               ) : (
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 12 12"
+                  fill="currentColor"
+                >
                   <rect x="1" y="1" width="10" height="10" rx="1.5" />
                 </svg>
               )}
@@ -511,7 +548,16 @@ export function AgentChatInput({
               className={`${actionButtonGlass} flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:brightness-100`}
               title="Send"
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <path d="M5 12h14M12 5l7 7-7 7" />
               </svg>
             </button>

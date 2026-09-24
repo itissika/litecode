@@ -1,4 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -100,11 +107,16 @@ describe("EngineView LSP install poll", () => {
     probeLspServers.mockResolvedValue([]);
     const detail = detailFixture();
     detail.retrieval.embed_device = "cpu-ort";
-    const { rerender } = render(<EngineView detail={detail} onChanged={() => {}} />);
+    const { rerender } = render(
+      <EngineView detail={detail} onChanged={() => {}} />,
+    );
     expect(screen.queryByText("cuda")).toBeNull();
     rerender(
       <EngineView
-        detail={{ ...detail, retrieval: { ...detail.retrieval, embed_device: "cuda-ort" } }}
+        detail={{
+          ...detail,
+          retrieval: { ...detail.retrieval, embed_device: "cuda-ort" },
+        }}
         onChanged={() => {}}
       />,
     );
@@ -242,7 +254,9 @@ describe("EngineView LSP persist vs stale detail", () => {
     );
     const lsp = screen.getByText("Language servers").closest("section");
     expect(lsp).toBeTruthy();
-    const stop = within(lsp as HTMLElement).getByRole("button", { name: "Stop engine" });
+    const stop = within(lsp as HTMLElement).getByRole("button", {
+      name: "Stop engine",
+    });
     expect(stop).toBeTruthy();
     expect((stop as HTMLButtonElement).disabled).toBe(false);
 
@@ -254,7 +268,9 @@ describe("EngineView LSP persist vs stale detail", () => {
         }),
       );
     });
-    fireEvent.click(within(lsp as HTMLElement).getByRole("button", { name: "Start engine" }));
+    fireEvent.click(
+      within(lsp as HTMLElement).getByRole("button", { name: "Start engine" }),
+    );
     await waitFor(() => {
       expect(saveEngines).toHaveBeenCalledTimes(2);
       expect(saveEngines).toHaveBeenLastCalledWith(

@@ -90,8 +90,12 @@ export function NotificationBell({ sessionId }: { sessionId: string }) {
                   key={it.id}
                   className={`flex items-start gap-2 border-l-2 px-3 py-2 pr-3 text-[11px] leading-snug ${KIND_BORDER[it.kind]}`}
                 >
-                  <span className={`mt-[3px] h-1.5 w-1.5 shrink-0 rounded-full ${KIND_DOT[it.kind]}`} />
-                  <span className="text-(--_dk-text-secondary)">{it.message}</span>
+                  <span
+                    className={`mt-[3px] h-1.5 w-1.5 shrink-0 rounded-full ${KIND_DOT[it.kind]}`}
+                  />
+                  <span className="text-(--_dk-text-secondary)">
+                    {it.message}
+                  </span>
                 </div>
               ))
             )}

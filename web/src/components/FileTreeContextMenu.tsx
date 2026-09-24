@@ -18,7 +18,12 @@ interface FileTreeContextMenuProps {
   onClose: () => void;
 }
 
-export function FileTreeContextMenu({ x, y, items, onClose }: FileTreeContextMenuProps) {
+export function FileTreeContextMenu({
+  x,
+  y,
+  items,
+  onClose,
+}: FileTreeContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x, top: y });
 
@@ -79,7 +84,9 @@ export function FileTreeContextMenu({ x, y, items, onClose }: FileTreeContextMen
           >
             <span>{item.label}</span>
             {item.shortcut && (
-              <span className="text-[10px] text-(--_dk-text-disabled)">{item.shortcut}</span>
+              <span className="text-[10px] text-(--_dk-text-disabled)">
+                {item.shortcut}
+              </span>
             )}
           </button>
         ),

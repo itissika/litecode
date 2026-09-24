@@ -1,4 +1,10 @@
-import { useRef, useState, useCallback, useEffect, useLayoutEffect } from "react";
+import {
+  useRef,
+  useState,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+} from "react";
 
 interface FloatingDialogProps {
   visible: boolean;
@@ -12,7 +18,14 @@ interface FloatingDialogProps {
 const MIN_W = 300;
 const MIN_H = 200;
 
-export function FloatingDialog({ visible, title = "Dialog", onClose, children, defaultWidth = 480, defaultHeight = 320 }: FloatingDialogProps) {
+export function FloatingDialog({
+  visible,
+  title = "Dialog",
+  onClose,
+  children,
+  defaultWidth = 480,
+  defaultHeight = 320,
+}: FloatingDialogProps) {
   const [pos, setPos] = useState({ x: 120, y: 60 });
   const [size, setSize] = useState({ w: defaultWidth, h: defaultHeight });
   const containerRef = useRef<HTMLDivElement>(null);
@@ -27,8 +40,18 @@ export function FloatingDialog({ visible, title = "Dialog", onClose, children, d
   // open and whenever the size changes (open / viewport resize / manual drag).
   const ratioRef = useRef({ rw: 0, rh: 0 });
 
-  const dragState = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
-  const resizeState = useRef<{ startX: number; startY: number; origW: number; origH: number } | null>(null);
+  const dragState = useRef<{
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+  } | null>(null);
+  const resizeState = useRef<{
+    startX: number;
+    startY: number;
+    origW: number;
+    origH: number;
+  } | null>(null);
 
   const getBounds = useCallback(() => {
     const el = containerRef.current?.parentElement;
@@ -125,14 +148,18 @@ export function FloatingDialog({ visible, title = "Dialog", onClose, children, d
 
     const titlebar = el.querySelector("[data-drag-handle]");
     titlebar?.addEventListener("mousedown", onDragStart as EventListener);
-    return () => titlebar?.removeEventListener("mousedown", onDragStart as EventListener);
+    return () =>
+      titlebar?.removeEventListener("mousedown", onDragStart as EventListener);
   }, [visible]);
 
   useEffect(() => {
     const onMove = (ev: MouseEvent) => {
       const d = resizeState.current;
       if (!d) return;
-      const newSize = clampSize(d.origW + (ev.clientX - d.startX), d.origH + (ev.clientY - d.startY));
+      const newSize = clampSize(
+        d.origW + (ev.clientX - d.startX),
+        d.origH + (ev.clientY - d.startY),
+      );
       setSize(newSize);
       const b = getBounds();
       ratioRef.current = { rw: newSize.w / b.w, rh: newSize.h / b.h };
@@ -162,7 +189,8 @@ export function FloatingDialog({ visible, title = "Dialog", onClose, children, d
 
     const handle = el.querySelector("[data-resize-handle]");
     handle?.addEventListener("mousedown", onResizeStart as EventListener);
-    return () => handle?.removeEventListener("mousedown", onResizeStart as EventListener);
+    return () =>
+      handle?.removeEventListener("mousedown", onResizeStart as EventListener);
   }, [visible]);
 
   if (!visible) return null;
@@ -187,7 +215,11 @@ export function FloatingDialog({ visible, title = "Dialog", onClose, children, d
           aria-label="Close dialog"
         >
           <svg width="10" height="10" viewBox="0 0 10 10">
-            <path d="M1 1l8 8M9 1L1 9" stroke="currentColor" strokeWidth="1.5" />
+            <path
+              d="M1 1l8 8M9 1L1 9"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            />
           </svg>
         </button>
       </div>

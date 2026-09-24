@@ -1,7 +1,10 @@
 import type { IDockviewPanelProps } from "dockview-react";
 
 import { useSessionStore } from "../../stores/sessionStore";
-import { SessionStatusDot, deriveSessionStatus } from "../../components/SessionStatusDot";
+import {
+  SessionStatusDot,
+  deriveSessionStatus,
+} from "../../components/SessionStatusDot";
 
 /**
  * Tab for an open agent (session) panel. The panel header was removed because
@@ -11,7 +14,9 @@ import { SessionStatusDot, deriveSessionStatus } from "../../components/SessionS
  */
 export function AgentTab(props: IDockviewPanelProps<{ sessionId?: string }>) {
   const sessionId = props.params.sessionId ?? "";
-  const session = useSessionStore((s) => s.sessions.find((x) => x.id === sessionId));
+  const session = useSessionStore((s) =>
+    s.sessions.find((x) => x.id === sessionId),
+  );
   const status = deriveSessionStatus(session);
   // Subscribe to the preview directly so the tab shows the live summary instead
   // of relying on setTitle() propagating to api.title.

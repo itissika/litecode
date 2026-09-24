@@ -5,7 +5,10 @@ import { recoverDefaultLayout } from "../config/layout";
 import { buildTabContextMenuItems } from "../config/tabContextMenu";
 import { closingFlags } from "../config/sharedFlags";
 import { useEditorStore } from "../../stores/editorStore";
-import { useConnectionStore, setDockviewApi } from "../../stores/connectionStore";
+import {
+  useConnectionStore,
+  setDockviewApi,
+} from "../../stores/connectionStore";
 import { readFile } from "../../api/workspace";
 import { languageFromPath } from "../../utils/language";
 
@@ -19,9 +22,7 @@ let isRestoring = false;
  *  implementation used by both the layout-restore callback and its 2s safety
  *  net — FE-08 dedup). */
 async function restoreEditorTabs(api: DockviewApi): Promise<void> {
-  const editorPanels = api.panels.filter(
-    (p) => p.api.component === "editor",
-  );
+  const editorPanels = api.panels.filter((p) => p.api.component === "editor");
   for (const panel of editorPanels) {
     const path = panel.api.id;
     const store = useEditorStore.getState();
@@ -29,15 +30,18 @@ async function restoreEditorTabs(api: DockviewApi): Promise<void> {
     try {
       const content = await readFile(path);
       useEditorStore.setState((s) => ({
-        tabs: [...s.tabs, {
-          path,
-          content,
-          savedContent: content,
-          dirty: false,
-          language: languageFromPath(path),
-          loading: false,
-          error: null,
-        }],
+        tabs: [
+          ...s.tabs,
+          {
+            path,
+            content,
+            savedContent: content,
+            dirty: false,
+            language: languageFromPath(path),
+            loading: false,
+            error: null,
+          },
+        ],
       }));
     } catch {
       // file may not exist — skip
@@ -87,7 +91,10 @@ export function useDockviewConfig() {
       // When an agent panel is closed, unsubscribe from that session.
       // No confirmation dialog, no cancel turn — just unsubscribe.
       // Panel id follows convention "agent-${sessionId}".
-      if (panel.api.component === "agent" && panel.api.id?.startsWith("agent-")) {
+      if (
+        panel.api.component === "agent" &&
+        panel.api.id?.startsWith("agent-")
+      ) {
         const sid = panel.api.id.slice("agent-".length);
         if (sid) {
           useConnectionStore.getState().unsubscribeSession(sid);
@@ -108,32 +115,32 @@ export function useDockviewConfig() {
         if (!parsed || parsed.schemaVersion !== LAYOUT_SCHEMA_VERSION) {
           recoverDefaultLayout(api);
         } else {
-        const data = parsed.layout;
-        isRestoring = true;
-        const finishRestore = () => {
-          recoverDefaultLayout(api);
-          void restoreEditorTabs(api);
-        };
-        let safetyTimer: ReturnType<typeof setTimeout> | undefined;
-        const disposable = api.onDidLayoutFromJSON(() => {
-          isRestoring = false;
-          if (safetyTimer !== undefined) clearTimeout(safetyTimer);
-          disposable.dispose();
-          try {
-            finishRestore();
-          } catch {
+          const data = parsed.layout;
+          isRestoring = true;
+          const finishRestore = () => {
             recoverDefaultLayout(api);
-          }
-        });
-        api.fromJSON(data);
-        // Safety net: reset after 2s if onDidLayoutFromJSON never fires.
-        safetyTimer = setTimeout(() => {
-          if (isRestoring) {
+            void restoreEditorTabs(api);
+          };
+          let safetyTimer: ReturnType<typeof setTimeout> | undefined;
+          const disposable = api.onDidLayoutFromJSON(() => {
             isRestoring = false;
+            if (safetyTimer !== undefined) clearTimeout(safetyTimer);
             disposable.dispose();
-            finishRestore();
-          }
-        }, 2000);
+            try {
+              finishRestore();
+            } catch {
+              recoverDefaultLayout(api);
+            }
+          });
+          api.fromJSON(data);
+          // Safety net: reset after 2s if onDidLayoutFromJSON never fires.
+          safetyTimer = setTimeout(() => {
+            if (isRestoring) {
+              isRestoring = false;
+              disposable.dispose();
+              finishRestore();
+            }
+          }, 2000);
         }
       } catch {
         isRestoring = false;
@@ -151,7 +158,10 @@ export function useDockviewConfig() {
         const data = api.toJSON();
         localStorage.setItem(
           LAYOUT_STORAGE_KEY,
-          JSON.stringify({ schemaVersion: LAYOUT_SCHEMA_VERSION, layout: data }),
+          JSON.stringify({
+            schemaVersion: LAYOUT_SCHEMA_VERSION,
+            layout: data,
+          }),
         );
       }, 500);
     });

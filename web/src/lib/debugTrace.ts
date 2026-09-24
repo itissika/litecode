@@ -12,7 +12,9 @@ export const DEBUG_STORAGE_KEY = "litecode.debug";
 export const DEBUG_CHANNELS = ["turn", "buffer"] as const;
 export type DebugChannel = (typeof DEBUG_CHANNELS)[number];
 
-export function parseDebugSpec(raw: string | null | undefined): Set<DebugChannel> {
+export function parseDebugSpec(
+  raw: string | null | undefined,
+): Set<DebugChannel> {
   const enabled = new Set<DebugChannel>();
   if (!raw) return enabled;
   const v = raw.trim().toLowerCase();

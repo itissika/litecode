@@ -86,11 +86,36 @@ function occupancySegments(
   bd: ItemTokenBreakdown,
 ): OccupancySegment[] {
   const parts: OccupancySegment[] = [
-    { key: "system", label: "System", tokens: Math.max(0, bd.system ?? 0), color: "var(--_dk-cat-cyan)" },
-    { key: "schema", label: "Tool schemas", tokens: Math.max(0, bd.tool_schema ?? 0), color: "var(--_dk-cat-orange)" },
-    { key: "call", label: "Tool calls", tokens: Math.max(0, bd.tool_call ?? 0), color: "var(--_dk-cat-purple)" },
-    { key: "output", label: "Tool outputs", tokens: Math.max(0, bd.tool_output ?? 0), color: "var(--_dk-cat-blue)" },
-    { key: "conv", label: "Conversation", tokens: Math.max(0, bd.conversation ?? 0), color: "var(--_dk-cat-pink)" },
+    {
+      key: "system",
+      label: "System",
+      tokens: Math.max(0, bd.system ?? 0),
+      color: "var(--_dk-cat-cyan)",
+    },
+    {
+      key: "schema",
+      label: "Tool schemas",
+      tokens: Math.max(0, bd.tool_schema ?? 0),
+      color: "var(--_dk-cat-orange)",
+    },
+    {
+      key: "call",
+      label: "Tool calls",
+      tokens: Math.max(0, bd.tool_call ?? 0),
+      color: "var(--_dk-cat-purple)",
+    },
+    {
+      key: "output",
+      label: "Tool outputs",
+      tokens: Math.max(0, bd.tool_output ?? 0),
+      color: "var(--_dk-cat-blue)",
+    },
+    {
+      key: "conv",
+      label: "Conversation",
+      tokens: Math.max(0, bd.conversation ?? 0),
+      color: "var(--_dk-cat-pink)",
+    },
   ];
   let classified = parts.reduce((s, p) => s + p.tokens, 0);
   let other = Math.max(0, used - classified);
@@ -134,9 +159,7 @@ export function ContextUsageRing({
     (s) => s.byId.get(sessionId)?.lastTurnPromptTokens ?? 0,
   );
   const used = providerPrompt > 0 ? providerPrompt : estimate;
-  const total = useTurnStore(
-    (s) => s.byId.get(sessionId)?.contextWindow ?? 0,
-  );
+  const total = useTurnStore((s) => s.byId.get(sessionId)?.contextWindow ?? 0);
   const cacheHit = useTurnStore(
     (s) => s.byId.get(sessionId)?.lastTurnCacheHitTokens ?? 0,
   );
@@ -177,7 +200,10 @@ export function ContextUsageRing({
 
   // Ring color encodes cache hit rate when truth is present.
   // No provider usage yet → neutral gray (absent, not alarming).
-  const color = hitRate !== null ? ringColorForHitRate(hitRate) : "var(--_dk-text-disabled)";
+  const color =
+    hitRate !== null
+      ? ringColorForHitRate(hitRate)
+      : "var(--_dk-text-disabled)";
   const sessionColor =
     sessionHitRate !== null
       ? ringColorForHitRate(sessionHitRate)
@@ -199,9 +225,7 @@ export function ContextUsageRing({
   // from the cache-hit green→red hue so the two metrics are never confused.
   const occupancyBarWidth = hasOccupancy && total > 0 ? `${pct * 100}%` : "0%";
   const segments =
-    hasOccupancy && breakdown
-      ? occupancySegments(used, breakdown)
-      : [];
+    hasOccupancy && breakdown ? occupancySegments(used, breakdown) : [];
   const hasMix = segments.some((s) => s.key !== "other");
   const toolRows = usedToolRows(breakdown);
   const compactDisabled =
@@ -270,7 +294,7 @@ export function ContextUsageRing({
         </button>
       )}
     >
-      {({ }) => (
+      {({}) => (
         <div className="flex flex-col gap-3 px-3 py-3 text-[11px]">
           {/* Context occupancy + compact action */}
           <div className="flex items-center gap-2">
@@ -290,7 +314,10 @@ export function ContextUsageRing({
               </div>
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-(--_dk-line)">
                 {hasMix ? (
-                  <div className="flex h-full" style={{ width: occupancyBarWidth }}>
+                  <div
+                    className="flex h-full"
+                    style={{ width: occupancyBarWidth }}
+                  >
                     {segments.map((seg) => (
                       <div
                         key={seg.key}
@@ -322,7 +349,10 @@ export function ContextUsageRing({
                 >
                   <div className="flex flex-col gap-0.5">
                     {segments.map((seg) => (
-                      <div key={seg.key} className="flex items-center justify-between gap-2">
+                      <div
+                        key={seg.key}
+                        className="flex items-center justify-between gap-2"
+                      >
                         <span className="flex min-w-0 items-center gap-1.5 text-(--_dk-text-secondary)">
                           <span
                             className="h-1 w-1 shrink-0 rounded-full"
@@ -337,10 +367,14 @@ export function ContextUsageRing({
                     ))}
                     {toolRows.length > 0 && (
                       <>
-                        <span className="mt-1 text-(--_dk-text-disabled)">Per tool</span>
+                        <span className="mt-1 text-(--_dk-text-disabled)">
+                          Per tool
+                        </span>
                         {toolRows.map((row) => {
                           const usedByTool =
-                            (row.schema ?? 0) + (row.call ?? 0) + (row.output ?? 0);
+                            (row.schema ?? 0) +
+                            (row.call ?? 0) +
+                            (row.output ?? 0);
                           return (
                             <div
                               key={row.name}
@@ -358,15 +392,21 @@ export function ContextUsageRing({
                         })}
                       </>
                     )}
-                    <span className="text-(--_dk-text-disabled)">Estimated, not billed</span>
+                    <span className="text-(--_dk-text-disabled)">
+                      Estimated, not billed
+                    </span>
                   </div>
                 </FoldCard>
               )}
               {!hasOccupancy && (
-                <span className="text-(--_dk-text-disabled)">No context usage yet</span>
+                <span className="text-(--_dk-text-disabled)">
+                  No context usage yet
+                </span>
               )}
               {hasOccupancy && total === 0 && (
-                <span className="text-(--_dk-text-disabled)">No context window configured</span>
+                <span className="text-(--_dk-text-disabled)">
+                  No context window configured
+                </span>
               )}
             </div>
             {!readOnly && (
@@ -375,11 +415,18 @@ export function ContextUsageRing({
                 disabled={compactDisabled}
                 onClick={() => compact(sessionId)}
                 title={compacting ? "Compacting…" : "Compact context"}
-                aria-label={compacting ? "Compacting context" : "Compact context"}
+                aria-label={
+                  compacting ? "Compacting context" : "Compact context"
+                }
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-(--_dk-line) text-(--_dk-text-secondary) transition-colors hover:bg-(--_dk-ix-bg-hover) disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {compacting ? (
-                  <CircleNotch size={14} weight="bold" className="animate-spin" aria-hidden />
+                  <CircleNotch
+                    size={14}
+                    weight="bold"
+                    className="animate-spin"
+                    aria-hidden
+                  />
                 ) : (
                   <ArrowsInSimple size={14} weight="bold" aria-hidden />
                 )}
@@ -400,21 +447,25 @@ export function ContextUsageRing({
                 Total
               </span>
               <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
-                {sessionHitRate !== null ? `${(sessionHitRate * 100).toFixed(1)}%` : "--"}
+                {sessionHitRate !== null
+                  ? `${(sessionHitRate * 100).toFixed(1)}%`
+                  : "--"}
               </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-1.5 text-(--_dk-text-secondary)">
                 <span
                   className="h-1 w-1 rounded-full"
-                  style={{
-                    backgroundColor: color,
-                    ["--_dk-cache-pulse-color" as string]: color,
-                    animation:
-                      hitRate !== null
-                        ? "dk-cache-pulse 1.8s ease-in-out infinite"
-                        : "none",
-                  } as CSSProperties}
+                  style={
+                    {
+                      backgroundColor: color,
+                      ["--_dk-cache-pulse-color" as string]: color,
+                      animation:
+                        hitRate !== null
+                          ? "dk-cache-pulse 1.8s ease-in-out infinite"
+                          : "none",
+                    } as CSSProperties
+                  }
                 />
                 Current
               </span>
@@ -428,7 +479,8 @@ export function ContextUsageRing({
             <div className="flex items-center justify-between border-t border-(--_dk-line) pt-2.5 text-(--_dk-text-disabled)">
               <span>Last request</span>
               <span className="font-mono tabular-nums">
-                {formatToken(providerPrompt)} prompt + {formatToken(turnCompletion)} completion
+                {formatToken(providerPrompt)} prompt +{" "}
+                {formatToken(turnCompletion)} completion
               </span>
             </div>
           )}

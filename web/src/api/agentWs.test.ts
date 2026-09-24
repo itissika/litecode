@@ -32,7 +32,9 @@ beforeEach(() => {
   vi.stubGlobal("WebSocket", MockWebSocket);
   // Neutralize the handshake/reconnect timers so tests don't leave pending work.
   vi.spyOn(globalThis, "setTimeout").mockImplementation((() => 0) as never);
-  vi.spyOn(globalThis, "clearTimeout").mockImplementation((() => undefined) as never);
+  vi.spyOn(globalThis, "clearTimeout").mockImplementation(
+    (() => undefined) as never,
+  );
 });
 
 afterEach(() => {
@@ -98,7 +100,10 @@ describe("AgentWsClient incoming frames", () => {
   };
   const workspaceChangedJson = JSON.stringify(workspaceChanged);
 
-  function connectedClient(onEnvelope: (env: unknown) => void, onError: (e: string) => void) {
+  function connectedClient(
+    onEnvelope: (env: unknown) => void,
+    onError: (e: string) => void,
+  ) {
     const client = new AgentWsClient({
       url: "ws://127.0.0.1:7483/ws",
       onEnvelope,

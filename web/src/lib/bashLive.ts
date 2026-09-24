@@ -91,7 +91,9 @@ export interface BashCallMeta {
   background: boolean;
 }
 
-export function bashCallMetaByCallId(rows: HumanRow[]): Map<string, BashCallMeta> {
+export function bashCallMetaByCallId(
+  rows: HumanRow[],
+): Map<string, BashCallMeta> {
   const meta = new Map<string, BashCallMeta>();
   for (const row of rows) {
     const item = itemFromRow(row);

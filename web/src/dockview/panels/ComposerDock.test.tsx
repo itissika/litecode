@@ -77,6 +77,33 @@ describe("ComposerDock permission overlay", () => {
   });
 });
 
+describe("ComposerDock flex height clamp", () => {
+  it("fills the pane, bottom-aligns the column and keeps the shrink chain open", () => {
+    render(<ComposerDock sessionId="session-1" />);
+
+    // The dock's box is exactly the pane (`absolute inset-0`) with its column
+    // bottom-aligned, so the browser — not a JS measurement — clamps the status
+    // panel: the panel is the one shrinkable item, everything else is
+    // `shrink-0`.
+    const dock = screen.getByTestId("composer-dock");
+    expect(dock.className).toContain("absolute");
+    expect(dock.className).toContain("inset-0");
+    expect(dock.className).toContain("justify-end");
+
+    // Every level between the pane and the panel must let a shrink through
+    // (`min-h-0`), or a long plan would push the input out of the pane instead
+    // of scrolling inside the panel.
+    const content = screen.getByTestId("composer-dock-content");
+    const chain = [
+      dock,
+      dock.firstElementChild as HTMLElement,
+      content,
+      content.firstElementChild as HTMLElement,
+    ];
+    for (const el of chain) expect(el.className).toContain("min-h-0");
+  });
+});
+
 describe("ComposerDock collapse", () => {
   it("folds the whole dock (permission card included) into the bar and flips the toggle", async () => {
     const user = userEvent.setup();
@@ -88,7 +115,9 @@ describe("ComposerDock collapse", () => {
     expect(screen.getByTestId("composer-dock-content").dataset.collapsed).toBe(
       "false",
     );
-    expect(screen.getByRole("button", { name: "Collapse composer" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Collapse composer" }),
+    ).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Collapse composer" }));
 
@@ -98,7 +127,9 @@ describe("ComposerDock collapse", () => {
       "true",
     );
     expect(screen.queryByTestId("composer-collapsed-bar")).toBeNull();
-    expect(screen.getByRole("button", { name: "Expand composer" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Expand composer" }),
+    ).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Expand composer" }));
 
@@ -106,6 +137,8 @@ describe("ComposerDock collapse", () => {
     expect(screen.getByTestId("composer-dock-content").dataset.collapsed).toBe(
       "false",
     );
-    expect(screen.getByRole("button", { name: "Collapse composer" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Collapse composer" }),
+    ).toBeTruthy();
   });
 });

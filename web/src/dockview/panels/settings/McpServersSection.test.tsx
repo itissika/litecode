@@ -1,4 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { McpServerDefinition, ToolScope } from "../../../api/settings";
@@ -9,14 +16,19 @@ function openNew(scope: "Global" | "Workspace") {
   fireEvent.click(screen.getByRole("button", { name: "New MCP server" }));
   const panel = document.querySelector("[data-dropdown-panel]");
   expect(panel).toBeTruthy();
-  fireEvent.click(within(panel as HTMLElement).getByRole("button", { name: scope }));
+  fireEvent.click(
+    within(panel as HTMLElement).getByRole("button", { name: scope }),
+  );
 }
 
 describe("McpServersSection persist UX", () => {
   const saveMcpServer = vi.fn(
-    async (_id: string, _def: McpServerDefinition, _scope?: ToolScope) => undefined,
+    async (_id: string, _def: McpServerDefinition, _scope?: ToolScope) =>
+      undefined,
   );
-  const removeMcpServer = vi.fn(async (_id: string, _scope?: ToolScope) => undefined);
+  const removeMcpServer = vi.fn(
+    async (_id: string, _scope?: ToolScope) => undefined,
+  );
 
   beforeEach(() => {
     saveMcpServer.mockClear();
@@ -67,7 +79,9 @@ describe("McpServersSection persist UX", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "{}" } });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     expect(
-      await screen.findByText("Valid JSON with id and stdio command is required"),
+      await screen.findByText(
+        "Valid JSON with id and stdio command is required",
+      ),
     ).toBeTruthy();
     expect(saveMcpServer).not.toHaveBeenCalled();
     expect(screen.queryByText("Fix fields to save")).toBeNull();
@@ -125,6 +139,8 @@ describe("McpServersSection persist UX", () => {
         workspace: {},
       },
     });
-    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(before);
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+      before,
+    );
   });
 });

@@ -21,7 +21,11 @@ export function parseCustomToolJson(
     const command = typeof raw.command === "string" ? raw.command.trim() : "";
     if (!command) return { skip: "invalid" };
     const schemaRaw = raw.schema;
-    if (schemaRaw === null || typeof schemaRaw !== "object" || Array.isArray(schemaRaw)) {
+    if (
+      schemaRaw === null ||
+      typeof schemaRaw !== "object" ||
+      Array.isArray(schemaRaw)
+    ) {
       return { skip: "invalid" };
     }
     const schema = schemaRaw as Record<string, unknown>;
@@ -34,7 +38,10 @@ export function parseCustomToolJson(
       return { skip: "invalid" };
     }
     const required = schema.required ?? [];
-    if (!Array.isArray(required) || required.some((x) => typeof x !== "string")) {
+    if (
+      !Array.isArray(required) ||
+      required.some((x) => typeof x !== "string")
+    ) {
       return { skip: "invalid" };
     }
     const args = Array.isArray(raw.args)
@@ -45,7 +52,8 @@ export function parseCustomToolJson(
     return {
       ok: {
         name,
-        description: typeof raw.description === "string" ? raw.description.trim() : "",
+        description:
+          typeof raw.description === "string" ? raw.description.trim() : "",
         command,
         args,
         timeout,
@@ -76,15 +84,23 @@ export function parseMcpJson(
     const command = typeof raw.command === "string" ? raw.command.trim() : "";
     const transportRaw = raw.transport;
     let transport: McpServerDefinition["transport"] = { type: "stdio" };
-    if (transportRaw && typeof transportRaw === "object" && !Array.isArray(transportRaw)) {
+    if (
+      transportRaw &&
+      typeof transportRaw === "object" &&
+      !Array.isArray(transportRaw)
+    ) {
       const t = transportRaw as Record<string, unknown>;
       if (t.type === "remote") {
-        if (typeof t.url !== "string" || !t.url.trim()) return { skip: "invalid" };
+        if (typeof t.url !== "string" || !t.url.trim())
+          return { skip: "invalid" };
         const headers =
-          t.headers && typeof t.headers === "object" && !Array.isArray(t.headers)
+          t.headers &&
+          typeof t.headers === "object" &&
+          !Array.isArray(t.headers)
             ? Object.fromEntries(
                 Object.entries(t.headers as Record<string, unknown>).filter(
-                  (entry): entry is [string, string] => typeof entry[1] === "string",
+                  (entry): entry is [string, string] =>
+                    typeof entry[1] === "string",
                 ),
               )
             : {};
@@ -103,7 +119,8 @@ export function parseMcpJson(
       raw.env && typeof raw.env === "object" && !Array.isArray(raw.env)
         ? Object.fromEntries(
             Object.entries(raw.env as Record<string, unknown>).filter(
-              (entry): entry is [string, string] => typeof entry[1] === "string",
+              (entry): entry is [string, string] =>
+                typeof entry[1] === "string",
             ),
           )
         : {};

@@ -3,11 +3,7 @@ import { useMemo, useState } from "react";
 import { type CatalogProviderDto } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { ProviderLogo } from "../../../components/ProviderLogos";
-import {
-  SettingsPageShell,
-  TextInput,
-  useSettingsSaveBlocked,
-} from "./shared";
+import { SettingsPageShell, TextInput, useSettingsSaveBlocked } from "./shared";
 import {
   useDocPersist,
   useSettingsPersist,

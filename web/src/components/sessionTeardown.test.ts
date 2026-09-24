@@ -3,12 +3,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { userTextItem } from "../api/adapter";
 import type { HumanRow } from "../api/types";
 import { setDockviewApi, useConnectionStore } from "../stores/connectionStore";
-import { emptySlice as emptyMessageSlice, useMessageStore } from "../stores/messageStore";
+import {
+  emptySlice as emptyMessageSlice,
+  useMessageStore,
+} from "../stores/messageStore";
 import { useNotificationStore } from "../stores/notificationStore";
-import { emptySlice as emptyTurnSlice, useTurnStore } from "../stores/turnStore";
-import { clearFoldCardOpen, getFoldCardOpenIntent, setFoldCardOpenIntent } from "./foldCardState";
-import { releaseSessionTab, releaseSubagentCard, teardownSession } from "./sessionTeardown";
-import { holdSubagentRoster, resetSubagentRosterHolds } from "./subagentRosterHolds";
+import {
+  emptySlice as emptyTurnSlice,
+  useTurnStore,
+} from "../stores/turnStore";
+import {
+  clearFoldCardOpen,
+  getFoldCardOpenIntent,
+  setFoldCardOpenIntent,
+} from "./foldCardState";
+import {
+  releaseSessionTab,
+  releaseSubagentCard,
+  teardownSession,
+} from "./sessionTeardown";
+import {
+  holdSubagentRoster,
+  resetSubagentRosterHolds,
+} from "./subagentRosterHolds";
 
 const CHILD = "child-a";
 const CARD_ID = `${CHILD}:bubble:tool:call_1`;
@@ -16,6 +33,7 @@ const CARD_ID = `${CHILD}:bubble:tool:call_1`;
 const row = (seq: number, text: string): HumanRow => ({
   seq,
   kind: "item/user",
+  state: "final",
   body: userTextItem(text),
 });
 
@@ -99,7 +117,9 @@ describe("sessionTeardown — path 2: tab closes while an expanded card holds it
     releaseSessionTab(CHILD);
 
     expect(unsubscribed(sendRpc)).toBe(false);
-    expect(useConnectionStore.getState().subscribedSessions.has(CHILD)).toBe(true);
+    expect(useConnectionStore.getState().subscribedSessions.has(CHILD)).toBe(
+      true,
+    );
     expect(useNotificationStore.getState().bySession.has(CHILD)).toBe(true);
     expect(getFoldCardOpenIntent(CARD_ID)).toBe("keepopen");
     expect(messageRows()).toBe(1);
@@ -114,7 +134,9 @@ describe("sessionTeardown — path 3: roster card collapses with no tab (P6)", (
     releaseSubagentCard(CHILD);
 
     expect(unsubscribed(sendRpc)).toBe(true);
-    expect(useConnectionStore.getState().subscribedSessions.has(CHILD)).toBe(false);
+    expect(useConnectionStore.getState().subscribedSessions.has(CHILD)).toBe(
+      false,
+    );
     // The review leak: these two used to be skipped on the card path.
     expect(useNotificationStore.getState().bySession.has(CHILD)).toBe(false);
     expect(getFoldCardOpenIntent(CARD_ID)).toBe("none");

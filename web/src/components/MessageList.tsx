@@ -1,5 +1,21 @@
-import { BrainIcon, PencilIcon, TerminalIcon, WrenchIcon } from "@phosphor-icons/react";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import {
+  BrainIcon,
+  PencilIcon,
+  TerminalIcon,
+  WrenchIcon,
+} from "@phosphor-icons/react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import {
@@ -10,7 +26,6 @@ import {
   isHiddenHumanRow,
   isHumanUserRow,
   isHumanViewKind,
-  isInProgressItem,
   isMessageItem,
   isReasoningItem,
   isTranscriptMarkRow,
@@ -38,14 +53,53 @@ import { useStickToBottom } from "../lib/scrollStick";
 import { ToolCallCard } from "./ToolCallCard";
 import { isToolCallLive, processGroupAutoOpen } from "./toolCallStatus";
 import { MiniChatInput, type MiniChatInputSettings } from "./MiniChatInput";
-import { CompactingMark, TranscriptMark, TranscriptMarkForRow, jobExitDetail, subagentExitDetail } from "./transcriptMarks";
+import {
+  CompactingMark,
+  TranscriptMark,
+  TranscriptMarkForRow,
+  jobExitDetail,
+  subagentExitDetail,
+} from "./transcriptMarks";
 
 type RenderNode =
-  | { kind: "text"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
-  | { kind: "reasoning"; text: string; key: string; streaming: boolean; live: boolean; incomplete?: boolean }
-  | { kind: "compact_cut"; summary?: string; key: string; streaming: boolean; live: false }
-  | { kind: "job_exit"; detail?: string; key: string; streaming: boolean; live: false }
-  | { kind: "subagent_exit"; detail?: string; childId?: string; key: string; streaming: boolean; live: false }
+  | {
+      kind: "text";
+      text: string;
+      key: string;
+      streaming: boolean;
+      live: boolean;
+      incomplete?: boolean;
+    }
+  | {
+      kind: "reasoning";
+      text: string;
+      key: string;
+      streaming: boolean;
+      live: boolean;
+      incomplete?: boolean;
+    }
+  | {
+      kind: "compact_cut";
+      summary?: string;
+      key: string;
+      streaming: boolean;
+      live: false;
+    }
+  | {
+      kind: "job_exit";
+      detail?: string;
+      key: string;
+      streaming: boolean;
+      live: false;
+    }
+  | {
+      kind: "subagent_exit";
+      detail?: string;
+      childId?: string;
+      key: string;
+      streaming: boolean;
+      live: false;
+    }
   | { kind: "plan"; key: string; streaming: boolean; live: false }
   | { kind: "plan_execute"; key: string; streaming: boolean; live: false }
   | {
@@ -66,7 +120,9 @@ export interface EditingUserAnchor {
   startHeight: number;
 }
 
-function outputsByCallId(rows: HumanRow[]): Map<string, FunctionCallOutputItem> {
+function outputsByCallId(
+  rows: HumanRow[],
+): Map<string, FunctionCallOutputItem> {
   const map = new Map<string, FunctionCallOutputItem>();
   for (const row of rows) {
     if (row.kind !== "item/tool_result") continue;
@@ -76,9 +132,12 @@ function outputsByCallId(rows: HumanRow[]): Map<string, FunctionCallOutputItem> 
   return map;
 }
 
+/**
+ * Whether the log still holds this row in flight. The row's own `state` answers
+ * it; a payload's `status` is provider content and may be absent entirely.
+ */
 function rowInProgress(row: HumanRow): boolean {
-  const item = itemFromRow(row);
-  return row.streaming === true || (item ? isInProgressItem(item) : false);
+  return row.state === "in_progress";
 }
 
 /** Flatten HumanView rows into nodes; only `item/*` bodies are Items. */
@@ -89,7 +148,7 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
     if (row.kind !== "item/tool_result") continue;
     const item = itemFromRow(row);
     if (item && isFunctionCallOutput(item)) {
-      outputInProgressByCallId.set(item.call_id, isInProgressItem(item));
+      outputInProgressByCallId.set(item.call_id, rowInProgress(row));
     }
   }
   const nodes: RenderNode[] = [];
@@ -115,7 +174,8 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
         });
         continue;
       }
-      const markDetail = mark === "job_exit" ? jobExitDetail(reminderText) : undefined;
+      const markDetail =
+        mark === "job_exit" ? jobExitDetail(reminderText) : undefined;
       nodes.push({
         kind: mark,
         key,
@@ -139,7 +199,12 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
         outputInProgress: outputInProgressByCallId.get(item.call_id) === true,
       });
       nodes.push({
-        kind: "tool", call: item, output, key, streaming, live,
+        kind: "tool",
+        call: item,
+        output,
+        key,
+        streaming,
+        live,
       });
       continue;
     }
@@ -151,13 +216,16 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
           text,
           key,
           streaming,
-          live: isInProgressItem(item),
+          live: streaming,
           incomplete: item.status === "incomplete",
         });
       }
       continue;
     }
-    if ((row.kind === "item/user" || row.kind === "item/assistant") && isMessageItem(item)) {
+    if (
+      (row.kind === "item/user" || row.kind === "item/assistant") &&
+      isMessageItem(item)
+    ) {
       const text = itemPlainText(item);
       // Vendors emit whitespace-only content (e.g. "\n\n" before a tool call).
       // Such a message renders as nothing, but as an `output` node it would cut
@@ -168,7 +236,7 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
           text,
           key,
           streaming,
-          live: isInProgressItem(item),
+          live: streaming,
           incomplete: item.status === "incomplete",
         });
       }
@@ -248,7 +316,13 @@ export function NodeView({
           }
           className="text-sm"
           contentClassName="text-(--_dk-text-secondary)"
-          icon={<BrainIcon size={13} aria-hidden className="shrink-0 text-(--_dk-text-muted)" />}
+          icon={
+            <BrainIcon
+              size={13}
+              aria-hidden
+              className="shrink-0 text-(--_dk-text-muted)"
+            />
+          }
           label={node.incomplete ? "Reasoning (incomplete)" : "Reasoning"}
           autoOpen={node.live}
           streaming={streaming}
@@ -307,7 +381,11 @@ export function NodeView({
       return <TranscriptMark kind={node.kind} detail={node.detail} />;
     case "subagent_exit":
       return (
-        <TranscriptMark kind={node.kind} detail={node.detail} childId={node.childId} />
+        <TranscriptMark
+          kind={node.kind}
+          detail={node.detail}
+          childId={node.childId}
+        />
       );
     case "plan":
       return <TranscriptMark kind={node.kind} />;
@@ -543,7 +621,9 @@ function ItemBubbleImpl({
 }) {
   const sessionSettings = useSessionStore((s) => s.byId.get(sessionId));
   const replayFromAnchor = useTurnStore((s) => s.replayFromAnchor);
-  const replaying = useTurnStore((s) => s.byId.get(sessionId)?.replaying ?? false);
+  const replaying = useTurnStore(
+    (s) => s.byId.get(sessionId)?.replaying ?? false,
+  );
   const first = rows.find((r) => !isTranscriptMarkRow(r)) ?? rows[0];
   const isUser = first != null && isHumanUserRow(first);
   const nodes = rowsToNodes(rows);
@@ -565,11 +645,18 @@ function ItemBubbleImpl({
     groups.map((group, gi) => {
       if (group.type === "cut") {
         return group.nodes.map((n) => (
-          <NodeView key={n.key} node={n} sessionId={sessionId} bubbleKey={bubbleKey} />
+          <NodeView
+            key={n.key}
+            node={n}
+            sessionId={sessionId}
+            bubbleKey={bubbleKey}
+          />
         ));
       }
       if (group.type === "process") {
-        const groupLive = group.nodes.some((n) => n.kind !== "compact_cut" && n.live);
+        const groupLive = group.nodes.some(
+          (n) => n.kind !== "compact_cut" && n.live,
+        );
         const followedByMessage = groups[gi + 1]?.type === "output";
         const hasTerminalStop = processGroupHasTerminalStop(group.nodes);
         const groupAutoOpen = processGroupAutoOpen({
@@ -627,28 +714,35 @@ function ItemBubbleImpl({
             />
           </MiniChatPanel>
         ) : (
-        <div
-          data-user-message-bubble
-          className={`flex items-start gap-2 ${readOnly ? "" : "cursor-text"}`}
-          onClick={(event) => {
-            if (readOnly || !showRevert || userAnchorK === undefined || !bubbleKey || editing) return;
-            onEditAnchor({
-              bubbleKey,
-              userAnchorK,
-              draft: userText,
-              settings: {
-                primaryId: sessionSettings?.activePrimary ?? "default",
-                modelId: sessionSettings?.modelId ?? "",
-                thinkingTier: sessionSettings?.thinkingTier ?? "medium",
-                contextMode: sessionSettings?.contextMode ?? "standard",
-              },
-              startHeight: event.currentTarget.getBoundingClientRect().height,
-            });
-          }}
-        >
-          <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-accent-hover)" />
-          <div className="min-w-0 flex-1">{body}</div>
-        </div>
+          <div
+            data-user-message-bubble
+            className={`flex items-start gap-2 ${readOnly ? "" : "cursor-text"}`}
+            onClick={(event) => {
+              if (
+                readOnly ||
+                !showRevert ||
+                userAnchorK === undefined ||
+                !bubbleKey ||
+                editing
+              )
+                return;
+              onEditAnchor({
+                bubbleKey,
+                userAnchorK,
+                draft: userText,
+                settings: {
+                  primaryId: sessionSettings?.activePrimary ?? "default",
+                  modelId: sessionSettings?.modelId ?? "",
+                  thinkingTier: sessionSettings?.thinkingTier ?? "medium",
+                  contextMode: sessionSettings?.contextMode ?? "standard",
+                },
+                startHeight: event.currentTarget.getBoundingClientRect().height,
+              });
+            }}
+          >
+            <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-accent-hover)" />
+            <div className="min-w-0 flex-1">{body}</div>
+          </div>
         )
       ) : (
         <div className="flex items-start gap-2">
@@ -886,7 +980,9 @@ export const MessageList = memo(function MessageList({
   // Transient "compacting now" line: `compacting` is set on started and cleared
   // on succeeded/failed. Do not key off `turnPhase`, which can stay compacting
   // after the checkpoint lands.
-  const compactingNow = useTurnStore((s) => s.byId.get(sessionId)?.compacting ?? false);
+  const compactingNow = useTurnStore(
+    (s) => s.byId.get(sessionId)?.compacting ?? false,
+  );
   // Plan-execution marks name the plan the button launched; the persisted row
   // carries only the prompt text, so the path comes from the session pointer.
   const activePlanPath = useTurnStore(
@@ -936,7 +1032,9 @@ export const MessageList = memo(function MessageList({
       const first = firstContentRow(bubbles[i] ?? []);
       if (!first) return 28;
       if (isHumanUserRow(first)) {
-        return editingAnchor?.bubbleKey === bubbleIdentity(bubbles, i) ? 240 : 88;
+        return editingAnchor?.bubbleKey === bubbleIdentity(bubbles, i)
+          ? 240
+          : 88;
       }
       return 240;
     },
@@ -954,13 +1052,10 @@ export const MessageList = memo(function MessageList({
     active: true,
     initialStick: true,
     isAtEnd: () => virtualizer.isAtEnd(),
-    onStickChange: useCallback(
-      (next: boolean) => {
-        setStickToEnd(next);
-        onStickChangeRef.current?.(next);
-      },
-      [],
-    ),
+    onStickChange: useCallback((next: boolean) => {
+      setStickToEnd(next);
+      onStickChangeRef.current?.(next);
+    }, []),
   });
 
   const virtualizer = useVirtualizer({
@@ -984,7 +1079,11 @@ export const MessageList = memo(function MessageList({
   // This predicate is a public instance property, not a VirtualizerOptions field
   // in this version — assigned once per instance (idempotent on re-render, same
   // pattern as the library's own setOptions).
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
+    item,
+    _delta,
+    instance,
+  ) =>
     shouldCompensateSizeChange({
       stickToEnd: stickRef.current,
       measured: instance.itemSizeCache.has(item.key),
@@ -1096,7 +1195,9 @@ export const MessageList = memo(function MessageList({
                     height: LIST_LOADER_HEIGHT,
                   }}
                   aria-busy={loadingHistory}
-                  aria-label={loadingHistory ? "Loading earlier items" : undefined}
+                  aria-label={
+                    loadingHistory ? "Loading earlier items" : undefined
+                  }
                 />
               );
             }
@@ -1139,15 +1240,15 @@ export const MessageList = memo(function MessageList({
                 ref={virtualizer.measureElement}
                 style={itemStyle(virtualItem.start)}
               >
-                {cutOnly
-                  ? group.map((cut) => (
-                      <TranscriptMarkForRow
-                        key={projectionRowKey(cut)}
-                        row={cut}
-                        planPath={activePlanPath}
-                      />
-                    ))
-                  : (
+                {cutOnly ? (
+                  group.map((cut) => (
+                    <TranscriptMarkForRow
+                      key={projectionRowKey(cut)}
+                      row={cut}
+                      planPath={activePlanPath}
+                    />
+                  ))
+                ) : (
                   <ItemBubble
                     rows={group}
                     userAnchorK={userAnchorK}

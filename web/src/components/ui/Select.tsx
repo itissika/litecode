@@ -1,6 +1,10 @@
 import { type ReactNode } from "react";
 
-import { Dropdown, dropdownItemClass, dropdownItemActiveClass } from "./Dropdown";
+import {
+  Dropdown,
+  dropdownItemClass,
+  dropdownItemActiveClass,
+} from "./Dropdown";
 
 interface Option {
   value: string;
@@ -63,7 +67,13 @@ export function Select({
           onClick={() => !disabled && toggle()}
           className="flex w-full items-center justify-between gap-1 border-0 border-b border-(--_dk-line) bg-transparent px-1 py-[0.375rem] text-left text-[0.875rem] text-(--_dk-text-muted) hover:brightness-110 focus-visible:border-(--_dk-line-visible) disabled:opacity-40"
         >
-          <span className={selected ? "text-(--_dk-text-primary)" : "text-(--_dk-text-disabled)"}>
+          <span
+            className={
+              selected
+                ? "text-(--_dk-text-primary)"
+                : "text-(--_dk-text-disabled)"
+            }
+          >
             {display}
           </span>
           <Chevron open={open} />

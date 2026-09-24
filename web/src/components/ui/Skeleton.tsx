@@ -68,7 +68,10 @@ export function EnginesSkeleton() {
         </div>
         <div className="lsp-grid">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="tool-binding-card flex flex-col overflow-hidden">
+            <div
+              key={i}
+              className="tool-binding-card flex flex-col overflow-hidden"
+            >
               <div className="flex min-h-[60px] w-full items-start justify-between gap-2 p-3">
                 <div className="min-w-0 space-y-1.5">
                   <Skeleton className="h-3.5 w-24" />
@@ -90,7 +93,11 @@ export function EnginesSkeleton() {
 
 export function FileTreeSkeleton() {
   return (
-    <div className="space-y-2 px-3 py-2" aria-busy="true" aria-label="Loading files">
+    <div
+      className="space-y-2 px-3 py-2"
+      aria-busy="true"
+      aria-label="Loading files"
+    >
       <Skeleton className="h-3.5 w-[55%]" />
       <Skeleton className="h-3.5 w-[72%]" />
       <Skeleton className="h-3.5 w-[48%]" />

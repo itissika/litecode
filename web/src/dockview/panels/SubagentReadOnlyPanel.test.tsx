@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { IDockviewPanelProps } from "dockview-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -64,12 +70,14 @@ const CHILD = "child-a";
 const userRow = (seq: number, text: string): HumanRow => ({
   seq,
   kind: "item/user",
+  state: "final",
   body: userTextItem(text),
 });
 
 const assistantRow = (seq: number, text: string): HumanRow => ({
   seq,
   kind: "item/assistant",
+  state: "final",
   body: {
     type: "message",
     role: "assistant",
@@ -96,7 +104,6 @@ function seedChild(rows: HumanRow[]): void {
       subagentBindings: {},
       blockLogGrowth: false,
       turnEndNotice: null,
-      itemIdToSeq: new Map(),
     });
     return { bySession };
   });
@@ -128,7 +135,10 @@ interface PanelApiStub {
   setTitle: ReturnType<typeof vi.fn>;
 }
 
-function panelProps(sessionId: string): { params: { sessionId: string }; api: PanelApiStub } {
+function panelProps(sessionId: string): {
+  params: { sessionId: string };
+  api: PanelApiStub;
+} {
   return {
     params: { sessionId },
     api: {
@@ -182,7 +192,9 @@ describe("SubagentReadOnlyPanel — full read-only transcript", () => {
     // Full transcript is present.
     expect(screen.getByTestId("message-list")).toBeTruthy();
     expect(screen.getByText("now do this")).toBeTruthy();
-    expect(document.querySelectorAll("[data-user-message-bubble]")).toHaveLength(2);
+    expect(
+      document.querySelectorAll("[data-user-message-bubble]"),
+    ).toHaveLength(2);
 
     // Derived subagent view: the status capsules + the session-row knobs are
     // mounted (model / tier / context mode are honored by the child's own next
@@ -232,16 +244,19 @@ describe("SubagentReadOnlyPanel — full read-only transcript", () => {
     seedSession("root");
     seedChild([userRow(0, "hi")]);
     const close = vi.fn();
-    vi.spyOn(useConnectionStore.getState(), "ensureSubscribe").mockRejectedValue(
-      new Error("session not found"),
-    );
+    vi.spyOn(
+      useConnectionStore.getState(),
+      "ensureSubscribe",
+    ).mockRejectedValue(new Error("session not found"));
     const showToast = vi
       .spyOn(useToastStore.getState(), "showToast")
       .mockImplementation(() => {});
 
     const props = panelProps(CHILD);
     props.api.close = close;
-    render(<SubagentReadOnlyPanel {...(props as unknown as IDockviewPanelProps)} />);
+    render(
+      <SubagentReadOnlyPanel {...(props as unknown as IDockviewPanelProps)} />,
+    );
 
     await waitFor(() => {
       expect(showToast).toHaveBeenCalled();
@@ -280,7 +295,9 @@ describe("SubagentReadOnlyPanel — full read-only transcript", () => {
     seedSession("root");
     seedChild([userRow(0, "hi")]);
     const props = panelProps(CHILD);
-    render(<SubagentReadOnlyPanel {...(props as unknown as IDockviewPanelProps)} />);
+    render(
+      <SubagentReadOnlyPanel {...(props as unknown as IDockviewPanelProps)} />,
+    );
 
     expect(props.api.setTitle).toHaveBeenCalledWith("the child summary");
   });

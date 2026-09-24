@@ -97,9 +97,12 @@ export function FileTreeGlobHits({
   const openHit = (entry: TreeEntry) => {
     if (entry.kind === "dir") {
       onClear();
-      void useTreeStore.getState().revealPath(entry.path).then(() => {
-        void useTreeStore.getState().expandDir(entry.path);
-      });
+      void useTreeStore
+        .getState()
+        .revealPath(entry.path)
+        .then(() => {
+          void useTreeStore.getState().expandDir(entry.path);
+        });
       return;
     }
     void useEditorStore.getState().openFile(entry.path);
@@ -107,7 +110,9 @@ export function FileTreeGlobHits({
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto py-1">
-      {error && <p className="px-3 py-2 text-xs text-(--_dk-red-500)">{error}</p>}
+      {error && (
+        <p className="px-3 py-2 text-xs text-(--_dk-red-500)">{error}</p>
+      )}
       {!error && !busy && hits.length === 0 && (
         <p className="px-3 py-2 text-xs text-(--_dk-text-disabled)">
           No files matching &lsquo;{query}&rsquo;
@@ -165,11 +170,15 @@ function GlobHitRow({
       <span className="min-w-0 truncate">
         {entry.name}
         {dir ? (
-          <span className="ml-1.5 text-[11px] text-(--_dk-text-disabled)">{dir}</span>
+          <span className="ml-1.5 text-[11px] text-(--_dk-text-disabled)">
+            {dir}
+          </span>
         ) : null}
       </span>
       {gitLetter && (
-        <span className={`ml-auto font-mono text-[11px] ${gitStatusColor(gitLetter)}`}>
+        <span
+          className={`ml-auto font-mono text-[11px] ${gitStatusColor(gitLetter)}`}
+        >
           {gitLetter}
         </span>
       )}

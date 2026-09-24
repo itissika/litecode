@@ -12,7 +12,12 @@ function laneClass(lane: number): string {
   return `git-graph-lane-${lane % LANE_COLORS}`;
 }
 
-function mergePath(row: number, from: number, to: number, maxLanes: number): string {
+function mergePath(
+  row: number,
+  from: number,
+  to: number,
+  maxLanes: number,
+): string {
   const y0 = row * GIT_GRAPH_ROW_HEIGHT;
   const yMid = y0 + GIT_GRAPH_ROW_HEIGHT / 2;
   const y1 = y0 + GIT_GRAPH_ROW_HEIGHT;

@@ -70,7 +70,11 @@ const commandCodeProvider = provider({
   models: [commandCodeModel],
 });
 
-const arkProvider = provider({ id: "ark-coding", name: "Ark Coding", models: [] });
+const arkProvider = provider({
+  id: "ark-coding",
+  name: "Ark Coding",
+  models: [],
+});
 const hiddenProvider = provider({
   id: "hidden-one",
   name: "Hidden One",
@@ -142,7 +146,9 @@ describe("ProvidersSection", () => {
 
     // An empty field says the key is empty, and the catalog file — the
     // backend's own config — is never surfaced.
-    const arkField = screen.getByLabelText("API key for Ark Coding") as HTMLInputElement;
+    const arkField = screen.getByLabelText(
+      "API key for Ark Coding",
+    ) as HTMLInputElement;
     expect(arkField.placeholder).toBe("Empty key");
     expect(screen.queryByText(/provider-catalog\.toml/)).toBeNull();
   });
@@ -167,7 +173,9 @@ describe("ProvidersSection", () => {
 
   it("leaves models to the Models page", () => {
     render(<ProvidersSection />);
-    expect(screen.queryByText("commandcode/deepseek/deepseek-v4-flash")).toBeNull();
+    expect(
+      screen.queryByText("commandcode/deepseek/deepseek-v4-flash"),
+    ).toBeNull();
   });
 
   it("never PUTs while a key field is empty", async () => {
@@ -204,7 +212,9 @@ describe("ProvidersSection", () => {
     expect(mockedPut).toHaveBeenCalledTimes(1);
     expect(mockedPut).toHaveBeenCalledWith("opencode-go", "sk-test");
     // The llm document is authoritative: the card turns configured from it.
-    expect(useSettingsStore.getState().llm?.providers[0]?.configured).toBe(true);
+    expect(useSettingsStore.getState().llm?.providers[0]?.configured).toBe(
+      true,
+    );
     expect(cardFor("OpenCode Go").getAttribute("data-configured")).toBe("true");
   });
 });

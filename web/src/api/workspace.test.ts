@@ -17,40 +17,53 @@ describe("workspace engine API", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ ok: true, data: { desired: true, mode: "incremental" } }),
+      json: async () => ({
+        ok: true,
+        data: { desired: true, mode: "incremental" },
+      }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await refreshRetrieval();
     expect(result.mode).toBe("incremental");
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/workspace/retrieval/refresh");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/workspace/retrieval/refresh",
+    );
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
   });
 
   it("parses native retrieval and LSP detail payloads", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
         ok: true,
-        data: {
-          retrieval: {
-            desired: true,
-            usable: "ready",
-            model: { ready: true },
-            index: {
-              status: "ready",
-              indexed_files: 1,
-              indexed_chunks: 2,
-              progress: null,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          data: {
+            retrieval: {
+              desired: true,
+              usable: "ready",
+              model: { ready: true },
+              index: {
+                status: "ready",
+                indexed_files: 1,
+                indexed_chunks: 2,
+                progress: null,
+              },
+              policy: {},
+              embed_device: "cuda-ort",
             },
-            policy: {},
-            embed_device: "cuda-ort",
+            lsp: {
+              desired: false,
+              usable: "stopped",
+              configured_servers: [],
+              probes: [],
+            },
           },
-          lsp: { desired: false, usable: "stopped", configured_servers: [], probes: [] },
-        },
+        }),
       }),
-    }));
+    );
     const detail = await getEnginesDetail();
     expect(detail.retrieval.usable).toBe("ready");
     expect(detail.retrieval.index.status).toBe("ready");
@@ -88,7 +101,9 @@ describe("workspace engine API", () => {
       json: async () => ({
         ok: true,
         data: {
-          entries: [{ name: "FileTree.tsx", path: "src/FileTree.tsx", kind: "file" }],
+          entries: [
+            { name: "FileTree.tsx", path: "src/FileTree.tsx", kind: "file" },
+          ],
           truncated: false,
         },
       }),
@@ -120,7 +135,9 @@ describe("workspace engine API", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const byDir = await fetchTreeReveal("src/a.ts");
-    expect(byDir.src).toEqual([{ name: "a.ts", path: "src/a.ts", kind: "file" }]);
+    expect(byDir.src).toEqual([
+      { name: "a.ts", path: "src/a.ts", kind: "file" },
+    ]);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "/api/workspace/tree?path=src%2Fa.ts&reveal=1",
     );

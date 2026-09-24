@@ -12,7 +12,9 @@ export const LITECODE_THEME: DockviewTheme = {
 };
 
 /** Build a dockview theme whose `colorScheme` matches the app theme. */
-export function dockviewThemeForApp(appTheme: "default" | "light"): DockviewTheme {
+export function dockviewThemeForApp(
+  appTheme: "default" | "light",
+): DockviewTheme {
   return {
     ...LITECODE_THEME,
     colorScheme: appTheme === "light" ? "light" : "dark",

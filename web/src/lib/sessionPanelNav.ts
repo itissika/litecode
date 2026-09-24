@@ -25,7 +25,10 @@ export function getPendingReveal(): PendingSeqReveal | null {
   return pending;
 }
 
-export function requestSeqReveal(sessionId: string, seq: number): PendingSeqReveal {
+export function requestSeqReveal(
+  sessionId: string,
+  seq: number,
+): PendingSeqReveal {
   gen += 1;
   pending = { sessionId, seq, gen };
   emit();
@@ -63,7 +66,10 @@ function activateExisting(
   const existing = api.getPanel(panelId);
   if (!existing) return false;
   existing.api.setActive();
-  void useConnectionStore.getState().ensureSubscribe(sessionId).catch(() => {});
+  void useConnectionStore
+    .getState()
+    .ensureSubscribe(sessionId)
+    .catch(() => {});
   return true;
 }
 

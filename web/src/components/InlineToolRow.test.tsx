@@ -1,7 +1,11 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { FunctionCallItem, FunctionCallOutputItem, SessionInfo } from "../api/types";
+import type {
+  FunctionCallItem,
+  FunctionCallOutputItem,
+  SessionInfo,
+} from "../api/types";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useBashStore } from "../stores/bashStore";
@@ -36,7 +40,10 @@ afterEach(() => {
 describe("InlineToolRow — subagent_launch is a single-line row", () => {
   it("shows agent + running status with no FoldCard", () => {
     const { container } = render(
-      <InlineToolRow call={launchCall({ agent: "explore", prompt: "go" })} streaming />,
+      <InlineToolRow
+        call={launchCall({ agent: "explore", prompt: "go" })}
+        streaming
+      />,
     );
     const line = screen.getByTestId("subagent-launch-line");
     expect(line.textContent).toContain("explore");
@@ -67,7 +74,10 @@ describe("InlineToolRow — subagent_launch is a single-line row", () => {
     seedSession("child-1", "worker", { running: false, status: "idle" });
     render(
       <InlineToolRow
-        call={launchCall({ agent: "worker", responsibility: "review the diff" })}
+        call={launchCall({
+          agent: "worker",
+          responsibility: "review the diff",
+        })}
         output={output}
         streaming={false}
         sessionId="s1"
@@ -111,7 +121,10 @@ describe("InlineToolRow — subagent_launch is a single-line row", () => {
   });
 });
 
-function sendCall(args: Record<string, unknown>, status = "completed"): FunctionCallItem {
+function sendCall(
+  args: Record<string, unknown>,
+  status = "completed",
+): FunctionCallItem {
   return {
     type: "function_call",
     id: "fc",
@@ -157,14 +170,18 @@ describe("InlineToolRow — subagent_send is a single-line row", () => {
     const { container } = render(
       <InlineToolRow
         call={sendCall({ id: "child-abcdef1234", message: "keep going" })}
-        output={sendOutput("status: running\nchild_session_id: child-abcdef1234\nThe child runs in the background\n")}
+        output={sendOutput(
+          "status: running\nchild_session_id: child-abcdef1234\nThe child runs in the background\n",
+        )}
       />,
     );
     const line = screen.getByTestId("subagent-send-line");
     expect(line.textContent).toContain("researcher");
     expect(line.textContent).toContain("keep going");
     expect(line.textContent).toContain("running");
-    expect(container.textContent).not.toContain("The child runs in the background");
+    expect(container.textContent).not.toContain(
+      "The child runs in the background",
+    );
     expect(container.querySelector(".foldcard-header")).toBeNull();
   });
 
@@ -175,8 +192,12 @@ describe("InlineToolRow — subagent_send is a single-line row", () => {
         output={sendOutput("status: running\n")}
       />,
     );
-    expect(screen.getByTestId("subagent-send-line").textContent).toContain("child-ab");
-    expect(screen.getByTestId("subagent-send-line").textContent).toContain("running");
+    expect(screen.getByTestId("subagent-send-line").textContent).toContain(
+      "child-ab",
+    );
+    expect(screen.getByTestId("subagent-send-line").textContent).toContain(
+      "running",
+    );
   });
 
   it("shows failed when the call failed", () => {
@@ -187,7 +208,9 @@ describe("InlineToolRow — subagent_send is a single-line row", () => {
         output={sendOutput("Error: nope")}
       />,
     );
-    expect(screen.getByTestId("subagent-send-line").textContent).toContain("failed");
+    expect(screen.getByTestId("subagent-send-line").textContent).toContain(
+      "failed",
+    );
   });
 });
 
@@ -210,7 +233,8 @@ function toolOutput(text: string): FunctionCallOutputItem {
   return { type: "function_call_output", call_id: "call_t", output: text };
 }
 
-const RUNNING_BASH = "status: running\nbash_id: bg_a\noutput_file: .litecode/bash/bg_a.output\n";
+const RUNNING_BASH =
+  "status: running\nbash_id: bg_a\noutput_file: .litecode/bash/bg_a.output\n";
 
 function seedBashJob(callId = "call_t", id = "bg_a"): void {
   useBashStore.getState().applySnapshot("s1", {
@@ -231,8 +255,12 @@ describe("InlineToolRow — session-mount capsules render as single-line summari
   it("renders todo as the summary toolTitle already produces", () => {
     const { container } = render(
       <InlineToolRow
-        call={toolCall("todo", { todos: [{ content: "ship", status: "in_progress" }] })}
-        output={toolOutput("OK. Status — pending: 2, in_progress: 1, completed: 3")}
+        call={toolCall("todo", {
+          todos: [{ content: "ship", status: "in_progress" }],
+        })}
+        output={toolOutput(
+          "OK. Status — pending: 2, in_progress: 1, completed: 3",
+        )}
       />,
     );
     expect(screen.getByTestId("inline-todo-summary").textContent).toBe(
@@ -267,8 +295,12 @@ describe("InlineToolRow — background bash is a single-line row", () => {
       />,
     );
 
-    expect(screen.getByTestId("inline-bash-command").textContent).toBe("sleep 8");
-    expect(screen.getByTestId("inline-bash-status").textContent).toMatch(/^\d+s$/);
+    expect(screen.getByTestId("inline-bash-command").textContent).toBe(
+      "sleep 8",
+    );
+    expect(screen.getByTestId("inline-bash-status").textContent).toMatch(
+      /^\d+s$/,
+    );
     expect(screen.getByTestId("inline-bash-kill")).toBeTruthy();
     expect(container.querySelector(".foldcard-header")).toBeNull();
   });
@@ -300,7 +332,9 @@ describe("InlineToolRow — background bash is a single-line row", () => {
         sessionId="s1"
       />,
     );
-    expect(screen.getByTestId("inline-bash-status").textContent).toBe("exit_code: 1");
+    expect(screen.getByTestId("inline-bash-status").textContent).toBe(
+      "exit_code: 1",
+    );
     expect(screen.queryByTestId("inline-bash-kill")).toBeNull();
   });
 });
@@ -309,13 +343,19 @@ describe("InlineToolRow — remaining subagent tools are single-line rows", () =
   it("shows wait target count while pending and settled N after output", () => {
     const { rerender, container } = render(
       <InlineToolRow
-        call={toolCall("subagent_wait", { ids: ["a", "b"], count: 2 }, "in_progress")}
+        call={toolCall(
+          "subagent_wait",
+          { ids: ["a", "b"], count: 2 },
+          "in_progress",
+        )}
         streaming
       />,
     );
-    expect(screen.getByTestId("subagent-wait-pending").textContent?.replace(/\u00a0/g, " ")).toContain(
-      "waiting 2",
-    );
+    expect(
+      screen
+        .getByTestId("subagent-wait-pending")
+        .textContent?.replace(/\u00a0/g, " "),
+    ).toContain("waiting 2");
     expect(container.querySelector(".foldcard-header")).toBeNull();
 
     rerender(
@@ -339,7 +379,9 @@ describe("InlineToolRow — remaining subagent tools are single-line rows", () =
         output={toolOutput("status: already ended\nreason: completed\n")}
       />,
     );
-    expect(screen.getByTestId("subagent-stop-line").textContent).toContain("reviewer");
+    expect(screen.getByTestId("subagent-stop-line").textContent).toContain(
+      "reviewer",
+    );
     expect(screen.getByTestId("subagent-stop-line").textContent).toContain(
       "already ended · completed",
     );
@@ -352,7 +394,9 @@ describe("InlineToolRow — remaining subagent tools are single-line rows", () =
         output={toolOutput("sessions: 2\n- a  worker\n- b  explore\n")}
       />,
     );
-    expect(screen.getByTestId("subagent-list-line").textContent).toBe("2 sessions");
+    expect(screen.getByTestId("subagent-list-line").textContent).toBe(
+      "2 sessions",
+    );
     expect(container.querySelector(".foldcard-header")).toBeNull();
   });
 });

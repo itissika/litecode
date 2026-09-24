@@ -12,11 +12,7 @@ import { SubagentInlineLine } from "./SubagentInlineLine";
  * Single-line `subagent_send`: child agent + truncated message + live status.
  * The tool's `format_started` body stays in the log for the agent, not the row.
  */
-export function SubagentSendToolView({
-  input,
-  output,
-  status,
-}: ToolViewProps) {
+export function SubagentSendToolView({ input, output, status }: ToolViewProps) {
   const childId = inputString(input, "id");
   const message = inputString(input, "message");
   const child = useSessionStore((s) =>

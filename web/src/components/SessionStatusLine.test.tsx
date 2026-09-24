@@ -62,7 +62,13 @@ function subagentSession(
     running,
     status: running ? "running" : "idle",
     turn: running
-      ? { turn_id: `turn-${id}`, phase: "calling_llm", step: 1, step_max: 10, started_at_ms: Date.now() }
+      ? {
+          turn_id: `turn-${id}`,
+          phase: "calling_llm",
+          step: 1,
+          step_max: 10,
+          started_at_ms: Date.now(),
+        }
       : null,
     agent_id: agent,
     api_model_id: "m",
@@ -97,7 +103,7 @@ function bashCallRow(
   return {
     seq,
     kind: "item/tool_call",
-    streaming: false,
+    state: "final",
     body: {
       type: "function_call",
       id: `fc_${callId}`,
@@ -113,7 +119,7 @@ function bashResultRow(callId: string, output: string, seq = 2): HumanRow {
   return {
     seq,
     kind: "item/tool_result",
-    streaming: false,
+    state: "final",
     body: { type: "function_call_output", call_id: callId, output },
   };
 }
@@ -136,7 +142,11 @@ beforeEach(() => {
   useBashStore.getState().reset();
   useMessageStore.setState({ bySession: new Map() });
   useTurnStore.setState({ byId: new Map() });
-  useSessionStore.setState({ project: null, sessions: [], byId: new Map() } as never);
+  useSessionStore.setState({
+    project: null,
+    sessions: [],
+    byId: new Map(),
+  } as never);
   useEditorStore.setState({ openFile: originalOpenFile } as never);
   useWorkspaceChangeStore.setState({ last: null });
   vi.mocked(readFile).mockReset().mockResolvedValue("# plan");
@@ -148,7 +158,11 @@ afterEach(() => {
   useBashStore.getState().reset();
   useMessageStore.setState({ bySession: new Map() });
   useTurnStore.setState({ byId: new Map() });
-  useSessionStore.setState({ project: null, sessions: [], byId: new Map() } as never);
+  useSessionStore.setState({
+    project: null,
+    sessions: [],
+    byId: new Map(),
+  } as never);
   useEditorStore.setState({ openFile: originalOpenFile } as never);
   useWorkspaceChangeStore.setState({ last: null });
 });
@@ -187,7 +201,9 @@ describe("SessionStatusLine — resident capsules", () => {
       (el.className as string).split(/\s+/).includes(token);
     render(<SessionStatusLine sessionId="s1" />);
     const wrapper = (id: string) =>
-      screen.getByTestId(`capsule-${id}`).querySelector("[data-content-hidden]")!;
+      screen
+        .getByTestId(`capsule-${id}`)
+        .querySelector("[data-content-hidden]")!;
 
     // Todo owns the slot by default; the other three are collapsed.
     expect(hasToken(wrapper("todo"), "visible")).toBe(false);
@@ -200,7 +216,9 @@ describe("SessionStatusLine — resident capsules", () => {
     for (const id of ["plan", "subagent", "terminal"] as const) {
       expect(hasToken(wrapper(id), "visible")).toBe(false);
       expect(hasToken(wrapper(id), "invisible")).toBe(true);
-      expect(wrapper(id).className).toContain("transition-[opacity,visibility]");
+      expect(wrapper(id).className).toContain(
+        "transition-[opacity,visibility]",
+      );
     }
 
     // Hovering another capsule flips which wrapper is expanded — still no
@@ -211,7 +229,9 @@ describe("SessionStatusLine — resident capsules", () => {
     expect(wrapper("plan").className).not.toContain("visibility");
     expect(hasToken(wrapper("todo"), "visible")).toBe(false);
     expect(hasToken(wrapper("todo"), "invisible")).toBe(true);
-    expect(wrapper("todo").className).toContain("transition-[opacity,visibility]");
+    expect(wrapper("todo").className).toContain(
+      "transition-[opacity,visibility]",
+    );
   });
 
   it("surfaces the live counts in the accessible name and the hover label", () => {
@@ -303,12 +323,12 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
       within(screen.getByTestId("capsule-todo")).getByText("Tasks"),
     ).toBeTruthy();
     for (const id of ["plan", "subagent", "terminal"] as const) {
-      expect(screen.getByTestId(`capsule-${id}`).dataset.expanded).toBe("false");
+      expect(screen.getByTestId(`capsule-${id}`).dataset.expanded).toBe(
+        "false",
+      );
     }
     const plan = screen.getByTestId("capsule-plan");
-    expect(
-      plan.querySelector('[data-content-hidden="true"]'),
-    ).toBeTruthy();
+    expect(plan.querySelector('[data-content-hidden="true"]')).toBeTruthy();
   });
 
   it("hover claims the slot and mouse-leave keeps it (sticky)", () => {
@@ -352,7 +372,9 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     act(() => {
       vi.advanceTimersByTime(BASH_CLAIM_GRACE_MS + 1);
     });
-    expect(screen.getByTestId("capsule-terminal").dataset.expanded).toBe("true");
+    expect(screen.getByTestId("capsule-terminal").dataset.expanded).toBe(
+      "true",
+    );
     expect(screen.getByTestId("capsule-plan").dataset.expanded).toBe("false");
   });
 
@@ -655,29 +677,56 @@ describe("SessionStatusLine — vertical expand", () => {
 
     const scroll = screen.getByTestId("status-panel-scroll");
     expect(scroll.className).toContain("overscroll-contain");
-    // Content-sized: the panel carries no height of its own, the scrollport is
-    // what the auto-height ceiling caps.
-    expect(screen.getByTestId("status-capsule-panel").style.height).toBe("");
-    expect(scroll.style.maxHeight).toBe(`${PANEL_MAX_H}px`);
+    // Content-sized: the panel carries no height of its own, only its own
+    // `max-height` ceiling — the pane clamp is flexbox's job.
+    const panel = screen.getByTestId("status-capsule-panel");
+    expect(panel.style.height).toBe("");
+    expect(panel.style.maxHeight).toBe(`${PANEL_MAX_H}px`);
   });
 
-  it("caps the auto height to the space above the row inside the pane", () => {
-    const { container } = render(
-      <div className="dv-content-container">
-        <SessionStatusLine sessionId="s1" />
-      </div>,
-    );
-    const pane = container.querySelector<HTMLElement>(".dv-content-container")!;
-    pane.getBoundingClientRect = () => ({ top: 100 }) as unknown as DOMRect;
-    const row = screen.getByTestId("session-status-capsules");
-    row.getBoundingClientRect = () => ({ top: 400 }) as unknown as DOMRect;
-
+  it("keeps the flex shrink chain open, so the browser — not a measurement — clamps the panel", () => {
+    render(<SessionStatusLine sessionId="s1" />);
     fireEvent.click(screen.getByTestId("capsule-plan"));
 
-    // 400 − 100 − 16 (row gap + breathing room).
-    expect(screen.getByTestId("status-panel-scroll").style.maxHeight).toBe(
-      "284px",
-    );
+    const line = screen.getByTestId("session-status-line");
+    const panel = screen.getByTestId("status-capsule-panel");
+    const scroll = screen.getByTestId("status-panel-scroll");
+    const row = screen.getByTestId("session-status-capsules");
+
+    // Every level from the dock column down to the scrolling body must let the
+    // shrink through (`min-h-0`), while the capsules row keeps its size
+    // (`shrink-0`): the panel is the one item that yields, so a long plan can
+    // never push the row/input out of the agent pane.
+    expect(line.className).toContain("min-h-0");
+    expect(panel.className).toContain("flex");
+    expect(panel.className).toContain("min-h-0");
+    expect(scroll.className).toContain("min-h-0");
+    expect(scroll.className).toContain("flex-auto");
+    expect(row.className).toContain("shrink-0");
+  });
+
+  it("keeps the plan file row in its own container, above the scrolling body", async () => {
+    vi.mocked(readFile).mockResolvedValue("# Title\n\nbody");
+    seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+
+    const row = await screen.findByTestId("plan-file-row");
+    const rule = screen.getByTestId("plan-header-rule");
+    const scroll = screen.getByTestId("status-panel-scroll");
+    // Two containers: the row is the panel's chrome (a `shrink-0` sibling of the
+    // body, with the rule between them), and the body is the viewport that clips
+    // and scrolls the document.
+    expect(row.className).toContain("shrink-0");
+    expect(scroll.contains(row)).toBe(false);
+    expect(row.nextElementSibling).toBe(rule);
+    expect(rule.nextElementSibling).toBe(scroll);
+    expect(rule.textContent).toBe("");
+    expect(scroll.className).toContain("overflow-y-auto");
+    // No overlay of its own — the panel's glass is not stacking another fill.
+    expect(row.className).not.toContain("sticky");
+    expect(row.className).not.toContain("backdrop-blur");
+    expect(within(scroll).getByRole("heading", { name: "Title" })).toBeTruthy();
   });
 
   it("opens the clicked capsule's panel content-sized", () => {
@@ -1166,7 +1215,9 @@ describe("SessionStatusLine — migrated chip content", () => {
     render(<SessionStatusLine sessionId="s1" />);
     fireEvent.click(screen.getByTestId("capsule-plan"));
 
-    expect(await screen.findByRole("heading", { name: "current" })).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { name: "current" }),
+    ).toBeTruthy();
     expect(vi.mocked(readFile)).toHaveBeenCalledTimes(1);
   });
 

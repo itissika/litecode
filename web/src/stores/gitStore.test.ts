@@ -1,11 +1,21 @@
 import { describe, expect, it } from "vitest";
 
-import { actionTargetPaths, gitRowId, isGitMetaPath, parseGitRowId, selectedPaths, watchPathsAffectGitWorktree } from "./gitStore";
+import {
+  actionTargetPaths,
+  gitRowId,
+  isGitMetaPath,
+  parseGitRowId,
+  selectedPaths,
+  watchPathsAffectGitWorktree,
+} from "./gitStore";
 
 describe("git row ids", () => {
   it("round-trips section and path", () => {
     const id = gitRowId("changes", "src/foo.rs");
-    expect(parseGitRowId(id)).toEqual({ section: "changes", path: "src/foo.rs" });
+    expect(parseGitRowId(id)).toEqual({
+      section: "changes",
+      path: "src/foo.rs",
+    });
   });
 
   it("filters selected paths by section", () => {
@@ -28,7 +38,9 @@ describe("git watch path filter", () => {
   });
 
   it("ignores refresh when every changed path is git metadata", () => {
-    expect(watchPathsAffectGitWorktree([".git/index", ".git/HEAD"])).toBe(false);
+    expect(watchPathsAffectGitWorktree([".git/index", ".git/HEAD"])).toBe(
+      false,
+    );
     expect(watchPathsAffectGitWorktree([".git/index", "src/a.ts"])).toBe(true);
     expect(watchPathsAffectGitWorktree([])).toBe(true);
   });
@@ -40,10 +52,17 @@ describe("git file action targets", () => {
       gitRowId("changes", "a.ts"),
       gitRowId("changes", "b.ts"),
     ]);
-    expect(actionTargetPaths(selected, "changes", "a.ts")).toEqual(["a.ts", "b.ts"]);
-    expect(actionTargetPaths(selected, "changes", "c.ts")).toEqual(["c.ts"]);
-    expect(actionTargetPaths(new Set([gitRowId("changes", "a.ts")]), "changes", "a.ts")).toEqual([
+    expect(actionTargetPaths(selected, "changes", "a.ts")).toEqual([
       "a.ts",
+      "b.ts",
     ]);
+    expect(actionTargetPaths(selected, "changes", "c.ts")).toEqual(["c.ts"]);
+    expect(
+      actionTargetPaths(
+        new Set([gitRowId("changes", "a.ts")]),
+        "changes",
+        "a.ts",
+      ),
+    ).toEqual(["a.ts"]);
   });
 });

@@ -74,7 +74,10 @@ describe("gitFileLetters", () => {
   });
 
   it("ignores rename/copy/conflict", () => {
-    const s = status([file("r.ts", "R")], [file("c.ts", "C"), file("u.ts", "U")]);
+    const s = status(
+      [file("r.ts", "R")],
+      [file("c.ts", "C"), file("u.ts", "U")],
+    );
     expect(gitFileLetters(s).size).toBe(0);
   });
 });

@@ -43,7 +43,9 @@ const MIN_SPAWN_ROWS = 2;
 
 /** Resolve a theme token to its concrete color, falling back if unresolved. */
 function readTokenColor(name: string, fallback: string): string {
-  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const v = getComputedStyle(document.documentElement)
+    .getPropertyValue(name)
+    .trim();
   return v || fallback;
 }
 
@@ -143,7 +145,10 @@ export function TerminalPanel(props: IDockviewPanelProps<{ cwd?: string }>) {
   //     the host must stay padding-free (the p-1 lives on the outer wrapper),
   //     otherwise rows/cols are computed against a box 8px larger than the
   //     area xterm actually fills and the bottom row gets clipped.
-  const measureGeometry = useCallback((): { cols: number; rows: number } | null => {
+  const measureGeometry = useCallback((): {
+    cols: number;
+    rows: number;
+  } | null => {
     const term = termRef.current;
     const fit = fitRef.current;
     const host = hostRef.current;
@@ -281,7 +286,8 @@ export function TerminalPanel(props: IDockviewPanelProps<{ cwd?: string }>) {
     // MIN_SPAWN_COLS). Bail and let the next dimensions/observer event retry
     // once layout has settled.
     const dims = measureGeometry();
-    if (!dims || dims.cols < MIN_SPAWN_COLS || dims.rows < MIN_SPAWN_ROWS) return;
+    if (!dims || dims.cols < MIN_SPAWN_COLS || dims.rows < MIN_SPAWN_ROWS)
+      return;
     creatingRef.current = true;
     const myReq = ++reqRef.current;
     try {
@@ -306,7 +312,10 @@ export function TerminalPanel(props: IDockviewPanelProps<{ cwd?: string }>) {
       // reset) to drop the previous session's content without desyncing
       // xterm's cursor from the shell's.
       const settled = measureGeometry();
-      if (settled && (settled.cols !== term.cols || settled.rows !== term.rows)) {
+      if (
+        settled &&
+        (settled.cols !== term.cols || settled.rows !== term.rows)
+      ) {
         resizeTo(settled.cols, settled.rows);
       }
       term.clear();
@@ -384,7 +393,9 @@ export function TerminalPanel(props: IDockviewPanelProps<{ cwd?: string }>) {
       const id = idRef.current;
       if (!id) return;
       void terminalWrite(id, data).catch((e) => {
-        term.writeln(`\r\n[write error] ${e instanceof Error ? e.message : String(e)}`);
+        term.writeln(
+          `\r\n[write error] ${e instanceof Error ? e.message : String(e)}`,
+        );
       });
     });
 

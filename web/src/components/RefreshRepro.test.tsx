@@ -68,7 +68,11 @@ afterEach(() => {
   cleanup();
   useTurnStore.setState({ byId: new Map() });
   useMessageStore.setState({ bySession: new Map() });
-  useSessionStore.setState({ byId: new Map(), primaryAgents: [], availableModels: [] } as never);
+  useSessionStore.setState({
+    byId: new Map(),
+    primaryAgents: [],
+    availableModels: [],
+  } as never);
 });
 
 describe("refresh hydration repro", () => {

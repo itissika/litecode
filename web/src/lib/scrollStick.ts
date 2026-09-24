@@ -151,7 +151,11 @@ export function useStickToBottom({
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (!SCROLL_INTENT_KEYS.has(event.key)) return;
-      if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") {
+      if (
+        event.key === "ArrowUp" ||
+        event.key === "PageUp" ||
+        event.key === "Home"
+      ) {
         setStick(false);
         return;
       }

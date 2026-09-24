@@ -17,9 +17,13 @@ export function SubagentInlineLine({
 }) {
   const inner = (
     <>
-      <span className="shrink-0 font-mono text-(--_dk-text-primary)">{label}</span>
+      <span className="shrink-0 font-mono text-(--_dk-text-primary)">
+        {label}
+      </span>
       {secondary ? (
-        <span className="min-w-0 truncate text-(--_dk-text-secondary)">{secondary}</span>
+        <span className="min-w-0 truncate text-(--_dk-text-secondary)">
+          {secondary}
+        </span>
       ) : null}
       <span
         className={`min-w-0 truncate ${

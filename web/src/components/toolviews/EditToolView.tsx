@@ -32,7 +32,10 @@ export function collectEditBlocks(input: unknown): EditBlockPreview[] {
       ];
     });
   }
-  if (typeof obj.old_string === "string" || typeof obj.new_string === "string") {
+  if (
+    typeof obj.old_string === "string" ||
+    typeof obj.new_string === "string"
+  ) {
     return [
       {
         oldString: typeof obj.old_string === "string" ? obj.old_string : "",
@@ -55,11 +58,16 @@ export function EditToolView({ name, input, status, output }: ToolViewProps) {
     input && typeof input === "object" && !Array.isArray(input)
       ? (input as Record<string, unknown>)
       : {};
-  const filePath = typeof obj.file_path === "string" ? obj.file_path : undefined;
+  const filePath =
+    typeof obj.file_path === "string" ? obj.file_path : undefined;
   const blocks = collectEditBlocks(input);
   const primary = Array.isArray(obj.edits)
     ? ["file_path", "edits"]
-    : (TOOL_PARAM_META[name]?.primary ?? ["file_path", "old_string", "new_string"]);
+    : (TOOL_PARAM_META[name]?.primary ?? [
+        "file_path",
+        "old_string",
+        "new_string",
+      ]);
   const meta = collectMetaFields(input, primary);
 
   const headerColor =
@@ -70,7 +78,11 @@ export function EditToolView({ name, input, status, output }: ToolViewProps) {
         : "text-(--_dk-text-secondary)";
 
   const countLabel =
-    blocks.length > 1 ? `${blocks.length} edits` : blocks.length === 1 ? "1 edit" : "request preview";
+    blocks.length > 1
+      ? `${blocks.length} edits`
+      : blocks.length === 1
+        ? "1 edit"
+        : "request preview";
 
   return (
     <div className="flex flex-col gap-1">
@@ -85,7 +97,9 @@ export function EditToolView({ name, input, status, output }: ToolViewProps) {
         <ToolInfoIcon fields={meta} />
       </div>
       {blocks.length === 0 ? (
-        <div className="text-dk-xs text-(--_dk-text-muted)">No edit preview</div>
+        <div className="text-dk-xs text-(--_dk-text-muted)">
+          No edit preview
+        </div>
       ) : (
         blocks.map((block, index) => (
           <div key={index} className="flex flex-col gap-1">
@@ -97,7 +111,9 @@ export function EditToolView({ name, input, status, output }: ToolViewProps) {
               </div>
             )}
             {blocks.length === 1 && block.replaceAll && (
-              <div className="text-dk-xs text-(--_dk-text-muted)">replace_all · request preview</div>
+              <div className="text-dk-xs text-(--_dk-text-muted)">
+                replace_all · request preview
+              </div>
             )}
             <DiffView oldText={block.oldString} newText={block.newString} />
           </div>

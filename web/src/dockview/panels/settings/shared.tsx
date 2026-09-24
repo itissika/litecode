@@ -1,7 +1,13 @@
 import type { ReactNode } from "react";
 
-import { useSettingsStore, type PersistStatus } from "../../../stores/settingsStore";
-import type { PersistDocKey, SettingsSection } from "../../../stores/settingsDocuments";
+import {
+  useSettingsStore,
+  type PersistStatus,
+} from "../../../stores/settingsStore";
+import type {
+  PersistDocKey,
+  SettingsSection,
+} from "../../../stores/settingsDocuments";
 import { turnMapIsBusy, useTurnStore } from "../../../stores/turnStore";
 
 export function useSettingsSaveBlocked(): boolean {
@@ -25,14 +31,13 @@ export function FieldLabel({
 
 export function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
-    <input
-      {...props}
-      className={`settings-input ${props.className ?? ""}`}
-    />
+    <input {...props} className={`settings-input ${props.className ?? ""}`} />
   );
 }
 
-export function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+export function TextArea(
+  props: React.TextareaHTMLAttributes<HTMLTextAreaElement>,
+) {
   return (
     <textarea
       {...props}
@@ -61,12 +66,20 @@ const SECTION_PERSIST_DOCS: Record<SettingsSection, PersistDocKey[]> = {
   engines: ["engines"],
 };
 
-const RANK: PersistStatus[] = ["error", "invalid", "saving", "pending", "saved"];
+const RANK: PersistStatus[] = [
+  "error",
+  "invalid",
+  "saving",
+  "pending",
+  "saved",
+];
 
 export function PersistStatusLabel() {
   const section = useSettingsStore((s) => s.section);
   const persistByDoc = useSettingsStore((s) => s.persistByDoc);
-  const statuses = SECTION_PERSIST_DOCS[section].map((d) => persistByDoc[d] ?? "idle");
+  const statuses = SECTION_PERSIST_DOCS[section].map(
+    (d) => persistByDoc[d] ?? "idle",
+  );
   const status = RANK.find((s) => statuses.includes(s)) ?? "idle";
   const text = PERSIST_LABEL[status];
   if (!text) return null;
@@ -98,7 +111,9 @@ export function SectionHeader({
       className={`flex items-center justify-between gap-2${divider ? " settings-op-divider" : ""}`}
     >
       <h3 className="settings-section-title">{title}</h3>
-      {children ? <div className="flex items-center gap-2 pr-2">{children}</div> : null}
+      {children ? (
+        <div className="flex items-center gap-2 pr-2">{children}</div>
+      ) : null}
     </div>
   );
 }

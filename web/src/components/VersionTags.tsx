@@ -92,7 +92,9 @@ function ChannelTag({
 }) {
   if (waiting) {
     return (
-      <span className={`${VERSION_TAG_BASE} ${textSize} uppercase text-(--_dk-text-muted)`}>
+      <span
+        className={`${VERSION_TAG_BASE} ${textSize} uppercase text-(--_dk-text-muted)`}
+      >
         …
       </span>
     );
@@ -109,7 +111,9 @@ function ChannelTag({
 
 export function useServerVersionTags() {
   const serverVersion = useConnectionStore((s) => s.serverVersion);
-  const serverVersionChannel = useConnectionStore((s) => s.serverVersionChannel);
+  const serverVersionChannel = useConnectionStore(
+    (s) => s.serverVersionChannel,
+  );
   const connectionState = useConnectionStore((s) => s.state);
   const waiting = connectionState !== "connected" && !serverVersion;
 

@@ -137,7 +137,11 @@ export function ToolIcon({
         ? "tool-icon--warn"
         : "tool-icon--ok";
   const animClass =
-    anim === "pop" ? "tool-icon--pop" : anim === "fail" ? "tool-icon--fail-anim" : "";
+    anim === "pop"
+      ? "tool-icon--pop"
+      : anim === "fail"
+        ? "tool-icon--fail-anim"
+        : "";
 
   return (
     <span className={`tool-icon ${colorClass} ${animClass}`} aria-hidden>

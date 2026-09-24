@@ -64,9 +64,9 @@ describe("SessionList — root filtering (P7)", () => {
     // sidebar must not surface it as a session of its own.
     expect(useSessionStore.getState().sessions).toHaveLength(2);
     expect(screen.queryByText("child work")).toBeNull();
-    expect(screen.getAllByRole("button", { name: "Delete session" })).toHaveLength(
-      1,
-    );
+    expect(
+      screen.getAllByRole("button", { name: "Delete session" }),
+    ).toHaveLength(1);
     expect(screen.getByText("1 session")).toBeTruthy();
   });
 
@@ -117,8 +117,6 @@ describe("SessionList — root filtering (P7)", () => {
 
     render(<SessionList />);
 
-    expect(
-      await screen.findByText("No saved sessions yet."),
-    ).toBeTruthy();
+    expect(await screen.findByText("No saved sessions yet.")).toBeTruthy();
   });
 });

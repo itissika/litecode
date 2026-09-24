@@ -53,11 +53,20 @@ function baseLetter(color: string): React.CSSProperties {
   };
 }
 
-export function Logo({ size, replay = 0, splash, animated = true, style: extraStyle }: LogoProps) {
-  useEffect(() => { injectStyles(); }, []);
+export function Logo({
+  size,
+  replay = 0,
+  splash,
+  animated = true,
+  style: extraStyle,
+}: LogoProps) {
+  useEffect(() => {
+    injectStyles();
+  }, []);
 
   const fs = size === "sm" ? 12 : size === "lg" ? 80 : 28;
-  const color = size === "lg" ? "var(--_dk-text-primary)" : "var(--_dk-text-secondary)";
+  const color =
+    size === "lg" ? "var(--_dk-text-primary)" : "var(--_dk-text-secondary)";
   const useGradient = size === "lg" && splash;
   const gradientStyle: React.CSSProperties = useGradient
     ? {
@@ -99,11 +108,16 @@ export function Logo({ size, replay = 0, splash, animated = true, style: extraSt
 
   const textEl =
     size === "sm" ? (
-      <span className="ml-3 inline-flex items-center leading-none select-none whitespace-nowrap" style={extraStyle}>
+      <span
+        className="ml-3 inline-flex items-center leading-none select-none whitespace-nowrap"
+        style={extraStyle}
+      >
         {letters}
       </span>
     ) : (
-      <span className="select-none whitespace-nowrap" style={extraStyle}>{letters}</span>
+      <span className="select-none whitespace-nowrap" style={extraStyle}>
+        {letters}
+      </span>
     );
 
   if (splash) {
@@ -154,7 +168,8 @@ function SplashOverlay({ children }: { children: React.ReactNode }) {
         backdropFilter: phase === "showing" ? "blur(9px)" : undefined,
         WebkitBackdropFilter: phase === "showing" ? "blur(9px)" : undefined,
         pointerEvents: phase === "fading" ? "none" : undefined,
-        animation: phase === "fading" ? "splash-out 0.6s ease-out forwards" : undefined,
+        animation:
+          phase === "fading" ? "splash-out 0.6s ease-out forwards" : undefined,
       }}
       onAnimationEnd={() => {
         if (phase === "fading") {

@@ -57,7 +57,10 @@ describe("model-selection death list", () => {
   });
 
   it("connectionStore has no session model field", () => {
-    const src = readFileSync(join(WEB_SRC, "stores/connectionStore.ts"), "utf8");
+    const src = readFileSync(
+      join(WEB_SRC, "stores/connectionStore.ts"),
+      "utf8",
+    );
     expect(/\bmodel\s*:/.test(src)).toBe(false);
     expect(src.includes("hello.model")).toBe(false);
   });

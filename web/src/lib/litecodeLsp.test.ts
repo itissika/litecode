@@ -37,8 +37,12 @@ describe("toFileUri", () => {
   });
 
   it("rejects Windows verbatim project roots (no silent strip)", () => {
-    expect(() => toFileUri("\\\\?\\E:\\litecode", "src/a.rs")).toThrow(/LAP|verbatim/i);
-    expect(() => toFileUri("//?/E:/litecode", "src/a.rs")).toThrow(/LAP|verbatim/i);
+    expect(() => toFileUri("\\\\?\\E:\\litecode", "src/a.rs")).toThrow(
+      /LAP|verbatim/i,
+    );
+    expect(() => toFileUri("//?/E:/litecode", "src/a.rs")).toThrow(
+      /LAP|verbatim/i,
+    );
   });
 });
 

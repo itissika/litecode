@@ -7,11 +7,7 @@ import { describe, expect, it } from "vitest";
 
 const WEB_SRC = join(__dirname, "..");
 
-const FORBIDDEN = [
-  "turnActive",
-  "isLastBubble",
-  "assistant-after:",
-] as const;
+const FORBIDDEN = ["turnActive", "isLastBubble", "assistant-after:"] as const;
 
 function walkTsFiles(dir: string, out: string[]): void {
   for (const name of readdirSync(dir)) {

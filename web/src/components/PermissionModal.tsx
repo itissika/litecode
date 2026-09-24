@@ -21,7 +21,7 @@ export function PermissionCard({
 
   return (
     <div
-      className={`${composerCardClass} flex gap-3 border-l-2 border-l-(--_dk-amber-500) p-3`}
+      className={`${composerCardClass} flex shrink-0 gap-3 border-l-2 border-l-(--_dk-amber-500) p-3`}
       role="group"
       aria-labelledby="perm-title"
       aria-describedby={requestSuffix ? "perm-request-id" : undefined}

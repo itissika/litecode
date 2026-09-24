@@ -45,7 +45,9 @@ describe("WaitShellToolView", () => {
     const label = screen.getByTestId("wait-elapsed").textContent ?? "";
     expect(label).toMatch(/wait\s+1[12]s/);
     expect(label).not.toContain(formatElapsed(90_000));
-    expect(document.querySelectorAll(".wait-wave-char").length).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".wait-wave-char").length).toBeGreaterThan(
+      0,
+    );
   });
 
   it("waves while waiting before the waiter snapshot arrives", () => {
@@ -59,7 +61,9 @@ describe("WaitShellToolView", () => {
       />,
     );
     expect(screen.getByTestId("wait-pending")).toBeTruthy();
-    expect(document.querySelectorAll(".wait-wave-char").length).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".wait-wave-char").length).toBeGreaterThan(
+      0,
+    );
   });
 
   it("shows waited after the tool result seals and the waiter is gone", () => {

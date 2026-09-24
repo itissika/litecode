@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactElement,
+} from "react";
 import { UsersThree } from "@phosphor-icons/react";
 
 import type { AgentRunState } from "../api/types";
@@ -79,7 +85,11 @@ export function SubagentStatusIcon({
       // Sealed: pick the settle feedback from the derived tool status.
       // Warning reuses the ok pop but flashes amber via `.sa-warn` vars.
       next =
-        status === "failed" ? "fail" : status === "ok" || status === "warning" ? "ok" : null;
+        status === "failed"
+          ? "fail"
+          : status === "ok" || status === "warning"
+            ? "ok"
+            : null;
     } else if (!wasRunning && running && live) {
       next = "enter";
     }
@@ -109,7 +119,11 @@ export function SubagentStatusIcon({
   const failing = shot === "fail";
 
   const colorClass =
-    sealed && status === "failed" ? "sa-failed" : sealed && status === "warning" ? "sa-warn" : "";
+    sealed && status === "failed"
+      ? "sa-failed"
+      : sealed && status === "warning"
+        ? "sa-warn"
+        : "";
   const cls = [
     "tool-icon",
     "sa-presence",

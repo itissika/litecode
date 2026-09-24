@@ -11,7 +11,12 @@ const waitLineClass = "font-mono text-dk-sm";
  * Auxiliary wait_shell view: countdown while this call is waiting, then
  * "waited". Live output stays on the bash card.
  */
-export function WaitShellToolView({ call_id, sessionId, output, status }: ToolViewProps) {
+export function WaitShellToolView({
+  call_id,
+  sessionId,
+  output,
+  status,
+}: ToolViewProps) {
   const waiter = useBashStore((s) => {
     if (!sessionId || !call_id) return undefined;
     return s.bySession.get(sessionId)?.waits.find((w) => w.call_id === call_id);

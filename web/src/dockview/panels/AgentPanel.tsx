@@ -1,4 +1,13 @@
-import { Component, type ReactNode, type RefObject, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  Component,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import { CaretDownIcon } from "@phosphor-icons/react";
 
@@ -13,7 +22,10 @@ import {
   subscribePendingReveal,
 } from "../../lib/sessionPanelNav";
 import { AgentChatInput } from "../../components/AgentChatInput";
-import { MessageList, type EditingUserAnchor } from "../../components/MessageList";
+import {
+  MessageList,
+  type EditingUserAnchor,
+} from "../../components/MessageList";
 import { PermissionCard } from "../../components/PermissionModal";
 import { ProgressiveBlur } from "../../components/ProgressiveBlur";
 import { SessionStatusLine } from "../../components/SessionStatusLine";
@@ -41,11 +53,7 @@ function PanelCrash({ onClose }: { onClose: () => void }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4 px-4 text-(--_dk-text-muted)">
       <p className="text-sm">Something went wrong with this session.</p>
-      <button
-        type="button"
-        onClick={onClose}
-        className="btn btn-sm"
-      >
+      <button type="button" onClick={onClose} className="btn btn-sm">
         Close
       </button>
     </div>
@@ -85,16 +93,22 @@ export function AgentPanel(props: IDockviewPanelProps) {
   useEffect(() => {
     if (!sessionId || connState !== "connected") return;
     let disposed = false;
-    useConnectionStore.getState().ensureSubscribe(sessionId).catch((error: unknown) => {
-      if (disposed) return;
-      const message = error instanceof Error ? error.message : "Failed to open session";
-      if (/session.*not found/i.test(message)) {
-        useToastStore.getState().showToast("This session no longer exists", "error");
-        props.api.close();
-      }
-      // Any other failure (socket dropped mid-flight, timeout) is left to the
-      // next "connected" transition rather than surfaced as a scary toast.
-    });
+    useConnectionStore
+      .getState()
+      .ensureSubscribe(sessionId)
+      .catch((error: unknown) => {
+        if (disposed) return;
+        const message =
+          error instanceof Error ? error.message : "Failed to open session";
+        if (/session.*not found/i.test(message)) {
+          useToastStore
+            .getState()
+            .showToast("This session no longer exists", "error");
+          props.api.close();
+        }
+        // Any other failure (socket dropped mid-flight, timeout) is left to the
+        // next "connected" transition rather than surfaced as a scary toast.
+      });
     return () => {
       disposed = true;
     };
@@ -133,8 +147,7 @@ export function AgentPanel(props: IDockviewPanelProps) {
     s.sessions.find((x) => x.id === sessionId),
   );
   const knownChild = session !== undefined && !!session.parent_session_id;
-  const writable =
-    !knownChild && (explicitRootIntent || session !== undefined);
+  const writable = !knownChild && (explicitRootIntent || session !== undefined);
   useEffect(() => {
     props.api.setTitle(preview || sessionId.slice(0, 8));
   }, [props.api, sessionId, preview]);
@@ -170,14 +183,23 @@ export function AgentChatShell({
   isActive?: boolean;
 }) {
   const [stickToEnd, setStickToEnd] = useState(true);
-  const [editingAnchor, setEditingAnchor] = useState<EditingUserAnchor | null>(null);
-  const [miniPhase, setMiniPhase] = useState<"idle" | "entering" | "visible" | "exiting">("idle");
+  const [editingAnchor, setEditingAnchor] = useState<EditingUserAnchor | null>(
+    null,
+  );
+  const [miniPhase, setMiniPhase] = useState<
+    "idle" | "entering" | "visible" | "exiting"
+  >("idle");
   const dismissTimerRef = useRef<number | null>(null);
   const jumpToEndRef = useRef<(() => void) | null>(null);
   const revealBashRef = useRef<((callId: string) => void) | null>(null);
   const revealSeqRef = useRef<((seq: number) => void) | null>(null);
-  const pendingReveal = useSyncExternalStore(subscribePendingReveal, getPendingReveal);
-  const hydrated = useMessageStore((s) => s.bySession.get(sessionId)?.hydrated ?? false);
+  const pendingReveal = useSyncExternalStore(
+    subscribePendingReveal,
+    getPendingReveal,
+  );
+  const hydrated = useMessageStore(
+    (s) => s.bySession.get(sessionId)?.hydrated ?? false,
+  );
 
   useEffect(() => {
     if (!pendingReveal || pendingReveal.sessionId !== sessionId) return;
@@ -186,11 +208,13 @@ export function AgentChatShell({
     const seq = pendingReveal.seq;
     let cancelled = false;
     void (async () => {
-      const ok = await useMessageStore.getState().ensureSeqLoaded(
-        sessionId,
-        seq,
-        () => !cancelled && getPendingReveal()?.gen === gen,
-      );
+      const ok = await useMessageStore
+        .getState()
+        .ensureSeqLoaded(
+          sessionId,
+          seq,
+          () => !cancelled && getPendingReveal()?.gen === gen,
+        );
       if (cancelled) return;
       if (!ok) {
         clearPendingReveal(gen);
@@ -202,7 +226,13 @@ export function AgentChatShell({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, hydrated, pendingReveal?.sessionId, pendingReveal?.seq, pendingReveal?.gen]);
+  }, [
+    sessionId,
+    hydrated,
+    pendingReveal?.sessionId,
+    pendingReveal?.seq,
+    pendingReveal?.gen,
+  ]);
 
   const openMini = useCallback((anchor: EditingUserAnchor) => {
     if (dismissTimerRef.current !== null) {
@@ -213,7 +243,9 @@ export function AgentChatShell({
     // Bubble click / re-open: start the enter animation. Draft edits from the
     // mini chat itself must NOT restart it (the wrapper would collapse back
     // to the bubble height on every keystroke).
-    setMiniPhase((phase) => (phase === "idle" || phase === "exiting" ? "entering" : phase));
+    setMiniPhase((phase) =>
+      phase === "idle" || phase === "exiting" ? "entering" : phase,
+    );
   }, []);
 
   const finishDismiss = useCallback(() => {
@@ -456,9 +488,17 @@ export function ComposerDock({
   const [collapsed, setCollapsed] = useState(false);
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-4">
+    // The dock fills the pane (inset-0, pointer-events-none) and bottom-aligns
+    // its column, so the browser — not a JS measurement — owns the height
+    // clamp: the status panel below is the one shrinkable item (row, chips and
+    // input are `shrink-0`), so a long plan is stopped at the free space above
+    // the capsule row instead of growing out of the agent panel.
+    <div
+      data-testid="composer-dock"
+      className="pointer-events-none absolute inset-0 z-10 flex min-h-0 flex-col justify-end px-4 pb-4"
+    >
       <div
-        className={`pointer-events-auto mx-auto relative w-full max-w-[var(--_dk-prose-measure)] ${
+        className={`pointer-events-auto relative mx-auto flex min-h-0 w-full max-w-[var(--_dk-prose-measure)] flex-col ${
           isActive
             ? "[--_dk-composer-card-shadow:var(--_dk-composer-focus-shadow)]"
             : ""
@@ -477,15 +517,15 @@ export function ComposerDock({
         <div
           data-testid="composer-dock-content"
           data-collapsed={collapsed}
-          className={`transition-[transform,opacity] duration-200 ease-in-out ${
+          className={`flex min-h-0 flex-col transition-[transform,opacity] duration-200 ease-in-out ${
             collapsed
               ? "pointer-events-none translate-y-[calc(100%_+_2rem)] opacity-0"
               : "opacity-100"
           }`}
         >
-          <div className="flex flex-col gap-2">
+          <div className="flex min-h-0 flex-col gap-2">
             {!stickToEnd && (
-              <div className="flex justify-center">
+              <div className="flex shrink-0 justify-center">
                 <button
                   type="button"
                   className={`${composerCardClass} inline-flex items-center gap-1 px-2.5 py-1 text-xs text-(--_dk-text-secondary) transition-transform duration-100 hover:scale-105 active:scale-90 active:brightness-90`}

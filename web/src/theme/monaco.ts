@@ -32,7 +32,8 @@ export function toMonacoHex(cssColor: string, fallback = "#000000"): string {
   if (rgb) {
     const chan = (v: string) => {
       const n = Number(v);
-      const x = n <= 1 && String(v).includes(".") ? Math.round(n * 255) : Math.round(n);
+      const x =
+        n <= 1 && String(v).includes(".") ? Math.round(n * 255) : Math.round(n);
       return Math.max(0, Math.min(255, x));
     };
     const r = chan(rgb[1]);
@@ -56,15 +57,30 @@ function withAlpha(hex: string, alphaByte: number): string {
 }
 
 function monacoColorsFromTokens(t: DkTokens, mode: "dark" | "light") {
-  const editor = toMonacoHex(t.editor, mode === "light" ? "#ffffff" : "#1c1c1c");
+  const editor = toMonacoHex(
+    t.editor,
+    mode === "light" ? "#ffffff" : "#1c1c1c",
+  );
   const widget = toMonacoHex(
     mode === "light" ? t.float : t.overlay,
     mode === "light" ? "#fafafa" : "#161616",
   );
-  const fg = toMonacoHex(t.textPrimary, mode === "light" ? "#000000" : "#ffffff");
-  const muted = toMonacoHex(t.textMuted, mode === "light" ? "#707070" : "#888888");
-  const disabled = toMonacoHex(t.textDisabled, mode === "light" ? "#a7a5a5" : "#646463");
-  const line = toMonacoHex(t.line, mode === "light" ? "#0000000d" : "#ffffff0d");
+  const fg = toMonacoHex(
+    t.textPrimary,
+    mode === "light" ? "#000000" : "#ffffff",
+  );
+  const muted = toMonacoHex(
+    t.textMuted,
+    mode === "light" ? "#707070" : "#888888",
+  );
+  const disabled = toMonacoHex(
+    t.textDisabled,
+    mode === "light" ? "#a7a5a5" : "#646463",
+  );
+  const line = toMonacoHex(
+    t.line,
+    mode === "light" ? "#0000000d" : "#ffffff0d",
+  );
   const lineVisible = toMonacoHex(
     t.lineVisible,
     mode === "light" ? "#0000001a" : "#ffffff1a",
@@ -94,7 +110,9 @@ function monacoColorsFromTokens(t: DkTokens, mode: "dark" | "light") {
   };
 }
 
-function semanticTokenRules(mode: "dark" | "light"): { token: string; foreground: string }[] {
+function semanticTokenRules(
+  mode: "dark" | "light",
+): { token: string; foreground: string }[] {
   const c =
     mode === "light"
       ? {
@@ -193,6 +211,8 @@ export function applyMonacoThemeForApp(
 ): void {
   defineAllMonacoThemes(monaco);
   monaco.editor.setTheme(
-    appTheme === "light" ? LITECODE_MONACO_THEME_LIGHT : LITECODE_MONACO_THEME_DARK,
+    appTheme === "light"
+      ? LITECODE_MONACO_THEME_LIGHT
+      : LITECODE_MONACO_THEME_DARK,
   );
 }

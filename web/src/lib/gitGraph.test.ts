@@ -50,7 +50,9 @@ describe("layoutGitGraph", () => {
 describe("graph width clipping", () => {
   it("keeps at least one lane and clips overflow onto the last column", () => {
     expect(maxLanesForWidth(0)).toBe(1);
-    expect(maxLanesForWidth(GIT_GRAPH_PAD_X + GIT_GRAPH_LANE_WIDTH + 200)).toBeGreaterThan(1);
+    expect(
+      maxLanesForWidth(GIT_GRAPH_PAD_X + GIT_GRAPH_LANE_WIDTH + 200),
+    ).toBeGreaterThan(1);
     expect(clipLane(5, 3)).toBe(2);
     expect(clipLane(0, 1)).toBe(0);
     expect(graphWidth(8, 3)).toBe(GIT_GRAPH_PAD_X + 3 * GIT_GRAPH_LANE_WIDTH);

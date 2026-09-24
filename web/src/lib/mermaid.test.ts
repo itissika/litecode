@@ -34,7 +34,8 @@ describe("withMindmapTreeLayout", () => {
   });
 
   it("leaves frontmatter-bearing mindmaps untouched (author intent wins)", () => {
-    const code = "---\nconfig:\n  layout: something\n---\nmindmap\n  root((Root))";
+    const code =
+      "---\nconfig:\n  layout: something\n---\nmindmap\n  root((Root))";
     expect(withMindmapTreeLayout(code)).toBe(code);
   });
 });

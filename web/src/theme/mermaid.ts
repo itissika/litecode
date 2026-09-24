@@ -25,7 +25,8 @@ function parseRgb(input: string): [number, number, number] {
   const s = input.trim();
   if (s.startsWith("#")) {
     let hex = s.slice(1);
-    if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+    if (hex.length === 3)
+      hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
     return [
       parseInt(hex.slice(0, 2), 16),
       parseInt(hex.slice(2, 4), 16),
@@ -225,7 +226,12 @@ export const LITECODE_MERMAID_INIT = {
     rankSpacing: 44,
   },
   sequence: { useMaxWidth: false, mirrorActors: false, wrap: true },
-  gantt: { useMaxWidth: false, gridLineStartPadding: 8, barHeight: 18, barGap: 6 },
+  gantt: {
+    useMaxWidth: false,
+    gridLineStartPadding: 8,
+    barHeight: 18,
+    barGap: 6,
+  },
   class: { useMaxWidth: false },
   er: { useMaxWidth: false },
 };

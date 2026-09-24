@@ -5,22 +5,28 @@ export interface LitecodeDesktopBridge {
   /** Electron session: local sidecar vs remote attach. */
   getSessionMode?: () => "local" | "remote";
   pickFolder?: () => Promise<string | null>;
-  listRecents?: () => Promise<Array<{ path: string; pinned: boolean; lastOpenedAt: number }>>;
+  listRecents?: () => Promise<
+    Array<{ path: string; pinned: boolean; lastOpenedAt: number }>
+  >;
   setRecentPinned?: (
     workspacePath: string,
     pinned: boolean,
   ) => Promise<Array<{ path: string; pinned: boolean; lastOpenedAt: number }>>;
-  removeRecent?: (workspacePath: string) => Promise<Array<{ path: string; pinned: boolean; lastOpenedAt: number }>>;
-  listSshTargets?: () => Promise<Array<{
-    id: string;
-    label: string;
-    host: string;
-    user?: string;
-    port?: number;
-    identityFile?: string;
-    lastWorkspace?: string;
-    lastConnectedAt?: number;
-  }>>;
+  removeRecent?: (
+    workspacePath: string,
+  ) => Promise<Array<{ path: string; pinned: boolean; lastOpenedAt: number }>>;
+  listSshTargets?: () => Promise<
+    Array<{
+      id: string;
+      label: string;
+      host: string;
+      user?: string;
+      port?: number;
+      identityFile?: string;
+      lastWorkspace?: string;
+      lastConnectedAt?: number;
+    }>
+  >;
   saveSshTarget?: (target: {
     id?: string;
     label: string;
@@ -86,20 +92,27 @@ export interface LitecodeDesktopBridge {
   listPendingRemoteDirs?: (
     sessionId: string,
     remotePath?: string,
-  ) => Promise<{ path: string; home: string; entries: Array<{ name: string }> }>;
+  ) => Promise<{
+    path: string;
+    home: string;
+    entries: Array<{ name: string }>;
+  }>;
   completeRemoteSession?: (
     sessionId: string,
     workspace: string,
-  ) => Promise<{ token: string; baseUrl: string; workspace: string; label: string }>;
-  enterRemoteWorkbench?: (sessionId: string) => Promise<{ ok: boolean; mode: "remote" }>;
+  ) => Promise<{
+    token: string;
+    baseUrl: string;
+    workspace: string;
+    label: string;
+  }>;
+  enterRemoteWorkbench?: (
+    sessionId: string,
+  ) => Promise<{ ok: boolean; mode: "remote" }>;
   cancelRemoteSession?: (sessionId: string) => Promise<void>;
   reconnectRemote?: (id: string) => Promise<{ ok: boolean; mode: "remote" }>;
   onRemoteProgress?: (
-    handler: (event: {
-      stage: string;
-      ratio: number;
-      message: string;
-    }) => void,
+    handler: (event: { stage: string; ratio: number; message: string }) => void,
   ) => () => void;
   /** Electron frameless chrome (no-ops in browser). */
   windowMinimize?: () => Promise<void>;

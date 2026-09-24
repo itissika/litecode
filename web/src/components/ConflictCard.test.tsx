@@ -12,7 +12,9 @@ describe("ConflictCard (FE-01)", () => {
       <ConflictCard path="src/a.ts" source="agent" onDismiss={() => {}} />,
     );
     expect(screen.getByTestId("conflict-card")).toBeTruthy();
-    expect(screen.getByText(/unsaved changes conflicted with agent/i)).toBeTruthy();
+    expect(
+      screen.getByText(/unsaved changes conflicted with agent/i),
+    ).toBeTruthy();
     expect(screen.getByText("src/a.ts")).toBeTruthy();
   });
 

@@ -42,7 +42,10 @@ describe("parseDebugSpec", () => {
 
   it("selects listed channels", () => {
     expect([...parseDebugSpec("turn")]).toEqual(["turn"]);
-    expect([...parseDebugSpec("turn,buffer")].sort()).toEqual(["buffer", "turn"]);
+    expect([...parseDebugSpec("turn,buffer")].sort()).toEqual([
+      "buffer",
+      "turn",
+    ]);
   });
 });
 

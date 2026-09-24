@@ -34,18 +34,18 @@ export const TOOL_VIEWS: Record<
   string,
   (props: ToolViewProps) => ReactElement | null
 > = {
-    read: FileParamView,
-    write: WriteToolView,
-    edit: EditToolView,
-    bash: BashToolView,
-    wait_shell: WaitShellToolView,
-    kill_shell: KillShellToolView,
-    subagent_launch: SubagentLaunchToolView,
-    subagent_wait: SubagentWaitToolView,
-    subagent_stop: SubagentStopToolView,
-    subagent_send: SubagentSendToolView,
-    subagent_list: SubagentListToolView,
-  };
+  read: FileParamView,
+  write: WriteToolView,
+  edit: EditToolView,
+  bash: BashToolView,
+  wait_shell: WaitShellToolView,
+  kill_shell: KillShellToolView,
+  subagent_launch: SubagentLaunchToolView,
+  subagent_wait: SubagentWaitToolView,
+  subagent_stop: SubagentStopToolView,
+  subagent_send: SubagentSendToolView,
+  subagent_list: SubagentListToolView,
+};
 
 /** Returns the dedicated view for a tool, or undefined for fallback rendering. */
 export function getToolView(

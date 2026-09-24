@@ -23,9 +23,11 @@ function makeController(opts?: {
 }) {
   const statuses: PersistStatus[] = [];
   let snapshot = "a";
-  const revert = opts?.revert ?? (() => {
-    snapshot = "a";
-  });
+  const revert =
+    opts?.revert ??
+    (() => {
+      snapshot = "a";
+    });
   const controller = new SettingsPersistController(snapshot, {
     debounceMs: opts?.debounceMs ?? 400,
     setStatus: (s) => statuses.push(s),
@@ -41,7 +43,14 @@ function makeController(opts?: {
       controller.schedule(snapshot);
     },
   });
-  return { controller, statuses, getSnapshot: () => snapshot, setSnapshot: (v: string) => { snapshot = v; } };
+  return {
+    controller,
+    statuses,
+    getSnapshot: () => snapshot,
+    setSnapshot: (v: string) => {
+      snapshot = v;
+    },
+  };
 }
 
 describe("shouldHydrateDraftFromStore", () => {
@@ -159,7 +168,10 @@ describe("SettingsPersistController", () => {
 
   it("does not re-PUT after commit when keys are reshuffled", async () => {
     const commit = vi.fn(async () => undefined);
-    const controller = new SettingsPersistController<Record<string, number>, Record<string, number>>(
+    const controller = new SettingsPersistController<
+      Record<string, number>,
+      Record<string, number>
+    >(
       { a: 1 },
       {
         debounceMs: 0,

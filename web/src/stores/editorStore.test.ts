@@ -165,7 +165,9 @@ describe("remapTabs on rename", () => {
     expect(useEditorStore.getState().activePath).toBe("src/a.ts");
 
     useEditorStore.getState().remapTabs("src/a.ts", "src/c.ts");
-    const moved = useEditorStore.getState().tabs.find((t) => t.path === "src/c.ts")!;
+    const moved = useEditorStore
+      .getState()
+      .tabs.find((t) => t.path === "src/c.ts")!;
     expect(moved.content).toBe("unsaved");
     expect(moved.dirty).toBe(true);
     expect(useEditorStore.getState().activePath).toBe("src/c.ts");
@@ -187,7 +189,9 @@ describe("remapTabs on rename", () => {
       activePath: "src/b.ts",
       conflicts: {},
     });
-    await useEditorStore.getState().handleWorkspaceChange(["src/a.ts"], "deleted");
+    await useEditorStore
+      .getState()
+      .handleWorkspaceChange(["src/a.ts"], "deleted");
     expect(useEditorStore.getState().tabs).toHaveLength(1);
     expect(useEditorStore.getState().tabs[0]?.path).toBe("src/b.ts");
   });

@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import {
   clearPendingReveal,
@@ -65,7 +71,10 @@ export function SubagentReadOnlyContent({
   const listRef = useRef<HTMLDivElement>(null);
   const revealSeqRef = useRef<((seq: number) => void) | null>(null);
   const [blurOpacity, setBlurOpacity] = useState(0);
-  const pendingReveal = useSyncExternalStore(subscribePendingReveal, getPendingReveal);
+  const pendingReveal = useSyncExternalStore(
+    subscribePendingReveal,
+    getPendingReveal,
+  );
 
   // Same reveal contract as the writable shell (Search hit → load the seq, then
   // scroll it into view) so a read-only panel can locate a search result.
@@ -76,11 +85,13 @@ export function SubagentReadOnlyContent({
     const seq = pendingReveal.seq;
     let cancelled = false;
     void (async () => {
-      const ok = await useMessageStore.getState().ensureSeqLoaded(
-        sessionId,
-        seq,
-        () => !cancelled && getPendingReveal()?.gen === gen,
-      );
+      const ok = await useMessageStore
+        .getState()
+        .ensureSeqLoaded(
+          sessionId,
+          seq,
+          () => !cancelled && getPendingReveal()?.gen === gen,
+        );
       if (cancelled) return;
       if (!ok) {
         clearPendingReveal(gen);
@@ -92,7 +103,13 @@ export function SubagentReadOnlyContent({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, hydrated, pendingReveal?.sessionId, pendingReveal?.seq, pendingReveal?.gen]);
+  }, [
+    sessionId,
+    hydrated,
+    pendingReveal?.sessionId,
+    pendingReveal?.seq,
+    pendingReveal?.gen,
+  ]);
 
   const canLoadMore = fromSeq > 0;
   const isRunning = runState === "running" || runState === "cancelling";
@@ -150,11 +167,17 @@ export function SubagentReadOnlyContent({
       />
 
       {/* Derived subagent controls — floats over the transcript exactly like the
-          writable `ComposerDock`, with every human-composition surface removed. */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-4">
-        <div className="pointer-events-auto mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col gap-2">
+          writable `ComposerDock`, with every human-composition surface removed.
+          Same flex clamp: the dock box spans the pane, its column is bottom-
+          aligned, and the status panel is the only shrinkable item. */}
+      <div className="pointer-events-none absolute inset-0 z-10 flex min-h-0 flex-col justify-end px-4 pb-4">
+        <div className="pointer-events-auto mx-auto flex min-h-0 w-full max-w-[var(--_dk-prose-measure)] flex-col gap-2">
           <SessionStatusLine sessionId={sessionId} variant="subagent" />
-          <AgentChatInput key={sessionId} sessionId={sessionId} variant="subagent" />
+          <AgentChatInput
+            key={sessionId}
+            sessionId={sessionId}
+            variant="subagent"
+          />
         </div>
       </div>
     </div>

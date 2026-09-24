@@ -8,7 +8,10 @@ import {
 } from "../api/workspace";
 import { flushMarkdownEditor } from "../lib/markdownFlush";
 import { languageFromPath, fileNameFromPath } from "../utils/language";
-import { isWysiwygMarkdownPath, type MdEditorView } from "../utils/wysiwygMarkdown";
+import {
+  isWysiwygMarkdownPath,
+  type MdEditorView,
+} from "../utils/wysiwygMarkdown";
 import { remapPathPrefix } from "../utils/path";
 import { closingFlags } from "../dockview/config/sharedFlags";
 import { attachSiblingStores } from "./connectionStore";
@@ -53,7 +56,11 @@ interface EditorStore {
   openFile: (path: string) => Promise<void>;
   /** Open file and reveal a 1-based line (workspace search / go-to). */
   openFileAt: (path: string, line: number, column?: number) => Promise<void>;
-  consumePendingReveal: () => { path: string; line: number; column?: number } | null;
+  consumePendingReveal: () => {
+    path: string;
+    line: number;
+    column?: number;
+  } | null;
   pushJump: (from: JumpLocation) => void;
   goJumpBack: (current?: JumpLocation) => JumpLocation | null;
   goJumpForward: (current?: JumpLocation) => JumpLocation | null;
@@ -201,7 +208,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const fileName = fileNameFromPath(path);
 
     // Check if any grid group exists. If not (first file opened without default editor panel), create one.
-    const gridGroups = dockviewApi.groups.filter((g) => g.api.location.type === "grid");
+    const gridGroups = dockviewApi.groups.filter(
+      (g) => g.api.location.type === "grid",
+    );
     let panel: ReturnType<typeof dockviewApi.addPanel>;
     if (gridGroups.length === 0) {
       const group = dockviewApi.addGroup();
@@ -242,9 +251,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     try {
       const content = await readFile(path);
       set((s) => ({
-        tabs: s.tabs.map((t) =>
-          t.path === path ? makeTab(path, content) : t,
-        ),
+        tabs: s.tabs.map((t) => (t.path === path ? makeTab(path, content) : t)),
       }));
       panel.api.setTitle(fileName);
     } catch (e) {
@@ -347,9 +354,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       const msg = e instanceof Error ? e.message : String(e);
       set((s) => ({
         saving: false,
-        tabs: s.tabs.map((t) =>
-          t.path === path ? { ...t, error: msg } : t,
-        ),
+        tabs: s.tabs.map((t) => (t.path === path ? { ...t, error: msg } : t)),
       }));
     }
   },
@@ -358,16 +363,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     try {
       const content = await readFile(path);
       set((s) => ({
-        tabs: s.tabs.map((t) =>
-          t.path === path ? makeTab(path, content) : t,
-        ),
+        tabs: s.tabs.map((t) => (t.path === path ? makeTab(path, content) : t)),
       }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       set((s) => ({
-        tabs: s.tabs.map((t) =>
-          t.path === path ? { ...t, error: msg } : t,
-        ),
+        tabs: s.tabs.map((t) => (t.path === path ? { ...t, error: msg } : t)),
       }));
     }
   },
@@ -481,7 +482,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       return { conflicts: next };
     });
   },
-
 }));
 
 attachSiblingStores({ editor: useEditorStore });

@@ -118,18 +118,14 @@ export const AgentMarkdown = memo(function AgentMarkdown({
         <li className="mb-0.5">{children}</li>
       ),
       strong: ({ children }: { children?: ReactNode }) => (
-        <strong className="font-semibold text-(--_dk-text-primary)">{children}</strong>
+        <strong className="font-semibold text-(--_dk-text-primary)">
+          {children}
+        </strong>
       ),
       em: ({ children }: { children?: ReactNode }) => (
         <em className="italic">{children}</em>
       ),
-      a: ({
-        href,
-        children,
-      }: {
-        href?: string;
-        children?: ReactNode;
-      }) => (
+      a: ({ href, children }: { href?: string; children?: ReactNode }) => (
         <a
           href={href}
           className="text-(--_dk-accent-hover) underline hover:text-(--_dk-accent-hover)"
@@ -182,7 +178,9 @@ export const AgentMarkdown = memo(function AgentMarkdown({
       },
       pre: ({ children }: { children?: ReactNode }) => <>{children}</>,
       blockquote: ({ children }: { children?: ReactNode }) => (
-        <blockquote className="agent-markdown-blockquote">{children}</blockquote>
+        <blockquote className="agent-markdown-blockquote">
+          {children}
+        </blockquote>
       ),
       // Headings are wired to the project's --_dk-text-* scale (exposed as
       // text-dk-* utilities) so every size lives in one shared system. Body is

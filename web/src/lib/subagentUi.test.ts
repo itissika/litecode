@@ -27,20 +27,31 @@ function child(patch: Partial<SessionInfo>): SessionInfo {
 describe("childStatusWord", () => {
   it("prefers live Session over the sealed tool call", () => {
     expect(childStatusWord(undefined, "failed")).toBe("failed");
-    expect(childStatusWord(child({ status: "stopping" }), "ok")).toBe("stopping");
-    expect(childStatusWord(child({ running: true, status: "running" }), "ok")).toBe(
-      "running",
+    expect(childStatusWord(child({ status: "stopping" }), "ok")).toBe(
+      "stopping",
     );
+    expect(
+      childStatusWord(child({ running: true, status: "running" }), "ok"),
+    ).toBe("running");
     expect(childStatusWord(child({ status: "idle" }), "ok")).toBe("idle");
     expect(
-      childStatusWord(child({ status: "idle", last_turn_reason: "cancelled" }), "ok"),
+      childStatusWord(
+        child({ status: "idle", last_turn_reason: "cancelled" }),
+        "ok",
+      ),
     ).toBe("cancelled");
     expect(
-      childStatusWord(child({ status: "idle", last_turn_reason: "completed" }), "ok"),
+      childStatusWord(
+        child({ status: "idle", last_turn_reason: "completed" }),
+        "ok",
+      ),
     ).toBe("completed");
-    expect(childStatusWord(child({ status: "idle", last_turn_reason: "error" }), "ok")).toBe(
-      "error",
-    );
+    expect(
+      childStatusWord(
+        child({ status: "idle", last_turn_reason: "error" }),
+        "ok",
+      ),
+    ).toBe("error");
     expect(childStatusWord(undefined, "running")).toBe("running");
     expect(childStatusWord(undefined, "ok")).toBe("accepted");
   });
@@ -49,10 +60,12 @@ describe("childStatusWord", () => {
 describe("sendStatusWord", () => {
   it("uses the child when known, else the started-status line", () => {
     expect(sendStatusWord(undefined, "failed")).toBe("failed");
-    expect(sendStatusWord(child({ running: true, status: "running" }), "ok")).toBe(
+    expect(
+      sendStatusWord(child({ running: true, status: "running" }), "ok"),
+    ).toBe("running");
+    expect(sendStatusWord(undefined, "ok", "status: running\n")).toBe(
       "running",
     );
-    expect(sendStatusWord(undefined, "ok", "status: running\n")).toBe("running");
     expect(sendStatusWord(undefined, "running")).toBe("sending");
     expect(sendStatusWord(undefined, "ok")).toBe("sent");
   });
@@ -60,7 +73,9 @@ describe("sendStatusWord", () => {
 
 describe("waitSettledLine", () => {
   it("reads the barrier snapshot, not the full reports", () => {
-    expect(waitSettledLine("status: nothing to wait for\n")).toBe("nothing to wait");
+    expect(waitSettledLine("status: nothing to wait for\n")).toBe(
+      "nothing to wait",
+    );
     expect(
       waitSettledLine(
         "status: settled\nsettled: 1\n---\nchild_session_id: c\nreason: cancelled\nagent: reviewer\n",
@@ -87,13 +102,15 @@ describe("stopStatusWord", () => {
   it("distinguishes request, already ended, and idle", () => {
     expect(stopStatusWord(undefined, "failed")).toBe("failed");
     expect(stopStatusWord(undefined, "running")).toBe("stopping");
-    expect(stopStatusWord("status: stop_requested\nchild_session_id: c\n", "ok")).toBe(
-      "stop requested",
-    );
+    expect(
+      stopStatusWord("status: stop_requested\nchild_session_id: c\n", "ok"),
+    ).toBe("stop requested");
     expect(
       stopStatusWord("status: already ended\nreason: cancelled\n", "ok"),
     ).toBe("already ended · cancelled");
-    expect(stopStatusWord("status: idle\nchild_session_id: c\n", "ok")).toBe("idle");
+    expect(stopStatusWord("status: idle\nchild_session_id: c\n", "ok")).toBe(
+      "idle",
+    );
   });
 });
 

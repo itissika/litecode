@@ -7,10 +7,7 @@ import {
   itemFromRow,
   parseFunctionArguments,
 } from "../api/adapter";
-import type {
-  AgentRunState,
-  HumanRow,
-} from "../api/types";
+import type { AgentRunState, HumanRow } from "../api/types";
 import { formatElapsed } from "../lib/bashLive";
 import { openSubagentPanel } from "../lib/sessionPanelNav";
 import { useConnectionStore } from "../stores/connectionStore";
@@ -89,7 +86,10 @@ function subagentRowMeta(
 function iconStatus(entry: RosterEntry): ToolStatus {
   if (entry.runState !== "idle") return "running";
   if (entry.launchFailed || entry.lastTurnReason === "error") return "failed";
-  if (entry.lastTurnReason === "cancelled" || entry.lastTurnReason === "max_steps") {
+  if (
+    entry.lastTurnReason === "cancelled" ||
+    entry.lastTurnReason === "max_steps"
+  ) {
     return "warning";
   }
   if (entry.lastTurnReason === "completed") return "ok";
@@ -151,11 +151,12 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
         callId,
         agent: s.agent_id || info?.agent || undefined,
         responsibility: s.responsibility || undefined,
-        runState: s.status === "stopping"
-          ? "cancelling"
-          : s.running === true || s.status === "running"
-            ? "running"
-            : "idle",
+        runState:
+          s.status === "stopping"
+            ? "cancelling"
+            : s.running === true || s.status === "running"
+              ? "running"
+              : "idle",
         startedAt: s.turn?.started_at_ms,
         lastTurnReason: s.last_turn_reason,
         launchFailed: info?.finished === "failed",
@@ -175,11 +176,12 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
         callId,
         agent: session?.agent_id || info?.agent || undefined,
         responsibility: session?.responsibility || undefined,
-        runState: session?.status === "stopping"
-          ? "cancelling"
-          : session?.running === true || session?.status === "running"
-            ? "running"
-            : "idle",
+        runState:
+          session?.status === "stopping"
+            ? "cancelling"
+            : session?.running === true || session?.status === "running"
+              ? "running"
+              : "idle",
         startedAt: session?.turn?.started_at_ms,
         lastTurnReason: session?.last_turn_reason,
         launchFailed: info?.finished === "failed",
@@ -292,7 +294,9 @@ function SubagentStatus({ entry }: { entry: RosterEntry }) {
       >
         {entry.startedAt !== undefined
           ? `${entry.runState === "cancelling" ? "cancelling" : "running"} ${formatElapsed(now - entry.startedAt)}`
-          : entry.runState === "cancelling" ? "cancelling" : "running"}
+          : entry.runState === "cancelling"
+            ? "cancelling"
+            : "running"}
       </span>
     );
   }

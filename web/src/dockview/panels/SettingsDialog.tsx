@@ -1,6 +1,19 @@
-import { Link, Cube, Robot, GearSix, Cpu, Code, PlugsConnected, Tree } from "@phosphor-icons/react";
+import {
+  Link,
+  Cube,
+  Robot,
+  GearSix,
+  Cpu,
+  Code,
+  PlugsConnected,
+  Tree,
+} from "@phosphor-icons/react";
 
-import { useSettingsStore, sectionNeedsSkeleton, type SettingsSection } from "../../stores/settingsStore";
+import {
+  useSettingsStore,
+  sectionNeedsSkeleton,
+  type SettingsSection,
+} from "../../stores/settingsStore";
 import { SettingsSkeleton } from "../../components/ui/Skeleton";
 import { FloatingDialog } from "../components/FloatingDialog";
 import { ProvidersSection } from "./settings/ProvidersSection";
@@ -15,7 +28,11 @@ import { useSettingsSaveBlocked } from "./settings/shared";
 
 const NAV_GROUPS: {
   title: string;
-  items: { id: SettingsSection; label: string; Icon: React.FC<{ size?: number }> }[];
+  items: {
+    id: SettingsSection;
+    label: string;
+    Icon: React.FC<{ size?: number }>;
+  }[];
 }[] = [
   {
     title: "LLM",
@@ -78,7 +95,9 @@ export function SettingsDialog() {
   const section = useSettingsStore((s) => s.section);
   const revision = useSettingsStore((s) => s.revision);
   const loadError = useSettingsStore((s) => s.loadError);
-  const showSkeleton = useSettingsStore((s) => sectionNeedsSkeleton(s.section, s));
+  const showSkeleton = useSettingsStore((s) =>
+    sectionNeedsSkeleton(s.section, s),
+  );
   const closeSettings = useSettingsStore((s) => s.closeSettings);
   const setSection = useSettingsStore((s) => s.setSection);
 
@@ -129,7 +148,9 @@ export function SettingsDialog() {
                   <SettingsSkeleton />
                 </div>
               ) : loadError ? (
-                <p className="px-6 py-5 text-sm text-(--_dk-red-500)">{loadError}</p>
+                <p className="px-6 py-5 text-sm text-(--_dk-red-500)">
+                  {loadError}
+                </p>
               ) : (
                 <SectionContent section={section} />
               )}

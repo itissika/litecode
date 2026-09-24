@@ -9,7 +9,11 @@ interface MenuBarProps {
   items?: MenuItem[];
 }
 
-export function MenuBar({ onAction, sessionMode = "local", items }: MenuBarProps) {
+export function MenuBar({
+  onAction,
+  sessionMode = "local",
+  items,
+}: MenuBarProps) {
   const menus = items ?? buildMenuItems(sessionMode);
   return (
     <div

@@ -17,7 +17,9 @@ export function computeLineDiff(oldStr: string, newStr: string): DiffLine[] {
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
       dp[i][j] =
-        a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        a[i] === b[j]
+          ? dp[i + 1][j + 1] + 1
+          : Math.max(dp[i + 1][j], dp[i][j + 1]);
     }
   }
 
@@ -65,7 +67,13 @@ const DIFF_LINE_LIMIT = 80;
  * Git-style unified diff of two texts. Shared by write (old = "") and edit
  * (old_string/new_string). Oversized diffs are clipped to a summary row.
  */
-export function DiffView({ oldText, newText }: { oldText: string; newText: string }) {
+export function DiffView({
+  oldText,
+  newText,
+}: {
+  oldText: string;
+  newText: string;
+}) {
   const diff = computeLineDiff(oldText, newText);
   const added = diff.filter((d) => d.type === "add").length;
   const removed = diff.filter((d) => d.type === "remove").length;

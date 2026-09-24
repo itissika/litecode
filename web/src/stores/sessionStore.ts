@@ -12,27 +12,47 @@ import type {
   ThinkingTier,
   ContextMode,
 } from "../api/types";
-import { useConnectionStore, attachSiblingStores, getDockviewApi } from "./connectionStore";
+import {
+  useConnectionStore,
+  attachSiblingStores,
+  getDockviewApi,
+} from "./connectionStore";
 import { useBashStore } from "./bashStore";
 import { useToastStore } from "./toastStore";
 import { useTurnStore } from "./turnStore";
 import { useMessageStore } from "./messageStore";
 import { openSessionPanel } from "../lib/sessionPanelNav";
 
+/** Ordering granularity: one minute — the resolution of the sidebar's own
+ *  relative label ("1m", "2m", …). `updated_at` moves on every streamed flush
+ *  (the runtime coalesces at 80ms), so comparing raw milliseconds makes two
+ *  sessions that stream in parallel swap rows on every flush. Inside a minute
+ *  they tie, the stable sort keeps the row that was already higher, and the
+ *  order never contradicts the labels the user is reading. */
+const ORDER_BUCKET_MS = 60_000;
+
+function orderBucket(updatedAt: number | null | undefined): number {
+  return Math.floor((updatedAt ?? 0) / ORDER_BUCKET_MS);
+}
+
 /**
- * Most-recently-updated first (event order). The backend returns the list
- * pre-sorted, but live lifecycle events mutate it in place; re-sort so any
- * session with new activity always bubbles to the top. Stable sort — sessions
- * sharing an `updated_at` keep their relative order.
+ * Most-recently-updated first, at minute granularity. The backend returns the
+ * list pre-sorted, but live lifecycle events mutate it in place; re-sort so a
+ * session a minute (or more) newer than the rest bubbles to the top. Stable
+ * sort — sessions in the same minute keep their relative order.
  */
 function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
-  return [...sessions].sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
+  return [...sessions].sort(
+    (a, b) => orderBucket(b.updated_at) - orderBucket(a.updated_at),
+  );
 }
 
 function sessionControlsLocked(sessionId: string): boolean {
   const slice = useTurnStore.getState().byId.get(sessionId);
   const run = slice?.runState;
-  return run === "running" || run === "cancelling" || slice?.compacting === true;
+  return (
+    run === "running" || run === "cancelling" || slice?.compacting === true
+  );
 }
 
 export interface SessionSlice {
@@ -70,7 +90,10 @@ function emptySlice(): SessionSlice {
   };
 }
 
-function getSlice(byId: Map<string, SessionSlice>, sessionId: string): SessionSlice {
+function getSlice(
+  byId: Map<string, SessionSlice>,
+  sessionId: string,
+): SessionSlice {
   let slice = byId.get(sessionId);
   if (!slice) {
     slice = emptySlice();
@@ -161,7 +184,6 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       useBashStore.getState().applySnapshot(sessionId, snap.bash);
     }
     if (snap.buffer.next_seq === 0) {
-      useTurnStore.getState().clearPendingStream(sessionId);
       useMessageStore.getState().onBufferLoaded(sessionId, {
         session_id: sessionId,
         from_seq: 0,
@@ -175,14 +197,18 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     // Cold-start history only. Growth after the window exists is buffer/item.
     const msgSlice = useMessageStore.getState().bySession.get(sessionId);
     const needsInitialLoad =
-      !msgSlice ||
-      (msgSlice.toSeq === 0 && msgSlice.messages.length === 0);
+      !msgSlice || (msgSlice.toSeq === 0 && msgSlice.messages.length === 0);
 
     if (needsInitialLoad) {
-      useTurnStore.getState().clearPendingStream(sessionId);
       const toSeq = snap.buffer.next_seq;
       const fromSeq = Math.max(0, toSeq - 40);
-      useConnectionStore.getState().sendRpc<BufferLoaded>("buffer/load", { from_seq: fromSeq, to_seq: toSeq, session_id: sessionId })
+      useConnectionStore
+        .getState()
+        .sendRpc<BufferLoaded>("buffer/load", {
+          from_seq: fromSeq,
+          to_seq: toSeq,
+          session_id: sessionId,
+        })
         .then((loaded) => {
           useMessageStore.getState().onBufferLoaded(sessionId, loaded);
         })
@@ -233,9 +259,10 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         // A loaded window past the surviving tail (`last_seq`) still holds rows
         // the revert deleted. `next_seq` is the allocator high-water and does
         // not move back, so it cannot be the threshold.
-        const local = useMessageStore.getState().bySession.get(op.snapshot.session_id);
+        const local = useMessageStore
+          .getState()
+          .bySession.get(op.snapshot.session_id);
         if (local && local.toSeq > op.snapshot.buffer.last_seq + 1) {
-          useTurnStore.getState().clearPendingStream(op.snapshot.session_id);
           useTurnStore.getState().onTranscriptReverted(op.snapshot.session_id);
           useMessageStore.getState().onBufferReverted(op.snapshot.session_id, {
             session_id: op.snapshot.session_id,
@@ -243,9 +270,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             next_seq: op.snapshot.buffer.next_seq,
           });
         }
-        useToastStore
-          .getState()
-          .showToast("Transcript reverted", "success");
+        useToastStore.getState().showToast("Transcript reverted", "success");
       }
       if (op.op === "revert_files") {
         useToastStore.getState().showToast("Files reverted", "success");
@@ -257,8 +282,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       return;
     }
 
-    const errMsg =
-      op.error?.message ?? op.error?.code ?? "Operation failed";
+    const errMsg = op.error?.message ?? op.error?.code ?? "Operation failed";
 
     if (op.op === "new_session") {
       useToastStore.getState().showToast(errMsg, "error");
@@ -335,7 +359,11 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     applySnapshot,
 
     onSessionList: (sessions: SessionInfo[]) => {
-      set({ sessions: sortSessions(sessions), sessionsLoading: false, sessionListError: null });
+      set({
+        sessions: sortSessions(sessions),
+        sessionsLoading: false,
+        sessionListError: null,
+      });
     },
 
     onSessionLifecycle: (params) => {
@@ -360,7 +388,11 @@ export const useSessionStore = create<SessionStore>((set, get) => {
           useConnectionStore.getState().unsubscribeSession(session_id);
           getDockviewApi()?.getPanel(`agent-${session_id}`)?.api.close();
           return exists
-            ? { sessions: sortSessions(state.sessions.filter((s) => s.id !== session_id)) }
+            ? {
+                sessions: sortSessions(
+                  state.sessions.filter((s) => s.id !== session_id),
+                ),
+              }
             : {};
         }
         // turn_started / turn_updated / turn_finished may arrive for a session
@@ -368,10 +400,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         // initial pull completed). Upsert it so the live status is not dropped.
         if (!exists) {
           if (event === "turn_finished") {
-            useTurnStore.getState().onLifecycleTurnFinished(
-              session_id,
-              turn?.turn_id,
-            );
+            useTurnStore
+              .getState()
+              .onLifecycleTurnFinished(session_id, turn?.turn_id);
           }
           const fresh: SessionInfo = {
             id: session_id,
@@ -416,10 +447,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
                     ...s,
                     running: true,
                     turn: turn ?? s.turn,
-                    step_kinds:
-                      step_kind
-                        ? [...(s.step_kinds ?? []), step_kind]
-                        : (s.step_kinds ?? []),
+                    step_kinds: step_kind
+                      ? [...(s.step_kinds ?? []), step_kind]
+                      : (s.step_kinds ?? []),
                   }
                 : s,
             );
@@ -429,7 +459,14 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             // New turn: wipe the previous turn's accumulated step kinds.
             const sessions = state.sessions.map((s) =>
               s.id === session_id
-                ? { ...s, running: true, status: "running" as const, turn: turn ?? s.turn, step_kinds: [], last_turn_reason: undefined }
+                ? {
+                    ...s,
+                    running: true,
+                    status: "running" as const,
+                    turn: turn ?? s.turn,
+                    step_kinds: [],
+                    last_turn_reason: undefined,
+                  }
                 : s,
             );
             return { sessions: sortSessions(sessions) };
@@ -440,7 +477,10 @@ export const useSessionStore = create<SessionStore>((set, get) => {
                 ? {
                     ...s,
                     running: true,
-                    status: turn?.phase === "cancelling" ? "stopping" as const : "running" as const,
+                    status:
+                      turn?.phase === "cancelling"
+                        ? ("stopping" as const)
+                        : ("running" as const),
                     turn: turn ?? s.turn,
                   }
                 : s,
@@ -450,10 +490,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
           case "turn_finished": {
             // Keep `step_kinds` for the recap; the UI holds it for a while then
             // transitions back to idle on its own timer. Cleared on next start.
-            useTurnStore.getState().onLifecycleTurnFinished(
-              session_id,
-              turn?.turn_id,
-            );
+            useTurnStore
+              .getState()
+              .onLifecycleTurnFinished(session_id, turn?.turn_id);
             const sessions = state.sessions.map((s) =>
               s.id === session_id
                 ? {
@@ -486,7 +525,6 @@ export const useSessionStore = create<SessionStore>((set, get) => {
 
     onOperationResult,
 
-
     newSession: () => {
       const { pendingSessionOp } = get();
       if (pendingSessionOp !== null) return;
@@ -495,17 +533,21 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         showSessionList: false,
         statusMessage: "Starting new session…",
       });
-      useConnectionStore.getState().sendRpc<{ session_id: string }>("session/new").then((result) => {
-        set({ pendingSessionOp: null, statusMessage: null });
-        if (result.session_id) {
-          openSessionPanel(result.session_id);
-        }
-      }).catch(() => {
-        set({
-          pendingSessionOp: null,
-          statusMessage: "Failed to create new session",
+      useConnectionStore
+        .getState()
+        .sendRpc<{ session_id: string }>("session/new")
+        .then((result) => {
+          set({ pendingSessionOp: null, statusMessage: null });
+          if (result.session_id) {
+            openSessionPanel(result.session_id);
+          }
+        })
+        .catch(() => {
+          set({
+            pendingSessionOp: null,
+            statusMessage: "Failed to create new session",
+          });
         });
-      });
     },
 
     deleteSession: (id: string) => {
@@ -521,7 +563,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       }
 
       // Optimistic: gone from list and panel immediately.
-      set({ sessions: sortSessions(get().sessions.filter((s) => s.id !== id)) });
+      set({
+        sessions: sortSessions(get().sessions.filter((s) => s.id !== id)),
+      });
       useConnectionStore.getState().unsubscribeSession(id);
       getDockviewApi()?.getPanel(`agent-${id}`)?.api.close();
 
@@ -529,21 +573,32 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         .getState()
         .sendRpc("session/delete", { id })
         .catch(() => {
-          useToastStore.getState().showToast("Failed to delete session", "error");
+          useToastStore
+            .getState()
+            .showToast("Failed to delete session", "error");
           get().listSessions();
         });
     },
 
     listSessions: () => {
       set({ sessionsLoading: true, sessionListError: null });
-      useConnectionStore.getState().sendRpc<{ sessions: SessionInfo[] }>("session/list").then((data) => {
-        set({ sessions: sortSessions(data.sessions), sessionsLoading: false, sessionListError: null });
-      }).catch((err: unknown) => {
-        set({
-          sessionsLoading: false,
-          sessionListError: err instanceof Error ? err.message : "Failed to load sessions",
+      useConnectionStore
+        .getState()
+        .sendRpc<{ sessions: SessionInfo[] }>("session/list")
+        .then((data) => {
+          set({
+            sessions: sortSessions(data.sessions),
+            sessionsLoading: false,
+            sessionListError: null,
+          });
+        })
+        .catch((err: unknown) => {
+          set({
+            sessionsLoading: false,
+            sessionListError:
+              err instanceof Error ? err.message : "Failed to load sessions",
+          });
         });
-      });
     },
 
     setPrimary: (sessionId, agentId) => {
@@ -554,10 +609,15 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       patch(sessionId, { pendingPrimaryId: agentId });
       useConnectionStore
         .getState()
-        .sendRpc("agent/set-primary", { agent_id: agentId, session_id: sessionId })
+        .sendRpc("agent/set-primary", {
+          agent_id: agentId,
+          session_id: sessionId,
+        })
         .catch(() => {
           patch(sessionId, { pendingPrimaryId: null });
-          useToastStore.getState().showToast("Failed to set primary agent", "error");
+          useToastStore
+            .getState()
+            .showToast("Failed to set primary agent", "error");
         });
     },
 
@@ -565,7 +625,10 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       if (sessionControlsLocked(sessionId)) return;
       useConnectionStore
         .getState()
-        .sendRpc("agent/set-model", { model_id: modelId, session_id: sessionId })
+        .sendRpc("agent/set-model", {
+          model_id: modelId,
+          session_id: sessionId,
+        })
         .catch(() => {
           useToastStore.getState().showToast("Failed to set model", "error");
         });
@@ -582,7 +645,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         })
         .catch(() => {
           patch(sessionId, { pendingThinkingTier: null });
-          useToastStore.getState().showToast("Failed to set thinking tier", "error");
+          useToastStore
+            .getState()
+            .showToast("Failed to set thinking tier", "error");
         });
     },
 
@@ -597,7 +662,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         })
         .catch(() => {
           patch(sessionId, { pendingContextMode: null });
-          useToastStore.getState().showToast("Failed to set context mode", "error");
+          useToastStore
+            .getState()
+            .showToast("Failed to set context mode", "error");
         });
     },
 

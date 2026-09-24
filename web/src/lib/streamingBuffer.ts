@@ -33,10 +33,7 @@ function advanceCharacters(text: string, start: number, count: number): number {
 }
 
 function charactersPerTick(backlog: number): number {
-  const clampedBacklog = Math.min(
-    Math.max(backlog, 1),
-    BACKLOG_FOR_MAX_SPEED,
-  );
+  const clampedBacklog = Math.min(Math.max(backlog, 1), BACKLOG_FOR_MAX_SPEED);
   const progress = (clampedBacklog - 1) / (BACKLOG_FOR_MAX_SPEED - 1);
   return Math.round(
     MIN_CHARACTERS_PER_TICK +

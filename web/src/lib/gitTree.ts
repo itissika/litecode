@@ -15,14 +15,21 @@ export type GitTreeFile = {
 
 export type GitTreeNode = GitTreeDir | GitTreeFile;
 
-function insert(nodes: GitTreeNode[], parts: string[], file: GitFile, prefix: string) {
+function insert(
+  nodes: GitTreeNode[],
+  parts: string[],
+  file: GitFile,
+  prefix: string,
+) {
   if (parts.length === 1) {
     nodes.push({ kind: "file", name: parts[0] ?? file.path, file });
     return;
   }
   const name = parts[0] ?? "";
   const dirPath = prefix ? `${prefix}/${name}` : name;
-  let dir = nodes.find((n): n is GitTreeDir => n.kind === "dir" && n.name === name);
+  let dir = nodes.find(
+    (n): n is GitTreeDir => n.kind === "dir" && n.name === name,
+  );
   if (!dir) {
     dir = { kind: "dir", name, path: dirPath, children: [] };
     nodes.push(dir);

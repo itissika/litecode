@@ -11,8 +11,16 @@ vi.mock("../api/workspace", () => ({
 const mockedFetchTree = vi.mocked(fetchTree);
 const mockedFetchTreeReveal = vi.mocked(fetchTreeReveal);
 
-const dir = (path: string, name: string): TreeEntry => ({ path, name, kind: "dir" });
-const file = (path: string, name: string): TreeEntry => ({ path, name, kind: "file" });
+const dir = (path: string, name: string): TreeEntry => ({
+  path,
+  name,
+  kind: "dir",
+});
+const file = (path: string, name: string): TreeEntry => ({
+  path,
+  name,
+  kind: "file",
+});
 
 beforeEach(() => {
   useTreeStore.setState({

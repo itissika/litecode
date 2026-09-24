@@ -30,14 +30,20 @@ export function SubagentReadOnlyPanel(props: IDockviewPanelProps) {
   useEffect(() => {
     if (!sessionId || connState !== "connected") return;
     let disposed = false;
-    useConnectionStore.getState().ensureSubscribe(sessionId).catch((error: unknown) => {
-      if (disposed) return;
-      const message = error instanceof Error ? error.message : "Failed to open session";
-      if (/session.*not found/i.test(message)) {
-        useToastStore.getState().showToast("This session no longer exists", "error");
-        props.api.close();
-      }
-    });
+    useConnectionStore
+      .getState()
+      .ensureSubscribe(sessionId)
+      .catch((error: unknown) => {
+        if (disposed) return;
+        const message =
+          error instanceof Error ? error.message : "Failed to open session";
+        if (/session.*not found/i.test(message)) {
+          useToastStore
+            .getState()
+            .showToast("This session no longer exists", "error");
+          props.api.close();
+        }
+      });
     return () => {
       disposed = true;
     };

@@ -37,10 +37,7 @@ describe("flattenVisibleRows", () => {
       src: [dir("src/lib", "lib"), file("src/main.rs", "main.rs")],
       "src/lib": [file("src/lib/mod.rs", "mod.rs")],
     };
-    const rows = flattenVisibleRows(
-      children,
-      new Set(["src", "src/lib"]),
-    );
+    const rows = flattenVisibleRows(children, new Set(["src", "src/lib"]));
     expect(visibleEntryPaths(rows)).toEqual([
       "src",
       "src/lib",
@@ -48,9 +45,9 @@ describe("flattenVisibleRows", () => {
       "src/main.rs",
       "README.md",
     ]);
-    expect(
-      rows.filter((r) => r.type === "entry").map((r) => r.depth),
-    ).toEqual([0, 1, 2, 1, 0]);
+    expect(rows.filter((r) => r.type === "entry").map((r) => r.depth)).toEqual([
+      0, 1, 2, 1, 0,
+    ]);
   });
 
   it("does not paint children of a collapsed directory", () => {

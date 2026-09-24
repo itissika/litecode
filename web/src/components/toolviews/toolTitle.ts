@@ -9,7 +9,10 @@ function truncate(value: string, max = MAX_TITLE_CHARS): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
-function stringField(input: Record<string, unknown>, name: string): string | null {
+function stringField(
+  input: Record<string, unknown>,
+  name: string,
+): string | null {
   const value = input[name];
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
@@ -36,9 +39,12 @@ function planSummary(
   outputText?: string,
   activePlanPath?: string | null,
 ): string {
-  const created = outputText?.match(/^Created plan at\s+(.+?)(?:\r?\n|$)/m)?.[1]?.trim();
+  const created = outputText
+    ?.match(/^Created plan at\s+(.+?)(?:\r?\n|$)/m)?.[1]
+    ?.trim();
   if (created) return created;
-  if (outputText?.includes("Active plan cleared.")) return "Active plan cleared";
+  if (outputText?.includes("Active plan cleared."))
+    return "Active plan cleared";
   if (input.action === "create" && activePlanPath) return activePlanPath;
   return input.action === "finish" ? "Clearing active plan…" : "Creating plan…";
 }
@@ -57,7 +63,10 @@ function lspSummary(input: Record<string, unknown>): string {
   const line = typeof input.line === "number" ? `:${input.line}` : "";
   const text = stringField(input, "text");
   const token = text ? ` ${truncate(text, MAX_TOKEN_CHARS)}` : "";
-  return [label[action ?? ""] ?? action, filePath ? `${filePath}${line}${token}` : null]
+  return [
+    label[action ?? ""] ?? action,
+    filePath ? `${filePath}${line}${token}` : null,
+  ]
     .filter(Boolean)
     .join(" · ");
 }
@@ -106,17 +115,27 @@ export function toolTitle(
 
   if (toolName === "grep") {
     const pattern = stringField(obj, "pattern");
-    return { summary: pattern ? truncate(`/${pattern}/${formatScope(obj, ["path", "glob"])}`) : fallbackSummary(input) };
+    return {
+      summary: pattern
+        ? truncate(`/${pattern}/${formatScope(obj, ["path", "glob"])}`)
+        : fallbackSummary(input),
+    };
   }
   if (toolName === "glob") {
     const pattern = stringField(obj, "pattern");
-    return { summary: pattern ? truncate(`${pattern}${formatScope(obj, ["path"])}`) : fallbackSummary(input) };
+    return {
+      summary: pattern
+        ? truncate(`${pattern}${formatScope(obj, ["path"])}`)
+        : fallbackSummary(input),
+    };
   }
   if (["code_search", "session_search"].includes(toolName)) {
     const query = stringField(obj, "query");
     return {
       summary: query
-        ? truncate(`${query}${formatScope(obj, ["include_pattern", "session_id"])}`)
+        ? truncate(
+            `${query}${formatScope(obj, ["include_pattern", "session_id"])}`,
+          )
         : fallbackSummary(input),
     };
   }

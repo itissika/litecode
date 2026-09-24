@@ -253,7 +253,6 @@ export const useTreeStore = create<TreeStore>((set, get) => {
       }
       queueWorkspaceChange(paths, kind);
     },
-
   };
 });
 

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import {
   ArrowsClockwise,
   CheckCircle,
@@ -75,12 +83,18 @@ function intentControl(desired: boolean): {
   return { icon: "play", action: "start", label: "Start engine" };
 }
 
-function resolveIndexStatus(index: RetrievalEngineDetail["index"]): IndexStatus {
-  return index.status ?? (index.needs_rebuild ? "needs_rebuild" : index.exists ? "ready" : "absent");
+function resolveIndexStatus(
+  index: RetrievalEngineDetail["index"],
+): IndexStatus {
+  return (
+    index.status ??
+    (index.needs_rebuild ? "needs_rebuild" : index.exists ? "ready" : "absent")
+  );
 }
 
 function indexTone(status: IndexStatus, engineUsable: EngineUsable): IndexTone {
-  if (engineUsable === "stopped" || engineUsable === "unavailable") return "idle";
+  if (engineUsable === "stopped" || engineUsable === "unavailable")
+    return "idle";
   switch (status) {
     case "ready":
       return "ready";
@@ -98,10 +112,16 @@ function indexTone(status: IndexStatus, engineUsable: EngineUsable): IndexTone {
   }
 }
 
-function barWidth(status: IndexStatus, progress?: IndexingProgress | null): { width: string; pulse: boolean } {
+function barWidth(
+  status: IndexStatus,
+  progress?: IndexingProgress | null,
+): { width: string; pulse: boolean } {
   if (status === "building" || status === "refreshing") {
     if (progress && progress.files_total > 0) {
-      const pct = Math.min(100, Math.round((progress.files_done * 100) / progress.files_total));
+      const pct = Math.min(
+        100,
+        Math.round((progress.files_done * 100) / progress.files_total),
+      );
       return { width: `${pct}%`, pulse: true };
     }
     return { width: "45%", pulse: true };
@@ -110,7 +130,10 @@ function barWidth(status: IndexStatus, progress?: IndexingProgress | null): { wi
   return { width: "100%", pulse: false };
 }
 
-function modelDisplay(model: RetrievalEngineDetail["model"]): { name: string; path: string } {
+function modelDisplay(model: RetrievalEngineDetail["model"]): {
+  name: string;
+  path: string;
+} {
   const path = (model.model_dir || model.model_path || "").replace(/\\/g, "/");
   const parts = path.split("/").filter(Boolean);
   let name = parts[parts.length - 1] || "model";
@@ -238,7 +261,9 @@ function RetrievalSection({
     <section className="space-y-3">
       <div className="settings-op-divider flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <h3 className="text-sm font-medium text-(--_dk-text-primary)">Semantic retrieval</h3>
+          <h3 className="text-sm font-medium text-(--_dk-text-primary)">
+            Semantic retrieval
+          </h3>
           <span className={`tag tag-${tag.tone} tag-md`}>{tag.label}</span>
           {detail.embed_device === "cuda-ort" ? (
             <span className="tag tag-ok tag-soft tag-md">cuda</span>
@@ -255,14 +280,29 @@ function RetrievalSection({
 
       <div className="space-y-3 pl-4">
         {detail.error && (
-          <p className="truncate text-dk-xs text-(--_dk-red-500)" title={detail.error}>{detail.error}</p>
+          <p
+            className="truncate text-dk-xs text-(--_dk-red-500)"
+            title={detail.error}
+          >
+            {detail.error}
+          </p>
         )}
 
         <div className="flex min-w-0 items-center gap-2 text-xs text-(--_dk-text-secondary)">
           {detail.model.ready ? (
-            <CheckCircle size={14} weight="fill" className="shrink-0 text-(--_dk-emerald-500)" aria-hidden />
+            <CheckCircle
+              size={14}
+              weight="fill"
+              className="shrink-0 text-(--_dk-emerald-500)"
+              aria-hidden
+            />
           ) : (
-            <XCircle size={14} weight="fill" className="shrink-0 text-(--_dk-red-500)" aria-hidden />
+            <XCircle
+              size={14}
+              weight="fill"
+              className="shrink-0 text-(--_dk-red-500)"
+              aria-hidden
+            />
           )}
           <span className="min-w-0 break-all font-mono text-dk-xs">
             {detail.model.ready
@@ -290,14 +330,24 @@ function RetrievalSection({
               disabled={refreshDisabled}
               onClick={() => void run(refreshRetrieval)}
             >
-              <ArrowsClockwise size={14} weight="bold" className={tone === "busy" ? "animate-spin" : undefined} />
+              <ArrowsClockwise
+                size={14}
+                weight="bold"
+                className={tone === "busy" ? "animate-spin" : undefined}
+              />
             </IconSquareButton>
-            <span className="engine-icon-static" title={skipTip} aria-label={skipTip}>
+            <span
+              className="engine-icon-static"
+              title={skipTip}
+              aria-label={skipTip}
+            >
               <Info size={14} />
             </span>
           </div>
           {relative && (
-            <p className="text-dk-xs text-(--_dk-text-disabled)">Updated {relative}</p>
+            <p className="text-dk-xs text-(--_dk-text-disabled)">
+              Updated {relative}
+            </p>
           )}
         </div>
       </div>
@@ -309,28 +359,52 @@ function RetrievalSection({
 /* LSP section                                                         */
 /* ------------------------------------------------------------------ */
 
-function ActionButton({ children, onClick, disabled = false }: {
+function ActionButton({
+  children,
+  onClick,
+  disabled = false,
+}: {
   children: ReactNode;
   onClick: (event: MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
 }) {
   return (
-    <button type="button" onClick={onClick} disabled={disabled} className="btn btn-sm">
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="btn btn-sm"
+    >
       {children}
     </button>
   );
 }
 
-function InstallProgress({ progress }: { progress?: { downloaded_bytes: number; total_bytes?: number | null } | null }) {
-  if (!progress) return <span className="text-xs text-(--_dk-text-muted)">Installing…</span>;
-  const percent = progress.total_bytes ? Math.min(100, Math.round(progress.downloaded_bytes * 100 / progress.total_bytes)) : null;
+function InstallProgress({
+  progress,
+}: {
+  progress?: { downloaded_bytes: number; total_bytes?: number | null } | null;
+}) {
+  if (!progress)
+    return <span className="text-xs text-(--_dk-text-muted)">Installing…</span>;
+  const percent = progress.total_bytes
+    ? Math.min(
+        100,
+        Math.round((progress.downloaded_bytes * 100) / progress.total_bytes),
+      )
+    : null;
   return (
     <div className="min-w-32">
       <div className="h-1.5 overflow-hidden rounded bg-(--_dk-line)">
-        <div className={`h-full bg-(--_dk-accent-hover) ${percent === null ? "w-1/2 animate-pulse" : ""}`} style={percent === null ? undefined : { width: `${percent}%` }} />
+        <div
+          className={`h-full bg-(--_dk-accent-hover) ${percent === null ? "w-1/2 animate-pulse" : ""}`}
+          style={percent === null ? undefined : { width: `${percent}%` }}
+        />
       </div>
       <div className="mt-1 text-dk-2xs text-(--_dk-text-muted)">
-        {percent === null ? `${Math.round(progress.downloaded_bytes / 1024 / 1024)} MB` : `${percent}%`}
+        {percent === null
+          ? `${Math.round(progress.downloaded_bytes / 1024 / 1024)} MB`
+          : `${percent}%`}
       </div>
     </div>
   );
@@ -345,7 +419,10 @@ function LspServerCard({
 }: {
   probe: LspServerProbe;
   checked: boolean;
-  installing?: { taskId: string; progress?: { downloaded_bytes: number; total_bytes?: number | null } | null };
+  installing?: {
+    taskId: string;
+    progress?: { downloaded_bytes: number; total_bytes?: number | null } | null;
+  };
   onToggle: () => void;
   onInstall: () => void;
 }) {
@@ -353,9 +430,14 @@ function LspServerCard({
   const summary = [
     probe.installed_version ? `v${probe.installed_version}` : null,
     ...probe.sources,
-  ].filter(Boolean).join(" · ");
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
-    <div className="tool-binding-card flex flex-col overflow-hidden" data-enabled={checked ? "true" : "false"}>
+    <div
+      className="tool-binding-card flex flex-col overflow-hidden"
+      data-enabled={checked ? "true" : "false"}
+    >
       <button
         type="button"
         aria-pressed={checked}
@@ -367,16 +449,22 @@ function LspServerCard({
       <div className="tool-binding-content flex flex-col">
         <div className="flex min-h-[60px] w-full items-start justify-between gap-2 p-3">
           <div className="min-w-0">
-            <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">{probe.id}</p>
+            <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">
+              {probe.id}
+            </p>
             <div className="mt-1 flex h-4 items-center gap-1.5">
-              <span className="truncate text-dk-xs text-(--_dk-text-muted)">{summary}</span>
+              <span className="truncate text-dk-xs text-(--_dk-text-muted)">
+                {summary}
+              </span>
               {probe.error || (probe.managed_path && !ready) ? (
                 <span
                   className="tool-binding-action shrink-0 cursor-help text-(--_dk-red-500)"
                   aria-label="error details"
                   title={[
                     probe.error,
-                    !ready && probe.managed_path ? `Expected: ${probe.managed_path}` : null,
+                    !ready && probe.managed_path
+                      ? `Expected: ${probe.managed_path}`
+                      : null,
                   ]
                     .filter(Boolean)
                     .join("\n")}
@@ -386,21 +474,39 @@ function LspServerCard({
               ) : null}
             </div>
           </div>
-          <span className={`tag ${checked ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}>
+          <span
+            className={`tag ${checked ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}
+          >
             {checked ? "On" : "Off"}
           </span>
         </div>
         <div className="tool-binding-foot flex shrink-0 items-center justify-between gap-2 px-3 py-2.5">
-          <span className={ready ? "text-(--_dk-emerald-500)" : "text-(--_dk-amber-500)"}>
-            {installing ? <InstallProgress progress={installing.progress} /> : probe.status}
+          <span
+            className={
+              ready ? "text-(--_dk-emerald-500)" : "text-(--_dk-amber-500)"
+            }
+          >
+            {installing ? (
+              <InstallProgress progress={installing.progress} />
+            ) : (
+              probe.status
+            )}
           </span>
           {ready ? (
-            <span className="shrink-0 text-(--_dk-emerald-500)" title="ready" aria-label="ready">
+            <span
+              className="shrink-0 text-(--_dk-emerald-500)"
+              title="ready"
+              aria-label="ready"
+            >
               <CheckCircle size={14} weight="fill" />
             </span>
           ) : (
             <div className="tool-binding-action flex items-center gap-1.5">
-              <span className="shrink-0 text-(--_dk-red-500)" title="not installed" aria-label="not installed">
+              <span
+                className="shrink-0 text-(--_dk-red-500)"
+                title="not installed"
+                aria-label="not installed"
+              >
                 <XCircle size={14} weight="fill" />
               </span>
               {probe.official_url && (
@@ -431,13 +537,32 @@ function LspServerCard({
   );
 }
 
-function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh: () => void }) {
+function LspSection({
+  detail,
+  refresh,
+}: {
+  detail: EnginesDetail["lsp"];
+  refresh: () => void;
+}) {
   const engines = useSettingsStore((s) => s.engines) ?? DEFAULT_ENGINES;
   const saveEngines = useSettingsStore((s) => s.saveEngines);
   const { persistStatus, setPersistStatus } = useDocPersist("engines");
   const [probes, setProbes] = useState<LspServerProbe[]>(detail.probes);
-  const [selected, setSelected] = useState<Set<string>>(new Set(engines.lsp.servers));
-  const [installing, setInstalling] = useState<Record<string, { taskId: string; progress?: { downloaded_bytes: number; total_bytes?: number | null } | null }>>({});
+  const [selected, setSelected] = useState<Set<string>>(
+    new Set(engines.lsp.servers),
+  );
+  const [installing, setInstalling] = useState<
+    Record<
+      string,
+      {
+        taskId: string;
+        progress?: {
+          downloaded_bytes: number;
+          total_bytes?: number | null;
+        } | null;
+      }
+    >
+  >({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -455,7 +580,9 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
     const next = await probeLspServers();
     if (mountedRef.current) setProbes(next);
   }, []);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
   useEffect(() => {
     setProbes(detail.probes);
   }, [detail]);
@@ -481,14 +608,16 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
         refresh();
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        useToastStore.getState().showToast(
-          message === "turn_in_progress"
-            ? "Cannot change engines while an agent turn is in progress"
-            : message,
-          "error",
-          5000,
-          SETTINGS_PERSIST_ERROR_CHANNEL,
-        );
+        useToastStore
+          .getState()
+          .showToast(
+            message === "turn_in_progress"
+              ? "Cannot change engines while an agent turn is in progress"
+              : message,
+            "error",
+            5000,
+            SETTINGS_PERSIST_ERROR_CHANNEL,
+          );
         throw e;
       }
     },
@@ -500,14 +629,20 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
     try {
       const task = await installServer(id);
       if (!mountedRef.current) return;
-      setInstalling((current) => ({ ...current, [id]: { taskId: task.task_id, progress: task.progress } }));
+      setInstalling((current) => ({
+        ...current,
+        [id]: { taskId: task.task_id, progress: task.progress },
+      }));
       let current = task;
       while (current.status === "installing") {
         await new Promise((resolve) => setTimeout(resolve, 800));
         if (!mountedRef.current) return;
         current = await getInstallStatus(task.task_id);
         if (!mountedRef.current) return;
-        setInstalling((items) => ({ ...items, [id]: { taskId: task.task_id, progress: current.progress } }));
+        setInstalling((items) => ({
+          ...items,
+          [id]: { taskId: task.task_id, progress: current.progress },
+        }));
       }
       if (current.status === "failed") {
         setError(`${id}: ${current.error ?? "installation failed"}`);
@@ -517,7 +652,9 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
       await load();
     } catch (caught) {
       if (mountedRef.current) {
-        setError(`${id}: ${caught instanceof Error ? caught.message : String(caught)}`);
+        setError(
+          `${id}: ${caught instanceof Error ? caught.message : String(caught)}`,
+        );
       }
     } finally {
       if (mountedRef.current) {
@@ -550,7 +687,8 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
   const desired = engines.lsp.desired;
   const control = intentControl(desired);
   const ControlIcon = control.icon === "play" ? Play : Stop;
-  const controlDisabled = busy || (control.action === "start" && !hasRunnableServer);
+  const controlDisabled =
+    busy || (control.action === "start" && !hasRunnableServer);
   const onEngineClick = () => {
     const current = snapshotEngines();
     if (control.action === "start") {
@@ -593,7 +731,9 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
       )}
       <div className="settings-op-divider flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <h3 className="text-sm font-medium text-(--_dk-text-primary)">Language servers</h3>
+          <h3 className="text-sm font-medium text-(--_dk-text-primary)">
+            Language servers
+          </h3>
           <span className={`tag tag-${tag.tone} tag-md`}>{tag.label}</span>
         </div>
         <IconSquareButton
@@ -620,7 +760,9 @@ function LspSection({ detail, refresh }: { detail: EnginesDetail["lsp"]; refresh
 
       {(detail.servers?.length ?? 0) > 0 && (
         <div className="space-y-1 text-dk-xs text-(--_dk-text-secondary)">
-          <p className="font-medium text-(--_dk-text-primary)">Running instances</p>
+          <p className="font-medium text-(--_dk-text-primary)">
+            Running instances
+          </p>
           <ul className="space-y-1">
             {detail.servers!.map((s) => (
               <li key={`${s.command}:${s.project_root}`}>

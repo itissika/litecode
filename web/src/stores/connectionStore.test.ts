@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { useConnectionStore, shouldIgnoreForwardedSubagentEvent } from "./connectionStore";
+import {
+  useConnectionStore,
+  shouldIgnoreForwardedSubagentEvent,
+} from "./connectionStore";
 import { useMessageStore } from "./messageStore";
 import { useSessionStore } from "./sessionStore";
 import { useWorkspaceChangeStore } from "./workspaceChangeStore";
@@ -8,13 +11,15 @@ import { useWorkspaceChangeStore } from "./workspaceChangeStore";
 describe("shouldIgnoreForwardedSubagentEvent", () => {
   it("ignores turn/buffer/permission when parent_session_id is set", () => {
     const params = { parent_session_id: "parent-1", session_id: "parent-1" };
-    expect(shouldIgnoreForwardedSubagentEvent("agent/turn_started", params)).toBe(
-      true,
-    );
+    expect(
+      shouldIgnoreForwardedSubagentEvent("agent/turn_started", params),
+    ).toBe(true);
     expect(shouldIgnoreForwardedSubagentEvent("agent/turn_event", params)).toBe(
       true,
     );
-    expect(shouldIgnoreForwardedSubagentEvent("buffer/item", params)).toBe(true);
+    expect(shouldIgnoreForwardedSubagentEvent("buffer/item", params)).toBe(
+      true,
+    );
     expect(
       shouldIgnoreForwardedSubagentEvent("agent/permission_request", params),
     ).toBe(true);
@@ -31,9 +36,9 @@ describe("shouldIgnoreForwardedSubagentEvent", () => {
         session_id: "s1",
       }),
     ).toBe(false);
-    expect(shouldIgnoreForwardedSubagentEvent("agent/turn_started", undefined)).toBe(
-      false,
-    );
+    expect(
+      shouldIgnoreForwardedSubagentEvent("agent/turn_started", undefined),
+    ).toBe(false);
     expect(
       shouldIgnoreForwardedSubagentEvent("agent/subagent_bound", {
         parent_session_id: "parent-1",

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { ProgressiveBlur } from "./ProgressiveBlur";
 import {
@@ -75,7 +82,7 @@ export function FoldCard({
   const initialIntent = id !== undefined ? getFoldCardOpenIntent(id) : "none";
   const [intent, setIntent] = useState<FoldCardOpenIntent>(initialIntent);
   const isControlled = controlledOpen !== undefined;
-  const systemOpen = autoOpen ?? defaultOpen ?? (streaming === true);
+  const systemOpen = autoOpen ?? defaultOpen ?? streaming === true;
   const open = isControlled
     ? controlledOpen
     : intent === "keepopen"
@@ -124,7 +131,9 @@ export function FoldCard({
     let ms = 0;
     if (el) {
       const style = getComputedStyle(el);
-      ms = cssTimeToMs(style.transitionDuration) + cssTimeToMs(style.transitionDelay);
+      ms =
+        cssTimeToMs(style.transitionDuration) +
+        cssTimeToMs(style.transitionDelay);
     }
     if (!(ms > 0)) {
       setBodyMounted(false);
@@ -281,13 +290,15 @@ export function FoldCard({
           <path d="M3 1.5l4 3.5-4 3.5" />
         </svg>
         {icon != null ? (
-          <span className={`${FOLDCARD_HEADER_TONE} inline-flex shrink-0`}>{icon}</span>
+          <span className={`${FOLDCARD_HEADER_TONE} inline-flex shrink-0`}>
+            {icon}
+          </span>
         ) : null}
-        <span
-          className="foldcard-title relative min-w-0 flex-1"
-        >
+        <span className="foldcard-title relative min-w-0 flex-1">
           {typeof label === "string" ? (
-            <span className={`${FOLDCARD_HEADER_TONE} block truncate`}>{label}</span>
+            <span className={`${FOLDCARD_HEADER_TONE} block truncate`}>
+              {label}
+            </span>
           ) : (
             label
           )}
@@ -304,7 +315,10 @@ export function FoldCard({
       >
         <div className="foldcard-body-inner">
           {bodyMounted && (
-            <div className="foldcard-scroll-frame" style={frameColor ? { background: frameColor } : undefined}>
+            <div
+              className="foldcard-scroll-frame"
+              style={frameColor ? { background: frameColor } : undefined}
+            >
               <div
                 ref={contentRef}
                 className={`foldcard-scroll ${contentClassName}`}

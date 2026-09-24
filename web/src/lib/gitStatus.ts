@@ -49,7 +49,10 @@ export function gitFileLetters(status: GitStatus): Map<string, string> {
     const letter = treeGitLetter(file);
     if (!letter) return;
     const prev = out.get(file.path);
-    if (!prev || (LETTER_PRIORITY[letter] ?? 0) > (LETTER_PRIORITY[prev] ?? 0)) {
+    if (
+      !prev ||
+      (LETTER_PRIORITY[letter] ?? 0) > (LETTER_PRIORITY[prev] ?? 0)
+    ) {
       out.set(file.path, letter);
     }
   };

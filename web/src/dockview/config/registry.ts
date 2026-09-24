@@ -14,7 +14,10 @@ import { EdgeTab } from "../tabs/EdgeTab";
 import { EditorTab } from "../tabs/EditorTab";
 import { AgentTab } from "../tabs/AgentTab";
 
-export const panelComponents: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
+export const panelComponents: Record<
+  string,
+  React.FunctionComponent<IDockviewPanelProps>
+> = {
   filetree: FileTreePanel,
   search: SearchPanel,
   git: GitPanel,
@@ -26,7 +29,10 @@ export const panelComponents: Record<string, React.FunctionComponent<IDockviewPa
   terminal: TerminalPanel,
 };
 
-export const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
+export const tabComponents: Record<
+  string,
+  React.FunctionComponent<IDockviewPanelProps>
+> = {
   edge: EdgeTab,
   editor: EditorTab,
   agent: AgentTab,

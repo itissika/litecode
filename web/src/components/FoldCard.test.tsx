@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen, act } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  act,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FoldCard } from "./FoldCard";
@@ -15,13 +21,21 @@ import { clearFoldCardOpen, requestFoldCardOpen } from "./foldCardState";
 const SESSION = "s1";
 const ID = `${SESSION}:bubble:tool:call_1`;
 
-function renderCard(props: {
-  streaming?: boolean;
-  defaultOpen?: boolean;
-} = {}) {
+function renderCard(
+  props: {
+    streaming?: boolean;
+    defaultOpen?: boolean;
+  } = {},
+) {
   const { streaming, defaultOpen, ...rest } = props;
   return render(
-    <FoldCard id={ID} label="bash" streaming={streaming} defaultOpen={defaultOpen} {...rest}>
+    <FoldCard
+      id={ID}
+      label="bash"
+      streaming={streaming}
+      defaultOpen={defaultOpen}
+      {...rest}
+    >
       body
     </FoldCard>,
   );
@@ -112,9 +126,19 @@ describe("FoldCard inner stick-to-bottom", () => {
     return document.querySelector(".foldcard-scroll") as HTMLElement;
   }
 
-  function mockOverflow(el: HTMLElement, scrollHeight = 400, clientHeight = 100) {
-    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => scrollHeight });
-    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => clientHeight });
+  function mockOverflow(
+    el: HTMLElement,
+    scrollHeight = 400,
+    clientHeight = 100,
+  ) {
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(el, "clientHeight", {
+      configurable: true,
+      get: () => clientHeight,
+    });
   }
 
   it("starts pinned while streaming and pins to the bottom on growth", () => {

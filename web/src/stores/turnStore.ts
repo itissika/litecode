@@ -1,6 +1,10 @@
 import { create } from "zustand";
 
-import { applyTurnEventMeta, newPendingUserId, userTextItem } from "../api/adapter";
+import {
+  applyTurnEventMeta,
+  newPendingUserId,
+  userTextItem,
+} from "../api/adapter";
 import type {
   AgentRunState,
   ContextMode,
@@ -12,7 +16,6 @@ import type {
   TurnEventEnvelope,
   TurnFinished,
   PermissionRequest,
-  ResponseStreamEvent,
   SessionSnapshot,
   CompactLifecycle,
 } from "../api/types";
@@ -64,7 +67,11 @@ export interface TurnSlice {
   todoPending: number;
   todoInProgress: number;
   todoCompleted: number;
-  todoItems: { id: string; content: string; status: "pending" | "in_progress" | "completed" }[];
+  todoItems: {
+    id: string;
+    content: string;
+    status: "pending" | "in_progress" | "completed";
+  }[];
   activePlanPath: string | null;
 }
 
@@ -218,7 +225,11 @@ interface TurnStore {
   ) => Promise<boolean>;
   compact: (sessionId: string) => void;
   cancel: (sessionId: string) => void;
-  grantPermission: (sessionId: string, approved: boolean, always: boolean) => void;
+  grantPermission: (
+    sessionId: string,
+    approved: boolean,
+    always: boolean,
+  ) => void;
 
   onPermissionRequest: (sessionId: string, pr: PermissionRequest) => void;
   onTurnStarted: (ts: TurnStarted) => void;
@@ -232,16 +243,13 @@ interface TurnStore {
   /** Transcript revert cancelled the live turn; wait for turn_finished. */
   onTranscriptReverted: (sessionId: string) => void;
   onCompactLifecycle: (life: CompactLifecycle) => void;
-  applySnapshotTurn: (sessionId: string, turn: TurnSnapshot | null | undefined) => void;
+  applySnapshotTurn: (
+    sessionId: string,
+    turn: TurnSnapshot | null | undefined,
+  ) => void;
   /** Hydrate context ring fields from a session snapshot (subscribe / reload). */
   applySnapshotMeter: (sessionId: string, snap: SessionSnapshot) => void;
   resetTurn: (sessionId: string) => void;
-  /** Flush rAF-coalesced stream deltas before authority seal. */
-  flushPendingStream: (sessionId: string) => void;
-  /** Drop queued stream deltas without applying them (transcript revert). */
-  clearPendingStream: (sessionId: string) => void;
-  /** Drop every session's queued rAF stream (socket drop / resubscribe). */
-  clearAllPendingStreams: () => void;
 }
 
 function deriveRunState(turn: TurnSnapshot | null | undefined): AgentRunState {
@@ -255,26 +263,10 @@ function deriveRunState(turn: TurnSnapshot | null | undefined): AgentRunState {
   return "running";
 }
 
-// Coalesce stream deltas so the message list re-renders at most once per
-// animation frame instead of once per token. Each WS delta currently triggers
-// a full re-render of the (virtualized) list, which is the dominant cost during
-// streaming. Buffering and flushing on rAF caps that to ~60 renders/sec and lets
-// the browser paint between batches.
-interface PendingStream {
-  turnId: string;
-  events: ResponseStreamEvent[];
-}
-const pendingStreamBySession = new Map<string, PendingStream>();
-const rafBySession = new Map<string, number>();
+export const OPTIMISTIC_USER_SEAL_MS = 2500;
+
 const replayBySession = new Map<string, Promise<boolean>>();
 const sealWatchdogBySession = new Map<string, number>();
-
-/**
- * User rows persist before the LLM call. If the optimistic bubble is still
- * unsealed after this window, the turn started on the wire but never landed
- * a `buffer/item` — toast and unstick instead of failing silently.
- */
-export const OPTIMISTIC_USER_SEAL_MS = 2500;
 
 function clearSealWatchdog(sessionId: string): void {
   const timer = sealWatchdogBySession.get(sessionId);
@@ -302,64 +294,8 @@ function waitForTurnIdle(sessionId: string): Promise<void> {
   });
 }
 
-function flushStreamSession(sessionId: string): void {
-  const raf = rafBySession.get(sessionId);
-  if (raf !== undefined) {
-    cancelAnimationFrame(raf);
-    rafBySession.delete(sessionId);
-  }
-  const pending = pendingStreamBySession.get(sessionId);
-  if (!pending) return;
-  pendingStreamBySession.delete(sessionId);
-  const msg = useMessageStore.getState();
-  for (const ev of pending.events) {
-    msg.applyStreamEvent(sessionId, pending.turnId, 0, ev);
-  }
-}
-
-/**
- * Drain rAF-buffered stream deltas for a session.
- * Must run before `buffer/item` seal so authority text is not followed by
- * late appends (DeepSeek/chat path has no output_text.done to repair this).
- */
-export function flushPendingStream(sessionId: string): void {
-  flushStreamSession(sessionId);
-}
-
-function enqueueStreamEvent(
-  sessionId: string,
-  turnId: string,
-  event: ResponseStreamEvent,
-): void {
-  const existing = pendingStreamBySession.get(sessionId);
-  if (existing) {
-    existing.events.push(event);
-  } else {
-    pendingStreamBySession.set(sessionId, { turnId, events: [event] });
-  }
-  if (rafBySession.has(sessionId)) return;
-  const raf = requestAnimationFrame(() => {
-    if (rafBySession.get(sessionId) !== raf) return;
-    rafBySession.delete(sessionId);
-    flushStreamSession(sessionId);
-  });
-  rafBySession.set(sessionId, raf);
-}
-
-function clearStreamSession(sessionId: string): void {
-  const raf = rafBySession.get(sessionId);
-  if (raf !== undefined) {
-    cancelAnimationFrame(raf);
-    rafBySession.delete(sessionId);
-  }
-  pendingStreamBySession.delete(sessionId);
-}
-
 export const useTurnStore = create<TurnStore>((set, get) => {
-  function patch(
-    sessionId: string,
-    update: Partial<TurnSlice>,
-  ): void {
+  function patch(sessionId: string, update: Partial<TurnSlice>): void {
     const byId = new Map(get().byId);
     const next = { ...getSlice(byId, sessionId), ...update };
     byId.set(sessionId, next);
@@ -384,7 +320,10 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         return false;
       }
 
-      const pending = { clientId: newPendingUserId(), item: userTextItem(trimmed) };
+      const pending = {
+        clientId: newPendingUserId(),
+        item: userTextItem(trimmed),
+      };
       useMessageStore.getState().pushPendingUser(sessionId, pending);
 
       patch(sessionId, {
@@ -402,46 +341,58 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       clearSealWatchdog(sessionId);
       const sealWatchdog = window.setTimeout(() => {
         sealWatchdogBySession.delete(sessionId);
-        const still = useMessageStore.getState().bySession.get(sessionId)?.pendingUser;
+        const still = useMessageStore
+          .getState()
+          .bySession.get(sessionId)?.pendingUser;
         if (still?.clientId !== pending.clientId) return;
         debugTrace("turn", "start.unsealed", {
           sessionId,
           clientId: pending.clientId,
           currentTurnId: getSlice(get().byId, sessionId).currentTurnId,
         });
-        useMessageStore.getState().discardOptimisticUserMessage(
-          sessionId,
-          pending.clientId,
-        );
+        useMessageStore
+          .getState()
+          .discardOptimisticUserMessage(sessionId, pending.clientId);
         const current = getSlice(get().byId, sessionId);
         if (current.currentTurnId == null) {
           patch(sessionId, { runState: "idle", currentTurnId: null });
         }
-        useToastStore.getState().showToast(
-          "Message was not saved. Try sending again.",
-          "error",
-          8000,
-        );
+        useToastStore
+          .getState()
+          .showToast(
+            "Message was not saved. Try sending again.",
+            "error",
+            8000,
+          );
       }, OPTIMISTIC_USER_SEAL_MS);
       sealWatchdogBySession.set(sessionId, sealWatchdog);
 
       // Use send (fire-and-forget) for agent/run
-      useConnectionStore.getState().sendRpc("agent/run", startPayload).catch((error: unknown) => {
-        clearSealWatchdog(sessionId);
-        patch(sessionId, { runState: "idle", currentTurnId: null });
-        useMessageStore.getState().discardOptimisticUserMessage(sessionId, pending.clientId);
-        const message =
-          error instanceof Error ? error.message : "Failed to start agent turn";
-        // Config / setup gaps → corner toast with full guidance (not the bell).
-        if (
-          useSettingsStore.getState().summary?.setup_guidance ||
-          /model_ref|no model configured|provider|not found|Settings/i.test(message)
-        ) {
-          toastLlmConfigFailure(message);
-        } else {
-          useToastStore.getState().showToast(message, "error", 8000);
-        }
-      });
+      useConnectionStore
+        .getState()
+        .sendRpc("agent/run", startPayload)
+        .catch((error: unknown) => {
+          clearSealWatchdog(sessionId);
+          patch(sessionId, { runState: "idle", currentTurnId: null });
+          useMessageStore
+            .getState()
+            .discardOptimisticUserMessage(sessionId, pending.clientId);
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Failed to start agent turn";
+          // Config / setup gaps → corner toast with full guidance (not the bell).
+          if (
+            useSettingsStore.getState().summary?.setup_guidance ||
+            /model_ref|no model configured|provider|not found|Settings/i.test(
+              message,
+            )
+          ) {
+            toastLlmConfigFailure(message);
+          } else {
+            useToastStore.getState().showToast(message, "error", 8000);
+          }
+        });
       return true;
     },
 
@@ -456,10 +407,12 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       task = (async () => {
         const current = getSlice(get().byId, sessionId);
         if (current.compacting) {
-          useToastStore.getState().showToast(
-            "Wait for context compaction to finish before replaying",
-            "error",
-          );
+          useToastStore
+            .getState()
+            .showToast(
+              "Wait for context compaction to finish before replaying",
+              "error",
+            );
           return false;
         }
 
@@ -500,10 +453,12 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           }
           return true;
         } catch (error) {
-          useToastStore.getState().showToast(
-            error instanceof Error ? error.message : "Replay failed",
-            "error",
-          );
+          useToastStore
+            .getState()
+            .showToast(
+              error instanceof Error ? error.message : "Replay failed",
+              "error",
+            );
           return false;
         } finally {
           patch(sessionId, { replaying: false });
@@ -532,18 +487,27 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         .sendRpc("session/compact", { session_id: sessionId })
         .catch((error: unknown) => {
           patch(sessionId, { compacting: false });
-          useToastStore.getState().showToast(
-            error instanceof Error ? error.message : "Compact failed",
-            "error",
-          );
+          useToastStore
+            .getState()
+            .showToast(
+              error instanceof Error ? error.message : "Compact failed",
+              "error",
+            );
         });
     },
 
     cancel: (sessionId) => {
       const current = getSlice(get().byId, sessionId);
       if (current.runState !== "running") return;
-      patch(sessionId, { runState: "cancelling", pendingCancel: true, pendingPermission: null });
-      useConnectionStore.getState().sendRpc("agent/cancel", { session_id: sessionId }).catch(() => {});
+      patch(sessionId, {
+        runState: "cancelling",
+        pendingCancel: true,
+        pendingPermission: null,
+      });
+      useConnectionStore
+        .getState()
+        .sendRpc("agent/cancel", { session_id: sessionId })
+        .catch(() => {});
     },
 
     onTranscriptReverted: (sessionId) => {
@@ -566,30 +530,32 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       // Keep the card open until the server's `agent/permission` receipt
       // arrives; only then close it. On failure, restore the card and surface
       // the error explicitly instead of a silent empty catch (FE-04).
-      useConnectionStore.getState().sendRpc("agent/permission", {
-        request_id: pending.request_id,
-        tool: pending.tool,
-        approved,
-        always,
-        session_id: sessionId,
-      }).then(() => {
-        // Close only the card we granted; a newer request may have replaced it.
-        const latest = getSlice(get().byId, sessionId).pendingPermission;
-        if (latest?.request_id === pending.request_id) {
-          patch(sessionId, { pendingPermission: null });
-        }
-      }).catch((error: unknown) => {
-        // Rollback: keep/restore this card (unless a newer request is showing).
-        const latest = getSlice(get().byId, sessionId).pendingPermission;
-        if (latest?.request_id === pending.request_id || !latest) {
-          patch(sessionId, { pendingPermission: pending });
-        }
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Permission grant failed";
-        useToastStore.getState().showToast(message, "error");
-      });
+      useConnectionStore
+        .getState()
+        .sendRpc("agent/permission", {
+          request_id: pending.request_id,
+          tool: pending.tool,
+          approved,
+          always,
+          session_id: sessionId,
+        })
+        .then(() => {
+          // Close only the card we granted; a newer request may have replaced it.
+          const latest = getSlice(get().byId, sessionId).pendingPermission;
+          if (latest?.request_id === pending.request_id) {
+            patch(sessionId, { pendingPermission: null });
+          }
+        })
+        .catch((error: unknown) => {
+          // Rollback: keep/restore this card (unless a newer request is showing).
+          const latest = getSlice(get().byId, sessionId).pendingPermission;
+          if (latest?.request_id === pending.request_id || !latest) {
+            patch(sessionId, { pendingPermission: pending });
+          }
+          const message =
+            error instanceof Error ? error.message : "Permission grant failed";
+          useToastStore.getState().showToast(message, "error");
+        });
     },
 
     onPermissionRequest: (sessionId, pr) => {
@@ -630,7 +596,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       const sessionId = te.session_id;
       const current = getSlice(get().byId, sessionId);
       if (te.turn_id !== current.currentTurnId) {
-        if (te.event.type !== "stream_event") {
+        {
           debugTrace("turn", "event.dropped", {
             sessionId,
             eventTurn: te.turn_id,
@@ -661,16 +627,19 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           break;
         case "snapshot_notice": {
           const level = te.event.level.toLowerCase();
-          const variant = level === "error" || level === "warn" || level === "warning"
-            ? "error"
-            : "info";
+          const variant =
+            level === "error" || level === "warn" || level === "warning"
+              ? "error"
+              : "info";
           useToastStore.getState().showToast(te.event.message, variant, 8000);
           break;
         }
         case "permission_resolved":
           notify.add(
             sessionId,
-            te.event.approved ? `Approved: ${te.event.tool}` : `Denied: ${te.event.tool}`,
+            te.event.approved
+              ? `Approved: ${te.event.tool}`
+              : `Denied: ${te.event.tool}`,
             te.event.approved ? "success" : "error",
           );
           break;
@@ -682,15 +651,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           return;
       }
 
-      // Stream tokens go to messageStore via rAF; do not set turnStore (no
-      // meta change) so Todo/Ring/Input/List parents do not re-render per token.
-      if (te.event.type === "stream_event") {
-        if (current.runState === "running" && current.currentTurnId) {
-          enqueueStreamEvent(sessionId, te.turn_id, te.event.event);
-        }
-        return;
-      }
-
       const updated = new Map(get().byId);
       const slice = { ...getSlice(updated, sessionId) };
 
@@ -700,28 +660,37 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       };
       if (metaUpdate.phase !== undefined) mapped.turnPhase = metaUpdate.phase;
       if (metaUpdate.step !== undefined) mapped.turnStep = metaUpdate.step;
-      if (metaUpdate.stepMax !== undefined) mapped.turnStepMax = metaUpdate.stepMax;
-      if (metaUpdate.contextWindow !== undefined) mapped.contextWindow = metaUpdate.contextWindow;
+      if (metaUpdate.stepMax !== undefined)
+        mapped.turnStepMax = metaUpdate.stepMax;
+      if (metaUpdate.contextWindow !== undefined)
+        mapped.contextWindow = metaUpdate.contextWindow;
       if (metaUpdate.tokenBreakdown !== undefined) {
         mapped.contextTokenBreakdown = metaUpdate.tokenBreakdown;
       }
-      if (metaUpdate.promptTokens !== undefined) mapped.lastTurnPromptTokens = metaUpdate.promptTokens;
-      if (metaUpdate.completionTokens !== undefined) mapped.lastTurnCompletionTokens = metaUpdate.completionTokens;
-      if (metaUpdate.cacheHitTokens !== undefined) mapped.lastTurnCacheHitTokens = metaUpdate.cacheHitTokens;
-      if (metaUpdate.cacheMissTokens !== undefined) mapped.lastTurnCacheMissTokens = metaUpdate.cacheMissTokens;
-      if (metaUpdate.stopReason !== undefined) mapped.stopReason = metaUpdate.stopReason;
+      if (metaUpdate.promptTokens !== undefined)
+        mapped.lastTurnPromptTokens = metaUpdate.promptTokens;
+      if (metaUpdate.completionTokens !== undefined)
+        mapped.lastTurnCompletionTokens = metaUpdate.completionTokens;
+      if (metaUpdate.cacheHitTokens !== undefined)
+        mapped.lastTurnCacheHitTokens = metaUpdate.cacheHitTokens;
+      if (metaUpdate.cacheMissTokens !== undefined)
+        mapped.lastTurnCacheMissTokens = metaUpdate.cacheMissTokens;
+      if (metaUpdate.stopReason !== undefined)
+        mapped.stopReason = metaUpdate.stopReason;
       // Session-total accumulators: add each request's usage to the running sum.
       // Snapshot hydrates (applySnapshotMeter / onTurnFinished) overwrite with the
       // authoritative backend value; events only add the increment after that.
       if (metaUpdate.promptTokens !== undefined) {
-        mapped.sessionPromptTokens = (slice.sessionPromptTokens ?? 0) + metaUpdate.promptTokens;
+        mapped.sessionPromptTokens =
+          (slice.sessionPromptTokens ?? 0) + metaUpdate.promptTokens;
       }
       if (metaUpdate.completionTokens !== undefined) {
         mapped.sessionCompletionTokens =
           (slice.sessionCompletionTokens ?? 0) + metaUpdate.completionTokens;
       }
       if (metaUpdate.cacheHitTokens !== undefined) {
-        mapped.sessionCacheHitTokens = (slice.sessionCacheHitTokens ?? 0) + metaUpdate.cacheHitTokens;
+        mapped.sessionCacheHitTokens =
+          (slice.sessionCacheHitTokens ?? 0) + metaUpdate.cacheHitTokens;
       }
       if (metaUpdate.cacheMissTokens !== undefined) {
         mapped.sessionCacheMissTokens =
@@ -737,7 +706,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (life.stage === "started") {
         patch(sessionId, {
           compacting: true,
-          ...(life.trigger === "auto" ? { turnPhase: "compacting" as const } : {}),
+          ...(life.trigger === "auto"
+            ? { turnPhase: "compacting" as const }
+            : {}),
         });
         return;
       }
@@ -750,17 +721,21 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       }
       patch(sessionId, { compacting: false });
       if (life.trigger === "auto") {
-        useToastStore.getState().showToast(
-          life.error?.message ?? "Compact failed",
-          "error",
-          8000,
-        );
+        useToastStore
+          .getState()
+          .showToast(life.error?.message ?? "Compact failed", "error", 8000);
       }
     },
 
     onLifecycleTurnFinished: (sessionId, finishedTurnId) => {
       const current = getSlice(get().byId, sessionId);
-      if (!shouldApplyTurnEnd(current.currentTurnId, current.runState, finishedTurnId)) {
+      if (
+        !shouldApplyTurnEnd(
+          current.currentTurnId,
+          current.runState,
+          finishedTurnId,
+        )
+      ) {
         debugTrace("turn", "lifecycle.finished.skipped", {
           sessionId,
           finishedTurnId: finishedTurnId ?? null,
@@ -775,8 +750,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         currentTurnId: current.currentTurnId,
         runState: current.runState,
       });
-      flushStreamSession(sessionId);
-      useMessageStore.getState().finalizeTurn(sessionId, current.currentTurnId ?? "");
       get().applySnapshotTurn(sessionId, null);
     },
 
@@ -811,10 +784,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
 
       const tts = snap.last_turn_token_stats ?? tf.turn_token_stats;
       const cum = snap.cumulative_token_stats;
-      const turnId = tf.turn_id || current.currentTurnId;
 
-      flushStreamSession(sessionId);
-      useMessageStore.getState().finalizeTurn(sessionId, turnId ?? "");
       if (notice) {
         useMessageStore.getState().setTurnEndNotice(sessionId, notice);
       }
@@ -823,7 +793,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         useMessageStore.getState().bySession.get(sessionId)?.toSeq ?? 0;
       const serverEnd = snap.buffer?.next_seq ?? 0;
       if (serverEnd > localEnd) {
-        void useMessageStore.getState().loadRange(sessionId, localEnd, serverEnd);
+        void useMessageStore
+          .getState()
+          .loadRange(sessionId, localEnd, serverEnd);
       }
 
       patch(sessionId, {
@@ -836,7 +808,8 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         pendingPermission: null,
         contextWindow: snap.context_window ?? 0,
         contextTokensEstimate: snap.context_tokens_estimate ?? 0,
-        contextTokenBreakdown: snap.context_token_breakdown ?? EMPTY_TOKEN_BREAKDOWN,
+        contextTokenBreakdown:
+          snap.context_token_breakdown ?? EMPTY_TOKEN_BREAKDOWN,
         compactEligible: snap.compact_eligible ?? false,
         compacting: snap.compacting ?? false,
         activePlanPath: snap.active_plan_path ?? null,
@@ -894,7 +867,8 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       patch(sessionId, {
         contextWindow: snap.context_window ?? 0,
         contextTokensEstimate: snap.context_tokens_estimate ?? 0,
-        contextTokenBreakdown: snap.context_token_breakdown ?? EMPTY_TOKEN_BREAKDOWN,
+        contextTokenBreakdown:
+          snap.context_token_breakdown ?? EMPTY_TOKEN_BREAKDOWN,
         compactEligible: snap.compact_eligible ?? false,
         compacting: snap.compacting ?? false,
         lastTurnPromptTokens: tts?.prompt_tokens ?? 0,
@@ -919,25 +893,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
     },
 
     resetTurn: (sessionId) => {
-      clearStreamSession(sessionId);
       patch(sessionId, emptySlice());
-    },
-
-    flushPendingStream: (sessionId) => {
-      flushStreamSession(sessionId);
-    },
-
-    clearPendingStream: (sessionId) => {
-      clearStreamSession(sessionId);
-    },
-
-    clearAllPendingStreams: () => {
-      for (const sessionId of new Set([
-        ...pendingStreamBySession.keys(),
-        ...rafBySession.keys(),
-      ])) {
-        clearStreamSession(sessionId);
-      }
     },
   };
 });

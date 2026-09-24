@@ -89,7 +89,10 @@ export type MessageItem = InputMessageItem | OutputMessageItem;
 export interface ReasoningItem {
   type: "reasoning";
   id?: string | null;
-  summary: Array<{ type: "summary_text"; text: string } | { type: string; [k: string]: unknown }>;
+  summary: Array<
+    | { type: "summary_text"; text: string }
+    | { type: string; [k: string]: unknown }
+  >;
   content?: Array<{ type: "reasoning_text"; text: string }>;
   encrypted_content?: string | null;
   status?: string;
@@ -128,69 +131,6 @@ export type Item =
   | FunctionCallOutputItem
   | { type: string };
 
-/**
- * Minimal ResponseStreamEvent subset used by the UI.
- * Handled semantic variants mutate Item-shaped state; lifecycle variants may no-op
- * (see `NON_SEMANTIC_STREAM_TYPES` in adapter). Anything else → shapeError.
- */
-export type ResponseStreamEvent =
-  | {
-      type: "response.output_text.delta";
-      sequence_number: number;
-      item_id: string;
-      output_index: number;
-      content_index: number;
-      delta: string;
-      logprobs?: unknown;
-    }
-  | {
-      type: "response.output_text.done";
-      sequence_number: number;
-      item_id: string;
-      output_index: number;
-      content_index: number;
-      text: string;
-      logprobs?: unknown;
-    }
-  | {
-      type: "response.reasoning_text.delta";
-      sequence_number?: number;
-      item_id: string;
-      output_index?: number;
-      content_index?: number;
-      delta: string;
-    }
-  | {
-      type: "response.reasoning_text.done";
-      sequence_number?: number;
-      item_id: string;
-      output_index?: number;
-      content_index?: number;
-      text: string;
-    }
-  | {
-      type: "response.function_call_arguments.delta";
-      sequence_number?: number;
-      item_id: string;
-      output_index?: number;
-      delta: string;
-    }
-  | {
-      type: "response.function_call_arguments.done";
-      sequence_number?: number;
-      item_id: string;
-      output_index?: number;
-      arguments: string;
-      name?: string | null;
-    }
-  | {
-      type: "response.output_item.added";
-      sequence_number?: number;
-      output_index?: number;
-      item: Item;
-    }
-  | { type: string; [key: string]: unknown };
-
 export interface SettingsSummary {
   revision: number;
   /** Catalog providers that hold a credential. */
@@ -226,42 +166,53 @@ export type ItemLogKind =
   | "item/tool_call"
   | "item/tool_result";
 
-export interface ItemLogRow {
+/** A committed row's lifecycle, as the session log itself records it. */
+export type LogRowState = "in_progress" | "final" | "aborted";
+
+/** Every committed row carries the log envelope; `seq` is its identity. */
+interface LogRowEnvelope {
   seq: number;
+  /** Lifecycle from the log: `in_progress` until the row settles.
+   *
+   *  Required, and never derived from the payload: a payload's own `status` is
+   *  provider content that a dialect may omit entirely. A row without a `state`
+   *  is rejected rather than assumed settled — guessing "final" is what silently
+   *  dropped every live delta for reasoning items. */
+  state: LogRowState;
+  /** Seqs this row cites (a compaction's shadowed range). */
+  cites?: number[];
+}
+
+export interface ItemLogRow extends LogRowEnvelope {
   kind: ItemLogKind;
   body: Item;
   child_session_id?: string;
 }
 
-export interface CompactedLogRow {
-  seq: number;
+export interface CompactedLogRow extends LogRowEnvelope {
   kind: "compacted";
   body: { summary: string; from: number; to: number };
 }
 
-export interface JobExitReminderLogRow {
-  seq: number;
+export interface JobExitReminderLogRow extends LogRowEnvelope {
   kind: "reminder/job_exit";
   body: Item;
 }
 
 /** A durable plan-review reminder: a system mark, never a chat bubble. */
-export interface PlanReminderLogRow {
-  seq: number;
+export interface PlanReminderLogRow extends LogRowEnvelope {
   kind: "reminder/plan";
   body: Item;
 }
 
 /** The system-issued plan-execution trigger. Body is a user `Item`, but the kind
  *  is its own: it is *not* a revert anchor (anchors only count `item/user`). */
-export interface PlanExecuteLogRow {
-  seq: number;
+export interface PlanExecuteLogRow extends LogRowEnvelope {
   kind: "plan/execute";
   body: Item;
 }
 
-export interface ControlLogRow {
-  seq: number;
+export interface ControlLogRow extends LogRowEnvelope {
   kind: "turn/start" | "turn/end" | "request/header" | "request/context";
   body: Record<string, unknown>;
 }
@@ -275,8 +226,8 @@ export type WireBufferEvent =
   | PlanExecuteLogRow
   | ControlLogRow;
 
-/** HumanView row: a committed log row with transient UI-only state. */
-export type HumanRow = WireBufferEvent & { streaming?: boolean };
+/** HumanView row: a committed log row. Its lifecycle is its own `state`. */
+export type HumanRow = WireBufferEvent;
 
 export interface BufferLoaded {
   session_id: string;
@@ -407,7 +358,6 @@ export interface WorkspaceChanged {
   kind: string;
 }
 
-
 export interface BufferState {
   last_seq: number;
   next_seq: number;
@@ -497,11 +447,7 @@ export interface BashTailResult {
 export type ThinkingTier = "low" | "medium" | "high";
 export type ContextMode = "standard" | "max";
 
-export type TurnEndReason =
-  | "completed"
-  | "cancelled"
-  | "max_steps"
-  | "error";
+export type TurnEndReason = "completed" | "cancelled" | "max_steps" | "error";
 
 export interface TurnStarted {
   session_id: string;
@@ -617,7 +563,6 @@ export interface PermissionRequest {
 // --- WireEvent (Rust: #[serde(tag = "type", rename_all = "snake_case")]) ---
 
 export type WireEvent =
-  | { type: "stream_event"; event: ResponseStreamEvent }
   | {
       type: "todo_progress";
       pending: number;
@@ -651,7 +596,12 @@ export type WireEvent =
       stop_reason: string;
     }
   | { type: "compaction"; kind: CompactionKind; detail: string | null }
-  | { type: "permission_resolved"; tool: string; approved: boolean; always: boolean }
+  | {
+      type: "permission_resolved";
+      tool: string;
+      approved: boolean;
+      always: boolean;
+    }
   | { type: "error"; code: ErrorCode; message: string }
   | { type: "snapshot_notice"; level: string; message: string };
 
@@ -717,5 +667,9 @@ export interface TurnMeta {
   tokenBreakdown?: ItemTokenBreakdown;
   stopReason: string | null;
   lastCompaction: { kind: CompactionKind; detail: string | null } | null;
-  lastPermissionResolved: { tool: string; approved: boolean; always: boolean } | null;
+  lastPermissionResolved: {
+    tool: string;
+    approved: boolean;
+    always: boolean;
+  } | null;
 }

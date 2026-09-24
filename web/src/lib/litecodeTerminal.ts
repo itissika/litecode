@@ -1,7 +1,10 @@
 /** Human terminal client — TerminalHub over WS (UTF-8 lossy data frames). */
 
 import type { WireEnvelope } from "../api/agentWs";
-import { attachSiblingStores, useConnectionStore } from "../stores/connectionStore";
+import {
+  attachSiblingStores,
+  useConnectionStore,
+} from "../stores/connectionStore";
 
 type DataHandler = (id: string, data: string) => void;
 type ExitHandler = (id: string, code: number | null) => void;
@@ -79,14 +82,13 @@ export async function terminalCreate(opts?: {
   rows?: number;
   cwd?: string;
 }): Promise<string> {
-  const result = await useConnectionStore.getState().sendRpc<{ id: string }>(
-    "terminal/create",
-    {
+  const result = await useConnectionStore
+    .getState()
+    .sendRpc<{ id: string }>("terminal/create", {
       cols: opts?.cols ?? 80,
       rows: opts?.rows ?? 24,
       ...(opts?.cwd ? { cwd: opts.cwd } : {}),
-    },
-  );
+    });
   if (!result?.id) throw new Error("terminal/create missing id");
   return result.id;
 }

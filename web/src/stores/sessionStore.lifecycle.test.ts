@@ -112,25 +112,71 @@ describe("sessionStore session list ordering", () => {
     };
   }
 
+  // Minute-spaced activity: the ordering granularity is a minute (see
+  // `ORDER_BUCKET_MS`), so sub-minute deltas must not reorder anything.
+  const MIN = 60_000;
+
   beforeEach(() => {
     useSessionStore.setState({
-      sessions: [info("s-old", 100, "old"), info("s-new", 200, "new")],
+      sessions: [
+        info("s-old", MIN, "old"),
+        info("s-new", 2 * MIN, "new"),
+      ],
     } as never);
   });
 
   it("keeps sessions sorted by updated_at desc on preview_updated", () => {
-    // A session lower in the list gets new activity → bubbles to the top.
+    // A session lower in the list gets new activity a minute later → bubbles up.
     useSessionStore.getState().onSessionLifecycle({
       session_id: "s-old",
       event: "preview_updated",
       turn: null,
       preview: "fresh",
-      updated_at: 300,
+      updated_at: 3 * MIN,
     });
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual([
       "s-old",
       "s-new",
     ]);
+  });
+
+  it("does not reorder sessions whose activity is inside the same minute", () => {
+    // Start from a sorted list: `s-new` is a minute newer, so it sits on top.
+    useSessionStore
+      .getState()
+      .onSessionList([info("s-old", MIN), info("s-new", 2 * MIN)]);
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual([
+      "s-new",
+      "s-old",
+    ]);
+
+    // Both sessions flush every 80ms in an arbitrary interleaving: whichever
+    // flushed last owns the newest timestamp. Not one of those events may move
+    // a row — only minute-level activity does.
+    const flush = (sessionId: string, ms: number) =>
+      useSessionStore.getState().onSessionLifecycle({
+        session_id: sessionId,
+        event: "preview_updated",
+        turn: null,
+        assistant_preview: `${sessionId} token ${ms}`,
+        updated_at: 2 * MIN + 1000 + ms,
+      });
+    const ticks: Array<[string, number]> = [];
+    for (let i = 0; i < 8; i++) {
+      const ms = i * 160;
+      ticks.push(
+        i % 2 === 0 ? ["s-old", ms] : ["s-new", ms],
+        i % 2 === 0 ? ["s-new", ms + 80] : ["s-old", ms + 80],
+      );
+    }
+
+    for (const [sessionId, ms] of ticks) {
+      flush(sessionId, ms);
+      expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual([
+        "s-new",
+        "s-old",
+      ]);
+    }
   });
 
   it("sorts an upserted new session into place instead of appending", () => {
@@ -144,7 +190,8 @@ describe("sessionStore session list ordering", () => {
         step_max: 5,
         started_at_ms: 1,
       },
-      updated_at: 50,
+      // A minute older than `s-old`: strictly last, not an appended tie.
+      updated_at: 0,
     });
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual([
       "s-new",
@@ -154,11 +201,9 @@ describe("sessionStore session list ordering", () => {
   });
 
   it("sorts the list handed to onSessionList", () => {
-    useSessionStore.getState().onSessionList([
-      info("a", 10),
-      info("b", 30),
-      info("c", 20),
-    ]);
+    useSessionStore
+      .getState()
+      .onSessionList([info("a", 0), info("b", 2 * MIN), info("c", MIN)]);
     expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual([
       "b",
       "c",
@@ -222,9 +267,38 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
       from_seq: 0,
       to_seq: 3,
       events: [
-        { seq: 0, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "a" }] } },
-        { seq: 1, kind: "item/assistant", body: { type: "message", role: "assistant", id: "a0", status: "completed", content: [{ type: "output_text", text: "b", annotations: [] }] } },
-        { seq: 2, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "c" }] } },
+        {
+          seq: 0,
+          kind: "item/user",
+          state: "final",
+          body: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "a" }],
+          },
+        },
+        {
+          seq: 1,
+          kind: "item/assistant",
+          state: "final",
+          body: {
+            type: "message",
+            role: "assistant",
+            id: "a0",
+            status: "completed",
+            content: [{ type: "output_text", text: "b", annotations: [] }],
+          },
+        },
+        {
+          seq: 2,
+          kind: "item/user",
+          state: "final",
+          body: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "c" }],
+          },
+        },
       ],
     });
     useTurnStore.getState().onTurnStarted({
@@ -266,9 +340,38 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
       from_seq: 0,
       to_seq: 3,
       events: [
-        { seq: 0, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "a" }] } },
-        { seq: 1, kind: "item/assistant", body: { type: "message", role: "assistant", id: "a0", status: "completed", content: [{ type: "output_text", text: "b", annotations: [] }] } },
-        { seq: 2, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "c" }] } },
+        {
+          seq: 0,
+          kind: "item/user",
+          state: "final",
+          body: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "a" }],
+          },
+        },
+        {
+          seq: 1,
+          kind: "item/assistant",
+          state: "final",
+          body: {
+            type: "message",
+            role: "assistant",
+            id: "a0",
+            status: "completed",
+            content: [{ type: "output_text", text: "b", annotations: [] }],
+          },
+        },
+        {
+          seq: 2,
+          kind: "item/user",
+          state: "final",
+          body: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "c" }],
+          },
+        },
       ],
     });
     // Revert to seq 2: the rows at 2.. are gone and growth is blocked.
@@ -291,9 +394,38 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
       from_seq: 0,
       to_seq: 3,
       events: [
-        { seq: 0, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "a" }] } },
-        { seq: 1, kind: "item/assistant", body: { type: "message", role: "assistant", id: "a0", status: "completed", content: [{ type: "output_text", text: "b", annotations: [] }] } },
-        { seq: 2, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "c" }] } },
+        {
+          seq: 0,
+          kind: "item/user",
+          state: "final",
+          body: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "a" }],
+          },
+        },
+        {
+          seq: 1,
+          kind: "item/assistant",
+          state: "final",
+          body: {
+            type: "message",
+            role: "assistant",
+            id: "a0",
+            status: "completed",
+            content: [{ type: "output_text", text: "b", annotations: [] }],
+          },
+        },
+        {
+          seq: 2,
+          kind: "item/user",
+          state: "final",
+          body: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "c" }],
+          },
+        },
       ],
     });
 
@@ -301,6 +433,7 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
       session_id: sid,
       seq: 3,
       kind: "compacted",
+      state: "final",
       body: { summary: "first-cut", from: 0, to: 3 },
     });
 
@@ -318,9 +451,38 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
       from_seq: 0,
       to_seq: 3,
       events: [
-        { seq: 0, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "keep" }] } },
-        { seq: 1, kind: "item/assistant", body: { type: "message", role: "assistant", id: "a0", status: "completed", content: [{ type: "output_text", text: "drop", annotations: [] }] } },
-        { seq: 2, kind: "item/user", body: { type: "message", role: "user", content: [{ type: "input_text", text: "drop too" }] } },
+        {
+          seq: 0,
+          kind: "item/user",
+          state: "final",
+          body: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "keep" }],
+          },
+        },
+        {
+          seq: 1,
+          kind: "item/assistant",
+          state: "final",
+          body: {
+            type: "message",
+            role: "assistant",
+            id: "a0",
+            status: "completed",
+            content: [{ type: "output_text", text: "drop", annotations: [] }],
+          },
+        },
+        {
+          seq: 2,
+          kind: "item/user",
+          state: "final",
+          body: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "drop too" }],
+          },
+        },
       ],
     });
 
@@ -331,7 +493,10 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
       op: "revert_to_user_anchor",
       ok: true,
       error: null,
-      snapshot: { ...snap(sid, 1), buffer: { last_seq: 0, next_seq: 5, revision: 2 } },
+      snapshot: {
+        ...snap(sid, 1),
+        buffer: { last_seq: 0, next_seq: 5, revision: 2 },
+      },
     });
 
     const slice = useMessageStore.getState().bySession.get(sid)!;

@@ -54,7 +54,9 @@ export function CompactCutMark({ summary }: { summary?: string }) {
   if (!hasSummary) {
     return (
       <MarkLine role="separator" label="Context compacted here">
-        <span className="text-dk-2xs text-(--_dk-text-disabled)">compaction point</span>
+        <span className="text-dk-2xs text-(--_dk-text-disabled)">
+          compaction point
+        </span>
       </MarkLine>
     );
   }
@@ -105,7 +107,9 @@ export function JobExitMark({ detail }: { detail?: string }) {
   return (
     <MarkLine role="status" label="Background terminal exited">
       <span className="text-dk-2xs text-(--_dk-text-disabled)">
-        {detail ? `background terminal exited · ${detail}` : "background terminal exited"}
+        {detail
+          ? `background terminal exited · ${detail}`
+          : "background terminal exited"}
       </span>
     </MarkLine>
   );
@@ -119,7 +123,9 @@ export function JobExitMark({ detail }: { detail?: string }) {
 export function PlanUpdateMark() {
   return (
     <MarkLine role="status" label="Plan updated" testId="plan-update-mark">
-      <span className="text-dk-2xs text-(--_dk-text-disabled)">计划已更新 · 需重读</span>
+      <span className="text-dk-2xs text-(--_dk-text-disabled)">
+        计划已更新 · 需重读
+      </span>
     </MarkLine>
   );
 }
@@ -131,7 +137,11 @@ export function PlanUpdateMark() {
  */
 export function PlanExecuteMark({ planPath }: { planPath?: string | null }) {
   return (
-    <MarkLine role="status" label="Plan execution started" testId="plan-execute-mark">
+    <MarkLine
+      role="status"
+      label="Plan execution started"
+      testId="plan-execute-mark"
+    >
       <span className="text-dk-2xs text-(--_dk-text-disabled)">
         {planPath ? `${planPath} 开始执行` : "开始执行"}
       </span>
@@ -153,7 +163,11 @@ export function SubagentExitMark({
   const label = detail ? `subagent ${detail}` : "subagent settled";
   if (!childId) {
     return (
-      <MarkLine role="status" label="Subagent settled" testId="subagent-exit-mark">
+      <MarkLine
+        role="status"
+        label="Subagent settled"
+        testId="subagent-exit-mark"
+      >
         <span className="text-dk-2xs text-(--_dk-text-disabled)">{label}</span>
       </MarkLine>
     );
@@ -174,13 +188,25 @@ export function SubagentExitMark({
   );
 }
 
-export function subagentExitDetail(text: string): { detail: string; childId?: string } {
-  const ids = [...text.matchAll(/^child_session_id: (\S+)/gm)].map((match) => match[1]!);
-  const agents = [...text.matchAll(/^agent: (\S+)/gm)].map((match) => match[1]!);
-  const reasons = [...text.matchAll(/^reason: (\S+)/gm)].map((match) => match[1]!);
+export function subagentExitDetail(text: string): {
+  detail: string;
+  childId?: string;
+} {
+  const ids = [...text.matchAll(/^child_session_id: (\S+)/gm)].map(
+    (match) => match[1]!,
+  );
+  const agents = [...text.matchAll(/^agent: (\S+)/gm)].map(
+    (match) => match[1]!,
+  );
+  const reasons = [...text.matchAll(/^reason: (\S+)/gm)].map(
+    (match) => match[1]!,
+  );
   const settled = /^settled: (\d+)/m.exec(text);
   const n = settled ? Number(settled[1]) : ids.length || 1;
-  const who = n === 1 ? agents[0] || (ids[0] ? ids[0].slice(0, 8) : undefined) : undefined;
+  const who =
+    n === 1
+      ? agents[0] || (ids[0] ? ids[0].slice(0, 8) : undefined)
+      : undefined;
   const reason = n === 1 && reasons.length === 1 ? reasons[0] : undefined;
   const parts: string[] = n > 1 ? [`${n} settled`] : ["settled"];
   if (who) parts.push(who);
@@ -195,9 +221,13 @@ export function subagentExitDetail(text: string): { detail: string; childId?: st
  * body carries no recognizable exit line (nothing extra to show).
  */
 export function jobExitDetail(text: string): string | undefined {
-  const exited = /^Background bash (\S+) exited with code (-?\d+)\.$/m.exec(text);
+  const exited = /^Background bash (\S+) exited with code (-?\d+)\.$/m.exec(
+    text,
+  );
   if (exited) return `${exited[1]} · exit code ${exited[2]}`;
-  const stopped = /^The user stopped background bash (\S+) \(Kill\)\.$/m.exec(text);
+  const stopped = /^The user stopped background bash (\S+) \(Kill\)\.$/m.exec(
+    text,
+  );
   if (stopped) return `${stopped[1]} · stopped by user (Kill)`;
   return undefined;
 }
@@ -255,7 +285,11 @@ export function TranscriptMarkForRow({
   return (
     <TranscriptMark
       kind={kind}
-      summary={kind === "compact_cut" && "summary" in row.body ? String(row.body.summary) : undefined}
+      summary={
+        kind === "compact_cut" && "summary" in row.body
+          ? String(row.body.summary)
+          : undefined
+      }
       detail={
         kind === "job_exit"
           ? jobExitDetail(text)

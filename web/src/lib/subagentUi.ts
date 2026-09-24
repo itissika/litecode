@@ -2,7 +2,8 @@ import type { SessionInfo } from "../api/types";
 import type { ToolStatus } from "../components/ToolIcon";
 
 export function inputString(input: unknown, key: string): string | undefined {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return undefined;
   const value = (input as Record<string, unknown>)[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -14,7 +15,8 @@ export function outputField(text: string, key: string): string | undefined {
 }
 
 export function countWaitIds(input: unknown): number | undefined {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return undefined;
   const ids = (input as Record<string, unknown>).ids;
   if (!Array.isArray(ids)) return undefined;
   const n = ids.filter((id) => typeof id === "string" && id.length > 0).length;
@@ -22,7 +24,8 @@ export function countWaitIds(input: unknown): number | undefined {
 }
 
 export function waitTargetCount(input: unknown): number | undefined {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return undefined;
   const count = (input as Record<string, unknown>).count;
   if (typeof count === "number" && Number.isFinite(count) && count > 0) {
     return Math.floor(count);
@@ -69,8 +72,12 @@ export function waitSettledLine(outputText: string): string {
   const status = outputField(outputText, "status");
   if (status === "nothing to wait for") return "nothing to wait";
   const settled = outputField(outputText, "settled");
-  const agents = [...outputText.matchAll(/^agent: (\S+)/gm)].map((match) => match[1]!);
-  const reasons = [...outputText.matchAll(/^reason: (\S+)/gm)].map((match) => match[1]!);
+  const agents = [...outputText.matchAll(/^agent: (\S+)/gm)].map(
+    (match) => match[1]!,
+  );
+  const reasons = [...outputText.matchAll(/^reason: (\S+)/gm)].map(
+    (match) => match[1]!,
+  );
   const n = settled ? Number(settled) : agents.length || 1;
   const parts = [`settled ${n}`];
   if (agents.length === 1) parts.push(agents[0]!);
@@ -80,7 +87,10 @@ export function waitSettledLine(outputText: string): string {
   return parts.join(" · ");
 }
 
-export function stopStatusWord(outputText: string | undefined, toolStatus: ToolStatus): string {
+export function stopStatusWord(
+  outputText: string | undefined,
+  toolStatus: ToolStatus,
+): string {
   if (toolStatus === "failed") return "failed";
   if (!outputText) return "stopping";
   const status = outputField(outputText, "status");
@@ -93,7 +103,10 @@ export function stopStatusWord(outputText: string | undefined, toolStatus: ToolS
   return "stop requested";
 }
 
-export function listStatusWord(outputText: string | undefined, toolStatus: ToolStatus): string {
+export function listStatusWord(
+  outputText: string | undefined,
+  toolStatus: ToolStatus,
+): string {
   if (toolStatus === "failed") return "failed";
   if (!outputText) return "listing…";
   const match = /^sessions: (\d+)/m.exec(outputText);

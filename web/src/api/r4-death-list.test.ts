@@ -27,7 +27,11 @@ function walkTsFiles(dir: string, out: string[]): void {
     const st = statSync(path);
     if (st.isDirectory()) {
       walkTsFiles(path, out);
-    } else if (/\.(ts|tsx)$/.test(name) && !name.endsWith(".test.ts") && !name.endsWith(".test.tsx")) {
+    } else if (
+      /\.(ts|tsx)$/.test(name) &&
+      !name.endsWith(".test.ts") &&
+      !name.endsWith(".test.tsx")
+    ) {
       out.push(path);
     }
   }

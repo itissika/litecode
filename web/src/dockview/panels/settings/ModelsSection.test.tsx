@@ -1,4 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -40,7 +47,9 @@ function model(patch: Partial<CatalogModelDto> = {}): CatalogModelDto {
   };
 }
 
-function modelProvider(patch: Partial<CatalogProviderDto> = {}): CatalogProviderDto {
+function modelProvider(
+  patch: Partial<CatalogProviderDto> = {},
+): CatalogProviderDto {
   return {
     id: "opencode",
     name: "OpenCode Zen",
@@ -54,7 +63,11 @@ function modelProvider(patch: Partial<CatalogProviderDto> = {}): CatalogProvider
   };
 }
 
-const solModel = model({ ref: "opencode/gpt-6-sol", id: "gpt-6-sol", label: "GPT-6 Sol" });
+const solModel = model({
+  ref: "opencode/gpt-6-sol",
+  id: "gpt-6-sol",
+  label: "GPT-6 Sol",
+});
 const offModel = model({
   ref: "opencode/kimi-k2",
   id: "kimi-k2",
@@ -70,7 +83,9 @@ const zenProvider = modelProvider({
 const goProvider = modelProvider({
   id: "opencode-go",
   name: "OpenCode Go",
-  models: [model({ ref: "opencode-go/deepseek-v4-flash", label: "DeepSeek V4 Flash" })],
+  models: [
+    model({ ref: "opencode-go/deepseek-v4-flash", label: "DeepSeek V4 Flash" }),
+  ],
 });
 
 const unconfigured = modelProvider({
@@ -137,13 +152,19 @@ describe("ModelsSection", () => {
     render(<ModelsSection />);
 
     expect(
-      within(toggleFor("GPT-6 Sol")).getByRole("button", { name: "On" }).getAttribute("aria-pressed"),
+      within(toggleFor("GPT-6 Sol"))
+        .getByRole("button", { name: "On" })
+        .getAttribute("aria-pressed"),
     ).toBe("true");
     expect(
-      within(toggleFor("GPT-6 Sol")).getByRole("button", { name: "Off" }).getAttribute("aria-pressed"),
+      within(toggleFor("GPT-6 Sol"))
+        .getByRole("button", { name: "Off" })
+        .getAttribute("aria-pressed"),
     ).toBe("false");
     expect(
-      within(toggleFor("Kimi K2")).getByRole("button", { name: "On" }).getAttribute("aria-pressed"),
+      within(toggleFor("Kimi K2"))
+        .getByRole("button", { name: "On" })
+        .getAttribute("aria-pressed"),
     ).toBe("false");
   });
 
@@ -163,14 +184,18 @@ describe("ModelsSection", () => {
     );
     render(<ModelsSection />);
 
-    fireEvent.click(within(toggleFor("GPT-6 Sol")).getByRole("button", { name: "Off" }));
+    fireEvent.click(
+      within(toggleFor("GPT-6 Sol")).getByRole("button", { name: "Off" }),
+    );
 
     await waitFor(() => {
       expect(mockedEnabled).toHaveBeenCalledWith("opencode/gpt-6-sol", false);
     });
     await waitFor(() => {
       expect(
-        within(toggleFor("GPT-6 Sol")).getByRole("button", { name: "Off" }).getAttribute("aria-pressed"),
+        within(toggleFor("GPT-6 Sol"))
+          .getByRole("button", { name: "Off" })
+          .getAttribute("aria-pressed"),
       ).toBe("true");
     });
   });
@@ -178,7 +203,9 @@ describe("ModelsSection", () => {
   it("turns a switched-off model back on", async () => {
     render(<ModelsSection />);
 
-    fireEvent.click(within(toggleFor("Kimi K2")).getByRole("button", { name: "On" }));
+    fireEvent.click(
+      within(toggleFor("Kimi K2")).getByRole("button", { name: "On" }),
+    );
 
     await waitFor(() => {
       expect(mockedEnabled).toHaveBeenCalledWith("opencode/kimi-k2", true);

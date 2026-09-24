@@ -45,7 +45,10 @@ describe("sessionPanelNav", () => {
     openSessionPanel("sess-open", 4);
     expect(setActive).toHaveBeenCalled();
     expect(addPanel).not.toHaveBeenCalled();
-    expect(getPendingReveal()).toMatchObject({ sessionId: "sess-open", seq: 4 });
+    expect(getPendingReveal()).toMatchObject({
+      sessionId: "sess-open",
+      seq: 4,
+    });
   });
 
   it("opens a missing panel in the grid group", () => {
@@ -87,7 +90,10 @@ describe("sessionPanelNav", () => {
         position: { referenceGroup: "g1" },
       }),
     );
-    expect(getPendingReveal()).toMatchObject({ sessionId: "child-new", seq: 7 });
+    expect(getPendingReveal()).toMatchObject({
+      sessionId: "child-new",
+      seq: 7,
+    });
   });
 
   it("focuses an already-open subagent panel without adding another", () => {
@@ -181,7 +187,10 @@ describe("openKnownSessionPanel", () => {
     const addPanel = setApi();
     openKnownSessionPanel("child-1", sessions);
     expect(addPanel).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "subagent-child-1", component: "subagent" }),
+      expect.objectContaining({
+        id: "subagent-child-1",
+        component: "subagent",
+      }),
     );
   });
 

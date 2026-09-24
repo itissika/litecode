@@ -115,13 +115,7 @@ function stripTrailingNewline(text: string): string {
   return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
-function PinnedOutput({
-  text,
-  failed,
-}: {
-  text: string;
-  failed: boolean;
-}) {
+function PinnedOutput({ text, failed }: { text: string; failed: boolean }) {
   const preRef = useRef<HTMLPreElement>(null);
   // Bash output is a fixed tail window by design (no scroll-up): always pin to
   // the newest line. Earlier output is read in the enclosing FoldCard scroller.
@@ -197,7 +191,13 @@ function CommandHeader({ command }: { command: string }) {
  * Bash tool body: command + the captured output, or a live tee tail overlay
  * while the process is still running after the tool result sealed.
  */
-export function BashToolView({ status, input, output, call_id, sessionId }: ToolViewProps) {
+export function BashToolView({
+  status,
+  input,
+  output,
+  call_id,
+  sessionId,
+}: ToolViewProps) {
   const obj =
     input && typeof input === "object" && !Array.isArray(input)
       ? (input as Record<string, unknown>)

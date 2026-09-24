@@ -22,7 +22,9 @@ export function gitRowId(section: GitSection, path: string): string {
   return `${section}:${path}`;
 }
 
-export function parseGitRowId(id: string): { section: GitSection; path: string } | null {
+export function parseGitRowId(
+  id: string,
+): { section: GitSection; path: string } | null {
   const split = id.indexOf(":");
   if (split <= 0) return null;
   const section = id.slice(0, split);
@@ -36,7 +38,9 @@ export function isGitMetaPath(path: string): boolean {
   return n === ".git" || n.startsWith(".git/") || n.includes("/.git/");
 }
 
-export function watchPathsAffectGitWorktree(paths: string[] | undefined): boolean {
+export function watchPathsAffectGitWorktree(
+  paths: string[] | undefined,
+): boolean {
   if (!paths || paths.length === 0) return true;
   return paths.some((p) => !isGitMetaPath(p));
 }
@@ -65,7 +69,10 @@ interface GitStore {
 
   setMessage: (message: string) => void;
   setVisible: (visible: boolean) => void;
-  select: (id: string, opts?: { additive?: boolean; range?: boolean; visible?: string[] }) => void;
+  select: (
+    id: string,
+    opts?: { additive?: boolean; range?: boolean; visible?: string[] },
+  ) => void;
   clearSelection: () => void;
   refresh: (opts?: { silent?: boolean }) => Promise<void>;
   scheduleRefresh: (paths?: string[]) => void;
@@ -87,7 +94,10 @@ function toastError(err: unknown) {
   useToastStore.getState().showToast(message, "error", 8000, "git");
 }
 
-export function selectedPaths(selected: Set<string>, section: GitSection): string[] {
+export function selectedPaths(
+  selected: Set<string>,
+  section: GitSection,
+): string[] {
   const out: string[] = [];
   for (const id of selected) {
     const parsed = parseGitRowId(id);
@@ -241,7 +251,9 @@ export const useGitStore = create<GitStore>((set, get) => ({
   commit: async () => {
     const message = get().message.trim();
     if (!message) {
-      useToastStore.getState().showToast("Commit message is required", "error", 4000, "git");
+      useToastStore
+        .getState()
+        .showToast("Commit message is required", "error", 4000, "git");
       return;
     }
     set({ mutating: true });

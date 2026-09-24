@@ -1,16 +1,16 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
   PointerEvent as ReactPointerEvent,
   ReactNode,
 } from "react";
-import { CrosshairIcon, PlayIcon, StrategyIcon, TerminalIcon, UsersIcon } from "@phosphor-icons/react";
+import {
+  CrosshairIcon,
+  PlayIcon,
+  StrategyIcon,
+  TerminalIcon,
+  UsersIcon,
+} from "@phosphor-icons/react";
 
 import { normalizeToolFilePath } from "../api/adapter";
 import type { BashJob } from "../api/types";
@@ -43,42 +43,15 @@ export const PANEL_MIN_H = 80;
 /** Exit-animation duration (ms) — matches `status-panel-exit` in chat.css. */
 export const PANEL_EXIT_MS = 160;
 
-/** Absolute ceiling for the auto height (px): a pane taller than this still
- *  opens a panel that leaves the transcript readable. Below it the ceiling is
- *  the free space above the capsule row inside the pane. */
+/** Static ceiling for the panel (px) — the `max-height` the panel itself
+ *  carries, so even a very tall pane never opens a plan taller than this and
+ *  the transcript stays readable.
+ *
+ *  The pane-aware limit is NOT measured here: the dock's column is a flex box
+ *  where this panel is the only shrinkable item (row / input / chips are
+ *  `shrink-0`), so the browser stops it at the free space above the capsule row
+ *  inside the agent pane — however short that pane is. */
 export const PANEL_MAX_H = 480;
-
-/** Space kept between the panel's top edge and the pane's top edge (px) — the
- *  8px row gap below the panel plus breathing room. */
-const PANEL_TOP_MARGIN = 16;
-
-/**
- * The dockview group content container hosting this status line — the pane area
- * a panel must not outgrow (dockview clips at the group's content container).
- */
-function hostingPane(el: HTMLElement | null): HTMLElement | null {
-  return el?.closest<HTMLElement>(".dv-content-container") ?? null;
-}
-
-/**
- * Auto-height ceiling: the free space above the capsule row inside the hosting
- * pane. The panel itself is content-sized — this only caps its scrolling body.
- * Outside a pane (isolated use, jsdom without layout) the static PANEL_MAX_H
- * stands.
- */
-function panelHeightCap(rowEl: HTMLElement | null): number {
-  const pane = hostingPane(rowEl);
-  if (!rowEl || !pane) return PANEL_MAX_H;
-  // The row's rect is never transformed and the pane top is fixed while the
-  // panel grows upward (the dock sits bottom-anchored), so one read is enough.
-  const space =
-    rowEl.getBoundingClientRect().top -
-    pane.getBoundingClientRect().top -
-    PANEL_TOP_MARGIN;
-  // jsdom (and any tree without layout) reports zero rects → static ceiling.
-  if (!(space > 0)) return PANEL_MAX_H;
-  return Math.max(PANEL_MIN_H, Math.min(PANEL_MAX_H, Math.round(space)));
-}
 
 /**
  * A newly-appeared background terminal claims the horizontal slot only after it
@@ -119,10 +92,14 @@ const EMPTY_TODO_ITEMS: TodoItem[] = [];
  *     (a rewrite lands as another plan file and only claims the slot). Todo
  *     owns the slot by default.
  *  3. Level 2 — vertical: clicking a capsule expands its panel above the row,
- *     content-sized (auto height) and capped to the free space above the row
- *     inside the pane; the top-right drag handle overrides that height for the
- *     current open only (same pointer-capture pattern as AgentChatInput, and
- *     never remembered: the next open is content-sized again). Only one panel
+ *     content-sized (auto height) with PANEL_MAX_H as its own `max-height`.
+ *     The pane clamp is pure flexbox: the panel is the only shrinkable item in
+ *     the dock's column, so it can never grow past the agent pane — the
+ *     browser hands it the free space above the capsule row inside the pane and
+ *     its body scrolls (no rect measurement, no ResizeObserver). The top-right
+ *     drag handle overrides that height for the current open only (same
+ *     pointer-capture pattern as AgentChatInput, and never remembered: the next
+ *     open is content-sized again). Only one panel
  *     open at a time; clicking the same capsule again or clicking outside
  *     closes it. While a panel is already open, hover follows onto that
  *     capsule's panel.
@@ -145,7 +122,9 @@ export function SessionStatusLine({
   );
   // Transcript-derived bash call metadata (loaded rows only): the background
   // verdict, the full command and the sealed result for the terminal views.
-  const messageRows = useMessageStore((s) => s.bySession.get(sessionId)?.display);
+  const messageRows = useMessageStore(
+    (s) => s.bySession.get(sessionId)?.display,
+  );
   const bashCallMeta = useMemo(
     () => bashCallMetaByCallId(messageRows ?? []),
     [messageRows],
@@ -156,7 +135,9 @@ export function SessionStatusLine({
   // direction: hiding a real terminal is worse than showing one redundantly).
   const backgroundJobs = useMemo(
     () =>
-      bashJobs.filter((job) => bashCallMeta.get(job.call_id)?.background ?? true),
+      bashJobs.filter(
+        (job) => bashCallMeta.get(job.call_id)?.background ?? true,
+      ),
     [bashJobs, bashCallMeta],
   );
   // Minimal worker summary: total children and the live running count.
@@ -180,13 +161,16 @@ export function SessionStatusLine({
   );
   const subagentRunning = Math.max(
     childSessions.filter(
-      (s) => s.running === true || s.status === "running" || s.status === "stopping",
+      (s) =>
+        s.running === true || s.status === "running" || s.status === "stopping",
     ).length,
   );
   const todoItems = useTurnStore(
     (s) => s.byId.get(sessionId)?.todoItems ?? EMPTY_TODO_ITEMS,
   );
-  const todoPending = useTurnStore((s) => s.byId.get(sessionId)?.todoPending ?? 0);
+  const todoPending = useTurnStore(
+    (s) => s.byId.get(sessionId)?.todoPending ?? 0,
+  );
   const todoInProgress = useTurnStore(
     (s) => s.byId.get(sessionId)?.todoInProgress ?? 0,
   );
@@ -238,8 +222,6 @@ export function SessionStatusLine({
   const heightRef = useRef<number | null>(null);
   const draggingRef = useRef(false);
   const dragStartRef = useRef({ y: 0, h: PANEL_MIN_H });
-  /** Auto-height ceiling in px, measured against the hosting pane. */
-  const [panelCap, setPanelCap] = useState(PANEL_MAX_H);
 
   // Flexbox owns width calculation: every capsule has the same icon-only
   // basis, while the expanded one receives all remaining row space. Animating
@@ -257,21 +239,6 @@ export function SessionStatusLine({
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
     };
-  }, [openId]);
-
-  // Auto height ceiling: re-measured while a panel is open, so a pane resize
-  // (dockview splitter, window resize) re-caps it. jsdom has no layout and no
-  // ResizeObserver → the static ceiling stands there.
-  useEffect(() => {
-    if (!openId) return;
-    const row = rowRef.current;
-    const measure = () => setPanelCap(panelHeightCap(row));
-    measure();
-    const pane = hostingPane(row);
-    if (!pane || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(pane);
-    return () => observer.disconnect();
   }, [openId]);
 
   // Close on outside mousedown / Escape while a panel is open.
@@ -345,7 +312,12 @@ export function SessionStatusLine({
   // it survives BASH_CLAIM_GRACE_MS, and a job leaving never claims at all —
   // short calls must not flash the capsule. The pending claim is dropped by the
   // effect's own cleanup (any later domain change, panel open, or unmount).
-  const sigRef = useRef<{ bash: string; sub: string; plan: string; todo: string } | null>(null);
+  const sigRef = useRef<{
+    bash: string;
+    sub: string;
+    plan: string;
+    todo: string;
+  } | null>(null);
   useEffect(() => {
     const cur = {
       bash: backgroundJobs.map((j) => j.id).join(","),
@@ -388,19 +360,27 @@ export function SessionStatusLine({
       }
     }, BASH_CLAIM_GRACE_MS);
     return () => window.clearTimeout(timer);
-  }, [backgroundJobs, childSessions, subagentTotal, activePlanPath, todoItems, openId]);
+  }, [
+    backgroundJobs,
+    childSessions,
+    subagentTotal,
+    activePlanPath,
+    todoItems,
+    openId,
+  ]);
 
   // Drag handle: dragging up grows the panel (delta = start.y - clientY), same
   // math as AgentChatInput's textarea resize. The new height is written straight
   // to the panel's style (no React state), so dragging never re-renders the
   // panel body. The drag starts from the height the content-sized panel happens
-  // to have, capped by the pane, and never lifts a shorter panel to PANEL_MIN_H.
+  // to have and never lifts a shorter panel to PANEL_MIN_H; PANEL_MAX_H is the
+  // drag's own ceiling (a shorter pane still shrinks the panel through flex).
   const applyResize = (clientY: number) => {
     const start = dragStartRef.current;
     const delta = start.y - clientY;
     const next = Math.max(
       Math.min(PANEL_MIN_H, start.h),
-      Math.min(panelCap, start.h + delta),
+      Math.min(PANEL_MAX_H, start.h + delta),
     );
     heightRef.current = next;
     if (panelRef.current) panelRef.current.style.height = `${next}px`;
@@ -428,7 +408,8 @@ export function SessionStatusLine({
     if (!draggingRef.current) return;
     draggingRef.current = false;
     const el = e.currentTarget as HTMLElement;
-    if (el.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture?.(e.pointerId);
+    if (el.hasPointerCapture?.(e.pointerId))
+      el.releasePointerCapture?.(e.pointerId);
     document.body.style.userSelect = "";
     document.body.style.cursor = "";
   };
@@ -462,14 +443,7 @@ export function SessionStatusLine({
     ) : (openId ?? closingId) === "subagent" ? (
       <SubagentRosterPanel sessionId={sessionId} />
     ) : (openId ?? closingId) === "plan" ? (
-      <PlanPanel
-        path={activePlanPath}
-        projectRoot={projectRoot}
-        running={running}
-        onOpen={openPlan}
-        onExecute={executePlan}
-        allowExecute={!subagentView}
-      />
+      <PlanPanel path={activePlanPath} projectRoot={projectRoot} />
     ) : (openId ?? closingId) === "todo" ? (
       <TodoPanelBody
         items={todoItems}
@@ -501,7 +475,7 @@ export function SessionStatusLine({
   return (
     <div
       ref={rootRef}
-      className="flex min-w-0 flex-col gap-2"
+      className="flex min-h-0 min-w-0 flex-col gap-2"
       data-testid="session-status-line"
     >
       {panelId && (
@@ -516,16 +490,18 @@ export function SessionStatusLine({
             ...(heightRef.current != null
               ? { height: heightRef.current }
               : null),
+            // The panel's own ceiling. The tighter pane clamp is flexbox's job:
+            // `min-h-0` lets the dock column shrink this panel down to the free
+            // space above the row, while its siblings stay `shrink-0`.
+            maxHeight: PANEL_MAX_H,
             transformOrigin: `${originX}px 100%`,
           }}
           // No `[container-type:size]` here: its size containment would make the
           // content-sized panel collapse to zero height.
-          className={`${composerCardClass} relative overflow-hidden ${
+          className={`${composerCardClass} relative flex min-h-0 flex-col overflow-hidden ${
             openId ? "status-panel-enter" : "status-panel-exit"
           }`}
-          onAnimationEnd={
-            !openId ? finishClose : undefined
-          }
+          onAnimationEnd={!openId ? finishClose : undefined}
         >
           <button
             type="button"
@@ -537,14 +513,29 @@ export function SessionStatusLine({
             onPointerCancel={onResizeEnd}
             className="absolute right-1.5 top-1.5 z-10 flex h-4 w-6 cursor-ns-resize items-center justify-center rounded text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary)"
           >
-            <span aria-hidden className="block h-0.5 w-3 rounded-full bg-current" />
+            <span
+              aria-hidden
+              className="block h-0.5 w-3 rounded-full bg-current"
+            />
           </button>
-          {/* The scrollport owns the ceiling: the panel is content-sized, so the
-              cap must sit on the scrolling box itself. `h-full` still resolves
-              once a drag has given the panel an explicit height. */}
+          {/* Plan header, its own container above the body (see PlanHeader):
+              fixed chrome, so the document scrolls under it instead of carrying
+              it away. */}
+          {panelId === "plan" && activePlanPath && (
+            <PlanHeader
+              path={activePlanPath}
+              running={running}
+              allowExecute={!subagentView}
+              onOpen={openPlan}
+              onExecute={executePlan}
+            />
+          )}
+          {/* Scrolling body: content-based on its own (`flex-auto`, not a 0
+              basis — the panel is content-sized until the pane or a drag gives
+              it a height), and the item that absorbs every pixel the pane
+              cannot give the panel. */}
           <div
-            className="h-full overflow-y-auto overscroll-contain py-2"
-            style={{ maxHeight: panelCap }}
+            className="min-h-0 flex-auto overflow-y-auto overscroll-contain py-2"
             data-testid="status-panel-scroll"
           >
             {panelBody}
@@ -554,7 +545,7 @@ export function SessionStatusLine({
 
       <div
         ref={rowRef}
-        className="flex min-w-0 items-center gap-2"
+        className="flex min-w-0 shrink-0 items-center gap-2"
         data-testid="session-status-capsules"
       >
         {/* A child session never gets the plan/todo tools (registry depth gate +
@@ -658,7 +649,9 @@ export function SessionStatusLine({
               size={14}
               weight="fill"
               aria-hidden
-              className={backgroundJobs.length > 0 ? "terminal-status-icon" : ""}
+              className={
+                backgroundJobs.length > 0 ? "terminal-status-icon" : ""
+              }
             />
           }
           label="Terminals"
@@ -846,10 +839,7 @@ function TerminalJob({
           aria-hidden
           className="terminal-status-icon shrink-0"
         />
-        <span
-          title={command}
-          className="min-w-0 flex-1 truncate font-mono"
-        >
+        <span title={command} className="min-w-0 flex-1 truncate font-mono">
           {job.command_preview}
         </span>
         {allowKill && (
@@ -882,9 +872,70 @@ function TerminalJob({
   );
 }
 
-/** Plan panel: renders the active plan file's markdown from the workspace.
- *  The file row ends with the Open affordance; a missing/unreadable file
- *  collapses to a "lost" state instead of dead content. */
+/** Plan header: the active plan's path plus its actions, then the rule that
+ *  separates it from the document. This is the panel's chrome — a sibling
+ *  *above* the scrolling body, not its first row — so the document scrolls
+ *  under a fixed header. It carries no fill of its own: the panel's glass shows
+ *  through untouched. */
+function PlanHeader({
+  path,
+  running,
+  allowExecute,
+  onOpen,
+  onExecute,
+}: {
+  path: string;
+  running: boolean;
+  onOpen: (path: string) => void;
+  onExecute: () => void;
+  /** `false` in the subagent variant: starting a plan turn is the human's
+   *  action on their own session; a child panel only reads / opens the file. */
+  allowExecute: boolean;
+}) {
+  return (
+    <>
+      {/* Even padding on all four sides, so the header reads as one block. */}
+      <div
+        data-testid="plan-file-row"
+        className="flex shrink-0 items-center gap-2 p-3"
+      >
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--_dk-text-secondary)">
+          {path}
+        </span>
+        {allowExecute && (
+          <button
+            type="button"
+            onClick={onExecute}
+            disabled={running}
+            data-testid="plan-execute"
+            className="flex shrink-0 items-center gap-1.5 rounded border border-(--_dk-line) px-2 py-1 text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary) disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+          >
+            <PlayIcon size={13} weight="fill" aria-hidden />
+            执行计划
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onOpen(path)}
+          className="flex shrink-0 items-center gap-1.5 rounded border border-(--_dk-line) px-2 py-1 text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary)"
+        >
+          <StrategyIcon size={13} weight="fill" aria-hidden />
+          Open plan
+        </button>
+      </div>
+      {/* Proportional gutters: the rule is inset by a share of the panel's
+          width instead of a fixed px, so it keeps its air at any width. */}
+      <div className="shrink-0 px-[8%]" data-testid="plan-header-rule">
+        <div className="border-t border-(--_dk-line)" />
+      </div>
+    </>
+  );
+}
+
+/** Plan panel body: the active plan file's markdown, read from the workspace.
+ *  The row naming that file is the panel's chrome (PlanHeader); a
+ *  missing/unreadable file collapses to a "lost" state instead of dead
+ *  content. */
 type PlanDoc =
   | { status: "loading" }
   | { status: "ok"; md: string }
@@ -893,19 +944,9 @@ type PlanDoc =
 function PlanPanel({
   path,
   projectRoot,
-  running,
-  onOpen,
-  onExecute,
-  allowExecute,
 }: {
   path: string | null;
   projectRoot: string | null;
-  running: boolean;
-  onOpen: (path: string) => void;
-  onExecute: () => void;
-  /** `false` in the subagent variant: starting a plan turn is the human's
-   *  action on their own session; a child panel only reads / opens the file. */
-  allowExecute: boolean;
 }) {
   const [doc, setDoc] = useState<PlanDoc>({ status: "loading" });
   const lastChange = useWorkspaceChangeStore((s) => s.last);
@@ -956,32 +997,7 @@ function PlanPanel({
 
   if (!path) return <PanelEmpty>No active plan</PanelEmpty>;
   return (
-    <div className="flex flex-col gap-2 px-3 py-1">
-      <div className="flex items-center gap-2" data-testid="plan-file-row">
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--_dk-text-secondary)">
-          {path}
-        </span>
-        {allowExecute && (
-          <button
-            type="button"
-            onClick={onExecute}
-            disabled={running}
-            data-testid="plan-execute"
-            className="flex shrink-0 items-center gap-1.5 rounded border border-(--_dk-line) px-2 py-1 text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary) disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-          >
-            <PlayIcon size={13} weight="fill" aria-hidden />
-            执行计划
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => onOpen(path)}
-          className="flex shrink-0 items-center gap-1.5 rounded border border-(--_dk-line) px-2 py-1 text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary)"
-        >
-          <StrategyIcon size={13} weight="fill" aria-hidden />
-          Open plan
-        </button>
-      </div>
+    <div className="px-3">
       {doc.status === "loading" && (
         <div className="text-xs text-(--_dk-text-disabled)">Loading…</div>
       )}
@@ -1018,7 +1034,9 @@ function TodoPanelBody({
         <ProgressRing pct={pct} />
         <span className="min-w-0 flex-1 truncate">
           {current ? (
-            <span className="text-(--_dk-text-secondary)">{current.content}</span>
+            <span className="text-(--_dk-text-secondary)">
+              {current.content}
+            </span>
           ) : (
             <span className="italic text-(--_dk-text-disabled)">
               No active task
@@ -1040,19 +1058,19 @@ function TodoPanelBody({
             // the list skips it — no duplicated first row.
             .filter((item) => item.status !== "in_progress")
             .map((item) => (
-            <div key={item.id} className="flex items-start gap-2">
-              <TodoStatusIcon status={item.status} />
-              <span
-                className={
-                  item.status === "completed"
-                    ? "text-(--_dk-text-disabled) line-through"
-                    : "text-(--_dk-text-secondary)"
-                }
-              >
-                {item.content}
-              </span>
-            </div>
-          ))}
+              <div key={item.id} className="flex items-start gap-2">
+                <TodoStatusIcon status={item.status} />
+                <span
+                  className={
+                    item.status === "completed"
+                      ? "text-(--_dk-text-disabled) line-through"
+                      : "text-(--_dk-text-secondary)"
+                  }
+                >
+                  {item.content}
+                </span>
+              </div>
+            ))}
         </div>
       )}
     </div>
@@ -1130,4 +1148,3 @@ function TodoStatusIcon({ status }: { status: TodoItemStatus }) {
     <span className="mt-0.5 h-3 w-3 shrink-0 rounded-full border border-(--_dk-line-visible)" />
   );
 }
-

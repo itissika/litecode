@@ -266,7 +266,11 @@ async function parseJson<T>(res: Response): Promise<T> {
   try {
     body = (await res.json()) as ApiResult<T>;
   } catch {
-    throw new SettingsApiError(res.status, "invalid_response", `HTTP ${res.status}`);
+    throw new SettingsApiError(
+      res.status,
+      "invalid_response",
+      `HTTP ${res.status}`,
+    );
   }
 
   if (!body.ok) {
@@ -281,17 +285,18 @@ async function parseJson<T>(res: Response): Promise<T> {
   return rest as unknown as T;
 }
 
-async function requestJson<T>(
-  url: string,
-  init?: RequestInit,
-): Promise<T> {
+async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await apiFetch(url, init);
   if (!res.ok) {
     try {
       await parseJson<T>(res);
     } catch (err) {
       if (err instanceof SettingsApiError) throw err;
-      throw new SettingsApiError(res.status, "request_failed", `HTTP ${res.status}`);
+      throw new SettingsApiError(
+        res.status,
+        "request_failed",
+        `HTTP ${res.status}`,
+      );
     }
   }
   return parseJson<T>(res);
@@ -364,7 +369,9 @@ export async function putWebSearch(body: {
 }
 
 export async function getAgent(id: string): Promise<AgentProfile> {
-  return requestJson<AgentProfile>(`/api/settings/agents/${encodeURIComponent(id)}`);
+  return requestJson<AgentProfile>(
+    `/api/settings/agents/${encodeURIComponent(id)}`,
+  );
 }
 
 export async function putAgent(
@@ -411,7 +418,9 @@ export interface LayeredList<T> {
   workspace: T[];
 }
 
-export async function getCustomTools(): Promise<LayeredList<CustomToolDefinition>> {
+export async function getCustomTools(): Promise<
+  LayeredList<CustomToolDefinition>
+> {
   const data = await requestJson<{
     global?: CustomToolDefinition[];
     workspace?: CustomToolDefinition[];
@@ -457,7 +466,9 @@ export interface McpRuntimeSnapshot {
 export async function getMcpServers(): Promise<LayeredList<McpServerItem>> {
   const data = await requestJson<{
     global?: Array<McpServerDefinition & { id: string; origin?: ToolOrigin }>;
-    workspace?: Array<McpServerDefinition & { id: string; origin?: ToolOrigin }>;
+    workspace?: Array<
+      McpServerDefinition & { id: string; origin?: ToolOrigin }
+    >;
     runtime?: {
       global?: Record<string, McpRuntimeSnapshot>;
       workspace?: Record<string, McpRuntimeSnapshot>;
@@ -616,7 +627,11 @@ export function isSubagentBindableTool(entry: AvailableTool): boolean {
 }
 
 /** Tools that form one closed loop: enable/disable together. */
-export const BASH_SERIES_TOOL_IDS = ["bash", "wait_shell", "kill_shell"] as const;
+export const BASH_SERIES_TOOL_IDS = [
+  "bash",
+  "wait_shell",
+  "kill_shell",
+] as const;
 
 const TOOL_ENABLE_SERIES: readonly (readonly string[])[] = [
   BASH_SERIES_TOOL_IDS,
@@ -687,14 +702,20 @@ export async function deleteAgent(id: string): Promise<RevisionResponse> {
       await parseJson<RevisionResponse>(res);
     } catch (err) {
       if (err instanceof SettingsApiError) throw err;
-      throw new SettingsApiError(res.status, "request_failed", `HTTP ${res.status}`);
+      throw new SettingsApiError(
+        res.status,
+        "request_failed",
+        `HTTP ${res.status}`,
+      );
     }
   }
   return parseJson<RevisionResponse>(res);
 }
 
 export async function listAgents(): Promise<AgentListItem[]> {
-  const data = await requestJson<{ agents: AgentListItem[] }>("/api/settings/agents");
+  const data = await requestJson<{ agents: AgentListItem[] }>(
+    "/api/settings/agents",
+  );
   return data.agents;
 }
 
@@ -711,7 +732,10 @@ export function isHiddenSettingsAgent(id: string, role: AgentRole): boolean {
 const AGENT_IDS_STORAGE_KEY = "litecode:settingsAgentIds";
 
 export function storeAgentIds(ids: string[]): void {
-  sessionStorage.setItem(AGENT_IDS_STORAGE_KEY, JSON.stringify([...new Set(ids)]));
+  sessionStorage.setItem(
+    AGENT_IDS_STORAGE_KEY,
+    JSON.stringify([...new Set(ids)]),
+  );
 }
 
 /** Load agent ids from settings API (primary, subagent, and hidden compaction). */

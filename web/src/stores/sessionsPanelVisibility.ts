@@ -17,7 +17,8 @@ let wired = false;
 const listeners = new Set<() => void>();
 
 function recompute(): void {
-  const v = getDockviewApi()?.getPanel(SESSIONS_PANEL_ID)?.api.isVisible ?? false;
+  const v =
+    getDockviewApi()?.getPanel(SESSIONS_PANEL_ID)?.api.isVisible ?? false;
   if (v !== visible) {
     visible = v;
     listeners.forEach((l) => l());

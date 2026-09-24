@@ -2,7 +2,13 @@ import { useEffect, useRef } from "react";
 
 import { turnMapIsBusy, useTurnStore } from "../stores/turnStore";
 
-export type PersistStatus = "idle" | "pending" | "saving" | "saved" | "invalid" | "error";
+export type PersistStatus =
+  | "idle"
+  | "pending"
+  | "saving"
+  | "saved"
+  | "invalid"
+  | "error";
 
 export type SerializeResult<P> = { ok: P } | { skip: "unchanged" | "invalid" };
 
@@ -106,7 +112,8 @@ export class SettingsPersistController<D, P> {
     if (this.lastCommitted === this.fingerprint(result.ok)) {
       this.clearTimer();
       this.pendingFp = null;
-      if (!this.inflight) this.opts.setStatus(this.everCommitted ? "saved" : "idle");
+      if (!this.inflight)
+        this.opts.setStatus(this.everCommitted ? "saved" : "idle");
       return;
     }
     const fp = this.fingerprint(result.ok);

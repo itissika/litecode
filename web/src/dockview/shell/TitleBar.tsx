@@ -1,14 +1,20 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { MenuBar } from "../menu/MenuBar";
 import { Logo } from "../../components/Logo";
-import { useServerVersionTags, VersionTags } from "../../components/VersionTags";
+import {
+  useServerVersionTags,
+  VersionTags,
+} from "../../components/VersionTags";
 
 interface TitleBarProps {
   onMenuAction?: (item: string) => void;
   sessionMode?: "local" | "remote";
 }
 
-export function TitleBar({ onMenuAction, sessionMode = "local" }: TitleBarProps) {
+export function TitleBar({
+  onMenuAction,
+  sessionMode = "local",
+}: TitleBarProps) {
   const [maximized, setMaximized] = useState(false);
   const hasWindowChrome = typeof window.litecode?.windowClose === "function";
   const versionTags = useServerVersionTags();

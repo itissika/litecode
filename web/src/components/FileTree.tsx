@@ -1,4 +1,10 @@
-import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import type { TreeEntry } from "../api/workspace";
@@ -8,7 +14,11 @@ import { useExplorerStore } from "../stores/explorerStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useTreeStore } from "../stores/treeStore";
 import { useGitStore } from "../stores/gitStore";
-import { gitChangedDirs, gitFileLetters, gitStatusColor } from "../lib/gitStatus";
+import {
+  gitChangedDirs,
+  gitFileLetters,
+  gitStatusColor,
+} from "../lib/gitStatus";
 import { openTerminalAt } from "../dockview/config/layout";
 import {
   copyAbsolutePaths,
@@ -24,16 +34,16 @@ import {
 } from "../lib/fileTreeOps";
 import { validateFileName } from "../lib/fileTreeNames";
 import { FileTreeSkeleton } from "./ui/Skeleton";
-import { FileTreeContextMenu, type FileTreeMenuItem } from "./FileTreeContextMenu";
+import {
+  FileTreeContextMenu,
+  type FileTreeMenuItem,
+} from "./FileTreeContextMenu";
 import { FileTreeGlobHits, FileTreeGlobInput } from "./FileTreeGlob";
 import { fileNameFromPath } from "../utils/language";
 import { getFileIcon, FolderIcon } from "../utils/fileIcon";
 import { isSelfOrDescendant, parentPath } from "../utils/path";
 import { useToastStore } from "../stores/toastStore";
-import {
-  flattenVisibleRows,
-  visibleEntryPaths,
-} from "../lib/fileTreeVisible";
+import { flattenVisibleRows, visibleEntryPaths } from "../lib/fileTreeVisible";
 
 export const LITECODE_PATHS_MIME = "application/x-litecode-paths";
 
@@ -51,10 +61,16 @@ function entryKind(
 ): "file" | "dir" | null {
   if (!path) return "dir";
   const parent = parentPath(path);
-  return children[parent]?.find((e) => e.path === path)?.kind ?? (children[path] ? "dir" : "file");
+  return (
+    children[parent]?.find((e) => e.path === path)?.kind ??
+    (children[path] ? "dir" : "file")
+  );
 }
 
-function dropDir(path: string | null, children: Record<string, TreeEntry[] | undefined>): string {
+function dropDir(
+  path: string | null,
+  children: Record<string, TreeEntry[] | undefined>,
+): string {
   if (path === null) return "";
   return entryKind(children, path) === "dir" ? path : parentPath(path);
 }
@@ -82,11 +98,18 @@ function handleDropEvent(
   childrenMap: Record<string, TreeEntry[] | undefined>,
 ): void {
   const target = dropDir(targetPath, childrenMap);
-  const osFiles = [...e.dataTransfer.files].filter((f) => f.size > 0 || Boolean(f.type));
+  const osFiles = [...e.dataTransfer.files].filter(
+    (f) => f.size > 0 || Boolean(f.type),
+  );
   const internal = readInternalPaths(e.dataTransfer);
-  if (osFiles.length > 0 && !e.dataTransfer.types.includes(LITECODE_PATHS_MIME)) {
+  if (
+    osFiles.length > 0 &&
+    !e.dataTransfer.types.includes(LITECODE_PATHS_MIME)
+  ) {
     if (osFiles.every((f) => f.size === 0 && !f.type)) {
-      useToastStore.getState().showToast("Folder drops from the OS are not supported", "info");
+      useToastStore
+        .getState()
+        .showToast("Folder drops from the OS are not supported", "info");
       return;
     }
     void importOsFiles(target, osFiles);
@@ -96,14 +119,19 @@ function handleDropEvent(
     const copy = e.ctrlKey || e.metaKey;
     const blocked = internal.some((p) => isSelfOrDescendant(p, target));
     if (blocked && !copy) {
-      useToastStore.getState().showToast("Cannot move a folder into itself", "error");
+      useToastStore
+        .getState()
+        .showToast("Cannot move a folder into itself", "error");
       return;
     }
     void moveOrCopyEntries(internal, target, copy);
   }
 }
 
-async function beginCreate(parent: string, kind: "newFile" | "newFolder"): Promise<void> {
+async function beginCreate(
+  parent: string,
+  kind: "newFile" | "newFolder",
+): Promise<void> {
   if (parent) await useTreeStore.getState().expandDir(parent);
   useExplorerStore.getState().setInline({ kind, parent });
 }
@@ -190,11 +218,21 @@ function GhostRow({
     >
       <span className="w-4 shrink-0" />
       {kind === "newFolder" ? (
-        <FolderIcon size={16} weight="regular" className="h-4 w-4 shrink-0 text-(--_dk-fg-muted)" />
+        <FolderIcon
+          size={16}
+          weight="regular"
+          className="h-4 w-4 shrink-0 text-(--_dk-fg-muted)"
+        />
       ) : (
         (() => {
           const Glyph = getFileIcon("untitled");
-          return <Glyph size={16} weight="regular" className="h-4 w-4 shrink-0 text-(--_dk-fg-muted)" />;
+          return (
+            <Glyph
+              size={16}
+              weight="regular"
+              className="h-4 w-4 shrink-0 text-(--_dk-fg-muted)"
+            />
+          );
         })()
       )}
       <InlineNameInput
@@ -243,7 +281,8 @@ function TreeNode({
   const gitLetter = isDir ? null : (gitLetters.get(entry.path) ?? null);
   const dirChanged = isDir && changedDirs.has(entry.path);
   const isActive = !isDir && activePath === entry.path;
-  const isCut = clipboard?.mode === "cut" && clipboard.paths.includes(entry.path);
+  const isCut =
+    clipboard?.mode === "cut" && clipboard.paths.includes(entry.path);
   const renaming = inline?.kind === "rename" && inline.path === entry.path;
   const isDrop = dropTarget === entry.path;
 
@@ -288,92 +327,99 @@ function TreeNode({
       : "text-(--_dk-text-secondary)";
 
   return (
-      <div
-        role="treeitem"
-        aria-selected={selected}
-        draggable={!renaming}
-        onClick={handleClick}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          if (!useExplorerStore.getState().selected.has(entry.path)) {
-            select(entry.path);
-          }
-          setMenu({ x: e.clientX, y: e.clientY, path: entry.path });
-        }}
-        onDragStart={onDragStart}
-        onDragOver={onDragOver}
-        onDrop={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const target = isDir ? entry.path : parentPath(entry.path);
-          handleDropEvent(e, target, useTreeStore.getState().children);
-          useExplorerStore.getState().setDropTarget(null);
-        }}
-        onDragLeave={() => {
-          if (dropTarget === entry.path || dropTarget === parentPath(entry.path)) {
-            /* keep until next over */
-          }
-        }}
-        className={`flex w-full cursor-default items-center gap-1 truncate px-2 py-0.5 text-left text-sm transition-colors hover:bg-(--_dk-ix-bg-hover) ${highlight} ${
-          isCut || busy ? "opacity-50" : ""
-        } ${isDrop && isDir ? "outline outline-1 outline-(--_dk-accent-hover)" : ""} ${
-          focusPath === entry.path ? "ring-1 ring-inset ring-(--_dk-line-visible)" : ""
-        }`}
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
-        data-path={entry.path}
-        title={entry.path}
-      >
-        <span className="w-4 shrink-0 text-center text-[10px] text-(--_dk-text-disabled)">
-          {isDir ? (expanded ? "▼" : "▶") : ""}
+    <div
+      role="treeitem"
+      aria-selected={selected}
+      draggable={!renaming}
+      onClick={handleClick}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!useExplorerStore.getState().selected.has(entry.path)) {
+          select(entry.path);
+        }
+        setMenu({ x: e.clientX, y: e.clientY, path: entry.path });
+      }}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const target = isDir ? entry.path : parentPath(entry.path);
+        handleDropEvent(e, target, useTreeStore.getState().children);
+        useExplorerStore.getState().setDropTarget(null);
+      }}
+      onDragLeave={() => {
+        if (
+          dropTarget === entry.path ||
+          dropTarget === parentPath(entry.path)
+        ) {
+          /* keep until next over */
+        }
+      }}
+      className={`flex w-full cursor-default items-center gap-1 truncate px-2 py-0.5 text-left text-sm transition-colors hover:bg-(--_dk-ix-bg-hover) ${highlight} ${
+        isCut || busy ? "opacity-50" : ""
+      } ${isDrop && isDir ? "outline outline-1 outline-(--_dk-accent-hover)" : ""} ${
+        focusPath === entry.path
+          ? "ring-1 ring-inset ring-(--_dk-line-visible)"
+          : ""
+      }`}
+      style={{ paddingLeft: `${depth * 12 + 8}px` }}
+      data-path={entry.path}
+      title={entry.path}
+    >
+      <span className="w-4 shrink-0 text-center text-[10px] text-(--_dk-text-disabled)">
+        {isDir ? (expanded ? "▼" : "▶") : ""}
+      </span>
+      {isDir ? (
+        <FolderIcon
+          size={16}
+          weight="regular"
+          aria-hidden
+          className={`h-4 w-4 shrink-0 select-none ${
+            dirChanged ? CHANGED_DIR_CLASS : "text-(--_dk-fg-muted)"
+          }`}
+        />
+      ) : (
+        (() => {
+          const Glyph = getFileIcon(entry.name);
+          return (
+            <Glyph
+              size={16}
+              weight="regular"
+              aria-hidden
+              className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
+            />
+          );
+        })()
+      )}
+      {renaming ? (
+        <InlineNameInput
+          initial={entry.name}
+          onCancel={() => setInline(null)}
+          onSubmit={async (name) => {
+            setInline(null);
+            await renameEntry(entry.path, name);
+          }}
+        />
+      ) : (
+        <span className={`truncate ${dirChanged ? CHANGED_DIR_CLASS : ""}`}>
+          {entry.name}
         </span>
-        {isDir ? (
-          <FolderIcon
-            size={16}
-            weight="regular"
-            aria-hidden
-            className={`h-4 w-4 shrink-0 select-none ${
-              dirChanged ? CHANGED_DIR_CLASS : "text-(--_dk-fg-muted)"
-            }`}
-          />
-        ) : (
-          (() => {
-            const Glyph = getFileIcon(entry.name);
-            return (
-              <Glyph
-                size={16}
-                weight="regular"
-                aria-hidden
-                className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
-              />
-            );
-          })()
+      )}
+      <span className="ml-auto flex shrink-0 items-center gap-1">
+        {loading && (
+          <span className="text-[10px] text-(--_dk-text-disabled)">…</span>
         )}
-        {renaming ? (
-          <InlineNameInput
-            initial={entry.name}
-            onCancel={() => setInline(null)}
-            onSubmit={async (name) => {
-              setInline(null);
-              await renameEntry(entry.path, name);
-            }}
-          />
-        ) : (
-          <span className={`truncate ${dirChanged ? CHANGED_DIR_CLASS : ""}`}>
-            {entry.name}
+        {gitLetter && (
+          <span
+            className={`font-mono text-[11px] ${gitStatusColor(gitLetter)}`}
+          >
+            {gitLetter}
           </span>
         )}
-        <span className="ml-auto flex shrink-0 items-center gap-1">
-          {loading && (
-            <span className="text-[10px] text-(--_dk-text-disabled)">…</span>
-          )}
-          {gitLetter && (
-            <span className={`font-mono text-[11px] ${gitStatusColor(gitLetter)}`}>
-              {gitLetter}
-            </span>
-          )}
-        </span>
-      </div>
+      </span>
+    </div>
   );
 }
 
@@ -447,9 +493,7 @@ export function FileTree() {
   useEffect(() => {
     const p = activePath;
     if (!p || revealedRef.current === p) return;
-    const idx = rows.findIndex(
-      (r) => r.type === "entry" && r.entry.path === p,
-    );
+    const idx = rows.findIndex((r) => r.type === "entry" && r.entry.path === p);
     if (idx < 0) return;
     revealedRef.current = p;
     virtualizer.scrollToIndex(idx, { align: "auto" });
@@ -477,7 +521,8 @@ export function FileTree() {
       return;
     }
     const mod = e.ctrlKey || e.metaKey;
-    const paths = selected.size > 0 ? [...selected] : focusPath ? [focusPath] : [];
+    const paths =
+      selected.size > 0 ? [...selected] : focusPath ? [focusPath] : [];
     const focus = focusPath ?? paths[0] ?? "";
 
     if (e.key === "F2" && paths[0]) {
@@ -528,17 +573,24 @@ export function FileTree() {
     if (e.key === "Enter" && focus) {
       e.preventDefault();
       const kind = entryKind(childrenMap, focus);
-      if (kind === "dir") void useTreeStore.getState().toggleExpand(focus, "dir");
+      if (kind === "dir")
+        void useTreeStore.getState().toggleExpand(focus, "dir");
       else void useEditorStore.getState().openFile(focus);
       return;
     }
-    if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Home" || e.key === "End") {
+    if (
+      e.key === "ArrowDown" ||
+      e.key === "ArrowUp" ||
+      e.key === "Home" ||
+      e.key === "End"
+    ) {
       e.preventDefault();
       if (visible.length === 0) return;
       let idx = focus ? visible.indexOf(focus) : -1;
       if (e.key === "Home") idx = 0;
       else if (e.key === "End") idx = visible.length - 1;
-      else if (e.key === "ArrowDown") idx = Math.min(visible.length - 1, idx + 1);
+      else if (e.key === "ArrowDown")
+        idx = Math.min(visible.length - 1, idx + 1);
       else idx = Math.max(0, idx <= 0 ? 0 : idx - 1);
       const next = visible[idx];
       if (next) {
@@ -625,12 +677,14 @@ export function FileTree() {
       {
         id: "copy-path",
         label: "Copy Path",
-        onClick: () => void copyAbsolutePaths(paths.length ? paths : [path ?? ""], project),
+        onClick: () =>
+          void copyAbsolutePaths(paths.length ? paths : [path ?? ""], project),
       },
       {
         id: "copy-rel",
         label: "Copy Relative Path",
-        onClick: () => void copyRelativePaths(paths.length ? paths : [path ?? ""]),
+        onClick: () =>
+          void copyRelativePaths(paths.length ? paths : [path ?? ""]),
       },
       ...(path === null
         ? [
@@ -674,12 +728,17 @@ export function FileTree() {
       </div>
 
       {filtering ? (
-        <FileTreeGlobHits query={globQuery.trim()} onClear={() => setGlobQuery("")} />
+        <FileTreeGlobHits
+          query={globQuery.trim()}
+          onClear={() => setGlobQuery("")}
+        />
       ) : (
         <div
           ref={scrollRef}
           className={`min-h-0 flex-1 overflow-y-auto py-1 ${
-            dropTarget === "" ? "outline outline-1 outline-(--_dk-accent-hover)" : ""
+            dropTarget === ""
+              ? "outline outline-1 outline-(--_dk-accent-hover)"
+              : ""
           }`}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -687,7 +746,8 @@ export function FileTree() {
           }}
           onDragOver={(e) => {
             e.preventDefault();
-            e.dataTransfer.dropEffect = e.ctrlKey || e.metaKey ? "copy" : "move";
+            e.dataTransfer.dropEffect =
+              e.ctrlKey || e.metaKey ? "copy" : "move";
             setDropTarget("");
           }}
           onDragLeave={() => setDropTarget(null)}
@@ -716,7 +776,11 @@ export function FileTree() {
               if (!row) return null;
               return (
                 <div
-                  key={row.type === "entry" ? row.entry.path : `ghost:${row.parent}:${row.kind}`}
+                  key={
+                    row.type === "entry"
+                      ? row.entry.path
+                      : `ghost:${row.parent}:${row.kind}`
+                  }
                   data-index={vi.index}
                   style={{
                     position: "absolute",

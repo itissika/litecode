@@ -30,11 +30,11 @@ describe("AgentMarkdown raw HTML boundary", () => {
   });
 
   it("renders the complete text when a stream finishes between renders", () => {
-    const { container, rerender } = render(
-      <AgentMarkdown text="" streaming />,
-    );
+    const { container, rerender } = render(<AgentMarkdown text="" streaming />);
 
-    rerender(<AgentMarkdown text="complete assistant response" streaming={false} />);
+    rerender(
+      <AgentMarkdown text="complete assistant response" streaming={false} />,
+    );
 
     expect(container.textContent).toContain("complete assistant response");
   });
@@ -80,10 +80,12 @@ describe("AgentMarkdown raw HTML boundary", () => {
 
     expect(screen.getByRole("heading", { name: "Safe heading" })).toBeTruthy();
     expect(screen.getByText("bold").tagName).toBe("STRONG");
-    expect(screen.getByRole("link", { name: "docs" }).getAttribute("href")).toBe(
-      "https://example.com",
-    );
-    expect(container.querySelector('input[type="checkbox"][checked]')).not.toBeNull();
+    expect(
+      screen.getByRole("link", { name: "docs" }).getAttribute("href"),
+    ).toBe("https://example.com");
+    expect(
+      container.querySelector('input[type="checkbox"][checked]'),
+    ).not.toBeNull();
     expect(screen.getByRole("table")).toBeTruthy();
   });
 });

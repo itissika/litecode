@@ -64,22 +64,32 @@ output_file: .litecode/bash/bg_a.output
   it("recognizes a sealed background-bash result from its text alone", () => {
     expect(isBackgroundBashResult(RUNNING)).toBe(true);
     // bash_id without the status word (e.g. a status document) is still a job.
-    expect(isBackgroundBashResult(`bash_id: bg_a
+    expect(
+      isBackgroundBashResult(`bash_id: bg_a
 running: 1
-`)).toBe(true);
-    expect(isBackgroundBashResult(`exit_code: 0
+`),
+    ).toBe(true);
+    expect(
+      isBackgroundBashResult(`exit_code: 0
 hello
-`)).toBe(false);
+`),
+    ).toBe(false);
   });
 
   it("reads a leading exit_code line only", () => {
-    expect(headExitCode(`exit_code: 3
+    expect(
+      headExitCode(`exit_code: 3
 boom
-`)).toBe(3);
-    expect(headExitCode(`exit_code: 0
-`)).toBe(0);
-    expect(headExitCode(`note: see exit_code: 1
-`)).toBeNull();
+`),
+    ).toBe(3);
+    expect(
+      headExitCode(`exit_code: 0
+`),
+    ).toBe(0);
+    expect(
+      headExitCode(`note: see exit_code: 1
+`),
+    ).toBeNull();
     expect(headExitCode(RUNNING)).toBeNull();
   });
 });
@@ -103,9 +113,14 @@ bash_id: bg_a
   });
 
   it("is never live for a completed document", () => {
-    expect(isBashJobLive(`exit_code: 0
+    expect(
+      isBashJobLive(
+        `exit_code: 0
 ok
-`, job)).toBe(false);
+`,
+        job,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -118,7 +133,7 @@ function callRow(
   return {
     seq,
     kind: "item/tool_call",
-    streaming: false,
+    state: "final",
     body: {
       type: "function_call",
       id: `fc_${callId}`,
@@ -134,7 +149,7 @@ function outputRow(callId: string, output: string, seq = 2): HumanRow {
   return {
     seq,
     kind: "item/tool_result",
-    streaming: false,
+    state: "final",
     body: { type: "function_call_output", call_id: callId, output },
   };
 }
@@ -142,7 +157,10 @@ function outputRow(callId: string, output: string, seq = 2): HumanRow {
 describe("bashCallMetaByCallId", () => {
   it("collects the full command and marks an explicit background call", () => {
     const meta = bashCallMetaByCallId([
-      callRow("c1", "bash", { command: "npm run dev", run_in_background: true }),
+      callRow("c1", "bash", {
+        command: "npm run dev",
+        run_in_background: true,
+      }),
     ]);
     expect(meta.get("c1")).toMatchObject({
       command: "npm run dev",

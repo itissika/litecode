@@ -1,7 +1,8 @@
 export type VersionChannel = "dev" | "nightly" | "official";
 
 export const ABOUT = {
-  tagline: "A coding agent framework obsessively optimized for runtime lightness",
+  tagline:
+    "A coding agent framework obsessively optimized for runtime lightness",
   repositoryUrl: "https://github.com/itissika/litecode",
   releasesUrl: "https://github.com/itissika/litecode/releases/latest",
   license: "MIT",
@@ -9,7 +10,9 @@ export const ABOUT = {
   copyright: "Copyright © 2025 LiteCode contributors",
 } as const;
 
-export function parseVersionChannel(raw: string | undefined): VersionChannel | null {
+export function parseVersionChannel(
+  raw: string | undefined,
+): VersionChannel | null {
   switch (raw) {
     case "dev":
     case "nightly":
@@ -25,7 +28,9 @@ export function formatServerVersion(raw: string): string {
 }
 
 /** Official is internal-only: UI shows version without a channel tag. */
-export function shouldShowVersionChannel(channel: VersionChannel | null): boolean {
+export function shouldShowVersionChannel(
+  channel: VersionChannel | null,
+): boolean {
   return channel !== null && channel !== "official";
 }
 

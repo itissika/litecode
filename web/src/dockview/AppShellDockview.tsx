@@ -10,7 +10,12 @@ import { StatusBar } from "../components/StatusBar";
 import { WelcomeWatermark } from "./watermark/WelcomeWatermark";
 import { FloatingDialog } from "./components/FloatingDialog";
 import { DOCKVIEW_CLASS, dockviewThemeForApp } from "../theme/dockview/adapter";
-import { getTheme, setTheme, THEME_CHANGE_EVENT, type ThemeName } from "../lib/theme";
+import {
+  getTheme,
+  setTheme,
+  THEME_CHANGE_EVENT,
+  type ThemeName,
+} from "../lib/theme";
 import { SettingsDialog } from "./panels/SettingsDialog";
 import { useSettingsStore } from "../stores/settingsStore";
 import { AboutContent } from "./panels/AboutPanel";
@@ -26,9 +31,14 @@ export function AppShellDockview() {
   const { onReady, onWillDrop, getTabContextMenuItems } = useDockviewConfig();
   const [dialogVisible, setDialogVisible] = useState(false);
   const [aboutReplay, setAboutReplay] = useState(0);
-  const [sessionMode, setSessionMode] = useState<"local" | "remote">(readSessionMode);
+  const [sessionMode, setSessionMode] = useState<"local" | "remote">(
+    readSessionMode,
+  );
   const [appTheme, setAppTheme] = useState<ThemeName>(() => getTheme());
-  const dockviewTheme = useMemo(() => dockviewThemeForApp(appTheme), [appTheme]);
+  const dockviewTheme = useMemo(
+    () => dockviewThemeForApp(appTheme),
+    [appTheme],
+  );
 
   const openSettings = useSettingsStore((s) => s.openSettings);
 
@@ -47,7 +57,11 @@ export function AppShellDockview() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "f" || e.key === "F")) {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        e.shiftKey &&
+        (e.key === "f" || e.key === "F")
+      ) {
         e.preventDefault();
         const api = useEditorStore.getState().dockviewApi;
         if (!api) return;
@@ -65,20 +79,23 @@ export function AppShellDockview() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const handleMenuAction = useCallback((item: string) => {
-    if (item === "Home") {
-      void window.litecode?.returnToHub?.();
-    } else if (item === "About") {
-      setAboutReplay((n) => n + 1);
-      setDialogVisible(true);
-    } else if (item === "Settings...") {
-      openSettings();
-    } else if (item === "Theme: Dark") {
-      setTheme("default");
-    } else if (item === "Theme: Light") {
-      setTheme("light");
-    }
-  }, [openSettings]);
+  const handleMenuAction = useCallback(
+    (item: string) => {
+      if (item === "Home") {
+        void window.litecode?.returnToHub?.();
+      } else if (item === "About") {
+        setAboutReplay((n) => n + 1);
+        setDialogVisible(true);
+      } else if (item === "Settings...") {
+        openSettings();
+      } else if (item === "Theme: Dark") {
+        setTheme("default");
+      } else if (item === "Theme: Light") {
+        setTheme("light");
+      }
+    },
+    [openSettings],
+  );
 
   return (
     <>

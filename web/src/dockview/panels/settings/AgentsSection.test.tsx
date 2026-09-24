@@ -1,4 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -117,9 +124,13 @@ describe("AgentsSection persist UX", () => {
   it("PUTs the selected agent after an edit", async () => {
     vi.useFakeTimers();
     render(<AgentsSection />);
-    const description = screen.getAllByRole("textbox").find(
-      (el) => (el as HTMLInputElement).type !== "number" && (el as HTMLTextAreaElement).rows == null,
-    );
+    const description = screen
+      .getAllByRole("textbox")
+      .find(
+        (el) =>
+          (el as HTMLInputElement).type !== "number" &&
+          (el as HTMLTextAreaElement).rows == null,
+      );
     expect(description).toBeTruthy();
     fireEvent.change(description!, { target: { value: "Helper" } });
     await vi.advanceTimersByTimeAsync(400);
@@ -149,12 +160,17 @@ describe("AgentsSection persist UX", () => {
     expect(screen.queryByText("System prompt")).toBeNull();
     expect(screen.queryByText("Max steps")).toBeNull();
     expect(
-      screen.getByText("Compaction only assigns a model. Prompt, tools, and max steps are built in."),
+      screen.getByText(
+        "Compaction only assigns a model. Prompt, tools, and max steps are built in.",
+      ),
     ).toBeTruthy();
   });
 
   it("deletes a non-protected agent after confirm", async () => {
-    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => true),
+    );
     useSettingsStore.setState({
       agentIds: ["helper"],
       selectedAgentId: "helper",
@@ -168,12 +184,22 @@ describe("AgentsSection persist UX", () => {
   });
 });
 
-const lspTool: AvailableTool = { id: "lsp", kind: "engine", origin: "workspace" };
+const lspTool: AvailableTool = {
+  id: "lsp",
+  kind: "engine",
+  origin: "workspace",
+};
 const readTool: AvailableTool = { id: "read", kind: "core", origin: "builtin" };
-const mcpDemoTool: AvailableTool = { id: "mcp_demo", kind: "mcp", origin: "workspace" };
+const mcpDemoTool: AvailableTool = {
+  id: "mcp_demo",
+  kind: "mcp",
+  origin: "workspace",
+};
 
 describe("AgentsSection subagent tool cards", () => {
-  const saveAgent = vi.fn(async (_id: string, _next: AgentProfile) => undefined);
+  const saveAgent = vi.fn(
+    async (_id: string, _next: AgentProfile) => undefined,
+  );
   const createAgent = vi.fn(async () => undefined);
   const removeAgent = vi.fn(async () => undefined);
   const refreshAgents = vi.fn(async () => undefined);
@@ -204,16 +230,26 @@ describe("AgentsSection subagent tool cards", () => {
   it("renders per-tool preset cards with a deny-semantics note, not checkboxes", () => {
     render(<AgentsSection />);
     // Full card rows (clickable), one per bindable tool — not a checkbox list.
-    expect(screen.getByRole("button", { name: /read tool binding, disabled/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /lsp tool binding, disabled/i })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /read tool binding, disabled/i }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /lsp tool binding, disabled/i }),
+    ).toBeTruthy();
     expect(screen.queryByRole("checkbox")).toBeNull();
     // Configurable tools expose the ALL/SAFE preset control.
     const readPreset = screen.getByRole("group", { name: "read preset" });
-    expect(within(readPreset).getByRole("button", { name: "SAFE" })).toBeTruthy();
-    expect(within(readPreset).getByRole("button", { name: "ALL" })).toBeTruthy();
+    expect(
+      within(readPreset).getByRole("button", { name: "SAFE" }),
+    ).toBeTruthy();
+    expect(
+      within(readPreset).getByRole("button", { name: "ALL" }),
+    ).toBeTruthy();
     // MCP server bindings expose the per-server tool visibility picker.
     expect(
-      screen.getByRole("button", { name: "Select visible tools for MCP server demo" }),
+      screen.getByRole("button", {
+        name: "Select visible tools for MCP server demo",
+      }),
     ).toBeTruthy();
     // Guidance on Ask -> deny semantics for subagent turns.
     expect(screen.getByText(/can't ask for approval/i)).toBeTruthy();
@@ -222,7 +258,9 @@ describe("AgentsSection subagent tool cards", () => {
   it("persists a SAFE preset picked on a subagent tool card", async () => {
     vi.useFakeTimers();
     render(<AgentsSection />);
-    fireEvent.click(screen.getByRole("button", { name: /read tool binding, disabled/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /read tool binding, disabled/i }),
+    );
     const readPreset = screen.getByRole("group", { name: "read preset" });
     fireEvent.click(within(readPreset).getByRole("button", { name: "SAFE" }));
     await vi.advanceTimersByTimeAsync(400);
@@ -235,7 +273,9 @@ describe("AgentsSection subagent tool cards", () => {
 });
 
 describe("AgentsSection LSP bind persist loop", () => {
-  const saveAgent = vi.fn(async (_id: string, _next: AgentProfile) => undefined);
+  const saveAgent = vi.fn(
+    async (_id: string, _next: AgentProfile) => undefined,
+  );
 
   beforeEach(() => {
     saveAgent.mockReset();
@@ -308,7 +348,10 @@ describe("AgentsSection LSP bind persist loop", () => {
   it("does not storm saves when lsp availability flickers after a bind toggle", async () => {
     vi.useFakeTimers();
     let lspListed = true;
-    let lastLsp: AgentToolBinding = { enabled: true, last_applied_preset: "ALL" };
+    let lastLsp: AgentToolBinding = {
+      enabled: true,
+      last_applied_preset: "ALL",
+    };
     saveAgent.mockImplementation(async (id: string, next: AgentProfile) => {
       if (next.tools.lsp) lastLsp = next.tools.lsp;
       const merged: AgentProfile = {
@@ -374,7 +417,11 @@ describe("AgentsSection LSP bind persist loop", () => {
         const binding = next.tools[key];
         tools[key] = {
           ...binding,
-          policy: binding.policy ?? { default: "allow", default_id: "default", rules: [] },
+          policy: binding.policy ?? {
+            default: "allow",
+            default_id: "default",
+            rules: [],
+          },
           path_mode: binding.path_mode ?? "unrestricted",
           last_applied_preset: binding.last_applied_preset ?? null,
           allowed_tools: binding.allowed_tools ?? null,
@@ -472,6 +519,28 @@ describe("AgentsSection model picker", () => {
     return panel as HTMLElement;
   }
 
+  it("marks each model option and the collapsed trigger with the provider's brand mark", () => {
+    render(<AgentsSection />);
+
+    // The trigger renders the selected option's label, so it carries the icon too.
+    const trigger = screen.getByRole("button", { name: /^GPT$/ });
+    expect(
+      trigger.querySelector("[data-provider-logo]")?.getAttribute("title"),
+    ).toBe("prov");
+
+    const panel = openModelDropdown();
+    // Same wire id, two providers — each row keeps its own owner's mark.
+    const rows = [
+      within(panel).getByRole("button", { name: /^GPT$/ }),
+      within(panel).getByRole("button", { name: /Same Wire Id/ }),
+    ];
+    expect(
+      rows.map((row) =>
+        row.querySelector("[data-provider-logo]")?.getAttribute("title"),
+      ),
+    ).toEqual(["prov", "other"]);
+  });
+
   it("groups active models by provider and keeps a duplicate wire id independently selectable", async () => {
     vi.useFakeTimers();
     render(<AgentsSection />);
@@ -481,7 +550,9 @@ describe("AgentsSection model picker", () => {
     // providers expose the wire id `m1`, yet each keeps its own ref.
     expect(within(panel).getByText("Prov")).toBeTruthy();
     expect(within(panel).getByText("Other")).toBeTruthy();
-    fireEvent.click(within(panel).getByRole("button", { name: /Same Wire Id/ }));
+    fireEvent.click(
+      within(panel).getByRole("button", { name: /Same Wire Id/ }),
+    );
     await vi.advanceTimersByTimeAsync(400);
     expect(saveAgent).toHaveBeenCalledWith(
       "default",
@@ -496,9 +567,13 @@ describe("AgentsSection model picker", () => {
     });
     render(<AgentsSection />);
 
-    const trigger = screen.getByRole("button", { name: /Missing: ghost\/gone-model/ });
+    const trigger = screen.getByRole("button", {
+      name: /Missing: ghost\/gone-model/,
+    });
     fireEvent.click(trigger);
-    const panel = document.querySelector("[data-dropdown-panel]") as HTMLElement;
+    const panel = document.querySelector(
+      "[data-dropdown-panel]",
+    ) as HTMLElement;
     const missing = within(panel).getAllByRole("button", {
       name: /Missing: ghost\/gone-model/,
     })[0];
@@ -507,7 +582,9 @@ describe("AgentsSection model picker", () => {
     fireEvent.click(missing);
     await vi.advanceTimersByTimeAsync(400);
     // The ref is still the missing one — nothing was silently selected.
-    expect(screen.getByRole("button", { name: /Missing: ghost\/gone-model/ })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /Missing: ghost\/gone-model/ }),
+    ).toBeTruthy();
     expect(saveAgent).not.toHaveBeenCalled();
   });
 
@@ -534,4 +611,3 @@ describe("AgentsSection model picker", () => {
     expect(screen.getByText("Configure a provider API key")).toBeTruthy();
   });
 });
-

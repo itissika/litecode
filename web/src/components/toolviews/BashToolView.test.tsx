@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BashToolView } from "./BashToolView";
@@ -45,7 +51,8 @@ describe("BashToolView live overlay", () => {
         output={{
           type: "function_call_output",
           call_id: "call_1",
-          output: "status: running\nbash_id: bg_a\noutput_file: .litecode/bash/bg_a.output\n",
+          output:
+            "status: running\nbash_id: bg_a\noutput_file: .litecode/bash/bg_a.output\n",
         }}
         call_id="call_1"
         sessionId="s1"
@@ -81,7 +88,9 @@ describe("BashToolView live overlay", () => {
 
     const expand = screen.getByRole("button", { name: "Expand command" });
     fireEvent.click(expand);
-    expect(screen.getByRole("button", { name: "Collapse command" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Collapse command" }),
+    ).toBeTruthy();
     expect(screen.getByText(/npm run build[\s\S]*npm run test/)).toBeTruthy();
   });
 
@@ -94,8 +103,18 @@ describe("BashToolView live overlay", () => {
       if (method !== "bash/tail") throw new Error(`unexpected ${method}`);
       calls += 1;
       return calls === 1
-        ? { text: "live-out", truncated_on_disk: false, alive: true, exit_code: null }
-        : { text: "final-out", truncated_on_disk: false, alive: false, exit_code: 3 };
+        ? {
+            text: "live-out",
+            truncated_on_disk: false,
+            alive: true,
+            exit_code: null,
+          }
+        : {
+            text: "final-out",
+            truncated_on_disk: false,
+            alive: false,
+            exit_code: 3,
+          };
     });
     useConnectionStore.setState({ sendRpc } as never);
     useBashStore.getState().applySnapshot("s1", {
@@ -195,10 +214,14 @@ describe("BashToolView parses the real backend result document", () => {
   });
 
   it("renders a cancelled run as a status footer", () => {
-    renderOutput("status: cancelled\n\n--- head ---\ninterrupted\n--- tail ---\n");
+    renderOutput(
+      "status: cancelled\n\n--- head ---\ninterrupted\n--- tail ---\n",
+    );
 
     expect(screen.getByText("interrupted")).toBeTruthy();
-    expect(screen.getByTestId("bash-footer").textContent).toBe("status: cancelled");
+    expect(screen.getByTestId("bash-footer").textContent).toBe(
+      "status: cancelled",
+    );
   });
 
   it("keeps exit_code: 0 neutral in the footer", () => {

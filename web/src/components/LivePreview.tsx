@@ -12,8 +12,18 @@ type StepKind = "reasoning" | "toolcall" | "text";
 
 /** Expressive emoji pool for the idle placeholder (pop-in on trigger). */
 const EMOJIS = [
-  "😀", "😎", "🤔", "😴", "🥳", "😇",
-  "🙃", "🤩", "🥰", "😺", "😏", "🤖",
+  "😀",
+  "😎",
+  "🤔",
+  "😴",
+  "🥳",
+  "😇",
+  "🙃",
+  "🤩",
+  "🥰",
+  "😺",
+  "😏",
+  "🤖",
 ];
 
 /** The three entrance animation sequences; one is matched at random per trigger. */
@@ -66,7 +76,9 @@ function useDebug(): boolean {
   );
 }
 if (typeof window !== "undefined") {
-  (window as unknown as { __livePreviewDebug: { enabled: boolean } }).__livePreviewDebug = {
+  (
+    window as unknown as { __livePreviewDebug: { enabled: boolean } }
+  ).__livePreviewDebug = {
     get enabled() {
       return debugEnabled;
     },
@@ -127,7 +139,12 @@ type Phase = "idle" | "running" | "finished" | "waiting" | "exiting";
  * cancels the pending exit timers and jumps straight to running with no exit
  * animation.
  */
-export function LivePreview({ stepKinds, running, updatedAt, now }: LivePreviewProps) {
+export function LivePreview({
+  stepKinds,
+  running,
+  updatedAt,
+  now,
+}: LivePreviewProps) {
   const panelVisible = useSessionsPanelVisible();
   const debug = useDebug();
 
@@ -198,7 +215,10 @@ export function LivePreview({ stepKinds, running, updatedAt, now }: LivePreviewP
       // Turn just ended: hold the recap (finished → waiting → exiting → idle).
       setPhase("finished");
       const t1 = window.setTimeout(() => setPhase("waiting"), FINISHED_MS);
-      const t2 = window.setTimeout(() => setPhase("exiting"), FINISHED_MS + WAIT_MS);
+      const t2 = window.setTimeout(
+        () => setPhase("exiting"),
+        FINISHED_MS + WAIT_MS,
+      );
       waitTimers.current = [t1, t2];
       return;
     }
@@ -229,7 +249,12 @@ export function LivePreview({ stepKinds, running, updatedAt, now }: LivePreviewP
       if (renderRef.current && !exitingRef.current) startExit();
       return;
     }
-    if (phase === "idle" && panelVisible && !bubbledRef.current && !renderRef.current) {
+    if (
+      phase === "idle" &&
+      panelVisible &&
+      !bubbledRef.current &&
+      !renderRef.current
+    ) {
       if (Math.random() < triggerProbability(now - updatedAt)) doTrigger();
     }
   }, [now, panelVisible, active, phase, debug, doTrigger, startExit]);

@@ -1,4 +1,10 @@
-import { type FormEvent, type KeyboardEvent, useEffect, useLayoutEffect, useRef } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+} from "react";
 
 import type { ContextMode, ThinkingTier } from "../api/types";
 import { useSessionStore } from "../stores/sessionStore";
@@ -80,7 +86,9 @@ export function MiniChatInput({
               activeId={settings.primaryId}
               pendingId={null}
               disabled={disabled}
-              onChange={(primaryId) => onChange(draft, { ...settings, primaryId })}
+              onChange={(primaryId) =>
+                onChange(draft, { ...settings, primaryId })
+              }
             />
           ) : null}
           <ModelSwitcher
@@ -95,13 +103,17 @@ export function MiniChatInput({
             sessionId={`mini-${sessionId}`}
             value={settings.thinkingTier}
             disabled={disabled}
-            onChange={(thinkingTier) => onChange(draft, { ...settings, thinkingTier })}
+            onChange={(thinkingTier) =>
+              onChange(draft, { ...settings, thinkingTier })
+            }
           />
           <div className="mx-0.5 h-3.5 w-px shrink-0 bg-(--_dk-line)" />
           <ContextModeToggle
             mode={settings.contextMode}
             disabled={disabled}
-            onChange={(contextMode) => onChange(draft, { ...settings, contextMode })}
+            onChange={(contextMode) =>
+              onChange(draft, { ...settings, contextMode })
+            }
           />
         </div>
       </div>
@@ -125,7 +137,16 @@ export function MiniChatInput({
           className={`${actionButtonGlass} absolute right-2 bottom-2 flex h-[30px] w-[30px] items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 disabled:cursor-not-allowed disabled:opacity-40`}
           title="Revert and resend"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             <path d="M5 12h14M12 5l7 7-7 7" />
           </svg>
         </button>

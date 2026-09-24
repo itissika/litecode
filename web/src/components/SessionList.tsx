@@ -62,7 +62,11 @@ export function SessionList() {
         return (
           <div className="flex flex-col items-center gap-2 p-4 text-center">
             <p className="text-xs text-(--_dk-red-500)">{error}</p>
-            <button type="button" onClick={() => listSessions()} className="btn-ghost">
+            <button
+              type="button"
+              onClick={() => listSessions()}
+              className="btn-ghost"
+            >
               Retry
             </button>
           </div>
@@ -118,9 +122,7 @@ export function SessionList() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
-        {renderBody()}
-      </div>
+      <div className="flex-1 overflow-y-auto">{renderBody()}</div>
     </div>
   );
 }

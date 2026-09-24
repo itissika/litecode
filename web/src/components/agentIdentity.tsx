@@ -39,5 +39,7 @@ export function AgentTypeIcon({
   size?: number;
 }) {
   const Glyph = role === "subagent" ? UsersThree : Robot;
-  return <Glyph size={size} aria-hidden style={color ? { color } : undefined} />;
+  return (
+    <Glyph size={size} aria-hidden style={color ? { color } : undefined} />
+  );
 }

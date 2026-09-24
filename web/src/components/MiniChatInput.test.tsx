@@ -63,7 +63,11 @@ describe("MiniChatInput", () => {
       />,
     );
 
-    expect(screen.getByTestId("mini-chat-input").hasAttribute("data-mini-chat-input")).toBe(true);
+    expect(
+      screen
+        .getByTestId("mini-chat-input")
+        .hasAttribute("data-mini-chat-input"),
+    ).toBe(true);
     expect(screen.getByDisplayValue("original message")).toBeTruthy();
     expect(screen.queryByLabelText(/notification/i)).toBeNull();
     expect(screen.queryByLabelText(/context usage/i)).toBeNull();
@@ -112,8 +116,13 @@ describe("MiniChatInput", () => {
         onSubmit={vi.fn()}
       />,
     );
-    const textarea = screen.getByDisplayValue("a long draft") as HTMLTextAreaElement;
-    Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 180 });
+    const textarea = screen.getByDisplayValue(
+      "a long draft",
+    ) as HTMLTextAreaElement;
+    Object.defineProperty(textarea, "scrollHeight", {
+      configurable: true,
+      value: 180,
+    });
 
     rerender(
       <MiniChatInput
@@ -132,7 +141,10 @@ describe("MiniChatInput", () => {
     );
     expect(textarea.style.height).toBe("180px");
 
-    Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 400 });
+    Object.defineProperty(textarea, "scrollHeight", {
+      configurable: true,
+      value: 400,
+    });
     fireEvent.change(textarea, { target: { value: "very long draft" } });
     expect(textarea.style.height).toBe("256px");
   });

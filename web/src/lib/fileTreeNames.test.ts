@@ -9,7 +9,9 @@ describe("uniqueChildName", () => {
 
   it("inserts copy before the extension", () => {
     expect(uniqueChildName(["foo.ts"], "foo.ts")).toBe("foo copy.ts");
-    expect(uniqueChildName(["foo.ts", "foo copy.ts"], "foo.ts")).toBe("foo copy 2.ts");
+    expect(uniqueChildName(["foo.ts", "foo copy.ts"], "foo.ts")).toBe(
+      "foo copy 2.ts",
+    );
   });
 });
 

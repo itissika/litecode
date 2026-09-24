@@ -1,4 +1,12 @@
-import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type MouseEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -264,7 +272,9 @@ function FileRow({
         {letter}
       </span>
       <Icon size={14} className="shrink-0" />
-      <span className="min-w-0 flex-1 truncate">{fileNameFromPath(file.path)}</span>
+      <span className="min-w-0 flex-1 truncate">
+        {fileNameFromPath(file.path)}
+      </span>
       <FileActions section={section} paths={targets} mutating={mutating} />
     </div>
   );
@@ -447,7 +457,10 @@ function CommitsPane({
   }, []);
 
   const layout = useMemo(
-    () => layoutGitGraph(commits.map((c) => ({ sha: c.sha, parents: c.parents ?? [] }))),
+    () =>
+      layoutGitGraph(
+        commits.map((c) => ({ sha: c.sha, parents: c.parents ?? [] })),
+      ),
     [commits],
   );
   const maxLanes = maxLanesForWidth(width);
@@ -528,7 +541,10 @@ export function GitPanel() {
     const height = pane.getBoundingClientRect().height;
     const onMove = (ev: globalThis.MouseEvent) => {
       if (height <= 0) return;
-      const next = Math.min(0.8, Math.max(0.2, start + (ev.clientY - startY) / height));
+      const next = Math.min(
+        0.8,
+        Math.max(0.2, start + (ev.clientY - startY) / height),
+      );
       splitRef.current = next;
       setSplit(next);
     };
@@ -608,7 +624,9 @@ export function GitPanel() {
 
           <div className="px-1 py-1">
             {!hasChanges ? (
-              <div className="px-2 py-3 text-(--_dk-text-muted)">No changes</div>
+              <div className="px-2 py-3 text-(--_dk-text-muted)">
+                No changes
+              </div>
             ) : (
               <>
                 {status.staged.length > 0 && (
@@ -617,7 +635,9 @@ export function GitPanel() {
                     files={status.staged}
                     label="Staged Changes"
                     headerActionTitle="Unstage All Changes"
-                    onHeaderAction={() => void unstagePaths(status.staged.map((f) => f.path))}
+                    onHeaderAction={() =>
+                      void unstagePaths(status.staged.map((f) => f.path))
+                    }
                     collapsed={collapsed}
                     toggleCollapsed={toggleCollapsed}
                   />
@@ -628,7 +648,9 @@ export function GitPanel() {
                     files={status.changes}
                     label="Changes"
                     headerActionTitle="Stage All Changes"
-                    onHeaderAction={() => void stagePaths(status.changes.map((f) => f.path))}
+                    onHeaderAction={() =>
+                      void stagePaths(status.changes.map((f) => f.path))
+                    }
                     collapsed={collapsed}
                     toggleCollapsed={toggleCollapsed}
                   />

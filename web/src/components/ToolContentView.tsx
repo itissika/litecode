@@ -66,7 +66,8 @@ export function ToolContentView({
 
   const ToolView = getToolView(name);
   const hasInput = input !== undefined && input !== "";
-  const hasResult = typeof resultContent === "string" && resultContent.length > 0;
+  const hasResult =
+    typeof resultContent === "string" && resultContent.length > 0;
   const ownsOutput = ToolView !== undefined && viewOwnsOutput(name);
 
   return (

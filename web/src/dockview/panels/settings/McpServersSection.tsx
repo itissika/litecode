@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash } from "@phosphor-icons/react";
 
-import {
-  type McpProbeResult,
-  type ToolScope,
-} from "../../../api/settings";
+import { type McpProbeResult, type ToolScope } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import type { McpDefItem } from "../../../stores/settingsDocuments";
 import { mergeLayeredMcp } from "../../../stores/settingsDocuments";
 import { FoldCard } from "../../../components/FoldCard";
 import { Dropdown, dropdownItemClass } from "../../../components/ui/Dropdown";
-import { FieldLabel, TextArea, SettingsPageShell, useSettingsSaveBlocked } from "./shared";
+import {
+  FieldLabel,
+  TextArea,
+  SettingsPageShell,
+  useSettingsSaveBlocked,
+} from "./shared";
 import { parseMcpJson } from "./jsonDefinitions";
 import {
   flushRegisteredSettings,
@@ -99,9 +101,8 @@ export function McpServersSection() {
     commit: (p) => saveMcpServer(p.id, p.def, selectedScope),
     revert: () => {
       const defs = useSettingsStore.getState().mcpDefs;
-      const found = (selectedScope === "workspace"
-        ? defs?.workspace
-        : defs?.global
+      const found = (
+        selectedScope === "workspace" ? defs?.workspace : defs?.global
       )?.find((s) => s.id === selectedId);
       if (found) setJsonText(prettyServer(found));
     },
@@ -245,16 +246,22 @@ export function McpServersSection() {
           {busy === "stop" ? "Stopping…" : "Stop"}
         </button>
         <span className="text-xs text-(--_dk-text-muted)">
-          Keeps a stdio process running. Save JSON, then Start. Config changes need Restart.
+          Keeps a stdio process running. Save JSON, then Start. Config changes
+          need Restart.
         </span>
       </div>
       {probe ? (
         probe.ready ? (
           <p className="text-xs text-(--_dk-text-secondary)">
-            Ready — tools: {probe.tools.length ? probe.tools.map((tool) => tool.name).join(", ") : "(none listed)"}
+            Ready — tools:{" "}
+            {probe.tools.length
+              ? probe.tools.map((tool) => tool.name).join(", ")
+              : "(none listed)"}
           </p>
         ) : (
-          <p className="text-sm text-(--_dk-red-500)">{probe.error || "Probe failed"}</p>
+          <p className="text-sm text-(--_dk-red-500)">
+            {probe.error || "Probe failed"}
+          </p>
         )
       ) : null}
       {formError ? (
@@ -334,74 +341,91 @@ export function McpServersSection() {
               className="settings-foldcard"
             >
               <div className="space-y-2">
-              {list.length === 0 && !(isNew && createScope === scope) ? (
-                <p className="px-2 py-3 text-xs text-(--_dk-text-muted)">None.</p>
-              ) : null}
-              {list.map((server) => (
-                <FoldCard
-                  key={`${scope}:${server.id}`}
-                  open={!isNew && selectedScope === scope && selectedId === server.id}
-                  onToggle={(o) => {
-                    if (o) {
-                      void flushRegisteredSettings().then(() => {
-                        setIsNew(false);
-                        setSelectedScope(scope);
-                        setSelectedId(server.id);
-                        setProbe(null);
-                      });
-                    } else if (selectedScope === scope && selectedId === server.id) {
-                      void flushRegisteredSettings().then(() => setSelectedId(null));
+                {list.length === 0 && !(isNew && createScope === scope) ? (
+                  <p className="px-2 py-3 text-xs text-(--_dk-text-muted)">
+                    None.
+                  </p>
+                ) : null}
+                {list.map((server) => (
+                  <FoldCard
+                    key={`${scope}:${server.id}`}
+                    open={
+                      !isNew &&
+                      selectedScope === scope &&
+                      selectedId === server.id
                     }
-                  }}
-                  label={
-                    <span className="flex flex-1 items-center justify-between gap-2">
-                      <span className="font-mono text-sm text-(--_dk-text-secondary)">
-                        {server.id}
-                      </span>
-                      <span className="flex items-center gap-2">
-                        <span className="truncate text-xs text-(--_dk-text-muted)">
-                          {server.status ?? "stopped"}
-                          {server.command ? ` · ${server.command}` : ""}
+                    onToggle={(o) => {
+                      if (o) {
+                        void flushRegisteredSettings().then(() => {
+                          setIsNew(false);
+                          setSelectedScope(scope);
+                          setSelectedId(server.id);
+                          setProbe(null);
+                        });
+                      } else if (
+                        selectedScope === scope &&
+                        selectedId === server.id
+                      ) {
+                        void flushRegisteredSettings().then(() =>
+                          setSelectedId(null),
+                        );
+                      }
+                    }}
+                    label={
+                      <span className="flex flex-1 items-center justify-between gap-2">
+                        <span className="font-mono text-sm text-(--_dk-text-secondary)">
+                          {server.id}
                         </span>
-                        <button
-                          type="button"
-                          className="btn-danger btn-icon"
-                          disabled={saveBlocked || isPersistBusy(persistStatus)}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDelete(server.id, scope);
-                          }}
-                          onKeyDown={(e) => e.stopPropagation()}
-                          aria-label={`Delete ${server.id}`}
-                          title={`Delete ${server.id}`}
-                        >
-                          <Trash size={16} />
-                        </button>
+                        <span className="flex items-center gap-2">
+                          <span className="truncate text-xs text-(--_dk-text-muted)">
+                            {server.status ?? "stopped"}
+                            {server.command ? ` · ${server.command}` : ""}
+                          </span>
+                          <button
+                            type="button"
+                            className="btn-danger btn-icon"
+                            disabled={
+                              saveBlocked || isPersistBusy(persistStatus)
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDelete(server.id, scope);
+                            }}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            aria-label={`Delete ${server.id}`}
+                            title={`Delete ${server.id}`}
+                          >
+                            <Trash size={16} />
+                          </button>
+                        </span>
                       </span>
-                    </span>
-                  }
-                  className="settings-foldcard"
-                >
-                  {!isNew && selectedScope === scope && selectedId === server.id
-                    ? editorForm
-                    : null}
-                </FoldCard>
-              ))}
-              {isNew && createScope === scope ? (
-                <FoldCard
-                  key="__new"
-                  open
-                  onToggle={(o) => {
-                    if (!o) setIsNew(false);
-                  }}
-                  label={
-                    <span className="font-mono text-sm text-(--_dk-text-secondary)">(new)</span>
-                  }
-                  className="settings-foldcard"
-                >
-                  {editorForm}
-                </FoldCard>
-              ) : null}
+                    }
+                    className="settings-foldcard"
+                  >
+                    {!isNew &&
+                    selectedScope === scope &&
+                    selectedId === server.id
+                      ? editorForm
+                      : null}
+                  </FoldCard>
+                ))}
+                {isNew && createScope === scope ? (
+                  <FoldCard
+                    key="__new"
+                    open
+                    onToggle={(o) => {
+                      if (!o) setIsNew(false);
+                    }}
+                    label={
+                      <span className="font-mono text-sm text-(--_dk-text-secondary)">
+                        (new)
+                      </span>
+                    }
+                    className="settings-foldcard"
+                  >
+                    {editorForm}
+                  </FoldCard>
+                ) : null}
               </div>
             </FoldCard>
           ))}

@@ -5,8 +5,18 @@ import { useTreeStore } from "../../../stores/treeStore";
 import type { WorkspaceExcludesLists } from "../../../api/settings";
 import { globsFromText, textFromGlobs } from "../../../utils/excludeGlobs";
 import { FoldCard } from "../../../components/FoldCard";
-import { FieldLabel, TextArea, SectionHeader, SettingsPageShell, useSettingsSaveBlocked } from "./shared";
-import { shouldHydrateDraftFromStore, useDocPersist, useSettingsPersist } from "./persist";
+import {
+  FieldLabel,
+  TextArea,
+  SectionHeader,
+  SettingsPageShell,
+  useSettingsSaveBlocked,
+} from "./shared";
+import {
+  shouldHydrateDraftFromStore,
+  useDocPersist,
+  useSettingsPersist,
+} from "./persist";
 
 type FilesDraft = {
   filesText: string;
@@ -111,9 +121,10 @@ export function FilesSection() {
     >
       <div className="space-y-3">
         <p className="text-dk-sm text-(--_dk-text-secondary)">
-          These lists live in this workspace (<code>.litecode/excludes.json</code>).
-          New workspaces start with the built-in VS Code defaults; Settings edits
-          and direct changes to that file apply to the tree and search immediately.
+          These lists live in this workspace (
+          <code>.litecode/excludes.json</code>). New workspaces start with the
+          built-in VS Code defaults; Settings edits and direct changes to that
+          file apply to the tree and search immediately.
         </p>
 
         <div className="settings-card space-y-3 p-4">
@@ -124,7 +135,9 @@ export function FilesSection() {
               className="accent-(--_dk-accent-hover)"
               checked={draft.gitIgnore}
               disabled={saveBlocked}
-              onChange={(e) => setDraft((d) => ({ ...d, gitIgnore: e.target.checked }))}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, gitIgnore: e.target.checked }))
+              }
             />
             Honor .gitignore in search and code index
           </label>
@@ -134,7 +147,9 @@ export function FilesSection() {
               className="accent-(--_dk-accent-hover)"
               checked={draft.explorerGitIgnore}
               disabled={saveBlocked}
-              onChange={(e) => setDraft((d) => ({ ...d, explorerGitIgnore: e.target.checked }))}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, explorerGitIgnore: e.target.checked }))
+              }
             />
             Honor .gitignore in the explorer
           </label>
@@ -148,7 +163,9 @@ export function FilesSection() {
           <TextArea
             rows={6}
             value={draft.filesText}
-            onChange={(e) => setDraft((d) => ({ ...d, filesText: e.target.value }))}
+            onChange={(e) =>
+              setDraft((d) => ({ ...d, filesText: e.target.value }))
+            }
             placeholder={"**/.git\n**/.DS_Store"}
             disabled={saveBlocked}
             spellCheck={false}
@@ -159,11 +176,16 @@ export function FilesSection() {
           label={<span className="settings-section-title">Search exclude</span>}
           className="settings-foldcard"
         >
-          <FieldLabel>Additional hides for search, glob, and index (on top of files exclude)</FieldLabel>
+          <FieldLabel>
+            Additional hides for search, glob, and index (on top of files
+            exclude)
+          </FieldLabel>
           <TextArea
             rows={6}
             value={draft.searchText}
-            onChange={(e) => setDraft((d) => ({ ...d, searchText: e.target.value }))}
+            onChange={(e) =>
+              setDraft((d) => ({ ...d, searchText: e.target.value }))
+            }
             placeholder={"**/node_modules\n**/bower_components"}
             disabled={saveBlocked}
             spellCheck={false}
@@ -171,14 +193,18 @@ export function FilesSection() {
         </FoldCard>
 
         <FoldCard
-          label={<span className="settings-section-title">Watcher exclude</span>}
+          label={
+            <span className="settings-section-title">Watcher exclude</span>
+          }
           className="settings-foldcard"
         >
           <FieldLabel>Paths skipped by the file watcher</FieldLabel>
           <TextArea
             rows={5}
             value={draft.watcherText}
-            onChange={(e) => setDraft((d) => ({ ...d, watcherText: e.target.value }))}
+            onChange={(e) =>
+              setDraft((d) => ({ ...d, watcherText: e.target.value }))
+            }
             disabled={saveBlocked}
             spellCheck={false}
           />

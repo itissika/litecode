@@ -2,7 +2,10 @@ import type { ReactNode } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 
 import { Logo } from "../../components/Logo";
-import { useServerVersionTags, VersionTags } from "../../components/VersionTags";
+import {
+  useServerVersionTags,
+  VersionTags,
+} from "../../components/VersionTags";
 import { ABOUT } from "../../lib/about";
 
 const RUNTIME_DEPS = [
@@ -11,13 +14,7 @@ const RUNTIME_DEPS = [
   { name: "monaco-editor", version: "0.55.1" },
 ] as const;
 
-function AboutLink({
-  href,
-  children,
-}: {
-  href: string;
-  children: ReactNode;
-}) {
+function AboutLink({ href, children }: { href: string; children: ReactNode }) {
   return (
     <a
       href={href}
@@ -34,7 +31,9 @@ function MetaRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-4 text-dk-xs">
       <span className="shrink-0 text-(--_dk-text-muted)">{label}</span>
-      <span className="min-w-0 text-right text-(--_dk-text-secondary)">{children}</span>
+      <span className="min-w-0 text-right text-(--_dk-text-secondary)">
+        {children}
+      </span>
     </div>
   );
 }
@@ -61,7 +60,9 @@ export function AboutContent({ replay = 0 }: { replay?: number }) {
         </MetaRow>
       </div>
 
-      <p className="text-center text-dk-2xs text-(--_dk-text-disabled)">{ABOUT.copyright}</p>
+      <p className="text-center text-dk-2xs text-(--_dk-text-disabled)">
+        {ABOUT.copyright}
+      </p>
 
       <div className="mt-auto w-full max-w-sm border-t border-(--_dk-line) pt-4">
         <p className="mb-2 text-center text-dk-2xs uppercase tracking-wide text-(--_dk-text-disabled)">
@@ -69,7 +70,10 @@ export function AboutContent({ replay = 0 }: { replay?: number }) {
         </p>
         <div className="space-y-1">
           {RUNTIME_DEPS.map((dep) => (
-            <p key={dep.name} className="text-center font-mono text-dk-2xs text-(--_dk-text-disabled)">
+            <p
+              key={dep.name}
+              className="text-center font-mono text-dk-2xs text-(--_dk-text-disabled)"
+            >
               {dep.name} v{dep.version}
             </p>
           ))}

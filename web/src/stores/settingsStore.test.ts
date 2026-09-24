@@ -200,7 +200,9 @@ describe("ensureSectionLoaded", () => {
     mockedLlm.mockResolvedValue({
       ...llmDoc,
       revision: 2,
-      providers: [provider({ configured: true, masked_api_key: "sk-***remote" })],
+      providers: [
+        provider({ configured: true, masked_api_key: "sk-***remote" }),
+      ],
     });
     useSettingsStore.getState().onRemoteSettingsChanged({
       revision: 2,
@@ -208,9 +210,9 @@ describe("ensureSectionLoaded", () => {
       summary: summary(2),
     });
     await waitFor(() => {
-      expect(useSettingsStore.getState().llm?.providers[0]?.masked_api_key).toBe(
-        "sk-***remote",
-      );
+      expect(
+        useSettingsStore.getState().llm?.providers[0]?.masked_api_key,
+      ).toBe("sk-***remote");
     });
 
     expect(mockedLlm).toHaveBeenCalled();
@@ -325,7 +327,9 @@ describe("workspace excludes clock", () => {
       docClock: { excludes: 1 },
     });
     mockedExcludes.mockClear();
-    useSettingsStore.getState().handleWorkspaceChange([".litecode/excludes.json"], "modified");
+    useSettingsStore
+      .getState()
+      .handleWorkspaceChange([".litecode/excludes.json"], "modified");
     await Promise.resolve();
     expect(mockedExcludes).not.toHaveBeenCalled();
     expect(useSettingsStore.getState().excludes?.git_ignore).toBe(true);
@@ -340,7 +344,9 @@ describe("workspace excludes clock", () => {
       docClock: { mcp: 1 },
     });
     mockedMcp.mockClear();
-    useSettingsStore.getState().handleWorkspaceChange([".litecode/mcp.json"], "modified");
+    useSettingsStore
+      .getState()
+      .handleWorkspaceChange([".litecode/mcp.json"], "modified");
     await Promise.resolve();
     expect(mockedMcp).not.toHaveBeenCalled();
     expect(useSettingsStore.getState().mcpDefs?.workspace).toEqual([]);
@@ -420,7 +426,11 @@ describe("provider credential actions", () => {
       },
     });
     mockedDeleteKey.mockResolvedValue({ revision: 5, docs: ["llm"] });
-    mockedLlm.mockResolvedValue({ ...llmDoc, revision: 5, providers: [provider()] });
+    mockedLlm.mockResolvedValue({
+      ...llmDoc,
+      revision: 5,
+      providers: [provider()],
+    });
 
     await useSettingsStore.getState().removeProviderKey("openai");
 
@@ -431,4 +441,3 @@ describe("provider credential actions", () => {
     expect(state.llm?.providers[0]?.masked_api_key).toBeNull();
   });
 });
-

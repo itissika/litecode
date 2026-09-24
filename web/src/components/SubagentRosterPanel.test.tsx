@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setDockviewApi, useConnectionStore } from "../stores/connectionStore";
@@ -132,7 +138,9 @@ describe("SubagentRosterPanel — card header", () => {
 
     const roster = renderPanel();
 
-    const label = within(roster).getByTestId("subagent-roster-agent").textContent;
+    const label = within(roster).getByTestId(
+      "subagent-roster-agent",
+    ).textContent;
     expect(label).toBe("researcher");
     expect(label).not.toBe("subagent");
     // Assistant text wins over the raw last-message preview.
@@ -186,7 +194,9 @@ describe("SubagentRosterPanel — card header", () => {
     seedSession("researcher", "busy", true);
     const { container } = render(<SubagentRosterPanel sessionId={PARENT} />);
 
-    expect(container.querySelector(".tool-icon.sa-presence.sa-running")).toBeTruthy();
+    expect(
+      container.querySelector(".tool-icon.sa-presence.sa-running"),
+    ).toBeTruthy();
   });
 
   it("keeps card order stable when live session updates reorder the global list", () => {
@@ -218,10 +228,9 @@ describe("SubagentRosterPanel — card header", () => {
       sessions: [session("child-b", "beta", 3), session(CHILD, "alpha", 2)],
     });
 
-    expect(headers().map((header) => header.getAttribute("aria-label"))).toEqual([
-      "Subagent alpha",
-      "Subagent beta",
-    ]);
+    expect(
+      headers().map((header) => header.getAttribute("aria-label")),
+    ).toEqual(["Subagent alpha", "Subagent beta"]);
   });
 
   it("falls back to the parent transcript row when the session is unknown", () => {
@@ -229,6 +238,7 @@ describe("SubagentRosterPanel — card header", () => {
       session_id: PARENT,
       seq: 0,
       kind: "item/tool_call",
+      state: "final",
       body: {
         type: "function_call",
         id: "fc_a",
@@ -242,6 +252,7 @@ describe("SubagentRosterPanel — card header", () => {
       session_id: PARENT,
       seq: 1,
       kind: "item/tool_result",
+      state: "final",
       body: {
         type: "function_call_output",
         call_id: "call_a",

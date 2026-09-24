@@ -28,7 +28,10 @@ export function buildTabContextMenuItems(
 
   if (panel.api.tabComponent === "edge") {
     const items: TabMenuItem[] = [
-      { label: "Popout Window", action: () => api.addPopoutGroup(panel).catch(() => {}) },
+      {
+        label: "Popout Window",
+        action: () => api.addPopoutGroup(panel).catch(() => {}),
+      },
       "separator",
       panel.api.isMaximized()
         ? { label: "Restore", action: () => panel.api.exitMaximized() }

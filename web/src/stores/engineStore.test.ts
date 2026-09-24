@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { catalogPollDelayMs, resetCatalogPollState, setEngineDetailPolling, useEngineStore } from "./engineStore";
+import {
+  catalogPollDelayMs,
+  resetCatalogPollState,
+  setEngineDetailPolling,
+  useEngineStore,
+} from "./engineStore";
 import { useToastStore } from "./toastStore";
 import type { EnginesDetail, EnginesSnapshot } from "../api/workspace";
 import type { EngineWarmupState } from "../api/settings";

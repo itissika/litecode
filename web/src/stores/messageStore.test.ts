@@ -5,7 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 
-import { deriveUserAnchorK, isCompactCutRow, itemPlainText } from "../api/adapter";
+import {
+  deriveUserAnchorK,
+  isCompactCutRow,
+  itemPlainText,
+} from "../api/adapter";
 import type {
   BufferLoaded,
   Item,
@@ -18,7 +22,11 @@ import { useToastStore } from "./toastStore";
 import { useConnectionStore } from "./connectionStore";
 import { useSessionStore } from "./sessionStore";
 
-function assistantMsg(id: string, text: string, status: "in_progress" | "completed" = "completed"): Item {
+function assistantMsg(
+  id: string,
+  text: string,
+  status: "in_progress" | "completed" = "completed",
+): Item {
   return {
     type: "message",
     role: "assistant",
@@ -36,10 +44,18 @@ function userMsg(text: string): Item {
   };
 }
 
-function ev(seq: number, body: Item): WireBufferEvent {
+function ev(
+  seq: number,
+  body: Item,
+  state: "final" | "in_progress" = "final",
+): WireBufferEvent {
   return {
     seq,
-    kind: body.type === "message" && "role" in body && body.role === "user" ? "item/user" : "item/assistant",
+    kind:
+      body.type === "message" && "role" in body && body.role === "user"
+        ? "item/user"
+        : "item/assistant",
+    state,
     body,
   };
 }
@@ -54,16 +70,24 @@ function load(
   const loaded: BufferLoaded = {
     session_id: sid,
     from_seq: from,
-    to_seq: to ?? (events.length ? Math.max(...events.map((e) => e.seq)) + 1 : from),
+    to_seq:
+      to ?? (events.length ? Math.max(...events.map((e) => e.seq)) + 1 : from),
     events,
-    ...(userDetailBefore !== undefined ? { user_detail_before: userDetailBefore } : {}),
+    ...(userDetailBefore !== undefined
+      ? { user_detail_before: userDetailBefore }
+      : {}),
   };
   useMessageStore.getState().onBufferLoaded(sid, loaded);
 }
 
 function markTurnRunning(sessionId: string, turnId = "t1"): void {
   useTurnStore.setState({
-    byId: new Map([[sessionId, { ...EMPTY_TURN, runState: "running", currentTurnId: turnId }]]),
+    byId: new Map([
+      [
+        sessionId,
+        { ...EMPTY_TURN, runState: "running", currentTurnId: turnId },
+      ],
+    ]),
   });
 }
 
@@ -84,7 +108,11 @@ describe("messageStore seq map", () => {
     ]);
     const slice = useMessageStore.getState().bySession.get(sid)!;
     expect(slice.messages.map((r) => r.seq)).toEqual([0, 1, 2]);
-    expect(slice.messages.map((r) => itemPlainText(r.body as Item))).toEqual(["zero", "one", "two"]);
+    expect(slice.messages.map((r) => itemPlainText(r.body as Item))).toEqual([
+      "zero",
+      "one",
+      "two",
+    ]);
     expect(slice.bySeq.size).toBe(3);
   });
 
@@ -93,7 +121,12 @@ describe("messageStore seq map", () => {
     load(sid, [
       ev(0, userMsg("ask")),
       ev(1, assistantMsg("a", "old")),
-      { seq: 2, kind: "compacted", body: { summary: "summary", from: 0, to: 2 } },
+      {
+        seq: 2,
+        kind: "compacted",
+        state: "final",
+        body: { summary: "summary", from: 0, to: 2 },
+      },
       ev(3, userMsg("continue")),
     ]);
     const slice = useMessageStore.getState().bySession.get(sid)!;
@@ -114,41 +147,54 @@ describe("messageStore seq map", () => {
     expect(slice.shapeError).toMatch(/seq/);
   });
 
-  it("stream delta without a seq mapping does not create a row", () => {
-    const sid = "s-live";
-    markTurnRunning(sid);
-    useMessageStore.getState().applyStreamEvent(sid, "t1", 1, {
-      type: "response.output_text.delta",
-      sequence_number: 1,
-      item_id: "msg_1",
-      output_index: 0,
-      content_index: 0,
-      delta: "ghost",
-    });
-    expect(useMessageStore.getState().bySession.get(sid)?.messages ?? []).toHaveLength(0);
-  });
-
-  it("deltas update the seq allocated by buffer/item while in_progress", () => {
-    const sid = "s-delta";
-    markTurnRunning(sid);
+  it("a row the log still holds in flight is streaming without any payload status", () => {
+    // The regression this guards: a reasoning item carries no `status`, so reading
+    // lifecycle off the payload called the row settled and every update that
+    // arrived for it was dropped. The log's own `state` is the only lifecycle.
+    const sid = "s-reasoning";
+    const reasoning: Item = {
+      type: "reasoning",
+      id: "rs_1",
+      summary: [{ type: "summary_text", text: "thinking" }],
+    };
     useMessageStore.getState().onBufferItem(sid, {
       session_id: sid,
-      seq: 4,
+      seq: 7,
       kind: "item/assistant",
+      state: "in_progress",
+      body: reasoning,
+    });
+    const live = useMessageStore.getState().bySession.get(sid)!.messages[0]!;
+    expect(live.state).toBe("in_progress");
 
-      body: assistantMsg("msg_1", "", "in_progress"),
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      seq: 7,
+      kind: "item/assistant",
+      state: "final",
+      body: {
+        ...reasoning,
+        summary: [{ type: "summary_text", text: "thought it through" }],
+      },
     });
-    useMessageStore.getState().applyStreamEvent(sid, "t1", 1, {
-      type: "response.output_text.delta",
-      sequence_number: 1,
-      item_id: "msg_1",
-      output_index: 0,
-      content_index: 0,
-      delta: "hello",
-    });
-    const row = useMessageStore.getState().bySession.get(sid)!.messages[0]!;
-    expect(row.seq).toBe(4);
-    expect(itemPlainText(row.body as Item)).toBe("hello");
+    const settled = useMessageStore.getState().bySession.get(sid)!.messages[0]!;
+    expect(settled.state).toBe("final");
+    expect(itemPlainText(settled.body as Item)).toBe("thought it through");
+  });
+
+  it("rejects a row that does not say what state it is in", () => {
+    // Guessing "settled" for a missing state is what silently swallowed live
+    // updates, so the wire has to say.
+    const sid = "s-nostate";
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      seq: 1,
+      kind: "item/assistant",
+      body: assistantMsg("msg_1", "unlabelled"),
+    } as never);
+    expect(
+      useMessageStore.getState().bySession.get(sid)?.messages ?? [],
+    ).toHaveLength(0);
   });
 
   it("buffer/item replaces live content on the same seq (no merge)", () => {
@@ -158,39 +204,42 @@ describe("messageStore seq map", () => {
       session_id: sid,
       seq: 3,
       kind: "item/assistant",
-
+      state: "in_progress",
       body: assistantMsg("msg_r", "partial", "in_progress"),
     });
     useMessageStore.getState().onBufferItem(sid, {
       session_id: sid,
       seq: 3,
       kind: "item/assistant",
+      state: "final",
 
       body: assistantMsg("msg_r", "final from ledger", "completed"),
     });
     const row = useMessageStore.getState().bySession.get(sid)!.messages[0]!;
     expect(itemPlainText(row.body as Item)).toBe("final from ledger");
-    expect(row.streaming).toBe(false);
+    expect(row.state).toBe("final");
   });
 
-  it("G4: sealed seq ignores a later delta for the same item_id", () => {
+  it("a settled seq keeps its text when a later row reuses the provider id", () => {
     const sid = "s-g4";
-    markTurnRunning(sid, "t-after");
-    load(sid, [ev(0, assistantMsg("msg_1", "old reply")), ev(1, userMsg("rolled-up"))]);
-    useMessageStore.getState().applyStreamEvent(sid, "t-after", 1, {
-      type: "response.output_text.delta",
-      sequence_number: 1,
-      item_id: "msg_1",
-      output_index: 0,
-      content_index: 0,
-      delta: "new live text",
+    load(sid, [
+      ev(0, assistantMsg("msg_1", "old reply")),
+      ev(1, userMsg("rolled-up")),
+    ]);
+    useMessageStore.getState().onBufferItem(sid, {
+      session_id: sid,
+      seq: 2,
+      kind: "item/assistant",
+      state: "final",
+      body: assistantMsg("msg_1", "new reply"),
     });
     const slice = useMessageStore.getState().bySession.get(sid)!;
-    const old = slice.messages.find((m) => m.seq === 0)!;
-    expect(itemPlainText(old.body as Item)).toBe("old reply");
-    expect(slice.messages.some((m) => itemPlainText(m.body as Item).includes("new live text"))).toBe(
-      false,
-    );
+    expect(
+      itemPlainText(slice.messages.find((m) => m.seq === 0)!.body as Item),
+    ).toBe("old reply");
+    expect(
+      itemPlainText(slice.messages.find((m) => m.seq === 2)!.body as Item),
+    ).toBe("new reply");
   });
 
   it("pending user is not a seq key and seals on matching buffer/item", () => {
@@ -206,6 +255,7 @@ describe("messageStore seq map", () => {
       session_id: sid,
       seq: 0,
       kind: "item/user",
+      state: "final",
 
       body: userMsg("hello"),
     });
@@ -225,6 +275,7 @@ describe("messageStore seq map", () => {
       session_id: sid,
       seq: 0,
       kind: "plan/execute",
+      state: "final",
       body: userMsg("按当前计划开始执行。"),
     });
     const slice = useMessageStore.getState().bySession.get(sid)!;
@@ -256,7 +307,7 @@ describe("messageStore seq map", () => {
       );
       return createElement("div", { "data-testid": "n" }, String(rows.length));
     }
-      expect(() => render(createElement(Probe))).not.toThrow();
+    expect(() => render(createElement(Probe))).not.toThrow();
     expect(screen.getByTestId("n").textContent).toBe("1");
   });
 
@@ -270,7 +321,9 @@ describe("messageStore seq map", () => {
       clientId: "b",
       item: userMsg("two"),
     });
-    expect(useMessageStore.getState().bySession.get(sid)!.pendingUser?.clientId).toBe("a");
+    expect(
+      useMessageStore.getState().bySession.get(sid)!.pendingUser?.clientId,
+    ).toBe("a");
   });
 
   it("finalizeTurn does not drop seq rows", () => {
@@ -280,23 +333,31 @@ describe("messageStore seq map", () => {
       session_id: sid,
       seq: 1,
       kind: "item/assistant",
+      state: "final",
 
       body: assistantMsg("msg_1", "mid", "in_progress"),
     });
-    useMessageStore.getState().finalizeTurn(sid, "t1");
     const slice = useMessageStore.getState().bySession.get(sid)!;
     expect(slice.messages).toHaveLength(1);
     expect(slice.messages[0]!.seq).toBe(1);
-    expect(slice.messages[0]!.streaming).toBe(false);
+    expect(slice.messages[0]!.state).toBe("final");
   });
 
   it("hydrates userDetailBefore from a partial buffer/load window", () => {
     const sid = "s-partial-k";
-    load(sid, [ev(10, userMsg("later")), ev(11, assistantMsg("a", "ok"))], 10, 12, 3);
+    load(
+      sid,
+      [ev(10, userMsg("later")), ev(11, assistantMsg("a", "ok"))],
+      10,
+      12,
+      3,
+    );
     const slice = useMessageStore.getState().bySession.get(sid)!;
     expect(slice.fromSeq).toBe(10);
     expect(slice.userDetailBefore).toBe(3);
-    expect(deriveUserAnchorK(slice.messages, 0, slice.userDetailBefore)).toBe(3);
+    expect(deriveUserAnchorK(slice.messages, 0, slice.userDetailBefore)).toBe(
+      3,
+    );
   });
 
   it("malformed buffer/item missing kind/body does not overwrite a valid seq", () => {
@@ -326,7 +387,11 @@ describe("messageStore seq map", () => {
 
   it("buffer/reverted keeps only the surviving tail when next_seq stays ahead", () => {
     const sid = "s-rev";
-    load(sid, [ev(0, userMsg("a")), ev(1, assistantMsg("x", "b")), ev(2, userMsg("c"))]);
+    load(sid, [
+      ev(0, userMsg("a")),
+      ev(1, assistantMsg("x", "b")),
+      ev(2, userMsg("c")),
+    ]);
     // A truncate drops the live tail to seq 0 but never rewinds the allocator:
     // the next append still takes seq 5, so rows 1..4 are gone for good and must
     // not survive in the window.
@@ -345,23 +410,31 @@ describe("messageStore seq map", () => {
     load(sid, [ev(0, userMsg("a")), ev(1, assistantMsg("x", "b"))], 0, 2);
     const sendRpc = vi.fn();
     useConnectionStore.setState({ sendRpc } as never);
-    await expect(useMessageStore.getState().ensureSeqLoaded(sid, 1)).resolves.toBe(true);
+    await expect(
+      useMessageStore.getState().ensureSeqLoaded(sid, 1),
+    ).resolves.toBe(true);
     expect(sendRpc).not.toHaveBeenCalled();
   });
 
   it("ensureSeqLoaded pages backward until the target seq is in the store", async () => {
     const sid = "s-history";
     load(sid, [ev(40, userMsg("tail"))], 40, 41);
-    const sendRpc = vi.fn(async (_method: string, params?: Record<string, unknown>) => ({
-      session_id: sid,
-      from_seq: params?.from_seq,
-      to_seq: params?.to_seq,
-      events: [ev(5, userMsg("older"))],
-    }));
+    const sendRpc = vi.fn(
+      async (_method: string, params?: Record<string, unknown>) => ({
+        session_id: sid,
+        from_seq: params?.from_seq,
+        to_seq: params?.to_seq,
+        events: [ev(5, userMsg("older"))],
+      }),
+    );
     useConnectionStore.setState({ sendRpc } as never);
-    await expect(useMessageStore.getState().ensureSeqLoaded(sid, 5)).resolves.toBe(true);
+    await expect(
+      useMessageStore.getState().ensureSeqLoaded(sid, 5),
+    ).resolves.toBe(true);
     expect(sendRpc).toHaveBeenCalled();
-    expect(useMessageStore.getState().bySession.get(sid)!.bySeq.has(5)).toBe(true);
+    expect(useMessageStore.getState().bySession.get(sid)!.bySeq.has(5)).toBe(
+      true,
+    );
     expect(useMessageStore.getState().bySession.get(sid)!.fromSeq).toBe(0);
   });
 
@@ -377,7 +450,9 @@ describe("messageStore seq map", () => {
     );
     useConnectionStore.setState({ sendRpc } as never);
     let currentGen = 1;
-    const first = useMessageStore.getState().ensureSeqLoaded(sid, 1, () => currentGen === 1);
+    const first = useMessageStore
+      .getState()
+      .ensureSeqLoaded(sid, 1, () => currentGen === 1);
     currentGen = 2;
     resume?.({
       session_id: sid,
@@ -392,7 +467,9 @@ describe("messageStore seq map", () => {
     const sid = "s-gone";
     load(sid, [ev(0, userMsg("keep"))], 0, 1);
     useConnectionStore.setState({ sendRpc: vi.fn() } as never);
-    await expect(useMessageStore.getState().ensureSeqLoaded(sid, 4)).resolves.toBe(false);
+    await expect(
+      useMessageStore.getState().ensureSeqLoaded(sid, 4),
+    ).resolves.toBe(false);
   });
 });
 
@@ -404,7 +481,13 @@ describe("messageStore buffer window — tail append (P6 catch-up)", () => {
   });
 
   it("keeps the window start and user-detail count when a load only appends the tail", () => {
-    load(sid, [ev(0, userMsg("ask")), ev(1, assistantMsg("a", "first"))], 0, 2, 0);
+    load(
+      sid,
+      [ev(0, userMsg("ask")), ev(1, assistantMsg("a", "first"))],
+      0,
+      2,
+      0,
+    );
 
     // Gap catch-up: the retained window [0,2) is topped up with [2,3).
     load(sid, [ev(2, assistantMsg("b", "second"))], 2, 3, 7);
@@ -419,7 +502,13 @@ describe("messageStore buffer window — tail append (P6 catch-up)", () => {
   });
 
   it("still moves the window start for a history page loaded below the window", () => {
-    load(sid, [ev(10, userMsg("ask")), ev(11, assistantMsg("a", "first"))], 10, 12, 3);
+    load(
+      sid,
+      [ev(10, userMsg("ask")), ev(11, assistantMsg("a", "first"))],
+      10,
+      12,
+      3,
+    );
 
     load(sid, [ev(8, userMsg("older"))], 8, 10, 1);
 
@@ -449,7 +538,9 @@ describe("sessionStore.applySnapshot — retained window catch-up (P6)", () => {
     const sendRpc = vi.fn(async (method: string, params: never) => {
       if (method !== "buffer/load") return {};
       const p = params as unknown as { from_seq: number; to_seq: number };
-      const inside = events.filter((e) => e.seq >= p.from_seq && e.seq < p.to_seq);
+      const inside = events.filter(
+        (e) => e.seq >= p.from_seq && e.seq < p.to_seq,
+      );
       return {
         session_id: sid,
         from_seq: p.from_seq,

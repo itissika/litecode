@@ -27,7 +27,10 @@ export function toWorkspacePath(
   projectRoot?: string | null,
 ): string | null {
   if (!filePath) return null;
-  if (hasVerbatimMarker(filePath) || (projectRoot && hasVerbatimMarker(projectRoot))) {
+  if (
+    hasVerbatimMarker(filePath) ||
+    (projectRoot && hasVerbatimMarker(projectRoot))
+  ) {
     return null;
   }
 
@@ -75,7 +78,11 @@ export function joinWorkspacePath(parent: string, name: string): string {
 }
 
 /** Remap `path` when `from` was renamed/moved to `to` (including descendants). */
-export function remapPathPrefix(path: string, from: string, to: string): string {
+export function remapPathPrefix(
+  path: string,
+  from: string,
+  to: string,
+): string {
   if (path === from) return to;
   if (from && path.startsWith(`${from}/`)) {
     return `${to}${path.slice(from.length)}`;
@@ -83,7 +90,10 @@ export function remapPathPrefix(path: string, from: string, to: string): string 
   return path;
 }
 
-export function isSelfOrDescendant(ancestor: string, candidate: string): boolean {
+export function isSelfOrDescendant(
+  ancestor: string,
+  candidate: string,
+): boolean {
   if (!ancestor) return true;
   return candidate === ancestor || candidate.startsWith(`${ancestor}/`);
 }

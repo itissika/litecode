@@ -105,7 +105,10 @@ interface ConnectionStore {
 
   init: () => void;
   destroy: () => void;
-  sendRpc: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>;
+  sendRpc: <T = unknown>(
+    method: string,
+    params?: Record<string, unknown>,
+  ) => Promise<T>;
   dispatchEnvelope: (env: WireEnvelope) => void;
   ensureSubscribe: (sid: string) => Promise<void>;
   unsubscribeSession: (sid: string) => void;
@@ -139,7 +142,6 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               // per-socket subscriptions (a fresh socket starts empty).
               // Clear the local record so each AgentPanel re-subscribes
               // itself on (re)connect via its own connection-state effect.
-              siblingStores.turn?.getState().clearAllPendingStreams?.();
               set({ state: connection, subscribedSessions: new Set() });
             }
             siblingStores.telemetry?.getState().onConnectionChange(connection);
@@ -291,10 +293,6 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
 
           case "buffer/item": {
             const bi = params as unknown as BufferItemNotification;
-            // Stream deltas are rAF-coalesced; seal is immediate. Flush first so
-            // pending tokens are not appended onto the sealed full text.
-            // `turn` is already getState() — actions live on the slice itself.
-            turn?.flushPendingStream?.(bi.session_id);
             message?.onBufferItem(bi.session_id, bi);
             return;
           }
@@ -326,7 +324,6 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               last_seq: number;
               next_seq: number;
             };
-            turn?.clearPendingStream?.(rev.session_id);
             const turnSlice = turn?.byId?.get(rev.session_id);
             if (
               turnSlice?.runState === "running" ||
@@ -443,7 +440,9 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
         if (!sessions.has(sid)) return;
         sessions.delete(sid);
         set({ subscribedSessions: sessions });
-        void get().sendRpc("session/unsubscribe", { session_id: sid }).catch(() => {});
+        void get()
+          .sendRpc("session/unsubscribe", { session_id: sid })
+          .catch(() => {});
       },
     };
   });

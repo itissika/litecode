@@ -83,9 +83,9 @@ function sendSubscribe(subscribe: boolean): void {
   try {
     const conn = useConnectionStore.getState();
     if (conn.state !== "connected") return;
-    conn.sendRpc(
-      subscribe ? "subscribe_logs" : "unsubscribe_logs",
-    ).catch(() => {});
+    conn
+      .sendRpc(subscribe ? "subscribe_logs" : "unsubscribe_logs")
+      .catch(() => {});
   } catch {
     // WS not ready yet; expand will retry on next connect if needed
   }

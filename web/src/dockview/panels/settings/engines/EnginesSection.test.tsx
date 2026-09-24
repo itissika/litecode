@@ -5,7 +5,8 @@ import type { EnginesDetail } from "../../../../api/workspace";
 import { EnginesSection } from "./EnginesSection";
 
 vi.mock("../../../../api/workspace", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../../api/workspace")>();
+  const actual =
+    await importOriginal<typeof import("../../../../api/workspace")>();
   return {
     ...actual,
     getEnginesDetail: vi.fn(),

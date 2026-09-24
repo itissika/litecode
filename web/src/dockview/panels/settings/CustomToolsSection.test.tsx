@@ -1,4 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CustomToolDefinition } from "../../../api/settings";
@@ -18,7 +25,9 @@ function openNew(scope: "Global" | "Workspace") {
   fireEvent.click(screen.getByRole("button", { name: "New custom tool" }));
   const panel = document.querySelector("[data-dropdown-panel]");
   expect(panel).toBeTruthy();
-  fireEvent.click(within(panel as HTMLElement).getByRole("button", { name: scope }));
+  fireEvent.click(
+    within(panel as HTMLElement).getByRole("button", { name: scope }),
+  );
 }
 
 describe("CustomToolsSection persist UX", () => {
@@ -70,7 +79,9 @@ describe("CustomToolsSection persist UX", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "{}" } });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     expect(
-      await screen.findByText("Valid JSON with name, command, and schema is required"),
+      await screen.findByText(
+        "Valid JSON with name, command, and schema is required",
+      ),
     ).toBeTruthy();
     expect(saveCustomTool).not.toHaveBeenCalled();
     expect(screen.queryByText("Fix fields to save")).toBeNull();

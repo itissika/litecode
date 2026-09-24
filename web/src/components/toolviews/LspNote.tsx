@@ -31,16 +31,14 @@ export function LspNoteTail({ text }: { text: string }) {
     <FoldCard
       icon={
         isHint ? (
-          <InfoIcon
-            size={12}
-            aria-hidden
-            className="text-(--_dk-text-muted)"
-          />
+          <InfoIcon size={12} aria-hidden className="text-(--_dk-text-muted)" />
         ) : (
           <WarningCircleIcon
             size={12}
             aria-hidden
-            className={isError ? "text-(--_dk-red-500)" : "text-(--_dk-amber-500)"}
+            className={
+              isError ? "text-(--_dk-red-500)" : "text-(--_dk-amber-500)"
+            }
           />
         )
       }
@@ -58,7 +56,11 @@ export function LspNoteTail({ text }: { text: string }) {
  * Renders a write/edit tool result: the main message inline, plus a collapsed
  * signal tail when present. Returns null when there is no output text at all.
  */
-export function ToolResultBlock({ output }: { output?: FunctionCallOutputItem }) {
+export function ToolResultBlock({
+  output,
+}: {
+  output?: FunctionCallOutputItem;
+}) {
   const text = output ? functionCallOutputText(output) : "";
   if (!text) return null;
   const { body, lsp } = splitLspNote(text);

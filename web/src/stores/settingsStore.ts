@@ -109,7 +109,10 @@ interface SettingsStore extends SettingsStoreState {
   onRemoteSettingsChanged: (event: SettingsChanged) => void;
   handleWorkspaceChange: (paths: string[], kind: WorkspaceChangeKind) => void;
   notifySetupIfNeeded: () => Promise<void>;
-  ensureSectionLoaded: (section: SettingsSection, force?: boolean) => Promise<void>;
+  ensureSectionLoaded: (
+    section: SettingsSection,
+    force?: boolean,
+  ) => Promise<void>;
   refreshAgents: () => Promise<void>;
   setSelectedAgentId: (id: string) => void;
   saveProviderKey: (providerId: string, apiKey: string) => Promise<void>;
@@ -117,9 +120,17 @@ interface SettingsStore extends SettingsStoreState {
   /** Switch one catalog model on or off for every picker. */
   setModelEnabled: (modelRef: string, enabled: boolean) => Promise<void>;
   saveWebSearch: (body: { api_key?: string }) => Promise<void>;
-  saveCustomTool: (id: string, def: CustomToolDefinition, scope?: ToolScope) => Promise<void>;
+  saveCustomTool: (
+    id: string,
+    def: CustomToolDefinition,
+    scope?: ToolScope,
+  ) => Promise<void>;
   removeCustomTool: (id: string, scope?: ToolScope) => Promise<void>;
-  saveMcpServer: (id: string, def: McpServerDefinition, scope?: ToolScope) => Promise<void>;
+  saveMcpServer: (
+    id: string,
+    def: McpServerDefinition,
+    scope?: ToolScope,
+  ) => Promise<void>;
   removeMcpServer: (id: string, scope?: ToolScope) => Promise<void>;
   startMcpServer: (id: string, scope?: ToolScope) => Promise<McpProbeResult>;
   restartMcpServer: (id: string, scope?: ToolScope) => Promise<McpProbeResult>;
@@ -158,7 +169,9 @@ function handleSaveError(err: unknown): void {
       );
     return;
   }
-  useToastStore.getState().showToast(message, "error", 5000, SETTINGS_PERSIST_ERROR_CHANNEL);
+  useToastStore
+    .getState()
+    .showToast(message, "error", 5000, SETTINGS_PERSIST_ERROR_CHANNEL);
 }
 
 async function withTurnGuard<T>(fn: () => Promise<T>): Promise<T> {
@@ -193,10 +206,9 @@ function stampClock(
   return next;
 }
 
-function applyMcpListing(listing: LayeredList<McpServerItem>): Pick<
-  SettingsStoreState,
-  "mcpDefs" | "mcpRuntime"
-> {
+function applyMcpListing(
+  listing: LayeredList<McpServerItem>,
+): Pick<SettingsStoreState, "mcpDefs" | "mcpRuntime"> {
   return splitMcpListing(listing);
 }
 
@@ -285,7 +297,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       patch.agentIds = agentIds;
       patch.agents = agents;
       const selected = get().selectedAgentId;
-      patch.selectedAgentId = agentIds.includes(selected) ? selected : (agentIds[0] ?? "default");
+      patch.selectedAgentId = agentIds.includes(selected)
+        ? selected
+        : (agentIds[0] ?? "default");
     });
 
     await Promise.all(tasks);
@@ -356,7 +370,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       set({ revision });
       if (open && revision > current) {
         const docs = SECTION_DOCUMENTS[get().section];
-        void loadDocuments(docs, { forceRevisioned: true, forceExcludes: false });
+        void loadDocuments(docs, {
+          forceRevisioned: true,
+          forceExcludes: false,
+        });
       }
     },
 
@@ -406,20 +423,27 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       const flight = ++loadFlight;
       const requested = section;
       try {
-        await loadDocuments(docs, { forceRevisioned: force, forceExcludes: false });
+        await loadDocuments(docs, {
+          forceRevisioned: force,
+          forceExcludes: false,
+        });
         if (get().section === requested && flight === loadFlight) {
           set({ loadError: null });
         }
       } catch (err) {
         if (get().section !== requested || flight !== loadFlight) return;
-        const message = err instanceof Error ? err.message : "Failed to load settings";
+        const message =
+          err instanceof Error ? err.message : "Failed to load settings";
         set({ loadError: message });
         useToastStore.getState().showToast(message, "error");
       }
     },
 
     refreshAgents: async () => {
-      await loadDocuments(["agents"], { forceRevisioned: true, forceExcludes: false });
+      await loadDocuments(["agents"], {
+        forceRevisioned: true,
+        forceExcludes: false,
+      });
     },
 
     setSelectedAgentId: (id) => set({ selectedAgentId: id }),
@@ -430,7 +454,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
         // Defense in depth: the section never schedules an empty draft, and the
         // backend answers 400 for one — catch it before the request.
         if (!key) {
-          throw new SettingsApiError(400, "empty_api_key", "API key must not be empty");
+          throw new SettingsApiError(
+            400,
+            "empty_api_key",
+            "API key must not be empty",
+          );
         }
         const { revision } = await putProviderKey(providerId, key);
         const llm = await getLlmSettings();
@@ -485,7 +513,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
           revision,
           customTools,
           availableTools,
-          docClock: stampClock(get().docClock, ["customTools", "availableTools"], revision),
+          docClock: stampClock(
+            get().docClock,
+            ["customTools", "availableTools"],
+            revision,
+          ),
         });
       }),
 
@@ -501,7 +533,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
           revision,
           customTools,
           availableTools,
-          docClock: stampClock(get().docClock, ["customTools", "availableTools"], revision),
+          docClock: stampClock(
+            get().docClock,
+            ["customTools", "availableTools"],
+            revision,
+          ),
         });
       }),
 
@@ -514,7 +550,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
           revision,
           availableTools,
           ...applyMcpListing(listing),
-          docClock: stampClock(get().docClock, ["mcp", "availableTools"], revision),
+          docClock: stampClock(
+            get().docClock,
+            ["mcp", "availableTools"],
+            revision,
+          ),
         });
       }),
 
@@ -528,25 +568,35 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
           revision,
           availableTools,
           ...applyMcpListing(listing),
-          docClock: stampClock(get().docClock, ["mcp", "availableTools"], revision),
+          docClock: stampClock(
+            get().docClock,
+            ["mcp", "availableTools"],
+            revision,
+          ),
         });
       }),
 
     startMcpServer: async (id, scope = "global") => {
       const result = await requestMcpStart(id, scope);
-      set((s) => ({ mcpRuntime: patchMcpRuntime(s.mcpRuntime, id, scope, result) }));
+      set((s) => ({
+        mcpRuntime: patchMcpRuntime(s.mcpRuntime, id, scope, result),
+      }));
       return result;
     },
 
     restartMcpServer: async (id, scope = "global") => {
       const result = await requestMcpRestart(id, scope);
-      set((s) => ({ mcpRuntime: patchMcpRuntime(s.mcpRuntime, id, scope, result) }));
+      set((s) => ({
+        mcpRuntime: patchMcpRuntime(s.mcpRuntime, id, scope, result),
+      }));
       return result;
     },
 
     stopMcpServer: async (id, scope = "global") => {
       const result = await requestMcpStop(id, scope);
-      set((s) => ({ mcpRuntime: patchMcpRuntime(s.mcpRuntime, id, scope, result) }));
+      set((s) => ({
+        mcpRuntime: patchMcpRuntime(s.mcpRuntime, id, scope, result),
+      }));
       return result;
     },
 

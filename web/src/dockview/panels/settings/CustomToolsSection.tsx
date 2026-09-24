@@ -8,7 +8,12 @@ import {
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { FoldCard } from "../../../components/FoldCard";
 import { Dropdown, dropdownItemClass } from "../../../components/ui/Dropdown";
-import { FieldLabel, TextArea, SettingsPageShell, useSettingsSaveBlocked } from "./shared";
+import {
+  FieldLabel,
+  TextArea,
+  SettingsPageShell,
+  useSettingsSaveBlocked,
+} from "./shared";
 import { parseCustomToolJson } from "./jsonDefinitions";
 import {
   flushRegisteredSettings,
@@ -94,9 +99,8 @@ export function CustomToolsSection() {
     commit: (p) => saveCustomTool(p.name, p, selectedScope),
     revert: () => {
       const layered = useSettingsStore.getState().customTools;
-      const found = (selectedScope === "workspace"
-        ? layered?.workspace
-        : layered?.global
+      const found = (
+        selectedScope === "workspace" ? layered?.workspace : layered?.global
       )?.find((t) => t.name === selectedId);
       if (found) setJsonText(prettyTool(found));
     },
@@ -217,7 +221,8 @@ export function CustomToolsSection() {
     >
       <div className="space-y-4">
         <p className="text-xs text-(--_dk-text-muted)">
-          Definitions only. Bind on Agents. Same name: workspace overrides global.
+          Definitions only. Bind on Agents. Same name: workspace overrides
+          global.
         </p>
         <div className="space-y-3">
           {(
@@ -233,72 +238,89 @@ export function CustomToolsSection() {
               className="settings-foldcard"
             >
               <div className="space-y-2">
-              {list.length === 0 && !(isNew && createScope === scope) ? (
-                <p className="px-2 py-3 text-xs text-(--_dk-text-muted)">None.</p>
-              ) : null}
-              {list.map((tool) => (
-                <FoldCard
-                  key={`${scope}:${tool.name}`}
-                  open={!isNew && selectedScope === scope && selectedId === tool.name}
-                  onToggle={(o) => {
-                    if (o) {
-                      void flushRegisteredSettings().then(() => {
-                        setIsNew(false);
-                        setSelectedScope(scope);
-                        setSelectedId(tool.name);
-                      });
-                    } else if (selectedScope === scope && selectedId === tool.name) {
-                      void flushRegisteredSettings().then(() => setSelectedId(null));
+                {list.length === 0 && !(isNew && createScope === scope) ? (
+                  <p className="px-2 py-3 text-xs text-(--_dk-text-muted)">
+                    None.
+                  </p>
+                ) : null}
+                {list.map((tool) => (
+                  <FoldCard
+                    key={`${scope}:${tool.name}`}
+                    open={
+                      !isNew &&
+                      selectedScope === scope &&
+                      selectedId === tool.name
                     }
-                  }}
-                  label={
-                    <span className="flex flex-1 items-center justify-between gap-2">
-                      <span className="font-mono text-sm text-(--_dk-text-secondary)">
-                        {tool.name}
-                      </span>
-                      <span className="flex items-center gap-2">
-                        <span className="truncate text-xs text-(--_dk-text-muted)">
-                          {tool.command}
+                    onToggle={(o) => {
+                      if (o) {
+                        void flushRegisteredSettings().then(() => {
+                          setIsNew(false);
+                          setSelectedScope(scope);
+                          setSelectedId(tool.name);
+                        });
+                      } else if (
+                        selectedScope === scope &&
+                        selectedId === tool.name
+                      ) {
+                        void flushRegisteredSettings().then(() =>
+                          setSelectedId(null),
+                        );
+                      }
+                    }}
+                    label={
+                      <span className="flex flex-1 items-center justify-between gap-2">
+                        <span className="font-mono text-sm text-(--_dk-text-secondary)">
+                          {tool.name}
                         </span>
-                        <button
-                          type="button"
-                          className="btn-danger btn-icon"
-                          disabled={saveBlocked || isPersistBusy(persistStatus)}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDelete(tool.name, scope);
-                          }}
-                          onKeyDown={(e) => e.stopPropagation()}
-                          aria-label={`Delete ${tool.name}`}
-                          title={`Delete ${tool.name}`}
-                        >
-                          <Trash size={16} />
-                        </button>
+                        <span className="flex items-center gap-2">
+                          <span className="truncate text-xs text-(--_dk-text-muted)">
+                            {tool.command}
+                          </span>
+                          <button
+                            type="button"
+                            className="btn-danger btn-icon"
+                            disabled={
+                              saveBlocked || isPersistBusy(persistStatus)
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDelete(tool.name, scope);
+                            }}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            aria-label={`Delete ${tool.name}`}
+                            title={`Delete ${tool.name}`}
+                          >
+                            <Trash size={16} />
+                          </button>
+                        </span>
                       </span>
-                    </span>
-                  }
-                  className="settings-foldcard"
-                >
-                  {!isNew && selectedScope === scope && selectedId === tool.name
-                    ? editorForm
-                    : null}
-                </FoldCard>
-              ))}
-              {isNew && createScope === scope ? (
-                <FoldCard
-                  key="__new"
-                  open
-                  onToggle={(o) => {
-                    if (!o) setIsNew(false);
-                  }}
-                  label={
-                    <span className="font-mono text-sm text-(--_dk-text-secondary)">(new)</span>
-                  }
-                  className="settings-foldcard"
-                >
-                  {editorForm}
-                </FoldCard>
-              ) : null}
+                    }
+                    className="settings-foldcard"
+                  >
+                    {!isNew &&
+                    selectedScope === scope &&
+                    selectedId === tool.name
+                      ? editorForm
+                      : null}
+                  </FoldCard>
+                ))}
+                {isNew && createScope === scope ? (
+                  <FoldCard
+                    key="__new"
+                    open
+                    onToggle={(o) => {
+                      if (!o) setIsNew(false);
+                    }}
+                    label={
+                      <span className="font-mono text-sm text-(--_dk-text-secondary)">
+                        (new)
+                      </span>
+                    }
+                    className="settings-foldcard"
+                  >
+                    {editorForm}
+                  </FoldCard>
+                ) : null}
               </div>
             </FoldCard>
           ))}

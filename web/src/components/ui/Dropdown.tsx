@@ -1,4 +1,10 @@
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 
 /** Display + width fallback per variant, applied to the root wrapper.
@@ -256,7 +262,10 @@ export function Dropdown({
   }, [open]);
 
   return (
-    <div ref={rootRef} className={`relative ${VARIANT_SHELL[variant]} ${className}`}>
+    <div
+      ref={rootRef}
+      className={`relative ${VARIANT_SHELL[variant]} ${className}`}
+    >
       {trigger({ open, toggle: () => setOpen((o) => !o) })}
       {open &&
         pos &&

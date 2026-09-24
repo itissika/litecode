@@ -47,7 +47,11 @@ describe("FilesSection", () => {
   it("PUTs after toggling an exclude flag", async () => {
     vi.useFakeTimers();
     render(<FilesSection />);
-    fireEvent.click(screen.getByRole("checkbox", { name: /Honor \.gitignore in the explorer/i }));
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: /Honor \.gitignore in the explorer/i,
+      }),
+    );
     await vi.advanceTimersByTimeAsync(400);
     expect(saveExcludes).toHaveBeenCalledWith(
       expect.objectContaining({ explorer_git_ignore: true }),

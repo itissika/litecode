@@ -1,6 +1,11 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { PlanExecuteMark, jobExitDetail, readableCompactSummary, subagentExitDetail } from "./transcriptMarks";
+import {
+  PlanExecuteMark,
+  jobExitDetail,
+  readableCompactSummary,
+  subagentExitDetail,
+} from "./transcriptMarks";
 
 afterEach(cleanup);
 
@@ -14,21 +19,28 @@ describe("PlanExecuteMark", () => {
 
   it("degrades to the bare label with no active plan pointer", () => {
     render(<PlanExecuteMark planPath={null} />);
-    expect(screen.getByTestId("plan-execute-mark").textContent).toBe("开始执行");
+    expect(screen.getByTestId("plan-execute-mark").textContent).toBe(
+      "开始执行",
+    );
   });
 });
 
 describe("readableCompactSummary", () => {
   it("strips the conversation summary label prefix", () => {
-    expect(readableCompactSummary("[Conversation summary]\nDone X and Y")).toBe("Done X and Y");
+    expect(readableCompactSummary("[Conversation summary]\nDone X and Y")).toBe(
+      "Done X and Y",
+    );
   });
 
   it("strips the aggressive summary label prefix", () => {
-    expect(readableCompactSummary("[Aggressive summary]\nOnly key facts")).toBe("Only key facts");
+    expect(readableCompactSummary("[Aggressive summary]\nOnly key facts")).toBe(
+      "Only key facts",
+    );
   });
 
   it("removes internal system-reminder blocks", () => {
-    const raw = "[Conversation summary]\n<system-reminder>\nkeep recent tool results\n</system-reminder>\nProse body";
+    const raw =
+      "[Conversation summary]\n<system-reminder>\nkeep recent tool results\n</system-reminder>\nProse body";
     expect(readableCompactSummary(raw)).toBe("Prose body");
   });
 
@@ -74,7 +86,10 @@ agent: reviewer
 output:
 done
 </system-reminder>`),
-    ).toEqual({ detail: "settled · reviewer · cancelled", childId: "child-abc" });
+    ).toEqual({
+      detail: "settled · reviewer · cancelled",
+      childId: "child-abc",
+    });
   });
 
   it("keeps a completed single child to agent only", () => {

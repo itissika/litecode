@@ -2,7 +2,12 @@ import { useEffect, useState } from "react";
 
 import { functionCallOutputText, parseFunctionArguments } from "../api/adapter";
 import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
-import { formatElapsed, headExitCode, isBashJobLive, matchJob } from "../lib/bashLive";
+import {
+  formatElapsed,
+  headExitCode,
+  isBashJobLive,
+  matchJob,
+} from "../lib/bashLive";
 import { bashKill } from "../lib/litecodeBash";
 import { useBashStore } from "../stores/bashStore";
 import { useTurnStore } from "../stores/turnStore";

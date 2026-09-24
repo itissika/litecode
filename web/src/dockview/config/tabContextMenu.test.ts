@@ -48,7 +48,9 @@ function makeParams(
   };
 }
 
-function labels(items: ReturnType<typeof buildTabContextMenuItems>): (string | undefined)[] {
+function labels(
+  items: ReturnType<typeof buildTabContextMenuItems>,
+): (string | undefined)[] {
   return items.map((item) => (typeof item === "string" ? item : item.label));
 }
 
@@ -56,7 +58,9 @@ describe("buildTabContextMenuItems", () => {
   it("offers Close on a terminal tab when more than one terminal panel exists", () => {
     const terminal1 = makePanel("terminal", "edge");
     const terminal2 = makePanel("terminal", "edge");
-    const items = buildTabContextMenuItems(makeParams(terminal1, [terminal1, terminal2]));
+    const items = buildTabContextMenuItems(
+      makeParams(terminal1, [terminal1, terminal2]),
+    );
 
     expect(items).toContain("close");
   });
@@ -81,7 +85,9 @@ describe("buildTabContextMenuItems", () => {
   it("keeps Close hidden for non-terminal edge panels even when terminals exist", () => {
     const filetree = makePanel("filetree", "edge");
     const terminal = makePanel("terminal", "edge");
-    const items = buildTabContextMenuItems(makeParams(filetree, [filetree, terminal]));
+    const items = buildTabContextMenuItems(
+      makeParams(filetree, [filetree, terminal]),
+    );
 
     expect(items).not.toContain("close");
     expect(labels(items)).toEqual([

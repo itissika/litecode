@@ -2,7 +2,13 @@ import React from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MessageList, NodeView, ProcessGroup, groupNodes, rowsToNodes } from "./MessageList";
+import {
+  MessageList,
+  NodeView,
+  ProcessGroup,
+  groupNodes,
+  rowsToNodes,
+} from "./MessageList";
 import type { HumanRow } from "../api/types";
 import { userTextItem } from "../api/adapter";
 import { useBashStore } from "../stores/bashStore";
@@ -45,7 +51,11 @@ vi.mock("@tanstack/react-virtual", () => ({
 const turnState = {
   byId: new Map<
     string,
-    { pendingPermission: unknown; compacting: boolean; turnPhase: string | null }
+    {
+      pendingPermission: unknown;
+      compacting: boolean;
+      turnPhase: string | null;
+    }
   >([
     [
       "session-1",
@@ -101,22 +111,19 @@ const makeScrollRef = () => React.createRef<HTMLDivElement>();
 const liveReasoning: HumanRow = {
   seq: 0,
   kind: "item/assistant",
-
-  streaming: true,
+  state: "in_progress",
   body: {
     type: "reasoning",
     id: "rs_1",
     summary: [{ type: "summary_text", text: "thinking" }],
     content: [{ type: "reasoning_text", text: "thinking" }],
-    status: "in_progress",
   },
 };
 
 const sealedReasoning: HumanRow = {
   seq: 0,
   kind: "item/assistant",
-
-  streaming: false,
+  state: "final",
   body: {
     type: "reasoning",
     id: "rs_1",
@@ -129,14 +136,13 @@ const sealedReasoning: HumanRow = {
 const liveTool: HumanRow = {
   seq: 2,
   kind: "item/tool_call",
-
-  streaming: true,
+  state: "in_progress",
   body: {
     type: "function_call",
     id: "fc_1",
     call_id: "call_1",
     name: "grep",
-    arguments: "{\"pattern\":\"foo\"}",
+    arguments: '{"pattern":"foo"}',
     status: "completed",
   },
 };
@@ -162,21 +168,20 @@ describe("MessageList G5 historical FoldCard", () => {
     const completedTool: HumanRow = {
       seq: 2,
       kind: "item/tool_call",
-
-      streaming: false,
+      state: "final",
       body: {
         type: "function_call",
         id: "fc_hist",
         call_id: "call_hist",
         name: "grep",
-        arguments: "{\"pattern\":\"foo\"}",
+        arguments: '{"pattern":"foo"}',
         status: "completed",
       },
     };
     const completedToolOutput: HumanRow = {
       seq: 3,
       kind: "item/tool_result",
-      streaming: false,
+      state: "final",
       body: {
         type: "function_call_output",
         call_id: "call_hist",
@@ -186,7 +191,7 @@ describe("MessageList G5 historical FoldCard", () => {
     const finalMessage: HumanRow = {
       seq: 4,
       kind: "item/assistant",
-      streaming: false,
+      state: "final",
       body: {
         type: "message",
         id: "msg_hist",
@@ -197,7 +202,12 @@ describe("MessageList G5 historical FoldCard", () => {
     };
     render(
       <MessageList
-        messages={[completedReasoning, completedTool, completedToolOutput, finalMessage]}
+        messages={[
+          completedReasoning,
+          completedTool,
+          completedToolOutput,
+          finalMessage,
+        ]}
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
@@ -254,7 +264,6 @@ describe("MessageList process group across seal", () => {
   it("keeps the process FoldCard expanded after the call seals until output arrives", () => {
     const sealedCall: HumanRow = {
       ...liveTool,
-      streaming: false,
     };
     const { rerender } = render(
       <MessageList
@@ -279,7 +288,7 @@ describe("MessageList process group across seal", () => {
           {
             seq: 3,
             kind: "item/tool_result",
-            streaming: false,
+            state: "final",
             body: {
               type: "function_call_output",
               call_id: "call_1",
@@ -297,7 +306,9 @@ describe("MessageList process group across seal", () => {
       />,
     );
     expect(
-      screen.getByRole("button", { name: /1 reasoning, 1 tool/i }).getAttribute("aria-expanded"),
+      screen
+        .getByRole("button", { name: /1 reasoning, 1 tool/i })
+        .getAttribute("aria-expanded"),
     ).toBe("true");
 
     rerender(
@@ -308,7 +319,7 @@ describe("MessageList process group across seal", () => {
           {
             seq: 3,
             kind: "item/tool_result",
-            streaming: false,
+            state: "final",
             body: {
               type: "function_call_output",
               call_id: "call_1",
@@ -318,7 +329,7 @@ describe("MessageList process group across seal", () => {
           {
             seq: 4,
             kind: "item/assistant",
-            streaming: false,
+            state: "final",
             body: {
               type: "message",
               id: "msg_1",
@@ -338,7 +349,9 @@ describe("MessageList process group across seal", () => {
       />,
     );
     expect(
-      screen.getByRole("button", { name: /1 reasoning, 1 tool/i }).getAttribute("aria-expanded"),
+      screen
+        .getByRole("button", { name: /1 reasoning, 1 tool/i })
+        .getAttribute("aria-expanded"),
     ).toBe("false");
   });
 });
@@ -350,8 +363,7 @@ describe("ProcessGroup header buckets", () => {
       {
         seq: 10,
         kind: "item/tool_call",
-
-        streaming: false,
+        state: "final",
         body: {
           type: "function_call",
           id: "fc_bash",
@@ -364,8 +376,7 @@ describe("ProcessGroup header buckets", () => {
       {
         seq: 11,
         kind: "item/tool_call",
-
-        streaming: false,
+        state: "final",
         body: {
           type: "function_call",
           id: "fc_edit",
@@ -379,8 +390,7 @@ describe("ProcessGroup header buckets", () => {
       {
         seq: 12,
         kind: "item/tool_call",
-
-        streaming: false,
+        state: "final",
         body: {
           type: "function_call",
           id: "fc_wait",
@@ -431,7 +441,7 @@ describe("MessageList whitespace-only assistant rows", () => {
   const whitespaceMessage: HumanRow = {
     seq: 1,
     kind: "item/assistant",
-    streaming: false,
+    state: "final",
     body: {
       type: "message",
       id: "cc_msg_ws",
@@ -461,7 +471,11 @@ describe("MessageList whitespace-only assistant rows", () => {
       },
     };
     const groups = groupNodes(rowsToNodes([reasoning, real, tool]));
-    expect(groups.map((group) => group.type)).toEqual(["process", "output", "process"]);
+    expect(groups.map((group) => group.type)).toEqual([
+      "process",
+      "output",
+      "process",
+    ]);
   });
 });
 
@@ -470,15 +484,25 @@ describe("MessageList reminder rows", () => {
     const reminder: HumanRow = {
       seq: 0,
       kind: "reminder/job_exit",
+      state: "final",
       body: userTextItem("hidden reminder"),
     };
     render(
-      <MessageList messages={[reminder]} loadingHistory={false} canLoadMore={false}
-        onLoadMore={() => {}} userDetailBefore={0} isRunning={false}
-        scrollRef={makeScrollRef()} sessionId="session-1" />,
+      <MessageList
+        messages={[reminder]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={false}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
     );
     expect(screen.queryByText(/hidden reminder/)).toBeNull();
-    expect(screen.getByRole("status", { name: "Background terminal exited" })).toBeTruthy();
+    expect(
+      screen.getByRole("status", { name: "Background terminal exited" }),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Revert to here" })).toBeNull();
   });
 
@@ -486,19 +510,29 @@ describe("MessageList reminder rows", () => {
     const unknown = {
       seq: 1,
       kind: "future/widget",
+      state: "final",
       body: {
         type: "message",
         role: "assistant",
         id: "ghost",
         status: "completed",
-        content: [{ type: "output_text", text: "do not render", annotations: [] }],
+        content: [
+          { type: "output_text", text: "do not render", annotations: [] },
+        ],
       },
     } as unknown as HumanRow;
     expect(rowsToNodes([unknown])).toEqual([]);
     render(
-      <MessageList messages={[unknown]} loadingHistory={false} canLoadMore={false}
-        onLoadMore={() => {}} userDetailBefore={0} isRunning={false}
-        scrollRef={makeScrollRef()} sessionId="session-1" />,
+      <MessageList
+        messages={[unknown]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={false}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
     );
     expect(screen.queryByText("do not render")).toBeNull();
   });
@@ -508,6 +542,7 @@ describe("MessageList reminder rows", () => {
     const user: HumanRow = {
       seq: 12,
       kind: "item/user",
+      state: "final",
       body: {
         type: "message",
         role: "user",
@@ -515,9 +550,17 @@ describe("MessageList reminder rows", () => {
       },
     };
     render(
-      <MessageList messages={[user]} loadingHistory={false} canLoadMore={false}
-        onLoadMore={() => {}} userDetailBefore={4} isRunning={false}
-        scrollRef={makeScrollRef()} sessionId="session-1" onEditAnchor={onEditAnchor} />,
+      <MessageList
+        messages={[user]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={4}
+        isRunning={false}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+        onEditAnchor={onEditAnchor}
+      />,
     );
     fireEvent.click(screen.getByText("later ask"));
     expect(onEditAnchor).toHaveBeenCalledWith(
@@ -530,6 +573,7 @@ describe("MessageList reminder rows", () => {
     const sealed: HumanRow = {
       seq: 12,
       kind: "item/user",
+      state: "final",
       body: {
         type: "message",
         role: "user",
@@ -542,6 +586,7 @@ describe("MessageList reminder rows", () => {
     const pending: HumanRow = {
       seq: -1,
       kind: "item/user",
+      state: "final",
       body: {
         type: "message",
         role: "user",
@@ -549,9 +594,17 @@ describe("MessageList reminder rows", () => {
       },
     };
     render(
-      <MessageList messages={[sealed, pending]} loadingHistory={false} canLoadMore={false}
-        onLoadMore={() => {}} userDetailBefore={4} isRunning={true}
-        scrollRef={makeScrollRef()} sessionId="session-1" onEditAnchor={onEditAnchor} />,
+      <MessageList
+        messages={[sealed, pending]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={4}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+        onEditAnchor={onEditAnchor}
+      />,
     );
 
     fireEvent.click(screen.getByText("earlier ask"));
@@ -608,7 +661,9 @@ describe("MessageList compacting now marker", () => {
     );
     expect(screen.getByTestId("compacting-now")).toBeTruthy();
     // Same per-character wave animation as the wait-shell text.
-    expect(document.querySelectorAll(".wait-wave-char").length).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".wait-wave-char").length).toBeGreaterThan(
+      0,
+    );
 
     slice().compacting = false;
     rerender(
@@ -650,7 +705,7 @@ function bashRows(output: string): HumanRow[] {
     {
       seq: 1,
       kind: "item/tool_call",
-      streaming: false,
+      state: "final",
       body: {
         type: "function_call",
         id: "fc_bash",
@@ -663,7 +718,7 @@ function bashRows(output: string): HumanRow[] {
     {
       seq: 2,
       kind: "item/tool_result",
-      streaming: false,
+      state: "final",
       body: {
         type: "function_call_output",
         call_id: "call_bash",
@@ -695,9 +750,11 @@ function seedBashJob(): void {
 
 describe("MessageList tool routing (inline row vs rich card)", () => {
   it("keeps a FOREGROUND bash on its rich card", () => {
-    const node = rowsToNodes(bashRows(`exit_code: 0
+    const node = rowsToNodes(
+      bashRows(`exit_code: 0
 all good
-`))[0]!;
+`),
+    )[0]!;
     const { container } = render(
       <NodeView node={node} projectRoot={null} sessionId="session-1" />,
     );
@@ -717,7 +774,9 @@ all good
       <NodeView node={node} projectRoot={null} sessionId="session-1" />,
     );
 
-    expect(screen.getByTestId("inline-bash-command").textContent).toBe("sleep 8");
+    expect(screen.getByTestId("inline-bash-command").textContent).toBe(
+      "sleep 8",
+    );
     expect(container.querySelector(".foldcard-header")).toBeNull();
     expect(screen.queryByTestId("bash-console")).toBeNull();
   });
@@ -728,7 +787,7 @@ describe("MessageList session-mount capsules route to single-line rows", () => {
     {
       seq: 1,
       kind: "item/tool_call",
-      streaming: false,
+      state: "final",
       body: {
         type: "function_call",
         id: "fc_cap",
@@ -741,7 +800,7 @@ describe("MessageList session-mount capsules route to single-line rows", () => {
     {
       seq: 2,
       kind: "item/tool_result",
-      streaming: false,
+      state: "final",
       body: { type: "function_call_output", call_id: "call_cap", output },
     },
   ];
@@ -750,7 +809,9 @@ describe("MessageList session-mount capsules route to single-line rows", () => {
     const node = rowsToNodes(
       capsule("todo", "OK. Status — pending: 2, in_progress: 1, completed: 3"),
     )[0]!;
-    const { container } = render(<NodeView node={node} sessionId="session-1" />);
+    const { container } = render(
+      <NodeView node={node} sessionId="session-1" />,
+    );
 
     expect(screen.getByTestId("inline-todo-summary").textContent).toBe(
       "1 active · 2 pending · 3 done",
@@ -762,7 +823,9 @@ describe("MessageList session-mount capsules route to single-line rows", () => {
     const node = rowsToNodes(
       capsule("plan", "Created plan at .litecode/plan/calm-river.md\nsaved."),
     )[0]!;
-    const { container } = render(<NodeView node={node} sessionId="session-1" />);
+    const { container } = render(
+      <NodeView node={node} sessionId="session-1" />,
+    );
 
     expect(screen.getByTestId("inline-plan-summary").textContent).toBe(
       ".litecode/plan/calm-river.md",
@@ -775,7 +838,7 @@ describe("MessageList job_exit mark", () => {
   const exitRow: HumanRow = {
     seq: 9,
     kind: "reminder/job_exit",
-    streaming: false,
+    state: "final",
     body: {
       type: "message",
       role: "user",
@@ -794,7 +857,10 @@ command: sleep 8
 
   it("carries the exit detail from the reminder body into the mark", () => {
     const node = rowsToNodes([exitRow])[0]!;
-    expect(node).toMatchObject({ kind: "job_exit", detail: "bg_a · exit code 3" });
+    expect(node).toMatchObject({
+      kind: "job_exit",
+      detail: "bg_a · exit code 3",
+    });
 
     render(<NodeView node={node} />);
     expect(
@@ -804,7 +870,14 @@ command: sleep 8
 
   it("falls back to the plain label when the body has no exit line", () => {
     const node = rowsToNodes([
-      { ...exitRow, body: { type: "message", role: "user", content: [{ type: "input_text", text: "no detail" }] } } as HumanRow,
+      {
+        ...exitRow,
+        body: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "no detail" }],
+        },
+      } as HumanRow,
     ])[0]!;
     expect(node.kind === "job_exit" && node.detail).toBeFalsy();
 
@@ -832,7 +905,7 @@ done
     const row: HumanRow = {
       seq: 9,
       kind: "reminder/job_exit",
-      streaming: false,
+      state: "final",
       body: userTextItem(reminder),
     };
     const node = rowsToNodes([row])[0]!;

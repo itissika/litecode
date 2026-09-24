@@ -15,13 +15,17 @@ import { AgentPanel } from "./AgentPanel";
 // assertion now that the read-only branch mounts the derived subagent views.
 vi.mock("../../components/AgentChatInput", () => ({
   AgentChatInput: ({ variant }: { variant?: string }) => (
-    <div data-testid={variant === "subagent" ? "subagent-controls" : "chat-input"} />
+    <div
+      data-testid={variant === "subagent" ? "subagent-controls" : "chat-input"}
+    />
   ),
 }));
 vi.mock("../../components/SessionStatusLine", () => ({
   SessionStatusLine: ({ variant }: { variant?: string }) => (
     <div
-      data-testid={variant === "subagent" ? "subagent-status-line" : "session-status-line"}
+      data-testid={
+        variant === "subagent" ? "subagent-status-line" : "session-status-line"
+      }
     />
   ),
 }));
@@ -69,6 +73,7 @@ const ID = "session-1";
 const userRow = (seq: number, text: string): HumanRow => ({
   seq,
   kind: "item/user",
+  state: "final",
   body: userTextItem(text),
 });
 
@@ -89,7 +94,6 @@ function seedMessages(rows: HumanRow[]): void {
       subagentBindings: {},
       blockLogGrowth: false,
       turnEndNotice: null,
-      itemIdToSeq: new Map(),
     });
     return { bySession };
   });

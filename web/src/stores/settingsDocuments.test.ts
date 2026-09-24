@@ -67,15 +67,15 @@ describe("settingsDocsForEvent", () => {
 describe("sectionNeedsSkeleton", () => {
   it("treats Provider as ready once the llm document is present", () => {
     expect(sectionNeedsSkeleton("connection", emptyProbe())).toBe(true);
-    expect(sectionNeedsSkeleton("connection", emptyProbe({ llm: llmDoc }))).toBe(
-      false,
-    );
+    expect(
+      sectionNeedsSkeleton("connection", emptyProbe({ llm: llmDoc })),
+    ).toBe(false);
   });
 
   it("skeletons Agents until llm + agents are loaded", () => {
-    expect(
-      sectionNeedsSkeleton("agents", emptyProbe({ agents: {} })),
-    ).toBe(true);
+    expect(sectionNeedsSkeleton("agents", emptyProbe({ agents: {} }))).toBe(
+      true,
+    );
     expect(
       sectionNeedsSkeleton(
         "agents",
@@ -134,7 +134,9 @@ describe("workspace tool def paths", () => {
   it("matches mcp.json and custom_tools.json under .litecode", () => {
     expect(isWorkspaceMcpPath(".litecode/mcp.json")).toBe(true);
     expect(isWorkspaceMcpPath("repo/.litecode/mcp.json")).toBe(true);
-    expect(isWorkspaceCustomToolsPath(".litecode/custom_tools.json")).toBe(true);
+    expect(isWorkspaceCustomToolsPath(".litecode/custom_tools.json")).toBe(
+      true,
+    );
     expect(isWorkspaceMcpPath(".litecode/excludes.json")).toBe(false);
     expect(isWorkspaceCustomToolsPath(".litecode/mcp.json")).toBe(false);
   });

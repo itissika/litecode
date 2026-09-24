@@ -86,7 +86,9 @@ function resolveFont(raw: string, cs: CSSStyleDeclaration): string {
 }
 
 /** Read tokens for the currently active theme from the live document. */
-export function readDkTokens(root: HTMLElement = document.documentElement): DkTokens {
+export function readDkTokens(
+  root: HTMLElement = document.documentElement,
+): DkTokens {
   return readVars(root);
 }
 

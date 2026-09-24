@@ -68,7 +68,9 @@ export function ProgressiveBlur({
   const maskDir = isBottom ? "to top" : "to bottom";
   // Anchor offset from the edge (inline style wins over the old top-0/bottom-0
   // utility), so the band can float in by `offset` px instead of hugging it.
-  const anchorStyle = isBottom ? { bottom: `${offset}px` } : { top: `${offset}px` };
+  const anchorStyle = isBottom
+    ? { bottom: `${offset}px` }
+    : { top: `${offset}px` };
 
   // Non-linear tint gradient: sample pow(t, tintCurve) at 6 points.
   const tintStops = Array.from({ length: 6 }, (_, i) => {

@@ -2,7 +2,11 @@ import { useMemo } from "react";
 
 import type { ModelInfo } from "../api/types";
 import { useSessionStore } from "../stores/sessionStore";
-import { Dropdown, dropdownItemClass, dropdownItemActiveClass } from "./ui/Dropdown";
+import {
+  Dropdown,
+  dropdownItemClass,
+  dropdownItemActiveClass,
+} from "./ui/Dropdown";
 import { ProviderLogo } from "./ProviderLogos";
 
 const CTRL_H = "h-7";
@@ -21,7 +25,9 @@ export interface ProviderModelGroup {
 }
 
 /** Group active models by provider (catalog order within a provider preserved). */
-export function groupModelsByProvider(models: ModelInfo[]): ProviderModelGroup[] {
+export function groupModelsByProvider(
+  models: ModelInfo[],
+): ProviderModelGroup[] {
   const groups = new Map<string, ModelInfo[]>();
   for (const model of models) {
     const bucket = groups.get(model.provider_id);
@@ -61,7 +67,10 @@ export function ModelSwitcher({
 }) {
   const availableModels = useSessionStore((s) => s.availableModels);
   const sessionSlice = useSessionStore((s) => s.byId.get(sessionId));
-  const modelId = controlledModelId === undefined ? sessionSlice?.modelId ?? null : controlledModelId;
+  const modelId =
+    controlledModelId === undefined
+      ? (sessionSlice?.modelId ?? null)
+      : controlledModelId;
   const label = sessionSlice?.label ?? "";
   const setModel = useSessionStore((s) => s.setModel);
 

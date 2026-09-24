@@ -115,7 +115,10 @@ function ModelRow({
   );
 }
 
-function ProviderModels({ provider, ...rest }: {
+function ProviderModels({
+  provider,
+  ...rest
+}: {
   provider: CatalogProviderDto;
   busyRef: string | null;
   saveBlocked: boolean;
@@ -134,7 +137,11 @@ function ProviderModels({ provider, ...rest }: {
       }
       className="settings-foldcard settings-foldcard-compact"
     >
-      <div className="settings-card overflow-hidden p-0" role="list" aria-label={`Models for ${provider.name}`}>
+      <div
+        className="settings-card overflow-hidden p-0"
+        role="list"
+        aria-label={`Models for ${provider.name}`}
+      >
         {provider.models.map((model) => (
           <ModelRow
             key={model.ref}

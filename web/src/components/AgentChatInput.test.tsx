@@ -66,9 +66,7 @@ afterEach(() => {
 describe("AgentChatInput silent send", () => {
   it("does not toast when Enter is blocked by an in-flight optimistic turn", () => {
     useTurnStore.setState({
-      byId: new Map([
-        ["session-1", { ...EMPTY_SLICE, runState: "running" }],
-      ]),
+      byId: new Map([["session-1", { ...EMPTY_SLICE, runState: "running" }]]),
     });
     render(<AgentChatInput sessionId="session-1" />);
 
@@ -77,7 +75,9 @@ describe("AgentChatInput silent send", () => {
     fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
 
     expect(useToastStore.getState().toasts).toEqual([]);
-    expect(useMessageStore.getState().bySession.get("session-1")?.pendingUser).toBeFalsy();
+    expect(
+      useMessageStore.getState().bySession.get("session-1")?.pendingUser,
+    ).toBeFalsy();
     expect((textarea as HTMLTextAreaElement).value).toBe("second try");
   });
 
@@ -94,9 +94,9 @@ describe("AgentChatInput silent send", () => {
 
     expect(useToastStore.getState().toasts).toEqual([]);
     expect((textarea as HTMLTextAreaElement).value).toBe("hello");
-    expect(useTurnStore.getState().byId.get("session-1")?.runState ?? "idle").toBe(
-      "idle",
-    );
+    expect(
+      useTurnStore.getState().byId.get("session-1")?.runState ?? "idle",
+    ).toBe("idle");
   });
 });
 

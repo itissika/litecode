@@ -16,7 +16,12 @@ describe("parseCustomToolJson", () => {
   });
 
   it("rejects name changes on an existing tool", () => {
-    expect(parseCustomToolJson(`{"name":"other","command":"x","schema":{"type":"object","properties":{},"required":[]}}`, "echo_py")).toEqual({
+    expect(
+      parseCustomToolJson(
+        `{"name":"other","command":"x","schema":{"type":"object","properties":{},"required":[]}}`,
+        "echo_py",
+      ),
+    ).toEqual({
       skip: "invalid",
     });
   });
@@ -48,7 +53,9 @@ describe("parseMcpJson", () => {
   });
 
   it("rejects missing stdio command", () => {
-    expect(parseMcpJson(`{"id":"x","command":"","transport":{"type":"stdio"}}`)).toEqual({
+    expect(
+      parseMcpJson(`{"id":"x","command":"","transport":{"type":"stdio"}}`),
+    ).toEqual({
       skip: "invalid",
     });
   });

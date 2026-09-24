@@ -56,7 +56,10 @@ export const MermaidBlock = memo(function MermaidBlock({
       return;
     }
 
-    if (chart === lastRenderedChart.current && theme === lastRenderedTheme.current) {
+    if (
+      chart === lastRenderedChart.current &&
+      theme === lastRenderedTheme.current
+    ) {
       return;
     }
 
@@ -86,7 +89,9 @@ export const MermaidBlock = memo(function MermaidBlock({
 
   useEffect(() => {
     const handler = (e: Event) => {
-      setTheme((e as CustomEvent<string>).detail === "light" ? "light" : "dark");
+      setTheme(
+        (e as CustomEvent<string>).detail === "light" ? "light" : "dark",
+      );
     };
     window.addEventListener(THEME_CHANGE_EVENT, handler);
     return () => window.removeEventListener(THEME_CHANGE_EVENT, handler);
@@ -100,7 +105,9 @@ export const MermaidBlock = memo(function MermaidBlock({
           <span className="agent-mermaid-status">Rendering when complete…</span>
         </div>
         <details className="agent-mermaid-source">
-          <summary className="agent-mermaid-source-summary">View source</summary>
+          <summary className="agent-mermaid-source-summary">
+            View source
+          </summary>
           <pre className="agent-mermaid-source-pre">
             <code>{code}</code>
           </pre>

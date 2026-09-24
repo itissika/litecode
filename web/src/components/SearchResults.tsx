@@ -136,7 +136,9 @@ export function SearchResultGroupCard({ group }: { group: SearchResultGroup }) {
       className="search-foldcard"
       icon={group.icon}
       label={
-        <span className={`${FOLDCARD_HEADER_TONE} flex min-w-0 items-baseline gap-1.5`}>
+        <span
+          className={`${FOLDCARD_HEADER_TONE} flex min-w-0 items-baseline gap-1.5`}
+        >
           {title}
           {group.subtitle && (
             <span className="truncate font-mono text-dk-xs text-(--_dk-text-disabled)">
@@ -204,7 +206,9 @@ export function SearchSection({
       </div>
       <div className="flex min-h-0 flex-1 flex-col">
         {count === 0 ? (
-          <p className="px-2 py-2 text-xs text-(--_dk-text-disabled)">{empty}</p>
+          <p className="px-2 py-2 text-xs text-(--_dk-text-disabled)">
+            {empty}
+          </p>
         ) : (
           children
         )}

@@ -10,7 +10,11 @@ export interface TreeEntry {
   size?: number;
 }
 
-export type WorkspaceChangeKind = "modified" | "created" | "deleted" | "renamed";
+export type WorkspaceChangeKind =
+  | "modified"
+  | "created"
+  | "deleted"
+  | "renamed";
 
 interface ApiOk<T> {
   ok: true;
@@ -32,10 +36,7 @@ async function parseJson<T>(res: Response): Promise<T> {
   return body.data;
 }
 
-export async function fetchTree(
-  path = "",
-  depth = 1,
-): Promise<TreeEntry[]> {
+export async function fetchTree(path = "", depth = 1): Promise<TreeEntry[]> {
   const params = new URLSearchParams();
   if (path) params.set("path", path);
   params.set("depth", String(depth));
@@ -102,10 +103,7 @@ export async function writeFile(path: string, content: string): Promise<void> {
   await parseJson<{ path: string }>(res);
 }
 
-export async function createFile(
-  path: string,
-  content: string,
-): Promise<void> {
+export async function createFile(path: string, content: string): Promise<void> {
   const res = await apiFetch("/api/workspace/file", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -249,19 +247,31 @@ export interface IndexingProgress {
 export type IndexWork =
   | { kind: "none" }
   | { kind: "update"; dirty: number }
-  | { kind: "rebuild"; reason: "first_desired" | "incompatible" | "dirty_too_large" };
+  | {
+      kind: "rebuild";
+      reason: "first_desired" | "incompatible" | "dirty_too_large";
+    };
 
-export type RefreshAcceptedMode = "starting" | "in_progress" | "rebuild" | "incremental";
+export type RefreshAcceptedMode =
+  | "starting"
+  | "in_progress"
+  | "rebuild"
+  | "incremental";
 
-export async function refreshRetrieval(): Promise<{ desired: boolean; mode: RefreshAcceptedMode }> {
-  const res = await apiFetch("/api/workspace/retrieval/refresh", { method: "POST" });
+export async function refreshRetrieval(): Promise<{
+  desired: boolean;
+  mode: RefreshAcceptedMode;
+}> {
+  const res = await apiFetch("/api/workspace/retrieval/refresh", {
+    method: "POST",
+  });
   return parseJson<{ desired: boolean; mode: RefreshAcceptedMode }>(res);
 }
 
 export interface InstallTask {
   task_id: string;
   server_id: string;
-  status: 'installing' | 'done' | 'failed';
+  status: "installing" | "done" | "failed";
   error?: string | null;
   progress?: {
     downloaded_bytes: number;
@@ -279,7 +289,9 @@ export async function installServer(serverId: string): Promise<InstallTask> {
 }
 
 export async function getInstallStatus(taskId: string): Promise<InstallTask> {
-  const res = await apiFetch(`/api/workspace/lsp/install/status?task_id=${encodeURIComponent(taskId)}`);
+  const res = await apiFetch(
+    `/api/workspace/lsp/install/status?task_id=${encodeURIComponent(taskId)}`,
+  );
   return parseJson<InstallTask>(res);
 }
 
@@ -317,17 +329,17 @@ export interface RetrievalEngineDetail {
       pending_updates?: number;
     };
   };
-    policy: {
-      /** Product-internal hard-skip dirs (e.g. `.litecode`). */
-      product_internal_dirs: string[];
-      /** Index preset exclude globs (files∪search + product dirs). */
-      exclude_globs: string[];
-      max_file_bytes: number;
-      binary_files: boolean;
-    };
-    /** Live worker inference device (`cuda-ort`, `cpu-ort`, `hash`). Omitted until ping. */
-    embed_device?: string | null;
-  }
+  policy: {
+    /** Product-internal hard-skip dirs (e.g. `.litecode`). */
+    product_internal_dirs: string[];
+    /** Index preset exclude globs (files∪search + product dirs). */
+    exclude_globs: string[];
+    max_file_bytes: number;
+    binary_files: boolean;
+  };
+  /** Live worker inference device (`cuda-ort`, `cpu-ort`, `hash`). Omitted until ping. */
+  embed_device?: string | null;
+}
 
 export interface LspInstanceStatusView {
   command: string;

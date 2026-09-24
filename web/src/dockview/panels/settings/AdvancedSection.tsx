@@ -9,7 +9,11 @@ import {
   SettingsPageShell,
   useSettingsSaveBlocked,
 } from "./shared";
-import { shouldHydrateDraftFromStore, useDocPersist, useSettingsPersist } from "./persist";
+import {
+  shouldHydrateDraftFromStore,
+  useDocPersist,
+  useSettingsPersist,
+} from "./persist";
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
 
@@ -63,9 +67,9 @@ export function AdvancedSection() {
         <div className="settings-card space-y-3 p-4">
           <SectionHeader title="Web search" />
           <p className="text-xs text-(--_dk-text-muted)">
-            Uses Exa hosted search. Paste an Exa API key for higher limits; leave empty for the
-            anonymous free tier, or set <code className="font-mono">EXA_API_KEY</code> in the
-            environment.
+            Uses Exa hosted search. Paste an Exa API key for higher limits;
+            leave empty for the anonymous free tier, or set{" "}
+            <code className="font-mono">EXA_API_KEY</code> in the environment.
           </p>
           <FieldLabel>Exa API key</FieldLabel>
           <TextInput
@@ -84,7 +88,10 @@ export function AdvancedSection() {
           <Select
             value={logLevel}
             onChange={setLogLevel}
-            options={LOG_LEVELS.map((level) => ({ value: level, label: level }))}
+            options={LOG_LEVELS.map((level) => ({
+              value: level,
+              label: level,
+            }))}
             disabled={saveBlocked}
             className="w-full"
           />

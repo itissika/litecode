@@ -1,5 +1,11 @@
 import type { IDockviewPanelProps } from "dockview-react";
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+} from "react";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 
 import {
@@ -16,7 +22,10 @@ import {
   SearchResultList,
   SearchSection,
 } from "../../components/SearchResults";
-import type { SearchResultGroup, SearchResultLine } from "../../components/SearchResults";
+import type {
+  SearchResultGroup,
+  SearchResultLine,
+} from "../../components/SearchResults";
 import { openKnownSessionPanel } from "../../lib/sessionPanelNav";
 import { useSessionStore } from "../../stores/sessionStore";
 
@@ -134,7 +143,10 @@ function formatSessionTime(ms: number): string {
   return d.toISOString().replace("T", " ").slice(0, 16);
 }
 
-function mergeSessionPage(prev: SessionSearchPage | null, next: SessionSearchPage): SessionSearchPage {
+function mergeSessionPage(
+  prev: SessionSearchPage | null,
+  next: SessionSearchPage,
+): SessionSearchPage {
   if (!prev || next.offset === 0) return next;
   const groups = prev.groups.map((g) => ({ ...g, hits: [...g.hits] }));
   for (const incoming of next.groups) {
@@ -170,7 +182,9 @@ export function SearchPanel(_props: IDockviewPanelProps) {
   const [exclude, setExclude] = useState("");
   const [textHits, setTextHits] = useState<RetrievalSearchHit[]>([]);
   const [semanticHits, setSemanticHits] = useState<RetrievalSearchHit[]>([]);
-  const [sessionPage, setSessionPage] = useState<SessionSearchPage | null>(null);
+  const [sessionPage, setSessionPage] = useState<SessionSearchPage | null>(
+    null,
+  );
   const [sessionMoreBusy, setSessionMoreBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [textBusy, setTextBusy] = useState(false);
@@ -193,7 +207,11 @@ export function SearchPanel(_props: IDockviewPanelProps) {
   // against the CURRENT session list (a child or an unknown id opens the
   // read-only panel, only a confirmed root opens the writable one).
   const routeOpen = useCallback((sessionId: string, revealSeq?: number) => {
-    openKnownSessionPanel(sessionId, useSessionStore.getState().sessions, revealSeq);
+    openKnownSessionPanel(
+      sessionId,
+      useSessionStore.getState().sessions,
+      revealSeq,
+    );
   }, []);
 
   const clearTimers = () => {
@@ -421,7 +439,8 @@ export function SearchPanel(_props: IDockviewPanelProps) {
   useEffect(() => {
     const focus = () => inputRef.current?.focus();
     window.addEventListener("litecode:focus-workspace-search", focus);
-    return () => window.removeEventListener("litecode:focus-workspace-search", focus);
+    return () =>
+      window.removeEventListener("litecode:focus-workspace-search", focus);
   }, []);
 
   const switchTarget = (next: SearchTarget) => {
@@ -448,7 +467,10 @@ export function SearchPanel(_props: IDockviewPanelProps) {
     const height = pane.getBoundingClientRect().height;
     const onMove = (ev: globalThis.MouseEvent) => {
       if (height <= 0) return;
-      const next = Math.min(0.8, Math.max(0.2, start + (ev.clientY - startY) / height));
+      const next = Math.min(
+        0.8,
+        Math.max(0.2, start + (ev.clientY - startY) / height),
+      );
       splitRef.current = next;
       setSplit(next);
     };
@@ -482,7 +504,10 @@ export function SearchPanel(_props: IDockviewPanelProps) {
           />
         </div>
         <div className="flex items-center gap-1 rounded border border-(--_dk-line) bg-(--_dk-editor) px-2">
-          <MagnifyingGlass size={14} className="shrink-0 text-(--_dk-text-muted)" />
+          <MagnifyingGlass
+            size={14}
+            className="shrink-0 text-(--_dk-text-muted)"
+          />
           <input
             ref={inputRef}
             value={query}
@@ -536,9 +561,7 @@ export function SearchPanel(_props: IDockviewPanelProps) {
             />
           </div>
         )}
-        {error && (
-          <p className="text-xs text-(--_dk-red-500)">{error}</p>
-        )}
+        {error && <p className="text-xs text-(--_dk-red-500)">{error}</p>}
       </div>
 
       <div ref={paneRef} className="flex min-h-0 flex-1 flex-col">
@@ -550,7 +573,9 @@ export function SearchPanel(_props: IDockviewPanelProps) {
                 title="Semantic"
                 badge={
                   cudaOrt ? (
-                    <span className="tag tag-ok tag-soft tag-xs ml-1">cuda</span>
+                    <span className="tag tag-ok tag-soft tag-xs ml-1">
+                      cuda
+                    </span>
                   ) : undefined
                 }
                 count={semanticHits.length}
@@ -562,7 +587,14 @@ export function SearchPanel(_props: IDockviewPanelProps) {
                     : "Type to search"
                 }
               >
-                <SearchResultList groups={buildCodeGroups(semanticHits, onOpenFile, query.trim(), caseSensitive)} />
+                <SearchResultList
+                  groups={buildCodeGroups(
+                    semanticHits,
+                    onOpenFile,
+                    query.trim(),
+                    caseSensitive,
+                  )}
+                />
               </SearchSection>
             )}
             {showSemanticSection && (
@@ -579,7 +611,14 @@ export function SearchPanel(_props: IDockviewPanelProps) {
               count={textHits.length}
               empty={query.trim() ? "No text matches" : "Type to search"}
             >
-              <SearchResultList groups={buildCodeGroups(textHits, onOpenFile, query.trim(), caseSensitive)} />
+              <SearchResultList
+                groups={buildCodeGroups(
+                  textHits,
+                  onOpenFile,
+                  query.trim(),
+                  caseSensitive,
+                )}
+              />
             </SearchSection>
           </>
         ) : (

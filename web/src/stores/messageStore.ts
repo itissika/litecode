@@ -1,13 +1,9 @@
 import { create } from "zustand";
 import {
-  applyStreamEvent,
   hydrateUserDetailBefore,
   isWellFormedBufferRow,
   itemFromRow,
-  isStreamFailureEvent,
-  itemAuthorityId,
   itemPlainText,
-  markFunctionCallsFailed,
   optimisticUserSealText,
   sealMismatchError,
 } from "../api/adapter";
@@ -16,14 +12,12 @@ import type {
   BufferLoaded,
   HumanRow,
   Item,
-  ResponseStreamEvent,
   SubagentBound,
   WireBufferEvent,
 } from "../api/types";
 import { debugTrace } from "../lib/debugTrace";
 import { useConnectionStore, attachSiblingStores } from "./connectionStore";
 import { useToastStore } from "./toastStore";
-import { useTurnStore } from "./turnStore";
 
 const HISTORY_PAGE = 40;
 
@@ -58,8 +52,6 @@ export interface MessageSlice {
   subagentBindings: Record<string, string>;
   blockLogGrowth: boolean;
   turnEndNotice: TurnEndNotice | null;
-  /** item_id / call_id → seq for stream deltas. Points at the latest seq. */
-  itemIdToSeq: Map<string, number>;
 }
 
 export interface TurnEndNotice {
@@ -83,7 +75,6 @@ export const EMPTY_SLICE: MessageSlice = {
   subagentBindings: {},
   blockLogGrowth: false,
   turnEndNotice: null,
-  itemIdToSeq: new Map(),
 };
 
 export function emptySlice(): MessageSlice {
@@ -93,7 +84,6 @@ export function emptySlice(): MessageSlice {
     messages: EMPTY_DISPLAY,
     display: EMPTY_DISPLAY,
     subagentBindings: {},
-    itemIdToSeq: new Map(),
   };
 }
 
@@ -108,8 +98,11 @@ function withDisplay(slice: MessageSlice): MessageSlice {
     display: [
       ...slice.messages,
       {
+        // The composer bubble is not a log row, so it carries no lifecycle of its
+        // own: the user's own text is never "in progress".
         seq: -1,
         kind: "item/user",
+        state: "final",
         body: slice.pendingUser.item,
       },
     ],
@@ -121,7 +114,10 @@ export function displayMessages(slice: MessageSlice | undefined): HumanRow[] {
   return slice.display;
 }
 
-function getSlice(byId: Map<string, MessageSlice>, sessionId: string): MessageSlice {
+function getSlice(
+  byId: Map<string, MessageSlice>,
+  sessionId: string,
+): MessageSlice {
   let slice = byId.get(sessionId);
   if (!slice) {
     slice = emptySlice();
@@ -134,45 +130,19 @@ function sortedMessages(bySeq: Map<number, HumanRow>): HumanRow[] {
   return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
 }
 
-function rememberRowItem(itemIdToSeq: Map<string, number>, row: HumanRow): void {
-  const item = itemFromRow(row);
-  const aid = item && itemAuthorityId(item);
-  if (aid) itemIdToSeq.set(aid, row.seq);
-}
-
-function streamEventItemIdHint(event: ResponseStreamEvent): string | undefined {
-  if (typeof (event as { item_id?: unknown }).item_id === "string") {
-    const id = (event as { item_id: string }).item_id;
-    if (id.length > 0) return id;
-  }
-  const nested = (event as { item?: { id?: unknown; call_id?: unknown } }).item;
-  if (nested && typeof nested === "object") {
-    if (typeof nested.id === "string" && nested.id.length > 0) return nested.id;
-    if (typeof nested.call_id === "string" && nested.call_id.length > 0) return nested.call_id;
-  }
-  return undefined;
-}
-
-function isSealedItem(item: Item): boolean {
-  if ("status" in item && typeof item.status === "string") {
-    return item.status === "completed" || item.status === "failed" || item.status === "incomplete";
-  }
-  return true;
-}
-
-function rowFromEvent(ev: WireBufferEvent, streaming: boolean): HumanRow {
-  return { ...ev, streaming };
-}
-
 function malformedSeq(ev: unknown): number | undefined {
   if (ev === null || typeof ev !== "object") return undefined;
   const seq = (ev as { seq?: unknown }).seq;
-  return typeof seq === "number" && Number.isFinite(seq) && seq >= 0 ? seq : undefined;
+  return typeof seq === "number" && Number.isFinite(seq) && seq >= 0
+    ? seq
+    : undefined;
 }
 
-function upsertEvents(slice: MessageSlice, events: WireBufferEvent[]): MessageSlice {
+function upsertEvents(
+  slice: MessageSlice,
+  events: WireBufferEvent[],
+): MessageSlice {
   const bySeq = new Map(slice.bySeq);
-  const itemIdToSeq = new Map(slice.itemIdToSeq);
   let pendingUser = slice.pendingUser;
   let shapeError = slice.shapeError;
   const empty = slice.bySeq.size === 0;
@@ -188,9 +158,8 @@ function upsertEvents(slice: MessageSlice, events: WireBufferEvent[]): MessageSl
       continue;
     }
     if (slice.blockLogGrowth && ev.seq >= slice.toSeq) continue;
-    const nextRow = rowFromEvent(ev, false);
+    const nextRow: HumanRow = { ...ev };
     const nextItem = itemFromRow(nextRow);
-    nextRow.streaming = nextItem ? !isSealedItem(nextItem) : false;
     const prev = bySeq.get(ev.seq);
     const prevItem = prev && itemFromRow(prev);
     if (prev && prevItem && nextItem) {
@@ -200,8 +169,7 @@ function upsertEvents(slice: MessageSlice, events: WireBufferEvent[]): MessageSl
         useToastStore.getState().showToast(mismatch, "error");
       }
     }
-    bySeq.set(ev.seq, { ...nextRow, streaming: nextRow.streaming });
-    rememberRowItem(itemIdToSeq, nextRow);
+    bySeq.set(ev.seq, nextRow);
     // `item/user` seals the composer bubble; `plan/execute` lands in its place
     // (same user Item text) and must seal it too, or the row double-renders.
     if (pendingUser) {
@@ -209,7 +177,8 @@ function upsertEvents(slice: MessageSlice, events: WireBufferEvent[]): MessageSl
       if (sealText !== null && sealText === itemPlainText(pendingUser.item)) {
         pendingUser = null;
       }
-    }  }
+    }
+  }
 
   const messages = sortedMessages(bySeq);
   let fromSeq = slice.fromSeq;
@@ -219,12 +188,24 @@ function upsertEvents(slice: MessageSlice, events: WireBufferEvent[]): MessageSl
     .map((e) => e.seq)
     .filter((s) => Number.isFinite(s) && s >= 0);
   if (seqs.length > 0) {
-    fromSeq = empty ? Math.min(...seqs) : Math.min(slice.fromSeq, Math.min(...seqs));
+    fromSeq = empty
+      ? Math.min(...seqs)
+      : Math.min(slice.fromSeq, Math.min(...seqs));
     toSeq = Math.max(slice.toSeq, Math.max(...seqs) + 1);
   }
   return {
-    ...slice, bySeq, messages, pendingUser, itemIdToSeq, fromSeq, toSeq,
-    userDetailBefore: hydrateUserDetailBefore(fromSeq, undefined, slice.userDetailBefore), shapeError,
+    ...slice,
+    bySeq,
+    messages,
+    pendingUser,
+    fromSeq,
+    toSeq,
+    userDetailBefore: hydrateUserDetailBefore(
+      fromSeq,
+      undefined,
+      slice.userDetailBefore,
+    ),
+    shapeError,
   };
 }
 
@@ -242,18 +223,15 @@ interface MessageStore extends MessageState {
   onSubagentBound: (sessionId: string, bound: SubagentBound) => void;
   allowLogGrowth: (sessionId: string) => void;
 
-  applyStreamEvent: (
-    sessionId: string,
-    turnId: string,
-    step: number,
-    event: ResponseStreamEvent,
-  ) => void;
-  finalizeTurn: (sessionId: string, turnId: string) => void;
   setTurnEndNotice: (sessionId: string, notice: TurnEndNotice | null) => void;
 
   pushPendingUser: (sessionId: string, pending: PendingUser) => void;
   discardOptimisticUserMessage: (sessionId: string, clientId: string) => void;
-  loadRange: (sessionId: string, fromSeq: number, toSeq: number) => Promise<void>;
+  loadRange: (
+    sessionId: string,
+    fromSeq: number,
+    toSeq: number,
+  ) => Promise<void>;
   loadMoreHistory: (sessionId: string) => void;
   ensureSeqLoaded: (
     sessionId: string,
@@ -288,13 +266,21 @@ export const useMessageStore = create<MessageStore>((set, get) => {
 
     onBufferLoaded: (sessionId, loaded) => {
       if (!Array.isArray(loaded.events)) {
-        reportShapeError(patch, sessionId, "buffer/load rejected: missing events");
+        reportShapeError(
+          patch,
+          sessionId,
+          "buffer/load rejected: missing events",
+        );
         patch(sessionId, { loadingHistory: false });
         return;
       }
       const missingSeq = loaded.events.some((e) => !Number.isFinite(e.seq));
       if (missingSeq) {
-        reportShapeError(patch, sessionId, "buffer/load rejected: event missing seq");
+        reportShapeError(
+          patch,
+          sessionId,
+          "buffer/load rejected: event missing seq",
+        );
         patch(sessionId, { loadingHistory: false });
         return;
       }
@@ -359,9 +345,12 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       }
       if (bi.kind === "item/tool_call" && bi.child_session_id) {
         const bufferItem = bi.body;
-        const callId = bufferItem.type === "function_call" && "call_id" in bufferItem && typeof bufferItem.call_id === "string"
-          ? bufferItem.call_id
-          : undefined;
+        const callId =
+          bufferItem.type === "function_call" &&
+          "call_id" in bufferItem &&
+          typeof bufferItem.call_id === "string"
+            ? bufferItem.call_id
+            : undefined;
         if (callId) {
           const slice = getSlice(get().bySession, sessionId);
           patch(sessionId, {
@@ -386,51 +375,6 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       set({ bySession });
     },
 
-    applyStreamEvent: (sessionId, turnId, _step, event) => {
-      const slice = getSlice(get().bySession, sessionId);
-      const turn = useTurnStore.getState().byId.get(sessionId);
-
-      if (isStreamFailureEvent(event)) {
-        const bySeq = new Map(slice.bySeq);
-        for (const [seq, row] of bySeq) {
-          const item = itemFromRow(row);
-          if (!item) continue;
-          const failed = markFunctionCallsFailed([item])[0];
-          if (failed !== item) bySeq.set(seq, { ...row, body: failed, streaming: false } as HumanRow);
-        }
-        patch(sessionId, { bySeq, messages: sortedMessages(bySeq) });
-        return;
-      }
-
-      const itemIdHint = streamEventItemIdHint(event);
-      if (!itemIdHint) return;
-      const seq = slice.itemIdToSeq.get(itemIdHint);
-      if (seq == null) return;
-      const existing = slice.bySeq.get(seq);
-      const existingItem = existing && itemFromRow(existing);
-      if (!existing || !existingItem || isSealedItem(existingItem)) return;
-      if (turn && (turn.runState !== "running" || turn.currentTurnId !== turnId)) return;
-
-      const result = applyStreamEvent(existingItem, event);
-      if (result.kind === "noop") return;
-      if (result.kind === "error") {
-        reportShapeError(patch, sessionId, result.message);
-        return;
-      }
-      const bySeq = new Map(slice.bySeq);
-      bySeq.set(seq, { ...existing, body: result.item, streaming: true } as HumanRow);
-      patch(sessionId, { bySeq, messages: sortedMessages(bySeq), shapeError: null });
-    },
-
-    finalizeTurn: (sessionId, _turnId) => {
-      const slice = getSlice(get().bySession, sessionId);
-      const bySeq = new Map(slice.bySeq);
-      for (const [seq, row] of bySeq) {
-        if (row.streaming) bySeq.set(seq, { ...row, streaming: false });
-      }
-      patch(sessionId, { bySeq, messages: sortedMessages(bySeq) });
-    },
-
     setTurnEndNotice: (sessionId, notice) => {
       patch(sessionId, { turnEndNotice: notice });
       if (notice) {
@@ -452,14 +396,12 @@ export const useMessageStore = create<MessageStore>((set, get) => {
     onBufferReverted: (sessionId, rev) => {
       const slice = getSlice(get().bySession, sessionId);
       const bySeq = new Map<number, HumanRow>();
-      const itemIdToSeq = new Map<string, number>();
       // `last_seq` is the surviving tail; `next_seq` is the allocator high-water
       // and does not move back, so after a revert it can sit well above the
       // tail. Keeping `seq < next_seq` would leave the deleted rows in the UI.
       for (const [seq, row] of slice.bySeq) {
         if (seq <= rev.last_seq) {
           bySeq.set(seq, row);
-          rememberRowItem(itemIdToSeq, row);
         }
       }
       const messages = sortedMessages(bySeq);
@@ -471,7 +413,6 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       patch(sessionId, {
         bySeq,
         messages,
-        itemIdToSeq,
         pendingUser: null,
         fromSeq: Math.min(slice.fromSeq, rev.next_seq),
         toSeq: rev.next_seq,
@@ -540,10 +481,12 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         .getState()
         .sendRpc("session/revert-to-user-anchor", { k, session_id: sessionId })
         .catch((err) => {
-          useToastStore.getState().showToast(
-            err instanceof Error ? err.message : "Revert failed",
-            "error",
-          );
+          useToastStore
+            .getState()
+            .showToast(
+              err instanceof Error ? err.message : "Revert failed",
+              "error",
+            );
         });
     },
 
@@ -552,10 +495,12 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         .getState()
         .sendRpc("session/revert-files", { k, session_id: sessionId })
         .catch((err) => {
-          useToastStore.getState().showToast(
-            err instanceof Error ? err.message : "Revert failed",
-            "error",
-          );
+          useToastStore
+            .getState()
+            .showToast(
+              err instanceof Error ? err.message : "Revert failed",
+              "error",
+            );
         });
     },
 
