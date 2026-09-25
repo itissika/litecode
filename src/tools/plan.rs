@@ -81,6 +81,10 @@ impl Tool for PlanTool {
 
     fn description(&self, _ctx: &Context) -> String {
         "Create or finish the session plan under .litecode/plan/.\n\
+         Use it when engineering complexity and information density are high and you need to align with the user.\n\
+         Plan content: state the problem and goal first; order the steps by dependency, each with how it will be verified;\n\
+         name the files to change (with paths for existing code to reuse); the recommended approach only, no alternatives;\n\
+         scannable, yet detailed enough to execute.\n\
          A plan is co-authored with the user: after create, keep confirming and refining it with edit\n\
          until the user approves, and never start executing the plan before that approval.\n\
          create writes a Markdown file (filename is auto-generated); to rewrite the plan from scratch,\n\

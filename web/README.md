@@ -34,7 +34,7 @@ npm run dev
 ```
 
 Open [http://localhost:5173](http://localhost:5173). Vite proxies `/ws`, `/health`,
-and `/api` to `127.0.0.1:7483`.
+and `/api` to `127.0.0.1:7483` (or `LITECODE_BIND` when set — see below).
 
 **Windows:** one-shot API + Vite (prints a handshake URL):
 
@@ -50,6 +50,7 @@ End-state Electron shell: `./scripts/dev_win.ps1` (no Vite HMR).
 
 | Variable | Description |
 |----------|-------------|
+| `LITECODE_BIND` | API host:port the dev proxy targets (default `127.0.0.1:7483`). Set it — or pass `-Bind` to `serve_win.ps1` — when another app already owns `7483`. |
 | `VITE_WS_URL` | Override WebSocket URL when not using the Vite proxy (e.g. `ws://127.0.0.1:7483/ws`) |
 | `VITE_AUTH_TOKEN` | **Dev only.** Must match server `LITECODE_TOKEN`; sent as query `?token=` and as the `auth` wire frame on connect. Prefer starting via `scripts/serve_win.ps1` / `serve.sh`, which inject matching tokens. You can also open a handshake URL with `?token=` (read by `getAuthToken`). Production builds served by `litecode serve` should rely on host-injected auth — do not embed secrets in the client bundle. |
 
