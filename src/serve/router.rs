@@ -163,7 +163,7 @@ pub async fn listen(
             session_gc.gc_stale_empty_sessions(EMPTY_SESSION_TTL).await;
         }
     });
-    // Idle refresh of both session indexes. Never on the search path: a search
+    // Idle maintenance of both session indexes. Never on the search path: a search
     // only reads whatever the index already holds (stale is fine, wrong is not —
     // `build_agent_view` re-checks each hit against the store).
     {
@@ -173,14 +173,19 @@ pub async fn listen(
             let mut tick = tokio::time::interval(SESSION_INDEX_TICK);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
+                // The first tick completes immediately, so a workspace opens with a
+                // maintenance pass behind it: an index that is missing, unreadable,
+                // or from an older schema is repaired at startup rather than at the
+                // first search.
                 tick.tick().await;
-                // The sparse ledger is refreshed every tick, turn or not: it is a
-                // key diff over its own file, a search never waits for it, and a
-                // corpus written by parallel sessions would otherwise only ever
-                // move in front of a query. Frequent passes are the cheap ones —
-                // each covers a smaller delta.
+                // The sparse pass runs every tick, turn or not, and decides for
+                // itself: reconcile when the file is usable, rebuild when it is
+                // not. In the steady state that is a key diff over its own file —
+                // a search never waits for it, and a corpus written by parallel
+                // sessions would otherwise only ever move in front of a query.
+                // Frequent passes are the cheap ones: each covers a smaller delta.
                 if let Some(reader) = engines.session_reader() {
-                    crate::engines::session_search::spawn_sparse_refresh(&reader);
+                    crate::engines::session_search::spawn_sparse_maintenance(&reader);
                 }
                 // The dense lane is still turn-gated: its pass embeds, and its
                 // worker call holds the client lock.

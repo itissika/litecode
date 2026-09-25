@@ -626,7 +626,7 @@ fn a_failed_rebuild_leaves_the_previous_index_live() {
         "the previous index is untouched, down to the row"
     );
     assert!(
-        !sparse::needs_rebuild(&sparse::sparse_index_path(&root)).expect("probe"),
+        !sparse::needs_rebuild(&sparse::sparse_index_path(&root)),
         "and what is on disk is still a finished index, not a half-written file"
     );
 }

@@ -3,16 +3,35 @@
 //! Ported from the validated eval chain (`sparse.rs` + `chunk.rs` + `echo.rs`
 //! next door): exact substring → proximity → routed BM25 → n-gram fallback,
 //! with `|` alternatives and an exact match span per hit. The index lives at
-//! `<data_root>/session-index/sparse.db`; this module owns its lifecycle:
-//! rebuild when the file is missing or incompatible, otherwise reconcile the
-//! final source key set behind every search — dispatched by the query, run on a
-//! background thread, and never waited on.
+//! `<data_root>/session-index/sparse.db`; this module owns its lifecycle.
+//!
+//! # Lifecycle
+//!
+//! One decision, taken from the file alone:
+//!
+//! | what is on disk           | what happens                  |
+//! |---------------------------|-------------------------------|
+//! | missing, unopenable       | rebuild                       |
+//! | written by another schema | rebuild                       |
+//! | current schema            | reconcile the settled key set |
+//!
+//! The first two rows are the whole of what `schema` decides, and it decides it
+//! about the **file**: whether this build can read it at all. It says nothing
+//! about the corpus. Freshness is the third row's question, answered by a diff of
+//! the settled `(session_id, seq)` set — a no-op when the corpus has not moved,
+//! because a settled row is never rewritten in place, so a row can only enter
+//! that set or leave it.
+//!
+//! Keeping the two questions apart is the point. A reconcile cannot fix a file it
+//! cannot read, so a maintenance path that can *only* reconcile leaves a
+//! stale-schema index failing once per tick, forever.
 
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::session::SessionDataReader;
+use crate::session::transcript_file::SearchableRow;
 use crate::types::{LitecodeError, Result};
 
 use super::sparse::{self, Lane};
@@ -48,14 +67,13 @@ const INLINE_BUILD_MAX_ROWS: usize = 2_000;
 pub enum LaneState {
     /// The index was answerable and the query ran against it. An empty hit list is
     /// now a fact about the corpus as the index holds it: the index may be behind
-    /// the store (the refresh for that runs behind the query, never in front of
-    /// it), but nothing was skipped and nothing was guessed.
+    /// the store (the catch-up runs behind the query, never in front of it), but
+    /// nothing was skipped and nothing was guessed.
     Ready,
-    /// No index could be produced in time to answer, so a build is running in the
-    /// background. The query did **not** run.
+    /// There was no index to answer from, so one is being built in the background.
+    /// The query did **not** run.
     Building,
-    /// The index could not be read, built, or reconciled. The query did **not**
-    /// run.
+    /// The index could not be built or read. The query did **not** run.
     Failed(String),
 }
 
@@ -65,8 +83,8 @@ impl LaneState {
         match self {
             Self::Ready => None,
             Self::Building => Some(
-                "the session index is still being built, so this search did not run; \
-                 retry in a moment"
+                "the session index is being rebuilt, so this search did not run; \
+                 a later search will answer from it"
                     .to_string(),
             ),
             Self::Failed(why) => Some(format!(
@@ -127,180 +145,195 @@ pub fn search_lexical(
 /// Answer from the index, and say whether the lane can answer at all.
 ///
 /// The delta is never applied in front of the query: a usable index is answered
-/// from as it stands, and a refresh is dispatched behind it. A session corpus
-/// moves on every turn, so "catch up first" meant every search in a live
-/// workspace waited for the turn that never pauses — the same reason the
-/// semantic lane never refreshes on demand.
-///
-/// Everything that can go wrong here is reported as a state rather than as a
-/// silent empty result, including the case that used to matter most: a corpus too
-/// large to build inline used to give the caller an empty list for the first few
-/// searches, which reads exactly like a corpus with no matching rows.
-fn prepare_index(reader: &SessionDataReader, data_root: &std::path::Path) -> LaneState {
+/// from as it stands, and the catch-up runs behind it. A session corpus moves on
+/// every turn, so "catch up first" meant every search in a live workspace waited
+/// for the turn that never pauses.
+fn prepare_index(reader: &SessionDataReader, data_root: &Path) -> LaneState {
     let path = sparse::sparse_index_path(data_root);
-    // A missing or incompatible index over a corpus too large to build inline is
-    // dispatched to the background thread *before* the lock below: the answer is
-    // `Building` now, not after a build that runs tens of seconds in this thread.
-    // Waiting for one here is what turned a rebuild into a search that hung. The
-    // lock section re-checks the state, so the two can only agree.
-    let must_rebuild = match sparse::needs_rebuild(&path) {
-        Ok(needs) => needs,
-        Err(error) => return LaneState::Failed(error.to_string()),
-    };
-    if must_rebuild
-        && let Ok(keys) = reader.searchable_keys_blocking(None)
-        && keys.len() > INLINE_BUILD_MAX_ROWS
-    {
-        spawn_background_build(reader.clone(), data_root.to_path_buf());
-        return LaneState::Building;
-    }
-    if !must_rebuild {
-        // The index is answerable as it stands. Nothing above this line waits,
-        // and neither does the caller: the refresh runs behind the query.
-        spawn_sparse_refresh(reader);
+    if !sparse::needs_rebuild(&path) {
+        // Usable as it stands. Nothing here waits, and neither does the caller.
+        spawn_sparse_maintenance(reader);
         return LaneState::Ready;
     }
-    let prepared = with_refresh_lock(|| -> Result<LaneState> {
-        // Re-checked inside the lock, not before it: another build may have
-        // landed while this one waited, and building over it would redo work
-        // that was already done. Nothing here reconciles — that is the
-        // background refresh's job, and a search must not wait for it. The diff
-        // itself is never skipped, only deferred: the refresh runs it on every
-        // pass, so a missed notification cannot hide a row.
-        if !sparse::needs_rebuild(&path)? {
-            spawn_sparse_refresh(reader);
-            return Ok(LaneState::Ready);
-        }
-
-        // The inline/background decision only needs how many rows there are, so it
-        // asks for keys first and reads bodies only when it will actually build.
-        // Only an *absent* store is an empty corpus. A store that exists but cannot
-        // be read is a failed lane, not an empty one: answering "the history has
-        // nothing" there would be the exact false negative this lane exists to
-        // prevent, and it would overwrite a good index with an empty one.
-        let keys = match reader.searchable_keys_blocking(None) {
-            Ok(keys) => keys,
-            Err(_) if !reader.path().is_file() => {
-                sparse::build_index(&[], data_root)?;
-                return Ok(LaneState::Ready);
-            }
-            Err(err) => return Err(err.into()),
+    // The file has to be built. Above the inline budget that is a build measured
+    // in tens of seconds, so it is dispatched and the caller is told the query did
+    // not run — rather than being handed the empty list that reads as "the
+    // history has no such row".
+    if too_large_to_build_inline(reader) {
+        // A pass that failed is the last word until one runs again, and this is a
+        // chance to run it. Reporting the cause rather than "being rebuilt" is
+        // what keeps the state honest: `Building` is only ever said while a pass is
+        // genuinely in flight, so it cannot become a build that never lands.
+        let last_failure = match worker_state(data_root) {
+            Some(Worker::Failed(why)) => Some(why),
+            _ => None,
         };
-
-        if keys.len() > INLINE_BUILD_MAX_ROWS {
-            spawn_background_build(reader.clone(), data_root.to_path_buf());
-            return Ok(LaneState::Building);
-        }
-        let rows = reader.searchable_rows_for_blocking(&keys)?;
-        sparse::build_index(&rows, data_root)?;
-        Ok(LaneState::Ready)
-    });
-
-    match prepared {
-        Ok(state) => state,
+        spawn_sparse_maintenance(reader);
+        return match last_failure {
+            Some(why) => LaneState::Failed(why),
+            None => LaneState::Building,
+        };
+    }
+    match ensure_sparse_index(reader) {
+        Ok(()) => LaneState::Ready,
         // Not being able to prepare the index is not being able to answer, and a
         // caller must never be handed an empty list for it.
         Err(error) => LaneState::Failed(error.to_string()),
     }
 }
 
-/// Build or reconcile the sparse index, blocking. Warmup paths and the eval
-/// boards call this; agent searches never do — they answer from the index as it
-/// stands and let the refresh run behind them.
+/// Whether the corpus is too large to build inside the search that needs it.
+///
+/// Keys only — integers, never bodies. A store that cannot be read is left for
+/// the build to report, which keeps this from having to distinguish "empty" from
+/// "unreadable".
+fn too_large_to_build_inline(reader: &SessionDataReader) -> bool {
+    reader
+        .searchable_keys_blocking(None)
+        .is_ok_and(|keys| keys.len() > INLINE_BUILD_MAX_ROWS)
+}
+
+/// Bring the index to a usable, current state. Blocking.
+///
+/// The lane's whole maintenance policy, in one place: rebuild when the file
+/// cannot be used as it stands, reconcile when it can. Both are idempotent, so a
+/// pass that arrives with nothing to do writes nothing.
+///
+/// This is also the only writer. Every caller that wants the index moved — the
+/// idle tick, a warmup, a search with a small corpus to build — comes through
+/// here, which is what makes the entry as a whole able to fix a file it can no
+/// longer read.
 pub fn ensure_sparse_index(reader: &SessionDataReader) -> Result<()> {
     let data_root = reader.data_root();
-    if !sparse::needs_rebuild(&sparse::sparse_index_path(data_root)).unwrap_or(true) {
-        // Already usable: this caller asked for a catch-up, so the delta is
-        // applied here, on its thread, under the one refresh lock.
-        with_refresh_lock(|| sparse::refresh_from_source(reader, data_root))?;
-        return Ok(());
-    }
-    match prepare_index(reader, data_root) {
-        // `Building` is a real answer to "is it ready" — it is not — even though a
-        // build was just set going. Reporting success here would let a caller
-        // believe an index it cannot query yet is in place.
-        LaneState::Building => Err(LitecodeError::IndexNotReady(
-            LaneState::Building.unanswered().unwrap_or_default(),
-        )),
-        LaneState::Failed(why) => Err(LitecodeError::IndexNotReady(why)),
-        LaneState::Ready => Ok(()),
+    with_refresh_lock(|| {
+        // Re-checked under the lock, not before it: a pass that was already
+        // running when this one was asked for has finished by now, and rebuilding
+        // over a finished index reads the whole corpus again for nothing.
+        if sparse::needs_rebuild(&sparse::sparse_index_path(data_root)) {
+            let rows = settled_rows(reader)?;
+            sparse::build_index(&rows, data_root)?;
+        } else {
+            sparse::refresh_from_source(reader, data_root)?;
+        }
+        Ok(())
+    })
+}
+
+/// Every settled source row, or none when there is no store at all.
+///
+/// Only an *absent* store is an empty corpus. A store that exists but cannot be
+/// read is a failure, not an empty one: publishing an empty index for it would
+/// answer "the history has nothing" to every query, and it would overwrite a good
+/// index to do it.
+fn settled_rows(reader: &SessionDataReader) -> Result<Vec<SearchableRow>> {
+    match reader.searchable_rows_blocking(None) {
+        Ok(rows) => Ok(rows),
+        Err(_) if !reader.path().is_file() => Ok(Vec::new()),
+        Err(error) => Err(error),
     }
 }
 
-/// One writer at a time: builds and reconciles are rare but must not race each
-/// other. Searches only take it to build, never to check for a delta.
-fn with_refresh_lock<T, E>(
-    f: impl FnOnce() -> std::result::Result<T, E>,
-) -> std::result::Result<T, E> {
+/// One writer at a time. A rebuild and a reconcile move the same file, and an
+/// inline build must not run over a background pass.
+fn with_refresh_lock<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let lock = LOCK.get_or_init(|| Mutex::new(()));
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
     f()
 }
 
-/// One background worker per data root. A build and a refresh are never both
-/// wanted at once (a build makes the file compatible, a refresh only runs when
-/// it already is), and a pile of searches must not pile up work: the second
-/// caller is answered by the first caller's pass.
-fn begin_background(data_root: &std::path::Path) -> bool {
-    in_flight()
+/// What a data root's background pass is doing, or what the last one failed with.
+#[derive(Clone)]
+enum Worker {
+    /// A pass is in flight. A request that arrives now is answered by it.
+    Running,
+    /// Nothing is in flight, and the last pass failed with this cause.
+    Failed(String),
+}
+
+/// One entry per data root, and the reason a search can tell "a build is coming"
+/// from "the last build failed": the first is only ever reported while a pass is
+/// genuinely running.
+fn workers() -> &'static Mutex<HashMap<PathBuf, Worker>> {
+    static WORKERS: OnceLock<Mutex<HashMap<PathBuf, Worker>>> = OnceLock::new();
+    WORKERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn worker_state(data_root: &Path) -> Option<Worker> {
+    workers()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(data_root.to_path_buf())
+        .get(data_root)
+        .cloned()
 }
 
-fn end_background(data_root: &std::path::Path) {
-    in_flight()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(data_root);
-}
+/// A pass's claim on its data root, released however the pass ends — including a
+/// panic, which must not leave the lane claiming a build forever.
+struct Claimed(PathBuf);
 
-fn in_flight() -> &'static Mutex<HashSet<PathBuf>> {
-    static IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
-    IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-/// Full build for a corpus too large to build inline: one background thread per
-/// workspace, fire-and-forget. The next search finds the finished index.
-fn spawn_background_build(reader: SessionDataReader, data_root: PathBuf) {
-    if !begin_background(&data_root) {
-        return;
-    }
-    std::thread::spawn(move || {
-        let result = with_refresh_lock(|| {
-            let rows = reader.searchable_rows_blocking(None)?;
-            sparse::build_index(&rows, reader.data_root())
-        });
-        match result {
-            Ok(()) => tracing::info!(path = %data_root.display(), "sparse session index ready"),
-            Err(error) => tracing::warn!(error = %error, "sparse session index build failed"),
+impl Drop for Claimed {
+    fn drop(&mut self) {
+        let mut guard = workers().lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(guard.get(&self.0), Some(Worker::Running)) {
+            guard.remove(&self.0);
         }
-        end_background(&data_root);
-    });
+    }
 }
 
-/// Bring the final source key set to the index, behind whoever asked.
+/// Run one maintenance pass off the caller's thread.
 ///
-/// Fire-and-forget by design: the caller is a search that must not wait, or the
-/// idle tick that keeps the window small. One pass at a time per data root — the
-/// diff is never skipped, only deferred, so a missed notification cannot hide a
-/// row.
-pub fn spawn_sparse_refresh(reader: &SessionDataReader) {
+/// One pass per data root at a time: a request that arrives while one is running
+/// loses nothing, because the running pass makes the same decision from the same
+/// file. That is only true of a single entry point — a build and a reconcile are
+/// one decision here, so a dropped duplicate cannot be the wrong one.
+pub fn spawn_sparse_maintenance(reader: &SessionDataReader) {
     let data_root = reader.data_root().to_path_buf();
-    if !begin_background(&data_root) {
-        return;
+    {
+        let mut guard = workers().lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(guard.get(&data_root), Some(Worker::Running)) {
+            return;
+        }
+        guard.insert(data_root.clone(), Worker::Running);
     }
     let reader = reader.clone();
     std::thread::spawn(move || {
-        let result = with_refresh_lock(|| sparse::refresh_from_source(&reader, reader.data_root()));
-        match result {
-            Ok(0) => {}
-            Ok(changed) => tracing::debug!(changed, "sparse session index refreshed"),
-            Err(error) => tracing::warn!(error = %error, "sparse session index refresh failed"),
-        }
-        end_background(&data_root);
+        // Held for the pass's whole life, and only the claim is released on the
+        // way out: a pass that ended by failing has already replaced it with the
+        // cause, and that is what a search should read until the next one runs.
+        let _claim = Claimed(data_root.clone());
+        let result = ensure_sparse_index(&reader);
+        report(&data_root, result);
     });
+}
+
+/// Report one finished pass, and let the next request for this root start.
+///
+/// A failure is logged when it is new or has changed. The tick retries every
+/// thirty seconds, so a store that cannot be read fails identically each time and
+/// says so once; a recovery is worth a line, because the last thing said about
+/// this lane would otherwise be a failure that is no longer true.
+fn report(data_root: &Path, result: Result<()>) {
+    let mut guard = workers().lock().unwrap_or_else(|e| e.into_inner());
+    match result {
+        Ok(()) => {
+            if matches!(guard.get(data_root), Some(Worker::Failed(_))) {
+                tracing::info!(path = %data_root.display(), "sparse session index recovered");
+            }
+            guard.remove(data_root);
+        }
+        Err(error) => {
+            let message = error.to_string();
+            let repeated = matches!(guard.get(data_root), Some(Worker::Failed(seen)) if *seen == message);
+            if !repeated {
+                tracing::warn!(
+                    path = %data_root.display(),
+                    error = %message,
+                    "sparse session index maintenance failed"
+                );
+            }
+            guard.insert(data_root.to_path_buf(), Worker::Failed(message));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -309,6 +342,147 @@ mod tests {
     use crate::session::{SessionData, WorkspaceWriteLease};
     use crate::types::user_text;
     use tempfile::TempDir;
+
+    /// A reader over a store holding one row that a search can find, and one that
+    /// only this test knows about.
+    fn seeded(dir: &Path) -> SessionDataReader {
+        let db = dir.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("alpha UNIQUE_SESSION_PHRASE omega")])
+            .unwrap();
+        SessionDataReader::open(&db)
+    }
+
+    fn find(reader: &SessionDataReader, needle: &str) -> Vec<SessionTextHit> {
+        let query = SessionTextQuery {
+            query: needle.into(),
+            offset: 0,
+            ..Default::default()
+        };
+        let (hits, state) = search_lexical(reader, &query).unwrap();
+        assert_eq!(state, LaneState::Ready, "the lane answered");
+        hits
+    }
+
+    /// Stamp the file as a previous build's, without disturbing its contents.
+    fn restamp_as_old_schema(path: &Path) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute("UPDATE meta SET value = '0' WHERE key = 'schema'", [])
+            .unwrap();
+    }
+
+    /// The bug this lifecycle was rebuilt around: a file written by another schema
+    /// is a **rebuild**, not something to reconcile row by row. Reconciling it
+    /// cannot work, so a pass that can only reconcile fails on every tick and the
+    /// lane never comes back.
+    #[test]
+    fn a_file_from_another_schema_is_rebuilt() {
+        let dir = TempDir::new().unwrap();
+        let reader = seeded(dir.path());
+        assert_eq!(find(&reader, "UNIQUE_SESSION_PHRASE").len(), 1);
+
+        let path = sparse::sparse_index_path(reader.data_root());
+        restamp_as_old_schema(&path);
+        assert!(sparse::needs_rebuild(&path), "an old schema needs a rebuild");
+
+        assert!(
+            ensure_sparse_index(&reader).is_ok(),
+            "one maintenance pass repairs it"
+        );
+        assert!(!sparse::needs_rebuild(&path), "and the file is current again");
+        assert_eq!(
+            find(&reader, "UNIQUE_SESSION_PHRASE").len(),
+            1,
+            "with its rows intact"
+        );
+    }
+
+    /// The outage this work exists for: a schema bump left the idle tick calling
+    /// the one entry that cannot repair it, so every pass failed and the lane
+    /// stayed down until somebody happened to search. The tick's entry is pinned
+    /// here: with no search at all, the pass brings an old file back.
+    #[test]
+    fn the_idle_pass_repairs_an_old_schema_without_a_search() {
+        let dir = TempDir::new().unwrap();
+        let reader = seeded(dir.path());
+        let path = sparse::sparse_index_path(reader.data_root());
+        assert!(ensure_sparse_index(&reader).is_ok());
+
+        restamp_as_old_schema(&path);
+        assert!(sparse::needs_rebuild(&path), "the file is from an older build");
+
+        // Exactly what `serve`'s 30-second tick does, and nothing else.
+        spawn_sparse_maintenance(&reader);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while sparse::needs_rebuild(&path) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the idle pass must repair the file on its own"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            find(&reader, "UNIQUE_SESSION_PHRASE").len(),
+            1,
+            "and the lane answers again"
+        );
+    }
+
+    /// A file that cannot be opened at all is also a rebuild. Nothing else can
+    /// make an unreadable file readable, so reporting the open failure instead
+    /// would leave the lane failed for good.
+    #[test]
+    fn an_unopenable_index_is_rebuilt() {
+        let dir = TempDir::new().unwrap();
+        let reader = seeded(dir.path());
+        assert_eq!(find(&reader, "UNIQUE_SESSION_PHRASE").len(), 1);
+
+        let path = sparse::sparse_index_path(reader.data_root());
+        std::fs::write(&path, b"this is not a database").unwrap();
+        assert!(sparse::needs_rebuild(&path), "an unreadable file needs a rebuild");
+
+        assert!(
+            ensure_sparse_index(&reader).is_ok(),
+            "the corrupt file is replaced rather than reported"
+        );
+        assert!(!sparse::needs_rebuild(&path));
+        assert_eq!(find(&reader, "UNIQUE_SESSION_PHRASE").len(), 1);
+    }
+
+    /// The third row of the table: a current file is reconciled, and a corpus that
+    /// has not moved makes that a no-op.
+    #[test]
+    fn a_current_index_is_reconciled_without_a_rebuild() {
+        let dir = TempDir::new().unwrap();
+        let reader = seeded(dir.path());
+        assert_eq!(find(&reader, "UNIQUE_SESSION_PHRASE").len(), 1);
+
+        let path = sparse::sparse_index_path(reader.data_root());
+        let built = std::fs::metadata(&path).unwrap().len();
+
+        assert!(ensure_sparse_index(&reader).is_ok());
+        assert!(ensure_sparse_index(&reader).is_ok());
+        assert!(
+            std::fs::metadata(&path).unwrap().len() >= built,
+            "a settled pass leaves the index in place"
+        );
+        assert_eq!(find(&reader, "UNIQUE_SESSION_PHRASE").len(), 1);
+    }
+
+    /// A missing file is built, and the search that asked for it answers.
+    #[test]
+    fn a_missing_index_is_built() {
+        let dir = TempDir::new().unwrap();
+        let reader = seeded(dir.path());
+        let path = sparse::sparse_index_path(reader.data_root());
+        assert!(!path.is_file(), "nothing has been built yet");
+
+        assert_eq!(find(&reader, "UNIQUE_SESSION_PHRASE").len(), 1);
+        assert!(path.is_file());
+    }
 
     /// A corpus too large to build inline is answered `Building` and built in the
     /// background, instead of the search waiting out the whole build.
@@ -331,6 +505,64 @@ mod tests {
             LaneState::Building,
             "the caller is answered now, not after the build"
         );
+    }
+
+    /// Above the inline budget the build is dispatched, so a failure cannot be
+    /// reported by the call that started it. It comes back from the worker's record
+    /// instead — and it comes back as the **cause**, not as a build that is forever
+    /// about to land.
+    #[test]
+    fn a_failed_background_build_is_reported_as_its_cause() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        let rows: Vec<_> = (0..INLINE_BUILD_MAX_ROWS + 1)
+            .map(|i| user_text(&format!("row number {i}")))
+            .collect();
+        data.insert_items(&id, &rows).unwrap();
+        drop(data);
+        drop(lease);
+        // A row the derivation cannot read: the build that runs above the inline
+        // budget will fail on it every time. Its seq sits past the corpus above.
+        let broken_seq = INLINE_BUILD_MAX_ROWS + 500;
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute(
+                "INSERT INTO transcript_items
+                    (session_id, seq, turn_id, turn_seq, item_type, kind, body,
+                     token_estimate, created_at, event_type, surface_op, state)
+                 VALUES (?1, ?2, 't', 0, 'message', 'item/user', '{{{ not an item',
+                         1, 1, 'message', 'append', 'final')",
+                rusqlite::params![id, broken_seq as i64],
+            )
+            .unwrap();
+        }
+        let reader = SessionDataReader::open(&db);
+
+        assert_eq!(
+            prepare_index(&reader, reader.data_root()),
+            LaneState::Building,
+            "the build is dispatched, so the caller is answered now"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !matches!(worker_state(reader.data_root()), Some(Worker::Failed(_))) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the dispatched build must finish, one way or the other"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        match prepare_index(&reader, reader.data_root()) {
+            LaneState::Failed(why) => assert!(
+                why.contains(&format!("{id}:{broken_seq}")),
+                "the caller is told the cause, not that a build is still coming: {why}"
+            ),
+            other => panic!("a failed pass must be reported as failed, got {other:?}"),
+        }
     }
 
     /// A usable index answers now; the delta is refreshed behind the query, not

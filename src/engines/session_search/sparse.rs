@@ -103,6 +103,7 @@ use super::derive;
 use super::echo;
 use super::query_plan::{self, QueryBranch};
 use super::ranking::{self, ContentRole, HitEvidence, LayerId, LayerTrace, RankKey, StopReason};
+use super::trimmer;
 
 /// Bump when the index layout changes; an old cache is then rebuilt.
 /// v4: `rows` stores the original chunk text (for offset mapping) and the
@@ -122,7 +123,14 @@ use super::ranking::{self, ContentRole, HitEvidence, LayerId, LayerTrace, RankKe
 /// than migrated.
 /// v11: every indexed chunk carries the row's retrieval `role` (人话/动作/产出),
 /// so ranking can prefer intent over output without re-reading the source.
-const INDEX_SCHEMA: i64 = 11;
+/// v12: the role separates the assistant's own reasoning from what was said, so
+/// the four tiers the product orders by (said → thought → call → result) are in
+/// the index instead of being reconstructed at query time.`v11`'s three
+/// groups merged the first two, so old files are rebuilt rather than migrated.
+/// v13: an indexed result keeps only its head (see `trimmer`), so a machine
+/// listing no longer beats what a person said by repeating the query once per
+/// line. Old files are rebuilt rather than migrated.
+const INDEX_SCHEMA: i64 = 13;
 
 /// Presentation scores. These are **derived** from the final rank
 /// ([`ranking::RankKey`]) so that every existing consumer keeps seeing the
@@ -628,12 +636,7 @@ impl SparseIndex {
             hit.evidence
                 .push(HitEvidence::new(LayerId::Exact, 0, total, total));
             hit.evidence[0].native = occurrences as f64;
-            hit.rank = RankKey {
-                band: ranking::RankBand::Exact,
-                strength: occurrences.min(999) as u32,
-                role: role.preference(),
-                local_rank: 0,
-            };
+            hit.rank = rank_key_for(&hit);
             Ok(hit)
         })?;
         finish_exact_hits(rows, limit)
@@ -682,12 +685,7 @@ impl SparseIndex {
             hit.evidence
                 .push(HitEvidence::new(LayerId::Exact, 0, total, total));
             hit.evidence[0].native = occurrences as f64;
-            hit.rank = RankKey {
-                band: ranking::RankBand::Exact,
-                strength: occurrences.min(999) as u32,
-                role: role.preference(),
-                local_rank: 0,
-            };
+            hit.rank = rank_key_for(&hit);
             Ok(hit)
         })?;
         finish_exact_hits(rows, limit)
@@ -1254,14 +1252,21 @@ fn distinct_rows(hits: &[SparseHit]) -> usize {
 /// small agreement bonus: the number of layers that independently found the
 /// row. Agreement is evidence, and it is the one signal that only exists because
 /// provenance was kept.
+///
+/// The total is then scaled by the hit's [`ContentRole`] weight. That is the one
+/// place a role reaches the ordering, and it is deliberately inside this number:
+/// the band keeps exactly one comparable scale, and the tier reorders equal
+/// quality without overriding it.
 fn strength_of(hit: &SparseHit) -> u32 {
     let primary = primary_evidence(hit);
     let base = match primary.layer {
         LayerId::Exact => primary.native.max(0.0).min(999.0) as u32,
         _ => primary.coverage_permille(),
     };
-    base.saturating_mul(100)
-        .saturating_add(hit.layer_count().min(99) as u32)
+    let earned = base
+        .saturating_mul(100)
+        .saturating_add(hit.layer_count().min(99) as u32);
+    hit.role.weigh(earned)
 }
 
 /// The evidence that explains a hit best: the highest band that found it, then
@@ -1500,17 +1505,42 @@ pub fn sparse_index_path(data_root: &Path) -> PathBuf {
     data_root.join("session-index").join("sparse.db")
 }
 
-/// True when the file is missing or was written by another schema version.
-pub fn needs_rebuild(path: &Path) -> Result<bool> {
+/// True when the file cannot be used as it stands: absent, unopenable, or written
+/// by another schema version.
+///
+/// An unopenable file is a rebuild, not an error to report. Nothing else can make
+/// it readable, so handing the open failure back leaves the lane failed for good
+/// — and the caller that could have replaced the file is the one being told to
+/// give up.
+pub fn needs_rebuild(path: &Path) -> bool {
     if !path.is_file() {
-        return Ok(true);
+        return true;
     }
-    let conn = open(path)?;
-    let schema_ok = meta(&conn, "schema")
+    let Ok(conn) = open(path) else {
+        return true;
+    };
+    meta(&conn, "schema")
         .ok()
         .and_then(|s| s.parse::<i64>().ok())
-        == Some(INDEX_SCHEMA);
-    Ok(!schema_ok)
+        != Some(INDEX_SCHEMA)
+}
+
+/// Open the index for a rebuild, replacing a file that cannot be read.
+///
+/// A database this build cannot open holds nothing to preserve, and the WAL
+/// sidecars go with it: they describe a file that is being replaced. A file that
+/// opens is left exactly where it is — the rebuild writes over it in one
+/// transaction, so a failure still leaves the previous index live.
+fn open_for_rebuild(path: &Path) -> Result<Connection> {
+    if let Ok(conn) = open(path) {
+        return Ok(conn);
+    }
+    for suffix in ["", "-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let _ = std::fs::remove_file(PathBuf::from(sidecar));
+    }
+    open(path)
 }
 
 /// Full build: make the index equal this corpus, atomically.
@@ -1555,7 +1585,7 @@ pub fn build_index_at(rows: &[SearchableRow], data_root: &Path, path: &Path) -> 
     // there is no reason to hold the file against readers while doing it.
     let derived = derive_rows(rows, data_root, &cfg, &HashSet::new())?;
 
-    let mut conn = open(path)?;
+    let mut conn = open_for_rebuild(path)?;
     conn.execute_batch("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")?;
     let tx = conn.transaction()?;
     // A rebuild is not a merge: the tables are recreated rather than cleared, so
@@ -1840,6 +1870,9 @@ fn insert_row_chunks(conn: &Connection, row: &derive::DerivedRow) -> Result<usiz
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     for c in &row.chunks {
+        // A trimmed chunk keeps its own `start`: the span shrinks from the tail
+        // only, so the line a hit renders from is still the line it points at.
+        let (end, text) = trimmer::trim_span(&c.text, c.start, c.end, role);
         ins.execute(params![
             row.session_id,
             row.seq,
@@ -1848,9 +1881,9 @@ fn insert_row_chunks(conn: &Connection, row: &derive::DerivedRow) -> Result<usiz
             row.item_type,
             role.as_str(),
             c.start as i64,
-            c.end as i64,
-            normalize(&c.text),
-            c.text,
+            end as i64,
+            normalize(text),
+            text,
         ])?;
     }
     Ok(total)
@@ -2543,6 +2576,52 @@ mod tests {
             lexical.rejected >= 1,
             "the one-word row is rejected, not ranked: {traces:#?}"
         );
+    }
+
+    /// The ladder itself, on four rows that are equal in everything but their
+    /// tier: same literal, same length, found by the same layers.
+    #[test]
+    fn the_role_ladder_orders_equal_match_quality() {
+        let index = memory_index(&[
+            ("s", 1, "ladder probe aaaa", "outcome"),
+            ("s", 2, "ladder probe bbbb", "action"),
+            ("s", 3, "ladder probe cccc", "reasoning"),
+            ("s", 4, "ladder probe dddd", "conversation"),
+        ]);
+        let (hits, _) = index.compose_sparse("ladder probe", 10).unwrap();
+        let rows: Vec<i64> = hits.iter().map(|h| h.seq).collect();
+        assert_eq!(rows, vec![4, 3, 2, 1], "说 → 思考 → 调用 → 结果");
+        assert!(
+            hits.windows(2).all(|pair| pair[0].rank.band == pair[1].rank.band
+                && pair[0].rank.strength > pair[1].rank.strength),
+            "one band, four tiers, reaching the order through the number: {hits:#?}"
+        );
+    }
+
+    /// The tier ladder is a *preference*: at equal quality it decides, and it
+    /// never overrules a real difference in quality.
+    #[test]
+    fn a_role_preference_yields_to_a_better_match() {
+        // Both rows hold the literal once and cover every query word, so the only
+        // thing between them is who said it. The `LIKE` length prior would put the
+        // shorter row first; the tier is what moves it.
+        let index = memory_index(&[
+            ("s", 1, "auth refactor token here", "reasoning"),
+            ("s", 2, "auth refactor token there", "conversation"),
+        ]);
+        let (hits, _) = index.compose_sparse("auth refactor token", 10).unwrap();
+        let rows: Vec<i64> = hits.iter().map(|h| h.seq).collect();
+        assert_eq!(rows, vec![2, 1], "what was said outranks what was thought");
+
+        // A row that says the literal twice is more about it than a row that says
+        // it once, so the better match wins from the lower tier.
+        let index = memory_index(&[
+            ("s", 1, "auth refactor token, and auth refactor token again", "reasoning"),
+            ("s", 2, "auth refactor token", "conversation"),
+        ]);
+        let (hits, _) = index.compose_sparse("auth refactor token", 10).unwrap();
+        let rows: Vec<i64> = hits.iter().map(|h| h.seq).collect();
+        assert_eq!(rows, vec![1, 2], "a better match is not overruled by a tier");
     }
 
     #[test]

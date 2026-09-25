@@ -142,6 +142,7 @@ impl Tool for SessionSearchTool {
         "Search past conversation transcripts. Use it to recall a decision, a fact, or a code change from an earlier session, including work another session did. \
          Matching is literal and case-insensitive; alternatives: separate with | (e.g. 'retry|重试'). \
          The current session's live context-window turns are never searched. \
+         It reports past transcripts, not live team state. \
          Read a hit with read or grep on `.litecode/sessions/<id>.md` — join that directory, the id shown in the result, and `.md`; bash cannot reach it, and a hit's `L` range is the start_line/end_line to ask for. \
          Narrow with session_id when the result names another session. \
          A result too large for one response names a .txt file that holds the remainder."

@@ -116,15 +116,20 @@ impl RankBand {
 
 /// Retrieval-facing role of a row: what question its text answers.
 ///
-/// This is [`Slot`] compressed to the three groups that matter to ranking.
-/// Intent records (人话 + 工具调用) rank together; tool output is evidence and is
-/// never preferred over intent at equal match quality. Nothing is filtered by
-/// role — a tool result is still fully searchable.
+/// The tiers, in the order the product prefers them: **what was said** (human
+/// and assistant alike) → **what the model thought** → **what it did** → **what
+/// came back**. Nothing is filtered by role — a tool result is still fully
+/// searchable.
+///
+/// A role is a *preference inside a band*, not a band of its own: see
+/// [`ContentRole::weigh`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ContentRole {
-    /// `item/user`, `item/assistant` — who said or thought it.
+    /// `item/user`, `item/assistant` — what was said, by either side.
     Conversation,
+    /// `item/assistant` reasoning — the model's own working.
+    Reasoning,
     /// `item/tool_call` — what was done.
     Action,
     /// `item/tool_result` — how it went.
@@ -138,7 +143,8 @@ impl ContentRole {
     /// Classify from the durable kind, the way the corpus already does.
     pub fn from_slot(slot: Slot) -> Self {
         match slot {
-            Slot::Who | Slot::Thought | Slot::Said => Self::Conversation,
+            Slot::Who | Slot::Said => Self::Conversation,
+            Slot::Thought => Self::Reasoning,
             Slot::Did => Self::Action,
             Slot::Outcome => Self::Outcome,
             Slot::Summary | Slot::When | Slot::Other => Self::Unknown,
@@ -146,11 +152,13 @@ impl ContentRole {
     }
 
     /// Classify from `item_type` alone, for lanes that carry no `kind`
-    /// (the semantic corpus keeps only the item type). The mapping is exact
-    /// where it can be: the three item types below are unambiguous.
+    /// (the semantic corpus keeps only the item type). Every one of the four
+    /// tiers is unambiguous from the item type alone, so this agrees with
+    /// [`Self::from_slot`] exactly.
     pub fn from_item_type(item_type: &str) -> Self {
         match item_type {
-            "message" | "reasoning" => Self::Conversation,
+            "message" => Self::Conversation,
+            "reasoning" => Self::Reasoning,
             "function_call" => Self::Action,
             "function_call_output" => Self::Outcome,
             _ => Self::Unknown,
@@ -160,6 +168,7 @@ impl ContentRole {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Conversation => "conversation",
+            Self::Reasoning => "reasoning",
             Self::Action => "action",
             Self::Outcome => "outcome",
             Self::Unknown => "unknown",
@@ -169,20 +178,51 @@ impl ContentRole {
     pub fn parse(raw: &str) -> Self {
         match raw {
             "conversation" => Self::Conversation,
+            "reasoning" => Self::Reasoning,
             "action" => Self::Action,
             "outcome" => Self::Outcome,
             _ => Self::Unknown,
         }
     }
 
-    /// Ranking preference, lower is better. Conversation and Action share the
-    /// top slot: an edit and the request for it are the same unit of intent.
+    /// Ranking preference, lower is better: what was said, then the model's own
+    /// working, then the call, then its output, then everything unclassified.
     pub fn preference(self) -> u8 {
         match self {
-            Self::Conversation | Self::Action => 0,
-            Self::Outcome => 1,
-            Self::Unknown => 2,
+            Self::Conversation => 0,
+            Self::Reasoning => 1,
+            Self::Action => 2,
+            Self::Outcome => 3,
+            Self::Unknown => 4,
         }
+    }
+
+    /// The tier's preference as a permille scale on a band's strength.
+    ///
+    /// The steps are small on purpose. A role is a *preference*, not a band: it
+    /// reorders hits whose match quality is close, and loses to any hit whose
+    /// quality is visibly better. One more matched term of a three-term query is
+    /// 33% of coverage, so a step of 5% can never stand in for a match — while
+    /// at equal coverage, or at equal occurrence count, it is the difference.
+    ///
+    /// This is why the lane keeps exactly one number per band: tuning the
+    /// product's taste means editing this table, not adding a comparison.
+    pub fn weight_permille(self) -> u32 {
+        match self {
+            Self::Conversation => 1000,
+            Self::Reasoning => 950,
+            Self::Action => 900,
+            Self::Outcome => 850,
+            Self::Unknown => 800,
+        }
+    }
+
+    /// Apply this role's preference to a within-band strength.
+    ///
+    /// The single place a role reaches the ordering. `u64` because the fused
+    /// scale is near `u32::MAX` and must not wrap.
+    pub fn weigh(self, strength: u32) -> u32 {
+        (u64::from(strength) * u64::from(self.weight_permille()) / 1000) as u32
     }
 }
 
@@ -258,7 +298,10 @@ impl HitEvidence {
 pub struct RankKey {
     pub band: RankBand,
     /// Within-band strength, greater is better. `Exact`: occurrence count.
-    /// `Proximity`/`Fuzzy`: coverage in permille. `Fusion`: RRF × 1000.
+    /// `Proximity`/`Fuzzy`: coverage in permille. `Fusion`: the fused RRF sum as
+    /// an integer (`rrf × 1_000_000`). Every scale is scaled once more by the hit's
+    /// [`ContentRole`] weight, so a tier difference reorders hits of equal quality
+    /// without ever overriding a real one.
     pub strength: u32,
     /// [`ContentRole::preference`].
     pub role: u8,
@@ -268,9 +311,12 @@ pub struct RankKey {
 
 /// Order two rank keys, best first.
 ///
-/// Band first — a product contract. Then coverage-strength, then the content
-/// role, then the producing layer's own rank. Recency is deliberately absent:
-/// it is applied by the caller *after* relevance, never before it.
+/// Band first — a product contract. Then the band's strength, which already
+/// carries the hit's role weight, so a tier difference is expressed through the
+/// number rather than as a layer above it. The explicit role comparison below
+/// only settles strengths the weight quantized together, and `local_rank` — the
+/// producing layer's own order — settles the rest. Recency is deliberately
+/// absent: it is applied by the caller *after* relevance, never before it.
 pub fn cmp_rank(a: &RankKey, b: &RankKey) -> Ordering {
     a.band
         .index()
@@ -507,23 +553,74 @@ mod tests {
     }
 
     #[test]
-    fn roles_follow_the_locked_corpus_policy() {
+    fn roles_follow_the_product_ladder() {
+        // 人类/助手的话 → 思考 → 调用 → 结果, then everything unclassified.
         assert_eq!(ContentRole::from_slot(Slot::Who), ContentRole::Conversation);
+        assert_eq!(ContentRole::from_slot(Slot::Said), ContentRole::Conversation);
+        assert_eq!(ContentRole::from_slot(Slot::Thought), ContentRole::Reasoning);
         assert_eq!(ContentRole::from_slot(Slot::Did), ContentRole::Action);
         assert_eq!(ContentRole::from_slot(Slot::Outcome), ContentRole::Outcome);
         assert_eq!(ContentRole::from_slot(Slot::Summary), ContentRole::Unknown);
-        // Intent ranks together; output sits behind it; unknown last.
-        assert_eq!(
-            ContentRole::Conversation.preference(),
-            ContentRole::Action.preference()
-        );
-        assert!(ContentRole::Action.preference() < ContentRole::Outcome.preference());
-        assert!(ContentRole::Outcome.preference() < ContentRole::Unknown.preference());
-        // The item-type fallback agrees with the slot mapping where it applies.
-        assert_eq!(
-            ContentRole::from_item_type("function_call_output"),
-            ContentRole::Outcome
-        );
-        assert_eq!(ContentRole::from_item_type("function_call"), ContentRole::Action);
+        assert_eq!(ContentRole::from_slot(Slot::When), ContentRole::Unknown);
+        assert_eq!(ContentRole::from_slot(Slot::Other), ContentRole::Unknown);
+
+        let ladder = [
+            ContentRole::Conversation,
+            ContentRole::Reasoning,
+            ContentRole::Action,
+            ContentRole::Outcome,
+            ContentRole::Unknown,
+        ];
+        for pair in ladder.windows(2) {
+            assert!(
+                pair[0].preference() < pair[1].preference(),
+                "{:?} must outrank {:?}",
+                pair[0],
+                pair[1]
+            );
+            assert!(
+                pair[0].weight_permille() > pair[1].weight_permille(),
+                "{:?} must weigh more than {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+
+        // The item-type fallback — the only classification the semantic corpus
+        // can make — agrees with the slot mapping on all four tiers.
+        for (item_type, slot) in [
+            ("message", Slot::Said),
+            ("reasoning", Slot::Thought),
+            ("function_call", Slot::Did),
+            ("function_call_output", Slot::Outcome),
+        ] {
+            assert_eq!(
+                ContentRole::from_item_type(item_type),
+                ContentRole::from_slot(slot),
+                "{item_type}"
+            );
+        }
+    }
+
+    /// The contract that keeps a role from becoming a layer: it decides between
+    /// equals, and loses to any real difference in match quality.
+    #[test]
+    fn a_role_weight_breaks_a_tie_in_quality_but_never_replaces_it() {
+        let said = ContentRole::Conversation;
+        let thought = ContentRole::Reasoning;
+
+        // Equal quality: the tier is the difference.
+        assert!(said.weigh(60_000) > thought.weigh(60_000));
+        // The step is the declared one, and never larger.
+        assert_eq!(thought.weigh(60_000), 57_000);
+
+        // One more matched term of a three-term query is 33% of coverage — far
+        // more than the 5% step — so the better match wins from either tier.
+        assert!(thought.weigh(100_000) > said.weigh(66_666));
+
+        // And it holds for the coarse `Exact` scale too, where one occurrence is
+        // worth 100: a lower tier needs one more occurrence to overtake.
+        assert!(said.weigh(100) > thought.weigh(100));
+        assert!(thought.weigh(200) > said.weigh(100));
     }
 }

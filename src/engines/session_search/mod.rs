@@ -21,8 +21,9 @@ mod semantic_index;
 mod slots;
 mod sparse;
 mod tokenizer;
+mod trimmer;
 
-pub use lexical::{ensure_sparse_index, spawn_sparse_refresh};
+pub use lexical::{ensure_sparse_index, spawn_sparse_maintenance};
 pub use ranking::{ContentRole, HitEvidence, LayerId, LayerTrace, RankBand, RankKey, StopReason};
 pub use semantic_index::{
     SessionSemanticIndex, consume_session_index, ensure_session_index, load_session_index,
@@ -346,7 +347,12 @@ pub fn fuse_session_layers(
                 // The band is untouched: a row whose only evidence is a fuzzy
                 // n-gram overlap stays below a row the lexical layer proved,
                 // however many lists mentioned it.
-                hit.rank.strength = (score * 1_000_000.0).round() as u32;
+                //
+                // The fused rank *is* this band's strength, so the role weight is
+                // applied here as well — the same single knob, at the other place
+                // a strength is finalized. Without it this band would rank on the
+                // RRF number alone, and every tier in it would weigh the same.
+                hit.rank.strength = hit.role.weigh((score * 1_000_000.0).round() as u32);
             }
             hit
         })
@@ -1439,19 +1445,24 @@ mod tests {
             );
         }
 
-        /// `Failed` must not be reachable through `ensure_sparse_index` as a
-        /// success either — the blocking warmup makes the same promise.
+        /// The blocking maintenance entry makes the same promise, and reports the
+        /// cause rather than a wrapper: a store it cannot read is a failed pass,
+        /// never a success. The consumer-facing `IndexNotReady` is raised once, at
+        /// the search boundary above ("I did not answer"), not again here.
         #[test]
-        fn warmup_reports_a_broken_index_too() {
+        fn maintenance_reports_a_broken_store_instead_of_succeeding() {
             let dir = TempDir::new().unwrap();
             let (reader, id_a, _) = seed_db(dir.path());
             assert!(lexical::ensure_sparse_index(&reader).is_ok());
             plant_unreadable_row(dir.path(), &id_a);
             std::fs::remove_file(sparse::sparse_index_path(dir.path())).unwrap();
-            assert!(matches!(
-                lexical::ensure_sparse_index(&reader),
-                Err(LitecodeError::IndexNotReady(_))
-            ));
+
+            let err = lexical::ensure_sparse_index(&reader)
+                .expect_err("a store it cannot read is not a prepared index");
+            assert!(
+                err.to_string().contains(&format!("{id_a}:99")),
+                "and it names the row that could not be read: {err}"
+            );
         }
 
         /// The delta is applied *behind* the query, not in front of it. A search
