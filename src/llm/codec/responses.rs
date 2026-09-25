@@ -78,10 +78,18 @@ impl ResponsesCodec {
 
         let mut input_items = params.input.clone();
         if model.has_quirk(ProviderQuirk::ReasoningReplay) {
-            // Replay whenever this request thinks: a vendor whose default is
-            // thinking-on must never see a reasoning-less assistant turn.
+            // Declared: reasoning text must go back. Replay whenever this request
+            // thinks: a vendor whose default is thinking-on must never see a
+            // reasoning-less assistant turn.
             input_items =
                 ensure_reasoning_replay(&input_items, !params.tools.is_empty(), thinking_active);
+        } else {
+            // Undeclared (OpenAI family): only the endpoint's own ciphertext
+            // replays. Input `content` is rejected outright
+            // (`array_above_max_length`, maximum length 0), and a foreign
+            // summary is a field this dialect is not verified to accept — so an
+            // item without ciphertext carries nothing that may go out.
+            input_items = keep_replayable_reasoning(input_items);
         }
         let input: Vec<Value> = input_items
             .iter()
@@ -185,6 +193,25 @@ impl ResponsesCodec {
     }
 }
 
+/// Keep only reasoning the endpoint itself produced (its ciphertext survived the
+/// provider check) and never send input `content`, which this dialect rejects.
+/// The session copy is not this vec.
+fn keep_replayable_reasoning(items: Vec<Item>) -> Vec<Item> {
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let Item::Reasoning(mut reasoning) = item else {
+                return Some(item);
+            };
+            if reasoning.encrypted_content.is_none() {
+                return None;
+            }
+            reasoning.content = None;
+            Some(Item::Reasoning(reasoning))
+        })
+        .collect()
+}
+
 /// The `reasoning` request object: the effort literal always, plus the summary
 /// opt-in when the model declares one. A model without the declaration never
 /// sees the key - vendors whose dialect does not document `summary` stay clean.
@@ -240,30 +267,17 @@ fn map_input_content(content: &InputContent) -> serde_json::Result<Value> {
     Ok(Value::Object(mapped))
 }
 
-/// Final wire-shape cleanup only. Replay provenance and cross-call ID collisions
-/// were handled on the request copy by `replay_compat`; this codec never collapses
-/// or rejects an entire history because two rows happen to share an ID.
+/// Final wire-shape cleanup.
 ///
-/// `status` comes from API output and is not accepted on input. An ID whose prefix
-/// cannot describe its item kind is omitted, never renamed; tool `call_id` remains
-/// untouched so the call/output pair is intact.
+/// Item `id`s never go back (replay rule 1): content, ciphertext, and `call_id`
+/// carry everything the model needs. `status` comes from API output and is not
+/// accepted on input.
 fn normalize_input_items(items: Vec<Value>) -> Vec<Value> {
     let mut input = Vec::with_capacity(items.len());
     for mut item in items {
         if let Value::Object(map) = &mut item {
             map.remove("status");
-            if map.get("id").and_then(Value::as_str).is_some_and(|id| {
-                id.trim().is_empty()
-                    || match map.get("type").and_then(Value::as_str) {
-                        Some("reasoning") => !id.starts_with("rs_"),
-                        Some("message") => !id.starts_with("msg_"),
-                        Some("function_call") => !id.starts_with("fc_"),
-                        Some("function_call_output") => true,
-                        _ => false,
-                    }
-            }) {
-                map.remove("id");
-            }
+            map.remove("id");
         }
         input.push(item);
     }
@@ -316,10 +330,16 @@ impl LlmProvider for ResponsesCodec {
                 "opening Responses event stream",
             )
             .await?;
+            if let Some(dump) = &dump {
+                dump.status(resp.status().as_u16());
+            }
 
             if !resp.status().is_success() {
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
+                if let Some(dump) = &dump {
+                    dump.error_body(&text);
+                }
                 return Err(LitecodeError::Llm(format!(
                     "{}: HTTP {status}: {text}",
                     error_prefix(&self.model)
@@ -483,8 +503,6 @@ endpoint_type = "responses"
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: None,
-            input_origins: vec![],
-            issuer: String::new(),
         }
     }
 
@@ -654,10 +672,8 @@ endpoint_type = "responses"
         assert!(body["tools"][0].get("function").is_none());
     }
 
-    /// A repeated provider id is not decided here anymore. Cross-call reuse is
-    /// de-identified by the request projection (`replay_compat`), and a
-    /// same-call duplicate is refused by the stream projection that owns the
-    /// one-row-per-item invariant. The codec keeps wire-shape cleanup only.
+    /// Item ids never reach the wire, so a repeated id cannot collide there; the
+    /// stream projection owns the one-row-per-item invariant.
     #[test]
     fn repeated_item_ids_are_not_rewritten_by_the_codec() {
         use crate::authority::responses::{FunctionToolCall, ReasoningItem};
@@ -694,6 +710,7 @@ endpoint_type = "responses"
             .expect("the codec no longer rejects repeated ids");
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 4, "{input:?}");
+        assert!(input.iter().all(|item| item.get("id").is_none()), "{input:?}");
         assert_eq!(request.input.len(), 4, "session-owned copy unchanged");
     }
 
@@ -712,7 +729,7 @@ endpoint_type = "responses"
                 id: Some("rs_1".into()),
                 summary: vec![],
                 content: None,
-                encrypted_content: None,
+                encrypted_content: Some("gAAAA".into()),
                 status: Some(OutputStatus::InProgress),
             }),
         ];
@@ -770,27 +787,61 @@ endpoint_type = "responses"
         assert_eq!(input[0]["role"], "assistant");
     }
 
+    /// Without `reasoning_replay`, only the endpoint's own ciphertext replays.
+    /// Foreign text — raw or summary — is not sent, and input `content` never
+    /// reaches the wire (OpenAI rejects it). The session copy is unchanged.
     #[test]
-    fn foreign_reasoning_uuid_is_not_replayed_or_written_back() {
-        use crate::authority::responses::ReasoningItem;
+    fn undeclared_dialect_replays_only_its_own_ciphertext() {
+        use crate::authority::responses::{
+            ReasoningItem, ReasoningItemContent, ReasoningTextContent, SummaryPart,
+            SummaryTextContent,
+        };
         let codec = ResponsesCodec::new(openai("")).unwrap();
         let mut request = sample_request();
-        request.input = vec![user_text("earlier"); 50];
-        request.input.push(Item::Reasoning(ReasoningItem {
-            id: Some("60102752-7590-49a2-92bf-cd3e631b96bf".into()),
-            summary: vec![],
-            content: None,
-            encrypted_content: None,
-            status: None,
-        }));
-        request.input.push(assistant_text("answer"));
+        request.input = vec![
+            user_text("earlier"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("cc_rs_1".into()),
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText(ReasoningTextContent {
+                    text: "plain text from another dialect".into(),
+                })]),
+                encrypted_content: None,
+                status: None,
+            }),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_foreign".into()),
+                summary: vec![SummaryPart::SummaryText(SummaryTextContent {
+                    text: "what the other model thought".into(),
+                })],
+                content: Some(vec![ReasoningItemContent::ReasoningText(ReasoningTextContent {
+                    text: "raw text riding along".into(),
+                })]),
+                encrypted_content: None,
+                status: None,
+            }),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_own".into()),
+                summary: vec![SummaryPart::SummaryText(SummaryTextContent {
+                    text: "own summary rides along".into(),
+                })],
+                content: Some(vec![ReasoningItemContent::ReasoningText(ReasoningTextContent {
+                    text: "raw text stripped from input".into(),
+                })]),
+                encrypted_content: Some("gAAAA".into()),
+                status: None,
+            }),
+            assistant_text("answer"),
+        ];
         let body = request_body(&codec, &request);
         let input = body["input"].as_array().unwrap();
-        assert_eq!(input.len(), 52, "{input:?}");
-        assert_eq!(input[50]["type"], "reasoning");
-        assert!(input[50].get("id").is_none(), "{}", input[50]);
-        assert_eq!(input[51]["role"], "assistant");
-        assert!(matches!(&request.input[50], Item::Reasoning(r) if r.id.is_some()));
+        assert_eq!(input.len(), 3, "{input:?}");
+        assert!(input.iter().all(|item| item.get("id").is_none()), "{input:?}");
+        assert_eq!(input[1]["encrypted_content"], "gAAAA");
+        assert!(input[1].get("content").is_none(), "{}", input[1]);
+        assert_eq!(input[1]["summary"][0]["text"], "own summary rides along");
+        assert_eq!(input[2]["role"], "assistant");
+        assert_eq!(request.input.len(), 5, "session-owned copy unchanged");
     }
 
     #[test]
@@ -880,15 +931,12 @@ endpoint_type = "responses"
             .as_array()
             .unwrap()
             .clone();
-        assert_eq!(input.len(), 6, "{input:?}");
-        assert_eq!(input[1]["type"], "reasoning");
-        assert!(input[1].get("id").is_none(), "{input:?}");
-        assert_eq!(input[2]["content"][0]["text"], "I'll use a tool");
-        assert!(input[2].get("id").is_none(), "{input:?}");
-        assert_eq!(input[3]["type"], "function_call");
-        assert!(input[3].get("id").is_none(), "{input:?}");
-        assert_eq!(input[3]["call_id"], input[4]["call_id"]);
-        assert_eq!(input[5]["role"], "user");
+        assert_eq!(input.len(), 5, "{input:?}");
+        assert!(input.iter().all(|item| item.get("id").is_none()), "{input:?}");
+        assert_eq!(input[1]["content"][0]["text"], "I'll use a tool");
+        assert_eq!(input[2]["type"], "function_call");
+        assert_eq!(input[2]["call_id"], input[3]["call_id"]);
+        assert_eq!(input[4]["role"], "user");
     }
 
     #[test]

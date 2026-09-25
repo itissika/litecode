@@ -7,6 +7,9 @@
 #   ./scripts/serve.sh --web-only      # Vite dev UI only (API must already be running)
 #   ./scripts/serve.sh --release       # cargo run --release (rebuilds release first)
 #   ./scripts/serve.sh --no-cleanup    # skip killing stale processes / freeing ports
+#   ./scripts/serve.sh --wire [DIR]    # capture + summarize every LLM request/stream
+#                                      # (default .litecode/wire; one line per request
+#                                      # in <DIR>/<stamp>/index.jsonl)
 #   ./scripts/serve.sh -- --workspace /path/to/project
 #
 # One process = one workspace. Changing folder requires restarting this script
@@ -34,6 +37,7 @@ API_ONLY=0
 WEB_ONLY=0
 USE_RELEASE=0
 SKIP_CLEANUP=0
+WIRE_DIR=""
 EXTRA_ARGS=()
 
 usage() {
@@ -63,6 +67,15 @@ while [[ $# -gt 0 ]]; do
         --no-cleanup)
             SKIP_CLEANUP=1
             shift
+            ;;
+        --wire)
+            if [[ -n "${2:-}" && "${2}" != -* ]]; then
+                WIRE_DIR="$2"
+                shift 2
+            else
+                WIRE_DIR="$PROJECT_DIR/.litecode/wire"
+                shift
+            fi
             ;;
         --bind)
             BIND="${2:?missing value for --bind}"
@@ -262,7 +275,13 @@ run_api_local() {
     echo "    bind=$BIND agent=$AGENT [host]"
     echo "    health: http://$BIND/health"
     echo "    ws:     ws://$BIND/ws"
-    LITECODE_CHANNEL=dev cargo "${cargo_args[@]}" &
+    if [[ -n "$WIRE_DIR" ]]; then
+        mkdir -p "$WIRE_DIR"
+        echo "    wire:   capture ON -> $WIRE_DIR/<stamp>/ (watch: tail -F $WIRE_DIR/*/index.jsonl)"
+        LITECODE_CHANNEL=dev LITECODE_LLM_WIRE="$WIRE_DIR" cargo "${cargo_args[@]}" &
+    else
+        LITECODE_CHANNEL=dev cargo "${cargo_args[@]}" &
+    fi
     PIDS+=("$!")
 }
 
@@ -277,6 +296,9 @@ run_web() {
     fi
     echo "==> starting Vite dev server (proxies /api and /ws to $BIND)..."
     echo "    UI: http://127.0.0.1:$WEB_PORT"
+    # Vite's dev proxy targets the API; export the resolved bind so a custom
+    # --bind keeps the proxy in sync (vite.config.ts reads LITECODE_BIND).
+    export LITECODE_BIND="$BIND"
     (cd "$WEB_DIR" && npm run dev) &
     PIDS+=("$!")
 }

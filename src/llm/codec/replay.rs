@@ -45,17 +45,25 @@ pub(crate) fn ensure_reasoning_replay(
     for item in input {
         match item {
             Item::Reasoning(r) => {
-                if reasoning_text_is_empty(r) {
-                    let mut patched = r.clone();
+                let mut patched = r.clone();
+                if reasoning_content_text(r).is_empty() {
+                    // This dialect reads `reasoning_text` only. The raw content
+                    // wins where it exists; a public summary is the same thinking
+                    // in shorter form and fills the slot; a turn with neither is
+                    // the only one replaced by the placeholder.
+                    let summary = reasoning_summary_text(r);
+                    let text = if summary.trim().is_empty() {
+                        REPLAY_REASONING_PLACEHOLDER.to_string()
+                    } else {
+                        // Moved, not duplicated: one copy of the text goes out.
+                        patched.summary = Vec::new();
+                        summary
+                    };
                     patched.content = Some(vec![ReasoningItemContent::ReasoningText(
-                        ReasoningTextContent {
-                            text: REPLAY_REASONING_PLACEHOLDER.into(),
-                        },
+                        ReasoningTextContent { text },
                     )]);
-                    out.push(Item::Reasoning(patched));
-                } else {
-                    out.push(item.clone());
                 }
+                out.push(Item::Reasoning(patched));
                 needs_reasoning = false;
             }
             Item::Message(MessageItem::Output(_)) | Item::FunctionCall(_) => {
@@ -85,12 +93,34 @@ pub(crate) fn ensure_reasoning_replay(
     out
 }
 
-fn reasoning_text_is_empty(r: &ReasoningItem) -> bool {
-    r.content.as_ref().is_none_or(|parts| {
-        parts
-            .iter()
-            .all(|p| matches!(p, ReasoningItemContent::ReasoningText(t) if t.text.is_empty()))
-    })
+/// The item's raw reasoning text, empty when the producer exposed none.
+fn reasoning_content_text(r: &ReasoningItem) -> String {
+    r.content
+        .as_ref()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| match part {
+                    ReasoningItemContent::ReasoningText(text) => Some(text.text.as_str()),
+                })
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+/// The item's public summary, empty when it carries none.
+fn reasoning_summary_text(r: &ReasoningItem) -> String {
+    use crate::authority::responses::SummaryPart;
+    r.summary
+        .iter()
+        .filter_map(|part| match part {
+            SummaryPart::SummaryText(text) => Some(text.text.as_str()),
+        })
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 #[cfg(test)]
 mod tests {
@@ -194,6 +224,40 @@ mod tests {
             })
             .unwrap_or_default();
         assert_eq!(text, REPLAY_REASONING_PLACEHOLDER);
+    }
+
+    /// A public summary is the same thinking in shorter form. This dialect reads
+    /// `reasoning_text`, so the summary fills that slot instead of being
+    /// replaced by the placeholder, and it is moved rather than duplicated.
+    #[test]
+    fn summary_fills_missing_reasoning_text() {
+        use crate::authority::responses::{SummaryPart, SummaryTextContent};
+        let summary_only = Item::Reasoning(ReasoningItem {
+            id: Some("rs_foreign".into()),
+            summary: vec![SummaryPart::SummaryText(SummaryTextContent {
+                text: "what the other model thought".into(),
+            })],
+            content: None,
+            encrypted_content: None,
+            status: None,
+        });
+        let input = vec![user_text("hi"), summary_only, assistant("hello")];
+        let replayed = ensure_reasoning_replay(&input, true, true);
+        assert_eq!(synthesized(&replayed), 0, "no placeholder while real text exists");
+        let Item::Reasoning(filled) = &replayed[1] else {
+            panic!("expected reasoning");
+        };
+        let text = filled
+            .content
+            .as_ref()
+            .and_then(|parts| parts.first())
+            .map(|part| {
+                let ReasoningItemContent::ReasoningText(text) = part;
+                text.text.clone()
+            })
+            .unwrap_or_default();
+        assert_eq!(text, "what the other model thought");
+        assert!(filled.summary.is_empty(), "the summary moved, it is not duplicated");
     }
 
     #[test]

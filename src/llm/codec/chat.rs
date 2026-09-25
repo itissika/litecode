@@ -235,10 +235,16 @@ impl LlmProvider for ChatCompletionsCodec {
                 "opening Chat Completions event stream",
             )
             .await?;
+            if let Some(dump) = &dump {
+                dump.status(resp.status().as_u16());
+            }
 
             if !resp.status().is_success() {
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
+                if let Some(dump) = &dump {
+                    dump.error_body(&text);
+                }
                 return Err(LitecodeError::Llm(format!(
                     "{prefix}: HTTP {status}: {text}"
                 )));
@@ -474,8 +480,6 @@ headers = { "x-opencode-session" = "{{session_id}}" }
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: Some("ses_1".into()),
-            input_origins: vec![],
-            issuer: String::new(),
         }
     }
 
@@ -728,6 +732,49 @@ headers = { "x-opencode-session" = "{{session_id}}" }
         }))];
         let body = codec("").encode_body(&request, true).unwrap();
         assert_eq!(body["messages"][1]["reasoning_content"], "");
+    }
+
+    /// Regression guard: the model's own earlier reasoning goes back as its
+    /// reasoning text, whatever id the item carries.
+    #[test]
+    fn recorded_reasoning_is_replayed_as_reasoning_content() {
+        use crate::authority::responses::{
+            FunctionCallOutputItemParam, FunctionToolCall, ReasoningItem, ReasoningItemContent,
+            ReasoningTextContent,
+        };
+        let mut request = sample_request();
+        request.tools = vec![tool("read")];
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("cc_rs_b0dd1e2387cd43649a76f14a949f06a9".into()),
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText(ReasoningTextContent {
+                    text: "my own thinking".into(),
+                })]),
+                encrypted_content: None,
+                status: None,
+            }),
+            Item::FunctionCall(FunctionToolCall {
+                id: Some("cc_fc_1".into()),
+                call_id: "call_1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                status: None,
+                namespace: None,
+            }),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                id: None,
+                call_id: "call_1".into(),
+                output: FunctionCallOutput::Text("ok".into()),
+                status: None,
+            }),
+        ];
+        let body = codec("").encode_body(&request, true).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages[2]["reasoning_content"], "my own thinking", "{body}");
+        assert_eq!(messages[2]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(messages[3]["tool_call_id"], "call_1");
     }
 
     #[test]

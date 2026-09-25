@@ -14,13 +14,9 @@ use std::sync::Arc;
 pub use provider::LlmProvider;
 pub use request::{ModelRequest, ToolDef};
 
-/// Per-request replay projection: a session's provider-minted item identities
-/// only go back to the service that minted them. Nothing here is a catalog
-/// declaration — providers stay data, policy stays code.
-pub(crate) use replay_compat::{
-    ItemOrigin, ProjectionReport, RequestOrigin, StoreMode, issuer_of_model, mark_cross_call_reuse,
-    origin_for_seq, origins_for_seqs, project_for_target,
-};
+/// Replay rules: ids never go on the wire, ciphertext only to its producer,
+/// reasoning text is never dropped.
+pub(crate) use replay_compat::{producers_for_seqs, strip_foreign_ciphertext};
 
 /// Folding a provider's stream into canonical `Item`s.
 ///

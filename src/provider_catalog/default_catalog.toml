@@ -112,6 +112,8 @@ temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+# Item ids never go back on the wire, so reasoning replays as its ciphertext.
+extra_body = { include = ["reasoning.encrypted_content"] }
 
 [[models]]
 id = "gpt-5.6-terra"
@@ -124,6 +126,8 @@ temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+# Item ids never go back on the wire, so reasoning replays as its ciphertext.
+extra_body = { include = ["reasoning.encrypted_content"] }
 
 [[models]]
 id = "gpt-5.6-luna"
@@ -136,6 +140,8 @@ temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+# Item ids never go back on the wire, so reasoning replays as its ciphertext.
+extra_body = { include = ["reasoning.encrypted_content"] }
 
 # ── DeepSeek (native Responses) ──────────────────────────────────────────────
 

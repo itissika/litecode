@@ -12,6 +12,12 @@
 #   ./scripts/serve_win.ps1 -Release
 #   ./scripts/serve_win.ps1 -NoAuth           # open serve without LITECODE_TOKEN
 #   ./scripts/serve_win.ps1 -Cuda             # API with the ort-cuda feature (ORT CUDA EP)
+#   ./scripts/serve_win.ps1 -Wire             # capture + summarize every LLM request/stream
+#   ./scripts/serve_win.ps1 -Wire -WireDir D:\wire
+#
+# -Wire sets LITECODE_LLM_WIRE (default .litecode\wire). Each run writes
+# <dir>\<stamp>\ with the exact request bodies, raw SSE lines, and index.jsonl
+# (one layered summary per request). Watch live: ./scripts/wire_watch.ps1
 #
 # -Cuda runs `cargo run --features ort-cuda` against target\cuda-accel (same
 # dir as dev_win.ps1 -Cuda), so toggling CUDA never invalidates the plain CPU
@@ -33,6 +39,8 @@ param(
   [switch]$NoAuth,
   [switch]$Cuda,
   [switch]$SkipNpmInstall,
+  [switch]$Wire,
+  [string]$WireDir = "",
   # Captures Unix-style leftovers like: --workspace C:\path (not bound as -Workspace)
   [Parameter(ValueFromRemainingArguments = $true)]
   [string[]]$RemainingArgs = @()
@@ -163,12 +171,24 @@ try {
     }
     $savedChannel = $env:LITECODE_CHANNEL
     $env:LITECODE_CHANNEL = "dev"
+    $savedWire = $env:LITECODE_LLM_WIRE
+    if ($Wire) {
+      $wireBase = if ($WireDir -and $WireDir.Trim().Length -gt 0) { $WireDir.Trim() } else { Join-Path $Root ".litecode\wire" }
+      New-Item -ItemType Directory -Force -Path $wireBase | Out-Null
+      $env:LITECODE_LLM_WIRE = $wireBase
+      Write-Host "    wire:  capture ON -> $wireBase\<stamp>\ (watch: ./scripts/wire_watch.ps1 -Dir `"$wireBase`")"
+    }
     $api = Start-Process -FilePath "cargo" -ArgumentList $cargoArgs `
       -WorkingDirectory $Root -NoNewWindow -PassThru
     if ($null -eq $savedChannel) {
       Remove-Item Env:\LITECODE_CHANNEL -ErrorAction SilentlyContinue
     } else {
       $env:LITECODE_CHANNEL = $savedChannel
+    }
+    if ($null -eq $savedWire) {
+      Remove-Item Env:\LITECODE_LLM_WIRE -ErrorAction SilentlyContinue
+    } else {
+      $env:LITECODE_LLM_WIRE = $savedWire
     }
     $procs += $api
 
@@ -187,6 +207,9 @@ try {
       } finally { Pop-Location }
     }
 
+    # Vite's dev proxy targets the API; export the resolved bind so a custom
+    # -Bind (e.g. 7483 taken by another app on Windows) stays in sync.
+    $env:LITECODE_BIND = $Bind
     Write-Host "==> starting Vite (proxies /api /ws /health → $Bind)"
     # Start-Process bypasses PowerShell's .ps1/.cmd command resolution. On
     # nvm-windows, the extensionless `npm` shim is not a Win32 executable;
