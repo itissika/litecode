@@ -19,6 +19,11 @@ use super::sparse::{self, Lane};
 use super::{SessionHitLane, SessionTextHit, SessionTextQuery, filter_hits};
 
 /// How many hits one query fetches; the page paginates over this list.
+///
+/// This is the lane's **final pool**: the leaf layers each take their own
+/// candidate depth above it (see `ranking::LayerSemantics`), and the pool is
+/// truncated to this size only after every layer's evidence has been merged and
+/// folded to rows.
 const FETCH_DEPTH: usize = 200;
 /// Below this many searchable rows the index builds inline, in the search that
 /// needed it. Above it the build goes to a background thread and searches are
@@ -108,6 +113,12 @@ pub fn search_lexical(
             char_start: h.char_start,
             char_end: h.char_end,
             lane: SessionHitLane::Text,
+            // Provenance, carried up intact: the ranking above this lane is
+            // built from *why* a row matched, not from a number that mixes the
+            // reasons together.
+            role: h.role,
+            evidence: h.evidence,
+            rank: h.rank,
         })
         .collect();
     Ok((filter_hits(ranked, query), LaneState::Ready))

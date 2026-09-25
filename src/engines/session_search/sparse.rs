@@ -66,16 +66,29 @@
 //! than to "the sparse lane" as a whole:
 //!
 //! | lane      | mechanism                                            |
-//! |-----------|------------------------------------------------------|
+//! |-----------|----------------------------------------------------|
 //! | `like`    | indexed `LIKE` — the exact-substring path            |
 //! | `trigram` | CJK `MATCH` + BM25                                   |
 //! | `unicode` | non-CJK `MATCH` + BM25                               |
 //! | `recipe`  | routed `MATCH`, short-CJK `LIKE` fallback            |
 //! | `hybrid`  | `like` ∪ `recipe`, exact substring ranked first      |
 //! | `near`    | `NEAR(...)` proximity over non-CJK word tokens       |
-//! | `final`   | the product ladder: `like` 1.0 > `near` 0.9 >        |
-//! |           | routed `MATCH` 0.85 > n-gram fallback 0.72           |
+//! | `final`   | the product layer: the four declared leaf layers,    |
+//! |           | coverage-gated, merged and ranked explicitly         |
+//!
+//! The leaf lanes are mechanisms; `final` is the *policy*. It enters the same
+//! `like` → `near` → routed `MATCH` → n-gram mechanisms, but as declared layers
+//! ([`ranking::LAYERS`]) with an explicit goal, priority and gate, then merges
+//! every layer's evidence, folds chunks into rows and ranks on an explicit key.
+//! Two properties the old score ladder did not have:
+//!
+//! * a layer that ran and then lost its hits to a truncation cannot happen any
+//!   more: every layer's output is merged *before* anything is truncated, and a
+//!   layer that was skipped records why ([`ranking::StopReason`]);
+//! * `score` is a presentation value derived from the final rank, not the thing
+//!   the order was computed from.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -88,6 +101,8 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use super::chunk::ChunkCfg;
 use super::derive;
 use super::echo;
+use super::query_plan::{self, QueryBranch};
+use super::ranking::{self, ContentRole, HitEvidence, LayerId, LayerTrace, RankKey, StopReason};
 
 /// Bump when the index layout changes; an old cache is then rebuilt.
 /// v4: `rows` stores the original chunk text (for offset mapping) and the
@@ -105,30 +120,43 @@ use super::echo;
 /// forced keys, no content window. Every search reconciles the current final
 /// source key set against the indexed key ledger. Old files are rebuilt rather
 /// than migrated.
-const INDEX_SCHEMA: i64 = 10;
+/// v11: every indexed chunk carries the row's retrieval `role` (人话/动作/产出),
+/// so ranking can prefer intent over output without re-reading the source.
+const INDEX_SCHEMA: i64 = 11;
 
-/// Exact-substring hits score like the product's verbatim path, ranked hits
-/// land in the product's "index confirmed" band. The split is what lets the
-/// board separate "the scan found it" from "BM25 found it".
+/// Presentation scores. These are **derived** from the final rank
+/// ([`ranking::RankKey`]) so that every existing consumer keeps seeing the
+/// product ladder it already knew — exact 1.0 > proximity 0.9 > matched 0.85 >
+/// n-gram fallback 0.72 — while the order itself is computed from evidence.
+/// They are not comparable across queries, and nothing ranks on them.
 const SCORE_LIKE: f64 = 1.0;
 const SCORE_MATCH: f64 = 0.90;
-/// The `final` lane emits the product ladder instead: exact 1.0 > proximity 0.9
-/// > BM25 0.85 > n-gram fallback 0.72 (the product's existing fuzzy band).
 const SCORE_RANKED: f64 = 0.85;
 const SCORE_NEAR: f64 = 0.90;
 const SCORE_FALLBACK: f64 = 0.72;
 
-/// `NEAR` window: FTS5's default distance, counted as tokens *between* the two
-/// phrases. A whole-sentence query usually exceeds it, which is the point —
-/// this is the precision tier; BM25 below it is the recall tier.
-const NEAR_DISTANCE: usize = 10;
-/// More terms than this would make `NEAR` unsatisfiable; keep the first few
-/// (sorted, so the query stays deterministic).
-const NEAR_MAX_TERMS: usize = 6;
+/// The ladder value a band is shown with.
+fn band_score(band: ranking::RankBand) -> f64 {
+    match band {
+        ranking::RankBand::Exact => SCORE_LIKE,
+        ranking::RankBand::Proximity => SCORE_NEAR,
+        ranking::RankBand::Fusion => SCORE_RANKED,
+        ranking::RankBand::Fuzzy => SCORE_FALLBACK,
+    }
+}
 
 /// Below this many chars a query has no trigram at all: the index cannot serve
 /// it, and the `LIKE` lane scans the rows directly.
-const TRIGRAM_LEN: usize = 3;
+const TRIGRAM_LEN: usize = query_plan::TRIGRAM_LEN;
+
+/// `NEAR` window: FTS5's default distance, counted as tokens *between* the two
+/// phrases. A whole-sentence query usually exceeds it, which is the point —
+/// this is the precision layer; the routed `MATCH` below it is the recall one.
+const NEAR_DISTANCE: usize = 10;
+/// More terms than this would make `NEAR` unsatisfiable. The window keeps the
+/// query's *informative* terms, in the order they were written
+/// ([`query_plan::QueryBranch::near_terms`]).
+const NEAR_MAX_TERMS: usize = query_plan::NEAR_MAX_TERMS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lane {
@@ -186,10 +214,22 @@ pub struct SparseHit {
     /// is what lets the renderer show context around the match.
     pub char_start: usize,
     pub char_end: usize,
+    /// Presentation value derived from [`Self::rank`]: the product ladder. Never
+    /// compare it across queries, and never rank on it.
     pub score: f64,
     /// The row's item type (`function_call`, `message`, …) — callers label hits
     /// with it.
     pub item_type: String,
+    /// What question the row's text answers (人话 / 动作 / 产出). Ranking only;
+    /// nothing is filtered by it.
+    pub role: ContentRole,
+    /// Every layer that returned this chunk, with the query coverage it proved.
+    /// Merged across chunks when the hit is folded to its row, so "three
+    /// mechanisms agree on this row" survives into the final ranking.
+    pub evidence: Vec<HitEvidence>,
+    /// The lane's own ordering key. The final layer rewrites it once the sparse
+    /// and semantic lists are fused.
+    pub rank: RankKey,
     /// Snippet around the match, taken from the chunk text. The renderer prefers
     /// the physical line it resolves from `char_start`; this is the fallback.
     pub summary: String,
@@ -198,6 +238,35 @@ pub struct SparseHit {
     /// is what explains a poor rank on a corpus of very long rows.
     #[allow(dead_code)]
     pub bm25: Option<f64>,
+}
+
+impl SparseHit {
+    /// The layers that independently found this hit, deduped and in priority
+    /// order.
+    pub fn layers(&self) -> Vec<LayerId> {
+        let mut out: Vec<LayerId> = Vec::new();
+        for evidence in &self.evidence {
+            if !out.contains(&evidence.layer) {
+                out.push(evidence.layer);
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// How many layers found it. Agreement is evidence.
+    pub fn layer_count(&self) -> usize {
+        self.layers().len()
+    }
+
+    /// The coverage the hit proved for one layer, if that layer found it.
+    pub fn coverage_of(&self, layer: LayerId) -> Option<f64> {
+        self.evidence
+            .iter()
+            .filter(|e| e.layer == layer)
+            .map(|e| e.coverage())
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+    }
 }
 
 pub struct SparseIndex {
@@ -251,7 +320,9 @@ impl SparseIndex {
             for hit in self.search_one(lane, alternative, limit)? {
                 match by_key.entry(hit.key.clone()) {
                     std::collections::btree_map::Entry::Occupied(mut slot) => {
-                        if hit.score > slot.get().score + 1e-9 {
+                        // The better-ranked branch owns the chunk: a later branch
+                        // cannot demote a hit an earlier one proved more strongly.
+                        if ranking::cmp_rank(&hit.rank, &slot.get().rank) == Ordering::Less {
                             slot.insert(hit);
                         }
                     }
@@ -263,9 +334,15 @@ impl SparseIndex {
         }
         let mut out: Vec<SparseHit> = by_key.into_values().collect();
         out.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            // The declared rank first, for the same reason the full layer uses
+            // it: two branches can disagree about coverage, and the display score
+            // only carries the band and the position within it.
+            ranking::cmp_rank(&a.rank, &b.rank)
+                .then_with(|| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .then_with(|| a.session_id.cmp(&b.session_id))
                 .then_with(|| a.seq.cmp(&b.seq))
         });
@@ -324,7 +401,7 @@ impl SparseIndex {
                 Some(mq) => self.contains_match("tri", &mq, session_id, seq),
                 None => Ok(false),
             },
-            Lane::Unicode => match word_query(&needle) {
+            Lane::Unicode => match word_query_gated(&QueryBranch::parse(&needle)) {
                 Some(mq) => self.contains_match("uni", &mq, session_id, seq),
                 None => Ok(false),
             },
@@ -340,23 +417,73 @@ impl SparseIndex {
                 None => Ok(false),
             },
             Lane::Final => {
+                // The product layer's membership question is the product
+                // layer's gate: a row the coverage rule would reject is not a
+                // row the agent could have been shown, so it is not a hit.
                 if self.contains_like(&needle, session_id, seq)? {
                     return Ok(true);
                 }
-                if let Some(mq) = near_query(&needle)
+                let branch = QueryBranch::parse(&needle);
+                if branch.proximity_applies()
+                    && let Some(mq) = near_query(&needle)
                     && self.contains_match("uni", &mq, session_id, seq)?
                 {
                     return Ok(true);
                 }
-                if self.contains_recipe(&needle, session_id, seq)? {
-                    return Ok(true);
-                }
-                match trigram_query(&needle) {
-                    Some(mq) => self.contains_match("tri", &mq, session_id, seq),
-                    None => Ok(false),
-                }
+                self.contains_gate(&branch, session_id, seq)
             }
         }
+    }
+
+    /// Is this pinned row a `Lexical` hit under the branch's coverage gate?
+    ///
+    /// Answered per chunk, from the chunk's own normalized text: the ranker
+    /// works per chunk, so the gate has to as well — a row is a hit when *one*
+    /// of its chunks clears the gate, not when its chunks collectively do.
+    fn contains_gate(&self, branch: &QueryBranch, session_id: &str, seq: i64) -> Result<bool> {
+        if branch.cjk {
+            if !branch.grams_apply() {
+                return Ok(false);
+            }
+            let Some(mq) = trigram_query(&branch.normalized) else {
+                return Ok(false);
+            };
+            // The `AND`-over-every-gram form *is* the literal; a subset is what
+            // the count below answers.
+            let semantics = ranking::semantics(LayerId::Lexical);
+            let min = branch.gram_min(semantics.min_coverage);
+            if min >= branch.grams.len() && self.contains_match("tri", &mq, session_id, seq)? {
+                return Ok(true);
+            }
+            let mut stmt = self.conn.prepare_cached(
+                "SELECT text_norm FROM rows WHERE session_id = ?1 AND seq = ?2",
+            )?;
+            let texts = stmt
+                .query_map(params![session_id, seq], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            return Ok(texts
+                .iter()
+                .any(|text| query_plan::count_grams(text, &branch.grams) >= min));
+        }
+        if !branch.words_apply() {
+            return Ok(false);
+        }
+        let min = branch.word_min();
+        if min >= branch.content_terms.len()
+            && let Some(mq) = word_query_gated(branch)
+            && self.contains_match("uni", &mq, session_id, seq)?
+        {
+            return Ok(true);
+        }
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT text_norm FROM rows WHERE session_id = ?1 AND seq = ?2")?;
+        let texts = stmt
+            .query_map(params![session_id, seq], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(texts
+            .iter()
+            .any(|text| query_plan::count_word_terms(text, &branch.content_terms) >= min))
     }
 
     fn contains_recipe(&self, needle: &str, session_id: &str, seq: i64) -> Result<bool> {
@@ -445,14 +572,19 @@ impl SparseIndex {
         if needle.chars().count() < TRIGRAM_LEN {
             return self.scan_like_hits(needle, limit);
         }
-        // The `ORDER BY` is not cosmetic: a `LIKE` probe with a `LIMIT` and no
-        // order truncates in rowid order, which is arbitrary and silently loses
-        // the newest rows. Session ids are ULIDs, so descending `(session_id,
-        // seq, chunk)` is newest-first and stable.
+        // The `ORDER BY` picks *which* literal hits survive about to be ranked,
+        // so it is a relevance decision, not cosmetics. It used to be newest
+        // first, which meant a common literal's top-`limit` was simply the last
+        // `limit` rows of the corpus and every later layer was truncated away
+        // behind it. It is now the shortest chunk first — the documented
+        // length prior, and the one thing a `LIKE` probe can see about how much
+        // a chunk is *about* the literal. The full ranking happens above this
+        // layer, where coverage, role and recency are all available.
         //
         // `instr` is asked for the same literal alongside the LIKE, so the hit
         // carries where the substring landed (normalized chars; `r.text` maps it
         // back to the original row coordinates).
+        let branch = QueryBranch::parse(needle);
         let scope_clause = if self.scope.is_some() {
             " AND r.session_id = ?4"
         } else {
@@ -460,12 +592,12 @@ impl SparseIndex {
         };
         let sql = format!(
             "SELECT r.session_id, r.seq, r.chunk, r.text, r.single, r.item_type,
-                    instr(t.text_norm, ?2) AS pos, r.char_start AS chunk_start
+                    instr(t.text_norm, ?2) AS pos, r.char_start AS chunk_start, r.role
                FROM tri t
                JOIN rows r ON r.rowid = t.rowid
               WHERE t.text_norm LIKE ?1
                 AND instr(t.text_norm, ?2) > 0{scope_clause}
-              ORDER BY r.session_id DESC, r.seq DESC, r.chunk DESC
+              ORDER BY length(t.text_norm) ASC, r.session_id DESC, r.seq DESC, r.chunk DESC
               LIMIT ?3"
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
@@ -475,27 +607,43 @@ impl SparseIndex {
         if let Some(scope) = &self.scope {
             bind.push(scope);
         }
+        let total = branch.terms.len().max(1);
         let rows = stmt.query_map(rusqlite::params_from_iter(bind), |row| {
             let text: String = row.get(3)?;
             let pos: i64 = row.get(6)?;
             let chunk_start: i64 = row.get(7)?;
-            let span = like_match_span(&text, needle, pos.max(1) as usize);
-            row_hit(
+            let role = ContentRole::parse(&row.get::<_, String>(8)?);
+            let (span, occurrences) = like_span_and_occurrences(&text, needle, pos.max(1) as usize);
+            let mut hit = row_hit(
                 row,
                 &text,
                 span,
                 SCORE_LIKE,
                 None,
                 chunk_start.max(0) as usize,
-            )
+                role,
+            )?;
+            // The literal is present in full, so coverage is complete by
+            // construction; the occurrence count is what varies.
+            hit.evidence
+                .push(HitEvidence::new(LayerId::Exact, 0, total, total));
+            hit.evidence[0].native = occurrences as f64;
+            hit.rank = RankKey {
+                band: ranking::RankBand::Exact,
+                strength: occurrences.min(999) as u32,
+                role: role.preference(),
+                local_rank: 0,
+            };
+            Ok(hit)
         })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        finish_exact_hits(rows, limit)
     }
 
     /// `LIKE` without the index: a direct scan of the normalized row text, for
     /// needles the trigram table cannot serve. The same `instr` predicate the
     /// indexed path uses to confirm a hit is the only one needed here.
     fn scan_like_hits(&self, needle: &str, limit: usize) -> Result<Vec<SparseHit>> {
+        let branch = QueryBranch::parse(needle);
         let scope_clause = if self.scope.is_some() {
             " AND r.session_id = ?3"
         } else {
@@ -503,10 +651,10 @@ impl SparseIndex {
         };
         let sql = format!(
             "SELECT r.session_id, r.seq, r.chunk, r.text, r.single, r.item_type,
-                    instr(r.text_norm, ?1) AS pos, r.char_start AS chunk_start
+                    instr(r.text_norm, ?1) AS pos, r.char_start AS chunk_start, r.role
                FROM rows r
               WHERE instr(r.text_norm, ?1) > 0{scope_clause}
-              ORDER BY r.session_id DESC, r.seq DESC, r.chunk DESC
+              ORDER BY length(r.text_norm) ASC, r.session_id DESC, r.seq DESC, r.chunk DESC
               LIMIT ?2"
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
@@ -515,21 +663,34 @@ impl SparseIndex {
         if let Some(scope) = &self.scope {
             bind.push(scope);
         }
+        let total = branch.terms.len().max(1);
         let rows = stmt.query_map(rusqlite::params_from_iter(bind), |row| {
             let text: String = row.get(3)?;
             let pos: i64 = row.get(6)?;
             let chunk_start: i64 = row.get(7)?;
-            let span = like_match_span(&text, needle, pos.max(1) as usize);
-            row_hit(
+            let role = ContentRole::parse(&row.get::<_, String>(8)?);
+            let (span, occurrences) = like_span_and_occurrences(&text, needle, pos.max(1) as usize);
+            let mut hit = row_hit(
                 row,
                 &text,
                 span,
                 SCORE_LIKE,
                 None,
                 chunk_start.max(0) as usize,
-            )
+                role,
+            )?;
+            hit.evidence
+                .push(HitEvidence::new(LayerId::Exact, 0, total, total));
+            hit.evidence[0].native = occurrences as f64;
+            hit.rank = RankKey {
+                band: ranking::RankBand::Exact,
+                strength: occurrences.min(999) as u32,
+                role: role.preference(),
+                local_rank: 0,
+            };
+            Ok(hit)
         })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        finish_exact_hits(rows, limit)
     }
 
     /// CJK path: trigram `MATCH` over the whole normalized query, BM25 order.
@@ -541,7 +702,7 @@ impl SparseIndex {
         let Some(match_query) = trigram_query(needle) else {
             return Ok(Vec::new());
         };
-        self.match_hits("tri", &match_query, limit, score)
+        self.leaf_hits(Leaf::ungated(LayerId::Fuzzy, "tri", &match_query, limit, score))
     }
 
     /// Non-CJK path: `unicode61` `MATCH` over the query's word tokens.
@@ -553,15 +714,21 @@ impl SparseIndex {
         let Some(match_query) = word_query(needle) else {
             return Ok(Vec::new());
         };
-        self.match_hits("uni", &match_query, limit, score)
+        self.leaf_hits(Leaf::ungated(LayerId::Lexical, "uni", &match_query, limit, score))
     }
 
-    /// Proximity tier: FTS5's `NEAR(...)` over the query's word tokens.
+    /// Proximity layer: FTS5's `NEAR(...)` over the query's informative words.
     fn near_hits(&self, needle: &str, limit: usize) -> Result<Vec<SparseHit>> {
         let Some(match_query) = near_query(needle) else {
             return Ok(Vec::new());
         };
-        self.match_hits("uni", &match_query, limit, SCORE_NEAR)
+        self.leaf_hits(Leaf::ungated(
+            LayerId::Proximity,
+            "uni",
+            &match_query,
+            limit,
+            SCORE_NEAR,
+        ))
     }
 
     /// The routed recipe: script decides the tokenizer, and a query too short
@@ -570,8 +737,9 @@ impl SparseIndex {
         self.routed_hits(needle, limit, SCORE_MATCH)
     }
 
-    /// Routed `MATCH` with the caller's score, so the `final` ladder can place
-    /// the BM25 tier below the proximity tier.
+    /// Routed `MATCH` with the caller's score. The product layer calls it for
+    /// its lexical layer; the eval lane uses it for the routed mechanism as a
+    /// whole.
     fn routed_hits(&self, needle: &str, limit: usize, score: f64) -> Result<Vec<SparseHit>> {
         if has_cjk(needle) {
             if needle.chars().count() < TRIGRAM_LEN {
@@ -587,41 +755,246 @@ impl SparseIndex {
         }
     }
 
-    /// The product ladder: exact substring 1.0 > proximity 0.9 > BM25 0.85 >
-    /// n-gram fallback 0.72. The fallback is only consulted when every tier
-    /// above found nothing — typo tolerance as a last resort, not a peer lane.
-    fn final_hits(&self, needle: &str, limit: usize) -> Result<Vec<SparseHit>> {
-        let mut hits = self.like_hits(needle, limit)?;
-        let mut seen: BTreeSet<String> = hits.iter().map(|h| h.key.clone()).collect();
-        extend_unique(&mut hits, self.near_hits(needle, limit)?, &mut seen);
-        extend_unique(
-            &mut hits,
-            self.routed_hits(needle, limit, SCORE_RANKED)?,
-            &mut seen,
-        );
-        if hits.is_empty() {
-            extend_unique(
-                &mut hits,
-                self.trigram_hits_scored(needle, limit, SCORE_FALLBACK)?,
-                &mut seen,
-            );
+    /// The product layer: the four declared leaf layers, each gated by the
+    /// intent its hits prove, then merged, folded to rows and ranked on
+    /// [`ranking::RankKey`].
+    ///
+    /// The difference from the ladder this replaces is not the mechanisms — it
+    /// is that nothing is decided by *position in a vector* any more:
+    ///
+    /// * every layer's hits land in one pool before any truncation, so a layer
+    ///   cannot be computed and then silently dropped by an earlier layer's
+    ///   `LIMIT`;
+    /// * a layer that does not run records why (`StopReason`), so "no proximity
+    ///   hits" is distinguishable from "proximity never ran";
+    /// * the ranking is a tuple over evidence (band → coverage → role → the
+    ///   producing layer's own rank), not a set of pre-baked floats to be
+    ///   appended to.
+    fn compose_sparse(&self, needle: &str, limit: usize) -> Result<(Vec<SparseHit>, Vec<LayerTrace>)> {
+        let branch = QueryBranch::parse(needle);
+        if branch.is_empty() || limit == 0 {
+            return Ok((Vec::new(), Vec::new()));
         }
-        hits.truncate(limit);
+        let mut traces: Vec<LayerTrace> = Vec::new();
+        let mut pool: Vec<SparseHit> = Vec::new();
+
+        // 1. Exact: the literal the user typed, verbatim. Always entered, and
+        //    never gated: an exact substring is the strongest evidence there is.
+        let exact = self.like_hits(needle, semantics_depth(LayerId::Exact, limit))?;
+        traces.push(LayerTrace {
+            layer: LayerId::Exact,
+            produced: exact.len(),
+            rejected: 0,
+            accepted: exact.len(),
+            stop: StopReason::Ran,
+        });
+        pool.extend(exact);
+
+        // 2. Proximity: the query's informative words, inside one window.
+        //
+        // From here down, a layer is only entered when the layers above it have
+        // not already filled the pool. A lower band can never outrank a higher
+        // one, so once the higher band alone can fill the caller's list, the work
+        // below it is wasted — and saying so explicitly is what keeps "no
+        // results from this layer" from meaning "this layer never ran".
+        let proximity = if distinct_rows(&pool) >= limit {
+            traces.push(skipped(LayerId::Proximity, StopReason::EnoughHighConfidence));
+            Vec::new()
+        } else if branch.proximity_applies() {
+            let terms = branch.near_terms();
+            match near_query(needle) {
+                Some(match_query) => {
+                    let semantics = ranking::semantics(LayerId::Proximity);
+                    let (hits, rejected) = self.match_hits(Leaf {
+                        layer: LayerId::Proximity,
+                        table: "uni",
+                        match_query: &match_query,
+                        gate_terms: &terms,
+                        gate_min: semantics.min_matches(terms.len()),
+                        coverage: Coverage::Words,
+                        min_run: 0,
+                        limit: semantics.depth(limit),
+                        display: SCORE_NEAR,
+                    })?;
+                    traces.push(LayerTrace {
+                        layer: LayerId::Proximity,
+                        produced: hits.len() + rejected,
+                        rejected,
+                        accepted: hits.len(),
+                        stop: StopReason::Ran,
+                    });
+                    hits
+                }
+                None => {
+                    traces.push(skipped(LayerId::Proximity, StopReason::NotApplicable));
+                    Vec::new()
+                }
+            }
+        } else {
+            traces.push(skipped(LayerId::Proximity, StopReason::NotApplicable));
+            Vec::new()
+        };
+        pool.extend(proximity);
+
+        // 3. Lexical: the coverage gate that stops one common word from filling
+        //    the list. Words for Latin, trigrams for CJK, same declared layer.
+        let semantics = ranking::semantics(LayerId::Lexical);
+        let lexical = if distinct_rows(&pool) >= limit {
+            traces.push(skipped(LayerId::Lexical, StopReason::EnoughHighConfidence));
+            Vec::new()
+        } else if branch.cjk {
+            match trigram_query(&branch.normalized) {
+                Some(match_query) => {
+                    let (hits, rejected) = self.match_hits(Leaf {
+                        layer: LayerId::Lexical,
+                        table: "tri",
+                        match_query: &match_query,
+                        gate_terms: &branch.grams,
+                        gate_min: branch.gram_min(semantics.min_coverage),
+                        coverage: Coverage::Grams,
+                        min_run: 0,
+                        limit: semantics.depth(limit),
+                        display: SCORE_RANKED,
+                    })?;
+                    traces.push(LayerTrace {
+                        layer: LayerId::Lexical,
+                        produced: hits.len() + rejected,
+                        rejected,
+                        accepted: hits.len(),
+                        stop: StopReason::Ran,
+                    });
+                    hits
+                }
+                None => {
+                    // Below the trigram floor the index cannot answer, so the
+                    // literal is the only mechanism left.
+                    traces.push(skipped(LayerId::Lexical, StopReason::NotApplicable));
+                    Vec::new()
+                }
+            }
+        } else if branch.words_apply() {
+            match word_query_gated(&branch) {
+                Some(match_query) => {
+                    let (hits, rejected) = self.match_hits(Leaf {
+                        layer: LayerId::Lexical,
+                        table: "uni",
+                        match_query: &match_query,
+                        gate_terms: &branch.content_terms,
+                        gate_min: branch.word_min(),
+                        coverage: Coverage::Words,
+                        min_run: 0,
+                        limit: semantics.depth(limit),
+                        display: SCORE_RANKED,
+                    })?;
+                    traces.push(LayerTrace {
+                        layer: LayerId::Lexical,
+                        produced: hits.len() + rejected,
+                        rejected,
+                        accepted: hits.len(),
+                        stop: StopReason::Ran,
+                    });
+                    hits
+                }
+                None => {
+                    traces.push(skipped(LayerId::Lexical, StopReason::NotApplicable));
+                    Vec::new()
+                }
+            }
+        } else {
+            traces.push(skipped(LayerId::Lexical, StopReason::NotApplicable));
+            Vec::new()
+        };
+        pool.extend(lexical);
+
+        // 4. Fuzzy: last resort, and only when the layers above did not already
+        //    answer with enough distinct rows. The decision is explicit here
+        //    instead of an implicit "the pool happened to be empty".
+        if distinct_rows(&pool) >= limit {
+            traces.push(skipped(
+                LayerId::Fuzzy,
+                StopReason::EnoughHighConfidence,
+            ));
+        } else if let Some(match_query) = trigram_query(&branch.normalized) {
+            let semantics = ranking::semantics(LayerId::Fuzzy);
+            let (hits, rejected) = self.match_hits(Leaf {
+                layer: LayerId::Fuzzy,
+                table: "tri",
+                match_query: &match_query,
+                gate_terms: &branch.grams,
+                gate_min: branch.gram_min(semantics.min_coverage),
+                coverage: Coverage::Grams,
+                min_run: branch.min_fuzzy_run(semantics.min_run_fraction),
+                limit: semantics.depth(limit),
+                display: SCORE_FALLBACK,
+            })?;
+            traces.push(LayerTrace {
+                layer: LayerId::Fuzzy,
+                produced: hits.len() + rejected,
+                rejected,
+                accepted: hits.len(),
+                stop: StopReason::RecallShortfall,
+            });
+            pool.extend(hits);
+        } else {
+            traces.push(skipped(LayerId::Fuzzy, StopReason::NotApplicable));
+        }
+
+        // Every layer's evidence is merged per chunk, then per row, before
+        // anything is truncated: a chunk can no longer consume a row's slot,
+        // and a row supported by three mechanisms says so.
+        let mut rows = merge_and_fold(pool);
+        for hit in rows.iter_mut() {
+            hit.rank = rank_key_for(hit);
+        }
+        rows.sort_by(|a, b| {
+            ranking::cmp_rank(&a.rank, &b.rank)
+                .then_with(|| b.session_id.cmp(&a.session_id))
+                .then_with(|| b.seq.cmp(&a.seq))
+        });
+        rows.truncate(limit);
+        // Presentation only: the ladder value the band is shown with, decayed by
+        // the hit's final position so the existing board keeps its shape.
+        for (index, hit) in rows.iter_mut().enumerate() {
+            hit.score = tier_score(band_score(hit.rank.band), index, limit);
+        }
+        Ok((rows, traces))
+    }
+
+    /// The product ladder's entry point.
+    fn final_hits(&self, needle: &str, limit: usize) -> Result<Vec<SparseHit>> {
+        let (hits, traces) = self.compose_sparse(needle, limit)?;
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            for trace in &traces {
+                tracing::debug!(
+                    layer = trace.layer.as_str(),
+                    produced = trace.produced,
+                    rejected = trace.rejected,
+                    accepted = trace.accepted,
+                    stop = ?trace.stop,
+                    "sparse layer"
+                );
+            }
+        }
         Ok(hits)
     }
 
-    fn match_hits(
-        &self,
-        table: &str,
-        match_query: &str,
-        limit: usize,
-        score: f64,
-    ) -> Result<Vec<SparseHit>> {
+    /// Run one leaf layer and collect what its hits prove.
+    fn leaf_hits(&self, leaf: Leaf<'_>) -> Result<Vec<SparseHit>> {
+        Ok(self.match_hits(leaf)?.0)
+    }
+
+    /// Run one leaf layer's `MATCH` and prove what each hit covers.
+    ///
+    /// Returns the accepted hits (ranked, with evidence) and how many the gate
+    /// rejected — the count that says whether the gate did anything at all.
+    fn match_hits(&self, leaf: Leaf<'_>) -> Result<(Vec<SparseHit>, usize)> {
         // `table` is one of two hard-coded literals, never user input.
         //
         // `highlight()` wraps every matched token in the stored (normalized)
         // text; the hit turns the densest cluster of those marks into one span
-        // in original row coordinates. (FTS5 has no `offsets()`.)
+        // in original row coordinates, and the marks themselves into the
+        // coverage count. (FTS5 has no `offsets()`.)
+        let table = leaf.table;
         let scope_clause = if self.scope.is_some() {
             " AND r.session_id = ?3"
         } else {
@@ -631,7 +1004,7 @@ impl SparseIndex {
             "SELECT r.session_id, r.seq, r.chunk, r.text, r.single, r.item_type,
                     highlight({table}, 0, char(2), char(3)) AS hl,
                     bm25({table}) AS rank,
-                    r.char_start AS chunk_start
+                    r.char_start AS chunk_start, r.role
                FROM {table} t
                JOIN rows r ON r.rowid = t.rowid
               WHERE {table} MATCH ?1{scope_clause}
@@ -639,37 +1012,107 @@ impl SparseIndex {
               LIMIT ?2"
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
-        let limit_i64 = limit as i64;
-        let mut bind: Vec<&dyn rusqlite::ToSql> = vec![&match_query, &limit_i64];
+        let limit_i64 = leaf.limit as i64;
+        let mut bind: Vec<&dyn rusqlite::ToSql> = vec![&leaf.match_query, &limit_i64];
         if let Some(scope) = &self.scope {
             bind.push(scope);
         }
-        let rows = stmt.query_map(rusqlite::params_from_iter(bind), |row| {
+        let terms = leaf.gate_terms.to_vec();
+        let total = terms.len();
+        let gate_min = leaf.gate_min;
+        let coverage = leaf.coverage;
+        let min_run = leaf.min_run;
+        let layer = leaf.layer;
+        let display = leaf.display;
+        let depth = leaf.limit.max(1);
+        let rows = stmt.query_map(rusqlite::params_from_iter(bind), move |row| {
             let text: String = row.get(3)?;
             let marked: Option<String> = row.get(6)?;
             let bm25 = row.get(7).ok();
             let chunk_start: i64 = row.get(8)?;
-            let span = highlight_span(&text, marked.as_deref().unwrap_or(""));
-            row_hit(
+            let role = ContentRole::parse(&row.get::<_, String>(9)?);
+            let marked = marked.unwrap_or_default();
+            let span = highlight_span(&text, &marked);
+            // Coverage is counted from the row's own text, not from the
+            // `highlight()` output: FTS5 merges adjacent and overlapping token
+            // marks into one run, so per-token marks cannot be recovered from it
+            // (and a 3-char trigram query marks one long run). The text is the
+            // ground truth anyway, and this way the gate means exactly what it
+            // says: how much of the query's intent this row contains.
+            let normalized_chunk = normalize(&text);
+            let matched = match coverage {
+                Coverage::None => 0,
+                Coverage::Words => query_plan::count_word_terms(&normalized_chunk, &terms),
+                Coverage::Grams => query_plan::count_grams(&normalized_chunk, &terms),
+            };
+            let mut evidence = HitEvidence::new(layer, 0, matched, total);
+            evidence.native = bm25.unwrap_or(0.0);
+            // The gate is computed here and answered by the caller's loop so
+            // rejections are counted. Counted coverage, never a score threshold:
+            // `the auth refactor token` cannot be satisfied by `the` alone,
+            // however good its BM25.
+            let clears = evidence.clears(gate_min);
+            // Typo tolerance is not "some grams match": a long enough fragment
+            // of the query must be there unbroken, or the row is a coincidence
+            // of common characters rather than a near miss of the phrase.
+            let adjacent = min_run == 0
+                || query_plan::longest_contiguous_run(&normalized_chunk, &terms) >= min_run;
+            let mut hit = row_hit(
                 row,
                 &text,
                 span,
-                score,
+                display,
                 bm25,
                 chunk_start.max(0) as usize,
-            )
+                role,
+            )?;
+            hit.evidence.push(evidence);
+            Ok((hit, clears && adjacent, depth))
         })?;
-        // Keep BM25's order *inside* the tier: the agent-facing sort is score
-        // desc and only breaks ties by recency, so a flat tier score would
-        // silently replace the ranker with "newest session first".
         let mut out = Vec::new();
-        for (rank, hit) in rows.enumerate() {
-            let mut hit = hit?;
-            hit.score = tier_score(score, rank, limit);
+        let mut rejected = 0usize;
+        for row in rows {
+            let (mut hit, accepted, depth) = row?;
+            if !accepted {
+                rejected += 1;
+                continue;
+            }
+            let rank = out.len();
+            hit.evidence[0].local_rank = rank;
+            // Keep the layer's own order *inside* the layer: the final ranking
+            // breaks ties by it, so BM25 is never replaced by recency.
+            hit.score = tier_score(display, rank, depth);
+            hit.rank = RankKey {
+                band: ranking::RankBand::from_layer(layer),
+                strength: strength_of(&hit),
+                role: hit.role.preference(),
+                local_rank: rank as u32,
+            };
             out.push(hit);
         }
-        Ok(out)
+        Ok((out, rejected))
     }
+}
+
+/// Finish the `Exact` layer's rows.
+///
+/// The layer's own order is the length prior the SQL applied — a chunk that is
+/// mostly about the literal before one that mentions it once in passing — so its
+/// position in that order **is** its rank. Without this every exact hit reports
+/// rank 0, which is how a flat score band erases the difference between them.
+fn finish_exact_hits(
+    rows: impl Iterator<Item = rusqlite::Result<SparseHit>>,
+    limit: usize,
+) -> Result<Vec<SparseHit>> {
+    let mut hits = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    for (index, hit) in hits.iter_mut().enumerate() {
+        if let Some(evidence) = hit.evidence.first_mut() {
+            evidence.local_rank = index;
+        }
+        hit.rank.local_rank = index as u32;
+        hit.score = tier_score(SCORE_LIKE, index, limit.max(1));
+    }
+    Ok(hits)
 }
 
 /// Build one hit from the shared column order (`session_id, seq, chunk, text,
@@ -684,6 +1127,7 @@ fn row_hit(
     score: f64,
     bm25: Option<f64>,
     chunk_start: usize,
+    role: ContentRole,
 ) -> rusqlite::Result<SparseHit> {
     let session_id: String = row.get(0)?;
     let seq: i64 = row.get(1)?;
@@ -712,43 +1156,229 @@ fn row_hit(
         char_end: span.1 + chunk_start,
         score,
         item_type,
+        role,
+        evidence: Vec::new(),
+        rank: RankKey::default(),
         summary,
         bm25,
     })
 }
 
-/// Append hits whose chunk key was not seen yet — the first tier that found a
-/// chunk owns it, so a lower tier can never re-rank a higher tier's hit.
-fn extend_unique(hits: &mut Vec<SparseHit>, extra: Vec<SparseHit>, seen: &mut BTreeSet<String>) {
-    for h in extra {
-        if seen.insert(h.key.clone()) {
-            hits.push(h);
+/// The characters FTS5's `highlight()` wraps around each matched token.
+
+/// What a layer's coverage counts against: the query's words, or its trigrams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Coverage {
+    /// No gate: every row the table returns counts (the eval lanes).
+    None,
+    /// Whole words, so `session` does not count for `sessions`.
+    Words,
+    /// Substrings of three chars, for scripts `unicode61` cannot segment.
+    Grams,
+}
+
+/// One leaf layer's request: which table and query to run, how the lane values
+/// it, and the gate a hit must clear before it counts.
+///
+/// This is where a layer's declared semantics
+/// ([`ranking::LayerSemantics`]) meet its mechanism. A layer is a mechanism plus
+/// a gate; the gate is what the old ladder never had.
+struct Leaf<'a> {
+    layer: LayerId,
+    table: &'a str,
+    match_query: &'a str,
+    /// Terms the coverage gate counts, and how many must be present. An empty
+    /// list is a bare mechanism: no gate, every row the table returns counts.
+    gate_terms: &'a [String],
+    gate_min: usize,
+    coverage: Coverage,
+    /// The fuzzy layer additionally requires an unbroken fragment of the query:
+    /// at least this many chars of it, copied verbatim.
+    min_run: usize,
+    limit: usize,
+    display: f64,
+}
+
+impl<'a> Leaf<'a> {
+    /// A layer run as a bare mechanism, ungated: what the eval lanes ask for.
+    fn ungated(
+        layer: LayerId,
+        table: &'a str,
+        match_query: &'a str,
+        limit: usize,
+        display: f64,
+    ) -> Self {
+        Self {
+            layer,
+            table,
+            match_query,
+            gate_terms: &[],
+            gate_min: 0,
+            coverage: Coverage::None,
+            min_run: 0,
+            limit,
+            display,
         }
     }
+}
+
+/// A layer's declared candidate depth for one query.
+fn semantics_depth(layer: LayerId, limit: usize) -> usize {
+    ranking::semantics(layer).depth(limit)
+}
+
+/// The trace entry for a layer that did not run.
+fn skipped(layer: LayerId, stop: StopReason) -> LayerTrace {
+    LayerTrace {
+        layer,
+        produced: 0,
+        rejected: 0,
+        accepted: 0,
+        stop,
+    }
+}
+
+/// Distinct rows in a pool of chunk hits.
+fn distinct_rows(hits: &[SparseHit]) -> usize {
+    hits.iter()
+        .map(|h| (h.session_id.as_str(), h.seq))
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+/// Within-band strength for a hit, from its best evidence.
+///
+/// `Exact`: how many times the literal occurs — a row that says it five times is
+/// more about it than a row that says it once. Everything else: coverage, the
+/// fraction of the query's intent this hit proved. Both are multiplied by a
+/// small agreement bonus: the number of layers that independently found the
+/// row. Agreement is evidence, and it is the one signal that only exists because
+/// provenance was kept.
+fn strength_of(hit: &SparseHit) -> u32 {
+    let primary = primary_evidence(hit);
+    let base = match primary.layer {
+        LayerId::Exact => primary.native.max(0.0).min(999.0) as u32,
+        _ => primary.coverage_permille(),
+    };
+    base.saturating_mul(100)
+        .saturating_add(hit.layer_count().min(99) as u32)
+}
+
+/// The evidence that explains a hit best: the highest band that found it, then
+/// the most coverage, then the producing layer's own order.
+fn primary_evidence(hit: &SparseHit) -> HitEvidence {
+    hit.evidence
+        .iter()
+        .min_by(|a, b| {
+            cmp_evidence(a, b)
+        })
+        .cloned()
+        .unwrap_or_else(|| HitEvidence::new(LayerId::Exact, 0, 0, 0))
+}
+
+/// Order two pieces of evidence, best first. Only ever compares evidence *of
+/// one hit*, so the scale question (which native score is bigger) never arises.
+fn cmp_evidence(a: &HitEvidence, b: &HitEvidence) -> Ordering {
+    ranking::cmp_rank(
+        &RankKey {
+            band: a.band(),
+            strength: a.coverage_permille(),
+            role: 0,
+            local_rank: a.local_rank as u32,
+        },
+        &RankKey {
+            band: b.band(),
+            strength: b.coverage_permille(),
+            role: 0,
+            local_rank: b.local_rank as u32,
+        },
+    )
+}
+
+/// The rank key a hit carries out of the sparse lane, before any fusion.
+fn rank_key_for(hit: &SparseHit) -> RankKey {
+    let primary = primary_evidence(hit);
+    RankKey {
+        band: primary.band(),
+        strength: strength_of(hit),
+        role: hit.role.preference(),
+        local_rank: primary.local_rank as u32,
+    }
+}
+
+/// Merge each chunk's evidence, then fold each row to its best chunk.
+///
+/// Both steps happen **before** anything is truncated. Otherwise a long row's
+/// five matching chunks would take five of the caller's slots, and a row found
+/// by three mechanisms would look like a row found by one — the two ways a
+/// chunk-level pool silently distorts a row-level answer.
+fn merge_and_fold(pool: Vec<SparseHit>) -> Vec<SparseHit> {
+    let mut by_chunk: BTreeMap<String, SparseHit> = BTreeMap::new();
+    for hit in pool {
+        match by_chunk.entry(hit.key.clone()) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(hit);
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                let existing = slot.get_mut();
+                let better = ranking::cmp_rank(&hit.rank, &existing.rank) == Ordering::Less;
+                for evidence in &hit.evidence {
+                    if !existing.evidence.contains(evidence) {
+                        existing.evidence.push(evidence.clone());
+                    }
+                }
+                if better {
+                    // The better producer owns the span: an exact literal points
+                    // at the literal, a fuzzy gram at a cluster of them.
+                    let evidence = std::mem::take(&mut existing.evidence);
+                    let mut replacement = hit;
+                    replacement.evidence = evidence;
+                    *existing = replacement;
+                }
+            }
+        }
+    }
+
+    let mut by_row: BTreeMap<(String, i64), SparseHit> = BTreeMap::new();
+    for hit in by_chunk.into_values() {
+        match by_row.entry((hit.session_id.clone(), hit.seq)) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(hit);
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                let existing = slot.get_mut();
+                let better = ranking::cmp_rank(&hit.rank, &existing.rank) == Ordering::Less;
+                for evidence in &hit.evidence {
+                    if !existing.evidence.contains(evidence) {
+                        existing.evidence.push(evidence.clone());
+                    }
+                }
+                if better {
+                    let evidence = std::mem::take(&mut existing.evidence);
+                    let mut replacement = hit;
+                    replacement.evidence = evidence;
+                    *existing = replacement;
+                }
+            }
+        }
+    }
+    by_row.into_values().collect()
 }
 
 /// Split a query on `|` into trimmed, non-empty, deduped alternatives — the
 /// contract the tool documents (`|` = alternatives, any may match), mirrored
 /// exactly so the lane answers "A|B" the way production does.
 fn split_alternatives(query: &str) -> Vec<&str> {
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
-    let mut out = Vec::new();
-    for part in query.split('|') {
-        let part = part.trim();
-        if !part.is_empty() && seen.insert(part) {
-            out.push(part);
-        }
-    }
-    out
+    query_plan::split_branches(query)
 }
 
-/// Score for the `rank`-th BM25 hit of a tier: a 2%-of-band decay that keeps
-/// the tier strictly below the one above and above the one below, while
-/// leaving the ranker's order intact through the product's score sort.
-/// (Exact substring hits keep their flat 1.0: among equals, recency is the
-/// product's intended tie-break.)
-fn tier_score(base: f64, rank: usize, limit: usize) -> f64 {
-    base - 0.02 * (rank as f64 / limit.max(1) as f64)
+/// Score for the `index`-th hit of a band: a 2%-of-band decay that keeps the
+/// band strictly below the one above and above the one below, while leaving the
+/// layer's own order intact through the product's score sort.
+///
+/// Presentation only. The order was already decided by [`ranking::RankKey`].
+fn tier_score(base: f64, index: usize, limit: usize) -> f64 {
+    base - 0.02 * (index as f64 / limit.max(1) as f64)
 }
 
 fn open(path: &Path) -> Result<Connection> {
@@ -803,6 +1433,7 @@ const ROWS_DDL: &str = "CREATE TABLE IF NOT EXISTS rows (
         chunk      INTEGER NOT NULL DEFAULT 0,
         single     INTEGER NOT NULL DEFAULT 1,
         item_type  TEXT NOT NULL DEFAULT '',
+        role       TEXT NOT NULL DEFAULT 'unknown',
         char_start INTEGER NOT NULL DEFAULT 0,
         char_end   INTEGER NOT NULL DEFAULT 0,
         text_norm  TEXT NOT NULL,
@@ -900,7 +1531,16 @@ pub fn needs_rebuild(path: &Path) -> Result<bool> {
 /// updater uses. The two paths are allowed to differ in *what they write*, never
 /// in *what they derive*.
 pub fn build_index(rows: &[SearchableRow], data_root: &Path) -> Result<()> {
-    let path = sparse_index_path(data_root);
+    build_index_at(rows, data_root, &sparse_index_path(data_root))
+}
+
+/// Build an index at an explicit path, deriving the rows against `data_root`.
+///
+/// The two are normally the same directory — an index belongs beside the corpus
+/// it was derived from — but a *probe* over a live workspace needs to read that
+/// workspace's blobs while writing its index somewhere else, so the derivation
+/// root and the output path are separate arguments here.
+pub fn build_index_at(rows: &[SearchableRow], data_root: &Path, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create sparse index dir {}", parent.display()))?;
@@ -915,7 +1555,7 @@ pub fn build_index(rows: &[SearchableRow], data_root: &Path) -> Result<()> {
     // there is no reason to hold the file against readers while doing it.
     let derived = derive_rows(rows, data_root, &cfg, &HashSet::new())?;
 
-    let mut conn = open(&path)?;
+    let mut conn = open(path)?;
     conn.execute_batch("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")?;
     let tx = conn.transaction()?;
     // A rebuild is not a merge: the tables are recreated rather than cleared, so
@@ -1189,11 +1829,15 @@ fn insert_row_chunks(conn: &Connection, row: &derive::DerivedRow) -> Result<usiz
     if row.chunks.is_empty() {
         return Ok(0);
     }
+    // The retrieval role is derived here from the same classification the corpus
+    // policy already uses, so ranking can prefer intent over tool output without
+    // a second source read at query time.
+    let role = ContentRole::from_slot(super::slots::classify(&row.kind, &row.item_type));
     let total = row.chunks.len();
     let mut ins = conn.prepare_cached(
-        "INSERT INTO rows(session_id, seq, chunk, single, item_type, char_start,
+        "INSERT INTO rows(session_id, seq, chunk, single, item_type, role, char_start,
                           char_end, text_norm, text)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     for c in &row.chunks {
         ins.execute(params![
@@ -1202,6 +1846,7 @@ fn insert_row_chunks(conn: &Connection, row: &derive::DerivedRow) -> Result<usiz
             c.index as i64,
             i64::from(total == 1),
             row.item_type,
+            role.as_str(),
             c.start as i64,
             c.end as i64,
             normalize(&c.text),
@@ -1290,9 +1935,22 @@ fn map_span(n: &NormText, nstart: usize, nend: usize) -> (usize, usize) {
 /// The exact substring span of a `LIKE` hit. `pos` is `instr`'s 1-based char
 /// offset inside the normalized text.
 fn like_match_span(text: &str, needle: &str, pos: usize) -> (usize, usize) {
+    like_span_and_occurrences(text, needle, pos).0
+}
+
+/// The span **and** how many times the literal occurs in the chunk.
+///
+/// Two literal hits are equally exact, so what separates them is how much of the
+/// row is about the literal at all: `occurrences` is that signal, and it is the
+/// one thing the old "newest session first" ordering threw away.
+fn like_span_and_occurrences(text: &str, needle: &str, pos: usize) -> ((usize, usize), usize) {
     let n = normalize_with_map(text);
     let start = pos.saturating_sub(1);
-    map_span(&n, start, start + needle.chars().count())
+    let occurrences = n.norm.matches(needle).count();
+    (
+        map_span(&n, start, start + needle.chars().count()),
+        occurrences,
+    )
 }
 
 /// Window used to pick the densest cluster of matched tokens, in original chars.
@@ -1384,35 +2042,24 @@ pub fn has_cjk(s: &str) -> bool {
 /// exact substring search, which `like` already does and which reaches 51/121
 /// against this lane's 84/121.
 pub fn trigram_query(needle: &str) -> Option<String> {
-    let chars: Vec<char> = needle.chars().collect();
-    if chars.len() < TRIGRAM_LEN {
-        return None;
-    }
-    let mut grams: BTreeSet<String> = BTreeSet::new();
-    for w in chars.windows(TRIGRAM_LEN) {
-        let gram: String = w.iter().collect();
-        if gram.trim().is_empty() {
-            continue;
-        }
-        grams.insert(quote_term(&gram));
-    }
+    let grams: BTreeSet<String> = query_plan::grams_of(needle).into_iter().collect();
     if grams.is_empty() {
         return None;
     }
-    Some(grams.into_iter().collect::<Vec<_>>().join(" OR "))
+    Some(
+        grams
+            .into_iter()
+            .map(|gram| quote_term(&gram))
+            .collect::<Vec<_>>()
+            .join(" OR "),
+    )
 }
 
 /// `unicode61` word tokens of the query, deduped and sorted so the generated
 /// query is deterministic. The tokenizer already drops punctuation and folds
 /// case, so splitting on non-alphanumerics reproduces its segmentation.
 fn word_terms(needle: &str) -> Vec<String> {
-    let mut tokens: BTreeSet<String> = BTreeSet::new();
-    for tok in needle.split(|c: char| !c.is_alphanumeric() && c != '_') {
-        if !tok.is_empty() {
-            tokens.insert(tok.to_string());
-        }
-    }
-    tokens.into_iter().collect()
+    query_plan::terms_sorted(needle)
 }
 
 /// A phrase for an FTS5 query: quoted so punctuation reads as text, with
@@ -1436,22 +2083,51 @@ pub fn word_query(needle: &str) -> Option<String> {
     )
 }
 
+/// The `unicode61` `MATCH` the lexical layer runs, which is the same terms but
+/// asked as the gate wants them.
+///
+/// When the gate demands *every* informative word, the query says so and FTS5
+/// does the filtering: no over-fetch and no post-filter. When it accepts a
+/// subset, the words are OR-ed and the coverage count decides — FTS5 has no
+/// `minimum_should_match`, so the count is how the same contract is expressed.
+/// Either way the words are the query's *informative* ones: `the` never becomes
+/// a clause of its own here.
+fn word_query_gated(branch: &QueryBranch) -> Option<String> {
+    let terms = &branch.content_terms;
+    if terms.is_empty() {
+        return None;
+    }
+    let joiner = if branch.word_min() >= terms.len() {
+        " AND "
+    } else {
+        " OR "
+    };
+    Some(
+        terms
+            .iter()
+            .map(|t| quote_term(t))
+            .collect::<Vec<_>>()
+            .join(joiner),
+    )
+}
+
 /// FTS5's documented proximity query: all query terms within `NEAR_DISTANCE`
 /// tokens of each other, in any order. This is the standard span-near tier
 /// (Lucene `SpanNearQuery`, ES `span_near`), not a local invention.
 ///
 /// Skipped for CJK — the trigram path already matches substrings, and `NEAR`
 /// over trigram tokens is not meaningful — and for single-term queries, which
-/// have nothing to be near.
+/// have nothing to be near. The terms are the query's informative ones in the
+/// order they were written: an earlier version took the alphabetically-first
+/// six, which meant a window that opened with `a` and `about` and never reached
+/// the word the user cared about.
 fn near_query(needle: &str) -> Option<String> {
-    if has_cjk(needle) {
+    let branch = QueryBranch::parse(needle);
+    if !branch.proximity_applies() {
         return None;
     }
-    let terms = word_terms(needle);
-    if terms.len() < 2 {
-        return None;
-    }
-    let list = terms
+    let list = branch
+        .near_terms()
         .iter()
         .take(NEAR_MAX_TERMS)
         .map(|t| quote_term(t))
@@ -1695,9 +2371,16 @@ mod tests {
 
     #[test]
     fn near_query_is_proximity_over_word_terms() {
+        // The window keeps the query's own order: the terms that matter are the
+        // ones the user wrote first, not the alphabetically smallest.
         assert_eq!(
             near_query("session search").unwrap(),
-            "NEAR(\"search\" \"session\", 10)"
+            "NEAR(\"session\" \"search\", 10)"
+        );
+        // Glue is skipped before the window is spent.
+        assert_eq!(
+            near_query("the session of search").unwrap(),
+            "NEAR(\"session\" \"search\", 10)"
         );
         assert!(near_query("single").is_none());
         assert!(near_query("会话检索").is_none(), "CJK takes the trigram path");
@@ -1741,5 +2424,158 @@ mod tests {
         let cfg = chunk_cfg(448);
         assert_eq!(cfg.tokens, 448);
         assert!(!cfg.anchor);
+    }
+
+    /// An in-memory index over `(session_id, seq, text, role)` rows.
+    fn memory_index(rows: &[(&str, i64, &str, &str)]) -> SparseIndex {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(ROWS_DDL).unwrap();
+        for (sid, seq, text, role) in rows {
+            conn.execute(
+                "INSERT INTO rows(session_id, seq, chunk, single, item_type, role,
+                                  char_start, char_end, text_norm, text)
+                 VALUES (?1, ?2, 0, 1, 'message', ?3, 0, ?4, ?5, ?6)",
+                params![
+                    sid,
+                    seq,
+                    role,
+                    text.chars().count() as i64,
+                    normalize(text),
+                    text
+                ],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(FTS_DDL).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tri(tri) VALUES('rebuild'); INSERT INTO uni(uni) VALUES('rebuild');",
+        )
+        .unwrap();
+        SparseIndex {
+            conn,
+            path: PathBuf::from(":memory:"),
+            scope: None,
+        }
+    }
+
+    #[test]
+    fn a_typo_is_found_by_the_fuzzy_layer_and_gated_by_adjacency() {
+        let index = memory_index(&[("s", 1, "UNIQUE_SESSION_PHRASE is here", "conversation")]);
+        let (hits, traces) = index.compose_sparse("UNIQUE_SESSION_PHRAZE", 10).unwrap();
+        assert_eq!(hits.len(), 1, "a typo is what the fuzzy layer exists for: {traces:#?}");
+        assert_eq!(hits[0].layers(), vec![LayerId::Fuzzy]);
+        let fuzzy = traces
+            .iter()
+            .find(|t| t.layer == LayerId::Fuzzy)
+            .expect("the fuzzy layer was the one that ran");
+        assert_eq!(fuzzy.stop, StopReason::RecallShortfall, "{traces:#?}");
+        assert_eq!(fuzzy.accepted, 1);
+    }
+
+    #[test]
+    fn a_partial_fragment_is_not_typo_tolerance() {
+        // Two words of a five-word question are not "nearly" the question.
+        let index = memory_index(&[
+            ("s", 1, "alpha beta only", "conversation"),
+            ("s", 2, "alpha beta gamma delta epsilon", "conversation"),
+        ]);
+        let (hits, _) = index
+            .compose_sparse("alpha beta gamma delta epsilon", 10)
+            .unwrap();
+        let rows: Vec<(String, i64)> = hits
+            .iter()
+            .map(|h| (h.session_id.clone(), h.seq))
+            .collect();
+        assert_eq!(rows.len(), 1, "only the row that covers the query");
+        assert_eq!(rows[0].1, 2);
+        assert_eq!(hits[0].coverage_of(LayerId::Lexical), Some(1.0));
+    }
+
+    #[test]
+    fn a_row_that_only_shares_a_suffix_is_not_a_typo_match() {
+        // The two rows share `_MARKER`; only one shares essentially the whole
+        // query. Coverage alone cannot tell them apart — the unbroken fragment
+        // can, which is why the fuzzy layer asks for one.
+        let index = memory_index(&[
+            ("s", 1, "ARCHIVED_OLD_MARKER buried before compact", "conversation"),
+            ("s", 2, "LIVE_TAIL_MARKER still in window", "conversation"),
+        ]);
+        let (hits, _) = index.compose_sparse("LIVE_TAIL_MARKER", 10).unwrap();
+        let rows: Vec<i64> = hits.iter().map(|h| h.seq).collect();
+        assert_eq!(rows, vec![2], "{hits:#?}");
+    }
+
+    #[test]
+    fn one_common_word_does_not_answer_a_multi_word_query() {
+        let index = memory_index(&[
+            ("s", 1, "the final answer", "conversation"),
+            ("s", 2, "the auth refactor token", "conversation"),
+            // One informative word of three: the OR query finds it, and the
+            // coverage gate is what refuses to call it an answer.
+            ("s", 3, "auth unrelated notes", "conversation"),
+        ]);
+        let branch = QueryBranch::parse("the auth refactor token");
+        assert_eq!(branch.content_terms, ["auth", "refactor", "token"]);
+        assert_eq!(branch.word_min(), 2);
+        let query = word_query_gated(&branch).unwrap();
+        assert_eq!(query, "\"auth\" OR \"refactor\" OR \"token\"");
+        assert!(
+            !query.contains("\"the\""),
+            "glue is not a clause of its own: {query}"
+        );
+
+        let (hits, traces) = index
+            .compose_sparse("the auth refactor token", 10)
+            .unwrap();
+        let rows: Vec<i64> = hits.iter().map(|h| h.seq).collect();
+        assert_eq!(rows, vec![2], "{traces:#?}");
+        assert_eq!(hits[0].rank.band, ranking::RankBand::Exact);
+        assert_eq!(
+            hits[0].layer_count(),
+            4,
+            "every mechanism found it, and the answer says so"
+        );
+        let lexical = traces
+            .iter()
+            .find(|t| t.layer == LayerId::Lexical)
+            .expect("the lexical layer ran");
+        assert!(
+            lexical.rejected >= 1,
+            "the one-word row is rejected, not ranked: {traces:#?}"
+        );
+    }
+
+    #[test]
+    fn a_common_literal_is_ranked_by_relevance_not_recency() {
+        // Both rows contain the literal `session`; only one is about it. The
+        // shortest-chunk prior plus the occurrence count is what the layer can
+        // see, and recency is only the last tie-break.
+        let mut rows: Vec<(String, i64, String, String)> = Vec::new();
+        for seq in 0..250 {
+            rows.push((
+                "01AAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
+                seq,
+                format!("session {seq} {}", "filler ".repeat(60)),
+                "conversation".to_string(),
+            ));
+        }
+        rows.push((
+            "01ZZZZZZZZZZZZZZZZZZZZZZZZ".to_string(),
+            999,
+            "session search ranking session coverage".to_string(),
+            "conversation".to_string(),
+        ));
+        let borrowed: Vec<(&str, i64, &str, &str)> = rows
+            .iter()
+            .map(|(sid, seq, text, role)| (sid.as_str(), *seq, text.as_str(), role.as_str()))
+            .collect();
+        let index = memory_index(&borrowed);
+        let (hits, _) = index.compose_sparse("session", 10).unwrap();
+        assert_eq!(hits.len(), 10, "the pool is still the caller's limit");
+        assert_eq!(
+            hits[0].session_id, "01ZZZZZZZZZZZZZZZZZZZZZZZZ",
+            "the row that is *about* the literal wins over 250 newer rows that merely mention it"
+        );
+        assert!(hits[0].evidence[0].native >= 2.0, "occurrence count is the signal");
     }
 }

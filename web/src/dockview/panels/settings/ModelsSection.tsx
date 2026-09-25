@@ -1,4 +1,10 @@
 import { useMemo, useState } from "react";
+import {
+  FilePdfIcon,
+  ImageIcon,
+  SpeakerHighIcon,
+  VideoIcon,
+} from "@phosphor-icons/react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 
 import {
@@ -12,16 +18,68 @@ import { ProviderLogo } from "../../../components/ProviderLogos";
 import { SettingsPageShell, useSettingsSaveBlocked } from "./shared";
 
 /**
+ * Input modalities as 12px glyphs, in the catalog's own order
+ * (`Modality::ALL` in Rust, minus `text`) so every row scans the same way.
+ *
+ * `text` is deliberately absent: every model must declare it
+ * (`resolve_model` rejects a catalog without it), so a text glyph would sit on
+ * every row identically and say nothing. The glyphs mark what a model takes
+ * *beyond* text, and a row with none stays name plus switch.
+ *
+ * The wire sends a closed set of tokens, so one the table does not name is
+ * dropped rather than given a guess of an icon.
+ */
+const MODALITY_GLYPHS: { token: string; Glyph: typeof ImageIcon }[] = [
+  { token: "image", Glyph: ImageIcon },
+  { token: "video", Glyph: VideoIcon },
+  { token: "audio", Glyph: SpeakerHighIcon },
+  { token: "pdf", Glyph: FilePdfIcon },
+];
+
+function ModalityIcons({ modalities }: { modalities: string[] }) {
+  const present = MODALITY_GLYPHS.filter(({ token }) =>
+    modalities.includes(token),
+  );
+  if (present.length === 0) return null;
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1 text-(--_dk-text-muted)"
+      aria-label="Input modalities"
+    >
+      {present.map(({ token, Glyph }) => (
+        <span
+          key={token}
+          role="img"
+          aria-label={token}
+          title={`Accepts ${token} input`}
+          className="inline-flex"
+        >
+          <Glyph size={12} aria-hidden />
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
  * Binary On/Off picker in the same segmented style as the chat input's
  * context/thinking switches: the active segment is a motion pill that springs
  * between the two slots (reduced-motion users get an instant swap).
+ *
+ * `id` (the globally unique `provider/model` ref) keys the shared-layout pill,
+ * never the display label: two providers ship the same label ("GPT-6 Luna" on
+ * both OpenCode hosts), and a label-keyed `layoutId` makes one row's pill the
+ * lead for every row that matches, so the duplicates render no pill of their
+ * own. The ref is the identity the switch writes to the server anyway.
  */
 function ModelToggle({
+  id,
   label,
   enabled,
   disabled,
   onToggle,
 }: {
+  id: string;
   label: string;
   enabled: boolean;
   disabled: boolean;
@@ -32,7 +90,7 @@ function ModelToggle({
     ? { duration: 0 }
     : { type: "spring" as const, stiffness: 420, damping: 34 };
   return (
-    <LayoutGroup id={`model-toggle-${label}`}>
+    <LayoutGroup id={`model-toggle-${id}`}>
       <div
         role="group"
         aria-label={`Enable ${label}`}
@@ -58,7 +116,8 @@ function ModelToggle({
             >
               {selected ? (
                 <motion.span
-                  layoutId={`model-toggle-pill-${label}`}
+                  layoutId={`model-toggle-pill-${id}`}
+                  data-layout-id={`model-toggle-pill-${id}`}
                   className="absolute inset-0 rounded bg-(--_dk-accent-halo)"
                   transition={spring}
                 />
@@ -75,7 +134,8 @@ function ModelToggle({
 }
 
 /**
- * One model: its name and whether the pickers may offer it. Nothing else.
+ * One model: its name, the input modalities it accepts, and whether the pickers
+ * may offer it.
  *
  * `tool_call: false` models would break an agent run, so the reason rides on the
  * row's tooltip rather than on a badge — the list stays two columns wide.
@@ -102,10 +162,14 @@ function ModelRow({
           : `${label} can't call tools — agents can't run on it`
       }
     >
-      <span className="min-w-0 truncate text-dk-sm text-(--_dk-text-secondary)">
-        {label}
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 truncate text-dk-sm text-(--_dk-text-secondary)">
+          {label}
+        </span>
+        <ModalityIcons modalities={model.modalities} />
       </span>
       <ModelToggle
+        id={model.ref}
         label={label}
         enabled={model.enabled}
         disabled={saveBlocked || busy}

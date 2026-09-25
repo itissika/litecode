@@ -111,6 +111,20 @@ function toggleFor(modelLabel: string): HTMLElement {
   return screen.getByRole("group", { name: `Enable ${modelLabel}` });
 }
 
+/** One modality glyph inside a model row. */
+function modalityIcon(
+  modelLabel: string,
+  modality: string,
+): HTMLElement | null {
+  const row = screen.getByText(modelLabel).closest('[role="listitem"]');
+  return row?.querySelector(`[role="img"][aria-label="${modality}"]`) ?? null;
+}
+
+/** The section renders the store's `llm`, so a test seeds it through setState. */
+function seedLlm(doc: LlmSettings) {
+  useSettingsStore.setState({ llm: doc });
+}
+
 describe("ModelsSection", () => {
   beforeEach(() => {
     mockedLlm.mockReset().mockResolvedValue(llmDoc());
@@ -146,6 +160,9 @@ describe("ModelsSection", () => {
     // The tags the Provider page used to carry are gone.
     expect(screen.queryByText("200k")).toBeNull();
     expect(screen.queryByText("opencode/gpt-6-sol")).toBeNull();
+    // `["text"]` alone earns no glyph: the row stays name plus switch.
+    expect(modalityIcon("GPT-6 Sol", "text")).toBeNull();
+    expect(modalityIcon("GPT-6 Sol", "image")).toBeNull();
   });
 
   it("reads each switch straight off the projection", () => {
@@ -209,6 +226,150 @@ describe("ModelsSection", () => {
 
     await waitFor(() => {
       expect(mockedEnabled).toHaveBeenCalledWith("opencode/kimi-k2", true);
+    });
+  });
+
+  it("renders a glyph per modality a model takes beyond text", () => {
+    seedLlm(
+      llmDoc({
+        providers: [
+          {
+            ...zenProvider,
+            models: [
+              { ...solModel, modalities: ["text", "image", "pdf"] },
+              offModel,
+            ],
+          },
+          {
+            ...goProvider,
+            models: [
+              model({
+                ref: "opencode-go/mimo",
+                label: "MiMo",
+                modalities: ["text", "image", "video", "audio"],
+              }),
+            ],
+          },
+          unconfigured,
+        ],
+      }),
+    );
+    render(<ModelsSection />);
+
+    expect(modalityIcon("GPT-6 Sol", "image")).toBeTruthy();
+    expect(modalityIcon("GPT-6 Sol", "pdf")).toBeTruthy();
+    // Not declared → no glyph, no placeholder.
+    expect(modalityIcon("GPT-6 Sol", "video")).toBeNull();
+    expect(modalityIcon("GPT-6 Sol", "audio")).toBeNull();
+    // `text` is universal, so it never spends a glyph.
+    expect(modalityIcon("GPT-6 Sol", "text")).toBeNull();
+
+    for (const modality of ["image", "video", "audio"]) {
+      expect(modalityIcon("MiMo", modality)).toBeTruthy();
+    }
+    expect(modalityIcon("MiMo", "pdf")).toBeNull();
+  });
+
+  it("keeps a pill on every row when two providers share a label", () => {
+    // "GPT-6 Luna" ships on both OpenCode hosts. A label-keyed layoutId makes
+    // one row's pill the lead for both, so the duplicate renders none.
+    seedLlm(
+      llmDoc({
+        providers: [
+          {
+            ...zenProvider,
+            models: [
+              model({
+                ref: "opencode/gpt-6-luna",
+                id: "gpt-6-luna",
+                label: "GPT-6 Luna",
+              }),
+            ],
+          },
+          {
+            ...goProvider,
+            models: [
+              model({
+                ref: "opencode-go/gpt-6-luna",
+                id: "gpt-6-luna",
+                label: "GPT-6 Luna",
+                enabled: false,
+              }),
+            ],
+          },
+          unconfigured,
+        ],
+      }),
+    );
+    render(<ModelsSection />);
+
+    const toggles = screen.getAllByRole("group", { name: "Enable GPT-6 Luna" });
+    expect(toggles).toHaveLength(2);
+    // Each row keeps its own selection: on for Zen, off for Go.
+    expect(
+      within(toggles[0])
+        .getByRole("button", { name: "On" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(
+      within(toggles[1])
+        .getByRole("button", { name: "On" })
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
+    expect(
+      within(toggles[1])
+        .getByRole("button", { name: "Off" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    // Both rows paint their own pill, and each pill carries its own layoutId:
+    // two rows sharing one id is the reported bug (the follower renders none).
+    const ids = toggles.map((toggle) => {
+      const pill = toggle.querySelector("[data-layout-id]");
+      expect(pill).toBeTruthy();
+      return pill?.getAttribute("data-layout-id");
+    });
+    expect(ids).toEqual([
+      "model-toggle-pill-opencode/gpt-6-luna",
+      "model-toggle-pill-opencode-go/gpt-6-luna",
+    ]);
+  });
+
+  it("routes a toggle on a duplicate label to that row's own ref", async () => {
+    seedLlm(
+      llmDoc({
+        providers: [
+          {
+            ...zenProvider,
+            models: [
+              model({
+                ref: "opencode/gpt-6-luna",
+                id: "gpt-6-luna",
+                label: "GPT-6 Luna",
+              }),
+            ],
+          },
+          {
+            ...goProvider,
+            models: [
+              model({
+                ref: "opencode-go/gpt-6-luna",
+                id: "gpt-6-luna",
+                label: "GPT-6 Luna",
+                enabled: false,
+              }),
+            ],
+          },
+          unconfigured,
+        ],
+      }),
+    );
+    render(<ModelsSection />);
+
+    const toggles = screen.getAllByRole("group", { name: "Enable GPT-6 Luna" });
+    fireEvent.click(within(toggles[1]).getByRole("button", { name: "On" }));
+
+    await waitFor(() => {
+      expect(mockedEnabled).toHaveBeenCalledWith("opencode-go/gpt-6-luna", true);
     });
   });
 });

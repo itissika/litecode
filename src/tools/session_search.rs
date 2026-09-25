@@ -98,7 +98,7 @@ impl Tool for SessionSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What to find in past session transcripts. Literal words/phrase; separate alternatives with | (any may match, e.g. 'retry|重试'); matched literally and case-insensitively, so separators count. The current session's live context window is never searched."
+                    "description": "What to find in past session transcripts. Literal words or a phrase. A multi-word query matches rows that contain most of those words (a literal phrase matches verbatim). Separate alternatives with | (any may match, e.g. 'retry|重试'); matching is case-insensitive and literal, so separators count. The current session's live context window is never searched."
                 },
                 "session_id": {
                     "type": "string",

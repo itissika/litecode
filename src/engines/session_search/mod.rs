@@ -13,12 +13,17 @@ mod golden;
 mod lexical;
 #[cfg(test)]
 mod parity;
+mod query_plan;
+mod ranking;
+#[cfg(test)]
+mod relevance;
 mod semantic_index;
 mod slots;
 mod sparse;
 mod tokenizer;
 
 pub use lexical::{ensure_sparse_index, spawn_sparse_refresh};
+pub use ranking::{ContentRole, HitEvidence, LayerId, LayerTrace, RankBand, RankKey, StopReason};
 pub use semantic_index::{
     SessionSemanticIndex, consume_session_index, ensure_session_index, load_session_index,
     queue_session_dirty, read_session_pending_hint, session_index_status, session_should_rebuild,
@@ -35,9 +40,19 @@ use crate::session::transcript_file::{self, TranscriptFile};
 use crate::session::{count_text_tokens, truncate_text_tokens};
 use crate::types::{LitecodeError, Result};
 
+use ranking::{cmp_rank, rrf_score};
+
 /// Semantic ANN over-fetch before gating / session filter.
-pub const SEMANTIC_WINDOW: usize = 16;
+///
+/// This is a **fusion window**, not a result count: the fused list is truncated
+/// later, by the view's token budget or the caller's limit, and a lane that is
+/// merged by rank needs a candidate pool several times larger than the answer to
+/// have anything worth merging. The old value was the answer size.
+pub const SEMANTIC_WINDOW: usize = 64;
 /// Cap fuzzy-scan scores below FTS-confirmed hits (0.85): confirmed hits rank first.
+/// Superseded by the band model — the fuzzy band is decided by evidence, not by
+/// a score ceiling — and kept only as the ladder value that band is shown with
+/// (`ranking::RankBand::Fuzzy` in the sparse lane).
 pub const FUZZY_SCORE_CAP: f64 = 0.72;
 /// Max characters of the hit nucleus used while locating a match span.
 pub const HIT_CORE_MAX_CHARS: usize = 200;
@@ -86,6 +101,8 @@ pub struct SessionTextHit {
     pub item_type: String,
     /// Lane-local preview; page hydration may replace this with a physical line.
     pub summary: String,
+    /// Presentation value: the lane's ladder figure, for a reader who expects
+    /// one. The **order** comes from [`Self::rank`].
     pub score: f64,
     /// Match start within this item's plain text (char index).
     #[serde(default)]
@@ -95,6 +112,48 @@ pub struct SessionTextHit {
     pub char_end: usize,
     #[serde(default)]
     pub lane: SessionHitLane,
+    /// What question the row's text answers. Ranking only: nothing is filtered
+    /// by role, a tool result is still fully searchable.
+    #[serde(default)]
+    pub role: ContentRole,
+    /// Every layer that found this row, with the coverage it proved. The reason
+    /// a hit is in the list, carried up so the ranking can use it instead of
+    /// guessing from a score.
+    #[serde(default)]
+    pub evidence: Vec<HitEvidence>,
+    /// The ordering key. This is the cross-layer currency: native scores stay in
+    /// their own layer.
+    #[serde(default)]
+    pub rank: RankKey,
+}
+
+impl SessionTextHit {
+    /// The layers that found this row, deduped and in priority order.
+    pub fn layers(&self) -> Vec<LayerId> {
+        let mut out: Vec<LayerId> = Vec::new();
+        for evidence in &self.evidence {
+            if !out.contains(&evidence.layer) {
+                out.push(evidence.layer);
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// How many layers found it. Agreement is evidence, and the fusion stage
+    /// rewards it.
+    pub fn layer_count(&self) -> usize {
+        self.layers().len()
+    }
+
+    /// The coverage this row proved for one layer, if that layer found it.
+    pub fn coverage_of(&self, layer: LayerId) -> Option<f64> {
+        self.evidence
+            .iter()
+            .filter(|e| e.layer == layer)
+            .map(|e| e.coverage())
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,21 +253,109 @@ fn hit_allowed(h: &SessionTextHit, query: &SessionTextQuery) -> bool {
     true
 }
 
-/// Lexical ranked list first; gated semantic hits append when `(session_id, seq)` is new.
-pub fn merge_session_hits(
-    lexical: Vec<SessionTextHit>,
+/// Fuse the sparse full layer with the semantic layer into one ranked stream.
+///
+/// The two lanes do not share a score scale — BM25 is unbounded and negated,
+/// `1/(1+distance)` lives in `(0, 1]` — so neither is ever compared with the
+/// other. **Rank** is the currency, and the merge is reciprocal rank fusion:
+/// a row both lanes found accumulates both contributions, which is how
+/// agreement is rewarded without ever asking whose score was bigger.
+///
+/// The one thing that is *not* fused is the high-confidence head. An exact
+/// literal or a proximity window is the product's strongest evidence, and its
+/// place at the top of the list is not subject to a rank lottery: fusion only
+/// decides how the loose recall below it is ordered.
+///
+/// Duplicates are folded per row before anything else, so one row cannot take
+/// two ranks (the sparse lane ranks per chunk). When both lanes found a row, the
+/// sparse hit is kept — it carries the literal span — and the semantic evidence
+/// is merged into it.
+pub fn fuse_session_layers(
+    sparse: Vec<SessionTextHit>,
     semantic: Vec<SessionTextHit>,
 ) -> Vec<SessionTextHit> {
-    let mut seen: HashSet<(String, i64)> = lexical
-        .iter()
-        .map(|h| (h.session_id.clone(), h.seq))
-        .collect();
-    let mut out = lexical;
+    /// Weight of the sparse list in the fusion.
+    const SPARSE_WEIGHT: f64 = 1.0;
+    /// Weight of the semantic list. Rank fusion is scale-free, so this is the
+    /// single knob that says what a dense hit is worth against a lexical one;
+    /// equal weight is the documented starting point, not a tuned result.
+    const SEMANTIC_WEIGHT: f64 = 1.0;
+
+    let sparse = dedup_chunks_to_rows(&sparse);
+    let semantic = dedup_chunks_to_rows(&semantic);
+
+    let mut by_key: HashMap<(String, i64), SessionTextHit> = HashMap::new();
+    let mut head: HashSet<(String, i64)> = HashSet::new();
+    let mut loose_sparse: Vec<(String, i64)> = Vec::new();
+    let mut semantic_order: Vec<(String, i64)> = Vec::new();
+
+    for hit in sparse {
+        let key = (hit.session_id.clone(), hit.seq);
+        match hit.rank.band {
+            RankBand::Exact | RankBand::Proximity => {
+                head.insert(key.clone());
+            }
+            RankBand::Fusion => loose_sparse.push(key.clone()),
+            RankBand::Fuzzy => {}
+        }
+        by_key.insert(key, hit);
+    }
     for hit in semantic {
-        if seen.insert((hit.session_id.clone(), hit.seq)) {
-            out.push(hit);
+        let key = (hit.session_id.clone(), hit.seq);
+        semantic_order.push(key.clone());
+        match by_key.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                // Both lanes found it. The sparse hit owns the span; the
+                // semantic evidence is added to it, so the final answer can say
+                // "this row is both a lexical and a semantic match".
+                let existing = slot.get_mut();
+                for evidence in hit.evidence {
+                    if !existing.evidence.contains(&evidence) {
+                        existing.evidence.push(evidence);
+                    }
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(hit);
+            }
         }
     }
+
+    // Reciprocal rank fusion, over the loose lists only.
+    let mut fusion: HashMap<(String, i64), f64> = HashMap::new();
+    for (rank, key) in loose_sparse.iter().enumerate() {
+        if head.contains(key) {
+            continue;
+        }
+        *fusion.entry(key.clone()).or_insert(0.0) += rrf_score(rank, SPARSE_WEIGHT);
+    }
+    for (rank, key) in semantic_order.iter().enumerate() {
+        if head.contains(key) {
+            continue;
+        }
+        *fusion.entry(key.clone()).or_insert(0.0) += rrf_score(rank, SEMANTIC_WEIGHT);
+    }
+
+    let mut out: Vec<SessionTextHit> = by_key
+        .into_values()
+        .map(|mut hit| {
+            let key = (hit.session_id.clone(), hit.seq);
+            if !head.contains(&key)
+                && let Some(score) = fusion.get(&key)
+            {
+                // The band is untouched: a row whose only evidence is a fuzzy
+                // n-gram overlap stays below a row the lexical layer proved,
+                // however many lists mentioned it.
+                hit.rank.strength = (score * 1_000_000.0).round() as u32;
+            }
+            hit
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        cmp_rank(&a.rank, &b.rank)
+            .then_with(|| b.session_id.cmp(&a.session_id))
+            .then_with(|| b.seq.cmp(&a.seq))
+    });
     out
 }
 
@@ -275,15 +422,16 @@ fn cmp_hits(a: &SessionTextHit, b: &SessionTextHit) -> std::cmp::Ordering {
         .then_with(|| a.seq.cmp(&b.seq))
 }
 
-/// Agent-facing final ordering: score desc → caller family first → most
-/// recently updated session first → stable (session_id, seq) for pagination.
+/// Agent-facing final ordering: the explicit rank key first, then caller
+/// family, then the most recently updated session, then a stable
+/// `(session_id, seq)` for pagination.
 ///
-/// The time key is the carrier of "newest first" among equal scores (mostly the
-/// exact-match tier, where every hit scores 1.0). It is deliberately **not**
-/// dropped: without it the fallback would be earliest-first (or the lane's ULID
-/// order), i.e. the original would stop outranking later mentions. The rendered
-/// view also carries `created`/`updated`, but that is for the reader, not a
-/// substitute for the ordering.
+/// The rank key is the relevance half — band (how strong the evidence is),
+/// coverage (how much of the query the row proved), content role and the
+/// producing layer's own order. Recency is deliberately *inside* that chain
+/// rather than above it: "newest first" is how equals are broken, not how
+/// relevance is decided.
+///
 pub fn sort_hits_for_agent(
     hits: &mut [SessionTextHit],
     prefer_session_ids: &[String],
@@ -291,9 +439,7 @@ pub fn sort_hits_for_agent(
 ) {
     let prefer: HashSet<&str> = prefer_session_ids.iter().map(String::as_str).collect();
     hits.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        cmp_rank(&a.rank, &b.rank)
             .then_with(|| {
                 let ra = usize::from(!prefer.contains(a.session_id.as_str()));
                 let rb = usize::from(!prefer.contains(b.session_id.as_str()));
@@ -1377,76 +1523,111 @@ mod tests {
         }
     }
 
-    #[test]
-    fn gate_drops_weak_semantic() {
-        let sem = vec![SessionTextHit {
-            session_id: "s".into(),
-            seq: 0,
+    /// One hit for the ordering tests. Ranking reads the rank key, never the
+    /// score, so the helper takes the key explicitly.
+    fn ranked_hit(
+        session_id: &str,
+        seq: i64,
+        lane: SessionHitLane,
+        band: RankBand,
+        local_rank: u32,
+    ) -> SessionTextHit {
+        let layer = match lane {
+            SessionHitLane::Text => LayerId::Lexical,
+            SessionHitLane::Semantic => LayerId::Semantic,
+        };
+        let role = ContentRole::Conversation;
+        SessionTextHit {
+            session_id: session_id.into(),
+            seq,
             item_type: "message".into(),
-            summary: "x".into(),
-            score: 0.3,
+            summary: format!("{session_id}:{seq}"),
+            score: 0.9,
             char_start: 0,
             char_end: 1,
-            lane: SessionHitLane::Semantic,
-        }];
+            lane,
+            role,
+            evidence: vec![HitEvidence {
+                layer,
+                branch: 0,
+                matched: 1,
+                total: 1,
+                local_rank: local_rank as usize,
+                native: 0.0,
+            }],
+            rank: RankKey {
+                band,
+                strength: 1_000 - local_rank,
+                role: role.preference(),
+                local_rank,
+            },
+        }
+    }
+
+    #[test]
+    fn gate_drops_weak_semantic() {
+        let mut sem = vec![ranked_hit("s", 0, SessionHitLane::Semantic, RankBand::Fusion, 0)];
+        sem[0].score = 0.3;
         assert!(gate_semantic_hits(sem).is_empty());
     }
 
     #[test]
     fn gate_keeps_strong_semantic() {
-        let sem = vec![SessionTextHit {
-            session_id: "s".into(),
-            seq: 0,
-            item_type: "message".into(),
-            summary: "x".into(),
-            score: 0.8,
-            char_start: 0,
-            char_end: 1,
-            lane: SessionHitLane::Semantic,
-        }];
+        let mut sem = vec![ranked_hit("s", 0, SessionHitLane::Semantic, RankBand::Fusion, 0)];
+        sem[0].score = 0.8;
         assert_eq!(gate_semantic_hits(sem).len(), 1);
     }
 
     #[test]
-    fn merge_keeps_lexical_first_and_appends_unique_semantic() {
-        let lexical = vec![SessionTextHit {
-            session_id: "a".into(),
-            seq: 1,
-            item_type: "message".into(),
-            summary: "lex".into(),
-            score: 1.0,
-            char_start: 0,
-            char_end: 3,
-            lane: SessionHitLane::Text,
-        }];
+    fn fusion_keeps_the_row_both_lanes_found_and_rewards_the_agreement() {
+        // The sparse lane found row a (with its literal span); the semantic lane
+        // found the same row plus one it alone knows about.
+        let lexical = vec![ranked_hit("a", 1, SessionHitLane::Text, RankBand::Fusion, 1)];
         let semantic = vec![
-            SessionTextHit {
-                session_id: "a".into(),
-                seq: 1,
-                item_type: "message".into(),
-                summary: "dup".into(),
-                score: 0.9,
-                char_start: 0,
-                char_end: 0,
-                lane: SessionHitLane::Semantic,
-            },
-            SessionTextHit {
-                session_id: "b".into(),
-                seq: 2,
-                item_type: "message".into(),
-                summary: "only-sem".into(),
-                score: 0.8,
-                char_start: 0,
-                char_end: 0,
-                lane: SessionHitLane::Semantic,
-            },
+            ranked_hit("a", 1, SessionHitLane::Semantic, RankBand::Fusion, 0),
+            ranked_hit("b", 2, SessionHitLane::Semantic, RankBand::Fusion, 1),
         ];
-        let merged = merge_session_hits(lexical, semantic);
-        assert_eq!(merged.len(), 2);
-        assert_eq!(merged[0].session_id, "a");
-        assert_eq!(merged[0].lane, SessionHitLane::Text);
-        assert_eq!(merged[1].session_id, "b");
-        assert_eq!(merged[1].lane, SessionHitLane::Semantic);
+        let fused = fuse_session_layers(lexical, semantic);
+        assert_eq!(fused.len(), 2, "one row is one hit, whichever lane found it");
+        assert_eq!(fused[0].session_id, "a");
+        // The sparse hit owns the row: it is the one carrying the literal span.
+        assert_eq!(fused[0].lane, SessionHitLane::Text);
+        assert_eq!(fused[0].char_end, 1);
+        let layers = fused[0].layers();
+        assert_eq!(layers, vec![LayerId::Lexical, LayerId::Semantic]);
+        assert!(layers.contains(&LayerId::Semantic), "agreement is recorded");
+        assert!(
+            fused[0].rank.strength > fused[1].rank.strength,
+            "two lists beating one is what rank fusion is for"
+        );
+        assert_eq!(fused[1].session_id, "b");
+        assert_eq!(fused[1].lane, SessionHitLane::Semantic);
+    }
+
+    #[test]
+    fn fusion_never_compares_native_scores_across_lanes() {
+        // The semantic hit has a far better `score` than the sparse one. It must
+        // still lose: an exact literal is a stronger statement than a distance,
+        // and the two numbers do not share a scale.
+        let mut literal = ranked_hit("exact", 1, SessionHitLane::Text, RankBand::Exact, 5);
+        literal.score = 1.0;
+        let mut dense = ranked_hit("dense", 2, SessionHitLane::Semantic, RankBand::Fusion, 0);
+        dense.score = 0.99;
+        let fused = fuse_session_layers(vec![literal], vec![dense]);
+        assert_eq!(fused[0].session_id, "exact");
+        assert_eq!(fused[1].session_id, "dense");
+    }
+
+    #[test]
+    fn fusion_keeps_the_sparse_order_when_the_semantic_lane_is_empty() {
+        let sparse = vec![
+            ranked_hit("a", 1, SessionHitLane::Text, RankBand::Fusion, 0),
+            ranked_hit("b", 2, SessionHitLane::Text, RankBand::Fusion, 1),
+            ranked_hit("c", 3, SessionHitLane::Text, RankBand::Fusion, 2),
+        ];
+        let fused = fuse_session_layers(sparse, Vec::new());
+        let order: Vec<&str> = fused.iter().map(|h| h.session_id.as_str()).collect();
+        assert_eq!(order, ["a", "b", "c"], "one list's own order is preserved");
     }
 
     #[test]
@@ -1652,6 +1833,9 @@ mod tests {
             char_start: start,
             char_end: start + 4,
             lane: SessionHitLane::Text,
+            role: ContentRole::Conversation,
+            evidence: Vec::new(),
+            rank: RankKey::default(),
         };
         // The same row matched at three chunk offsets, plus a second row.
         let rows = dedup_chunks_to_rows(&[hit(7, 0), hit(7, 320), hit(9, 0), hit(7, 900)]);
@@ -1696,6 +1880,59 @@ mod tests {
         // Internal coordinates stay out of the view.
         assert!(!view.contains("seq"), "{view}");
         assert!(!view.contains("Showing"), "{view}");
+    }
+
+    /// The provenance the ranking is built from is **internal**. The agent sees
+    /// prose and line numbers: no layer names, no coverage, no scores, no rank
+    /// keys. That is a contract, not an accident of formatting, so it is pinned
+    /// here rather than left to whichever shape the renderer happens to use.
+    #[test]
+    fn agent_view_carries_no_internal_ranking_vocabulary() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(&id, &[user_text("VIEW_CLEAN_NEEDLE plain words only")])
+                .unwrap();
+        }
+        let reader = SessionDataReader::open(&db);
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "VIEW_CLEAN_NEEDLE".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!hits.is_empty());
+        // The evidence is there, above and beyond what the view may show.
+        assert!(hits[0].layer_count() >= 1, "{hits:#?}");
+        assert_eq!(hits[0].rank.band, RankBand::Exact);
+
+        let view = build_agent_view(&reader, &hits, dir.path()).unwrap();
+        assert!(view.contains("VIEW_CLEAN_NEEDLE"), "{view}");
+        let lowered = view.to_lowercase();
+        for token in [
+            "exact",
+            "proximity",
+            "lexical",
+            "fuzzy",
+            "semantic",
+            "sparse",
+            "coverage",
+            "evidence",
+            "rank",
+            "band",
+            "score",
+            "layer",
+            "trace",
+            "0.85",
+            "0.9",
+        ] {
+            assert!(!lowered.contains(token), "{token} leaked into the view:\n{view}");
+        }
     }
 
     #[test]

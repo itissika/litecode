@@ -341,3 +341,54 @@ fn golden_scope_and_candidate_recall() {
 fn index(dir: &Path) -> sparse::SparseIndex {
     sparse::open_read_only(&sparse::sparse_index_path(dir)).expect("open index")
 }
+
+/// The product layer's contract, on the same fixed corpus: a query that shares
+/// only part of its words must not return the row that has the other part, and
+/// every hit must say which mechanism found it.
+#[test]
+fn golden_final_layer_gates_on_intent_and_reports_its_evidence() {
+    use super::ranking::{LayerId, RankBand};
+
+    let dir = tempfile::TempDir::new().unwrap();
+    build(dir.path());
+    let index = index(dir.path());
+
+    // The literal: exact evidence, and the strongest band there is.
+    let hits = index.search(Lane::Final, "AuthRefactorToken", 50).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].row_key, "S1:1");
+    assert_eq!(hits[0].rank.band, RankBand::Exact);
+    assert!(hits[0].layers().contains(&LayerId::Exact), "{hits:#?}");
+
+    // Two words are an AND, even when one of them is an identifier: the row is
+    // the same, and the second word is not there, so nothing answers.
+    assert!(
+        index
+            .search(Lane::Final, "authrefactortoken missingword", 50)
+            .unwrap()
+            .is_empty(),
+        "a query must not be answered by half of itself"
+    );
+
+    // The same words, out of the literal's order: proximity answers, and the
+    // word layer agrees.
+    let hits = index
+        .search(Lane::Final, "authrefactortoken final", 50)
+        .unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].row_key, "S1:1");
+    assert_eq!(hits[0].rank.band, RankBand::Proximity);
+    assert!(hits[0].layers().contains(&LayerId::Proximity), "{hits:#?}");
+    assert_eq!(hits[0].coverage_of(LayerId::Lexical), Some(1.0));
+
+    // A scope only narrows: the same row, from a session-scoped index.
+    let scoped = sparse::open_read_only(&sparse::sparse_index_path(dir.path()))
+        .unwrap()
+        .with_scope(Some("S2"));
+    assert!(
+        scoped
+            .search(Lane::Final, "authrefactortoken", 50)
+            .unwrap()
+            .is_empty()
+    );
+}

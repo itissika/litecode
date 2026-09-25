@@ -417,7 +417,7 @@ impl WorkspaceEngines {
             Vec::new()
         };
 
-        let mut ranked = session_search::merge_session_hits(lexical, semantic);
+        let mut ranked = session_search::fuse_session_layers(lexical, semantic);
         if !ranked.is_empty() {
             let mut session_ids: Vec<String> =
                 ranked.iter().map(|h| h.session_id.clone()).collect();

@@ -20,6 +20,7 @@ use crate::types::{LitecodeError, Result};
 
 use super::{SEMANTIC_WINDOW, SessionHitLane, SessionTextHit, echo};
 use super::corpus::{self, SessionDoc};
+use super::ranking::{ContentRole, HitEvidence, LayerId, RankBand, RankKey};
 use super::slots::{Policy, SlotCfg};
 
 use crate::session::SessionDataReader;
@@ -404,18 +405,42 @@ impl SessionSemanticIndex {
                 continue;
             }
             let summary: String = chunk.text.chars().take(SNIPPET_CHARS).collect();
+            let local_rank = hits.len();
+            let native = 1.0 / (1.0 + dist as f64);
+            let role = ContentRole::from_item_type(&chunk.item_type);
             // No lexical nucleus — Related is rendered entry-level (not fake 0..N bold).
             hits.push(SessionTextHit {
                 session_id: chunk.session_id.clone(),
                 seq: chunk.seq,
                 item_type: chunk.item_type.clone(),
                 summary,
-                score: 1.0 / (1.0 + dist as f64),
+                score: native,
                 // The chunk's own range: the renderer maps it to the row's
                 // physical lines (`L<a>…L<b>`), so a semantic hit is a *region*.
                 char_start: chunk.char_start,
                 char_end: chunk.char_end,
                 lane: SessionHitLane::Semantic,
+                role,
+                // One piece of evidence, stated in the terms the fusion stage
+                // uses: this layer, this rank, this distance — never its score
+                // against another lane's.
+                evidence: vec![HitEvidence {
+                    layer: LayerId::Semantic,
+                    branch: 0,
+                    matched: 1,
+                    total: 1,
+                    local_rank,
+                    native,
+                }],
+                // The band is where the *fusion* may put it; the strength is
+                // filled in by the fusion itself, from the rank, so that no
+                // dense score is ever compared with a BM25 one.
+                rank: RankKey {
+                    band: RankBand::Fusion,
+                    strength: 0,
+                    role: role.preference(),
+                    local_rank: local_rank as u32,
+                },
             });
             if hits.len() >= top_k {
                 break;
