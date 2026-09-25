@@ -479,3 +479,28 @@ fn file_revert_updated_projects_session_snapshot() {
         project::project(&InternalEvent::FileRevertUpdated { max_k: Some(2) }, &snap).unwrap();
     assert!(method_is(&msg, "session/snapshot"));
 }
+
+#[test]
+fn pending_messages_projects_the_full_authority_list() {
+    let msg = project::project_live(
+        &InternalEvent::PendingMessages {
+            pending: vec![
+                litecode::session::manager::PendingMessage {
+                    id: "p1".into(),
+                    text: "first".into(),
+                },
+                litecode::session::manager::PendingMessage {
+                    id: "p2".into(),
+                    text: "second".into(),
+                },
+            ],
+        },
+        "s1",
+        Some("t1"),
+    )
+    .unwrap();
+    assert!(method_is(&msg, "session/pending_messages"));
+    assert_eq!(msg["params"]["session_id"], "s1");
+    assert_eq!(msg["params"]["pending_messages"][0]["id"], "p1");
+    assert_eq!(msg["params"]["pending_messages"][1]["text"], "second");
+}

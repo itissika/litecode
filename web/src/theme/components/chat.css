@@ -718,3 +718,55 @@
 .animate-mini-chat-exit {
   animation: mini-chat-exit 150ms ease-in forwards;
 }
+
+/* ── Queued-batch in-flight bubble ─────────────────────────────
+   The bubble lands at the tail of the transcript when a user message is
+   queued for the live turn; sliding it up into place reads as "just
+   arrived" instead of teleporting. Transform/opacity only: the message list
+   measures layout, so nothing here may resize the box. ── */
+@keyframes queued-bubble-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.queued-bubble-enter {
+  animation: queued-bubble-enter 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .queued-bubble-enter {
+    animation: none;
+  }
+}
+
+/* The durable row that took over from the in-flight queue bubble. It lands in
+   the slot the bubble already occupied, so the settle is the veil lifting plus
+   a hair of rise — the hand-over at the "sending" moment, not a travel.
+   Transform/opacity only: the list measures layout, and the item's own
+   positioning translateY lives on the parent wrapper. ── */
+@keyframes queued-bubble-land {
+  from {
+    opacity: 0.55;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.queued-bubble-land {
+  animation: queued-bubble-land 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .queued-bubble-land {
+    animation: none;
+  }
+}

@@ -85,6 +85,8 @@ function seedMessages(rows: HumanRow[]): void {
       messages: rows,
       display: rows,
       pendingUser: null,
+      pendingQueue: null,
+      landedQueueSeq: null,
       fromSeq: 0,
       toSeq: rows.length,
       userDetailBefore: 0,

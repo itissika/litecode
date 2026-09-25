@@ -11,6 +11,7 @@ import type { ContextMode, ThinkingTier } from "../api/types";
 
 import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
+import { subscribeComposerAppend } from "../stores/composerDraft";
 import { useToastStore } from "../stores/toastStore";
 import { useTurnStore } from "../stores/turnStore";
 import { ContextUsageRing } from "./ContextUsageRing";
@@ -204,9 +205,29 @@ export function AgentChatInput({
   );
   const startAction = useTurnStore((s) => s.start);
   const cancelAction = useTurnStore((s) => s.cancel);
+  const enqueueAction = useTurnStore((s) => s.enqueuePending);
   const [draft, setDraft] = useState("");
   useEffect(() => {
     setDraft("");
+  }, [sessionId]);
+
+  // Recall hand-off: a queued bubble pulled back from the transcript appends to
+  // whatever is already being written — never replaces it — and takes the caret.
+  useEffect(() => {
+    return subscribeComposerAppend((target, text) => {
+      if (target !== sessionId) return;
+      setDraft((current) =>
+        current.trim() ? `${current.trimEnd()}\n\n${text}` : text,
+      );
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current;
+        if (!ta) return;
+        ta.focus();
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+        ta.style.height = "auto";
+        ta.style.height = `${Math.min(ta.scrollHeight, 256)}px`;
+      });
+    });
   }, [sessionId]);
 
   const startAgent = (input: string) => startAction(sessionId, input);
@@ -303,9 +324,25 @@ export function AgentChatInput({
   const connBlocked =
     connection !== "connected" || isRunning || compacting || replaying;
   const isBlocked = connBlocked || !hasModel;
+  // While a turn is live, the composer queues instead of starting: the server
+  // owns the queue (memory-only) and injects it at the next request seam.
+  const canQueue =
+    isRunning && connection === "connected" && !compacting && !replaying && hasModel;
+  // One button, two live-turn skins: a draft turns it into the queue action
+  // (arrow) and it keeps the turn's breathing glow either way.
+  const showQueueAction = canQueue && draft.trim().length > 0;
 
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
+    const trimmed = draft.trim();
+    if (!trimmed) return;
+    if (isRunning) {
+      if (!canQueue) return;
+      void enqueueAction(sessionId, trimmed).then((ok) => {
+        if (ok) setDraft((current) => (current === draft ? "" : current));
+      });
+      return;
+    }
     if (connBlocked) return;
     if (!hasModel) {
       useToastStore
@@ -318,8 +355,6 @@ export function AgentChatInput({
         );
       return;
     }
-    const trimmed = draft.trim();
-    if (!trimmed) return;
     if (startAgent(draft)) {
       setDraft("");
     }
@@ -328,7 +363,7 @@ export function AgentChatInput({
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (!isBlocked) {
+      if (!isBlocked || canQueue) {
         // Keyboard submit has no :active, so fire press feedback manually.
         const btn = sendBtnRef.current;
         if (btn) {
@@ -502,44 +537,71 @@ export function AgentChatInput({
             <ContextUsageRing sessionId={sessionId} />
           </span>
           {isRunning ? (
-            <button
-              type="button"
-              onClick={cancelAgent}
-              className={`${actionButtonGlass} send-spin-glow flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90`}
-              title="Cancel"
-            >
-              {runState === "cancelling" ? (
+            // One button for both live-turn actions: with a draft it queues
+            // for the next request seam (arrow), without one it cancels
+            // (square). Both keep the turn's breathing edge glow.
+            showQueueAction ? (
+              <button
+                ref={sendBtnRef}
+                type="button"
+                onClick={() => submit()}
+                className={`${actionButtonGlass} send-spin-glow flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90`}
+                title="Queue for the next step"
+              >
                 <svg
-                  className="h-4 w-4 animate-spin"
+                  width="14"
+                  height="14"
                   viewBox="0 0 24 24"
                   fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
                 >
-                  <circle
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="3"
-                    opacity="0.25"
-                  />
-                  <path
-                    d="M12 2a10 10 0 0 1 10 10"
-                    stroke="currentColor"
-                    strokeWidth="3"
-                    strokeLinecap="round"
-                  />
+                  <path d="M5 12h14M12 5l7 7-7 7" />
                 </svg>
-              ) : (
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 12 12"
-                  fill="currentColor"
-                >
-                  <rect x="1" y="1" width="10" height="10" rx="1.5" />
-                </svg>
-              )}
-            </button>
+              </button>
+            ) : (
+              <button
+                ref={sendBtnRef}
+                type="button"
+                onClick={cancelAgent}
+                className={`${actionButtonGlass} send-spin-glow flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90`}
+                title="Cancel"
+              >
+                {runState === "cancelling" ? (
+                  <svg
+                    className="h-4 w-4 animate-spin"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                  >
+                    <circle
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="3"
+                      opacity="0.25"
+                    />
+                    <path
+                      d="M12 2a10 10 0 0 1 10 10"
+                      stroke="currentColor"
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                ) : (
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    fill="currentColor"
+                  >
+                    <rect x="1" y="1" width="10" height="10" rx="1.5" />
+                  </svg>
+                )}
+              </button>
+            )
           ) : (
             <button
               ref={sendBtnRef}

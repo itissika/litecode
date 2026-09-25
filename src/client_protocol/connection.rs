@@ -233,6 +233,182 @@ pub async fn handle_jsonrpc(
             );
         }
 
+        methods::SESSION_PENDING_ENQUEUE => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                text: String,
+                #[serde(default)]
+                session_id: String,
+            }
+            let params: Params = match serde_json::from_value::<Params>(rpc.params.clone()) {
+                Ok(p) => p,
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {e}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            if params.text.len() > MAX_AGENT_RUN_INPUT_BYTES {
+                emit(
+                    sink,
+                    serde_json::to_value(err_response(
+                        id,
+                        -32602,
+                        format!("pending message exceeds {} bytes", MAX_AGENT_RUN_INPUT_BYTES),
+                    ))
+                    .unwrap(),
+                );
+                return false;
+            }
+            let text = params.text.trim().to_string();
+            if text.is_empty() {
+                emit(
+                    sink,
+                    serde_json::to_value(err_response(id, -32602, "empty message".into())).unwrap(),
+                );
+                return false;
+            }
+            let sid = resolve_sid(session, &params.session_id);
+            if let Err(e) = session.sessions.ensure_entry(&sid).await {
+                let msg = e.to_string();
+                emit(
+                    sink,
+                    operation_error(
+                        session,
+                        &sid,
+                        false,
+                        &msg,
+                        OperationKind::Start,
+                        ErrorCode::Internal,
+                    ),
+                );
+                emit(
+                    sink,
+                    serde_json::to_value(err_response(id, -32000, msg)).unwrap(),
+                );
+                return false;
+            }
+            match session.sessions.enqueue_pending_message(&sid, &text) {
+                Ok(_) => {
+                    // Idle race: the turn ended between the composer's last state
+                    // and this RPC. Send the queue as a fresh turn instead of
+                    // waiting for a TurnFinished that will never come.
+                    if let Some(claimed) = session.sessions.claim_pending_if_idle(&sid)
+                        && !claimed.is_empty()
+                    {
+                        let merged = claimed
+                            .iter()
+                            .map(|message| message.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        let turn_id = uuid::Uuid::new_v4().to_string();
+                        let permission_sink =
+                            session.permission_sink_for(&sid, perm_tx, &turn_id);
+                        if let Err(error) = session
+                            .start_turn(&sid, &merged, permission_sink, &turn_id, false)
+                            .await
+                        {
+                            session.sessions.restore_pending_messages(&sid, claimed);
+                            let msg = error.to_string();
+                            emit(
+                                sink,
+                                operation_error(
+                                    session,
+                                    &sid,
+                                    false,
+                                    &msg,
+                                    OperationKind::Start,
+                                    error.error_code(),
+                                ),
+                            );
+                            emit(
+                                sink,
+                                serde_json::to_value(err_response(id, -32000, msg)).unwrap(),
+                            );
+                            return false;
+                        }
+                    }
+                    for msg in session.take_outgoing_for(&sid) {
+                        emit(sink, msg);
+                    }
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(
+                            id,
+                            serde_json::json!({
+                                "queued": true,
+                                "pending_messages":
+                                    session.sessions.pending_messages_snapshot(&sid),
+                            }),
+                        ))
+                        .unwrap(),
+                    );
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    emit(
+                        sink,
+                        operation_error(
+                            session,
+                            &sid,
+                            false,
+                            &msg,
+                            OperationKind::Start,
+                            ErrorCode::Internal,
+                        ),
+                    );
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, msg)).unwrap(),
+                    );
+                }
+            }
+        }
+
+        methods::SESSION_PENDING_REMOVE => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                id: String,
+                #[serde(default)]
+                session_id: String,
+            }
+            let params: Params = match serde_json::from_value::<Params>(rpc.params.clone()) {
+                Ok(p) => p,
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {e}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            let sid = resolve_sid(session, &params.session_id);
+            let removed = session.sessions.remove_pending_message(&sid, &params.id);
+            emit(
+                sink,
+                serde_json::to_value(ok_response(
+                    id,
+                    serde_json::json!({
+                        "removed": removed,
+                        "pending_messages": session.sessions.pending_messages_snapshot(&sid),
+                    }),
+                ))
+                .unwrap(),
+            );
+        }
+
         methods::SESSION_NEW => match session.new_session().await {
             Ok(session_id) => {
                 for msg in session.take_all_outgoing() {
@@ -479,6 +655,7 @@ pub async fn handle_jsonrpc(
                 return false;
             };
             snapshot.bash = Some(terminal_hub.jobs.wire_snapshot(&sid));
+            snapshot.pending_messages = session.sessions.pending_messages_snapshot(&sid);
             for msg in session.take_all_outgoing() {
                 emit(sink, msg);
             }

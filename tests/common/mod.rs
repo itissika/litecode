@@ -17,8 +17,8 @@ pub use responses_replay::{
     fixture_responses_sse, serve_responses_queue, text_only_completed_sse, tool_call_completed_sse,
 };
 pub use runtime::{
-    TestAgentSpec, build_runtime_with_provider, test_agent, test_resolved,
-    test_resolved_with_budget, test_sessions_manager, test_turn_binding,
+    TestAgentSpec, build_runtime_with_provider, build_runtime_with_provider_and_observer,
+    test_agent, test_resolved, test_resolved_with_budget, test_sessions_manager, test_turn_binding,
 };
 pub use scripted_provider::ScriptedProvider;
 pub use seed::{

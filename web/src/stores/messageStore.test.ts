@@ -592,3 +592,128 @@ describe("sessionStore.applySnapshot — retained window catch-up (P6)", () => {
     expect(sendRpc).not.toHaveBeenCalled();
   });
 });
+
+describe("messageStore queued-batch in-flight bubble", () => {
+  beforeEach(() => {
+    useMessageStore.setState({ bySession: new Map() });
+  });
+
+  it("mirrors the batch joined exactly like the server's merged row", () => {
+    useMessageStore.getState().setPendingQueue("s-q", ["one", "two"]);
+    const slice = useMessageStore.getState().bySession.get("s-q")!;
+    expect(slice.pendingQueue?.joined).toBe("one\n\ntwo");
+    expect(slice.pendingQueue?.texts).toEqual(["one", "two"]);
+    // Chrome, not a log row: nothing lands in the transcript.
+    expect(slice.messages).toHaveLength(0);
+    expect(slice.display).toHaveLength(0);
+  });
+
+  it("the durable merged row seals the bubble and stays as a normal message", () => {
+    useMessageStore.getState().setPendingQueue("s-q2", ["one", "two"]);
+    useMessageStore.getState().onBufferItem("s-q2", {
+      session_id: "s-q2",
+      seq: 0,
+      kind: "item/user",
+      state: "final",
+      body: userMsg("one\n\ntwo"),
+    });
+    const slice = useMessageStore.getState().bySession.get("s-q2")!;
+    expect(slice.pendingQueue).toBeNull();
+    expect(slice.messages).toHaveLength(1);
+    expect(itemPlainText(slice.messages[0]!.body as Item)).toBe("one\n\ntwo");
+  });
+
+  it("a row with other text never seals it", () => {
+    useMessageStore.getState().setPendingQueue("s-q3", ["queued"]);
+    useMessageStore.getState().onBufferItem("s-q3", {
+      session_id: "s-q3",
+      seq: 0,
+      kind: "item/assistant",
+      state: "final",
+      body: assistantMsg("msg_1", "done"),
+    });
+    expect(
+      useMessageStore.getState().bySession.get("s-q3")?.pendingQueue?.joined,
+    ).toBe("queued");
+  });
+
+  it("an explicit clear removes it, and re-setting the same text is a no-op", () => {
+    useMessageStore.getState().setPendingQueue("s-q4", ["a"]);
+    const first = useMessageStore.getState().bySession.get("s-q4")!.pendingQueue;
+    useMessageStore.getState().setPendingQueue("s-q4", ["a"]);
+    expect(useMessageStore.getState().bySession.get("s-q4")!.pendingQueue).toBe(
+      first,
+    );
+    useMessageStore.getState().setPendingQueue("s-q4", null);
+    expect(useMessageStore.getState().bySession.get("s-q4")!.pendingQueue).toBeNull();
+    // Clearing again stays quiet.
+    useMessageStore.getState().setPendingQueue("s-q4", []);
+    expect(useMessageStore.getState().bySession.get("s-q4")!.pendingQueue).toBeNull();
+  });
+
+  it("names the settling row by seq and clears it once the settle has played", () => {
+    useMessageStore.getState().setPendingQueue("s-q5", ["one", "two"]);
+    useMessageStore.getState().onBufferItem("s-q5", {
+      session_id: "s-q5",
+      seq: 4,
+      kind: "item/user",
+      state: "final",
+      body: userMsg("one\n\ntwo"),
+    });
+    let slice = useMessageStore.getState().bySession.get("s-q5")!;
+    // One update: the bubble goes and this exact row takes over from it.
+    expect(slice.pendingQueue).toBeNull();
+    expect(slice.landedQueueSeq).toBe(4);
+
+    useMessageStore.getState().clearLandedQueueSeq("s-q5");
+    slice = useMessageStore.getState().bySession.get("s-q5")!;
+    expect(slice.landedQueueSeq).toBeNull();
+  });
+
+  it("no settle marker for a row that does not seal the batch", () => {
+    useMessageStore.getState().setPendingQueue("s-q6", ["queued"]);
+    useMessageStore.getState().onBufferItem("s-q6", {
+      session_id: "s-q6",
+      seq: 0,
+      kind: "item/assistant",
+      state: "final",
+      body: assistantMsg("msg_1", "done"),
+    });
+    expect(
+      useMessageStore.getState().bySession.get("s-q6")!.landedQueueSeq,
+    ).toBeNull();
+  });
+
+  it("a new batch is a new arrival, not the old settle", () => {
+    useMessageStore.getState().setPendingQueue("s-q7", ["first"]);
+    useMessageStore.getState().onBufferItem("s-q7", {
+      session_id: "s-q7",
+      seq: 0,
+      kind: "item/user",
+      state: "final",
+      body: userMsg("first"),
+    });
+    expect(useMessageStore.getState().bySession.get("s-q7")!.landedQueueSeq).toBe(
+      0,
+    );
+
+    useMessageStore.getState().setPendingQueue("s-q7", ["second"]);
+    const slice = useMessageStore.getState().bySession.get("s-q7")!;
+    expect(slice.pendingQueue?.joined).toBe("second");
+    expect(slice.landedQueueSeq).toBeNull();
+  });
+
+  it("a revert drops the bubble and the settle it was waiting for", () => {
+    useMessageStore.getState().setPendingQueue("s-q8", ["discarded"]);
+    useMessageStore.getState().onBufferReverted("s-q8", {
+      session_id: "s-q8",
+      last_seq: -1,
+      next_seq: 3,
+    });
+    const slice = useMessageStore.getState().bySession.get("s-q8")!;
+    // The row this bubble was waiting for can never land: keeping it would leave
+    // a permanent "pending" phantom in the transcript.
+    expect(slice.pendingQueue).toBeNull();
+    expect(slice.landedQueueSeq).toBeNull();
+  });
+});

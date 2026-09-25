@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use litecode::client_protocol::observer::NoopObserver;
+use litecode::runtime::observer::RuntimeObserver;
 use litecode::config::global_db::tools::{core_configurable_tools, core_none_tools};
 use litecode::config::resolved::{WorkspaceState, resolve};
 use litecode::config::schema::{AgentProfile, AgentRole, GlobalSettings};
@@ -159,6 +160,17 @@ pub fn build_runtime_with_provider(
     spec: TestAgentSpec,
     provider: Arc<dyn LlmProvider>,
 ) -> AgentRuntime {
+    build_runtime_with_provider_and_observer(cwd, spec, provider, Arc::new(NoopObserver))
+}
+
+/// Same product path with a caller-supplied observer, so a test can assert what
+/// the client-facing projection was told (and when).
+pub fn build_runtime_with_provider_and_observer(
+    cwd: &Path,
+    spec: TestAgentSpec,
+    provider: Arc<dyn LlmProvider>,
+    observer: Arc<dyn RuntimeObserver>,
+) -> AgentRuntime {
     let workspace = test_workspace(cwd);
     set_runtime_paths(workspace.paths.clone());
 
@@ -219,7 +231,7 @@ pub fn build_runtime_with_provider(
             "default",
             0,
             test_auto_approve_sink(),
-            Arc::new(NoopObserver),
+            observer,
             None,
             Some(spec.agent.max_steps),
         )

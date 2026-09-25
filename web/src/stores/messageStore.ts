@@ -26,12 +26,36 @@ export interface PendingUser {
   item: Item;
 }
 
+/**
+ * The queued batch as an in-flight bubble in the transcript area.
+ *
+ * Created from the queue mirror, kept after the server claims it (the queue
+ * empties before the durable row lands) and sealed by the matching `item/user`
+ * row — so the bubble becomes the real message instead of blinking out. It is
+ * never a log row: no seq, no revert anchor, and it disappears on its own if
+ * the batch never becomes durable (snapshot re-sync, recall).
+ */
+export interface PendingQueueBubble {
+  texts: string[];
+  /** Exactly what the server merges into one user row (`join("\n\n")`). */
+  joined: string;
+}
+
 export interface MessageSlice {
   /** Seq → row. Sorted projection is `messages`. */
   bySeq: Map<number, HumanRow>;
   messages: HumanRow[];
   /** Optimistic composer row; not a seq key. At most one. */
   pendingUser: PendingUser | null;
+  /** In-flight bubble for the queued batch. At most one. */
+  pendingQueue: PendingQueueBubble | null;
+  /**
+   * Seq of the durable row that took over from `pendingQueue`, set in the same
+   * update that drops the bubble: the settle animation needs the row's identity
+   * (a seq, not the batch text) so it can fire wherever the row landed and be
+   * cleared once it has played.
+   */
+  landedQueueSeq: number | null;
   /**
    * `messages` plus pending user row. Stable until the next slice patch —
    * zustand selectors must not allocate this on each snapshot.
@@ -65,6 +89,8 @@ export const EMPTY_SLICE: MessageSlice = {
   bySeq: new Map(),
   messages: EMPTY_DISPLAY,
   pendingUser: null,
+  pendingQueue: null,
+  landedQueueSeq: null,
   display: EMPTY_DISPLAY,
   fromSeq: 0,
   toSeq: 0,
@@ -144,6 +170,8 @@ function upsertEvents(
 ): MessageSlice {
   const bySeq = new Map(slice.bySeq);
   let pendingUser = slice.pendingUser;
+  let pendingQueue = slice.pendingQueue;
+  let landedQueueSeq = slice.landedQueueSeq;
   let shapeError = slice.shapeError;
   const empty = slice.bySeq.size === 0;
 
@@ -178,6 +206,15 @@ function upsertEvents(
         pendingUser = null;
       }
     }
+    // The queued batch seals the same way the composer row does: the durable
+    // row is the message, so the in-flight bubble hands over to it.
+    if (pendingQueue) {
+      const sealText = optimisticUserSealText(nextRow);
+      if (sealText !== null && sealText === pendingQueue.joined) {
+        pendingQueue = null;
+        landedQueueSeq = nextRow.seq;
+      }
+    }
   }
 
   const messages = sortedMessages(bySeq);
@@ -198,6 +235,8 @@ function upsertEvents(
     bySeq,
     messages,
     pendingUser,
+    pendingQueue,
+    landedQueueSeq,
     fromSeq,
     toSeq,
     userDetailBefore: hydrateUserDetailBefore(
@@ -227,6 +266,15 @@ interface MessageStore extends MessageState {
 
   pushPendingUser: (sessionId: string, pending: PendingUser) => void;
   discardOptimisticUserMessage: (sessionId: string, clientId: string) => void;
+  /**
+   * Mirror the queued batch as the in-flight bubble. `null`/empty clears it;
+   * non-empty (re)sets it. Callers own the semantics: a live empty list means
+   * "claimed, row en route" and must NOT clear, while a snapshot or a recall
+   * must.
+   */
+  setPendingQueue: (sessionId: string, texts: string[] | null) => void;
+  /** Called when the settle animation has played (and only then). */
+  clearLandedQueueSeq: (sessionId: string) => void;
   loadRange: (
     sessionId: string,
     fromSeq: number,
@@ -393,6 +441,28 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       patch(sessionId, { pendingUser: null });
     },
 
+    setPendingQueue: (sessionId, texts) => {
+      const slice = getSlice(get().bySession, sessionId);
+      if (texts === null || texts.length === 0) {
+        if (slice.pendingQueue === null) return;
+        patch(sessionId, { pendingQueue: null });
+        return;
+      }
+      const joined = texts.join("\n\n");
+      if (slice.pendingQueue?.joined === joined) return;
+      // A new batch is a new arrival: whatever settled before is stale.
+      patch(sessionId, {
+        pendingQueue: { texts: [...texts], joined },
+        landedQueueSeq: null,
+      });
+    },
+
+    clearLandedQueueSeq: (sessionId) => {
+      const slice = getSlice(get().bySession, sessionId);
+      if (slice.landedQueueSeq === null) return;
+      patch(sessionId, { landedQueueSeq: null });
+    },
+
     onBufferReverted: (sessionId, rev) => {
       const slice = getSlice(get().bySession, sessionId);
       const bySeq = new Map<number, HumanRow>();
@@ -414,6 +484,10 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         bySeq,
         messages,
         pendingUser: null,
+        // A revert voids the hand-over: the bubble can no longer seal (its row
+        // is gone) and the settle it was waiting for is meaningless.
+        pendingQueue: null,
+        landedQueueSeq: null,
         fromSeq: Math.min(slice.fromSeq, rev.next_seq),
         toSeq: rev.next_seq,
         userDetailBefore: hydrateUserDetailBefore(

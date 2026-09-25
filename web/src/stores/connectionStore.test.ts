@@ -6,6 +6,7 @@ import {
 } from "./connectionStore";
 import { useMessageStore } from "./messageStore";
 import { useSessionStore } from "./sessionStore";
+import { useTurnStore } from "./turnStore";
 import { useWorkspaceChangeStore } from "./workspaceChangeStore";
 
 describe("shouldIgnoreForwardedSubagentEvent", () => {
@@ -104,5 +105,39 @@ describe("workspace/changed → workspace change store", () => {
       paths: [".litecode/plan/calm-river.md"],
       kind: "modified",
     });
+  });
+});
+
+describe("session/pending_messages → turn store", () => {
+  afterEach(() => {
+    useTurnStore.setState({ byId: new Map() });
+  });
+
+  it("overwrites the queue with the full authority list (absent = empty)", () => {
+    useConnectionStore.getState().dispatchEnvelope({
+      method: "session/pending_messages",
+      params: {
+        session_id: "s-pending",
+        pending_messages: [
+          { id: "p1", text: "first" },
+          { id: "p2", text: "second" },
+        ],
+      },
+    });
+    expect(
+      useTurnStore.getState().byId.get("s-pending")?.pendingMessages,
+    ).toEqual([
+      { id: "p1", text: "first" },
+      { id: "p2", text: "second" },
+    ]);
+
+    // The server is the only authority: a later frame with no list empties it.
+    useConnectionStore.getState().dispatchEnvelope({
+      method: "session/pending_messages",
+      params: { session_id: "s-pending" },
+    });
+    expect(
+      useTurnStore.getState().byId.get("s-pending")?.pendingMessages,
+    ).toEqual([]);
   });
 });

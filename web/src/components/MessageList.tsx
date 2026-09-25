@@ -38,6 +38,7 @@ import type {
   FunctionCallItem,
   FunctionCallOutputItem,
   HumanRow,
+  PendingMessage,
 } from "../api/types";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { CategoryCount } from "./CategoryCount";
@@ -45,6 +46,7 @@ import { FoldCard } from "./FoldCard";
 import { InlineToolRow } from "./InlineToolRow";
 import { requestFoldCardOpen } from "./foldCardState";
 import { useSessionStore } from "../stores/sessionStore";
+import { useMessageStore } from "../stores/messageStore";
 import { useEditorStore } from "../stores/editorStore";
 import { useTurnStore } from "../stores/turnStore";
 import { isInlineCall, processToolBucket } from "../lib/toolCategory";
@@ -598,6 +600,7 @@ function ItemBubbleImpl({
   sessionId,
   bubbleKey,
   editingAnchor,
+  followedByUser,
   onEditAnchor,
   onDismissEdit,
   miniPhase,
@@ -613,6 +616,8 @@ function ItemBubbleImpl({
    *  child FoldCard open-state so it survives virtual-list remounts. */
   bubbleKey?: string;
   showRevertFiles?: boolean;
+  /** The next bubble is a user message, so the last process group is complete. */
+  followedByUser: boolean;
   editingAnchor: EditingUserAnchor | null;
   onEditAnchor: (anchor: EditingUserAnchor) => void;
   onDismissEdit: () => void;
@@ -657,7 +662,8 @@ function ItemBubbleImpl({
         const groupLive = group.nodes.some(
           (n) => n.kind !== "compact_cut" && n.live,
         );
-        const followedByMessage = groups[gi + 1]?.type === "output";
+        const followedByMessage =
+          groups[gi + 1]?.type === "output" || followedByUser;
         const hasTerminalStop = processGroupHasTerminalStop(group.nodes);
         const groupAutoOpen = processGroupAutoOpen({
           followedByMessage,
@@ -769,6 +775,7 @@ export const ItemBubble = memo(
     prev.showRevertFiles === next.showRevertFiles &&
     prev.userAnchorK === next.userAnchorK &&
     prev.bubbleKey === next.bubbleKey &&
+    prev.followedByUser === next.followedByUser &&
     prev.editingAnchor === next.editingAnchor &&
     prev.rows.length === next.rows.length &&
     prev.rows.every((r, i) => r === next.rows[i]),
@@ -776,6 +783,67 @@ export const ItemBubble = memo(
 
 function firstContentRow(group: HumanRow[]): HumanRow | undefined {
   return group.find((row) => !isTranscriptMarkRow(row));
+}
+
+/** Empty fallback so store selectors never allocate per snapshot. */
+const EMPTY_PENDING: PendingMessage[] = [];
+/** Virtual key of the trailing queued-batch bubble. */
+const QUEUE_BUBBLE_KEY = "__pending_queue__";
+
+/**
+ * The queued batch, rendered where its durable message will land.
+ *
+ * It is not a log row: it wears the same markup as a durable user bubble (same
+ * padding, bullet and text classes) so nothing moves when the real row
+ * arrives — only a veil on the text says "not written yet". Clicking pulls the
+ * whole batch back into the composer, but only while the server still holds it;
+ * once it has been claimed the message is durable and recall would be a lie.
+ */
+function PendingQueueBubble({
+  text,
+  canRecall,
+  onRecall,
+}: {
+  text: string;
+  canRecall: boolean;
+  onRecall: () => void;
+}) {
+  return (
+    <div className="py-4">
+      <div
+        data-pending-queue-bubble
+        role={canRecall ? "button" : undefined}
+        tabIndex={canRecall ? 0 : undefined}
+        aria-label={canRecall ? "Recall queued message" : undefined}
+        onClick={canRecall ? onRecall : undefined}
+        onKeyDown={
+          canRecall
+            ? (event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                onRecall();
+              }
+            : undefined
+        }
+        className={`queued-bubble-enter group flex items-start gap-2 ${
+          canRecall ? "cursor-pointer" : ""
+        }`}
+      >
+        {/* Same bullet as a durable user bubble: the bubble differs only by the
+            veil, so nothing shifts when the real row takes over. */}
+        <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-accent-hover)" />
+        {/* Veil on the text only: dimming the glyph too made the bullet read
+            as a rendering artifact rather than a "not written yet" cue. */}
+        <div
+          className={`text-dk-base min-w-0 flex-1 text-(--_dk-text-primary) pl-(--_dk-indent-card-head) opacity-60 transition-opacity duration-200 ${
+            canRecall ? "group-hover:opacity-100" : ""
+          }`}
+        >
+          <AgentMarkdown text={text} streaming={false} />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -988,8 +1056,29 @@ export const MessageList = memo(function MessageList({
   const activePlanPath = useTurnStore(
     (s) => s.byId.get(sessionId)?.activePlanPath ?? null,
   );
+  // Queued batch: the in-flight bubble plus whether the server still holds it
+  // (only then is recalling it honest).
+  const pendingQueue = useMessageStore(
+    (s) => s.bySession.get(sessionId)?.pendingQueue ?? null,
+  );
+  const pendingMessages = useTurnStore(
+    (s) => s.byId.get(sessionId)?.pendingMessages ?? EMPTY_PENDING,
+  );
+  const recallPending = useTurnStore((s) => s.recallPendingMessages);
+  // The durable row that takes over from the in-flight bubble lands exactly
+  // where the bubble already was, so there is no travel to animate: what the
+  // "sending" moment needs is the message settling in instead of snapping. The
+  // store names the row it sealed by (its seq) in the same update that drops the
+  // bubble, so the settle fires wherever that row landed — a batch injected at a
+  // mid-turn seam is not the last bubble — and only while it is fresh.
+  const landedQueueSeq = useMessageStore(
+    (s) => s.bySession.get(sessionId)?.landedQueueSeq ?? null,
+  );
+  const clearLandedQueueSeq = useMessageStore((s) => s.clearLandedQueueSeq);
   const loader = canLoadMore ? 1 : 0;
-  const count = loader + bubbles.length + (compactingNow ? 1 : 0);
+  const compactingRows = compactingNow ? 1 : 0;
+  const queueRows = pendingQueue ? 1 : 0;
+  const count = loader + bubbles.length + compactingRows + queueRows;
 
   const [bottomPad, setBottomPad] = useState(0);
   const [stickToEnd, setStickToEnd] = useState(true);
@@ -1018,17 +1107,27 @@ export const MessageList = memo(function MessageList({
     (index: number) => {
       if (loader && index === 0) return LIST_LOADER_KEY;
       const i = index - loader;
-      if (i >= bubbles.length) return COMPACTING_PENDING_KEY;
+      if (i >= bubbles.length) {
+        return i === bubbles.length + compactingRows
+          ? QUEUE_BUBBLE_KEY
+          : COMPACTING_PENDING_KEY;
+      }
       return bubbleIdentity(bubbles, i);
     },
-    [bubbles, loader],
+    [bubbles, loader, compactingRows],
   );
 
   const estimateSize = useCallback(
     (index: number) => {
       if (loader && index === 0) return LIST_LOADER_HEIGHT;
       const i = index - loader;
-      if (i >= bubbles.length) return COMPACTING_LINE_HEIGHT;
+      if (i >= bubbles.length) {
+        // The queued bubble sits after the compacting line: it is the newest
+        // thing in the conversation, just like its durable row will be.
+        return i === bubbles.length + compactingRows
+          ? 88
+          : COMPACTING_LINE_HEIGHT;
+      }
       const first = firstContentRow(bubbles[i] ?? []);
       if (!first) return 28;
       if (isHumanUserRow(first)) {
@@ -1038,7 +1137,7 @@ export const MessageList = memo(function MessageList({
       }
       return 240;
     },
-    [bubbles, editingAnchor?.bubbleKey, loader],
+    [bubbles, compactingRows, editingAnchor?.bubbleKey, loader],
   );
 
   // Human stick intent: true until the user scrolls up. The stick flag is an
@@ -1203,6 +1302,22 @@ export const MessageList = memo(function MessageList({
             }
 
             const bubbleIndex = virtualItem.index - loader;
+            if (pendingQueue && bubbleIndex === bubbles.length + compactingRows) {
+              return (
+                <div
+                  key={virtualItem.key}
+                  data-index={virtualItem.index}
+                  ref={virtualizer.measureElement}
+                  style={itemStyle(virtualItem.start)}
+                >
+                  <PendingQueueBubble
+                    text={pendingQueue.joined}
+                    canRecall={!readOnly && pendingMessages.length > 0}
+                    onRecall={() => void recallPending?.(sessionId)}
+                  />
+                </div>
+              );
+            }
             if (bubbleIndex >= bubbles.length) {
               return (
                 <div
@@ -1230,7 +1345,46 @@ export const MessageList = memo(function MessageList({
             const showRevertFiles =
               userAnchorK !== undefined &&
               canRevertFiles(userAnchorK, maxFileRevertK);
+            const nextBubbleFirst = firstContentRow(
+              bubbles[bubbleIndex + 1] ?? [],
+            );
+            const followedByUser =
+              nextBubbleFirst != null && isHumanUserRow(nextBubbleFirst);
             const bubbleKey = bubbleIdentity(bubbles, bubbleIndex);
+            // The queue hands over to its durable row: "sending" — that row,
+            // in the slot the bubble already occupied, settles in under the veil
+            // instead of snapping to full opacity.
+            const landedFromQueue =
+              landedQueueSeq !== null &&
+              first != null &&
+              first.seq === landedQueueSeq;
+
+            const item = cutOnly ? (
+              group.map((cut) => (
+                <TranscriptMarkForRow
+                  key={projectionRowKey(cut)}
+                  row={cut}
+                  planPath={activePlanPath}
+                />
+              ))
+            ) : (
+              <ItemBubble
+                rows={group}
+                userAnchorK={userAnchorK}
+                showRevert={showRevert}
+                showRevertFiles={showRevertFiles}
+                readOnly={readOnly}
+                isRunning={isRunning}
+                followedByUser={followedByUser}
+                sessionId={sessionId}
+                bubbleKey={bubbleKey}
+                editingAnchor={editingAnchor ?? null}
+                onEditAnchor={onEditAnchor}
+                onDismissEdit={onDismissEdit}
+                miniPhase={miniPhase}
+                onMiniAnimationEnd={onMiniAnimationEnd}
+              />
+            );
 
             return (
               <div
@@ -1240,30 +1394,22 @@ export const MessageList = memo(function MessageList({
                 ref={virtualizer.measureElement}
                 style={itemStyle(virtualItem.start)}
               >
-                {cutOnly ? (
-                  group.map((cut) => (
-                    <TranscriptMarkForRow
-                      key={projectionRowKey(cut)}
-                      row={cut}
-                      planPath={activePlanPath}
-                    />
-                  ))
+                {/* The positioned wrapper owns its own translateY, so the
+                    settle animates a child instead of clobbering it. */}
+                {landedFromQueue ? (
+                  <div
+                    className="queued-bubble-land"
+                    onAnimationEnd={(event) => {
+                      // Nested animations bubble: only the settle clears it, and
+                      // only once it has played, so a remount cannot replay it.
+                      if (event.target !== event.currentTarget) return;
+                      clearLandedQueueSeq(sessionId);
+                    }}
+                  >
+                    {item}
+                  </div>
                 ) : (
-                  <ItemBubble
-                    rows={group}
-                    userAnchorK={userAnchorK}
-                    showRevert={showRevert}
-                    showRevertFiles={showRevertFiles}
-                    readOnly={readOnly}
-                    isRunning={isRunning}
-                    sessionId={sessionId}
-                    bubbleKey={bubbleKey}
-                    editingAnchor={editingAnchor ?? null}
-                    onEditAnchor={onEditAnchor}
-                    onDismissEdit={onDismissEdit}
-                    miniPhase={miniPhase}
-                    onMiniAnimationEnd={onMiniAnimationEnd}
-                  />
+                  item
                 )}
               </div>
             );

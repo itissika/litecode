@@ -24,6 +24,13 @@ pub mod methods {
     pub const SESSION_LIST: &str = "session/list";
     pub const SESSION_COMPACT: &str = "session/compact";
     pub const SESSION_COMPACT_LIFECYCLE: &str = "session/compact_lifecycle";
+    /// Queue a user message for the live turn (memory-only; consumed at the
+    /// next request seam). Full authority list is echoed via
+    /// `session/pending_messages`.
+    pub const SESSION_PENDING_ENQUEUE: &str = "session/pending-enqueue";
+    pub const SESSION_PENDING_REMOVE: &str = "session/pending-remove";
+    /// Full pending list notification (same string on the wire).
+    pub const SESSION_PENDING_MESSAGES: &str = "session/pending_messages";
     pub const SESSION_REVERT_TO_USER_ANCHOR: &str = "session/revert-to-user-anchor";
     pub const SESSION_REVERT_FILES: &str = "session/revert-files";
     pub const AGENT_SET_PRIMARY: &str = "agent/set-primary";
@@ -359,6 +366,11 @@ pub struct SessionSnapshot {
     /// not rewrite this column; the panel must not wait for the next turn event.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub todos: Vec<TodoItem>,
+    /// Queued user messages for the live turn (memory-only, never persisted).
+    /// Full authority list on every snapshot so a rebuilt panel still sees it;
+    /// absent = empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_messages: Vec<crate::session::manager::PendingMessage>,
     /// Active workspace-relative plan file for the session, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_plan_path: Option<String>,

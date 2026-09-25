@@ -259,6 +259,13 @@ pub enum InternalEvent {
     BashJobs {
         snapshot: crate::terminal::BashJobsSnapshot,
     },
+    /// Session-scoped queued user messages. Memory-only by contract: the list
+    /// lives on the live `SessionRecord` and is never persisted. Carried on the
+    /// session broadcast so every subscriber converges to the full authority
+    /// list; projected to the wire as `session/pending_messages`.
+    PendingMessages {
+        pending: Vec<crate::session::manager::PendingMessage>,
+    },
     Error(TurnError),
 }
 

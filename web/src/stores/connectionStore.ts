@@ -24,6 +24,7 @@ import type {
   TurnEventEnvelope,
   TurnFinished,
   BashJobsNotification,
+  PendingMessage,
 } from "../api/types";
 import type { WorkspaceChangeKind } from "../api/workspace";
 import { useBashStore } from "./bashStore";
@@ -304,6 +305,18 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
             // only pushed on create/delete — re-pull so the roster and the
             // subagent tool rows can label it without waiting for a subscribe.
             session?.listSessions();
+            return;
+          }
+
+          case "session/pending_messages": {
+            const pending = params as unknown as {
+              session_id: string;
+              pending_messages?: PendingMessage[];
+            };
+            turn?.applyPendingMessages(
+              pending.session_id,
+              pending.pending_messages ?? [],
+            );
             return;
           }
 

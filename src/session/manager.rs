@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -17,6 +18,18 @@ use crate::session::live::{LifecycleEvent, TurnProgress};
 use crate::session::store::{Session, SessionApply, SessionContextMeter};
 use crate::session::task_state::{TaskReminders, prune_stale_active_plan};
 use crate::types::{LitecodeError, Result};
+
+/// One queued user message waiting for the turn's next request seam.
+///
+/// Process-local by contract: the queue is the live session's steering buffer,
+/// it is never written to SessionLog, and a process restart drops it. The only
+/// durable artifact of a queued message is the ordinary `item/user` row
+/// written when the queue is consumed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingMessage {
+    pub id: String,
+    pub text: String,
+}
 
 /// Live turn bookkeeping without wire types.
 pub struct LiveTurnState {
@@ -144,6 +157,9 @@ pub struct SessionRecord {
     event_tx: broadcast::Sender<InternalEnvelope>,
     /// Ring buffer for reconnect replay (cleared on next start_turn).
     event_buffer: VecDeque<InternalEnvelope>,
+    /// Queued user messages for the live turn. Outlives a turn (a cancel keeps
+    /// the queue for the follow-up flush) but never touches the session log.
+    pending_messages: Vec<PendingMessage>,
     subscriber_count: usize,
     /// Sticky agent selection 锟?isomorphic with `sessions.agent_id`.
     pub agent_id: String,
@@ -175,6 +191,7 @@ impl SessionRecord {
             pending_revert: None,
             event_tx,
             event_buffer: VecDeque::new(),
+            pending_messages: Vec::new(),
             subscriber_count: 0,
             agent_id: meta.agent_id.clone(),
             model_id: meta.model_id.clone(),
@@ -1019,6 +1036,197 @@ impl SessionManager {
             return true;
         }
         false
+    }
+
+    // ── queued user messages (memory-only) ──
+
+    /// Queue a user message for the live session. Never persisted: only the
+    /// consuming append writes an `item/user` row.
+    pub fn enqueue_pending_message(&self, session_id: &str, text: &str) -> Result<PendingMessage> {
+        let message = PendingMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            text: text.to_string(),
+        };
+        let mut records = self.records.lock().unwrap();
+        let record = records.get_mut(session_id).ok_or_else(|| {
+            LitecodeError::ToolExecution(format!("session {session_id} not found"))
+        })?;
+        record.pending_messages.push(message.clone());
+        emit_pending_messages_locked(record);
+        Ok(message)
+    }
+
+    /// Remove one queued message by id. Idempotent: `false` when the id was
+    /// already consumed or never existed.
+    pub fn remove_pending_message(&self, session_id: &str, id: &str) -> bool {
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return false;
+        };
+        let before = record.pending_messages.len();
+        record.pending_messages.retain(|message| message.id != id);
+        if record.pending_messages.len() == before {
+            return false;
+        }
+        emit_pending_messages_locked(record);
+        true
+    }
+
+    pub fn pending_messages_snapshot(&self, session_id: &str) -> Vec<PendingMessage> {
+        self.records
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|record| record.pending_messages.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn has_pending_messages(&self, session_id: &str) -> bool {
+        self.records
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .is_some_and(|record| !record.pending_messages.is_empty())
+    }
+
+    /// Atomically take the queued messages for a running, non-stopping turn.
+    ///
+    /// `None` means the session is not running that turn (or a cancel already
+    /// claimed the stopping flag): the queue is left untouched for the
+    /// follow-up flush. `Some(vec![])` means the claim succeeded and nothing
+    /// was queued.
+    pub fn claim_pending_messages_for_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Option<Vec<PendingMessage>> {
+        let mut records = self.records.lock().unwrap();
+        let record = records.get_mut(session_id)?;
+        match &record.activity {
+            SessionActivity::RunningTurn(live) if live.turn_id == turn_id && !live.stopping => {}
+            _ => return None,
+        }
+        let claimed = std::mem::take(&mut record.pending_messages);
+        if !claimed.is_empty() {
+            emit_pending_messages_locked(record);
+        }
+        Some(claimed)
+    }
+
+    /// Put claimed messages back at the head, in order, ahead of anything that
+    /// was queued after the claim.
+    pub fn restore_pending_messages(&self, session_id: &str, claimed: Vec<PendingMessage>) {
+        if claimed.is_empty() {
+            return;
+        }
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return;
+        };
+        record.pending_messages.splice(0..0, claimed);
+        emit_pending_messages_locked(record);
+    }
+
+    /// Drop the queue once a revert has taken the log back to anchor `k`.
+    ///
+    /// Only the revert that owns the session may call this: while that lease is
+    /// held no turn can start and no end-of-turn flush can claim the queue, so a
+    /// success here means nothing the user discarded can be delivered later.
+    /// Returns false when the caller does not hold the revert lease.
+    pub fn discard_pending_messages_for_revert(
+        &self,
+        session_id: &str,
+        operation_id: &str,
+    ) -> bool {
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return false;
+        };
+        let owns_revert = matches!(
+            &record.activity,
+            SessionActivity::Exclusive {
+                operation_id: active,
+                kind: SessionOperationKind::Revert,
+            } if active == operation_id
+        );
+        if !owns_revert {
+            return false;
+        }
+        if record.pending_messages.is_empty() {
+            return true;
+        }
+        record.pending_messages.clear();
+        emit_pending_messages_locked(record);
+        true
+    }
+
+    /// Take the queue only when the session is idle (no live turn or exclusive
+    /// operation).
+    ///
+    /// `None` = busy: the queue is untouched and a live turn (or its end flush)
+    /// owns it. `Some(vec![])` = idle, nothing was queued.
+    pub fn claim_pending_if_idle(&self, session_id: &str) -> Option<Vec<PendingMessage>> {
+        let mut records = self.records.lock().unwrap();
+        let record = records.get_mut(session_id)?;
+        if record.activity.is_busy() {
+            return None;
+        }
+        let claimed = std::mem::take(&mut record.pending_messages);
+        if !claimed.is_empty() {
+            emit_pending_messages_locked(record);
+        }
+        Some(claimed)
+    }
+
+    /// Reserve an idle turn and take the queue for it in one critical section.
+    ///
+    /// `Ok(None)` = nothing queued, no state changed. `Err(AgentAlreadyRunning)`
+    /// = a live turn owns the session; the running turn (or its own end flush)
+    /// will consume the queue.
+    #[allow(clippy::type_complexity)]
+    pub fn reserve_turn_and_claim_pending(
+        &self,
+        session_id: &str,
+        turn_id: String,
+        step_max: u32,
+        primary_agent: &str,
+        project: &str,
+    ) -> Result<Option<(TurnProgress, Vec<PendingMessage>)>> {
+        let started_at_ms = chrono::Utc::now().timestamp_millis();
+        let progress = TurnProgress {
+            turn_id: turn_id.clone(),
+            phase: TurnPhase::Starting,
+            step: 1,
+            step_max,
+            started_at_ms,
+            awaiting_permission: false,
+        };
+
+        let claimed = {
+            let mut records = self.records.lock().unwrap();
+            let record = records.get_mut(session_id).ok_or_else(|| {
+                LitecodeError::ToolExecution(format!("session {session_id} not found"))
+            })?;
+            if record.pending_messages.is_empty() {
+                return Ok(None);
+            }
+            if record.activity.is_busy() {
+                return Err(LitecodeError::AgentAlreadyRunning);
+            }
+            record.agent_id = primary_agent.to_string();
+            record.project = Some(project.to_string());
+            record.event_buffer.clear();
+            record.activity = SessionActivity::StartingTurn {
+                turn_id,
+                progress: progress.clone(),
+            };
+            let claimed = std::mem::take(&mut record.pending_messages);
+            emit_pending_messages_locked(record);
+            claimed
+        };
+
+        self.turn_guard.begin_turn();
+        Ok(Some((progress, claimed)))
     }
 
     /// Public own+descendant status for a session. Descendants only promote an
@@ -1898,9 +2106,8 @@ impl SessionManager {
     /// Record the origin of one LLM request (`request/header`).
     ///
     /// Control-plane only: the row never enters the spine, the UI transcript, or
-    /// model input. It exists so a later request can ask "did the endpoint I am
-    /// now calling mint the identities in this history?" without guessing from an
-    /// id's shape, and without rewriting any existing item.
+    /// model input. It exists so a later request can ask "which provider produced
+    /// this reasoning ciphertext?" without rewriting any existing item.
     ///
     /// Returns the seq the record landed on, which is what later items of the same
     /// request are attributed to.
@@ -1945,6 +2152,23 @@ impl SessionManager {
                 "unexpected request origins read".into(),
             )),
         }
+    }
+
+    /// Persist a consumed queue as one ordinary user message.
+    ///
+    /// The only durable artifact of the memory-only pending queue: it must be
+    /// indistinguishable from a message typed into the composer — same
+    /// `item/user` kind, same revert-anchor status, same rendering.
+    pub fn append_user_message(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
+        let item = crate::types::user_text(text.to_string());
+        let mut draft = EventDraft::surface_item(
+            EventType::ItemUser,
+            &item,
+            crate::session::surface::SurfaceOp::Append,
+        )?;
+        draft.time = chrono::Utc::now().timestamp_millis();
+        self.apply(session_id, SessionApply::Append(draft))?;
+        Ok(())
     }
 
     /// Persist a plan-review reminder as a dedicated `reminder/plan` spine Item.
@@ -2182,6 +2406,25 @@ async fn fanout_turn(
 
     // Safety net if the turn thread died without TurnCompleted.
     let _ = manager.finish_turn(&session_id, &handle.turn_id);
+}
+
+/// Fan out the full pending-message list to this session's subscribers.
+///
+/// Must be called while the `records` lock is held: the list and the broadcast
+/// then stay one sequence, so a later mutation can never be observed before an
+/// earlier one.
+fn emit_pending_messages_locked(record: &mut SessionRecord) {
+    let envelope = InternalEnvelope {
+        event: InternalEvent::PendingMessages {
+            pending: record.pending_messages.clone(),
+        },
+        parent_session_id: None,
+    };
+    if record.event_buffer.len() >= EVENT_BUFFER_CAPACITY {
+        record.event_buffer.pop_front();
+    }
+    record.event_buffer.push_back(envelope.clone());
+    let _ = record.event_tx.send(envelope);
 }
 
 /// Map a stream event to a one-shot list step kind + stable item id (for dedupe).
@@ -3307,5 +3550,186 @@ mod plan_settle_tests {
             Some(rev2)
         );
         assert!(mgr.plan_execution_reminder(&sid).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod pending_message_tests {
+    use super::*;
+    use crate::config::TurnGuard;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    fn mgr() -> Arc<SessionManager> {
+        Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            String::new(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn enqueue_remove_and_claim_never_touch_the_log() {
+        let mgr = mgr();
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        let revision_before = mgr.data().revision_blocking(&sid).unwrap();
+        let events_before = mgr.data().events_blocking(&sid).unwrap().len();
+
+        let first = mgr.enqueue_pending_message(&sid, "first").unwrap();
+        mgr.enqueue_pending_message(&sid, "second").unwrap();
+        assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 2);
+        assert!(mgr.has_pending_messages(&sid));
+
+        assert!(mgr.remove_pending_message(&sid, &first.id));
+        assert!(!mgr.remove_pending_message(&sid, &first.id));
+        assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 1);
+
+        // Memory-only by contract: nothing here is a log write.
+        assert_eq!(mgr.data().revision_blocking(&sid).unwrap(), revision_before);
+        assert_eq!(
+            mgr.data().events_blocking(&sid).unwrap().len(),
+            events_before
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_only_for_the_running_turn_and_restore_prepends() {
+        let mgr = mgr();
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.enqueue_pending_message(&sid, "a").unwrap();
+        mgr.enqueue_pending_message(&sid, "b").unwrap();
+
+        // Idle and wrong-turn-id claims are refused without touching the queue.
+        assert!(mgr.claim_pending_messages_for_turn(&sid, "t1").is_none());
+        let cancel = CancellationToken::new();
+        mgr.begin_turn(&sid, "t1".into(), cancel.clone(), 5, "default", "/proj")
+            .unwrap();
+        assert!(mgr.claim_pending_messages_for_turn(&sid, "t2").is_none());
+        assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 2);
+
+        let claimed = mgr.claim_pending_messages_for_turn(&sid, "t1").unwrap();
+        assert_eq!(claimed.len(), 2);
+        assert!(!mgr.has_pending_messages(&sid));
+        assert!(mgr.claim_pending_messages_for_turn(&sid, "t1").unwrap().is_empty());
+
+        // A message queued after the claim survives a restore and lands after
+        // the claimed block.
+        mgr.enqueue_pending_message(&sid, "c").unwrap();
+        mgr.restore_pending_messages(&sid, claimed);
+        let restored: Vec<String> = mgr
+            .pending_messages_snapshot(&sid)
+            .into_iter()
+            .map(|message| message.text)
+            .collect();
+        assert_eq!(restored, vec!["a", "b", "c"]);
+
+        // Cancel marks the turn stopping: it may no longer claim the queue.
+        assert!(mgr.cancel_turn_sync(&sid));
+        assert!(mgr.claim_pending_messages_for_turn(&sid, "t1").is_none());
+        assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 3);
+    }
+
+    #[tokio::test]
+    async fn reserve_and_claim_is_a_single_boundary() {
+        let mgr = mgr();
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+
+        // Empty queue: nothing reserved, session stays idle.
+        assert!(
+            mgr.reserve_turn_and_claim_pending(&sid, "t1".into(), 5, "default", "/proj")
+                .unwrap()
+                .is_none()
+        );
+        assert!(!mgr.is_session_busy_blocking(&sid));
+
+        mgr.enqueue_pending_message(&sid, "steer").unwrap();
+        let (progress, claimed) = mgr
+            .reserve_turn_and_claim_pending(&sid, "t1".into(), 5, "default", "/proj")
+            .unwrap()
+            .expect("reserved");
+        assert_eq!(progress.turn_id, "t1");
+        assert_eq!(claimed.len(), 1);
+        assert!(mgr.is_session_busy_blocking(&sid));
+        assert!(!mgr.has_pending_messages(&sid));
+
+        // Busy: a second reserve is refused and leaves later messages queued.
+        mgr.enqueue_pending_message(&sid, "later").unwrap();
+        assert!(matches!(
+            mgr.reserve_turn_and_claim_pending(&sid, "t2".into(), 5, "default", "/proj"),
+            Err(LitecodeError::AgentAlreadyRunning)
+        ));
+        assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_reverted_log_drops_the_queue_it_made_meaningless() {
+        let mgr = mgr();
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.insert_detail_rows(
+            &sid,
+            &[crate::types::user_text("u0"), crate::types::user_text("u1")],
+        )
+        .unwrap();
+        mgr.enqueue_pending_message(&sid, "discarded").unwrap();
+
+        // Only the revert that owns the session may drop the queue: another
+        // exclusive operation blocks it and a foreign caller is refused.
+        let compact = mgr
+            .try_begin_operation(&sid, SessionOperationKind::Compact)
+            .expect("compact lease");
+        let busy = match mgr.try_begin_revert(&sid) {
+            Ok(_) => panic!("compact must block the revert"),
+            Err(error) => error,
+        };
+        assert!(matches!(busy, LitecodeError::AgentAlreadyRunning));
+        assert!(!mgr.discard_pending_messages_for_revert(&sid, "not-the-owner"));
+        assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 1);
+        drop(compact);
+
+        // A revert that does own the session clears it, and the end-of-turn
+        // flush then has nothing left to deliver.
+        let lease = mgr
+            .try_begin_revert(&sid)
+            .expect("revert after compact releases the lease")
+            .expect("revert acquires a lease");
+        assert!(mgr.discard_pending_messages_for_revert(
+            &sid,
+            lease.operation_id()
+        ));
+        assert!(!mgr.has_pending_messages(&sid));
+        assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 0);
+        // Idempotent, and still owned.
+        assert!(mgr.discard_pending_messages_for_revert(
+            &sid,
+            lease.operation_id()
+        ));
+        drop(lease);
+
+        // The cleared queue is not re-created: an idle claim finds nothing.
+        assert_eq!(mgr.claim_pending_if_idle(&sid).map(|c| c.len()), Some(0));
+        assert!(
+            mgr.reserve_turn_and_claim_pending(&sid, "t1".into(), 5, "default", "/proj")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_revert_keeps_the_queue() {
+        let mgr = mgr();
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.insert_detail_rows(&sid, &[crate::types::user_text("u0")])
+            .unwrap();
+        mgr.enqueue_pending_message(&sid, "still mine").unwrap();
+
+        let lease = mgr
+            .try_begin_revert(&sid)
+            .expect("revert acquires a lease")
+            .expect("lease");
+        // A bad anchor truncates nothing, and the controller only clears on the
+        // success branch — so the queue must survive the attempt.
+        assert!(mgr.entry_revert_to_user_anchor(&sid, 99).is_err());
+        assert!(mgr.has_pending_messages(&sid));
+        drop(lease);
+        assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 1);
     }
 }

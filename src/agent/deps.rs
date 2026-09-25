@@ -29,6 +29,15 @@ pub trait AgentDeps {
         Ok(())
     }
 
+    /// Whether queued user messages are waiting for the next request seam.
+    ///
+    /// The loop must keep stepping while this is true: a message that arrived
+    /// while the final response streamed would otherwise be answered by a
+    /// follow-up turn instead of steering this one.
+    fn has_pending_user_messages(&self) -> bool {
+        false
+    }
+
     fn emit_todo_progress(&mut self);
     fn emit_plan_changed(&mut self);
 

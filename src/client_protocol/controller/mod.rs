@@ -287,6 +287,9 @@ impl Projection {
             .unwrap_or_default();
         snap.todos = task_state.todos;
         snap.active_plan_path = task_state.active_plan.map(|plan| plan.relative_path);
+        // Memory-only queue, but still part of the snapshot: a rebuilt panel
+        // (subscribed while idle after a cancel) must see it.
+        snap.pending_messages = self.sessions.pending_messages_snapshot(&self.session_id);
         if let Ok(meta) = self.sessions.data().meta_blocking(&self.session_id) {
             snap.meta = crate::client_protocol::protocol::SessionMetaWire {
                 id: meta.id,
@@ -508,7 +511,7 @@ impl Projection {
         project: &str,
         binding: &SessionBindingProjection,
     ) -> anyhow::Result<()> {
-        let _lease = match self.sessions.try_begin_revert(&self.session_id) {
+        let lease = match self.sessions.try_begin_revert(&self.session_id) {
             Ok(lease) => lease,
             Err(LitecodeError::AgentAlreadyRunning) => {
                 self.push_operation_error(
@@ -527,6 +530,17 @@ impl Projection {
             .entry_revert_to_user_anchor(&self.session_id, i64::from(k))
         {
             Ok(()) => {
+                // The log is back at anchor `k`: messages still queued for the
+                // next seam belong to the state the user just discarded, so they
+                // must not be delivered afterwards. Done under the same lease —
+                // no turn can start and no end-of-turn flush can claim them in
+                // between, and a failed revert never reaches this branch.
+                if let Some(lease) = lease.as_ref() {
+                    self.sessions.discard_pending_messages_for_revert(
+                        &self.session_id,
+                        lease.operation_id(),
+                    );
+                }
                 self.bump_buffer_revision(project, binding);
                 // Re-read after the bump: `last_seq` is the new (dropped) active
                 // tail while `next_seq` is the persisted high-water that did not
@@ -999,6 +1013,7 @@ impl SessionController {
         let mut snapshot = proj.snapshot(&project_str, &binding);
         // (Re)subscribe is the client's sync point for transient bash state.
         snapshot.bash = Some(self.runtime.ide.terminal.jobs.wire_snapshot(session_id));
+        snapshot.pending_messages = self.sessions.pending_messages_snapshot(session_id);
         proj.push_outgoing(session_snapshot(snapshot));
 
         let sid_owned = session_id.to_string();
@@ -1913,5 +1928,52 @@ mod compact_item_wire_tests {
         assert_eq!(items[0]["params"]["seq"], 9);
         assert_eq!(proj.snapshot("/p", &binding()).buffer.last_seq, 9);
         assert_eq!(proj.next_seq, 10);
+    }
+
+    #[test]
+    fn revert_drops_the_queue_it_made_meaningless() {
+        let (mut proj, sid, sessions) = setup_with_details(&["m0", "m1", "m2"]);
+        proj.bump_buffer_revision("/p", &binding());
+        let _ = proj.take_outgoing();
+        sessions
+            .enqueue_pending_message(&sid, "typed while busy")
+            .unwrap();
+        assert!(sessions.has_pending_messages(&sid));
+
+        proj.revert_to_user_anchor(1, "/p", &binding()).unwrap();
+        assert!(
+            !sessions.has_pending_messages(&sid),
+            "a successful revert must not leave messages queued for the next seam"
+        );
+        let out = proj.take_outgoing();
+        assert!(out.iter().any(|m| m["method"] == "buffer/reverted"));
+        // The wire notification is built from this event; clients overwrite from
+        // it, so an empty list is what drops the bubble right away.
+        assert!(latest_pending_state(&sessions, &sid)
+            .expect("the client must be told the queue is gone, not left guessing")
+            .is_empty());
+
+        // A bad anchor truncates nothing, so the queue must survive it.
+        sessions
+            .enqueue_pending_message(&sid, "still mine")
+            .unwrap();
+        proj.revert_to_user_anchor(99, "/p", &binding()).unwrap();
+        assert_eq!(latest_pending_state(&sessions, &sid).unwrap(), vec!["still mine"]);
+    }
+
+    fn latest_pending_state(sessions: &SessionManager, sid: &str) -> Option<Vec<String>> {
+        sessions
+            .event_buffer_snapshot(sid)
+            .into_iter()
+            .rev()
+            .find_map(|envelope| match envelope.event {
+                InternalEvent::PendingMessages { pending } => Some(
+                    pending
+                        .into_iter()
+                        .map(|message| message.text)
+                        .collect(),
+                ),
+                _ => None,
+            })
     }
 }

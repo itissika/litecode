@@ -154,10 +154,48 @@ impl AgentDeps for AgentRuntime {
             appended = true;
         }
 
+        // Queued user messages are drained last: they are the freshest input
+        // and must sit closest to the next request. The claim is atomic with
+        // the turn's ownership, so a cancel that already marked this turn
+        // stopping leaves the queue for the end-of-turn flush.
+        if let Some(turn_id) = self.context_pipeline.current_turn_id()
+            && let Some(claimed) = self
+                .sessions
+                .claim_pending_messages_for_turn(&self.session_id, &turn_id)
+            && !claimed.is_empty()
+        {
+            let merged = claimed
+                .iter()
+                .map(|message| message.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if let Err(error) = self.sessions.append_user_message(&self.session_id, &merged) {
+                // The queue is the delivery contract: never drop it silently.
+                // Restore it in order and stop this injection — the message
+                // stays visible, and the end-of-turn flush retries it as a
+                // normal turn input.
+                self.sessions.restore_pending_messages(&self.session_id, claimed);
+                return Err(crate::types::LitecodeError::Anyhow(error));
+            }
+            appended = true;
+        }
+
         if appended {
             *transcript = self.sessions.data().transcript_blocking(&self.session_id)?;
+            // The appended rows are durable now, so announce their arrival here
+            // instead of waiting for this step's own commit. The projection ships
+            // `buffer/item` on `StepCommitted` (or a seal restamp), so without
+            // this a claimed message stays parked in the client — bubble at the
+            // tail, below the answer that already consumed it — for a whole
+            // response, and every other runtime append (reminders, subagent
+            // completions) waits just as long to show up.
+            self.emit_internal(InternalEvent::StepCommitted);
         }
         Ok(())
+    }
+
+    fn has_pending_user_messages(&self) -> bool {
+        self.sessions.has_pending_messages(&self.session_id)
     }
 
     fn is_cancelled(&self) -> bool {
@@ -318,19 +356,25 @@ impl AgentRuntime {
 
         let tool_names: Vec<&str> = tool_schemas.iter().map(|t| t.name.as_str()).collect();
         let model = self.turn_llm.api_model_id.clone();
-        let issuer = crate::llm::issuer_of_model(&self.turn_llm.model);
-        // Origin is an append-only control-plane row written before the request.
-        // If it fails, do not send items whose future issuer could not be proven.
-        let origin_seq = self.record_request_origin(&issuer)?;
-        let input_origins = self.llm_input_origins(&input, &item_seqs);
+        // Replay rule 2: reasoning ciphertext goes back only to its producer.
+        // Producers are read before this request's own header is appended.
+        let provider_id = self.turn_llm.provider_id.clone();
+        let producers = self.llm_input_producers(&item_seqs);
+        let mut input = input;
+        let ciphertexts_stripped =
+            crate::llm::strip_foreign_ciphertext(&mut input, &producers, &provider_id);
+        // Origin is an append-only control-plane row written before the request:
+        // items this request produces inherit its provider.
+        let origin_seq = self.record_request_origin()?;
         tracing::info!(
             target: "litecode.debug.llm_request",
             session_id = %self.session_id,
             step = self.current_step_value(),
             model = %model,
             endpoint = %self.provider().endpoint(),
-            issuer = %issuer,
+            provider_id = %provider_id,
             origin_seq,
+            ciphertexts_stripped,
             tools_count = tool_names.len(),
             tools = ?tool_names,
             item_count = input.len(),
@@ -340,7 +384,7 @@ impl AgentRuntime {
             "LLM request built"
         );
 
-        let mut request = ModelRequest {
+        Ok(ModelRequest {
             model,
             instructions: instructions.to_string(),
             input,
@@ -353,74 +397,36 @@ impl AgentRuntime {
             // codec gates on, not a per-turn instruction.
             json_output: false,
             session_id: Some(self.session_id.clone()),
-            input_origins,
-            issuer,
-        };
-        let store = crate::llm::StoreMode::of_model(&self.turn_llm.model);
-        let report = request.project_replay(store);
-        if !report.is_empty() {
-            tracing::debug!(
-                target: "litecode.debug.llm_request",
-                session_id = %self.session_id,
-                step = self.current_step_value(),
-                issuer = %request.issuer,
-                identities_kept = report.identities_kept,
-                identities_stripped = report.identities_stripped,
-                items_dropped = report.items_dropped,
-                "replay identities projected for this endpoint"
-            );
-        }
-        Ok(request)
+        })
     }
 
-    /// Resolve item ownership only through each item's durable source seq.
-    /// Provider IDs are used below only to find active cross-request collisions,
-    /// never to map an item back to its session row.
-    fn llm_input_origins(
+    /// The provider that produced each input item, through its durable seq and the
+    /// session's `request/header` rows. Unreadable history degrades to "unknown",
+    /// which only costs foreign ciphertext, never text.
+    fn llm_input_producers(
         &self,
-        input: &[Item],
         item_seqs: &[Option<crate::session::event::Seq>],
-    ) -> Vec<crate::llm::ItemOrigin> {
-        let known = self
+    ) -> Vec<Option<String>> {
+        let headers = self
             .sessions
             .request_origins(&self.session_id)
             .unwrap_or_default()
             .into_iter()
-            .map(|(seq, body)| crate::llm::RequestOrigin {
-                seq,
-                issuer: body
-                    .get("issuer")
+            .map(|(seq, body)| {
+                let provider = body
+                    .get("provider_id")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default()
-                    .to_string(),
-                request_key: body
-                    .get("request_key")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                    .to_string();
+                (seq, provider)
             })
             .collect::<Vec<_>>();
-        let mut origins = crate::llm::origins_for_seqs(item_seqs, &known);
-        let active_rows = self
-            .context_pipeline
-            .working_set()
-            .into_iter()
-            .map(|row| {
-                let origin = crate::llm::origin_for_seq(&known, row.log_seq);
-                (row.item, origin)
-            })
-            .collect::<Vec<_>>();
-        crate::llm::mark_cross_call_reuse(input, &mut origins, &active_rows);
-        origins
+        crate::llm::producers_for_seqs(item_seqs, &headers)
     }
 
     /// Append the request boundary before sending, so the next durable Item row
-    /// inherits exactly this turn/step's issuer. Failed provenance writes fail the
-    /// turn before the provider sees a request; guessing would be unsafe.
-    fn record_request_origin(
-        &self,
-        issuer: &str,
-    ) -> Result<crate::session::event::Seq> {
+    /// inherits exactly this turn/step's provider.
+    fn record_request_origin(&self) -> Result<crate::session::event::Seq> {
         let turn_id = self.context_pipeline.current_turn_id().ok_or_else(|| {
             crate::types::LitecodeError::Llm(
                 "request origin cannot be recorded without a turn id".into(),
@@ -431,8 +437,6 @@ impl AgentRuntime {
             "schema": 1,
             "turn": turn_id,
             "step": step,
-            "request_key": format!("{turn_id}:{step}"),
-            "issuer": issuer,
             "endpoint_type": self.turn_llm.model.endpoint_type.as_str(),
             "provider_id": self.turn_llm.provider_id,
             "model_ref": self.turn_llm.model_ref,
@@ -727,8 +731,6 @@ mod estimate_body_bytes_tests {
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: None,
-            input_origins: vec![],
-            issuer: String::new(),
         }
     }
 

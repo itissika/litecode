@@ -145,6 +145,11 @@ impl ServeState {
             Arc::clone(&sessions),
             project.clone(),
         );
+        crate::runtime::pending_auto_turn::install_pending_flush(
+            Arc::clone(&runtime),
+            Arc::clone(&sessions),
+            project.clone(),
+        );
         {
             let sessions = Arc::clone(&sessions);
             let hub = Arc::clone(&terminal_hub);

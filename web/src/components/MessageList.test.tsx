@@ -12,6 +12,7 @@ import {
 import type { HumanRow } from "../api/types";
 import { userTextItem } from "../api/adapter";
 import { useBashStore } from "../stores/bashStore";
+import { useMessageStore } from "../stores/messageStore";
 import { clearFoldCardOpen } from "./foldCardState";
 
 const grantPermission = vi.fn();
@@ -55,6 +56,7 @@ const turnState = {
       pendingPermission: unknown;
       compacting: boolean;
       turnPhase: string | null;
+      pendingMessages: { id: string; text: string }[];
     }
   >([
     [
@@ -63,9 +65,11 @@ const turnState = {
         pendingPermission: null,
         compacting: false,
         turnPhase: null,
+        pendingMessages: [],
       },
     ],
   ]),
+  recallPendingMessages: vi.fn(async () => true),
 };
 
 vi.mock("../stores/turnStore", () => ({
@@ -151,11 +155,14 @@ afterEach(() => {
   cleanup();
   grantPermission.mockClear();
   useBashStore.getState().reset();
+  useMessageStore.setState({ bySession: new Map() });
   clearFoldCardOpen("session-1");
+  turnState.recallPendingMessages.mockClear();
   const slice = turnState.byId.get("session-1");
   if (slice) {
     slice.compacting = false;
     slice.turnPhase = null;
+    slice.pendingMessages = [];
   }
 });
 
@@ -223,6 +230,46 @@ describe("MessageList G5 historical FoldCard", () => {
 });
 
 describe("MessageList process group across seal", () => {
+  it("auto-collapses a process group before a following user bubble", () => {
+    const sealedTool: HumanRow = { ...liveTool, state: "final" };
+    const output: HumanRow = {
+      seq: 3,
+      kind: "item/tool_result",
+      state: "final",
+      body: {
+        type: "function_call_output",
+        call_id: "call_1",
+        output: "done",
+      },
+    };
+    const queuedUser: HumanRow = {
+      seq: 4,
+      kind: "item/user",
+      state: "final",
+      body: userTextItem("queued while the turn was running"),
+    };
+
+    render(
+      <MessageList
+        messages={[sealedReasoning, sealedTool, output, queuedUser]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+
+    expect(
+      screen
+        .getByRole("button", { name: /1 reasoning, 1 tool/i })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(screen.getByText("queued while the turn was running")).toBeTruthy();
+  });
+
   it("keeps the process FoldCard expanded when the first row seals live→buffer", () => {
     const { rerender } = render(
       <MessageList
@@ -353,6 +400,163 @@ describe("MessageList process group across seal", () => {
         .getByRole("button", { name: /1 reasoning, 1 tool/i })
         .getAttribute("aria-expanded"),
     ).toBe("false");
+  });
+});
+
+describe("MessageList queued-batch in-flight bubble", () => {
+  it("renders the whole batch as one bubble and recalls it on click", () => {
+    useMessageStore.getState().setPendingQueue("session-1", ["first", "second"]);
+    turnState.byId.get("session-1")!.pendingMessages = [
+      { id: "p1", text: "first" },
+      { id: "p2", text: "second" },
+    ];
+    render(
+      <MessageList
+        messages={[]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+
+    const bubble = screen.getByLabelText("Recall queued message");
+    expect(bubble.textContent).toContain("first");
+    expect(bubble.textContent).toContain("second");
+    // Never a revert/edit surface: the only action is taking the batch back.
+    expect(screen.queryByRole("button", { name: "Revert to here" })).toBeNull();
+
+    fireEvent.click(bubble);
+    expect(turnState.recallPendingMessages).toHaveBeenCalledWith("session-1");
+  });
+
+  it("settles the durable row in when it takes over from the in-flight batch", () => {
+    useMessageStore.getState().setPendingQueue("session-1", ["steer"]);
+    turnState.byId.get("session-1")!.pendingMessages = [
+      { id: "p1", text: "steer" },
+    ];
+    const landed: HumanRow = {
+      seq: 1,
+      kind: "item/user",
+      state: "final",
+      body: userTextItem("steer"),
+    };
+    const props = {
+      loadingHistory: false,
+      canLoadMore: false,
+      onLoadMore: () => {},
+      userDetailBefore: 0,
+      isRunning: true,
+      scrollRef: makeScrollRef(),
+      sessionId: "session-1",
+    };
+    const { rerender } = render(<MessageList {...props} messages={[]} />);
+    // In flight: the bubble is there on its own, nothing is landing.
+    expect(screen.getByLabelText("Recall queued message")).toBeTruthy();
+    expect(document.querySelector(".queued-bubble-land")).toBeNull();
+
+    // "Sending": the durable row lands and the store hands the bubble over to it
+    // in one update, so the settle is what says the message made it.
+    useMessageStore.getState().onBufferItem("session-1", {
+      session_id: "session-1",
+      seq: 1,
+      kind: "item/user",
+      state: "final",
+      body: userTextItem("steer"),
+    });
+    rerender(<MessageList {...props} messages={[landed]} />);
+
+    const settling = document.querySelector(".queued-bubble-land");
+    expect(settling).not.toBeNull();
+    expect(screen.queryByLabelText("Recall queued message")).toBeNull();
+
+    // Played: the row is retired, so a remount cannot replay the settle. A
+    // browser's animationend flips this; jsdom never delivers it to React's
+    // synthetic handler, so the test drives the state it flips.
+    useMessageStore.getState().clearLandedQueueSeq("session-1");
+    rerender(<MessageList {...props} messages={[landed]} />);
+    expect(document.querySelector(".queued-bubble-land")).toBeNull();
+  });
+
+  it("settles a batch that landed mid-turn, not only at the tail", () => {
+    // A queue injected at a tool-loop seam: its durable row is followed by the
+    // assistant's answer, so it is not the last bubble in the list.
+    useMessageStore.getState().setPendingQueue("session-1", ["steer"]);
+    useMessageStore.getState().onBufferItem("session-1", {
+      session_id: "session-1",
+      seq: 1,
+      kind: "item/user",
+      state: "final",
+      body: userTextItem("steer"),
+    });
+
+    render(
+      <MessageList
+        messages={[
+          {
+            seq: 0,
+            kind: "item/user",
+            state: "final",
+            body: userTextItem("go"),
+          },
+          {
+            seq: 1,
+            kind: "item/user",
+            state: "final",
+            body: userTextItem("steer"),
+          },
+          {
+            seq: 2,
+            kind: "item/assistant",
+            state: "final",
+            body: {
+              type: "message",
+              role: "assistant",
+              id: "msg_1",
+              status: "completed",
+              content: [
+                { type: "output_text", text: "answered", annotations: [] },
+              ],
+            },
+          },
+        ]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+
+    const settling = document.querySelector(".queued-bubble-land");
+    expect(settling).not.toBeNull();
+    expect(settling!.textContent).toContain("steer");
+  });
+
+  it("is inert once the server has claimed the batch", () => {
+    useMessageStore.getState().setPendingQueue("session-1", ["sent"]);
+    render(
+      <MessageList
+        messages={[]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+
+    expect(screen.queryByLabelText("Recall queued message")).toBeNull();
+    // Still the queued text, just no longer clickable: the veil is on both
+    // states, only the pointer/hover affordance goes away.
+    expect(screen.getByText("sent")).toBeTruthy();
   });
 });
 

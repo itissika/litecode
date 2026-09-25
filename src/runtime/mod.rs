@@ -4,6 +4,7 @@ pub mod exec;
 pub mod llm_resolve;
 pub mod observer;
 pub(crate) mod phase;
+pub mod pending_auto_turn;
 pub mod provider_registry;
 mod stream_projection;
 pub mod subagent_auto_turn;

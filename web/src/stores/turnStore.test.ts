@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isCompactCutRow } from "../api/adapter";
 import type { SessionSnapshot, TurnFinished, TurnSnapshot } from "../api/types";
 import { useConnectionStore } from "./connectionStore";
+import { subscribeComposerAppend } from "./composerDraft";
 import { useMessageStore } from "./messageStore";
 import { useNotificationStore } from "./notificationStore";
 import { useToastStore } from "./toastStore";
@@ -112,6 +113,89 @@ describe("turnStore convergence", () => {
       session_id: sessionId,
       k: 2,
     });
+    expect(useTurnStore.getState().byId.get(sessionId)?.replaying).toBe(false);
+  });
+
+  it("reverts a live turn through the server instead of cancelling first", async () => {
+    const sessionId = "s-replay-live";
+    const sendRpc = vi.fn(async (_method: string) => ({}));
+    useConnectionStore.setState({ sendRpc } as never);
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          { ...EMPTY_SLICE, runState: "running", currentTurnId: "t-live" },
+        ],
+      ]),
+    });
+    const methods = () => sendRpc.mock.calls.map(([method]) => method);
+
+    const task = useTurnStore
+      .getState()
+      .replayFromAnchor(sessionId, 1, "again", {
+        primaryId: "default",
+        modelId: "model-1",
+        thinkingTier: "high",
+        contextMode: "max",
+      });
+    // Let the settings and the revert settle. Cancelling from the client and
+    // waiting for idle first is what opened the flush window, so the revert has
+    // to be on the wire while the turn still looks live.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(methods()).toEqual([
+      "agent/set-primary",
+      "agent/set-model",
+      "agent/set-thinking-tier",
+      "agent/set-context-mode",
+      "session/revert-to-user-anchor",
+    ]);
+    expect(methods()).not.toContain("agent/run");
+
+    useTurnStore.getState().onTurnFinished({
+      turn_id: "t-live",
+      reason: "cancelled",
+      final_text: null,
+      error: null,
+      snapshot: snapshot(sessionId),
+      session_id: sessionId,
+    });
+
+    await expect(task).resolves.toBe(true);
+    expect(methods().at(-1)).toBe("agent/run");
+  });
+
+  it("keeps the edited text in the composer when the revert fails", async () => {
+    const sessionId = "s-replay-fail";
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method === "session/revert-to-user-anchor") {
+        throw new Error("k=1 is gone");
+      }
+      return {};
+    });
+    useConnectionStore.setState({ sendRpc } as never);
+    const handed: string[] = [];
+    const unsubscribe = subscribeComposerAppend((target, text) => {
+      if (target === sessionId) handed.push(text);
+    });
+
+    await expect(
+      useTurnStore.getState().replayFromAnchor(sessionId, 1, "keep me", {
+        primaryId: "default",
+        modelId: "model-1",
+        thinkingTier: "high",
+        contextMode: "max",
+      }),
+    ).resolves.toBe(false);
+    unsubscribe();
+
+    expect(sendRpc.mock.calls.map(([method]) => method)).not.toContain(
+      "agent/run",
+    );
+    expect(handed).toEqual(["keep me"]);
+    expect(useToastStore.getState().toasts.map((t) => t.message)).toContain(
+      "k=1 is gone",
+    );
     expect(useTurnStore.getState().byId.get(sessionId)?.replaying).toBe(false);
   });
 
@@ -889,5 +973,187 @@ describe("grantPermission receipt (FE-04)", () => {
     expect(
       useMessageStore.getState().bySession.get(sessionId)?.pendingUser,
     ).toBeNull();
+  });
+});
+
+describe("turnStore queued (pending) messages", () => {
+  beforeEach(() => {
+    useTurnStore.setState({ byId: new Map() });
+    useMessageStore.setState({ bySession: new Map() });
+    useToastStore.setState({ toasts: [] });
+    useConnectionStore.setState({
+      sendRpc: vi.fn(async () => ({})),
+    } as never);
+  });
+
+  it("enqueuePending mirrors the server's authoritative list from the ack", async () => {
+    const sessionId = "s-pending";
+    const sendRpc = vi.fn(async () => ({
+      queued: true,
+      pending_messages: [{ id: "p1", text: "steer" }],
+    }));
+    useConnectionStore.setState({ sendRpc } as never);
+
+    await expect(
+      useTurnStore.getState().enqueuePending(sessionId, "  steer  "),
+    ).resolves.toBe(true);
+
+    expect(sendRpc).toHaveBeenCalledWith("session/pending-enqueue", {
+      text: "steer",
+      session_id: sessionId,
+    });
+    expect(
+      useTurnStore.getState().byId.get(sessionId)?.pendingMessages,
+    ).toEqual([{ id: "p1", text: "steer" }]);
+  });
+
+  it("empty text is never sent", async () => {
+    const sendRpc = vi.fn(async () => ({}));
+    useConnectionStore.setState({ sendRpc } as never);
+    await expect(
+      useTurnStore.getState().enqueuePending("s-pending", "   "),
+    ).resolves.toBe(false);
+    expect(sendRpc).not.toHaveBeenCalled();
+  });
+
+  it("removePending deletes by server id and overwrites with the ack list", async () => {
+    const sessionId = "s-pending-remove";
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            pendingMessages: [
+              { id: "p1", text: "one" },
+              { id: "p2", text: "two" },
+            ],
+          },
+        ],
+      ]),
+    });
+    const sendRpc = vi.fn(async () => ({
+      removed: true,
+      pending_messages: [{ id: "p2", text: "two" }],
+    }));
+    useConnectionStore.setState({ sendRpc } as never);
+
+    await expect(
+      useTurnStore.getState().removePending(sessionId, "p1"),
+    ).resolves.toBe(true);
+
+    expect(sendRpc).toHaveBeenCalledWith("session/pending-remove", {
+      id: "p1",
+      session_id: sessionId,
+    });
+    expect(
+      useTurnStore.getState().byId.get(sessionId)?.pendingMessages,
+    ).toEqual([{ id: "p2", text: "two" }]);
+  });
+
+  it("applySnapshotMeter overwrites pending from the snapshot, absent = empty", () => {
+    const sessionId = "s-pending-snap";
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            pendingMessages: [{ id: "old", text: "stale" }],
+          },
+        ],
+      ]),
+    });
+
+    useTurnStore
+      .getState()
+      .applySnapshotMeter(sessionId, snapshot(sessionId));
+    expect(
+      useTurnStore.getState().byId.get(sessionId)?.pendingMessages,
+    ).toEqual([]);
+
+    useTurnStore.getState().applySnapshotMeter(sessionId, {
+      ...snapshot(sessionId),
+      pending_messages: [{ id: "p9", text: "nine" }],
+    });
+    expect(
+      useTurnStore.getState().byId.get(sessionId)?.pendingMessages,
+    ).toEqual([{ id: "p9", text: "nine" }]);
+  });
+
+  it("keeps the in-flight bubble after the claim (recall is inert by then)", async () => {
+    const sessionId = "s-pending-bridge";
+    const sendRpc = vi.fn(async () => ({ removed: true, pending_messages: [] }));
+    useConnectionStore.setState({ sendRpc } as never);
+
+    useTurnStore.getState().applyPendingMessages(sessionId, [
+      { id: "p1", text: "one" },
+      { id: "p2", text: "two" },
+    ]);
+    expect(
+      useMessageStore.getState().bySession.get(sessionId)?.pendingQueue?.joined,
+    ).toBe("one\n\ntwo");
+
+    // The server claimed the batch: the queue mirror is empty but the durable
+    // row is still en route, so the bubble must stay (no blink-out) — and recall
+    // must not pretend it can pull back a message that is already durable.
+    useTurnStore.getState().applyPendingMessages(sessionId, []);
+    expect(
+      useMessageStore.getState().bySession.get(sessionId)?.pendingQueue,
+    ).not.toBeNull();
+    await expect(
+      useTurnStore.getState().recallPendingMessages(sessionId),
+    ).resolves.toBe(false);
+    expect(sendRpc).not.toHaveBeenCalled();
+  });
+
+  it("recall hands the whole batch back and clears the bubble", async () => {
+    const sessionId = "s-pending-recall";
+    const sendRpc = vi.fn(async () => ({ removed: true, pending_messages: [] }));
+    useConnectionStore.setState({ sendRpc } as never);
+    const recalled: string[] = [];
+    const unsubscribe = subscribeComposerAppend((target, text) => {
+      if (target === sessionId) recalled.push(text);
+    });
+    useTurnStore.getState().applyPendingMessages(sessionId, [
+      { id: "p1", text: "one" },
+      { id: "p2", text: "two" },
+    ]);
+
+    await expect(
+      useTurnStore.getState().recallPendingMessages(sessionId),
+    ).resolves.toBe(true);
+    unsubscribe();
+
+    expect(recalled).toEqual(["one\n\ntwo"]);
+    expect(sendRpc).toHaveBeenCalledWith("session/pending-remove", {
+      id: "p1",
+      session_id: sessionId,
+    });
+    expect(sendRpc).toHaveBeenCalledWith("session/pending-remove", {
+      id: "p2",
+      session_id: sessionId,
+    });
+    expect(
+      useMessageStore.getState().bySession.get(sessionId)?.pendingQueue,
+    ).toBeNull();
+    expect(useTurnStore.getState().byId.get(sessionId)?.pendingMessages).toEqual(
+      [],
+    );
+  });
+
+  it("a snapshot with an empty queue drops an unsealed in-flight bubble", () => {
+    const sessionId = "s-pending-bridge-snap";
+    useTurnStore
+      .getState()
+      .applyPendingMessages(sessionId, [{ id: "p1", text: "one" }]);
+    expect(
+      useMessageStore.getState().bySession.get(sessionId)?.pendingQueue,
+    ).not.toBeNull();
+
+    useTurnStore
+      .getState()
+      .applySnapshotMeter(sessionId, snapshot(sessionId));
+    expect(useMessageStore.getState().bySession.get(sessionId)?.pendingQueue).toBeNull();
   });
 });

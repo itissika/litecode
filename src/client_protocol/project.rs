@@ -495,6 +495,15 @@ fn project_with(
                 "waits": bash.waits,
             }),
         )),
+        // Full authority list on every change: the client overwrites, never
+        // merges, so a dropped frame can only be healed, not diverged.
+        InternalEvent::PendingMessages { pending } => Some(notification(
+            super::protocol::methods::SESSION_PENDING_MESSAGES,
+            serde_json::json!({
+                "session_id": session_id,
+                "pending_messages": pending,
+            }),
+        )),
     }
 }
 
@@ -1099,6 +1108,7 @@ pub fn buffer_snapshot(
         max_file_revert_k: None,
         bash: None,
         todos: Vec::new(),
+        pending_messages: Vec::new(),
         active_plan_path: None,
     }
 }

@@ -9,6 +9,7 @@ import type {
   AgentRunState,
   ContextMode,
   ItemTokenBreakdown,
+  PendingMessage,
   ThinkingTier,
   TurnPhase,
   TurnSnapshot,
@@ -22,6 +23,7 @@ import type {
 import { EMPTY_TOKEN_BREAKDOWN } from "../api/types";
 import { debugTrace } from "../lib/debugTrace";
 import { useConnectionStore, attachSiblingStores } from "./connectionStore";
+import { appendComposerText } from "./composerDraft";
 import { useMessageStore, type TurnEndNotice } from "./messageStore";
 import { useNotificationStore } from "./notificationStore";
 import { toastLlmConfigFailure } from "../lib/settingsGuidance";
@@ -73,6 +75,12 @@ export interface TurnSlice {
     status: "pending" | "in_progress" | "completed";
   }[];
   activePlanPath: string | null;
+  /**
+   * Queued user messages for the live turn. Server-owned memory state: this
+   * slice only ever mirrors the full authority list from a snapshot or the
+   * `session/pending_messages` notification — never a local edit.
+   */
+  pendingMessages: PendingMessage[];
 }
 
 export function emptySlice(): TurnSlice {
@@ -107,6 +115,7 @@ export const EMPTY_SLICE: TurnSlice = {
   todoCompleted: 0,
   todoItems: [],
   activePlanPath: null,
+  pendingMessages: [],
 };
 
 function todoPatchFromItems(
@@ -217,6 +226,21 @@ interface TurnStore {
   byId: Map<string, TurnSlice>;
 
   start: (sessionId: string, input: string, planExecution?: boolean) => boolean;
+  /**
+   * Queue a message for the live turn (running / stopping). The ack carries the
+   * full authority list; the broadcast may also have landed first.
+   */
+  enqueuePending: (sessionId: string, text: string) => Promise<boolean>;
+  /** Delete one queued message by its server id (idempotent). */
+  removePending: (sessionId: string, id: string) => Promise<boolean>;
+  /** Full authority list (snapshot hydrate or `session/pending_messages`). */
+  applyPendingMessages: (sessionId: string, pending: PendingMessage[]) => void;
+  /**
+   * Pull the whole queued batch back into the composer: the text is never lost
+   * (that is the point of recalling instead of deleting), the in-flight bubble
+   * goes away, and the server's list stays the final authority.
+   */
+  recallPendingMessages: (sessionId: string) => Promise<boolean>;
   replayFromAnchor: (
     sessionId: string,
     userAnchorK: number,
@@ -396,6 +420,101 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       return true;
     },
 
+    enqueuePending: async (sessionId, text) => {
+      const trimmed = text.trim();
+      if (!trimmed) return false;
+      const ws = useConnectionStore.getState();
+      if (!ws.sendRpc) return false;
+      try {
+        const result = await ws.sendRpc<{ pending_messages?: PendingMessage[] }>(
+          "session/pending-enqueue",
+          { text: trimmed, session_id: sessionId },
+        );
+        if (Array.isArray(result?.pending_messages)) {
+          get().applyPendingMessages(sessionId, result.pending_messages);
+        }
+        return true;
+      } catch (error) {
+        useToastStore
+          .getState()
+          .showToast(
+            error instanceof Error ? error.message : "Failed to queue message",
+            "error",
+            8000,
+          );
+        return false;
+      }
+    },
+
+    removePending: async (sessionId, id) => {
+      const ws = useConnectionStore.getState();
+      if (!ws.sendRpc) return false;
+      try {
+        const result = await ws.sendRpc<{ pending_messages?: PendingMessage[] }>(
+          "session/pending-remove",
+          { id, session_id: sessionId },
+        );
+        if (Array.isArray(result?.pending_messages)) {
+          get().applyPendingMessages(sessionId, result.pending_messages);
+        }
+        return true;
+      } catch (error) {
+        useToastStore
+          .getState()
+          .showToast(
+            error instanceof Error ? error.message : "Failed to remove message",
+            "error",
+            8000,
+          );
+        return false;
+      }
+    },
+
+    applyPendingMessages: (sessionId, pending) => {
+      // Server authority: overwrite, never merge — a dropped frame can only be
+      // healed by the next full list, not diverged by a local edit.
+      patch(sessionId, { pendingMessages: pending });
+      // Non-empty: this batch is what the in-flight bubble shows. Empty: the
+      // server claimed it for the next seam and the durable user row is en
+      // route, so the bubble stays until that row lands (messageStore seals it
+      // by text). Only a snapshot or an explicit recall clears it.
+      if (pending.length > 0) {
+        useMessageStore
+          .getState()
+          .setPendingQueue(
+            sessionId,
+            pending.map((message) => message.text),
+          );
+      }
+    },
+
+    recallPendingMessages: async (sessionId) => {
+      const list = get().byId.get(sessionId)?.pendingMessages ?? [];
+      if (list.length === 0) return false;
+      // Refill first: the text is the user's, and it must not be able to vanish
+      // behind a failed round trip.
+      appendComposerText(
+        sessionId,
+        list.map((message) => message.text).join("\n\n"),
+      );
+      useMessageStore.getState().setPendingQueue(sessionId, null);
+      const removed = await Promise.all(
+        list.map((message) => get().removePending(sessionId, message.id)),
+      );
+      // A claim can beat the click. Whatever the server still holds owns the
+      // bubble; the raced items are already durable, so they must not come back.
+      const rest = get().byId.get(sessionId)?.pendingMessages ?? [];
+      if (rest.length > 0) {
+        useMessageStore
+          .getState()
+          .setPendingQueue(
+            sessionId,
+            rest.map((message) => message.text),
+          );
+      }
+      return removed.every(Boolean);
+    },
+
     replayFromAnchor: (sessionId, userAnchorK, input, settings) => {
       const trimmed = input.trim();
       if (!trimmed || !settings.modelId) return Promise.resolve(false);
@@ -418,11 +537,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
 
         patch(sessionId, { replaying: true });
         try {
-          if (current.runState !== "idle") {
-            get().cancel(sessionId);
-            await waitForTurnIdle(sessionId);
-          }
-
           const ws = useConnectionStore.getState();
           await ws.sendRpc("agent/set-primary", {
             agent_id: settings.primaryId,
@@ -440,10 +554,20 @@ export const useTurnStore = create<TurnStore>((set, get) => {
             context_mode: settings.contextMode,
             session_id: sessionId,
           });
+          // One call owns the whole handover: the server cancels the live turn,
+          // waits for it to wind down, truncates the log at the anchor and drops
+          // the queue that belonged to the discarded state. Cancelling from here
+          // and waiting for idle first only opened a window for the end-of-turn
+          // flush to deliver the very message the revert is discarding.
           await ws.sendRpc("session/revert-to-user-anchor", {
             k: userAnchorK,
             session_id: sessionId,
           });
+
+          // `start` still requires an idle slice, and the cancelled turn's
+          // `turn_finished` may still be in flight. The queue is already gone, so
+          // waiting here cannot re-deliver anything.
+          await waitForTurnIdle(sessionId);
 
           // `start` rejects concurrent user sends while replaying. Release the
           // workflow lock only for this synchronous, owned replacement start.
@@ -453,6 +577,10 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           }
           return true;
         } catch (error) {
+          // The edited text lived only in the mini chat's draft and the panel is
+          // already dismissed: hand it back to the composer instead of losing it
+          // (the revert may well have already truncated the log).
+          appendComposerText(sessionId, trimmed);
           useToastStore
             .getState()
             .showToast(
@@ -861,6 +989,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
     applySnapshotMeter: (sessionId, snap) => {
       const tts = snap.last_turn_token_stats;
       const cum = snap.cumulative_token_stats;
+      const pending = snap.pending_messages ?? [];
       // Snapshot meter is authoritative: absent last_turn_token_stats (e.g.
       // post-compact) must clear stale provider occupancy so the ring can
       // fall back to context_tokens_estimate.
@@ -889,7 +1018,21 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         ...(snap.active_plan_path !== undefined
           ? { activePlanPath: snap.active_plan_path }
           : {}),
+        // Full authority list on every snapshot; absent = empty. This is what
+        // lets a rebuilt panel (or a reconnected socket) still see the queue.
+        pendingMessages: pending,
       });
+      // A snapshot is a full re-sync: an empty queue here means the batch is
+      // gone (delivered long ago, or lost with the process), so an unsealed
+      // in-flight bubble must not linger.
+      useMessageStore
+        .getState()
+        .setPendingQueue(
+          sessionId,
+          pending.length > 0
+            ? pending.map((message) => message.text)
+            : null,
+        );
     },
 
     resetTurn: (sessionId) => {

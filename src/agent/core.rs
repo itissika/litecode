@@ -164,7 +164,15 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
         }
 
         match deps.should_stop(&output).await {
-            Ok(true) => break,
+            Ok(true) => {
+                // A queued user message arrived while this step streamed. Keep
+                // the turn alive: the next iteration injects it at the seam and
+                // the model answers it in the same turn instead of a follow-up.
+                if deps.has_pending_user_messages() {
+                    continue;
+                }
+                break;
+            }
             Ok(false) => {
                 tracing::warn!(step, "should_stop returned false, continuing loop");
             }
@@ -226,5 +234,101 @@ fn append_interrupted_outputs(
             id: None,
             status: None,
         }));
+    }
+}
+
+#[cfg(test)]
+mod pending_continue_tests {
+    use super::{AgentDeps, TurnOutcome};
+    use crate::types::{FunctionToolCall, Item, Result, Transcript, assistant_text};
+    use std::cell::Cell;
+
+    /// Minimal deps: every step returns a final text answer (no tool calls), so
+    /// the loop's stop check is what ends the turn.
+    struct StopOnceDeps {
+        steps: Cell<u64>,
+        requests: Cell<u64>,
+        pending: Cell<bool>,
+    }
+
+    impl AgentDeps for StopOnceDeps {
+        async fn call_model(&mut self) -> Result<Vec<Item>> {
+            self.requests.set(self.requests.get() + 1);
+            Ok(vec![assistant_text("done")])
+        }
+
+        async fn execute_tools(
+            &self,
+            _tool_uses: &[FunctionToolCall],
+            _transcript: &mut Transcript,
+        ) -> Result<()> {
+            unreachable!("no tool calls in this fixture")
+        }
+
+        async fn should_stop(&self, _output: &[Item]) -> Result<bool> {
+            Ok(true)
+        }
+
+        async fn compact_if_needed(&self, _transcript: &mut Transcript, _step: u64) -> Result<()> {
+            Ok(())
+        }
+
+        fn emit_todo_progress(&mut self) {}
+        fn emit_plan_changed(&mut self) {}
+
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+
+        fn max_steps(&self) -> u32 {
+            10
+        }
+
+        fn persist_items(&self, _items: &mut Vec<Item>) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn begin_step(&mut self, _step: u64) {
+            self.steps.set(self.steps.get() + 1);
+        }
+
+        fn has_pending_user_messages(&self) -> bool {
+            // True exactly once: the first stop check keeps the turn alive, the
+            // second one lets it finish.
+            let pending = self.pending.get();
+            self.pending.set(false);
+            pending
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_check_continues_once_for_a_queued_message() {
+        let mut deps = StopOnceDeps {
+            steps: Cell::new(0),
+            requests: Cell::new(0),
+            pending: Cell::new(true),
+        };
+        let mut transcript: Transcript = Vec::new();
+        let outcome = crate::agent::run(&mut deps, &mut transcript).await;
+        assert!(matches!(outcome, TurnOutcome::Completed { .. }));
+        assert_eq!(
+            deps.requests.get(),
+            2,
+            "a queued message must force one more request"
+        );
+        assert_eq!(deps.steps.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn stop_check_breaks_without_pending() {
+        let mut deps = StopOnceDeps {
+            steps: Cell::new(0),
+            requests: Cell::new(0),
+            pending: Cell::new(false),
+        };
+        let mut transcript: Transcript = Vec::new();
+        let outcome = crate::agent::run(&mut deps, &mut transcript).await;
+        assert!(matches!(outcome, TurnOutcome::Completed { .. }));
+        assert_eq!(deps.requests.get(), 1);
     }
 }

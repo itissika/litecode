@@ -411,6 +411,18 @@ export interface SessionSnapshot {
   }[];
   /** Workspace-relative Markdown file for the session's active plan. */
   active_plan_path?: string | null;
+  /**
+   * Queued user messages for the live turn (memory-only, never persisted).
+   * Full authority list on every snapshot and `session/pending_messages`
+   * notification; absent = empty.
+   */
+  pending_messages?: PendingMessage[];
+}
+
+/** One queued user message (server-assigned id; delete, never edit). */
+export interface PendingMessage {
+  id: string;
+  text: string;
 }
 
 export interface BashJob {
