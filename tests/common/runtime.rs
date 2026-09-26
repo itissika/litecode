@@ -6,7 +6,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use litecode::client_protocol::observer::NoopObserver;
-use litecode::runtime::observer::RuntimeObserver;
 use litecode::config::global_db::tools::{core_configurable_tools, core_none_tools};
 use litecode::config::resolved::{WorkspaceState, resolve};
 use litecode::config::schema::{AgentProfile, AgentRole, GlobalSettings};
@@ -15,6 +14,7 @@ use litecode::config::{AgentConfig, ResolvedConfig, TurnGuard};
 use litecode::engines::WorkspaceEngines;
 use litecode::llm::LlmProvider;
 use litecode::optional::EngineManager;
+use litecode::runtime::observer::RuntimeObserver;
 use litecode::runtime::{AgentRuntime, RuntimeHandle, TurnLlmBinding};
 use litecode::session::manager::SessionManager;
 

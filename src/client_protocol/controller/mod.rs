@@ -1949,16 +1949,21 @@ mod compact_item_wire_tests {
         assert!(out.iter().any(|m| m["method"] == "buffer/reverted"));
         // The wire notification is built from this event; clients overwrite from
         // it, so an empty list is what drops the bubble right away.
-        assert!(latest_pending_state(&sessions, &sid)
-            .expect("the client must be told the queue is gone, not left guessing")
-            .is_empty());
+        assert!(
+            latest_pending_state(&sessions, &sid)
+                .expect("the client must be told the queue is gone, not left guessing")
+                .is_empty()
+        );
 
         // A bad anchor truncates nothing, so the queue must survive it.
         sessions
             .enqueue_pending_message(&sid, "still mine")
             .unwrap();
         proj.revert_to_user_anchor(99, "/p", &binding()).unwrap();
-        assert_eq!(latest_pending_state(&sessions, &sid).unwrap(), vec!["still mine"]);
+        assert_eq!(
+            latest_pending_state(&sessions, &sid).unwrap(),
+            vec!["still mine"]
+        );
     }
 
     fn latest_pending_state(sessions: &SessionManager, sid: &str) -> Option<Vec<String>> {
@@ -1967,12 +1972,9 @@ mod compact_item_wire_tests {
             .into_iter()
             .rev()
             .find_map(|envelope| match envelope.event {
-                InternalEvent::PendingMessages { pending } => Some(
-                    pending
-                        .into_iter()
-                        .map(|message| message.text)
-                        .collect(),
-                ),
+                InternalEvent::PendingMessages { pending } => {
+                    Some(pending.into_iter().map(|message| message.text).collect())
+                }
                 _ => None,
             })
     }

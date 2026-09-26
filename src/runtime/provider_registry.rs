@@ -27,7 +27,8 @@ impl ProviderRegistry {
             return Ok(Arc::clone(existing));
         }
         let codec = Arc::from(provider_from_model(Arc::clone(model))?);
-        self.cache.insert(model.reference.clone(), Arc::clone(&codec));
+        self.cache
+            .insert(model.reference.clone(), Arc::clone(&codec));
         Ok(codec)
     }
 }

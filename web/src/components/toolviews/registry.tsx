@@ -6,12 +6,14 @@ import { BashToolView } from "./BashToolView";
 import { EditToolView } from "./EditToolView";
 import { FileParamView } from "./FileParamView";
 import { KillShellToolView } from "./KillShellToolView";
+import { SessionSearchToolView } from "./SessionSearchToolView";
 import { SubagentLaunchToolView } from "./SubagentLaunchToolView";
 import { SubagentListToolView } from "./SubagentListToolView";
 import { SubagentSendToolView } from "./SubagentSendToolView";
 import { SubagentStopToolView } from "./SubagentStopToolView";
 import { SubagentWaitToolView } from "./SubagentWaitToolView";
 import { WaitShellToolView } from "./WaitShellToolView";
+import { WorkspaceToolView } from "./WorkspaceToolView";
 import { WriteToolView } from "./WriteToolView";
 
 export interface ToolViewProps {
@@ -45,6 +47,8 @@ export const TOOL_VIEWS: Record<
   subagent_stop: SubagentStopToolView,
   subagent_send: SubagentSendToolView,
   subagent_list: SubagentListToolView,
+  session_search: SessionSearchToolView,
+  litecode_workspace: WorkspaceToolView,
 };
 
 /** Returns the dedicated view for a tool, or undefined for fallback rendering. */
@@ -70,6 +74,8 @@ const OUTPUT_OWNED_BY_VIEW: ReadonlySet<string> = new Set([
   "subagent_list",
   "edit",
   "write",
+  "session_search",
+  "litecode_workspace",
 ]);
 
 export function viewOwnsOutput(name: string): boolean {

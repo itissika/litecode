@@ -3,25 +3,7 @@ import type { FunctionCallOutputItem } from "../api/types";
 import { headExitCode } from "../lib/bashLive";
 import type { ToolStatus } from "./ToolIcon";
 
-function callWillNotProduceOutput(status?: string): boolean {
-  return status === "failed" || status === "incomplete";
-}
-
-/**
- * Tool-card / process-group work signal. Session/turn running is not an input.
- *
- * `function_call` completed means arguments are sealed, not that the tool ran.
- * Stay live until a matching output exists (or the call is failed/incomplete).
- */
-export function isToolCallLive(opts: {
-  callStatus?: string;
-  hasOutput: boolean;
-  outputInProgress?: boolean;
-}): boolean {
-  if (callWillNotProduceOutput(opts.callStatus)) return false;
-  if (opts.hasOutput) return opts.outputInProgress === true;
-  return true;
-}
+export { isToolCallLive } from "../lib/toolCallLive";
 
 /**
  * Process FoldCards represent a contiguous tool/reasoning segment, not a single

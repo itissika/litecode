@@ -9,7 +9,7 @@ use crate::permission::PermissionSink;
 use crate::runtime::{TurnOptions, spawn_turn};
 use crate::session::estimate::compute_token_breakdown;
 use crate::session::store::Session;
-use crate::types::LitecodeError;
+use crate::types::{LitecodeError, UserInput};
 use tokio_util::sync::CancellationToken;
 
 use super::{SessionController, StartTurnError};
@@ -39,7 +39,7 @@ impl SessionController {
     pub async fn start_turn(
         &mut self,
         session_id: &str,
-        input: &str,
+        input: UserInput,
         permission_sink: Arc<dyn PermissionSink>,
         turn_id: &str,
         plan_execution: bool,
@@ -124,6 +124,14 @@ impl SessionController {
                 other => StartTurnError::Runtime(anyhow::anyhow!("{other}")),
             })?;
 
+        // A plan-execution chip is text. Images belong to a composer message,
+        // and attaching them here would also write a second user row.
+        let input = if plan_execution {
+            UserInput::text(input.text)
+        } else {
+            input
+        };
+
         // The plan-execution message is issued on the human's behalf, so it
         // carries its own kind (`plan/execute`) instead of `item/user`: it must
         // not read as a revert anchor, and HumanView renders it as a chip.
@@ -132,7 +140,7 @@ impl SessionController {
         if plan_execution {
             if let Err(error) = self
                 .sessions
-                .append_plan_execute(session_id, &crate::types::user_text(input))
+                .append_plan_execute(session_id, &crate::types::user_text(&input.text))
             {
                 // Fail-open: degrade to a plain `item/user` pushed by the runtime.
                 tracing::warn!(
@@ -152,7 +160,7 @@ impl SessionController {
             &self.runtime,
             session_id.to_string(),
             self.sessions.clone(),
-            input.to_string(),
+            input,
             sink,
             turn_id.clone(),
             turn_opts,

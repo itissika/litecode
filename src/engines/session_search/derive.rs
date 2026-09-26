@@ -110,8 +110,6 @@ pub fn derive_row(
     })
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,7 +185,10 @@ mod tests {
         let call = call_row(1, "c1", "session_search", r#"{"query":"x"}"#);
         let decoded = decode_row(&call, &dir).unwrap();
         assert_eq!(decoded.call_id.as_deref(), Some("c1"));
-        assert!(decoded.session_read_call, "a session_search call reads the store");
+        assert!(
+            decoded.session_read_call,
+            "a session_search call reads the store"
+        );
 
         let plain = call_row(2, "c2", "read", r#"{"file_path":"src/main.rs"}"#);
         let decoded = decode_row(&plain, &dir).unwrap();

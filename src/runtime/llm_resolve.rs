@@ -39,8 +39,7 @@ impl TurnLlmBinding {
     }
 }
 
-const MISSING_MODEL_HINT: &str =
-    "open Settings → Providers and configure a provider API key, then pick a model for the agent \
+const MISSING_MODEL_HINT: &str = "open Settings → Providers and configure a provider API key, then pick a model for the agent \
      in Settings → Agents (a model that is not declared in provider-catalog.toml cannot be used)";
 
 /// The model a session should start on: the agent's declared model when it is
@@ -315,7 +314,12 @@ fn omit_unsupported_part(part: &InputContent, model: &ResolvedModel) -> Option<S
                 .or(image.file_id.as_deref())
                 .map(truncate_loc)
                 .unwrap_or_default();
-            Some(omit_note(&model.reference, "image", "image", location.as_str()))
+            Some(omit_note(
+                &model.reference,
+                "image",
+                "image",
+                location.as_str(),
+            ))
         }
         InputContent::InputFile(file) => {
             let capability = match classify_input_file(file) {
@@ -477,8 +481,11 @@ modalities = ["text", "image", "video", "audio"]
 
     #[test]
     fn capability_mismatch_is_a_hard_error() {
-        let error = validate_llm_input_capabilities(&[user_with_image()], &model("compact-provider/text-model"))
-            .unwrap_err();
+        let error = validate_llm_input_capabilities(
+            &[user_with_image()],
+            &model("compact-provider/text-model"),
+        )
+        .unwrap_err();
         assert!(
             error
                 .to_string()
@@ -488,9 +495,11 @@ modalities = ["text", "image", "video", "audio"]
 
     #[test]
     fn tool_image_capability_mismatch_is_a_hard_error() {
-        let error =
-            validate_llm_input_capabilities(&[tool_with_image()], &model("compact-provider/text-model"))
-                .unwrap_err();
+        let error = validate_llm_input_capabilities(
+            &[tool_with_image()],
+            &model("compact-provider/text-model"),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("required by tool output"));
     }
 
@@ -512,7 +521,11 @@ modalities = ["text", "image", "video", "audio"]
         ];
         let error = validate_llm_input_capabilities(&items, &model("compact-provider/text-model"))
             .unwrap_err();
-        assert!(error.to_string().contains("does not support capability 'video'"));
+        assert!(
+            error
+                .to_string()
+                .contains("does not support capability 'video'")
+        );
     }
 
     #[test]
@@ -587,11 +600,8 @@ modalities = ["text", "image", "video", "audio"]
                 ..Default::default()
             },
         );
-        let resolved = crate::config::resolved::resolve(
-            global,
-            WorkspaceState::new("/tmp/no-key"),
-            catalog(),
-        );
+        let resolved =
+            crate::config::resolved::resolve(global, WorkspaceState::new("/tmp/no-key"), catalog());
         let error = binding_for_agent(&resolved, &mut ProviderRegistry::new(), "compaction")
             .err()
             .expect("no credential");
@@ -608,7 +618,10 @@ modalities = ["text", "image", "video", "audio"]
         .err()
         .expect("unknown reference");
         assert!(error.to_string().contains("ghost/model"), "{error}");
-        assert!(error.to_string().contains("provider-catalog.toml"), "{error}");
+        assert!(
+            error.to_string().contains("provider-catalog.toml"),
+            "{error}"
+        );
     }
 
     fn ephemeral_session() -> (Arc<SessionManager>, String) {
@@ -674,7 +687,10 @@ modalities = ["text", "image", "video", "audio"]
             .set_session_model_id(&sid, Some("compact-provider/gone".into()))
             .unwrap();
 
-        assert_eq!(ensure_session_model(&keyless, &sessions, &sid, "default"), None);
+        assert_eq!(
+            ensure_session_model(&keyless, &sessions, &sid, "default"),
+            None
+        );
         assert_eq!(
             sessions.session_model_id(&sid).as_deref(),
             Some("compact-provider/gone"),

@@ -1,6 +1,6 @@
 [package]
 name = "litecode"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 description = "极致轻量的终端 AI 编程助手"
 license = "MIT"
@@ -117,6 +117,7 @@ tree-sitter-c = "0.24"
 tree-sitter-cpp = "0.23"
 tree-sitter-java = "0.23"
 tree-sitter-c-sharp = "0.23"
+jieba-rs = "0.11.0"
 
 [target.'cfg(target_env = "msvc")'.dependencies]
 usearch = { version = "2", default-features = false }

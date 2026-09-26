@@ -126,7 +126,6 @@ pub trait Tool: Send + Sync {
     fn agent_terminal(&self) -> Option<std::sync::Arc<crate::terminal::TerminalHub>> {
         None
     }
-
 }
 
 #[cfg(test)]

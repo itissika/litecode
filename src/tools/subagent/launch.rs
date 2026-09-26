@@ -435,7 +435,8 @@ mod tests {
 
     #[test]
     fn format_available_empty_allowlist_is_none() {
-        let resolved = resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"));
+        let resolved =
+            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"));
         assert!(format_available_subagents(&resolved, &[]).is_none());
     }
 }

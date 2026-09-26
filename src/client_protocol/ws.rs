@@ -199,7 +199,15 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                     // the fresh list so open pickers update without a reconnect.
                     if llm_changed {
                         let models = {
-                            let runtime = models_runtime.read().expect("runtime lock");
+                            let mut runtime = models_runtime.write().expect("runtime lock");
+                            // The commit broadcasts before the REST handler reloads the
+                            // runtime, so apply this event's docs here. Without it this
+                            // push can project a pre-key runtime and ship an empty model
+                            // list that no later frame ever corrects. `apply` is
+                            // revision-guarded, so this is a no-op once reloaded.
+                            if let Err(error) = runtime.apply(&event.docs) {
+                                tracing::warn!(%error, "models/changed: runtime apply failed");
+                            }
                             project::model_infos(&runtime.resolved)
                         };
                         if settings_tx.send(project::models_changed(models)).is_err() {

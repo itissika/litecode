@@ -262,12 +262,19 @@ mod tests {
     #[test]
     fn long_text_is_cut_into_tiles() {
         let tk = tk();
-        let cfg = ChunkCfg { tokens: 128, anchor: false };
+        let cfg = ChunkCfg {
+            tokens: 128,
+            anchor: false,
+        };
         let text: String = (0..400)
             .map(|i| format!("line {i}: the retry backoff doubles until it hits the cap.\n"))
             .collect();
         let chunks = assert_lossless(&tk, &text, &cfg);
-        assert!(chunks.len() > 3, "expected several chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() > 3,
+            "expected several chunks, got {}",
+            chunks.len()
+        );
         // Tiling: chunk k+1 starts exactly where chunk k ended.
         for pair in chunks.windows(2) {
             assert_eq!(pair[0].end, pair[1].start);
@@ -307,6 +314,10 @@ mod tests {
             "test text must exceed the tokenizer's shipped truncation limit"
         );
         let chunks = assert_lossless(&tk, &text, &cfg);
-        assert!(chunks.len() > 100, "expected many chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() > 100,
+            "expected many chunks, got {}",
+            chunks.len()
+        );
     }
 }

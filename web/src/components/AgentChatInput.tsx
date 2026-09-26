@@ -1,4 +1,5 @@
 import {
+  type ClipboardEvent,
   type FormEvent,
   type KeyboardEvent,
   useEffect,
@@ -8,6 +9,12 @@ import {
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 
 import type { ContextMode, ThinkingTier } from "../api/types";
+import { uploadMedia } from "../api/media";
+import {
+  MAX_COMPOSER_IMAGES,
+  clipboardImageFiles,
+  normalizeImage,
+} from "../lib/imageNormalize";
 
 import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
@@ -23,6 +30,7 @@ import {
 import { ModelSwitcher } from "./ModelSwitcher";
 import { NotificationBell } from "./NotificationBell";
 import { ShapeBlur } from "./ShapeBlur";
+import { ImageThumb } from "./ImageThumb";
 import { composerCardClass, actionButtonGlass } from "./composerCard";
 import { AgentTypeIcon, agentColor } from "./agentIdentity";
 
@@ -33,6 +41,19 @@ const PRESS =
 const DISABLED_CTRL = "disabled:cursor-not-allowed";
 const CTRL_BASE = `${CTRL_H} ${CTRL_TEXT} ${PRESS} ${DISABLED_CTRL} box-border flex items-center rounded-md border border-transparent px-2 leading-none text-(--_dk-text-muted) hover:text-(--_dk-ix-fg-hover)`;
 const CTRL_BTN = `${CTRL_BASE} hover:bg-(--_dk-ix-bg-hover)`;
+
+interface ComposerImage {
+  id: string;
+  phase: "uploading" | "ready";
+  ref?: string;
+  previewUrl: string;
+}
+
+function revokeImages(images: ComposerImage[]) {
+  for (const image of images) {
+    if (image.previewUrl) URL.revokeObjectURL(image.previewUrl);
+  }
+}
 
 export function AgentPicker({
   agents,
@@ -207,18 +228,36 @@ export function AgentChatInput({
   const cancelAction = useTurnStore((s) => s.cancel);
   const enqueueAction = useTurnStore((s) => s.enqueuePending);
   const [draft, setDraft] = useState("");
+  const [images, setImages] = useState<ComposerImage[]>([]);
+  const imageEpoch = useRef(0);
   useEffect(() => {
+    imageEpoch.current += 1;
     setDraft("");
+    setImages((current) => {
+      revokeImages(current);
+      return [];
+    });
   }, [sessionId]);
 
   // Recall hand-off: a queued bubble pulled back from the transcript appends to
   // whatever is already being written — never replaces it — and takes the caret.
   useEffect(() => {
-    return subscribeComposerAppend((target, text) => {
+    return subscribeComposerAppend((target, text, recalled = []) => {
       if (target !== sessionId) return;
       setDraft((current) =>
         current.trim() ? `${current.trimEnd()}\n\n${text}` : text,
       );
+      if (recalled.length > 0) {
+        setImages((current) => [
+          ...current,
+          ...recalled.map((ref, index) => ({
+            id: `recall-${ref}-${current.length + index}`,
+            phase: "ready" as const,
+            ref,
+            previewUrl: "",
+          })),
+        ]);
+      }
       requestAnimationFrame(() => {
         const ta = textareaRef.current;
         if (!ta) return;
@@ -230,7 +269,8 @@ export function AgentChatInput({
     });
   }, [sessionId]);
 
-  const startAgent = (input: string) => startAction(sessionId, input);
+  const startAgent = (input: string, refs: string[]) =>
+    startAction(sessionId, input, false, refs);
   const cancelAgent = () => {
     cancelAction(sessionId);
   };
@@ -258,6 +298,17 @@ export function AgentChatInput({
     (s) => s.byId.get(sessionId)?.modelId ?? null,
   );
   const availableModels = useSessionStore((s) => s.availableModels);
+  const supportsImage =
+    availableModels
+      .find((model) => model.id === sessionModelId)
+      ?.modalities?.includes("image") === true;
+  const readyRefs = images.flatMap((image) =>
+    image.phase === "ready" && image.ref ? [image.ref] : [],
+  );
+  const imagesBusy = images.some((image) => image.phase === "uploading");
+  const imagesMasked = images.length > 0 && !supportsImage;
+  const imagesBlockSend = imagesBusy || imagesMasked;
+  const hasBody = draft.trim().length > 0 || readyRefs.length > 0;
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sendBtnRef = useRef<HTMLButtonElement>(null);
@@ -320,26 +371,66 @@ export function AgentChatInput({
   };
 
   const isRunning = runState === "running" || runState === "cancelling";
-  const hasModel = Boolean(sessionModelId);
+  // A session with no stored model is not a dead end: the server repairs it
+  // (the agent's model, else the first runnable one) before the turn reads it,
+  // so sending is allowed as soon as ANY model is selectable. With no model at
+  // all the turn really cannot run — stay blocked.
+  const hasModel = Boolean(sessionModelId) || availableModels.length > 0;
   const connBlocked =
     connection !== "connected" || isRunning || compacting || replaying;
   const isBlocked = connBlocked || !hasModel;
   // While a turn is live, the composer queues instead of starting: the server
   // owns the queue (memory-only) and injects it at the next request seam.
+  //
+  // `compacting` is deliberately not part of this gate: an auto compaction runs
+  // *inside* a live turn and the queue is drained at the next seam — i.e. after
+  // the compaction — so the message lands in the fresh transcript and the turn
+  // keeps stepping to answer it. A standalone compaction (idle session) is
+  // still unreachable here: `isRunning` is false, so the send skin stays
+  // disabled by `isBlocked`.
   const canQueue =
-    isRunning && connection === "connected" && !compacting && !replaying && hasModel;
-  // One button, two live-turn skins: a draft turns it into the queue action
-  // (arrow) and it keeps the turn's breathing glow either way.
-  const showQueueAction = canQueue && draft.trim().length > 0;
+    isRunning && connection === "connected" && !replaying && hasModel;
+  const showQueueAction = canQueue && hasBody;
+  // One button, three skins: send while idle, queue while a turn runs and a
+  // draft exists, cancel while it runs without one.
+  const sendAction: "send" | "queue" | "cancel" = !isRunning
+    ? "send"
+    : showQueueAction
+      ? "queue"
+      : "cancel";
+
+  const clearSentImages = (sentIds: Set<string>) => {
+    setImages((current) => {
+      const keep: ComposerImage[] = [];
+      for (const image of current) {
+        if (sentIds.has(image.id)) {
+          if (image.previewUrl) URL.revokeObjectURL(image.previewUrl);
+        } else {
+          keep.push(image);
+        }
+      }
+      return keep;
+    });
+  };
 
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
     const trimmed = draft.trim();
-    if (!trimmed) return;
+    if (!hasBody) return;
+    if (imagesBusy) return;
+    if (imagesMasked) {
+      useToastStore
+        .getState()
+        .showToast("Switch to a model that supports images", "error");
+      return;
+    }
+    const sentIds = new Set(images.map((image) => image.id));
     if (isRunning) {
       if (!canQueue) return;
-      void enqueueAction(sessionId, trimmed).then((ok) => {
-        if (ok) setDraft((current) => (current === draft ? "" : current));
+      void enqueueAction(sessionId, trimmed, readyRefs).then((ok) => {
+        if (!ok) return;
+        setDraft((current) => (current === draft ? "" : current));
+        clearSentImages(sentIds);
       });
       return;
     }
@@ -347,17 +438,78 @@ export function AgentChatInput({
     if (!hasModel) {
       useToastStore
         .getState()
-        .showToast(
-          availableModels.length === 0
-            ? "Add a model in Settings first"
-            : "Select a model before sending",
-          "error",
-        );
+        .showToast("Add a model in Settings first", "error");
       return;
     }
-    if (startAgent(draft)) {
+    if (startAgent(trimmed, readyRefs)) {
       setDraft("");
+      clearSentImages(sentIds);
     }
+  };
+
+  const onPasteImage = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = clipboardImageFiles(event.clipboardData);
+    if (files.length === 0) return;
+    event.preventDefault();
+    const room = MAX_COMPOSER_IMAGES - images.length;
+    if (room <= 0) {
+      useToastStore
+        .getState()
+        .showToast(`Up to ${MAX_COMPOSER_IMAGES} images`, "error");
+      return;
+    }
+    const accepted = files.slice(0, room);
+    if (accepted.length < files.length) {
+      useToastStore
+        .getState()
+        .showToast(`Up to ${MAX_COMPOSER_IMAGES} images`, "error");
+    }
+    const epoch = imageEpoch.current;
+    for (const file of accepted) {
+      const id = `img-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      void (async () => {
+        let previewUrl = "";
+        try {
+          const normalized = await normalizeImage(file);
+          if (imageEpoch.current !== epoch) return;
+          previewUrl = URL.createObjectURL(normalized);
+          setImages((current) => [
+            ...current,
+            { id, phase: "uploading", previewUrl },
+          ]);
+          const uploaded = await uploadMedia(normalized);
+          if (imageEpoch.current !== epoch) {
+            URL.revokeObjectURL(previewUrl);
+            return;
+          }
+          setImages((current) =>
+            current.map((image) =>
+              image.id === id
+                ? { ...image, phase: "ready", ref: uploaded.ref }
+                : image,
+            ),
+          );
+        } catch (error) {
+          if (previewUrl) URL.revokeObjectURL(previewUrl);
+          if (imageEpoch.current !== epoch) return;
+          setImages((current) => current.filter((image) => image.id !== id));
+          useToastStore
+            .getState()
+            .showToast(
+              error instanceof Error ? error.message : "Could not add the image",
+              "error",
+            );
+        }
+      })();
+    }
+  };
+
+  const removeImage = (id: string) => {
+    setImages((current) => {
+      const image = current.find((entry) => entry.id === id);
+      if (image?.previewUrl) URL.revokeObjectURL(image.previewUrl);
+      return current.filter((entry) => entry.id !== id);
+    });
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -456,6 +608,49 @@ export function AgentChatInput({
         </div>
       </div>
       <div className="mx-3 border-t border-(--_dk-line)" />
+      {images.length > 0 ? (
+        <div
+          data-testid="composer-images"
+          className="flex flex-wrap gap-1.5 px-3 pt-2"
+        >
+          {images.map((image) =>
+            image.phase === "ready" && image.ref ? (
+              <ImageThumb
+                key={image.id}
+                mediaRef={image.ref}
+                masked={!supportsImage}
+                onRemove={() => removeImage(image.id)}
+              />
+            ) : (
+              <span
+                key={image.id}
+                className="relative inline-flex max-h-[120px] max-w-[160px] overflow-hidden rounded-md border border-(--_dk-line) bg-(--_dk-editor)"
+              >
+                {image.previewUrl ? (
+                  <img
+                    src={image.previewUrl}
+                    alt=""
+                    className="max-h-[120px] max-w-[160px] object-contain"
+                  />
+                ) : null}
+                {!supportsImage ? (
+                  <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-xs text-white">
+                    Unsupported
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  aria-label="Remove image"
+                  className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/60 text-[10px] leading-none text-white"
+                  onClick={() => removeImage(image.id)}
+                >
+                  ×
+                </button>
+              </span>
+            ),
+          )}
+        </div>
+      ) : null}
       <div className="relative overflow-hidden rounded-b-[calc(var(--radius-sm)-1px)]">
         <textarea
           ref={textareaRef}
@@ -469,6 +664,7 @@ export function AgentChatInput({
             }
           }}
           onKeyDown={onKeyDown}
+          onPaste={onPasteImage}
           onDragOver={(e) => {
             if (e.dataTransfer.types.includes("text/plain")) e.preventDefault();
           }}
@@ -489,9 +685,7 @@ export function AgentChatInput({
             connection !== "connected"
               ? "Waiting for connection..."
               : !hasModel
-                ? availableModels.length === 0
-                  ? "Add a model in Settings first..."
-                  : "Select a model above, then message the agent..."
+                ? "Add a model in Settings first..."
                 : "Message the agent..."
           }
           // disabled={isBlocked} — never disable, just block Enter key
@@ -536,81 +730,46 @@ export function AgentChatInput({
             />
             <ContextUsageRing sessionId={sessionId} />
           </span>
-          {isRunning ? (
-            // One button for both live-turn actions: with a draft it queues
-            // for the next request seam (arrow), without one it cancels
-            // (square). Both keep the turn's breathing edge glow.
-            showQueueAction ? (
-              <button
-                ref={sendBtnRef}
-                type="button"
-                onClick={() => submit()}
-                className={`${actionButtonGlass} send-spin-glow flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90`}
-                title="Queue for the next step"
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M5 12h14M12 5l7 7-7 7" />
-                </svg>
-              </button>
-            ) : (
-              <button
-                ref={sendBtnRef}
-                type="button"
-                onClick={cancelAgent}
-                className={`${actionButtonGlass} send-spin-glow flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90`}
-                title="Cancel"
-              >
-                {runState === "cancelling" ? (
-                  <svg
-                    className="h-4 w-4 animate-spin"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                  >
-                    <circle
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      opacity="0.25"
-                    />
-                    <path
-                      d="M12 2a10 10 0 0 1 10 10"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                ) : (
-                  <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 12 12"
-                    fill="currentColor"
-                  >
-                    <rect x="1" y="1" width="10" height="10" rx="1.5" />
-                  </svg>
-                )}
-              </button>
-            )
-          ) : (
-            <button
-              ref={sendBtnRef}
-              type="submit"
-              disabled={isBlocked || !draft.trim()}
-              className={`${actionButtonGlass} flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:brightness-100`}
-              title="Send"
-            >
+          {/* One button, three skins. The glyphs share a single grid cell and
+              cross-scale on the spot: the outgoing icon shrinks away while the
+              incoming one grows in, so a state change reads as one gesture
+              instead of an instant glyph swap. `sendAction` owns the behaviour
+              (type / disabled / onClick / title), the stacked layers own the
+              look. The box never remounts, so Enter's press feedback and focus
+              survive a swap; both live-turn skins keep the breathing edge glow. */}
+          <button
+            ref={sendBtnRef}
+            type={sendAction === "send" ? "submit" : "button"}
+            disabled={
+              (sendAction === "send" &&
+                (isBlocked || !hasBody || imagesBlockSend)) ||
+              (sendAction === "queue" && imagesBlockSend)
+            }
+            onClick={
+              sendAction === "send"
+                ? undefined
+                : sendAction === "queue"
+                  ? () => submit()
+                  : cancelAgent
+            }
+            className={`${actionButtonGlass} flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 active:brightness-90 disabled:cursor-not-allowed disabled:opacity-40 disabled:brightness-100${
+              isRunning ? " send-spin-glow" : ""
+            }`}
+            title={
+              sendAction !== "cancel" && imagesMasked
+                ? "Switch to a model that supports images"
+                : sendAction !== "cancel" && imagesBusy
+                  ? "Waiting for the image to upload"
+                  : sendAction === "send"
+                    ? "Send"
+                    : sendAction === "queue"
+                      ? "Queue for the next step"
+                      : "Cancel"
+            }
+          >
+            <span className="composer-action-icons">
               <svg
+                data-on={sendAction === "send"}
                 width="14"
                 height="14"
                 viewBox="0 0 24 24"
@@ -622,8 +781,62 @@ export function AgentChatInput({
               >
                 <path d="M5 12h14M12 5l7 7-7 7" />
               </svg>
-            </button>
-          )}
+              {/* The same arrow turned 90° counter-clockwise (up): a queued
+                  message waits for the next request seam, it does not send. */}
+              <svg
+                data-on={sendAction === "queue"}
+                className="-rotate-90"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M5 12h14M12 5l7 7-7 7" />
+              </svg>
+              {/* The cancel skin carries a pair of its own (stop square ↔ the
+                  cancelling swirl), stacked the same way inside it, so the
+                  spinner grows in as the square shrinks away. */}
+              <span
+                data-on={sendAction === "cancel"}
+                className="composer-action-icons"
+              >
+                <svg
+                  data-on={runState === "cancelling"}
+                  className="h-4 w-4 animate-spin"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                >
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    opacity="0.25"
+                  />
+                  <path
+                    d="M12 2a10 10 0 0 1 10 10"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                  />
+                </svg>
+                <svg
+                  data-on={runState !== "cancelling"}
+                  width="12"
+                  height="12"
+                  viewBox="0 0 12 12"
+                  fill="currentColor"
+                >
+                  <rect x="1" y="1" width="10" height="10" rx="1.5" />
+                </svg>
+              </span>
+            </span>
+          </button>
         </div>
       </div>
     </form>

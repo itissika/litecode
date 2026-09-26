@@ -6,7 +6,9 @@ import {
   itemPlainText,
   optimisticUserSealText,
   sealMismatchError,
+  userImageRefs,
 } from "../api/adapter";
+import { trimPartialHead } from "../lib/transcriptProjection";
 import type {
   BufferItemNotification,
   BufferLoaded,
@@ -39,6 +41,8 @@ export interface PendingQueueBubble {
   texts: string[];
   /** Exactly what the server merges into one user row (`join("\n\n")`). */
   joined: string;
+  /** Image refs concatenated in queue order. */
+  images: string[];
 }
 
 export interface MessageSlice {
@@ -114,15 +118,18 @@ export function emptySlice(): MessageSlice {
 }
 
 function withDisplay(slice: MessageSlice): MessageSlice {
+  // A history window often opens mid-turn. Drop that fragment from the view the
+  // list renders so the first bubble's key stays stable when the previous page
+  // arrives. The full rows stay on `messages`.
+  const visible = trimPartialHead(slice.messages, slice.fromSeq);
   if (!slice.pendingUser) {
-    return slice.display === slice.messages
-      ? slice
-      : { ...slice, display: slice.messages };
+    if (visible === slice.display) return slice;
+    return { ...slice, display: visible };
   }
   return {
     ...slice,
     display: [
-      ...slice.messages,
+      ...visible,
       {
         // The composer bubble is not a log row, so it carries no lifecycle of its
         // own: the user's own text is never "in progress".
@@ -154,6 +161,30 @@ function getSlice(
 
 function sortedMessages(bySeq: Map<number, HumanRow>): HumanRow[] {
   return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+}
+
+function sameImageRefs(pending: Item, landed: Item | null): boolean {
+  return userImageRefs(pending).join("\n") === (landed ? userImageRefs(landed).join("\n") : "");
+}
+
+function sameImageList(images: string[], landed: Item | null): boolean {
+  return images.join("\n") === (landed ? userImageRefs(landed).join("\n") : "");
+}
+
+function queueEntries(
+  batch: Array<string | { text: string; images?: string[] }>,
+): { texts: string[]; images: string[] } {
+  const texts: string[] = [];
+  const images: string[] = [];
+  for (const entry of batch) {
+    if (typeof entry === "string") {
+      texts.push(entry);
+    } else {
+      texts.push(entry.text);
+      images.push(...(entry.images ?? []));
+    }
+  }
+  return { texts, images };
 }
 
 function malformedSeq(ev: unknown): number | undefined {
@@ -202,7 +233,11 @@ function upsertEvents(
     // (same user Item text) and must seal it too, or the row double-renders.
     if (pendingUser) {
       const sealText = optimisticUserSealText(nextRow);
-      if (sealText !== null && sealText === itemPlainText(pendingUser.item)) {
+      if (
+        sealText !== null &&
+        sealText === itemPlainText(pendingUser.item) &&
+        sameImageRefs(pendingUser.item, nextItem ?? null)
+      ) {
         pendingUser = null;
       }
     }
@@ -210,7 +245,11 @@ function upsertEvents(
     // row is the message, so the in-flight bubble hands over to it.
     if (pendingQueue) {
       const sealText = optimisticUserSealText(nextRow);
-      if (sealText !== null && sealText === pendingQueue.joined) {
+      if (
+        sealText !== null &&
+        sealText === pendingQueue.joined &&
+        sameImageList(pendingQueue.images, nextItem ?? null)
+      ) {
         pendingQueue = null;
         landedQueueSeq = nextRow.seq;
       }
@@ -272,7 +311,10 @@ interface MessageStore extends MessageState {
    * "claimed, row en route" and must NOT clear, while a snapshot or a recall
    * must.
    */
-  setPendingQueue: (sessionId: string, texts: string[] | null) => void;
+  setPendingQueue: (
+    sessionId: string,
+    batch: Array<string | { text: string; images?: string[] }> | null,
+  ) => void;
   /** Called when the settle animation has played (and only then). */
   clearLandedQueueSeq: (sessionId: string) => void;
   loadRange: (
@@ -441,18 +483,24 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       patch(sessionId, { pendingUser: null });
     },
 
-    setPendingQueue: (sessionId, texts) => {
+    setPendingQueue: (sessionId, batch) => {
       const slice = getSlice(get().bySession, sessionId);
-      if (texts === null || texts.length === 0) {
+      if (batch === null || batch.length === 0) {
         if (slice.pendingQueue === null) return;
         patch(sessionId, { pendingQueue: null });
         return;
       }
+      const { texts, images } = queueEntries(batch);
       const joined = texts.join("\n\n");
-      if (slice.pendingQueue?.joined === joined) return;
+      if (
+        slice.pendingQueue?.joined === joined &&
+        slice.pendingQueue.images.join("\n") === images.join("\n")
+      ) {
+        return;
+      }
       // A new batch is a new arrival: whatever settled before is stale.
       patch(sessionId, {
-        pendingQueue: { texts: [...texts], joined },
+        pendingQueue: { texts, joined, images },
         landedQueueSeq: null,
       });
     },
@@ -537,9 +585,10 @@ export const useMessageStore = create<MessageStore>((set, get) => {
     ensureSeqLoaded: async (sessionId, seq, isCurrent = () => true) => {
       while (isCurrent()) {
         const slice = get().bySession.get(sessionId) ?? emptySlice();
-        if (slice.bySeq.has(seq)) return true;
         if (!slice.hydrated) return false;
-        if (seq >= slice.fromSeq && seq < slice.toSeq) return false;
+        // Visible, not merely loaded: a seq in the trimmed partial head is in
+        // `bySeq` but not on screen, and paging is what makes it renderable.
+        if (slice.display.some((row) => row.seq === seq)) return true;
         if (slice.fromSeq <= 0) return false;
         if (seq >= slice.toSeq) return false;
         const toSeq = slice.fromSeq;

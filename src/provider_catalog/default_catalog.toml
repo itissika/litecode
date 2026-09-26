@@ -195,6 +195,69 @@ modalities = ["text", "image"]
 reasoning = { tiers = { off = "disabled", low = "low", medium = "high", high = "high" } }
 extra_body = { store = false }
 
+[[models]]
+id = "doubao-seed-2.1-pro"
+provider_id = "ark-coding"
+label = "Doubao Seed 2.1 Pro"
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text", "image"]
+# 2.1 Pro/Lite accept low/medium/high. "disabled" is still the thinking switch.
+reasoning = { tiers = { off = "disabled", low = "low", medium = "medium", high = "high" } }
+extra_body = { store = false }
+
+[[models]]
+id = "doubao-seed-2.1-lite"
+provider_id = "ark-coding"
+label = "Doubao Seed 2.1 Lite"
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text", "image"]
+reasoning = { tiers = { off = "disabled", low = "low", medium = "medium", high = "high" } }
+extra_body = { store = false }
+
+# Third-party Coding Plan models are OpenAI Chat Completions on this same base.
+# The provider thinking switch applies only to the Responses codec.
+
+[[models]]
+id = "glm-5.3"
+provider_id = "ark-coding"
+label = "GLM-5.3"
+endpoint_type = "chat_completions"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+# GLM-5.3 accepts low/high/max and cannot be switched off.
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "kimi-k3"
+provider_id = "ark-coding"
+label = "Kimi K3"
+endpoint_type = "chat_completions"
+context_window = 256000
+context_window_max = 1000000
+max_output = 32768
+temperature = false
+modalities = ["text"]
+# K3 accepts low/high/max. Temperature is fixed at 1.0, so it is omitted.
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "kimi-k2.8-preview"
+provider_id = "ark-coding"
+label = "Kimi K2.8 Preview"
+endpoint_type = "chat_completions"
+context_window = 256000
+context_window_max = 1048576
+max_output = 32768
+temperature = false
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
 # ── OpenCode Zen ─────────────────────────────────────────────────────────────
 
 [[models]]
@@ -224,6 +287,88 @@ temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "gpt-5.6-sol"
+provider_id = "opencode"
+label = "GPT-5.6 Sol"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "gpt-5.6-terra"
+provider_id = "opencode"
+label = "GPT-5.6 Terra"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "gpt-5.6-luna"
+provider_id = "opencode"
+label = "GPT-5.6 Luna"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "grok-4.7"
+provider_id = "opencode"
+label = "Grok 4.7"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 500000
+max_output = 128000
+modalities = ["text", "image"]
+# Grok 4.7 cannot disable reasoning. Top effort is xhigh, not max.
+reasoning = { tiers = { low = "low", medium = "medium", high = "xhigh" } }
+
+[[models]]
+id = "muse-spark-1.3"
+provider_id = "opencode"
+label = "Muse Spark 1.3"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1048576
+max_output = 32768
+modalities = ["text"]
+
+[[models]]
+id = "glm-5.3"
+provider_id = "opencode"
+label = "GLM-5.3"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "kimi-k3"
+provider_id = "opencode"
+label = "Kimi K3"
+context_window = 256000
+context_window_max = 1000000
+max_output = 32768
+temperature = false
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
 # ── OpenCode Go ──────────────────────────────────────────────────────────────
 # The same id can declare a different vocabulary on each host, which is exactly
@@ -275,6 +420,48 @@ modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
+[[models]]
+id = "grok-4.7"
+provider_id = "opencode-go"
+label = "Grok 4.7"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 500000
+max_output = 128000
+modalities = ["text", "image"]
+reasoning = { tiers = { low = "low", medium = "medium", high = "xhigh" } }
+
+[[models]]
+id = "muse-spark-1.3-contributor"
+provider_id = "opencode-go"
+label = "Muse Spark 1.3 Contributor"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1048576
+max_output = 32768
+modalities = ["text"]
+
+[[models]]
+id = "glm-5.3"
+provider_id = "opencode-go"
+label = "GLM-5.3"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "kimi-k3"
+provider_id = "opencode-go"
+label = "Kimi K3"
+context_window = 256000
+context_window_max = 1000000
+max_output = 32768
+temperature = false
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
 # ── Command Code Goat ───────────────────────────────────────────────────────
 
 [[models]]
@@ -286,3 +473,87 @@ context_window_max = 1050000
 max_output = 128000
 # Chat Completions only carries text parts in this codec.
 modalities = ["text"]
+
+[[models]]
+id = "gpt-6-sol"
+provider_id = "commandcode"
+label = "GPT-6 Sol"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "gpt-6-luna"
+provider_id = "commandcode"
+label = "GPT-6 Luna"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "gpt-5.6-terra"
+provider_id = "commandcode"
+label = "GPT-5.6 Terra"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "gpt-5.6-luna"
+provider_id = "commandcode"
+label = "GPT-5.6 Luna"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 1050000
+max_output = 128000
+temperature = false
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "xai/grok-4.7"
+provider_id = "commandcode"
+label = "Grok 4.7"
+endpoint_type = "responses"
+context_window = 256000
+context_window_max = 500000
+max_output = 128000
+modalities = ["text", "image"]
+reasoning = { tiers = { low = "low", medium = "medium", high = "xhigh" } }
+
+[[models]]
+id = "zai-org/GLM-5.3"
+provider_id = "commandcode"
+label = "GLM-5.3"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "moonshotai/Kimi-K3"
+provider_id = "commandcode"
+label = "Kimi K3"
+context_window = 256000
+context_window_max = 1000000
+max_output = 32768
+temperature = false
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { WorkspaceRequestError } from "../lib/workspaceError";
 import { useEditorStore } from "./editorStore";
 import { readFile, writeFile } from "../api/workspace";
 
@@ -22,6 +23,9 @@ function tabState(path: string, dirty: boolean) {
         language: "typescript",
         loading: false,
         error: null,
+        errorRetryable: false,
+        kind: "text" as const,
+        diskRevision: 0,
       },
     ],
     conflicts: {},
@@ -98,6 +102,9 @@ describe("save content snapshot", () => {
           language: "typescript",
           loading: false,
           error: null,
+        errorRetryable: false,
+        kind: "text" as const,
+        diskRevision: 0,
         },
       ],
       activePath: path,
@@ -130,6 +137,9 @@ describe("remapTabs on rename", () => {
           language: "typescript",
           loading: false,
           error: null,
+        errorRetryable: false,
+        kind: "text" as const,
+        diskRevision: 0,
         },
         {
           path: "src/a/inner.ts",
@@ -139,6 +149,9 @@ describe("remapTabs on rename", () => {
           language: "typescript",
           loading: false,
           error: null,
+        errorRetryable: false,
+        kind: "text" as const,
+        diskRevision: 0,
         },
         {
           path: "other.ts",
@@ -148,6 +161,9 @@ describe("remapTabs on rename", () => {
           language: "typescript",
           loading: false,
           error: null,
+        errorRetryable: false,
+        kind: "text" as const,
+        diskRevision: 0,
         },
       ],
       activePath: "src/a.ts",
@@ -184,6 +200,9 @@ describe("remapTabs on rename", () => {
           language: "typescript",
           loading: false,
           error: null,
+        errorRetryable: false,
+        kind: "text" as const,
+        diskRevision: 0,
         },
       ],
       activePath: "src/b.ts",
@@ -194,6 +213,132 @@ describe("remapTabs on rename", () => {
       .handleWorkspaceChange(["src/a.ts"], "deleted");
     expect(useEditorStore.getState().tabs).toHaveLength(1);
     expect(useEditorStore.getState().tabs[0]?.path).toBe("src/b.ts");
+  });
+});
+
+describe("ensureReadable", () => {
+  it("does not reload a dirty tab", async () => {
+    const path = "src/a.ts";
+    tabState(path, true);
+    mockedReadFile.mockResolvedValue("from-disk");
+
+    await useEditorStore.getState().ensureReadable(path);
+
+    expect(mockedReadFile).not.toHaveBeenCalled();
+    expect(useEditorStore.getState().tabs[0]?.content).toBe("unsaved-edit");
+  });
+
+  it("reloads a clean text tab when disk content changed", async () => {
+    const path = "src/clean.ts";
+    tabState(path, false);
+    mockedReadFile.mockResolvedValue("newer");
+
+    await useEditorStore.getState().ensureReadable(path);
+
+    const tab = useEditorStore.getState().tabs[0]!;
+    expect(tab.content).toBe("newer");
+    expect(tab.dirty).toBe(false);
+    expect(tab.error).toBeNull();
+  });
+
+  it("retries a retryable failure and keeps a permanent one", async () => {
+    const path = "src/a.ts";
+    tabState(path, false);
+    useEditorStore.setState({
+      tabs: [
+        {
+          ...useEditorStore.getState().tabs[0]!,
+          content: "",
+          savedContent: "",
+          error: "offline",
+          errorRetryable: true,
+        },
+      ],
+    });
+    mockedReadFile.mockResolvedValue("back");
+    await useEditorStore.getState().ensureReadable(path);
+    expect(useEditorStore.getState().tabs[0]?.content).toBe("back");
+
+    useEditorStore.setState({
+      tabs: [
+        {
+          ...useEditorStore.getState().tabs[0]!,
+          content: "",
+          savedContent: "",
+          error: "missing",
+          errorRetryable: false,
+        },
+      ],
+    });
+    mockedReadFile.mockClear();
+    await useEditorStore.getState().ensureReadable(path);
+    expect(mockedReadFile).not.toHaveBeenCalled();
+    expect(useEditorStore.getState().tabs[0]?.error).toBe("missing");
+  });
+
+  it("turns an undisplayable text read into a binary fallback", async () => {
+    mockedReadFile.mockRejectedValue(
+      new WorkspaceRequestError("二进制，无法在这里显示", 415),
+    );
+    await useEditorStore.getState().ensureReadable("weird.txt");
+    const tab = useEditorStore.getState().tabs[0]!;
+    expect(tab.kind).toBe("binary");
+    expect(tab.error).toBe("二进制，无法在这里显示");
+    expect(tab.errorRetryable).toBe(false);
+
+    mockedReadFile.mockClear();
+    await useEditorStore.getState().ensureReadable("weird.txt");
+    expect(mockedReadFile).not.toHaveBeenCalled();
+  });
+
+  it("does not read preview files as text", async () => {
+    await useEditorStore.getState().ensureReadable("shot.png");
+    expect(mockedReadFile).not.toHaveBeenCalled();
+    expect(useEditorStore.getState().tabs[0]?.kind).toBe("image");
+  });
+
+  it("does not write a preview tab on save", async () => {
+    useEditorStore.setState({
+      tabs: [
+        {
+          path: "shot.png",
+          content: "",
+          savedContent: "",
+          dirty: false,
+          language: "plaintext",
+          loading: false,
+          error: null,
+          errorRetryable: false,
+          kind: "image",
+          diskRevision: 0,
+        },
+      ],
+      activePath: "shot.png",
+    });
+    await useEditorStore.getState().save("shot.png");
+    expect(mockedWriteFile).not.toHaveBeenCalled();
+  });
+
+  it("bumps a preview revision when the file changes on disk", async () => {
+    useEditorStore.setState({
+      tabs: [
+        {
+          path: "shot.png",
+          content: "",
+          savedContent: "",
+          dirty: false,
+          language: "plaintext",
+          loading: false,
+          error: null,
+          errorRetryable: false,
+          kind: "image",
+          diskRevision: 0,
+        },
+      ],
+    });
+    await useEditorStore.getState().handleWorkspaceChange(["shot.png"], "modified");
+    expect(mockedReadFile).not.toHaveBeenCalled();
+    expect(useEditorStore.getState().tabs[0]?.diskRevision).toBe(1);
   });
 });
 

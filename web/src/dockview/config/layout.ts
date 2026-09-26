@@ -105,12 +105,27 @@ export function ensureTerminalPanel(api: DockviewApi) {
  * Hidden panels still exist (getPanel returns them), so a user's choice to
  * hide a panel is respected.
  */
+/** Drop terminal panels left by the old "one dockview tab per pty" layout. */
+function removeLegacyTerminalPanels(api: DockviewApi) {
+  const extras = api.panels.filter((panel) =>
+    panel.id.startsWith("workspace-terminal-"),
+  );
+  for (const panel of extras) {
+    try {
+      panel.api.close();
+    } catch {
+      // ignore
+    }
+  }
+}
+
 export function ensureDefaultPanels(api: DockviewApi) {
   ensureExplorerPanel(api);
   ensureSearchPanel(api);
   ensureGitPanel(api);
   ensureSessionsPanel(api);
   ensureTerminalPanel(api);
+  removeLegacyTerminalPanels(api);
 }
 
 export function buildDefaultLayout(api: DockviewApi) {
@@ -164,23 +179,4 @@ export function recoverDefaultLayout(api: DockviewApi): void {
     }
     buildDefaultLayout(api);
   }
-}
-
-let extraTerminalSeq = 0;
-
-/** Open an additional integrated terminal tab rooted at a workspace-relative cwd. */
-export function openTerminalAt(api: DockviewApi, cwd: string) {
-  extraTerminalSeq += 1;
-  const id = `workspace-terminal-${extraTerminalSeq}`;
-  const leaf = cwd.split("/").filter(Boolean).pop();
-  const title = leaf ? `Terminal · ${leaf}` : "Terminal";
-  api.addPanel({
-    id,
-    component: "terminal",
-    title,
-    tabComponent: "edge",
-    params: { cwd },
-    position: { referenceGroup: ensureEdge(api, "bottom") },
-  });
-  api.getPanel(id)?.api.setActive();
 }

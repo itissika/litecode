@@ -1,6 +1,7 @@
 import { waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { resetFirstRunForTests } from "../lib/firstRun";
 import { useSettingsStore } from "./settingsStore";
 import { useToastStore } from "./toastStore";
 import { registerSettingsFlush } from "../lib/settingsPersist";
@@ -439,5 +440,58 @@ describe("provider credential actions", () => {
     expect(state.revision).toBe(5);
     expect(state.llm?.providers[0]?.configured).toBe(false);
     expect(state.llm?.providers[0]?.masked_api_key).toBeNull();
+  });
+});
+
+describe("workspace ready", () => {
+  beforeEach(() => {
+    resetFirstRunForTests();
+    useToastStore.setState({ toasts: [] });
+    mockedLlm.mockResolvedValue(llmDoc);
+  });
+
+  afterEach(() => {
+    resetFirstRunForTests();
+  });
+
+  it("opens the Provider page and notes it once when no key is configured", async () => {
+    mockedSummary.mockResolvedValue(summary(3));
+
+    await useSettingsStore.getState().noteWorkspaceReady();
+
+    const state = useSettingsStore.getState();
+    expect(state.open).toBe(true);
+    expect(state.section).toBe("connection");
+    expect(state.revision).toBe(3);
+    expect(useToastStore.getState().toasts.map((t) => t.id)).toEqual([
+      "first-run-no-key",
+    ]);
+  });
+
+  it("leaves a configured workspace alone", async () => {
+    mockedSummary.mockResolvedValue({
+      ...summary(4),
+      configured_provider_count: 1,
+      active_model_count: 2,
+    });
+
+    await useSettingsStore.getState().noteWorkspaceReady();
+
+    const state = useSettingsStore.getState();
+    expect(state.open).toBe(false);
+    expect(state.section).toBe("connection");
+    expect(state.revision).toBe(4);
+    expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
+  it("does not toast setup_guidance from settings/changed", () => {
+    useSettingsStore.getState().onRemoteSettingsChanged({
+      revision: 12,
+      docs: [],
+      summary: { ...summary(12), setup_guidance: "Configure a provider key" },
+    });
+    expect(useToastStore.getState().toasts.map((t) => t.message)).not.toContain(
+      "Configure a provider key",
+    );
   });
 });

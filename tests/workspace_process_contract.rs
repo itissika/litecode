@@ -196,8 +196,11 @@ fn agent_runtime_cwd_uses_resolved_workspace_not_process_cwd() {
     let expected = workspace.workspace_root.clone();
 
     let global = test_resolved("default", &[]).global().clone();
-    let resolved =
-        litecode::config::resolved::resolve(global, workspace.clone(), common::default_test_catalog());
+    let resolved = litecode::config::resolved::resolve(
+        global,
+        workspace.clone(),
+        common::default_test_catalog(),
+    );
 
     let db_path = workspace.paths.sessions_db.clone();
     let sessions = Arc::new(SessionManager::new_for_test(

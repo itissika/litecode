@@ -1,6 +1,7 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import { useToastStore, type ToastVariant } from "../stores/toastStore";
+import { ToastMarkdown } from "./ToastMarkdown";
 
 const VARIANT_DOT: Record<ToastVariant, string> = {
   success: "bg-(--_dk-emerald-500)",
@@ -33,12 +34,18 @@ export function ToastHost() {
             }
             className="pointer-events-auto flex items-start gap-2 rounded-md border border-(--_dk-line-visible) bg-(--_dk-overlay) px-3 py-2 text-[13px] shadow-(--_dk-elevation)"
           >
-            <span
-              className={`mt-[6px] h-1.5 w-1.5 shrink-0 rounded-full ${VARIANT_DOT[toast.variant]}`}
-            />
-            <p className="min-w-0 flex-1 leading-snug text-(--_dk-text-secondary)">
-              {toast.message}
-            </p>
+            {toast.icon ? (
+              <span className="mt-[1px] shrink-0 text-[13px] leading-[18px]">
+                {toast.icon}
+              </span>
+            ) : (
+              <span
+                className={`mt-[6px] h-1.5 w-1.5 shrink-0 rounded-full ${VARIANT_DOT[toast.variant]}`}
+              />
+            )}
+            <div className="min-w-0 flex-1 text-(--_dk-text-secondary)">
+              <ToastMarkdown text={toast.message} />
+            </div>
             <button
               type="button"
               onClick={() => dismissToast(toast.id)}

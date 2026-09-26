@@ -113,7 +113,10 @@ async fn list_sessions_includes_child_parent_ids_and_assistant_preview() {
         .iter()
         .find(|row| row.id == child)
         .expect("child listed");
-    assert_eq!(child_row.parent_session_id.as_deref(), Some(parent.as_str()));
+    assert_eq!(
+        child_row.parent_session_id.as_deref(),
+        Some(parent.as_str())
+    );
     assert_eq!(child_row.parent_call_id.as_deref(), Some("call-1"));
     assert_eq!(child_row.agent_id, "reviewer");
     assert_eq!(child_row.preview, "child prompt");

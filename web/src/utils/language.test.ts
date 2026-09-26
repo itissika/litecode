@@ -22,6 +22,14 @@ describe("languageFromPath", () => {
     expect(languageFromPath("Blit.metal")).toBe("cpp");
   });
 
+  it("maps extra basic languages", () => {
+    expect(languageFromPath("build.ps1")).toBe("powershell");
+    expect(languageFromPath("schema.proto")).toBe("proto");
+    expect(languageFromPath("main.tf")).toBe("hcl");
+    expect(languageFromPath("Token.sol")).toBe("sol");
+    expect(languageFromPath("chip.sv")).toBe("systemverilog");
+  });
+
   it("falls back to plaintext", () => {
     expect(languageFromPath("notes")).toBe("plaintext");
     expect(languageFromPath("a.bin")).toBe("plaintext");

@@ -163,7 +163,11 @@ mod tests {
         for (start, end, text) in cut {
             assert_eq!(text.chars().count(), OUTCOME_CHARS, "the tail is gone");
             assert_eq!(end - start, OUTCOME_CHARS as i64, "the span ends with it");
-            let source: String = body.chars().skip(start as usize).take(OUTCOME_CHARS).collect();
+            let source: String = body
+                .chars()
+                .skip(start as usize)
+                .take(OUTCOME_CHARS)
+                .collect();
             assert_eq!(text, source, "a result chunk is still its own head");
         }
 
@@ -172,9 +176,16 @@ mod tests {
         // Compared with trailing whitespace aside: the chunker already drops the
         // newline at the very end of a row, and that is not this change.
         assert_eq!(kept.trim_end(), body.trim_end(), "a message is not trimmed");
-        assert!(kept.chars().count() > OUTCOME_CHARS * 2, "nor cut to a head");
+        assert!(
+            kept.chars().count() > OUTCOME_CHARS * 2,
+            "nor cut to a head"
+        );
         for (start, end, text) in whole {
-            assert_eq!(end - start, text.chars().count() as i64, "its span is intact");
+            assert_eq!(
+                end - start,
+                text.chars().count() as i64,
+                "its span is intact"
+            );
         }
     }
 }

@@ -50,8 +50,10 @@ fn kill_process_group(child: &mut (dyn Child + Send + Sync)) -> TerminalResult<(
     Ok(())
 }
 
-/// Reply to DEC CPR / DSR cursor-position requests so PowerShell on ConPTY
-/// does not block waiting for a human terminal emulator.
+/// Reply to DEC CPR / DSR cursor-position requests so an agent session
+/// (no terminal emulator on the other end) does not block. Human interactive
+/// sessions leave this off: xterm answers with the real cursor, and a fake
+/// `1;1` reply races it and makes the shell redraw at the wrong place.
 ///
 /// The reply shares the master writer with `PtySession::write`. It must never
 /// block the reader thread behind a contended lock — a blocked write would
@@ -74,6 +76,73 @@ fn auto_reply_cpr(writer: &Mutex<Box<dyn Write + Send>>, chunk: &str) {
             }
             Err(_) => return,
         }
+    }
+}
+
+/// Longest valid UTF-8 prefix of `pending`. A trailing incomplete sequence
+/// (at most 3 bytes, `error_len == None`) stays in `pending` for the next
+/// read. A genuinely invalid byte (`error_len == Some`) is emitted as U+FFFD
+/// so the reader cannot stall on it.
+fn drain_utf8(pending: &mut Vec<u8>) -> String {
+    let mut out = String::new();
+    loop {
+        if pending.is_empty() {
+            break;
+        }
+        match std::str::from_utf8(pending) {
+            Ok(text) => {
+                out.push_str(text);
+                pending.clear();
+                break;
+            }
+            Err(err) => {
+                let valid = err.valid_up_to();
+                if valid > 0 {
+                    out.push_str(std::str::from_utf8(&pending[..valid]).expect("valid utf-8"));
+                }
+                match err.error_len() {
+                    None => {
+                        pending.drain(..valid);
+                        break;
+                    }
+                    Some(error_len) => {
+                        out.push('\u{FFFD}');
+                        pending.drain(..valid + error_len);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// EOF / read-error flush: remaining bytes are lossy so a torn sequence at
+/// the end of the stream still reaches the consumer.
+fn flush_utf8(pending: &mut Vec<u8>) -> String {
+    let out = String::from_utf8_lossy(pending).into_owned();
+    pending.clear();
+    out
+}
+
+fn emit_chunk(
+    chunk: &str,
+    answer_cpr: bool,
+    writer: &Mutex<Box<dyn Write + Send>>,
+    buffer_output: bool,
+    output: &Mutex<String>,
+    on_data: &Option<Arc<dyn Fn(&str) + Send + Sync>>,
+) {
+    if chunk.is_empty() {
+        return;
+    }
+    if answer_cpr {
+        auto_reply_cpr(writer, chunk);
+    }
+    if buffer_output {
+        output.lock().expect("output lock").push_str(chunk);
+    }
+    if let Some(cb) = on_data {
+        cb(chunk);
     }
 }
 
@@ -101,10 +170,13 @@ impl PtySession {
         on_data: Option<Arc<dyn Fn(&str) + Send + Sync>>,
         on_exit: Option<Arc<dyn Fn(Option<u32>) + Send + Sync>>,
         env: &[(&str, &str)],
+        answer_cpr: bool,
     ) -> TerminalResult<Self> {
         // 2.8 (REV-7): interactive sessions broadcast only and never buffer output
         // (`take_output` has no consumer for them), so memory stays bounded.
-        spawn_inner(id, shell, cwd, cols, rows, on_data, on_exit, env, false)
+        spawn_inner(
+            id, shell, cwd, cols, rows, on_data, on_exit, env, false, answer_cpr,
+        )
     }
 
     pub fn write(&self, data: &[u8]) -> TerminalResult<()> {
@@ -221,6 +293,7 @@ fn spawn_inner(
     on_exit: Option<Arc<dyn Fn(Option<u32>) + Send + Sync>>,
     env: &[(&str, &str)],
     buffer_output: bool,
+    answer_cpr: bool,
 ) -> TerminalResult<PtySession> {
     let pty_system = NativePtySystem::default();
     let pair = pty_system
@@ -270,21 +343,45 @@ fn spawn_inner(
         .name(format!("pty-read-{id_r}"))
         .spawn(move || {
             let mut buf = [0u8; 4096];
+            // Carry an incomplete UTF-8 sequence across read boundaries so a
+            // multibyte character split by the 4096-byte read is not replaced
+            // with U+FFFD on both sides.
+            let mut pending: Vec<u8> = Vec::new();
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let chunk = String::from_utf8_lossy(&buf[..n]);
-                        auto_reply_cpr(&writer_r, &chunk);
-                        if buffer_output {
-                            let mut out = output_r.lock().expect("output lock");
-                            out.push_str(&chunk);
-                        }
-                        if let Some(ref cb) = on_data {
-                            cb(&chunk);
-                        }
+                    Ok(0) => {
+                        emit_chunk(
+                            &flush_utf8(&mut pending),
+                            answer_cpr,
+                            &writer_r,
+                            buffer_output,
+                            &output_r,
+                            &on_data,
+                        );
+                        break;
                     }
-                    Err(_) => break,
+                    Ok(n) => {
+                        pending.extend_from_slice(&buf[..n]);
+                        emit_chunk(
+                            &drain_utf8(&mut pending),
+                            answer_cpr,
+                            &writer_r,
+                            buffer_output,
+                            &output_r,
+                            &on_data,
+                        );
+                    }
+                    Err(_) => {
+                        emit_chunk(
+                            &flush_utf8(&mut pending),
+                            answer_cpr,
+                            &writer_r,
+                            buffer_output,
+                            &output_r,
+                            &on_data,
+                        );
+                        break;
+                    }
                 }
             }
             alive_r.store(false, Ordering::SeqCst);
@@ -340,6 +437,7 @@ pub(crate) fn exec_once(
         None,
         AGENT_NON_INTERACTIVE_ENV,
         false,
+        true,
     )?;
     let start = Instant::now();
     loop {
@@ -383,5 +481,42 @@ pub(crate) fn exec_once(
             return Ok(ExecFinish::TimedOut);
         }
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{drain_utf8, flush_utf8};
+
+    #[test]
+    fn drain_utf8_keeps_a_cjk_character_split_across_chunks() {
+        // "你" is E4 BD A0. The first read stops inside the sequence.
+        let mut pending = vec![0xE4, 0xBD];
+        assert_eq!(drain_utf8(&mut pending), "");
+        assert_eq!(pending, vec![0xE4, 0xBD]);
+        pending.push(0xA0);
+        pending.extend_from_slice(b"ab");
+        assert_eq!(drain_utf8(&mut pending), "你ab");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn drain_utf8_replaces_an_invalid_byte_and_keeps_going() {
+        let mut pending = b"a\xffb".to_vec();
+        assert_eq!(drain_utf8(&mut pending), "a\u{FFFD}b");
+        assert!(pending.is_empty());
+
+        // A lead byte followed by a non-continuation must not stall the reader.
+        let mut pending = vec![0xC0, b'A'];
+        assert_eq!(drain_utf8(&mut pending), "\u{FFFD}A");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn flush_utf8_emits_a_torn_tail_as_replacement() {
+        let mut pending = vec![0xE4, 0xBD];
+        assert_eq!(drain_utf8(&mut pending), "");
+        assert_eq!(flush_utf8(&mut pending), "\u{FFFD}");
+        assert!(pending.is_empty());
     }
 }

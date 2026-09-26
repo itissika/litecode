@@ -488,10 +488,12 @@ fn pending_messages_projects_the_full_authority_list() {
                 litecode::session::manager::PendingMessage {
                     id: "p1".into(),
                     text: "first".into(),
+                    images: Vec::new(),
                 },
                 litecode::session::manager::PendingMessage {
                     id: "p2".into(),
                     text: "second".into(),
+                    images: Vec::new(),
                 },
             ],
         },

@@ -42,7 +42,9 @@ pub fn session_labels(
     sessions: &SessionManager,
     child_id: &str,
 ) -> (Option<String>, Option<String>) {
-    let agent = sessions.agent_id(child_id).filter(|value| !value.is_empty());
+    let agent = sessions
+        .agent_id(child_id)
+        .filter(|value| !value.is_empty());
     let responsibility = sessions
         .reader()
         .meta_blocking(child_id)
@@ -171,9 +173,8 @@ pub fn format_completion_reminder(
     sessions: &SessionManager,
     completions: &[CompletionRef],
 ) -> String {
-    let mut inner = String::from(
-        "source: subagent\nThe following background child session turns settled.\n",
-    );
+    let mut inner =
+        String::from("source: subagent\nThe following background child session turns settled.\n");
     inner.push_str(&format_batch_results(sessions, completions));
     format!("<system-reminder>\n{}</system-reminder>", inner.trim_end())
 }

@@ -6,6 +6,8 @@ export interface Toast {
   id: string;
   message: string;
   variant: ToastVariant;
+  /** Optional emoji that replaces the variant dot (personality on onboarding notes). */
+  icon?: string;
 }
 
 interface ToastStore {
@@ -15,6 +17,7 @@ interface ToastStore {
     variant?: ToastVariant,
     durationMs?: number,
     channel?: string,
+    opts?: { icon?: string },
   ) => void;
   dismissToast: (id: string) => void;
 }
@@ -25,14 +28,14 @@ const channelTimers = new Map<string, number>();
 export const useToastStore = create<ToastStore>((set, get) => ({
   toasts: [],
 
-  showToast: (message, variant = "error", durationMs = 5000, channel) => {
+  showToast: (message, variant = "error", durationMs = 5000, channel, opts) => {
     const id = channel ?? `toast-${++nextToastId}-${Date.now()}`;
     const prevTimer = channelTimers.get(id);
     if (prevTimer !== undefined) window.clearTimeout(prevTimer);
     set((s) => ({
       toasts: [
         ...s.toasts.filter((t) => t.id !== id),
-        { id, message, variant },
+        { id, message, variant, icon: opts?.icon },
       ],
     }));
     const timer = window.setTimeout(() => {

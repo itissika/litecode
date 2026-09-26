@@ -265,7 +265,8 @@ Output structure, in order:
 
 pub const DEFAULT_DESCRIPTION: &str = "General-purpose coding assistant";
 
-pub const ORCHESTRATOR_DESCRIPTION: &str = "Orchestrator. Manages a team of subagents and owns the user's goal.";
+pub const ORCHESTRATOR_DESCRIPTION: &str =
+    "Orchestrator. Manages a team of subagents and owns the user's goal.";
 
 pub const GENERAL_DESCRIPTION: &str = "General-purpose implementer. Edits code, runs commands, and reports back. Use for bounded implementation, tests, and fixes.";
 

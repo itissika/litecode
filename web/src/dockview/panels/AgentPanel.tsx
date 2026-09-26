@@ -189,6 +189,9 @@ export function AgentChatShell({
   const [miniPhase, setMiniPhase] = useState<
     "idle" | "entering" | "visible" | "exiting"
   >("idle");
+  // Owned by the dock, published up so the transcript can shrink its bottom pad
+  // (the pad only exists to keep the tail clear of the floating composer).
+  const [composerCollapsed, setComposerCollapsed] = useState(false);
   const dismissTimerRef = useRef<number | null>(null);
   const jumpToEndRef = useRef<(() => void) | null>(null);
   const revealBashRef = useRef<((callId: string) => void) | null>(null);
@@ -308,6 +311,7 @@ export function AgentChatShell({
         jumpToEndRef={jumpToEndRef}
         revealBashRef={revealBashRef}
         revealSeqRef={revealSeqRef}
+        composerCollapsed={composerCollapsed}
       />
       <ComposerDock
         sessionId={sessionId}
@@ -315,6 +319,7 @@ export function AgentChatShell({
         stickToEnd={stickToEnd}
         onJumpToEnd={() => jumpToEndRef.current?.()}
         onRevealBash={(callId) => revealBashRef.current?.(callId)}
+        onCollapsedChange={setComposerCollapsed}
       />
     </div>
   );
@@ -336,6 +341,7 @@ function MessageListRegion({
   jumpToEndRef,
   revealBashRef,
   revealSeqRef,
+  composerCollapsed,
 }: {
   sessionId: string;
   isActive: boolean;
@@ -348,6 +354,7 @@ function MessageListRegion({
   jumpToEndRef: RefObject<(() => void) | null>;
   revealBashRef: RefObject<((callId: string) => void) | null>;
   revealSeqRef: RefObject<((seq: number) => void) | null>;
+  composerCollapsed: boolean;
 }) {
   const messages = useMessageStore((s) =>
     displayMessages(s.bySession.get(sessionId)),
@@ -431,6 +438,7 @@ function MessageListRegion({
                 onDismissEdit={onDismissEdit}
                 miniPhase={miniPhase}
                 onMiniAnimationEnd={onMiniAnimationEnd}
+                composerCollapsed={composerCollapsed}
               />
             </div>
           </div>
@@ -474,12 +482,16 @@ export function ComposerDock({
   stickToEnd = true,
   onJumpToEnd,
   onRevealBash,
+  onCollapsedChange,
 }: {
   sessionId: string;
   isActive?: boolean;
   stickToEnd?: boolean;
   onJumpToEnd?: () => void;
   onRevealBash?: (callId: string) => void;
+  /** Notifies the shell so the transcript can shrink its bottom pad while the
+   *  composer is out of the way. */
+  onCollapsedChange?: (collapsed: boolean) => void;
 }) {
   const pendingPermission = useTurnStore(
     (s) => s.byId.get(sessionId)?.pendingPermission ?? null,
@@ -497,8 +509,15 @@ export function ComposerDock({
       data-testid="composer-dock"
       className="pointer-events-none absolute inset-0 z-10 flex min-h-0 flex-col justify-end px-4 pb-4"
     >
+      {/* Hit-testing surface. The wrapper must also drop pointer events while
+          collapsed: the collapse only *translates* the content out of view, so
+          the wrapper keeps its layout box (the band the composer occupied) and
+          a pointer-events-auto box there swallows the wheel — the transcript
+          below it cannot scroll. The toggle re-enables its own events. */}
       <div
-        className={`pointer-events-auto relative mx-auto flex min-h-0 w-full max-w-[var(--_dk-prose-measure)] flex-col ${
+        className={`relative mx-auto flex min-h-0 w-full max-w-[var(--_dk-prose-measure)] flex-col ${
+          collapsed ? "pointer-events-none" : "pointer-events-auto"
+        } ${
           isActive
             ? "[--_dk-composer-card-shadow:var(--_dk-composer-focus-shadow)]"
             : ""
@@ -512,12 +531,12 @@ export function ComposerDock({
             dock's own pb-4 padding, the extra 1rem guarantees the top edge
             lands below the panel even with subpixel rounding. Opacity fades to
             0 alongside the slide, so the content is fully gone regardless of
-            the clip boundary. pointer-events-none while collapsed so the
-            vacated area doesn't block the transcript. */}
+            the clip boundary. Its own pointer-events-none is belt-and-braces;
+            the wrapper above is what actually frees the vacated area. */}
         <div
           data-testid="composer-dock-content"
           data-collapsed={collapsed}
-          className={`flex min-h-0 flex-col transition-[transform,opacity] duration-200 ease-in-out ${
+          className={`composer-dock-slide flex min-h-0 flex-col ${
             collapsed
               ? "pointer-events-none translate-y-[calc(100%_+_2rem)] opacity-0"
               : "opacity-100"
@@ -562,12 +581,23 @@ export function ComposerDock({
             alone at the bottom. Chevron flips. */}
         <button
           type="button"
-          onClick={() => setCollapsed((c) => !c)}
+          onClick={() => {
+            const next = !collapsed;
+            setCollapsed(next);
+            onCollapsedChange?.(next);
+          }}
           aria-label={collapsed ? "Expand composer" : "Collapse composer"}
           title={collapsed ? "Expand composer" : "Collapse composer"}
-          className={`absolute bottom-1.5 left-1/2 z-20 flex h-5 w-9 -translate-x-1/2 cursor-pointer items-center justify-center active:brightness-90 ${
+          className={`pointer-events-auto absolute bottom-1.5 left-1/2 z-20 flex h-5 w-9 -translate-x-1/2 cursor-pointer items-center justify-center active:brightness-90 ${
             collapsed
-              ? `${composerCardClass} relative text-(--_dk-text-secondary) after:pointer-events-none after:absolute after:inset-0 after:rounded-md after:bg-(--_dk-ix-bg-hover) after:content-[''] after:opacity-0 after:transition-opacity after:duration-150 hover:after:opacity-100`
+              ? // No `relative` here: it loses to nothing but *wins* over the
+                // `absolute` above (Tailwind emits .relative after .absolute),
+                // which drops the toggle back into the wrapper's flex flow and
+                // grows it by the button's 20px. The wrapper is bottom-aligned,
+                // so that 20px shoves the whole composer up for a frame — the
+                // "bounce up before it slides down" on collapse. The button is
+                // already a containing block for its own `after:` layer.
+                `${composerCardClass} text-(--_dk-text-secondary) after:pointer-events-none after:absolute after:inset-0 after:rounded-md after:bg-(--_dk-ix-bg-hover) after:content-[''] after:opacity-0 after:transition-opacity after:duration-150 hover:after:opacity-100`
               : "rounded text-(--_dk-text-muted) transition-colors duration-200 hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary)"
           }`}
         >

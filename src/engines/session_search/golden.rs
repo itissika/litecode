@@ -113,6 +113,35 @@ fn corpus() -> Vec<SearchableRow> {
         ),
         row("S2", 1, "compacted", &user_text("COMPACTED_SUMMARY_UNIQUE")),
         row("S2", 2, "item/user", &user_text(long)),
+        // Chinese prose for the word path: the query's words spread across the
+        // row, a fragment that shares only the first of them, a mixed-script row,
+        // and a two-word pair that must find both words without them touching.
+        row(
+            "S2",
+            3,
+            "item/user",
+            &user_text("网络连接总是断掉，能否把重试次数放大一点"),
+        ),
+        row("S2", 4, "item/assistant", &assistant_text("网络连接")),
+        row(
+            "S2",
+            5,
+            "item/user",
+            &user_text("opencode.ai 的 ifIndex 报错"),
+        ),
+        row(
+            "S2",
+            6,
+            "item/assistant",
+            &assistant_text("codex 感知 模块，retry 重试 都在这"),
+        ),
+        row(
+            "S2",
+            7,
+            "item/user",
+            &user_text("配置从哪来，落盘时机是什么"),
+        ),
+        row("S2", 8, "item/assistant", &assistant_text("配置项渲染")),
     ]
 }
 
@@ -156,6 +185,12 @@ fn golden_indexes_exactly_the_admitted_rows() {
         ("S1", 5),
         ("S2", 0),
         ("S2", 2),
+        ("S2", 3),
+        ("S2", 4),
+        ("S2", 5),
+        ("S2", 6),
+        ("S2", 7),
+        ("S2", 8),
     ]
     .into_iter()
     .map(|(s, q)| (s.to_string(), q))
@@ -166,8 +201,14 @@ fn golden_indexes_exactly_the_admitted_rows() {
         "admission changed: echo results and compacted rows must stay out"
     );
     // The two excluded rows explicitly, so a future failure names them.
-    assert!(!indexed.contains(&("S1".into(), 3)), "session-echo result indexed");
-    assert!(!indexed.contains(&("S2".into(), 1)), "compacted row indexed");
+    assert!(
+        !indexed.contains(&("S1".into(), 3)),
+        "session-echo result indexed"
+    );
+    assert!(
+        !indexed.contains(&("S2".into(), 1)),
+        "compacted row indexed"
+    );
 }
 
 #[test]
@@ -189,6 +230,22 @@ fn golden_chunk_keys_and_normalized_text() {
         norm("S1", 1),
         sparse::normalize("the AuthRefactorToken decision is final")
     );
+    // The word column is the normalized text with the CJK run segmented
+    // (`cjk::segment`), which is what the `seg` table indexes.
+    let words = |sid: &str, seq: i64| -> String {
+        conn.query_row(
+            "SELECT text_words FROM rows WHERE session_id = ?1 AND seq = ?2 AND chunk = 0",
+            rusqlite::params![sid, seq],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let chinese = words("S2", 0);
+    assert!(chinese.contains("会话"), "{chinese:?}");
+    assert!(chinese.contains("检索"), "{chinese:?}");
+    // Latin rows are copied through unchanged, so the English word path sees
+    // exactly what it saw before.
+    assert_eq!(words("S1", 1), norm("S1", 1));
     // The tool call row's plain text is `name(arguments)`.
     assert_eq!(
         norm("S1", 4),
@@ -229,7 +286,10 @@ fn golden_long_row_tiles_losslessly_within_budget() {
     let mut cursor = 0i64;
     let mut rebuilt = String::new();
     for (index, start, end, text) in &chunks {
-        assert_eq!(*start, cursor, "chunk {index} must start where the previous ended");
+        assert_eq!(
+            *start, cursor,
+            "chunk {index} must start where the previous ended"
+        );
         assert!(*end > *start, "chunk {index} must make progress");
         assert!(
             tokenizer::token_len(&tk, text) <= 448,
@@ -243,7 +303,11 @@ fn golden_long_row_tiles_losslessly_within_budget() {
     let source = crate::session::transcript_file::row_plain_text(&rows[8], dir.path())
         .unwrap()
         .unwrap();
-    assert_eq!(rebuilt, source.trim(), "chunks must tile the source losslessly");
+    assert_eq!(
+        rebuilt,
+        source.trim(),
+        "chunks must tile the source losslessly"
+    );
 }
 
 #[test]
@@ -271,7 +335,9 @@ fn golden_query_ladder_and_exclusions() {
     let keys: BTreeSet<String> = hits.iter().map(|h| h.row_key.clone()).collect();
     assert_eq!(
         keys,
-        ["S1:4".to_string(), "S1:5".to_string()].into_iter().collect()
+        ["S1:4".to_string(), "S1:5".to_string()]
+            .into_iter()
+            .collect()
     );
 
     // CJK substring is answerable by both the LIKE path and the trigram table.
@@ -296,7 +362,10 @@ fn golden_query_ladder_and_exclusions() {
     // (LIKE) index, and no lane may surface them by key — the fuzzy n-gram
     // fallback is allowed to match other rows, but never an excluded one.
     assert!(
-        index.search(Lane::Like, "UNIQUE_ECHO", 50).unwrap().is_empty(),
+        index
+            .search(Lane::Like, "UNIQUE_ECHO", 50)
+            .unwrap()
+            .is_empty(),
         "session-echo result must not be indexed"
     );
     assert!(
@@ -315,7 +384,10 @@ fn golden_query_ladder_and_exclusions() {
                 .map(|h| h.row_key)
                 .collect();
             assert!(!keys.contains("S1:3"), "{lane:?} surfaced the echo result");
-            assert!(!keys.contains("S2:1"), "{lane:?} surfaced the compacted row");
+            assert!(
+                !keys.contains("S2:1"),
+                "{lane:?} surfaced the compacted row"
+            );
         }
     }
 }
@@ -334,12 +406,78 @@ fn golden_scope_and_candidate_recall() {
 
     // Candidate recall: a truth row is in the candidate set even below top-k.
     let index = sparse::open_read_only(&sparse::sparse_index_path(dir.path())).unwrap();
-    assert!(index.contains(Lane::Final, "AuthRefactorToken", "S1", 1).unwrap());
-    assert!(!index.contains(Lane::Final, "AuthRefactorToken", "S1", 0).unwrap());
+    assert!(
+        index
+            .contains(Lane::Final, "AuthRefactorToken", "S1", 1)
+            .unwrap()
+    );
+    assert!(
+        !index
+            .contains(Lane::Final, "AuthRefactorToken", "S1", 0)
+            .unwrap()
+    );
 }
 
 fn index(dir: &Path) -> sparse::SparseIndex {
     sparse::open_read_only(&sparse::sparse_index_path(dir)).expect("open index")
+}
+
+/// The Chinese word path: a query is answered by the *words* it asks for, in a
+/// row that says them apart — and a fragment of a sentence is not the sentence.
+#[test]
+fn golden_cjk_is_searched_by_words_and_gated_by_them() {
+    use super::ranking::LayerId;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    build(dir.path());
+    let index = index(dir.path());
+    let keys = |query: &str| -> BTreeSet<String> {
+        index
+            .search(Lane::Final, query, 50)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.row_key)
+            .collect()
+    };
+
+    // The words are spread across the row (`能否重试次数放大` vs
+    // `能不能放大一点`): the old trigram ratio could not see it, the word path
+    // does, and the row is found by the `Lexical` layer rather than by the
+    // literal.
+    let hits = index
+        .search(Lane::Final, "重试次数能不能放大一点", 50)
+        .unwrap();
+    let found: BTreeSet<String> = hits.iter().map(|h| h.row_key.clone()).collect();
+    assert!(found.contains("S2:3"), "{hits:#?}");
+    assert!(hits[0].layers().contains(&LayerId::Lexical), "{hits:#?}");
+
+    // A whole sentence. `S2:4` shares three words of it and a third of its
+    // characters; the word floor lets it in, the character floor does not.
+    let found = keys("网络连接总是断掉能否把重试次数放大一点");
+    assert!(found.contains("S2:3"), "{found:?}");
+    assert!(
+        !found.contains("S2:4"),
+        "a fragment must not stand in for the sentence: {found:?}"
+    );
+
+    // Two words mean both, and they need not be adjacent.
+    let found = keys("配置落盘");
+    assert!(found.contains("S2:7"), "{found:?}");
+    assert!(
+        !found.contains("S2:8"),
+        "one word of two is not the query: {found:?}"
+    );
+
+    // Both scripts are required: `codex` alone (S2:5 says `opencode`, `ifIndex`)
+    // and `感知` alone are not answers.
+    assert_eq!(
+        keys("codex 感知"),
+        ["S2:6".to_string()].into_iter().collect::<BTreeSet<_>>()
+    );
+    assert_eq!(
+        keys("retry 重试"),
+        ["S2:6".to_string()].into_iter().collect::<BTreeSet<_>>()
+    );
 }
 
 /// The product layer's contract, on the same fixed corpus: a query that shares

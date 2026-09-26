@@ -10,7 +10,7 @@ use crate::provider_catalog::{self, ProviderCatalog};
 
 use super::global_db;
 use super::resolved::{ResolvedConfig, WorkspaceState, resolve};
-use super::schema::{AgentRole, GlobalSettings, PLAN_TODO_TOOL_IDS, SUBAGENT_SERIES_TOOL_IDS};
+use super::schema::{AgentRole, GlobalSettings, PRIMARY_ONLY_TOOL_IDS, SUBAGENT_SERIES_TOOL_IDS};
 use super::workspace::{self, init_workspace, load_workspace_state};
 
 /// Single configuration entry point (L1).
@@ -45,9 +45,12 @@ impl ConfigManager {
         workspace: WorkspaceState,
     ) -> ResolvedConfig {
         let catalog = Arc::new(
-            ProviderCatalog::parse("version = 1
-", Path::new("<empty-catalog>"))
-                .expect("an empty catalog is valid"),
+            ProviderCatalog::parse(
+                "version = 1
+",
+                Path::new("<empty-catalog>"),
+            )
+            .expect("an empty catalog is valid"),
         );
         Self::resolve(global, workspace, catalog)
     }
@@ -74,7 +77,7 @@ impl ConfigManager {
             }
 
             if profile.role == AgentRole::Subagent {
-                for tool_id in PLAN_TODO_TOOL_IDS.iter().chain(SUBAGENT_SERIES_TOOL_IDS) {
+                for tool_id in PRIMARY_ONLY_TOOL_IDS.iter().chain(SUBAGENT_SERIES_TOOL_IDS) {
                     if profile.tools.contains_key(*tool_id) {
                         return Err(LitecodeError::Config(format!(
                             "agent '{agent_id}' (subagent) must not bind '{tool_id}'"
@@ -339,8 +342,7 @@ mod tests {
         // the default agent on a ref the catalog does not declare.
         ConfigManager::load_global_from(&db).unwrap();
         let conn = crate::config::global_db::open(&db).unwrap();
-        crate::config::global_db::store::set_provider_credential(&conn, "main", "sk-test")
-            .unwrap();
+        crate::config::global_db::store::set_provider_credential(&conn, "main", "sk-test").unwrap();
         crate::config::global_db::store::upsert_agent(
             &conn,
             "default",

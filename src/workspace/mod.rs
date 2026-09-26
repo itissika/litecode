@@ -3,11 +3,13 @@ mod change;
 pub mod file_ops;
 pub mod filter;
 mod git;
+mod open_host;
 mod path_sort;
 mod recycle;
 mod routes;
 mod sandbox;
 mod service;
+mod sqlite_preview;
 pub mod text_codec;
 mod tool_path;
 mod tree;
@@ -21,7 +23,7 @@ pub use filter::{
 pub use path_sort::{glob_hit_key, sort_glob_hits};
 pub use routes::{WorkspaceState, router as workspace_router};
 pub use sandbox::{Sandbox, SandboxError};
-pub use service::{MAX_FILE_SIZE, WorkspaceError, WorkspaceService};
+pub use service::{MAX_FILE_SIZE, MAX_PREVIEW_BYTES, WorkspaceError, WorkspaceService};
 pub use tool_path::{
     AGENT_FILE_PATH_HINT, ToolPathError, ToolPathMode, is_resolved_outside_workspace,
     raw_path_outside_workspace, resolve_agent, resolve_human_relative, resolve_lsp_workspace,

@@ -443,7 +443,10 @@ mod tests {
         let plan = root.join(".litecode").join("plan").join("calm-river.md");
         fs::create_dir_all(plan.parent().unwrap()).unwrap();
         fs::write(&plan, b"# Plan").unwrap();
-        let ev = make_event(EventKind::Modify(ModifyKind::Any), &[plan.to_str().unwrap()]);
+        let ev = make_event(
+            EventKind::Modify(ModifyKind::Any),
+            &[plan.to_str().unwrap()],
+        );
         let (paths, _) = classify_event(&ev, &root).expect("plan .md must broadcast");
         assert_eq!(paths, vec![".litecode/plan/calm-river.md".to_string()]);
         let ui = filter_change_for_ui(changed(&[".litecode/plan/calm-river.md"]))
@@ -451,7 +454,10 @@ mod tests {
         assert_eq!(ui.paths, vec![".litecode/plan/calm-river.md".to_string()]);
 
         // The atomic-create staging file does not end in .md: still blocked.
-        let tmp = root.join(".litecode").join("plan").join(".calm-river.md.tmp");
+        let tmp = root
+            .join(".litecode")
+            .join("plan")
+            .join(".calm-river.md.tmp");
         fs::write(&tmp, b"# Plan").unwrap();
         let ev_tmp = make_event(EventKind::Modify(ModifyKind::Any), &[tmp.to_str().unwrap()]);
         assert!(classify_event(&ev_tmp, &root).is_none());

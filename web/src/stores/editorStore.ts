@@ -6,7 +6,17 @@ import {
   writeFile,
   type WorkspaceChangeKind,
 } from "../api/workspace";
+import {
+  BINARY_FILE_MESSAGE,
+  fileKindFromPath,
+  isTextKind,
+  type FileKind,
+} from "../lib/fileKind";
 import { flushMarkdownEditor } from "../lib/markdownFlush";
+import {
+  WorkspaceRequestError,
+  undisplayableStatus,
+} from "../lib/workspaceError";
 import { languageFromPath, fileNameFromPath } from "../utils/language";
 import {
   isWysiwygMarkdownPath,
@@ -24,6 +34,11 @@ export interface EditorTab {
   language: string;
   loading: boolean;
   error: string | null;
+  /** Network or connection failure. Display errors are not retried. */
+  errorRetryable: boolean;
+  kind: FileKind;
+  /** Bumped when a non-text file changes on disk so its preview refetches. */
+  diskRevision: number;
 }
 
 /** A file the user has open that was overwritten on disk (by the agent).
@@ -54,6 +69,8 @@ interface EditorStore {
   jumpForward: JumpLocation[];
 
   openFile: (path: string) => Promise<void>;
+  /** Load or refresh a tab. Safe to call on every connect, including reconnects. */
+  ensureReadable: (path: string) => Promise<void>;
   /** Open file and reveal a 1-based line (workspace search / go-to). */
   openFileAt: (path: string, line: number, column?: number) => Promise<void>;
   consumePendingReveal: () => {
@@ -80,7 +97,7 @@ interface EditorStore {
   setMdView: (path: string, view: MdEditorView) => void;
 }
 
-function makeTab(path: string, content: string): EditorTab {
+function makeTab(path: string, content: string, diskRevision = 0): EditorTab {
   return {
     path,
     content,
@@ -89,7 +106,196 @@ function makeTab(path: string, content: string): EditorTab {
     language: languageFromPath(path),
     loading: false,
     error: null,
+    errorRetryable: false,
+    kind: "text",
+    diskRevision,
   };
+}
+
+function shellTab(path: string, kind: FileKind, diskRevision = 0): EditorTab {
+  return {
+    path,
+    content: "",
+    savedContent: "",
+    dirty: false,
+    language: languageFromPath(path),
+    loading: kind === "text",
+    error: kind === "binary" ? BINARY_FILE_MESSAGE : null,
+    errorRetryable: false,
+    kind,
+    diskRevision,
+  };
+}
+
+function failureTab(path: string, error: unknown, diskRevision: number): EditorTab {
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof WorkspaceRequestError && undisplayableStatus(error.status)) {
+    return {
+      ...shellTab(path, "binary", diskRevision),
+      loading: false,
+      error: message,
+    };
+  }
+  const retryable =
+    !(error instanceof WorkspaceRequestError) || error.retryable;
+  return {
+    ...shellTab(path, "text", diskRevision),
+    loading: false,
+    error: message,
+    errorRetryable: retryable,
+  };
+}
+
+const readableInflight = new Map<string, Promise<void>>();
+
+async function loadReadable(
+  path: string,
+  get: () => EditorStore,
+  set: (
+    partial:
+      | Partial<EditorStore>
+      | ((state: EditorStore) => Partial<EditorStore>),
+  ) => void,
+): Promise<void> {
+  const existing = get().tabs.find((t) => t.path === path);
+  if (existing?.dirty) return;
+  if (existing?.kind === "binary" && existing.error && !existing.errorRetryable) {
+    return;
+  }
+
+  const kind = fileKindFromPath(path);
+  if (!isTextKind(kind)) {
+    if (!existing) {
+      set((s) => ({ tabs: [...s.tabs, shellTab(path, kind)] }));
+      return;
+    }
+    if (existing.kind !== kind) {
+      set((s) => ({
+        tabs: s.tabs.map((t) =>
+          t.path === path
+            ? {
+                ...shellTab(path, kind, t.diskRevision),
+                diskRevision: t.diskRevision + 1,
+              }
+            : t,
+        ),
+      }));
+      return;
+    }
+    if (existing.errorRetryable) {
+      set((s) => ({
+        tabs: s.tabs.map((t) =>
+          t.path === path
+            ? {
+                ...t,
+                error: null,
+                errorRetryable: false,
+                diskRevision: t.diskRevision + 1,
+              }
+            : t,
+        ),
+      }));
+    }
+    return;
+  }
+
+  // A permanent text failure (missing file, and so on) has no buffer to keep.
+  if (
+    existing?.kind === "text" &&
+    existing.error &&
+    !existing.errorRetryable &&
+    existing.content === ""
+  ) {
+    return;
+  }
+
+  const loaded =
+    !!existing &&
+    existing.kind === "text" &&
+    !existing.error &&
+    !existing.loading;
+  if (!loaded) {
+    set((s) => {
+      const current = s.tabs.find((t) => t.path === path);
+      if (current?.dirty) return s;
+      if (!current) return { tabs: [...s.tabs, shellTab(path, "text")] };
+      return {
+        tabs: s.tabs.map((t) =>
+          t.path === path ? { ...t, loading: true, error: null } : t,
+        ),
+      };
+    });
+  }
+
+  if (get().tabs.find((t) => t.path === path)?.dirty) return;
+
+  try {
+    const content = await readFile(path);
+    const current = get().tabs.find((t) => t.path === path);
+    if (!current || current.dirty) {
+      if (current?.loading) {
+        set((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.path === path ? { ...t, loading: false } : t,
+          ),
+        }));
+      }
+      return;
+    }
+    if (
+      current.kind === "text" &&
+      !current.loading &&
+      !current.error &&
+      current.content === content &&
+      current.savedContent === content
+    ) {
+      return;
+    }
+    const revision = current.diskRevision;
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.path === path ? makeTab(path, content, revision) : t,
+      ),
+    }));
+  } catch (error) {
+    const current = get().tabs.find((t) => t.path === path);
+    if (!current || current.dirty) return;
+    const failed = failureTab(path, error, current.diskRevision);
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.path === path ? failed : t)),
+    }));
+  }
+}
+
+function addEditorPanel(dockviewApi: DockviewApi, path: string) {
+  const existing = dockviewApi.getPanel(path);
+  if (existing) {
+    existing.api.setActive();
+    return;
+  }
+  const fileName = fileNameFromPath(path);
+  const gridGroups = dockviewApi.groups.filter(
+    (g) => g.api.location.type === "grid",
+  );
+  const panel = {
+    id: path,
+    component: "editor",
+    title: fileName,
+    tabComponent: "editor",
+    params: { filePath: path },
+  };
+  if (gridGroups.length === 0) {
+    const group = dockviewApi.addGroup();
+    dockviewApi.addPanel({
+      ...panel,
+      position: { referenceGroup: group.id },
+    });
+  } else {
+    dockviewApi.addPanel({
+      ...panel,
+      position: { referenceGroup: gridGroups[0].api.id },
+    });
+  }
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
@@ -163,105 +369,21 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   openFile: async (path) => {
     const { dockviewApi } = get();
+    if (dockviewApi) addEditorPanel(dockviewApi, path);
     const existing = get().tabs.find((t) => t.path === path);
-    if (existing) {
-      set({ activePath: path });
-      dockviewApi?.getPanel(path)?.api.setActive();
-      return;
-    }
+    set({ activePath: path });
+    if (existing && (existing.dirty || !existing.errorRetryable)) return;
+    await get().ensureReadable(path);
+  },
 
-    // Fallback to pure store mode if dockviewApi is not available
-    if (!dockviewApi) {
-      const loadingTab: EditorTab = {
-        path,
-        content: "",
-        savedContent: "",
-        dirty: false,
-        language: languageFromPath(path),
-        loading: true,
-        error: null,
-      };
-
-      set((s) => ({
-        tabs: [...s.tabs, loadingTab],
-        activePath: path,
-      }));
-
-      try {
-        const content = await readFile(path);
-        set((s) => ({
-          tabs: s.tabs.map((t) =>
-            t.path === path ? makeTab(path, content) : t,
-          ),
-        }));
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        set((s) => ({
-          tabs: s.tabs.map((t) =>
-            t.path === path ? { ...t, loading: false, error: msg } : t,
-          ),
-        }));
-      }
-      return;
-    }
-
-    const fileName = fileNameFromPath(path);
-
-    // Check if any grid group exists. If not (first file opened without default editor panel), create one.
-    const gridGroups = dockviewApi.groups.filter(
-      (g) => g.api.location.type === "grid",
-    );
-    let panel: ReturnType<typeof dockviewApi.addPanel>;
-    if (gridGroups.length === 0) {
-      const group = dockviewApi.addGroup();
-      panel = dockviewApi.addPanel({
-        id: path,
-        component: "editor",
-        title: fileName,
-        tabComponent: "editor",
-        params: { filePath: path },
-        position: { referenceGroup: group.id },
-      });
-    } else {
-      panel = dockviewApi.addPanel({
-        id: path,
-        component: "editor",
-        title: fileName,
-        tabComponent: "editor",
-        params: { filePath: path },
-        position: { referenceGroup: gridGroups[0].api.id },
-      });
-    }
-
-    const loadingTab: EditorTab = {
-      path,
-      content: "",
-      savedContent: "",
-      dirty: false,
-      language: languageFromPath(path),
-      loading: true,
-      error: null,
-    };
-
-    set((s) => ({
-      tabs: [...s.tabs, loadingTab],
-      activePath: path,
-    }));
-
-    try {
-      const content = await readFile(path);
-      set((s) => ({
-        tabs: s.tabs.map((t) => (t.path === path ? makeTab(path, content) : t)),
-      }));
-      panel.api.setTitle(fileName);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      set((s) => ({
-        tabs: s.tabs.map((t) =>
-          t.path === path ? { ...t, loading: false, error: msg } : t,
-        ),
-      }));
-    }
+  ensureReadable: (path) => {
+    const pending = readableInflight.get(path);
+    if (pending) return pending;
+    const job = loadReadable(path, get, set).finally(() => {
+      if (readableInflight.get(path) === job) readableInflight.delete(path);
+    });
+    readableInflight.set(path, job);
+    return job;
   },
 
   closeTab: (path) => {
@@ -323,7 +445,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }
 
     const tab = get().tabs.find((t) => t.path === path);
-    if (!tab || tab.loading) return;
+    if (!tab || tab.loading || !isTextKind(tab.kind)) return;
 
     // Freeze the bytes we actually send. Completing a save must never claim
     // later edits (content B) were written when only snapshot A hit disk.
@@ -345,6 +467,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
                   savedContent: sentContent,
                   dirty: t.content !== sentContent,
                   error: null,
+                  errorRetryable: false,
                 }
               : t,
           ),
@@ -360,15 +483,41 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   reloadFromDisk: async (path) => {
+    const tab = get().tabs.find((t) => t.path === path);
+    if (!tab) return;
+    if (!isTextKind(tab.kind)) {
+      set((s) => ({
+        tabs: s.tabs.map((t) =>
+          t.path === path ? { ...t, diskRevision: t.diskRevision + 1 } : t,
+        ),
+      }));
+      return;
+    }
     try {
       const content = await readFile(path);
+      const current = get().tabs.find((t) => t.path === path);
+      if (!current) return;
+      if (
+        current.kind === "text" &&
+        !current.dirty &&
+        !current.error &&
+        current.content === content &&
+        current.savedContent === content
+      ) {
+        return;
+      }
+      const revision = current.diskRevision;
       set((s) => ({
-        tabs: s.tabs.map((t) => (t.path === path ? makeTab(path, content) : t)),
+        tabs: s.tabs.map((t) =>
+          t.path === path ? makeTab(path, content, revision) : t,
+        ),
       }));
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+    } catch (error) {
+      const current = get().tabs.find((t) => t.path === path);
+      const revision = current?.diskRevision ?? 0;
+      const failed = failureTab(path, error, revision);
       set((s) => ({
-        tabs: s.tabs.map((t) => (t.path === path ? { ...t, error: msg } : t)),
+        tabs: s.tabs.map((t) => (t.path === path ? failed : t)),
       }));
     }
   },
@@ -410,6 +559,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     );
     if (affected.length === 0) return;
 
+    const becameText = affected
+      .filter((t) => {
+        const next = remapPathPrefix(t.path, from, to);
+        return (
+          next !== t.path &&
+          isTextKind(fileKindFromPath(next)) &&
+          !isTextKind(t.kind)
+        );
+      })
+      .map((t) => remapPathPrefix(t.path, from, to));
+
     set((s) => {
       const nextConflicts: Record<string, EditorConflict> = {};
       for (const [key, value] of Object.entries(s.conflicts)) {
@@ -424,7 +584,24 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         tabs: s.tabs.map((t) => {
           const path = remapPathPrefix(t.path, from, to);
           if (path === t.path) return t;
-          return { ...t, path, language: languageFromPath(path) };
+          const kind = fileKindFromPath(path);
+          const next = { ...t, path, language: languageFromPath(path), kind };
+          if (kind === t.kind) return next;
+          if (!isTextKind(kind)) {
+            return {
+              ...shellTab(path, kind, t.diskRevision),
+              diskRevision: t.diskRevision + 1,
+            };
+          }
+          return {
+            ...next,
+            loading: true,
+            error: null,
+            errorRetryable: false,
+            content: "",
+            savedContent: "",
+            dirty: false,
+          };
         }),
         activePath: s.activePath
           ? remapPathPrefix(s.activePath, from, to)
@@ -433,6 +610,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         mdViewByPath,
       };
     });
+
+    for (const path of becameText) {
+      void get().reloadFromDisk(path);
+    }
 
     if (!dockviewApi) return;
 

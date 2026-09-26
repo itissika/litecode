@@ -5,7 +5,7 @@ use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,20 @@ fn default_depth() -> usize {
 
 fn reveal_requested(flag: &str) -> bool {
     flag == "1" || flag.eq_ignore_ascii_case("true")
+}
+
+#[derive(Debug, Deserialize)]
+struct SqliteQuery {
+    path: String,
+    #[serde(default)]
+    table: String,
+    #[serde(default)]
+    offset: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenBody {
+    path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,6 +185,9 @@ pub fn router() -> Router<ServeState> {
         .route("/rename", post(post_rename))
         .route("/copy", post(post_copy))
         .route("/blob", post(post_blob).put(put_blob))
+        .route("/bytes", get(get_bytes))
+        .route("/sqlite", get(get_sqlite))
+        .route("/open", post(post_open))
         .route("/git/status", get(get_git_status))
         .route("/git/log", get(get_git_log))
         .route("/git/stage", post(post_git_stage))
@@ -549,6 +566,67 @@ async fn get_file(State(state): State<ServeState>, Query(query): Query<PathQuery
     }
 }
 
+async fn get_bytes(State(state): State<ServeState>, Query(query): Query<PathQuery>) -> Response {
+    let workspace = state.workspace.clone();
+    let path = query.path;
+    match tokio::task::spawn_blocking(move || workspace.read_preview_bytes(&path)).await {
+        Ok(Ok((_path, mime, bytes))) => (
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::CACHE_CONTROL, "private, no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("bytes task join: {e}"),
+        ),
+    }
+}
+
+async fn get_sqlite(State(state): State<ServeState>, Query(query): Query<SqliteQuery>) -> Response {
+    let workspace = state.workspace.clone();
+    let SqliteQuery {
+        path,
+        table,
+        offset,
+    } = query;
+    match tokio::task::spawn_blocking(move || workspace.sqlite_preview(&path, &table, offset)).await
+    {
+        Ok(Ok((path, preview))) => {
+            let mut data = serde_json::to_value(&preview).unwrap_or_default();
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert("path".to_string(), serde_json::Value::String(path));
+            }
+            Json(ApiOk { ok: true, data }).into_response()
+        }
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("sqlite task join: {e}"),
+        ),
+    }
+}
+
+async fn post_open(State(state): State<ServeState>, Json(body): Json<OpenBody>) -> Response {
+    let workspace = state.workspace.clone();
+    let path = body.path;
+    match tokio::task::spawn_blocking(move || workspace.open_with_default_app(&path)).await {
+        Ok(Ok(())) => Json(ApiOk {
+            ok: true,
+            data: serde_json::json!({ "opened": true }),
+        })
+        .into_response(),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("open task join: {e}"),
+        ),
+    }
+}
+
 async fn put_file(
     State(state): State<ServeState>,
     Query(query): Query<PathQuery>,
@@ -814,12 +892,22 @@ fn workspace_error(err: WorkspaceError) -> Response {
             (StatusCode::NOT_FOUND, err.to_string())
         }
         WorkspaceError::AlreadyExists(_) => (StatusCode::CONFLICT, err.to_string()),
-        WorkspaceError::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, err.to_string()),
+        WorkspaceError::TooLarge | WorkspaceError::PreviewTooLarge => {
+            (StatusCode::PAYLOAD_TOO_LARGE, err.to_string())
+        }
         WorkspaceError::NotFile(_)
         | WorkspaceError::IsDir(_)
         | WorkspaceError::Tree(_)
-        | WorkspaceError::InvalidMove(_) => (StatusCode::BAD_REQUEST, err.to_string()),
-        WorkspaceError::NotUtf8 => (StatusCode::UNSUPPORTED_MEDIA_TYPE, err.to_string()),
+        | WorkspaceError::InvalidMove(_)
+        | WorkspaceError::NotSqlite
+        | WorkspaceError::UnknownTable
+        | WorkspaceError::PreviewOffset
+        | WorkspaceError::Sqlite(_) => (StatusCode::BAD_REQUEST, err.to_string()),
+        WorkspaceError::Binary | WorkspaceError::Utf16 | WorkspaceError::NotUtf8 => {
+            (StatusCode::UNSUPPORTED_MEDIA_TYPE, err.to_string())
+        }
+        WorkspaceError::OpenUnsupported => (StatusCode::NOT_IMPLEMENTED, err.to_string()),
+        WorkspaceError::OpenFailed(_) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
         WorkspaceError::Sandbox(super::sandbox::SandboxError::Io(e)) | WorkspaceError::Io(e) => {
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         }

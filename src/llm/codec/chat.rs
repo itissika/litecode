@@ -749,9 +749,11 @@ headers = { "x-opencode-session" = "{{session_id}}" }
             Item::Reasoning(ReasoningItem {
                 id: Some("cc_rs_b0dd1e2387cd43649a76f14a949f06a9".into()),
                 summary: vec![],
-                content: Some(vec![ReasoningItemContent::ReasoningText(ReasoningTextContent {
-                    text: "my own thinking".into(),
-                })]),
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "my own thinking".into(),
+                    },
+                )]),
                 encrypted_content: None,
                 status: None,
             }),
@@ -772,7 +774,10 @@ headers = { "x-opencode-session" = "{{session_id}}" }
         ];
         let body = codec("").encode_body(&request, true).unwrap();
         let messages = body["messages"].as_array().unwrap();
-        assert_eq!(messages[2]["reasoning_content"], "my own thinking", "{body}");
+        assert_eq!(
+            messages[2]["reasoning_content"], "my own thinking",
+            "{body}"
+        );
         assert_eq!(messages[2]["tool_calls"][0]["id"], "call_1");
         assert_eq!(messages[3]["tool_call_id"], "call_1");
     }

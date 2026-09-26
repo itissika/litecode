@@ -7,14 +7,22 @@
  * both sides simple: the sender never touches React state, and the composer
  * only ever appends — never replaces what the user was already writing.
  */
-type ComposerAppendHandler = (sessionId: string, text: string) => void;
+type ComposerAppendHandler = (
+  sessionId: string,
+  text: string,
+  images: string[],
+) => void;
 
 const handlers = new Set<ComposerAppendHandler>();
 
-/** Append text to the composer of `sessionId` (no-op for an empty session). */
-export function appendComposerText(sessionId: string, text: string): void {
-  if (!text.trim()) return;
-  for (const handler of handlers) handler(sessionId, text);
+/** Append text (and any recalled images) to the composer of `sessionId`. */
+export function appendComposerText(
+  sessionId: string,
+  text: string,
+  images: string[] = [],
+): void {
+  if (!text.trim() && images.length === 0) return;
+  for (const handler of handlers) handler(sessionId, text, images);
 }
 
 export function subscribeComposerAppend(

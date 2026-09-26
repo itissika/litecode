@@ -7,9 +7,9 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
 use crate::session::SessionDataReader;
 use crate::session::transcript_file::{SearchableRow, row_plain_text};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokenizers::Tokenizer;
@@ -187,7 +187,10 @@ fn derive_docs(
         // 人话 + 工具调用 + 工具产出；压缩总结/时间/未知一律不要。
         Policy::Final => {
             kind_ok
-                && matches!(slot, Slot::Who | Slot::Said | Slot::Thought | Slot::Did | Slot::Outcome)
+                && matches!(
+                    slot,
+                    Slot::Who | Slot::Said | Slot::Thought | Slot::Did | Slot::Outcome
+                )
         }
     };
     let Some(raw) = row_plain_text(row, data_root)? else {
@@ -218,7 +221,11 @@ fn derive_docs(
         return Ok(Vec::new());
     }
     let row_key = format!("{}:{}", row.session_id, row.seq);
-    let tool = if slot == Slot::Outcome { last_tool.clone() } else { None };
+    let tool = if slot == Slot::Outcome {
+        last_tool.clone()
+    } else {
+        None
+    };
     let raw_chars = text.chars().count();
     let mut docs = Vec::new();
 

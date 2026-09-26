@@ -9,6 +9,9 @@ use super::tree::{GlobListing, TreeEntry, TreeError, list_glob, list_tree, list_
 /// Maximum file size for read/write (10 MB), matching the read tool.
 pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
+/// Maximum bytes the file panel will download for an image, PDF, or media preview.
+pub const MAX_PREVIEW_BYTES: u64 = 32 * 1024 * 1024;
+
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceError {
     #[error(transparent)]
@@ -25,12 +28,61 @@ pub enum WorkspaceError {
     IsDir(String),
     #[error("file too large (max {MAX_FILE_SIZE} bytes)")]
     TooLarge,
-    #[error("content is not valid UTF-8")]
+    #[error("文件太大，无法在面板里预览")]
+    PreviewTooLarge,
+    #[error("二进制，无法在这里显示")]
+    Binary,
+    #[error("这是 UTF-16，这里按 UTF-8 打开会损坏")]
+    Utf16,
+    #[error("content is not valid UTF-8 (if this is a GBK/ANSI file, convert it to UTF-8 first)")]
     NotUtf8,
+    #[error("不是 SQLite 数据库，无法预览")]
+    NotSqlite,
+    #[error("未知的表")]
+    UnknownTable,
+    #[error("offset is too large")]
+    PreviewOffset,
+    #[error("could not read sqlite database: {0}")]
+    Sqlite(String),
+    #[error("opening with the system app is not available on this host")]
+    OpenUnsupported,
+    #[error("{0}")]
+    OpenFailed(String),
     #[error("invalid move: {0}")]
     InvalidMove(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+fn preview_mime(path: &str) -> &'static str {
+    let ext = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "avif" => "image/avif",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" | "oga" => "audio/ogg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        _ => "application/octet-stream",
+    }
 }
 
 pub struct WorkspaceService {
@@ -79,8 +131,92 @@ impl WorkspaceService {
 
     pub fn read_file(&self, path: &str) -> Result<(String, String), WorkspaceError> {
         let (rel, bytes) = self.read_file_bytes(path)?;
-        let content = String::from_utf8(bytes).map_err(|_| WorkspaceError::NotUtf8)?;
-        Ok((rel, content))
+        // `decode_utf8_bytes` strips a BOM. Keep the original UTF-8, including a
+        // BOM, so a later save does not rewrite the file's encoding.
+        match super::text_codec::decode_utf8_bytes(&bytes) {
+            Ok(_) => match String::from_utf8(bytes) {
+                Ok(content) => Ok((rel, content)),
+                Err(_) => Err(WorkspaceError::NotUtf8),
+            },
+            Err(super::text_codec::Utf8DecodeError::Utf16) => Err(WorkspaceError::Utf16),
+            Err(super::text_codec::Utf8DecodeError::Binary) => Err(WorkspaceError::Binary),
+            Err(super::text_codec::Utf8DecodeError::NotUtf8) => Err(WorkspaceError::NotUtf8),
+        }
+    }
+
+    /// Bytes for an in-panel preview (image, PDF, audio, video). Separate from
+    /// [`Self::read_file_bytes`], which stays capped at the text read limit.
+    pub fn read_preview_bytes(
+        &self,
+        path: &str,
+    ) -> Result<(String, &'static str, Vec<u8>), WorkspaceError> {
+        let sandbox = self.sandbox();
+        let abs = sandbox.resolve(path)?;
+        if !abs.exists() {
+            return Err(WorkspaceError::NotFound(
+                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
+            ));
+        }
+        if !abs.is_file() {
+            return Err(WorkspaceError::NotFile(
+                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
+            ));
+        }
+        let meta = abs.metadata()?;
+        if meta.len() > MAX_PREVIEW_BYTES {
+            return Err(WorkspaceError::PreviewTooLarge);
+        }
+        let bytes = std::fs::read(&abs)?;
+        let rel = sandbox.rel_path(&abs)?;
+        let mime = preview_mime(&rel);
+        Ok((rel, mime, bytes))
+    }
+
+    pub fn sqlite_preview(
+        &self,
+        path: &str,
+        table: &str,
+        offset: u64,
+    ) -> Result<(String, super::sqlite_preview::SqlitePreview), WorkspaceError> {
+        let sandbox = self.sandbox();
+        let abs = sandbox.resolve(path)?;
+        if !abs.exists() {
+            return Err(WorkspaceError::NotFound(
+                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
+            ));
+        }
+        if !abs.is_file() {
+            return Err(WorkspaceError::NotFile(
+                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
+            ));
+        }
+        let rel = sandbox.rel_path(&abs)?;
+        let page = super::sqlite_preview::preview(&abs, table, offset)?;
+        Ok((rel, page))
+    }
+
+    pub fn open_with_default_app(&self, path: &str) -> Result<(), WorkspaceError> {
+        let sandbox = self.sandbox();
+        let abs = sandbox.resolve(path)?;
+        if !abs.exists() {
+            return Err(WorkspaceError::NotFound(
+                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
+            ));
+        }
+        if !abs.is_file() {
+            return Err(WorkspaceError::NotFile(
+                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
+            ));
+        }
+        match super::open_host::open_with_default_app(&abs) {
+            Ok(()) => Ok(()),
+            Err(super::open_host::OpenHostError::Unsupported) => {
+                Err(WorkspaceError::OpenUnsupported)
+            }
+            Err(super::open_host::OpenHostError::Failed(message)) => {
+                Err(WorkspaceError::OpenFailed(message))
+            }
+        }
     }
 
     /// Read a workspace file through the shared sandbox and size limits.

@@ -19,7 +19,8 @@ import {
   gitFileLetters,
   gitStatusColor,
 } from "../lib/gitStatus";
-import { openTerminalAt } from "../dockview/config/layout";
+import { ensureTerminalPanel } from "../dockview/config/layout";
+import { useTerminalTabs } from "../lib/litecodeTerminal";
 import {
   copyAbsolutePaths,
   copyRelativePaths,
@@ -143,7 +144,11 @@ function openIntegratedTerminal(path: string, isDir: boolean): void {
     return;
   }
   const cwd = isDir ? path : parentPath(path);
-  openTerminalAt(api, cwd);
+  ensureTerminalPanel(api);
+  useTerminalTabs.getState().open(cwd || undefined);
+  const panel = api.getPanel("workspace-terminal");
+  panel?.api.group.api.expand();
+  panel?.api.setActive();
 }
 
 function InlineNameInput({

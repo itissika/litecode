@@ -123,22 +123,52 @@ describe("ComposerDock collapse", () => {
 
     // Collapsed: content slid out (permission card included), no fake bar,
     // toggle flips to expand.
-    expect(screen.getByTestId("composer-dock-content").dataset.collapsed).toBe(
-      "true",
-    );
+    const content = screen.getByTestId("composer-dock-content");
+    const toggle = screen.getByRole("button", { name: "Expand composer" });
+    expect(content.dataset.collapsed).toBe("true");
     expect(screen.queryByTestId("composer-collapsed-bar")).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Expand composer" }),
-    ).toBeTruthy();
+    // The wrapper keeps its layout box (the slide is a transform), so it must
+    // drop pointer events too — otherwise the band the composer occupied keeps
+    // swallowing the wheel and the transcript cannot scroll there.
+    const wrapper = content.parentElement as HTMLElement;
+    expect(wrapper.className).toContain("pointer-events-none");
+    expect(toggle.className).toContain("pointer-events-auto");
+    // And it must stay absolutely positioned while collapsed. A `relative` here
+    // wins over `absolute` (Tailwind emits .relative after .absolute) and drops
+    // the toggle back into the wrapper's flex flow, growing it by the button's
+    // 20px — the bottom-aligned composer then jumps up for a frame before the
+    // slide starts (the "bounce up on collapse").
+    expect(toggle.className).toContain("absolute");
+    expect(toggle.className).not.toContain("relative");
 
     await user.click(screen.getByRole("button", { name: "Expand composer" }));
 
-    // Expanded again.
+    // Expanded again — and the wrapper is hit-testable again.
     expect(screen.getByTestId("composer-dock-content").dataset.collapsed).toBe(
       "false",
+    );
+    expect((content.parentElement as HTMLElement).className).toContain(
+      "pointer-events-auto",
     );
     expect(
       screen.getByRole("button", { name: "Collapse composer" }),
     ).toBeTruthy();
+  });
+
+  it("publishes the collapse state so the transcript can drop its bottom pad", async () => {
+    const onCollapsedChange = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ComposerDock
+        sessionId="session-1"
+        onCollapsedChange={onCollapsedChange}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Collapse composer" }));
+    expect(onCollapsedChange).toHaveBeenLastCalledWith(true);
+
+    await user.click(screen.getByRole("button", { name: "Expand composer" }));
+    expect(onCollapsedChange).toHaveBeenLastCalledWith(false);
   });
 });

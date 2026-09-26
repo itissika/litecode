@@ -7,9 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use common::fake_deps::{assistant_text_item, function_call_item};
-use common::{
-    build_runtime_with_provider, build_runtime_with_provider_and_observer, test_agent,
-};
+use common::{build_runtime_with_provider, build_runtime_with_provider_and_observer, test_agent};
 use litecode::llm::{LlmProvider, ModelRequest};
 use litecode::runtime::observer::{InternalEvent, RuntimeObserver};
 use litecode::session::EventType;
@@ -279,7 +277,11 @@ async fn queued_message_during_final_response_extends_the_turn() {
     assert_eq!(text, "second", "the extended step owns the final text");
 
     let inputs = provider.inputs();
-    assert_eq!(inputs.len(), 2, "the queued message must force one more request");
+    assert_eq!(
+        inputs.len(),
+        2,
+        "the queued message must force one more request"
+    );
     assert!(
         inputs[1]
             .iter()

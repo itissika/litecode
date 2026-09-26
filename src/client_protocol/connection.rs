@@ -12,6 +12,16 @@ use crate::permission::{self, AskOutcome, PermissionAction};
 /// Upper bound for a single `agent/run` input payload (defensive cap).
 const MAX_AGENT_RUN_INPUT_BYTES: usize = 256 * 1024;
 
+#[derive(serde::Deserialize)]
+struct ImageParam {
+    #[serde(rename = "ref")]
+    media_ref: String,
+}
+
+fn image_refs(images: Vec<ImageParam>) -> Result<Vec<String>, String> {
+    crate::session::media::normalize_image_refs(images.into_iter().map(|image| image.media_ref))
+}
+
 pub fn emit(sink: &UnboundedSender<serde_json::Value>, msg: serde_json::Value) {
     tracing::debug!("wire notification sent");
     let _ = sink.send(msg);
@@ -94,7 +104,10 @@ pub async fn handle_jsonrpc(
         methods::AGENT_RUN => {
             #[derive(serde::Deserialize)]
             struct Params {
+                #[serde(default)]
                 input: String,
+                #[serde(default)]
+                images: Vec<ImageParam>,
                 #[serde(default)]
                 session_id: String,
                 #[serde(default)]
@@ -130,6 +143,25 @@ pub async fn handle_jsonrpc(
                 );
                 return false;
             }
+            let images = match image_refs(params.images) {
+                Ok(images) => images,
+                Err(error) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32602, error)).unwrap(),
+                    );
+                    return false;
+                }
+            };
+            let text = params.input.trim().to_string();
+            if text.is_empty() && images.is_empty() {
+                emit(
+                    sink,
+                    serde_json::to_value(err_response(id, -32602, "empty message".into())).unwrap(),
+                );
+                return false;
+            }
+            let user_input = crate::types::UserInput { text, images };
             let sid = resolve_sid(session, &params.session_id);
             if session.sessions.is_turn_running(&sid).await {
                 emit(
@@ -162,7 +194,7 @@ pub async fn handle_jsonrpc(
             match session
                 .start_turn(
                     &sid,
-                    &params.input,
+                    user_input,
                     permission_sink,
                     &turn_id,
                     params.plan_execution,
@@ -236,7 +268,10 @@ pub async fn handle_jsonrpc(
         methods::SESSION_PENDING_ENQUEUE => {
             #[derive(serde::Deserialize)]
             struct Params {
+                #[serde(default)]
                 text: String,
+                #[serde(default)]
+                images: Vec<ImageParam>,
                 #[serde(default)]
                 session_id: String,
             }
@@ -261,14 +296,27 @@ pub async fn handle_jsonrpc(
                     serde_json::to_value(err_response(
                         id,
                         -32602,
-                        format!("pending message exceeds {} bytes", MAX_AGENT_RUN_INPUT_BYTES),
+                        format!(
+                            "pending message exceeds {} bytes",
+                            MAX_AGENT_RUN_INPUT_BYTES
+                        ),
                     ))
                     .unwrap(),
                 );
                 return false;
             }
             let text = params.text.trim().to_string();
-            if text.is_empty() {
+            let images = match image_refs(params.images) {
+                Ok(images) => images,
+                Err(error) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32602, error)).unwrap(),
+                    );
+                    return false;
+                }
+            };
+            if text.is_empty() && images.is_empty() {
                 emit(
                     sink,
                     serde_json::to_value(err_response(id, -32602, "empty message".into())).unwrap(),
@@ -295,7 +343,10 @@ pub async fn handle_jsonrpc(
                 );
                 return false;
             }
-            match session.sessions.enqueue_pending_message(&sid, &text) {
+            match session
+                .sessions
+                .enqueue_user_input(&sid, crate::types::UserInput { text, images })
+            {
                 Ok(_) => {
                     // Idle race: the turn ended between the composer's last state
                     // and this RPC. Send the queue as a fresh turn instead of
@@ -303,16 +354,11 @@ pub async fn handle_jsonrpc(
                     if let Some(claimed) = session.sessions.claim_pending_if_idle(&sid)
                         && !claimed.is_empty()
                     {
-                        let merged = claimed
-                            .iter()
-                            .map(|message| message.text.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n\n");
+                        let merged = crate::session::manager::merge_pending(&claimed);
                         let turn_id = uuid::Uuid::new_v4().to_string();
-                        let permission_sink =
-                            session.permission_sink_for(&sid, perm_tx, &turn_id);
+                        let permission_sink = session.permission_sink_for(&sid, perm_tx, &turn_id);
                         if let Err(error) = session
-                            .start_turn(&sid, &merged, permission_sink, &turn_id, false)
+                            .start_turn(&sid, merged, permission_sink, &turn_id, false)
                             .await
                         {
                             session.sessions.restore_pending_messages(&sid, claimed);

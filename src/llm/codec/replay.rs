@@ -243,7 +243,11 @@ mod tests {
         });
         let input = vec![user_text("hi"), summary_only, assistant("hello")];
         let replayed = ensure_reasoning_replay(&input, true, true);
-        assert_eq!(synthesized(&replayed), 0, "no placeholder while real text exists");
+        assert_eq!(
+            synthesized(&replayed),
+            0,
+            "no placeholder while real text exists"
+        );
         let Item::Reasoning(filled) = &replayed[1] else {
             panic!("expected reasoning");
         };
@@ -257,7 +261,10 @@ mod tests {
             })
             .unwrap_or_default();
         assert_eq!(text, "what the other model thought");
-        assert!(filled.summary.is_empty(), "the summary moved, it is not duplicated");
+        assert!(
+            filled.summary.is_empty(),
+            "the summary moved, it is not duplicated"
+        );
     }
 
     #[test]

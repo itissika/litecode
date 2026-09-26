@@ -362,11 +362,17 @@ impl ResolvedConfig {
 ///
 /// For code that exercises settings shape (permission resolution, tool
 /// availability) without an LLM binding.
-pub fn resolve_without_catalog(global: GlobalSettings, workspace: WorkspaceState) -> ResolvedConfig {
+pub fn resolve_without_catalog(
+    global: GlobalSettings,
+    workspace: WorkspaceState,
+) -> ResolvedConfig {
     let catalog = Arc::new(
-        ProviderCatalog::parse("version = 1
-", Path::new("<empty-catalog>"))
-            .expect("an empty catalog is valid"),
+        ProviderCatalog::parse(
+            "version = 1
+",
+            Path::new("<empty-catalog>"),
+        )
+        .expect("an empty catalog is valid"),
     );
     resolve(global, workspace, catalog)
 }
@@ -437,7 +443,10 @@ provider_id = "p"
         let resolved = resolve(global, workspace.clone(), Arc::clone(&catalog));
 
         assert!(Arc::ptr_eq(resolved.catalog(), &catalog));
-        assert_eq!(resolved.workspace_root(), workspace.workspace_root.as_path());
+        assert_eq!(
+            resolved.workspace_root(),
+            workspace.workspace_root.as_path()
+        );
         assert_eq!(resolved.contract(), "# contract");
         assert_eq!(resolved.paths().sessions_db, workspace.paths.sessions_db);
     }

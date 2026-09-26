@@ -323,7 +323,8 @@ fn report(data_root: &Path, result: Result<()>) {
         }
         Err(error) => {
             let message = error.to_string();
-            let repeated = matches!(guard.get(data_root), Some(Worker::Failed(seen)) if *seen == message);
+            let repeated =
+                matches!(guard.get(data_root), Some(Worker::Failed(seen)) if *seen == message);
             if !repeated {
                 tracing::warn!(
                     path = %data_root.display(),
@@ -386,13 +387,19 @@ mod tests {
 
         let path = sparse::sparse_index_path(reader.data_root());
         restamp_as_old_schema(&path);
-        assert!(sparse::needs_rebuild(&path), "an old schema needs a rebuild");
+        assert!(
+            sparse::needs_rebuild(&path),
+            "an old schema needs a rebuild"
+        );
 
         assert!(
             ensure_sparse_index(&reader).is_ok(),
             "one maintenance pass repairs it"
         );
-        assert!(!sparse::needs_rebuild(&path), "and the file is current again");
+        assert!(
+            !sparse::needs_rebuild(&path),
+            "and the file is current again"
+        );
         assert_eq!(
             find(&reader, "UNIQUE_SESSION_PHRASE").len(),
             1,
@@ -412,7 +419,10 @@ mod tests {
         assert!(ensure_sparse_index(&reader).is_ok());
 
         restamp_as_old_schema(&path);
-        assert!(sparse::needs_rebuild(&path), "the file is from an older build");
+        assert!(
+            sparse::needs_rebuild(&path),
+            "the file is from an older build"
+        );
 
         // Exactly what `serve`'s 30-second tick does, and nothing else.
         spawn_sparse_maintenance(&reader);
@@ -442,7 +452,10 @@ mod tests {
 
         let path = sparse::sparse_index_path(reader.data_root());
         std::fs::write(&path, b"this is not a database").unwrap();
-        assert!(sparse::needs_rebuild(&path), "an unreadable file needs a rebuild");
+        assert!(
+            sparse::needs_rebuild(&path),
+            "an unreadable file needs a rebuild"
+        );
 
         assert!(
             ensure_sparse_index(&reader).is_ok(),

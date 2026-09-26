@@ -8,6 +8,7 @@ import {
   type TranscriptMarkKind,
 } from "../api/adapter";
 import { openSubagentPanel } from "../lib/sessionPanelNav";
+import { jobExitDetail, subagentExitDetail } from "../lib/transcriptProjection";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { WaveText } from "./WaveText";
 import { Popover } from "./ui/Popover";
@@ -188,49 +189,7 @@ export function SubagentExitMark({
   );
 }
 
-export function subagentExitDetail(text: string): {
-  detail: string;
-  childId?: string;
-} {
-  const ids = [...text.matchAll(/^child_session_id: (\S+)/gm)].map(
-    (match) => match[1]!,
-  );
-  const agents = [...text.matchAll(/^agent: (\S+)/gm)].map(
-    (match) => match[1]!,
-  );
-  const reasons = [...text.matchAll(/^reason: (\S+)/gm)].map(
-    (match) => match[1]!,
-  );
-  const settled = /^settled: (\d+)/m.exec(text);
-  const n = settled ? Number(settled[1]) : ids.length || 1;
-  const who =
-    n === 1
-      ? agents[0] || (ids[0] ? ids[0].slice(0, 8) : undefined)
-      : undefined;
-  const reason = n === 1 && reasons.length === 1 ? reasons[0] : undefined;
-  const parts: string[] = n > 1 ? [`${n} settled`] : ["settled"];
-  if (who) parts.push(who);
-  if (reason) parts.push(reason);
-  return { detail: parts.join(" · "), childId: ids[0] };
-}
-
-/**
- * Exit detail carried by a background-terminal reminder body, e.g.
- * `Background bash bg_a exited with code 3.` → `bg_a · exit code 3`, or the
- * user-Kill variant → `bg_a · stopped by user (Kill)`. `undefined` when the
- * body carries no recognizable exit line (nothing extra to show).
- */
-export function jobExitDetail(text: string): string | undefined {
-  const exited = /^Background bash (\S+) exited with code (-?\d+)\.$/m.exec(
-    text,
-  );
-  if (exited) return `${exited[1]} · exit code ${exited[2]}`;
-  const stopped = /^The user stopped background bash (\S+) \(Kill\)\.$/m.exec(
-    text,
-  );
-  if (stopped) return `${stopped[1]} · stopped by user (Kill)`;
-  return undefined;
-}
+export { jobExitDetail, subagentExitDetail };
 
 /** Transient line while a compaction runs; replaced by CompactCutMark when the row lands. */
 export function CompactingMark() {

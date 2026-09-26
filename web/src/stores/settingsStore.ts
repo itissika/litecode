@@ -52,6 +52,8 @@ import type { SettingsChanged } from "../api/types";
 import type { WorkspaceChangeKind } from "../api/workspace";
 import { anyTurnRunning } from "./turnStore";
 import { useToastStore } from "./toastStore";
+import { noteTransportReady } from "../lib/centreChat";
+import { noteHello } from "../lib/firstRun";
 import {
   flushRegisteredSettings,
   SETTINGS_PERSIST_ERROR_CHANNEL,
@@ -76,9 +78,17 @@ import {
 export type { PersistStatus, SettingsSection };
 export { sectionNeedsSkeleton };
 
+/** Deep-link extras for `openSettings` / `setSection`. */
+export interface SettingsOpenOpts {
+  /** Row id a section should centre and highlight once its data is loaded. */
+  anchor?: string;
+}
+
 interface SettingsStoreState {
   open: boolean;
   section: SettingsSection;
+  /** Pending row to centre in the section (consumed by that section). */
+  focusAnchor: string | null;
   revision: number;
   summary: SettingsSummary | null;
   /** Catalog + credentials + active models, from `GET /api/settings/llm`. */
@@ -100,15 +110,17 @@ interface SettingsStoreState {
 }
 
 interface SettingsStore extends SettingsStoreState {
-  openSettings: (section?: SettingsSection) => void;
+  openSettings: (section?: SettingsSection, opts?: SettingsOpenOpts) => void;
   closeSettings: () => Promise<void>;
-  setSection: (section: SettingsSection) => Promise<void>;
+  setSection: (section: SettingsSection, opts?: SettingsOpenOpts) => Promise<void>;
+  consumeFocusAnchor: () => void;
   setPersistStatus: (doc: PersistDocKey, status: PersistStatus) => void;
   persistStatusFor: (doc: PersistDocKey) => PersistStatus;
   setRevision: (revision: number) => void;
   onRemoteSettingsChanged: (event: SettingsChanged) => void;
   handleWorkspaceChange: (paths: string[], kind: WorkspaceChangeKind) => void;
-  notifySetupIfNeeded: () => Promise<void>;
+  /** Fetch the summary at hello, open a centre chat if needed, and run first-run. */
+  noteWorkspaceReady: () => Promise<void>;
   ensureSectionLoaded: (
     section: SettingsSection,
     force?: boolean,
@@ -186,12 +198,6 @@ async function withTurnGuard<T>(fn: () => Promise<T>): Promise<T> {
     handleSaveError(err);
     throw err;
   }
-}
-
-function toastSetupGuidance(summary: SettingsSummary | null | undefined): void {
-  const guidance = summary?.setup_guidance?.trim();
-  if (!guidance) return;
-  useToastStore.getState().showToast(guidance, "info", 12000);
 }
 
 function stampClock(
@@ -314,6 +320,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
   return {
     open: false,
     section: "connection",
+    focusAnchor: null,
     revision: 0,
     summary: null,
     llm: null,
@@ -332,13 +339,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     persistByDoc: {},
     docClock: {},
 
-    openSettings: (section = "connection") => {
+    openSettings: (section = "connection", opts) => {
       const wasOpen = get().open;
       // Closed → open: drop clocks so Gate GET runs even if generation did not
       // move (external `.litecode` edits). Stay-open jumps keep in-progress drafts.
       set({
         open: true,
         section,
+        focusAnchor: opts?.anchor ?? null,
         loadError: null,
         ...(wasOpen ? {} : { docClock: {} }),
       });
@@ -350,12 +358,19 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       set({ open: false, persistByDoc: {} });
     },
 
-    setSection: async (section) => {
-      if (get().section === section) return;
+    setSection: async (section, opts) => {
+      const anchor = opts?.anchor ?? null;
+      if (get().section === section) {
+        // Same page: the anchor still moves the focus (deep-link inside a section).
+        set({ focusAnchor: anchor });
+        return;
+      }
       await flushRegisteredSettings();
-      set({ section, loadError: null });
+      set({ section, focusAnchor: anchor, loadError: null });
       void get().ensureSectionLoaded(section);
     },
+
+    consumeFocusAnchor: () => set({ focusAnchor: null }),
 
     setPersistStatus: (doc, persistStatus) => {
       const current = get().persistByDoc[doc] ?? "idle";
@@ -383,8 +398,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
         useToastStore
           .getState()
           .showToast("Settings changed — restart the server to apply", "info");
-      } else if (event.summary.setup_guidance) {
-        toastSetupGuidance(event.summary);
       } else if (event.summary.effective_next_turn && !get().open) {
         useToastStore
           .getState()
@@ -403,7 +416,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       // Settings drafts hydrate only from gate commits (`settings/changed`).
     },
 
-    notifySetupIfNeeded: async () => {
+    noteWorkspaceReady: async () => {
+      // Socket is up. An empty centre opens a chat without waiting on the
+      // summary — a failed fetch must not leave the grid blank.
+      noteTransportReady();
       try {
         const summary = await getSettingsSummary();
         set({
@@ -411,7 +427,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
           revision: summary.revision,
           docClock: stampClock(get().docClock, ["summary"], summary.revision),
         });
-        toastSetupGuidance(summary);
+        // First-run combo: no key → Provider page. See lib/firstRun.
+        noteHello(summary);
       } catch {
         // Connect path already surfaces transport errors elsewhere.
       }

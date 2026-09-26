@@ -154,7 +154,9 @@ export function FoldCard({
 
   // System state owns a card with no explicit user intent. It may open or close
   // on every render; only `keepopen` / `keepclosed` survive a virtual-list remount.
-  useEffect(() => {
+  // Layout, not passive: the write must land in this commit. A passive write
+  // can run after the panel-close clear and put a stale keepopen back.
+  useLayoutEffect(() => {
     if (id === undefined || isControlled) return;
     setFoldCardOpenIntent(id, intent);
   }, [id, isControlled, intent]);

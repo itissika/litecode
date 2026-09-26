@@ -1445,7 +1445,10 @@ mod tests {
         assert_eq!(pattern_mode(r"ModelRequest \{", true), PatternMode::Regex);
         assert_eq!(pattern_mode("ModelRequest {", true), PatternMode::BraceText);
         assert_eq!(pattern_mode(r"needle\d+ {", true), PatternMode::BraceText);
-        assert_eq!(pattern_mode("println!(\"{}\")", true), PatternMode::BraceText);
+        assert_eq!(
+            pattern_mode("println!(\"{}\")", true),
+            PatternMode::BraceText
+        );
         assert_eq!(pattern_mode("found[", true), PatternMode::Literal);
         assert_eq!(escape_bare_braces("ModelRequest {"), "ModelRequest \\{");
         assert_eq!(escape_bare_braces(r"a{2,3}"), r"a\{2,3}");

@@ -25,8 +25,8 @@ pub use seed::{
     TEST_CATALOG_ENDPOINT, TEST_COMPACTION_MODEL_REF, TEST_PRIMARY_MODEL_REF, TEST_PROVIDER_ID,
     TestGlobalDb, TestServeFixture, build_global_with_custom_tool, build_global_with_mcp_server,
     catalog_for_db, default_test_catalog, default_test_global, fresh_test_global_db,
-    insert_test_llm_registry, test_catalog_windows, test_catalog_toml_windows,
-    seed_global_db, seed_test_catalog, seed_test_catalog_with, test_catalog, test_catalog_toml,
+    insert_test_llm_registry, seed_global_db, seed_test_catalog, seed_test_catalog_with,
+    test_catalog, test_catalog_toml, test_catalog_toml_windows, test_catalog_windows,
     test_serve_settings, test_serve_settings_with_db,
 };
 pub use workspace_fixture::{test_db_path, test_workspace};

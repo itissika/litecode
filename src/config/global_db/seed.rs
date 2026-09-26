@@ -1,6 +1,8 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::config::schema::{AgentRole, PLAN_TODO_TOOL_IDS, SUBAGENT_SERIES_TOOL_IDS, ToolPreset};
+use crate::config::schema::{
+    AgentRole, PRIMARY_ONLY_TOOL_IDS, SUBAGENT_SERIES_TOOL_IDS, ToolPreset,
+};
 use crate::types::Result;
 
 use super::builtin_prompts::{
@@ -9,15 +11,22 @@ use super::builtin_prompts::{
 use super::store;
 use super::tools::{core_configurable_tools, core_none_tools, network_core_tools};
 
-pub const SEED_REVISION: &str = "13";
+pub const SEED_REVISION: &str = "14";
 
 pub fn seed(conn: &Connection) -> Result<()> {
     let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);
+    let _ = conn.execute(
+        "DELETE FROM agent_tools WHERE tool_id = 'workspace_stats'",
+        [],
+    );
     seed_agents(conn)?;
     seed_default_agent_bindings(conn)?;
     seed_orchestrator_agent_bindings(conn)?;
     seed_general_agent_bindings(conn)?;
     seed_explore_agent_bindings(conn)?;
+    // Seeded bindings must satisfy the role rules on their own (a subagent never
+    // binds primary-only tools); this also repairs drift in older DBs.
+    reconcile_role_rules(conn)?;
 
     conn.execute(
         "INSERT INTO meta (key, value) VALUES ('seed_revision', ?1)
@@ -103,16 +112,42 @@ fn seed_primary_agent_bindings(conn: &Connection, agent_id: &str) -> Result<()> 
     Ok(())
 }
 
-/// Same configurable set as primary. No plan/todo (subagent tool-set gate).
+/// Same configurable set as primary, minus the primary-only tools.
 fn seed_general_agent_bindings(conn: &Connection) -> Result<()> {
-    bind_configurable(conn, "general", ToolPreset::All)
+    bind_subagent_configurable(conn, "general", ToolPreset::All)
+}
+
+/// Configurable tools a subagent role may bind (no [`PRIMARY_ONLY_TOOL_IDS`]).
+fn subagent_configurable_tools() -> impl Iterator<Item = &'static str> {
+    core_configurable_tools()
+        .iter()
+        .copied()
+        .filter(|tool| !PRIMARY_ONLY_TOOL_IDS.contains(tool))
 }
 
 fn bind_configurable(conn: &Connection, agent_id: &str, preset: ToolPreset) -> Result<()> {
+    bind_tools(
+        conn,
+        agent_id,
+        preset,
+        core_configurable_tools().iter().copied(),
+    )
+}
+
+fn bind_subagent_configurable(conn: &Connection, agent_id: &str, preset: ToolPreset) -> Result<()> {
+    bind_tools(conn, agent_id, preset, subagent_configurable_tools())
+}
+
+fn bind_tools<'a>(
+    conn: &Connection,
+    agent_id: &str,
+    preset: ToolPreset,
+    tools: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
     use crate::config::schema::AgentToolBinding;
     use crate::permission::presets::binding_for_tool;
 
-    for tool in core_configurable_tools() {
+    for tool in tools {
         let (policy, path_mode) = binding_for_tool(tool, preset);
         let binding = AgentToolBinding {
             enabled: true,
@@ -240,7 +275,7 @@ pub fn reconcile_role_rules(conn: &Connection) -> Result<()> {
                 params![agent_id],
             )?;
         } else if subagent {
-            for tool_id in PLAN_TODO_TOOL_IDS.iter().chain(SUBAGENT_SERIES_TOOL_IDS) {
+            for tool_id in PRIMARY_ONLY_TOOL_IDS.iter().chain(SUBAGENT_SERIES_TOOL_IDS) {
                 removed += conn.execute(
                     "DELETE FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
                     params![agent_id, *tool_id],
@@ -284,6 +319,10 @@ pub fn needs_seed(conn: &Connection) -> Result<bool> {
 /// (see [`reconcile_role_rules`]).
 pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
     let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);
+    let _ = conn.execute(
+        "DELETE FROM agent_tools WHERE tool_id = 'workspace_stats'",
+        [],
+    );
     ensure_default_core_bindings(conn)?;
     ensure_orchestrator_agent(conn)?;
     ensure_general_agent(conn)?;
@@ -342,7 +381,7 @@ fn ensure_general_agent(conn: &Connection) -> Result<()> {
         seed_general_agent_bindings(conn)?;
         return Ok(());
     }
-    for tool in core_configurable_tools() {
+    for tool in subagent_configurable_tools() {
         if !agent_has_tool(conn, "general", tool)? {
             let (policy, path_mode) =
                 crate::permission::presets::binding_for_tool(tool, ToolPreset::All);

@@ -92,11 +92,10 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
 use crate::session::SessionDataReader;
 use crate::session::transcript_file::SearchableRow;
+use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-
 
 use super::chunk::ChunkCfg;
 use super::derive;
@@ -130,7 +129,34 @@ use super::trimmer;
 /// v13: an indexed result keeps only its head (see `trimmer`), so a machine
 /// listing no longer beats what a person said by repeating the query once per
 /// line. Old files are rebuilt rather than migrated.
-const INDEX_SCHEMA: i64 = 13;
+/// v14: Chinese is indexed as **words**. `unicode61` cannot segment the script,
+/// so every CJK run is rewritten by the same segmenter the query side uses
+/// (jieba `cut_for_search`, see `cjk`) and stored in `rows.text_words`, which the
+/// `seg` table indexes. The old trigram path could only ask "do 60 % of this
+/// sentence's 3-char windows appear somewhere in the row", which a natural
+/// sentence rarely proves; a word the row really contains always does. Old files
+/// are rebuilt rather than migrated.
+const INDEX_SCHEMA: i64 = 14;
+
+/// Join the reconciliation ledger so Exact ordering can tell human speech from
+/// assistant speech. `rows.role` stores them as one value.
+const SPEAKER_JOIN_SQL: &str =
+    "LEFT JOIN source_state s ON s.session_id = r.session_id AND s.seq = r.seq";
+
+/// Same order as [`ranking::speaker_tier`]. The role fallback covers indexes
+/// built in tests without a ledger row.
+const SPEAKER_ORDER_SQL: &str = "CASE
+    WHEN s.kind = 'item/user' THEN 0
+    WHEN s.kind = 'item/assistant' AND s.item_type = 'reasoning' THEN 2
+    WHEN s.kind = 'item/assistant' THEN 1
+    WHEN s.kind = 'item/tool_call' THEN 3
+    WHEN s.kind = 'item/tool_result' THEN 4
+    WHEN r.role = 'reasoning' THEN 2
+    WHEN r.role = 'action' THEN 3
+    WHEN r.role = 'outcome' THEN 4
+    WHEN r.role = 'conversation' THEN 0
+    ELSE 5
+END";
 
 /// Presentation scores. These are **derived** from the final rank
 /// ([`ranking::RankKey`]) so that every existing consumer keeps seeing the
@@ -229,8 +255,11 @@ pub struct SparseHit {
     /// with it.
     pub item_type: String,
     /// What question the row's text answers (人话 / 动作 / 产出). Ranking only;
-    /// nothing is filtered by it.
+    /// nothing is filtered by it. Human and assistant speech share this value;
+    /// [`Self::speaker`] splits them.
     pub role: ContentRole,
+    /// Exact-band speaker tier ([`ranking::speaker_tier`]). Not part of the view.
+    pub speaker: u8,
     /// Every layer that returned this chunk, with the query coverage it proved.
     /// Merged across chunks when the hit is folded to its row, so "three
     /// mechanisms agree on this row" survives into the final ranking.
@@ -351,8 +380,8 @@ impl SparseIndex {
                         .partial_cmp(&a.score)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
-                .then_with(|| a.session_id.cmp(&b.session_id))
-                .then_with(|| a.seq.cmp(&b.seq))
+                .then_with(|| b.session_id.cmp(&a.session_id))
+                .then_with(|| b.seq.cmp(&a.seq))
         });
         out.truncate(limit);
         Ok(out)
@@ -450,28 +479,31 @@ impl SparseIndex {
     /// of its chunks clears the gate, not when its chunks collectively do.
     fn contains_gate(&self, branch: &QueryBranch, session_id: &str, seq: i64) -> Result<bool> {
         if branch.cjk {
-            if !branch.grams_apply() {
+            // The product gate for Chinese is the word gate below, not the old
+            // trigram ratio: `contains` has to answer for the layer the ranker
+            // actually ran.
+            if token_query_gated(branch).is_none() {
                 return Ok(false);
             }
-            let Some(mq) = trigram_query(&branch.normalized) else {
+            let terms = branch.token_terms();
+            let floor = branch.token_floor();
+            if floor == 0 {
                 return Ok(false);
-            };
-            // The `AND`-over-every-gram form *is* the literal; a subset is what
-            // the count below answers.
-            let semantics = ranking::semantics(LayerId::Lexical);
-            let min = branch.gram_min(semantics.min_coverage);
-            if min >= branch.grams.len() && self.contains_match("tri", &mq, session_id, seq)? {
-                return Ok(true);
             }
-            let mut stmt = self.conn.prepare_cached(
-                "SELECT text_norm FROM rows WHERE session_id = ?1 AND seq = ?2",
-            )?;
+            let chars = &branch.cjk_chars;
+            let char_min = branch.cjk_char_min();
+            let mut stmt = self
+                .conn
+                .prepare_cached("SELECT text_norm FROM rows WHERE session_id = ?1 AND seq = ?2")?;
             let texts = stmt
                 .query_map(params![session_id, seq], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            return Ok(texts
-                .iter()
-                .any(|text| query_plan::count_grams(text, &branch.grams) >= min));
+            // Two conditions, exactly as the ranker applies them: enough words,
+            // and enough of the sentence's characters.
+            return Ok(texts.iter().any(|text| {
+                query_plan::count_tokens(text, &terms) >= floor
+                    && query_plan::count_chars(text, chars) >= char_min
+            }));
         }
         if !branch.words_apply() {
             return Ok(false);
@@ -560,7 +592,9 @@ impl SparseIndex {
         );
         let hit: Option<i64> = self
             .conn
-            .query_row(&sql, params![match_query, session_id, seq], |row| row.get(0))
+            .query_row(&sql, params![match_query, session_id, seq], |row| {
+                row.get(0)
+            })
             .optional()?;
         Ok(hit.is_some())
     }
@@ -580,14 +614,12 @@ impl SparseIndex {
         if needle.chars().count() < TRIGRAM_LEN {
             return self.scan_like_hits(needle, limit);
         }
-        // The `ORDER BY` picks *which* literal hits survive about to be ranked,
-        // so it is a relevance decision, not cosmetics. It used to be newest
-        // first, which meant a common literal's top-`limit` was simply the last
-        // `limit` rows of the corpus and every later layer was truncated away
-        // behind it. It is now the shortest chunk first — the documented
-        // length prior, and the one thing a `LIKE` probe can see about how much
-        // a chunk is *about* the literal. The full ranking happens above this
-        // layer, where coverage, role and recency are all available.
+        // The `ORDER BY` picks *which* literal hits survive to be ranked, so it
+        // is a relevance decision. Speaker tier first: a long human message must
+        // not lose its slot to a short reasoning or tool chunk. Inside a tier,
+        // later sessions and later lines — repetition is not a better match.
+        // The agent-facing order then breaks the remaining ties on the session's
+        // real update time.
         //
         // `instr` is asked for the same literal alongside the LIKE, so the hit
         // carries where the substring landed (normalized chars; `r.text` maps it
@@ -600,12 +632,15 @@ impl SparseIndex {
         };
         let sql = format!(
             "SELECT r.session_id, r.seq, r.chunk, r.text, r.single, r.item_type,
-                    instr(t.text_norm, ?2) AS pos, r.char_start AS chunk_start, r.role
+                    instr(t.text_norm, ?2) AS pos, r.char_start AS chunk_start, r.role,
+                    s.kind
                FROM tri t
                JOIN rows r ON r.rowid = t.rowid
+               {SPEAKER_JOIN_SQL}
               WHERE t.text_norm LIKE ?1
                 AND instr(t.text_norm, ?2) > 0{scope_clause}
-              ORDER BY length(t.text_norm) ASC, r.session_id DESC, r.seq DESC, r.chunk DESC
+              ORDER BY {SPEAKER_ORDER_SQL},
+                       r.session_id DESC, r.seq DESC, r.chunk DESC
               LIMIT ?3"
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
@@ -621,6 +656,7 @@ impl SparseIndex {
             let pos: i64 = row.get(6)?;
             let chunk_start: i64 = row.get(7)?;
             let role = ContentRole::parse(&row.get::<_, String>(8)?);
+            let kind: Option<String> = row.get(9)?;
             let (span, occurrences) = like_span_and_occurrences(&text, needle, pos.max(1) as usize);
             let mut hit = row_hit(
                 row,
@@ -630,6 +666,7 @@ impl SparseIndex {
                 None,
                 chunk_start.max(0) as usize,
                 role,
+                kind.as_deref(),
             )?;
             // The literal is present in full, so coverage is complete by
             // construction; the occurrence count is what varies.
@@ -654,10 +691,13 @@ impl SparseIndex {
         };
         let sql = format!(
             "SELECT r.session_id, r.seq, r.chunk, r.text, r.single, r.item_type,
-                    instr(r.text_norm, ?1) AS pos, r.char_start AS chunk_start, r.role
+                    instr(r.text_norm, ?1) AS pos, r.char_start AS chunk_start, r.role,
+                    s.kind
                FROM rows r
+               {SPEAKER_JOIN_SQL}
               WHERE instr(r.text_norm, ?1) > 0{scope_clause}
-              ORDER BY length(r.text_norm) ASC, r.session_id DESC, r.seq DESC, r.chunk DESC
+              ORDER BY {SPEAKER_ORDER_SQL},
+                       r.session_id DESC, r.seq DESC, r.chunk DESC
               LIMIT ?2"
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
@@ -672,6 +712,7 @@ impl SparseIndex {
             let pos: i64 = row.get(6)?;
             let chunk_start: i64 = row.get(7)?;
             let role = ContentRole::parse(&row.get::<_, String>(8)?);
+            let kind: Option<String> = row.get(9)?;
             let (span, occurrences) = like_span_and_occurrences(&text, needle, pos.max(1) as usize);
             let mut hit = row_hit(
                 row,
@@ -681,6 +722,7 @@ impl SparseIndex {
                 None,
                 chunk_start.max(0) as usize,
                 role,
+                kind.as_deref(),
             )?;
             hit.evidence
                 .push(HitEvidence::new(LayerId::Exact, 0, total, total));
@@ -696,11 +738,22 @@ impl SparseIndex {
         self.trigram_hits_scored(needle, limit, SCORE_MATCH)
     }
 
-    fn trigram_hits_scored(&self, needle: &str, limit: usize, score: f64) -> Result<Vec<SparseHit>> {
+    fn trigram_hits_scored(
+        &self,
+        needle: &str,
+        limit: usize,
+        score: f64,
+    ) -> Result<Vec<SparseHit>> {
         let Some(match_query) = trigram_query(needle) else {
             return Ok(Vec::new());
         };
-        self.leaf_hits(Leaf::ungated(LayerId::Fuzzy, "tri", &match_query, limit, score))
+        self.leaf_hits(Leaf::ungated(
+            LayerId::Fuzzy,
+            "tri",
+            &match_query,
+            limit,
+            score,
+        ))
     }
 
     /// Non-CJK path: `unicode61` `MATCH` over the query's word tokens.
@@ -708,11 +761,22 @@ impl SparseIndex {
         self.unicode_hits_scored(needle, limit, SCORE_MATCH)
     }
 
-    fn unicode_hits_scored(&self, needle: &str, limit: usize, score: f64) -> Result<Vec<SparseHit>> {
+    fn unicode_hits_scored(
+        &self,
+        needle: &str,
+        limit: usize,
+        score: f64,
+    ) -> Result<Vec<SparseHit>> {
         let Some(match_query) = word_query(needle) else {
             return Ok(Vec::new());
         };
-        self.leaf_hits(Leaf::ungated(LayerId::Lexical, "uni", &match_query, limit, score))
+        self.leaf_hits(Leaf::ungated(
+            LayerId::Lexical,
+            "uni",
+            &match_query,
+            limit,
+            score,
+        ))
     }
 
     /// Proximity layer: FTS5's `NEAR(...)` over the query's informative words.
@@ -768,7 +832,11 @@ impl SparseIndex {
     /// * the ranking is a tuple over evidence (band → coverage → role → the
     ///   producing layer's own rank), not a set of pre-baked floats to be
     ///   appended to.
-    fn compose_sparse(&self, needle: &str, limit: usize) -> Result<(Vec<SparseHit>, Vec<LayerTrace>)> {
+    fn compose_sparse(
+        &self,
+        needle: &str,
+        limit: usize,
+    ) -> Result<(Vec<SparseHit>, Vec<LayerTrace>)> {
         let branch = QueryBranch::parse(needle);
         if branch.is_empty() || limit == 0 {
             return Ok((Vec::new(), Vec::new()));
@@ -796,7 +864,10 @@ impl SparseIndex {
         // below it is wasted — and saying so explicitly is what keeps "no
         // results from this layer" from meaning "this layer never ran".
         let proximity = if distinct_rows(&pool) >= limit {
-            traces.push(skipped(LayerId::Proximity, StopReason::EnoughHighConfidence));
+            traces.push(skipped(
+                LayerId::Proximity,
+                StopReason::EnoughHighConfidence,
+            ));
             Vec::new()
         } else if branch.proximity_applies() {
             let terms = branch.near_terms();
@@ -835,21 +906,34 @@ impl SparseIndex {
         pool.extend(proximity);
 
         // 3. Lexical: the coverage gate that stops one common word from filling
-        //    the list. Words for Latin, trigrams for CJK, same declared layer.
+        //    the list. Words for Latin, and words for CJK too — from the
+        //    segmenter the index was written with, because `unicode61` has none
+        //    of its own. Same declared layer.
         let semantics = ranking::semantics(LayerId::Lexical);
         let lexical = if distinct_rows(&pool) >= limit {
             traces.push(skipped(LayerId::Lexical, StopReason::EnoughHighConfidence));
             Vec::new()
         } else if branch.cjk {
-            match trigram_query(&branch.normalized) {
+            // The Chinese word path. The words are OR-ed (recall), the floor is
+            // `cjk_min` — one word is a query, two are an AND — and `Exact` above
+            // still puts a verbatim substring on top, so precision is not this
+            // layer's job alone. The trigram table is deliberately not consulted
+            // here any more: a natural sentence could only clear its ratio gate
+            // by reproducing most of itself, which is what made long Chinese
+            // queries unfindable. Literal substrings keep the `LIKE` path.
+            match token_query_gated(&branch) {
                 Some(match_query) => {
+                    let terms = branch.token_terms();
                     let (hits, rejected) = self.match_hits(Leaf {
                         layer: LayerId::Lexical,
-                        table: "tri",
+                        table: "seg",
                         match_query: &match_query,
-                        gate_terms: &branch.grams,
-                        gate_min: branch.gram_min(semantics.min_coverage),
-                        coverage: Coverage::Grams,
+                        gate_terms: &terms,
+                        gate_min: branch.token_floor(),
+                        coverage: Coverage::Tokens {
+                            chars: &branch.cjk_chars,
+                            min: branch.cjk_char_min(),
+                        },
                         min_run: 0,
                         limit: semantics.depth(limit),
                         display: SCORE_RANKED,
@@ -864,7 +948,7 @@ impl SparseIndex {
                     hits
                 }
                 None => {
-                    // Below the trigram floor the index cannot answer, so the
+                    // No words at all (a branch of bare punctuation); the
                     // literal is the only mechanism left.
                     traces.push(skipped(LayerId::Lexical, StopReason::NotApplicable));
                     Vec::new()
@@ -908,10 +992,7 @@ impl SparseIndex {
         //    answer with enough distinct rows. The decision is explicit here
         //    instead of an implicit "the pool happened to be empty".
         if distinct_rows(&pool) >= limit {
-            traces.push(skipped(
-                LayerId::Fuzzy,
-                StopReason::EnoughHighConfidence,
-            ));
+            traces.push(skipped(LayerId::Fuzzy, StopReason::EnoughHighConfidence));
         } else if let Some(match_query) = trigram_query(&branch.normalized) {
             let semantics = ranking::semantics(LayerId::Fuzzy);
             let (hits, rejected) = self.match_hits(Leaf {
@@ -1002,9 +1083,10 @@ impl SparseIndex {
             "SELECT r.session_id, r.seq, r.chunk, r.text, r.single, r.item_type,
                     highlight({table}, 0, char(2), char(3)) AS hl,
                     bm25({table}) AS rank,
-                    r.char_start AS chunk_start, r.role
+                    r.char_start AS chunk_start, r.role, s.kind
                FROM {table} t
                JOIN rows r ON r.rowid = t.rowid
+               {SPEAKER_JOIN_SQL}
               WHERE {table} MATCH ?1{scope_clause}
               ORDER BY rank
               LIMIT ?2"
@@ -1029,8 +1111,17 @@ impl SparseIndex {
             let bm25 = row.get(7).ok();
             let chunk_start: i64 = row.get(8)?;
             let role = ContentRole::parse(&row.get::<_, String>(9)?);
+            let kind: Option<String> = row.get(10)?;
             let marked = marked.unwrap_or_default();
-            let span = highlight_span(&text, &marked);
+            // The CJK path cannot take its span from `highlight()`: the marks are
+            // positions in `text_words`, and the segmented text has different
+            // char offsets than the row it was derived from. The words themselves
+            // are searched in the row text instead.
+            let span = if matches!(coverage, Coverage::Tokens { .. }) {
+                token_span(&text, &terms)
+            } else {
+                highlight_span(&text, &marked)
+            };
             // Coverage is counted from the row's own text, not from the
             // `highlight()` output: FTS5 merges adjacent and overlapping token
             // marks into one run, so per-token marks cannot be recovered from it
@@ -1038,10 +1129,21 @@ impl SparseIndex {
             // ground truth anyway, and this way the gate means exactly what it
             // says: how much of the query's intent this row contains.
             let normalized_chunk = normalize(&text);
-            let matched = match coverage {
-                Coverage::None => 0,
-                Coverage::Words => query_plan::count_word_terms(&normalized_chunk, &terms),
-                Coverage::Grams => query_plan::count_grams(&normalized_chunk, &terms),
+            let (matched, chars_ok) = match coverage {
+                Coverage::None => (0, true),
+                Coverage::Words => (
+                    query_plan::count_word_terms(&normalized_chunk, &terms),
+                    true,
+                ),
+                Coverage::Tokens { chars, min } => (
+                    query_plan::count_tokens(&normalized_chunk, &terms),
+                    // The fragment guard: a row that holds two words of a long
+                    // sentence but only a third of its characters is a row
+                    // *about something else*, and the word count alone cannot
+                    // say so.
+                    query_plan::count_chars(&normalized_chunk, chars) >= min,
+                ),
+                Coverage::Grams => (query_plan::count_grams(&normalized_chunk, &terms), true),
             };
             let mut evidence = HitEvidence::new(layer, 0, matched, total);
             evidence.native = bm25.unwrap_or(0.0);
@@ -1049,7 +1151,7 @@ impl SparseIndex {
             // rejections are counted. Counted coverage, never a score threshold:
             // `the auth refactor token` cannot be satisfied by `the` alone,
             // however good its BM25.
-            let clears = evidence.clears(gate_min);
+            let clears = evidence.clears(gate_min) && chars_ok;
             // Typo tolerance is not "some grams match": a long enough fragment
             // of the query must be there unbroken, or the row is a coincidence
             // of common characters rather than a near miss of the phrase.
@@ -1063,6 +1165,7 @@ impl SparseIndex {
                 bm25,
                 chunk_start.max(0) as usize,
                 role,
+                kind.as_deref(),
             )?;
             hit.evidence.push(evidence);
             Ok((hit, clears && adjacent, depth))
@@ -1094,10 +1197,9 @@ impl SparseIndex {
 
 /// Finish the `Exact` layer's rows.
 ///
-/// The layer's own order is the length prior the SQL applied — a chunk that is
-/// mostly about the literal before one that mentions it once in passing — so its
-/// position in that order **is** its rank. Without this every exact hit reports
-/// rank 0, which is how a flat score band erases the difference between them.
+/// Records the SQL admission order as `local_rank`. That order is speaker tier,
+/// then the later session and the later line. Exact comparison ignores the
+/// number: the agent-facing sort breaks those ties on the session's update time.
 fn finish_exact_hits(
     rows: impl Iterator<Item = rusqlite::Result<SparseHit>>,
     limit: usize,
@@ -1126,6 +1228,7 @@ fn row_hit(
     bm25: Option<f64>,
     chunk_start: usize,
     role: ContentRole,
+    kind: Option<&str>,
 ) -> rusqlite::Result<SparseHit> {
     let session_id: String = row.get(0)?;
     let seq: i64 = row.get(1)?;
@@ -1144,6 +1247,7 @@ fn row_hit(
     // line, so shift the span up by the chunk's start. The snippet is taken
     // from the chunk text, which is exactly the span's own coordinates.
     let summary = super::snippet_from_span(text, span.0, span.1);
+    let speaker = ranking::speaker_tier(kind, &item_type, role);
     Ok(SparseHit {
         key,
         row_key,
@@ -1155,6 +1259,7 @@ fn row_hit(
         score,
         item_type,
         role,
+        speaker,
         evidence: Vec::new(),
         rank: RankKey::default(),
         summary,
@@ -1164,13 +1269,19 @@ fn row_hit(
 
 /// The characters FTS5's `highlight()` wraps around each matched token.
 
-/// What a layer's coverage counts against: the query's words, or its trigrams.
+/// What a layer's coverage counts against: the query's words, its CJK words, or
+/// its trigrams.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Coverage {
+enum Coverage<'a> {
     /// No gate: every row the table returns counts (the eval lanes).
     None,
     /// Whole words, so `session` does not count for `sessions`.
     Words,
+    /// CJK words, matched as substrings — the script has no delimiter to be a
+    /// word boundary — plus the branch's character floor (`chars`/`min`), which
+    /// keeps a fragment from standing in for a sentence. The span is read from
+    /// the tokens themselves (see [`token_span`]), not from `highlight()`.
+    Tokens { chars: &'a [char], min: usize },
     /// Substrings of three chars, for scripts `unicode61` cannot segment.
     Grams,
 }
@@ -1189,7 +1300,7 @@ struct Leaf<'a> {
     /// list is a bare mechanism: no gate, every row the table returns counts.
     gate_terms: &'a [String],
     gate_min: usize,
-    coverage: Coverage,
+    coverage: Coverage<'a>,
     /// The fuzzy layer additionally requires an unbroken fragment of the query:
     /// at least this many chars of it, copied verbatim.
     min_run: usize,
@@ -1246,26 +1357,23 @@ fn distinct_rows(hits: &[SparseHit]) -> usize {
 
 /// Within-band strength for a hit, from its best evidence.
 ///
-/// `Exact`: how many times the literal occurs — a row that says it five times is
-/// more about it than a row that says it once. Everything else: coverage, the
-/// fraction of the query's intent this hit proved. Both are multiplied by a
-/// small agreement bonus: the number of layers that independently found the
-/// row. Agreement is evidence, and it is the one signal that only exists because
-/// provenance was kept.
+/// `Exact`: presence. How many times the literal is repeated is recorded on the
+/// evidence and then ignored — a row that says it five times is not more about
+/// it than a row that says it once. The speaker tier orders that band, and
+/// update time breaks the tie. Everything else: coverage, the fraction of the
+/// query's intent this hit proved, plus a small agreement bonus for layers that
+/// independently found the row.
 ///
-/// The total is then scaled by the hit's [`ContentRole`] weight. That is the one
-/// place a role reaches the ordering, and it is deliberately inside this number:
-/// the band keeps exactly one comparable scale, and the tier reorders equal
-/// quality without overriding it.
+/// The total is then scaled by the hit's [`ContentRole`] weight.
 fn strength_of(hit: &SparseHit) -> u32 {
     let primary = primary_evidence(hit);
-    let base = match primary.layer {
-        LayerId::Exact => primary.native.max(0.0).min(999.0) as u32,
-        _ => primary.coverage_permille(),
+    let earned = match primary.layer {
+        LayerId::Exact => 100,
+        _ => primary
+            .coverage_permille()
+            .saturating_mul(100)
+            .saturating_add(hit.layer_count().min(99) as u32),
     };
-    let earned = base
-        .saturating_mul(100)
-        .saturating_add(hit.layer_count().min(99) as u32);
     hit.role.weigh(earned)
 }
 
@@ -1274,9 +1382,7 @@ fn strength_of(hit: &SparseHit) -> u32 {
 fn primary_evidence(hit: &SparseHit) -> HitEvidence {
     hit.evidence
         .iter()
-        .min_by(|a, b| {
-            cmp_evidence(a, b)
-        })
+        .min_by(|a, b| cmp_evidence(a, b))
         .cloned()
         .unwrap_or_else(|| HitEvidence::new(LayerId::Exact, 0, 0, 0))
 }
@@ -1303,10 +1409,18 @@ fn cmp_evidence(a: &HitEvidence, b: &HitEvidence) -> Ordering {
 /// The rank key a hit carries out of the sparse lane, before any fusion.
 fn rank_key_for(hit: &SparseHit) -> RankKey {
     let primary = primary_evidence(hit);
+    // Exact compares speaker before strength, so the tier has to be the split
+    // one. Other bands still compare coverage first and only then the coarser
+    // role, which is what keeps a partial mention under a complete one.
+    let role = if primary.band() == ranking::RankBand::Exact {
+        hit.speaker
+    } else {
+        hit.role.preference()
+    };
     RankKey {
         band: primary.band(),
         strength: strength_of(hit),
-        role: hit.role.preference(),
+        role,
         local_rank: primary.local_rank as u32,
     }
 }
@@ -1423,14 +1537,19 @@ pub fn open_read_only(path: &Path) -> Result<SparseIndex> {
 }
 
 fn meta(conn: &Connection, key: &str) -> Result<String> {
-    Ok(conn.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
-        r.get(0)
-    })?)
+    Ok(
+        conn.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+            r.get(0)
+        })?,
+    )
 }
 
 /// Rows-table DDL, shared by the index builder and its tests. `text` keeps the
 /// original chunk text so normalized offsets can be mapped back at query time;
-/// [`SOURCE_STATE_DDL`] carries the per-row derived state.
+/// `text_words` is the same normalized text with every CJK run rewritten as
+/// space-separated words (`cjk::segment`), which is the only form `unicode61`
+/// can tokenize Chinese in; [`SOURCE_STATE_DDL`] carries the per-row derived
+/// state.
 const ROWS_DDL: &str = "CREATE TABLE IF NOT EXISTS rows (
         rowid      INTEGER PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -1442,7 +1561,8 @@ const ROWS_DDL: &str = "CREATE TABLE IF NOT EXISTS rows (
         char_start INTEGER NOT NULL DEFAULT 0,
         char_end   INTEGER NOT NULL DEFAULT 0,
         text_norm  TEXT NOT NULL,
-        text       TEXT NOT NULL
+        text       TEXT NOT NULL,
+        text_words TEXT NOT NULL DEFAULT ''
      );
      CREATE INDEX IF NOT EXISTS rows_key ON rows(session_id, seq);";
 
@@ -1472,6 +1592,11 @@ const SOURCE_STATE_DDL: &str = "CREATE TABLE IF NOT EXISTS source_state (
 
 /// FTS5 tables over `rows`. No bulk `rebuild` here: the triggers below keep
 /// them in sync on every insert/delete, which is what makes appends cheap.
+///
+/// `tri` and `uni` index the normalized text: the trigram table serves literal
+/// substrings, `uni` is the English word path. `seg` indexes `text_words` — the
+/// same text with CJK runs pre-segmented into words — and is the only one of the
+/// three that can answer Chinese with words instead of character windows.
 const FTS_DDL: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS tri USING fts5(
             text_norm,
             content='rows',
@@ -1483,6 +1608,12 @@ const FTS_DDL: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS tri USING fts5(
             content='rows',
             content_rowid='rowid',
             tokenize = 'unicode61 remove_diacritics 2'
+         );
+         CREATE VIRTUAL TABLE IF NOT EXISTS seg USING fts5(
+            text_words,
+            content='rows',
+            content_rowid='rowid',
+            tokenize = 'unicode61 remove_diacritics 2'
          );";
 
 /// External-content FTS5: inserts mirror the new row, deletes use the FTS5
@@ -1490,10 +1621,12 @@ const FTS_DDL: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS tri USING fts5(
 const TRIGGER_DDL: &str = "CREATE TRIGGER IF NOT EXISTS rows_ai AFTER INSERT ON rows BEGIN
             INSERT INTO tri(rowid, text_norm) VALUES (new.rowid, new.text_norm);
             INSERT INTO uni(rowid, text_norm) VALUES (new.rowid, new.text_norm);
+            INSERT INTO seg(rowid, text_words) VALUES (new.rowid, new.text_words);
          END;
          CREATE TRIGGER IF NOT EXISTS rows_ad AFTER DELETE ON rows BEGIN
             INSERT INTO tri(tri, rowid, text_norm) VALUES ('delete', old.rowid, old.text_norm);
             INSERT INTO uni(uni, rowid, text_norm) VALUES ('delete', old.rowid, old.text_norm);
+            INSERT INTO seg(seg, rowid, text_words) VALUES ('delete', old.rowid, old.text_words);
          END;";
 
 /// The chunk budget the index is built with.
@@ -1586,7 +1719,9 @@ pub fn build_index_at(rows: &[SearchableRow], data_root: &Path, path: &Path) -> 
     let derived = derive_rows(rows, data_root, &cfg, &HashSet::new())?;
 
     let mut conn = open_for_rebuild(path)?;
-    conn.execute_batch("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    )?;
     let tx = conn.transaction()?;
     // A rebuild is not a merge: the tables are recreated rather than cleared, so
     // a row that has left the settled set cannot survive because this pass
@@ -1598,7 +1733,8 @@ pub fn build_index_at(rows: &[SearchableRow], data_root: &Path, path: &Path) -> 
          DROP TABLE IF EXISTS rows;
          DROP TABLE IF EXISTS source_state;
          DROP TABLE IF EXISTS tri;
-         DROP TABLE IF EXISTS uni;",
+         DROP TABLE IF EXISTS uni;
+         DROP TABLE IF EXISTS seg;",
     )?;
     tx.execute_batch(&format!(
         "{ROWS_DDL} {SOURCE_STATE_DDL} {FTS_DDL} {TRIGGER_DDL}"
@@ -1694,9 +1830,7 @@ fn known_echo_calls(conn: &Connection) -> Result<HashSet<(String, String)>> {
         "SELECT session_id, call_id FROM source_state
          WHERE session_read_call = 1 AND call_id IS NOT NULL",
     )?;
-    let pairs = stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })?;
+    let pairs = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     Ok(pairs.collect::<rusqlite::Result<HashSet<_>>>()?)
 }
 
@@ -1810,10 +1944,8 @@ pub fn refresh_from_source(reader: &SessionDataReader, data_root: &Path) -> Resu
 #[cfg(test)]
 pub fn refresh_index(rows: &[SearchableRow], data_root: &Path) -> Result<usize> {
     let path = sparse_index_path(data_root);
-    let source_keys: Vec<(String, i64)> = rows
-        .iter()
-        .map(|r| (r.session_id.clone(), r.seq))
-        .collect();
+    let source_keys: Vec<(String, i64)> =
+        rows.iter().map(|r| (r.session_id.clone(), r.seq)).collect();
     let mut conn = open(&path)?;
     let plan = plan_reconcile(&conn, &source_keys)?;
     let wanted: HashSet<(String, i64)> = plan.to_add.iter().cloned().collect();
@@ -1866,13 +1998,18 @@ fn insert_row_chunks(conn: &Connection, row: &derive::DerivedRow) -> Result<usiz
     let total = row.chunks.len();
     let mut ins = conn.prepare_cached(
         "INSERT INTO rows(session_id, seq, chunk, single, item_type, role, char_start,
-                          char_end, text_norm, text)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                          char_end, text_norm, text, text_words)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     for c in &row.chunks {
         // A trimmed chunk keeps its own `start`: the span shrinks from the tail
         // only, so the line a hit renders from is still the line it points at.
         let (end, text) = trimmer::trim_span(&c.text, c.start, c.end, role);
+        let norm = normalize(text);
+        // The Chinese words of this chunk, from the same segmenter the query side
+        // runs (`cjk`). Derived from the normalized text so both sides agree on
+        // case and width.
+        let words = super::cjk::segment(&norm);
         ins.execute(params![
             row.session_id,
             row.seq,
@@ -1882,8 +2019,9 @@ fn insert_row_chunks(conn: &Connection, row: &derive::DerivedRow) -> Result<usiz
             role.as_str(),
             c.start as i64,
             end as i64,
-            normalize(text),
+            norm,
             text,
+            words,
         ])?;
     }
     Ok(total)
@@ -1973,9 +2111,8 @@ fn like_match_span(text: &str, needle: &str, pos: usize) -> (usize, usize) {
 
 /// The span **and** how many times the literal occurs in the chunk.
 ///
-/// Two literal hits are equally exact, so what separates them is how much of the
-/// row is about the literal at all: `occurrences` is that signal, and it is the
-/// one thing the old "newest session first" ordering threw away.
+/// Two literal hits are equally exact. `occurrences` is recorded on the evidence
+/// so a caller can see the repetition; it does not order the row.
 fn like_span_and_occurrences(text: &str, needle: &str, pos: usize) -> ((usize, usize), usize) {
     let n = normalize_with_map(text);
     let start = pos.saturating_sub(1);
@@ -2021,10 +2158,7 @@ fn highlight_span(text: &str, marked: &str) -> (usize, usize) {
     const CLOSE: char = '\u{3}';
     let n = normalize_with_map(text);
     debug_assert_eq!(
-        marked
-            .chars()
-            .filter(|c| *c != OPEN && *c != CLOSE)
-            .count(),
+        marked.chars().filter(|c| *c != OPEN && *c != CLOSE).count(),
         n.norm.chars().count(),
         "highlight() output must be normalize(text) with marks"
     );
@@ -2046,6 +2180,40 @@ fn highlight_span(text: &str, marked: &str) -> (usize, usize) {
                 }
             }
             _ => pos += 1,
+        }
+    }
+    cluster_spans(spans).unwrap_or((0, 0))
+}
+
+/// The densest cluster of the query's words in one chunk text, for the CJK path.
+///
+/// `highlight()` cannot serve here: it marks positions in `text_words`, and the
+/// segmented text has different char offsets than the row it was derived from,
+/// so the marks would be read against the wrong string. The words are searched in
+/// the normalized chunk text instead (substring, the same rule the coverage count
+/// uses), and the clustering the `highlight()` path applies turns their
+/// occurrences into one span.
+fn token_span(text: &str, tokens: &[String]) -> (usize, usize) {
+    /// Only the densest cluster matters, not every occurrence: a word repeated a
+    /// hundred times in one chunk must not turn the scan quadratic.
+    const MAX_PER_TOKEN: usize = 8;
+    let n = normalize_with_map(text);
+    let chars: Vec<char> = n.norm.chars().collect();
+    let mut spans = Vec::new();
+    for token in tokens {
+        let word: Vec<char> = token.chars().collect();
+        if word.is_empty() || word.len() > chars.len() {
+            continue;
+        }
+        let mut found = 0usize;
+        for start in 0..=chars.len() - word.len() {
+            if chars[start..start + word.len()] == word[..] {
+                spans.push(map_span(&n, start, start + word.len()));
+                found += 1;
+                if found >= MAX_PER_TOKEN {
+                    break;
+                }
+            }
         }
     }
     cluster_spans(spans).unwrap_or((0, 0))
@@ -2144,6 +2312,41 @@ fn word_query_gated(branch: &QueryBranch) -> Option<String> {
     )
 }
 
+/// The `seg` (pre-segmented) `MATCH` for a branch that contains CJK.
+///
+/// Chinese has no word delimiter, so the words come from the segmenter the index
+/// was written with rather than from `unicode61`, and they are OR-ed — that is
+/// the recall half of the contract, with the counted floor as the precision half.
+/// A Latin half keeps the word path's own gate, and the two clauses are AND-ed:
+/// a query that names both scripts (`codex 感知`) must find both, which is how the
+/// old trigram bag's phantom hits (`codex` clearing the gate through
+/// "open`code`") become impossible.
+fn token_query_gated(branch: &QueryBranch) -> Option<String> {
+    let clause = |terms: &[String], min: usize| -> Option<String> {
+        if terms.is_empty() {
+            return None;
+        }
+        let joiner = if min >= terms.len() { " AND " } else { " OR " };
+        Some(
+            terms
+                .iter()
+                .map(|t| quote_term(t))
+                .collect::<Vec<_>>()
+                .join(joiner),
+        )
+    };
+    let latin = clause(
+        &branch.latin_terms,
+        query_plan::min_word_matches(branch.latin_terms.len()),
+    );
+    let cjk = clause(&branch.cjk_tokens, branch.cjk_min());
+    match (latin, cjk) {
+        (Some(latin), Some(cjk)) => Some(format!("({latin}) AND ({cjk})")),
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
+    }
+}
+
 /// FTS5's documented proximity query: all query terms within `NEAR_DISTANCE`
 /// tokens of each other, in any order. This is the standard span-near tier
 /// (Lucene `SpanNearQuery`, ES `span_near`), not a local invention.
@@ -2208,7 +2411,8 @@ mod tests {
     #[test]
     fn like_and_match_spans_land_on_the_literal() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(ROWS_DDL).unwrap();
+        conn.execute_batch(&format!("{ROWS_DDL}{SOURCE_STATE_DDL}"))
+            .unwrap();
         let text = "开头 plain filler 重试三次 ＡBC 结尾";
         conn.execute(
             "INSERT INTO rows(session_id, seq, chunk, single, char_start, char_end,
@@ -2218,10 +2422,7 @@ mod tests {
         )
         .unwrap();
         conn.execute_batch(FTS_DDL).unwrap();
-        conn.execute_batch(
-            "INSERT INTO tri(tri) VALUES('rebuild'); INSERT INTO uni(uni) VALUES('rebuild');",
-        )
-        .unwrap();
+        rebuild_fts(&conn);
 
         // LIKE: `instr` reaches the substring; the span maps back to `ＡBC`.
         let needle = normalize("ＡBC");
@@ -2254,7 +2455,8 @@ mod tests {
     #[test]
     fn chunked_hit_carries_row_coordinates() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(ROWS_DDL).unwrap();
+        conn.execute_batch(&format!("{ROWS_DDL}{SOURCE_STATE_DDL}"))
+            .unwrap();
         let head = "alpha ".repeat(30);
         let needle = "needle_literal";
         let tail = format!("prefix {needle} suffix");
@@ -2275,10 +2477,7 @@ mod tests {
         )
         .unwrap();
         conn.execute_batch(FTS_DDL).unwrap();
-        conn.execute_batch(
-            "INSERT INTO tri(tri) VALUES('rebuild'); INSERT INTO uni(uni) VALUES('rebuild');",
-        )
-        .unwrap();
+        rebuild_fts(&conn);
         let index = SparseIndex {
             conn,
             path: PathBuf::from(":memory:"),
@@ -2313,7 +2512,10 @@ mod tests {
 
     #[test]
     fn word_query_drops_punctuation() {
-        assert_eq!(word_query("hello, world!").unwrap(), "\"hello\" OR \"world\"");
+        assert_eq!(
+            word_query("hello, world!").unwrap(),
+            "\"hello\" OR \"world\""
+        );
         assert!(word_query("!!!").is_none());
     }
 
@@ -2338,7 +2540,8 @@ mod tests {
     #[test]
     fn alternatives_match_any_branch() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(ROWS_DDL).unwrap();
+        conn.execute_batch(&format!("{ROWS_DDL}{SOURCE_STATE_DDL}"))
+            .unwrap();
         conn.execute(
             "INSERT INTO rows(session_id, seq, chunk, single, char_start, char_end,
                               text_norm, text)
@@ -2347,10 +2550,7 @@ mod tests {
         )
         .unwrap();
         conn.execute_batch(FTS_DDL).unwrap();
-        conn.execute_batch(
-            "INSERT INTO tri(tri) VALUES('rebuild'); INSERT INTO uni(uni) VALUES('rebuild');",
-        )
-        .unwrap();
+        rebuild_fts(&conn);
         let index = SparseIndex {
             conn,
             path: PathBuf::from(":memory:"),
@@ -2370,7 +2570,8 @@ mod tests {
     #[test]
     fn a_needle_below_the_trigram_floor_is_scanned_not_dropped() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(ROWS_DDL).unwrap();
+        conn.execute_batch(&format!("{ROWS_DDL}{SOURCE_STATE_DDL}"))
+            .unwrap();
         conn.execute(
             "INSERT INTO rows(session_id, seq, chunk, single, char_start, char_end,
                               text_norm, text)
@@ -2379,10 +2580,7 @@ mod tests {
         )
         .unwrap();
         conn.execute_batch(FTS_DDL).unwrap();
-        conn.execute_batch(
-            "INSERT INTO tri(tri) VALUES('rebuild'); INSERT INTO uni(uni) VALUES('rebuild');",
-        )
-        .unwrap();
+        rebuild_fts(&conn);
         let index = SparseIndex {
             conn,
             path: PathBuf::from(":memory:"),
@@ -2416,7 +2614,10 @@ mod tests {
             "NEAR(\"session\" \"search\", 10)"
         );
         assert!(near_query("single").is_none());
-        assert!(near_query("会话检索").is_none(), "CJK takes the trigram path");
+        assert!(
+            near_query("会话检索").is_none(),
+            "CJK takes the trigram path"
+        );
     }
 
     #[test]
@@ -2425,7 +2626,8 @@ mod tests {
         // semantics the lane relies on: the number counts the tokens *between*
         // the phrases, so `alpha`…`delta` (two in between) needs ≥2.
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(ROWS_DDL).unwrap();
+        conn.execute_batch(&format!("{ROWS_DDL}{SOURCE_STATE_DDL}"))
+            .unwrap();
         let text = "alpha beta gamma delta epsilon";
         conn.execute(
             "INSERT INTO rows(session_id, seq, chunk, single, char_start, char_end,
@@ -2435,10 +2637,7 @@ mod tests {
         )
         .unwrap();
         conn.execute_batch(FTS_DDL).unwrap();
-        conn.execute_batch(
-            "INSERT INTO tri(tri) VALUES('rebuild'); INSERT INTO uni(uni) VALUES('rebuild');",
-        )
-        .unwrap();
+        rebuild_fts(&conn);
         let count = |q: &str| -> i64 {
             conn.query_row(
                 "SELECT count(*) FROM uni WHERE uni MATCH ?1",
@@ -2448,8 +2647,16 @@ mod tests {
             .unwrap()
         };
         assert_eq!(count(&near_query("alpha delta").unwrap()), 1);
-        assert_eq!(count("NEAR(\"alpha\" \"delta\", 1)"), 0, "gap is two tokens");
-        assert_eq!(count(&near_query("epsilon alpha").unwrap()), 1, "order-free");
+        assert_eq!(
+            count("NEAR(\"alpha\" \"delta\", 1)"),
+            0,
+            "gap is two tokens"
+        );
+        assert_eq!(
+            count(&near_query("epsilon alpha").unwrap()),
+            1,
+            "order-free"
+        );
     }
 
     #[test]
@@ -2460,30 +2667,57 @@ mod tests {
     }
 
     /// An in-memory index over `(session_id, seq, text, role)` rows.
+    /// Build the three FTS tables from what `rows` holds.
+    ///
+    /// A hand-written test row cannot run the segmenter in SQL, so `text_words`
+    /// is filled here — the column exists before the rebuild, and the trigger
+    /// only mirrors inserts.
+    fn rebuild_fts(conn: &Connection) {
+        let texts: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare("SELECT rowid, text FROM rows").unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        for (rowid, text) in texts {
+            conn.execute(
+                "UPDATE rows SET text_words = ?1 WHERE rowid = ?2",
+                params![super::super::cjk::segment(&normalize(&text)), rowid],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO tri(tri) VALUES('rebuild');
+             INSERT INTO uni(uni) VALUES('rebuild');
+             INSERT INTO seg(seg) VALUES('rebuild');",
+        )
+        .unwrap();
+    }
+
     fn memory_index(rows: &[(&str, i64, &str, &str)]) -> SparseIndex {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(ROWS_DDL).unwrap();
+        conn.execute_batch(&format!("{ROWS_DDL}{SOURCE_STATE_DDL}"))
+            .unwrap();
         for (sid, seq, text, role) in rows {
             conn.execute(
                 "INSERT INTO rows(session_id, seq, chunk, single, item_type, role,
-                                  char_start, char_end, text_norm, text)
-                 VALUES (?1, ?2, 0, 1, 'message', ?3, 0, ?4, ?5, ?6)",
+                                  char_start, char_end, text_norm, text, text_words)
+                 VALUES (?1, ?2, 0, 1, 'message', ?3, 0, ?4, ?5, ?6, ?7)",
                 params![
                     sid,
                     seq,
                     role,
                     text.chars().count() as i64,
                     normalize(text),
-                    text
+                    text,
+                    super::super::cjk::segment(&normalize(text))
                 ],
             )
             .unwrap();
         }
         conn.execute_batch(FTS_DDL).unwrap();
-        conn.execute_batch(
-            "INSERT INTO tri(tri) VALUES('rebuild'); INSERT INTO uni(uni) VALUES('rebuild');",
-        )
-        .unwrap();
+        rebuild_fts(&conn);
         SparseIndex {
             conn,
             path: PathBuf::from(":memory:"),
@@ -2495,7 +2729,11 @@ mod tests {
     fn a_typo_is_found_by_the_fuzzy_layer_and_gated_by_adjacency() {
         let index = memory_index(&[("s", 1, "UNIQUE_SESSION_PHRASE is here", "conversation")]);
         let (hits, traces) = index.compose_sparse("UNIQUE_SESSION_PHRAZE", 10).unwrap();
-        assert_eq!(hits.len(), 1, "a typo is what the fuzzy layer exists for: {traces:#?}");
+        assert_eq!(
+            hits.len(),
+            1,
+            "a typo is what the fuzzy layer exists for: {traces:#?}"
+        );
         assert_eq!(hits[0].layers(), vec![LayerId::Fuzzy]);
         let fuzzy = traces
             .iter()
@@ -2515,10 +2753,7 @@ mod tests {
         let (hits, _) = index
             .compose_sparse("alpha beta gamma delta epsilon", 10)
             .unwrap();
-        let rows: Vec<(String, i64)> = hits
-            .iter()
-            .map(|h| (h.session_id.clone(), h.seq))
-            .collect();
+        let rows: Vec<(String, i64)> = hits.iter().map(|h| (h.session_id.clone(), h.seq)).collect();
         assert_eq!(rows.len(), 1, "only the row that covers the query");
         assert_eq!(rows[0].1, 2);
         assert_eq!(hits[0].coverage_of(LayerId::Lexical), Some(1.0));
@@ -2530,7 +2765,12 @@ mod tests {
         // query. Coverage alone cannot tell them apart — the unbroken fragment
         // can, which is why the fuzzy layer asks for one.
         let index = memory_index(&[
-            ("s", 1, "ARCHIVED_OLD_MARKER buried before compact", "conversation"),
+            (
+                "s",
+                1,
+                "ARCHIVED_OLD_MARKER buried before compact",
+                "conversation",
+            ),
             ("s", 2, "LIVE_TAIL_MARKER still in window", "conversation"),
         ]);
         let (hits, _) = index.compose_sparse("LIVE_TAIL_MARKER", 10).unwrap();
@@ -2557,9 +2797,7 @@ mod tests {
             "glue is not a clause of its own: {query}"
         );
 
-        let (hits, traces) = index
-            .compose_sparse("the auth refactor token", 10)
-            .unwrap();
+        let (hits, traces) = index.compose_sparse("the auth refactor token", 10).unwrap();
         let rows: Vec<i64> = hits.iter().map(|h| h.seq).collect();
         assert_eq!(rows, vec![2], "{traces:#?}");
         assert_eq!(hits[0].rank.band, ranking::RankBand::Exact);
@@ -2592,14 +2830,15 @@ mod tests {
         let rows: Vec<i64> = hits.iter().map(|h| h.seq).collect();
         assert_eq!(rows, vec![4, 3, 2, 1], "说 → 思考 → 调用 → 结果");
         assert!(
-            hits.windows(2).all(|pair| pair[0].rank.band == pair[1].rank.band
-                && pair[0].rank.strength > pair[1].rank.strength),
-            "one band, four tiers, reaching the order through the number: {hits:#?}"
+            hits.windows(2)
+                .all(|pair| pair[0].rank.band == pair[1].rank.band
+                    && pair[0].rank.strength > pair[1].rank.strength),
+            "one band, four tiers; the speaker orders them and the weight still steps down: {hits:#?}"
         );
     }
 
-    /// The tier ladder is a *preference*: at equal quality it decides, and it
-    /// never overrules a real difference in quality.
+    /// Exact hits already share the literal. The speaker tier orders them, and
+    /// repeating it in a lower tier does not climb back up.
     #[test]
     fn a_role_preference_yields_to_a_better_match() {
         // Both rows hold the literal once and cover every query word, so the only
@@ -2613,48 +2852,131 @@ mod tests {
         let rows: Vec<i64> = hits.iter().map(|h| h.seq).collect();
         assert_eq!(rows, vec![2, 1], "what was said outranks what was thought");
 
-        // A row that says the literal twice is more about it than a row that says
-        // it once, so the better match wins from the lower tier.
+        // Repeating the literal in reasoning does not outrank the row that said
+        // it once. The count is still on the evidence.
         let index = memory_index(&[
-            ("s", 1, "auth refactor token, and auth refactor token again", "reasoning"),
+            (
+                "s",
+                1,
+                "auth refactor token, and auth refactor token again",
+                "reasoning",
+            ),
             ("s", 2, "auth refactor token", "conversation"),
         ]);
         let (hits, _) = index.compose_sparse("auth refactor token", 10).unwrap();
         let rows: Vec<i64> = hits.iter().map(|h| h.seq).collect();
-        assert_eq!(rows, vec![1, 2], "a better match is not overruled by a tier");
+        assert_eq!(rows, vec![2, 1], "an echo does not outrank who said it");
+        assert!(
+            hits[1].evidence[0].native >= 2.0,
+            "the echo still records its repetitions"
+        );
     }
 
     #[test]
-    fn a_common_literal_is_ranked_by_relevance_not_recency() {
-        // Both rows contain the literal `session`; only one is about it. The
-        // shortest-chunk prior plus the occurrence count is what the layer can
-        // see, and recency is only the last tie-break.
-        let mut rows: Vec<(String, i64, String, String)> = Vec::new();
-        for seq in 0..250 {
-            rows.push((
-                "01AAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
-                seq,
-                format!("session {seq} {}", "filler ".repeat(60)),
-                "conversation".to_string(),
-            ));
-        }
-        rows.push((
-            "01ZZZZZZZZZZZZZZZZZZZZZZZZ".to_string(),
-            999,
-            "session search ranking session coverage".to_string(),
-            "conversation".to_string(),
-        ));
-        let borrowed: Vec<(&str, i64, &str, &str)> = rows
-            .iter()
-            .map(|(sid, seq, text, role)| (sid.as_str(), *seq, text.as_str(), role.as_str()))
-            .collect();
-        let index = memory_index(&borrowed);
+    fn an_exact_tie_falls_to_the_later_session_not_the_repeat_count() {
+        // Same speaker, same literal. Saying it many times in an older session
+        // does not outrank saying it once in a later one. The sparse layer has
+        // no update time, so the session id — a ULID — is the admission proxy.
+        // The count stays on the evidence.
+        let index = memory_index(&[
+            (
+                "01AAAAAAAAAAAAAAAAAAAAAAAA",
+                1,
+                "session session session session",
+                "conversation",
+            ),
+            (
+                "01ZZZZZZZZZZZZZZZZZZZZZZZZ",
+                1,
+                "session once in a newer note",
+                "conversation",
+            ),
+        ]);
         let (hits, _) = index.compose_sparse("session", 10).unwrap();
-        assert_eq!(hits.len(), 10, "the pool is still the caller's limit");
-        assert_eq!(
-            hits[0].session_id, "01ZZZZZZZZZZZZZZZZZZZZZZZZ",
-            "the row that is *about* the literal wins over 250 newer rows that merely mention it"
+        assert_eq!(hits[0].session_id, "01ZZZZZZZZZZZZZZZZZZZZZZZZ");
+        let older = hits
+            .iter()
+            .find(|h| h.session_id.starts_with("01AAA"))
+            .expect("the repeating row is still a hit");
+        assert!(
+            older.evidence[0].native >= 4.0,
+            "repetition is recorded, not ranked"
         );
-        assert!(hits[0].evidence[0].native >= 2.0, "occurrence count is the signal");
+    }
+
+    /// The cold-corpus failure: a long human message lost its candidate slot to
+    /// short echoes, and a reasoning row that repeated the phrase outranked the
+    /// person. Both have to go the other way, and the view shape is untouched.
+    #[test]
+    fn the_human_outranks_a_shorter_echo_that_repeats_the_phrase() {
+        use crate::authority::responses::{
+            OutputStatus, ReasoningItem, ReasoningItemContent, ReasoningTextContent,
+        };
+        use crate::session::transcript_file::SearchableRow;
+        use crate::types::{Item, assistant_text, user_text};
+
+        fn row(seq: i64, kind: &str, item: &Item) -> SearchableRow {
+            let value = serde_json::to_value(item).expect("serialize");
+            let item_type = value
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            SearchableRow {
+                session_id: "S".into(),
+                seq,
+                kind: kind.into(),
+                item_type,
+                body: Some(value.to_string()),
+                body_ref: None,
+            }
+        }
+        fn reasoning(text: &str) -> Item {
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs".into()),
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent { text: text.into() },
+                )]),
+                encrypted_content: None,
+                status: Some(OutputStatus::Completed),
+            })
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut rows = vec![
+            row(
+                1,
+                "item/user",
+                &user_text(&format!("请看 qxmarker {}", "背景".repeat(80))),
+            ),
+            row(2, "item/assistant", &assistant_text("qxmarker 就定在这里")),
+            row(
+                3,
+                "item/assistant",
+                &reasoning("qxmarker qxmarker qxmarker"),
+            ),
+        ];
+        for seq in 10..18 {
+            rows.push(row(seq, "item/assistant", &reasoning("qxmarker")));
+        }
+        build_index(&rows, dir.path()).unwrap();
+        let index = open_read_only(&sparse_index_path(dir.path())).unwrap();
+        // Depth equals the limit. Speaker-first admission keeps the human and
+        // the assistant line; later lines of the same tier fill the rest, so
+        // the early row that repeats the phrase may not survive the cap.
+        let hits = index.search(Lane::Final, "qxmarker", 5).unwrap();
+        let seqs: Vec<i64> = hits.iter().map(|h| h.seq).collect();
+        assert_eq!(seqs.first().copied(), Some(1), "human first: {seqs:?}");
+        assert_eq!(
+            seqs.get(1).copied(),
+            Some(2),
+            "then what was said: {seqs:?}"
+        );
+        let echo = hits.iter().position(|h| h.seq == 3);
+        assert!(
+            echo.is_none_or(|i| i > 1),
+            "a repeated echo does not climb past who said it: {seqs:?}"
+        );
     }
 }

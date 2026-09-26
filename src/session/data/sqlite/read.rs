@@ -116,9 +116,9 @@ pub fn execute(
         SessionRead::ChangeLogSince { last_change_id } => {
             Ok(ReadValue::Changes(change_log_since(conn, last_change_id)?))
         }
-        SessionRead::RequestOrigins { session_id } => {
-            Ok(ReadValue::RequestOrigins(request_origins(conn, &session_id)?))
-        }
+        SessionRead::RequestOrigins { session_id } => Ok(ReadValue::RequestOrigins(
+            request_origins(conn, &session_id)?,
+        )),
         SessionRead::LatestChangeId => Ok(ReadValue::Count(latest_change_id(conn)?)),
     }
 }

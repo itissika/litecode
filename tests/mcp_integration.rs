@@ -297,8 +297,7 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
     let resolved = resolve(
         global,
         WorkspaceState::new(ws.path()),
-        litecode::provider_catalog::shared_for_db(&ws.path().join("global.db"))
-            .expect("catalog"),
+        litecode::provider_catalog::shared_for_db(&ws.path().join("global.db")).expect("catalog"),
     );
 
     let workspace_engines = WorkspaceEngines::new();

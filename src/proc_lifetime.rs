@@ -60,8 +60,8 @@ fn bind_child_to_job(pid: u32) {
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
         SetInformationJobObject,
     };
     use windows_sys::Win32::System::Threading::{
@@ -132,12 +132,12 @@ fn sweep_once() -> usize {
     use crate::serve::shutdown::{is_process_alive, kill_process};
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
     };
 
     fn exe_under(pid: u32, dir: &Path) -> bool {
@@ -149,7 +149,8 @@ fn sweep_once() -> usize {
             }
             let mut buf = [0u16; 1024];
             let mut len = buf.len() as u32;
-            let ok = QueryFullProcessImageNameW(proc, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
+            let ok =
+                QueryFullProcessImageNameW(proc, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
             CloseHandle(proc);
             if ok == 0 {
                 return false;
@@ -200,7 +201,10 @@ fn sweep_once() -> usize {
     }
 
     for pid in &orphans {
-        tracing::warn!(pid, "killing orphaned language-server process (dead parent)");
+        tracing::warn!(
+            pid,
+            "killing orphaned language-server process (dead parent)"
+        );
         kill_process(*pid);
     }
     orphans.len()
@@ -245,12 +249,18 @@ fn sweep_once() -> usize {
         let Some((_, rest)) = stat.rsplit_once(')') else {
             continue;
         };
-        let Some(ppid) = rest.split_whitespace().nth(1).and_then(|f| f.parse::<u32>().ok())
+        let Some(ppid) = rest
+            .split_whitespace()
+            .nth(1)
+            .and_then(|f| f.parse::<u32>().ok())
         else {
             continue;
         };
         if ppid == 1 {
-            tracing::warn!(pid, "killing orphaned language-server process (dead parent)");
+            tracing::warn!(
+                pid,
+                "killing orphaned language-server process (dead parent)"
+            );
             kill_process(pid);
             killed += 1;
         }

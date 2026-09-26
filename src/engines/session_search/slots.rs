@@ -158,7 +158,8 @@ impl SlotCfg {
     /// lane indexes 8 kinds, the dense lane only 5 — a known inconsistency).
     pub fn kind_included(&self, kind: &str) -> bool {
         match kind {
-            "item/user" | "item/assistant" | "item/tool_call" | "item/tool_result" | "compacted" => true,
+            "item/user" | "item/assistant" | "item/tool_call" | "item/tool_result"
+            | "compacted" => true,
             "plan/execute" | "reminder/job_exit" | "reminder/plan" => true,
             "turn/start" | "turn/end" => self.index_when,
             _ => false,
@@ -256,7 +257,10 @@ mod tests {
         assert_eq!(classify("item/assistant", "reasoning"), Slot::Thought);
         assert_eq!(classify("item/assistant", "message"), Slot::Said);
         assert_eq!(classify("item/tool_call", "function_call"), Slot::Did);
-        assert_eq!(classify("item/tool_result", "function_call_output"), Slot::Outcome);
+        assert_eq!(
+            classify("item/tool_result", "function_call_output"),
+            Slot::Outcome
+        );
         assert_eq!(classify("compacted", "compacted"), Slot::Summary);
         assert_eq!(classify("turn/start", "turn/end"), Slot::When);
         assert_eq!(classify("plan/execute", "message"), Slot::Other);
@@ -284,7 +288,10 @@ mod tests {
 
     #[test]
     fn long_prose_keeps_head_and_tail() {
-        let cfg = SlotCfg { budget_tokens: 10, index_when: false };
+        let cfg = SlotCfg {
+            budget_tokens: 10,
+            index_when: false,
+        };
         let text: String = (0..100).map(|i| format!("line-{i:03}\n")).collect();
         let out = row_text_final(Slot::Said, &text, &cfg).expect("kept");
         assert!(out.contains("line-000"));

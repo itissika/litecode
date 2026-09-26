@@ -438,6 +438,39 @@ describe("messageStore seq map", () => {
     expect(useMessageStore.getState().bySession.get(sid)!.fromSeq).toBe(0);
   });
 
+  it("pages when the seq is loaded but hidden in the partial head", async () => {
+    const sid = "s-trimmed-head";
+    load(
+      sid,
+      [ev(40, assistantMsg("a", "partial")), ev(41, userMsg("visible"))],
+      40,
+      42,
+    );
+    expect(
+      displayMessages(useMessageStore.getState().bySession.get(sid)!).map(
+        (row) => row.seq,
+      ),
+    ).toEqual([41]);
+    const sendRpc = vi.fn(
+      async (_method: string, params?: Record<string, unknown>) => ({
+        session_id: sid,
+        from_seq: params?.from_seq,
+        to_seq: params?.to_seq,
+        events: [ev(10, userMsg("older"))],
+      }),
+    );
+    useConnectionStore.setState({ sendRpc } as never);
+    await expect(
+      useMessageStore.getState().ensureSeqLoaded(sid, 40),
+    ).resolves.toBe(true);
+    expect(sendRpc).toHaveBeenCalled();
+    expect(
+      displayMessages(useMessageStore.getState().bySession.get(sid)!).some(
+        (row) => row.seq === 40,
+      ),
+    ).toBe(true);
+  });
+
   it("ensureSeqLoaded follows only the latest request", async () => {
     const sid = "s-cancel";
     load(sid, [ev(40, userMsg("tail"))], 40, 41);
@@ -470,6 +503,50 @@ describe("messageStore seq map", () => {
     await expect(
       useMessageStore.getState().ensureSeqLoaded(sid, 4),
     ).resolves.toBe(false);
+  });
+});
+
+describe("display trims a partial history head", () => {
+  const sid = "s-display-head";
+
+  beforeEach(() => {
+    useMessageStore.setState({ bySession: new Map() });
+  });
+
+  it("hides assistant rows before the first user message when the window is partial", () => {
+    load(
+      sid,
+      [ev(40, assistantMsg("a", "fragment")), ev(41, userMsg("ask"))],
+      40,
+      42,
+    );
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages.map((row) => row.seq)).toEqual([40, 41]);
+    expect(displayMessages(slice).map((row) => row.seq)).toEqual([41]);
+  });
+
+  it("does not trim when the window starts at seq 0", () => {
+    load(sid, [ev(0, assistantMsg("a", "start"))], 0, 1);
+    expect(
+      displayMessages(useMessageStore.getState().bySession.get(sid)!).map(
+        (row) => row.seq,
+      ),
+    ).toEqual([0]);
+  });
+
+  it("keeps an optimistic user row when the loaded head is hidden", () => {
+    load(sid, [ev(40, assistantMsg("a", "fragment"))], 40, 41);
+    useMessageStore.getState().pushPendingUser(sid, {
+      clientId: "c1",
+      item: userMsg("still here"),
+    });
+    const shown = displayMessages(
+      useMessageStore.getState().bySession.get(sid)!,
+    );
+    expect(shown.map((row) => row.seq)).toEqual([-1]);
+    expect(shown).toBe(
+      displayMessages(useMessageStore.getState().bySession.get(sid)!),
+    );
   });
 });
 

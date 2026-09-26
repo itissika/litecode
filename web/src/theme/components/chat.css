@@ -347,6 +347,49 @@
   100% { box-shadow: 0 0 2px var(--_dk-border-strong), inset 0 0 1px var(--_dk-border-strong); }
 }
 
+/* ── Composer action icon swap ──────────────────────────────
+   Send / queue / cancel share one 30×30 button, so their glyphs are
+   stacked in a single grid cell and cross-scaled: the outgoing icon
+   shrinks away while the incoming one grows in from the same spot, and
+   the change reads as one gesture in place instead of an instant glyph
+   swap. Only `scale` and `opacity` animate, and the cell is sized by
+   the largest glyph, so the action row never reflows.
+
+   Entering is the slower half — 160ms with a small overshoot at the end
+   of the travel; leaving is 80ms of alpha inside a 120ms ease-in
+   shrink, so the two glyphs are never both legible long enough to read
+   as one blob. A transition is read from the state being *entered*,
+   hence the two specs. The class nests: a box inside a box (the cancel
+   skin holds square ↔ swirl) gets the same treatment one level down. ── */
+.composer-action-icons {
+  display: grid;
+  place-items: center;
+}
+
+.composer-action-icons > * {
+  grid-area: 1 / 1;
+  opacity: 0;
+  scale: 0.35;
+  transition:
+    scale 120ms cubic-bezier(0.4, 0, 1, 1),
+    opacity 80ms linear;
+}
+
+.composer-action-icons > [data-on="true"] {
+  opacity: 1;
+  scale: 1;
+  transition:
+    scale 160ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    opacity 110ms 20ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-action-icons > *,
+  .composer-action-icons > [data-on="true"] {
+    transition: none;
+  }
+}
+
 /* ── Cache-hit breathing dot ────────────────────────────────
    A slow halo pulse in the dot's own colour (set inline via
    box-shadow colour). Colour comes from the inline style, so this
@@ -768,5 +811,42 @@
 @media (prefers-reduced-motion: reduce) {
   .queued-bubble-land {
     animation: none;
+  }
+}
+
+/* ── Composer dock collapse ─────────────────────────────────────
+   One knob: `--dock-ms` is the shared 130ms window for both directions, so
+   collapse and expand are equally snappy and alpha/displacement always end
+   together (opacity deliberately linear, the slide curved, no stagger or
+   delay to drift). Both curves are non-linear ease-outs and neither
+   overshoots; only their shape differs, and a transition is read from the
+   state being *entered* — hence the collapsed override.
+
+   NOTE: `translate`, not `transform` — Tailwind v4's translate-y-* writes
+   the individual `translate` property, so `transition: transform ...`
+   silently skips the slide (the element just snaps).
+
+   - collapse: quick off the mark and settles fast (69% of the travel in
+     the first quarter of the time); alpha shares the window but runs linear
+     (1 -> 0 at a constant rate).
+   - expand: same idea without the bounce — 77% of the rise in the first
+     quarter, no overshoot past the resting spot; alpha stays linear over
+     the same window. */
+.composer-dock-slide {
+  --dock-ms: 130ms;
+  --dock-curve: cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    translate var(--dock-ms) var(--dock-curve),
+    opacity var(--dock-ms) linear;
+}
+
+.composer-dock-slide[data-collapsed="true"] {
+  --dock-curve: cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-dock-slide,
+  .composer-dock-slide[data-collapsed="true"] {
+    transition: none;
   }
 }

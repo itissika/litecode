@@ -611,3 +611,78 @@ describe("AgentsSection model picker", () => {
     expect(screen.getByText("Configure a provider API key")).toBeTruthy();
   });
 });
+
+describe("AgentsSection first-run anchor", () => {
+  const scrollIntoView = vi.fn();
+  const saveAgent = vi.fn(async () => undefined);
+
+  beforeEach(() => {
+    saveAgent.mockClear();
+    useSettingsStore.setState({
+      llm: llmDoc,
+      availableTools: [],
+      mcpDefs: { global: [], workspace: [] },
+      mcpRuntime: { global: {}, workspace: {} },
+      agentIds: ["default"],
+      selectedAgentId: "default",
+      agents: { default: profile() },
+      persistByDoc: {},
+      saveAgent,
+      focusAnchor: "max-steps",
+    });
+    // jsdom has no scrollIntoView; the anchor effect must still call it.
+    Element.prototype.scrollIntoView = scrollIntoView;
+    // jsdom queues rAF callbacks but never runs them: make the detour synchronous.
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+      (cb: FrameRequestCallback) => {
+        cb(0);
+        return 1;
+      },
+    );
+  });
+
+  afterEach(() => {
+    cleanup();
+    scrollIntoView.mockClear();
+    vi.restoreAllMocks();
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    useSettingsStore.setState({ focusAnchor: null });
+  });
+
+  it("centres the Max steps row, rings it and takes the caret", async () => {
+    render(<AgentsSection />);
+
+    await waitFor(() => {
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+    });
+    const row = document.querySelector('[data-anchor="max-steps"]');
+    expect(row?.className).toContain("ring-(--_dk-amber-500)");
+    expect(screen.getByText(/runs out on long tasks/)).toBeTruthy();
+    expect(document.activeElement).toBe(row?.querySelector("input"));
+    expect(useSettingsStore.getState().focusAnchor).toBeNull();
+    // Guidance only: the 50 → 200 edit stays the user's.
+    expect(saveAgent).not.toHaveBeenCalled();
+  });
+
+  it("consumes the anchor without flashing when another agent is selected", async () => {
+    useSettingsStore.setState({
+      agentIds: ["default", "other"],
+      selectedAgentId: "other",
+      agents: { default: profile(), other: profile({ description: "other" }) },
+    });
+    render(<AgentsSection />);
+
+    await waitFor(() => {
+      expect(useSettingsStore.getState().focusAnchor).toBeNull();
+    });
+    expect(screen.queryByText(/runs out on long tasks/)).toBeNull();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("stays quiet without an anchor", () => {
+    useSettingsStore.setState({ focusAnchor: null });
+    render(<AgentsSection />);
+    expect(screen.queryByText(/runs out on long tasks/)).toBeNull();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+});

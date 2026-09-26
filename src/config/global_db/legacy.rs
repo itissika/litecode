@@ -252,8 +252,10 @@ fn migrate_agent_refs(
         })?;
         rows.collect::<std::result::Result<_, _>>()?
     };
-    let by_id: HashMap<&str, &LegacyModel> =
-        models.iter().map(|model| (model.id.as_str(), model)).collect();
+    let by_id: HashMap<&str, &LegacyModel> = models
+        .iter()
+        .map(|model| (model.id.as_str(), model))
+        .collect();
 
     for (agent_id, model_ref) in agents {
         if model_ref.trim().is_empty() || catalog.model(&model_ref).is_some() {
@@ -350,7 +352,13 @@ provider_id = "deepseek"
         conn
     }
 
-    fn insert_legacy_provider(conn: &Connection, id: &str, adapter_id: &str, endpoint: &str, key: &str) {
+    fn insert_legacy_provider(
+        conn: &Connection,
+        id: &str,
+        adapter_id: &str,
+        endpoint: &str,
+        key: &str,
+    ) {
         conn.execute(
             "INSERT INTO providers (id, adapter_id, config_json) VALUES (?1, ?2, ?3)",
             params![
@@ -364,7 +372,13 @@ provider_id = "deepseek"
         .unwrap();
     }
 
-    fn insert_legacy_model(conn: &Connection, id: &str, adapter_id: &str, provider_ref: &str, api: &str) {
+    fn insert_legacy_model(
+        conn: &Connection,
+        id: &str,
+        adapter_id: &str,
+        provider_ref: &str,
+        api: &str,
+    ) {
         conn.execute(
             "INSERT INTO models (id, adapter_id, provider_ref, config_json) VALUES (?1, ?2, ?3, ?4)",
             params![
@@ -409,20 +423,25 @@ provider_id = "deepseek"
             "https://opencode.ai/zen/v1",
             "sk-zen",
         );
-        insert_legacy_model(&conn, "zen-flash", "opencode", "opencode", "deepseek-v4-flash");
+        insert_legacy_model(
+            &conn,
+            "zen-flash",
+            "opencode",
+            "opencode",
+            "deepseek-v4-flash",
+        );
 
         migrate_once(&conn, &catalog()).unwrap();
 
-        assert_eq!(
-            credential(&conn, "deepseek").as_deref(),
-            Some("sk-legacy")
-        );
+        assert_eq!(credential(&conn, "deepseek").as_deref(), Some("sk-legacy"));
         assert_eq!(credential(&conn, "opencode").as_deref(), Some("sk-zen"));
         assert_eq!(agent_ref(&conn, "default"), "opencode/deepseek-v4-flash");
         // The unmappable reference is preserved instead of guessed away.
         assert_eq!(agent_ref(&conn, "compaction"), "ghost-model");
         assert_eq!(
-            meta_get(&conn, LEGACY_LLM_MIGRATION_MARKER).unwrap().as_deref(),
+            meta_get(&conn, LEGACY_LLM_MIGRATION_MARKER)
+                .unwrap()
+                .as_deref(),
             Some("1")
         );
     }
@@ -453,7 +472,13 @@ provider_id = "deepseek"
             Path::new("t.toml"),
         )
         .unwrap();
-        insert_legacy_provider(&conn, "old", "openai_responses", "https://shared.example/v1", "sk-old");
+        insert_legacy_provider(
+            &conn,
+            "old",
+            "openai_responses",
+            "https://shared.example/v1",
+            "sk-old",
+        );
 
         migrate_once(&conn, &catalog).unwrap();
 
@@ -483,8 +508,15 @@ provider_id = "deepseek"
         migrate_once(&conn, &catalog()).unwrap();
 
         // A later legacy write must not be picked up: the marker is final.
-        conn.execute("DELETE FROM provider_credentials", []).unwrap();
-        insert_legacy_provider(&conn, "other", "opencode", "https://opencode.ai/zen/v1", "sk-new");
+        conn.execute("DELETE FROM provider_credentials", [])
+            .unwrap();
+        insert_legacy_provider(
+            &conn,
+            "other",
+            "opencode",
+            "https://opencode.ai/zen/v1",
+            "sk-new",
+        );
         migrate_once(&conn, &catalog()).unwrap();
 
         assert_eq!(credential(&conn, "deepseek"), None);

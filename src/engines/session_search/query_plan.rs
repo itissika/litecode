@@ -34,6 +34,14 @@
 //! Two words meaning "both" is the strictest rule that still allows a two-word
 //! phrase to be searched as words; beyond that the floor grows with the query so
 //! a five-word question cannot be answered by two of its words.
+//!
+//! Chinese is the same contract with a different tokenizer. `unicode61` cannot
+//! segment CJK, so the branch carries the words `cjk::query_tokens` derived from
+//! the segmenter the index was written with; those are the informative clauses,
+//! they are OR-ed into the `seg` `MATCH`, and [`QueryBranch::cjk_min`] is the
+//! floor — one word is a query, two are an AND. A branch that mixes scripts
+//! keeps both halves and ANDs them, so `codex 感知` can never be answered by one
+//! script alone.
 
 use std::collections::BTreeSet;
 
@@ -92,7 +100,11 @@ pub fn terms_in_order(text: &str) -> Vec<String> {
 /// Same words, sorted and deduped: the deterministic order a generated FTS5
 /// query is built in, so the same query always compiles to the same string.
 pub fn terms_sorted(text: &str) -> Vec<String> {
-    terms_in_order(text).into_iter().collect::<BTreeSet<_>>().into_iter().collect()
+    terms_in_order(text)
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// Minimum number of informative words a hit must match, for `n` of them.
@@ -142,6 +154,19 @@ pub struct QueryBranch {
     pub grams: Vec<String>,
     /// `unicode61` cannot segment CJK, so the script routes the branch.
     pub cjk: bool,
+    /// The branch's Chinese words, in query order, deduped, glue removed — what
+    /// the `seg` `MATCH` ORs together and the CJK gate counts. Empty without
+    /// CJK.
+    pub cjk_tokens: Vec<String>,
+    /// The branch's Latin words (the `content_terms` half of a mixed branch).
+    /// Empty for a pure-CJK branch, which is the only place it is read.
+    pub latin_terms: Vec<String>,
+    /// The distinct characters of [`Self::cjk_tokens`], sorted. The character
+    /// floor's universe: a word that is present brings all of its characters, so
+    /// "how much of the query does this row hold" is stable here in a way a ratio
+    /// over 3-char windows never was — one changed character used to erase three
+    /// windows at once.
+    pub cjk_chars: Vec<char>,
 }
 
 impl QueryBranch {
@@ -156,11 +181,43 @@ impl QueryBranch {
             .cloned()
             .collect();
         let content_terms = if kept.is_empty() { terms.clone() } else { kept };
+        let cjk = has_cjk(&normalized);
+        let cjk_tokens: Vec<String> = if cjk {
+            // Only the Chinese half: the Latin half belongs to the word path's
+            // clause, and handing `codex` to the CJK clause as well would count
+            // it twice.
+            super::cjk::query_tokens(&normalized)
+                .into_iter()
+                .filter(|t| has_cjk(t))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // A mixed branch is searched as two clauses: its Latin words under the
+        // word path's own gate, its CJK words under the CJK one.
+        let latin_terms = if cjk {
+            content_terms
+                .iter()
+                .filter(|t| !has_cjk(t))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let cjk_chars: Vec<char> = cjk_tokens
+            .iter()
+            .flat_map(|t| t.chars())
+            .collect::<BTreeSet<char>>()
+            .into_iter()
+            .collect();
         Self {
             raw: raw.trim().to_string(),
             min_word_matches: min_word_matches(content_terms.len()),
             grams: grams_of(&normalized),
-            cjk: has_cjk(&normalized),
+            cjk,
+            cjk_tokens,
+            latin_terms,
+            cjk_chars,
             normalized,
             terms,
             content_terms,
@@ -215,6 +272,50 @@ impl QueryBranch {
         !self.grams.is_empty()
     }
 
+    /// Whether the segmented-word layer can run at all.
+    pub fn tokens_apply(&self) -> bool {
+        !self.cjk_tokens.is_empty()
+    }
+
+    /// Minimum Chinese words a hit must show: one word is a query, two are an
+    /// AND. The "two words mean both" rule the word path uses, kept as the CJK
+    /// floor so a long sentence is not answered by a single common word — while
+    /// never growing with the query, which is what made a natural sentence
+    /// unfindable when the gate was a ratio over trigrams.
+    pub fn cjk_min(&self) -> usize {
+        self.cjk_tokens.len().min(2)
+    }
+
+    /// Every term the CJK word gate counts: the branch's Latin words first, then
+    /// its Chinese words. Order only matters for a stable `total`.
+    pub fn token_terms(&self) -> Vec<String> {
+        self.latin_terms
+            .iter()
+            .chain(self.cjk_tokens.iter())
+            .cloned()
+            .collect()
+    }
+
+    /// Minimum words a CJK branch's hit must show, both scripts counted. The
+    /// Latin side keeps its own count rule (so `codex` is required next to
+    /// `感知`), the CJK side keeps the fixed two-word ceiling above.
+    pub fn token_floor(&self) -> usize {
+        min_word_matches(self.latin_terms.len()) + self.cjk_min()
+    }
+
+    /// Minimum distinct query characters a CJK hit must contain: half of them.
+    ///
+    /// This is the fragment guard. A row that shares one word of a long sentence
+    /// — the classic four-character fragment — holds far less than half of the
+    /// sentence's characters and is not an answer to it, while a row that really
+    /// talks about the same thing holds most of them. The word floor above says
+    /// "at least two words"; this says "and enough of the sentence to be about
+    /// it", which is what the old 60 % trigram ratio tried to say and could not
+    /// — a single changed character killed three windows of it.
+    pub fn cjk_char_min(&self) -> usize {
+        self.cjk_chars.len().div_ceil(2)
+    }
+
     /// The shortest contiguous fragment of this branch that the fuzzy layer may
     /// accept as a typo. `fraction` comes from the layer's declared semantics.
     ///
@@ -222,7 +323,8 @@ impl QueryBranch {
     /// coincidence, not a near miss.
     pub fn min_fuzzy_run(&self, fraction: f64) -> usize {
         let chars = self.normalized.chars().count();
-        (((chars as f64 * fraction).ceil() as usize).max(TRIGRAM_LEN + 1)).min(chars.max(TRIGRAM_LEN + 1))
+        (((chars as f64 * fraction).ceil() as usize).max(TRIGRAM_LEN + 1))
+            .min(chars.max(TRIGRAM_LEN + 1))
     }
 }
 
@@ -248,6 +350,31 @@ pub fn count_word_terms(text: &str, terms: &[String]) -> usize {
 /// How many of `grams` occur in `text` as substrings.
 pub fn count_grams(text: &str, grams: &[String]) -> usize {
     grams.iter().filter(|g| text.contains(g.as_str())).count()
+}
+
+/// How many of `tokens` occur in `text` (the CJK word path's coverage).
+pub fn count_tokens(text: &str, tokens: &[String]) -> usize {
+    tokens.iter().filter(|t| token_present(text, t)).count()
+}
+
+/// Is one word of the CJK path present in `text`?
+///
+/// A Chinese word matches as a **substring**: the script has no delimiter to be
+/// a word boundary, so `网络` is present in `网络连接` and a hit's span may be
+/// read from the token itself. A Latin word keeps the word path's rule, so
+/// `session` still does not count for `sessions`.
+pub fn token_present(text: &str, token: &str) -> bool {
+    if has_cjk(token) {
+        text.contains(token)
+    } else {
+        contains_word(text, token)
+    }
+}
+
+/// How many of the query's distinct characters occur in `text` — the CJK path's
+/// character floor ([`QueryBranch::cjk_char_min`]).
+pub fn count_chars(text: &str, chars: &[char]) -> usize {
+    chars.iter().filter(|c| text.contains(**c)).count()
 }
 
 /// Are two adjacent grams present as one contiguous run? This is what separates
@@ -383,6 +510,73 @@ mod tests {
     }
 
     #[test]
+    fn a_cjk_branch_carries_words_and_the_two_word_floor() {
+        let branch = QueryBranch::parse("网络连接总是断掉");
+        assert!(branch.cjk);
+        assert!(branch.tokens_apply());
+        assert!(branch.cjk_min() > 0);
+        assert!(branch.latin_terms.is_empty(), "{branch:?}");
+        assert_eq!(branch.token_floor(), branch.cjk_min());
+        assert!(
+            !branch.cjk_tokens.contains(&"总是".to_string()),
+            "glue is dropped: {:?}",
+            branch.cjk_tokens
+        );
+
+        // One word is a query; two are an AND — and the floor never grows past
+        // two, however long the sentence is.
+        let long = QueryBranch::parse("重试次数能不能放大一点并且记录日志");
+        assert!(long.cjk_tokens.len() >= 3, "{:?}", long.cjk_tokens);
+        assert_eq!(long.cjk_min(), 2);
+
+        let single = QueryBranch::parse("落盘");
+        assert_eq!(single.cjk_min(), 1);
+    }
+
+    #[test]
+    fn a_mixed_branch_keeps_both_scripts_and_ands_them() {
+        let branch = QueryBranch::parse("codex 感知");
+        assert_eq!(branch.latin_terms, ["codex"]);
+        assert_eq!(branch.cjk_tokens, ["感知"], "the Latin half is not CJK");
+        assert_eq!(branch.token_floor(), 2, "both halves are required");
+        assert_eq!(branch.token_terms(), ["codex", "感知"]);
+        assert_eq!(branch.cjk_char_min(), 1);
+    }
+
+    #[test]
+    fn the_character_floor_keeps_a_fragment_out_of_a_sentence() {
+        // The fragment shares two words of the sentence but only a third of its
+        // characters; the words alone would let it in, the characters do not.
+        let sentence = QueryBranch::parse("稀疏检索的噪音来自单词命中");
+        let fragment = normalize("稀疏检索");
+        assert_eq!(sentence.cjk_char_min(), 6, "half of twelve distinct chars");
+        assert_eq!(count_tokens(&fragment, &sentence.cjk_tokens), 2);
+        assert!(count_chars(&fragment, &sentence.cjk_chars) < sentence.cjk_char_min());
+
+        // A row that really is about the query holds more than half of it.
+        let row = normalize("稀疏检索的噪音来自单词命中，不是排序");
+        assert!(count_chars(&row, &sentence.cjk_chars) >= sentence.cjk_char_min());
+    }
+
+    #[test]
+    fn cjk_coverage_is_substring_but_latin_coverage_is_a_word() {
+        let text = normalize("网络连接总是断掉；sessions list");
+        let tokens = vec![
+            "网络".to_string(),
+            "连接".to_string(),
+            "session".to_string(),
+            "list".to_string(),
+        ];
+        assert_eq!(count_tokens(&text, &tokens), 3, "network + 连接 + list");
+        assert!(token_present(&text, "网络"));
+        assert!(
+            token_present(&text, "sessions"),
+            "substring of another word"
+        );
+        assert!(!token_present(&text, "session"), "whole-word Latin only");
+    }
+
+    #[test]
     fn near_terms_follow_the_query_not_the_alphabet() {
         let branch = QueryBranch::parse("zebra apple mango");
         assert_eq!(branch.near_terms(), ["zebra", "apple", "mango"]);
@@ -454,4 +648,3 @@ mod tests {
         assert!(split_branches("|").is_empty());
     }
 }
-

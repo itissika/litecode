@@ -157,6 +157,8 @@ export interface WireServerHello {
   primary_agents: PrimaryAgentInfo[];
   /** Active models only — a model is listed when its provider has a credential. */
   models?: ModelInfo[];
+  /** OS of the machine that holds the workspace files (`windows`, `linux`, `macos`). */
+  host_os?: string;
 }
 
 /** Persisted SessionLog rows. `kind` is the only projection discriminator. */
@@ -265,6 +267,8 @@ export interface ModelInfo {
   provider_id: string;
   label: string;
   context_window: number;
+  /** Input modalities this model accepts. Absent on an older handshake. */
+  modalities?: string[];
 }
 
 export interface SettingsChanged {
@@ -423,6 +427,8 @@ export interface SessionSnapshot {
 export interface PendingMessage {
   id: string;
   text: string;
+  /** `litecode-media:` refs, in paste order. Absent when the message is text. */
+  images?: string[];
 }
 
 export interface BashJob {

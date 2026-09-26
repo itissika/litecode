@@ -293,10 +293,13 @@ function AgentProfileFields({
   draft,
   saveBlocked,
   onChange,
+  flashMaxSteps = false,
 }: {
   draft: AgentProfile;
   saveBlocked: boolean;
   onChange: (profile: AgentProfile) => void;
+  /** First-run detour: ring + hint on the row, so the user changes it themselves. */
+  flashMaxSteps?: boolean;
 }) {
   return (
     <div className="settings-card space-y-2 p-3">
@@ -319,7 +322,14 @@ function AgentProfileFields({
           disabled={saveBlocked}
         />
       </div>
-      <div>
+      <div
+        data-anchor="max-steps"
+        className={
+          flashMaxSteps
+            ? "rounded-md ring-1 ring-(--_dk-amber-500)"
+            : undefined
+        }
+      >
         <FieldLabel>Max steps</FieldLabel>
         <TextInput
           type="number"
@@ -333,6 +343,11 @@ function AgentProfileFields({
           }
           disabled={saveBlocked}
         />
+        {flashMaxSteps ? (
+          <p className="mt-1 text-[11px] text-(--_dk-amber-500)">
+            Default 50 runs out on long tasks — 200 is a saner default.
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -616,6 +631,8 @@ export function AgentsSection() {
   const saveBlocked = useSettingsSaveBlocked();
   const { persistStatus, setPersistStatus } = useDocPersist("agents");
   const setSelectedAgentId = useSettingsStore((s) => s.setSelectedAgentId);
+  const focusAnchor = useSettingsStore((s) => s.focusAnchor);
+  const consumeFocusAnchor = useSettingsStore((s) => s.consumeFocusAnchor);
   const saveAgent = useSettingsStore((s) => s.saveAgent);
   const createAgent = useSettingsStore((s) => s.createAgent);
   const removeAgent = useSettingsStore((s) => s.removeAgent);
@@ -623,6 +640,8 @@ export function AgentsSection() {
 
   const [creating, setCreating] = useState(false);
   const [newAgentId, setNewAgentId] = useState("");
+  /** Row id currently ringed + hinted (first-run Max steps detour). */
+  const [flashedAnchor, setFlashedAnchor] = useState<string | null>(null);
 
   const profile = agents[selectedAgentId];
   const [draft, setDraft] = useState<AgentProfile | null>(null);
@@ -688,6 +707,33 @@ export function AgentsSection() {
       });
     },
   });
+
+  // The flash ends on its own: never a permanent decoration.
+  useEffect(() => {
+    if (!flashedAnchor) return;
+    const timer = window.setTimeout(() => setFlashedAnchor(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [flashedAnchor]);
+
+  /**
+   * First-run deep-link (see lib/firstRun): centre the anchored row, ring it and
+   * put the caret in its input. The value is the user's to change — this never
+   * writes a setting.
+   */
+  useEffect(() => {
+    if (focusAnchor !== "max-steps") return;
+    // The row only exists once the draft is hydrated from the store.
+    if (creating || !profile || !draft) return;
+    consumeFocusAnchor();
+    if (selectedAgentId !== "default") return;
+    setFlashedAnchor("max-steps");
+    const raf = requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>('[data-anchor="max-steps"]');
+      row?.scrollIntoView?.({ block: "center" });
+      row?.querySelector("input")?.focus();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [focusAnchor, creating, profile, draft, selectedAgentId, consumeFocusAnchor]);
 
   const isHiddenAgent =
     profile != null && isHiddenSettingsAgent(selectedAgentId, profile.role);
@@ -920,6 +966,7 @@ export function AgentsSection() {
               draft={draft}
               saveBlocked={saveBlocked}
               onChange={setDraft}
+              flashMaxSteps={flashedAnchor === "max-steps"}
             />
           ) : null}
         </div>

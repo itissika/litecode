@@ -10,6 +10,7 @@ import type { ContextMode, ThinkingTier } from "../api/types";
 import { useSessionStore } from "../stores/sessionStore";
 import { actionButtonGlass, composerCardClass } from "./composerCard";
 import { AgentPicker, ContextModeToggle, ThinkSlider } from "./AgentChatInput";
+import { ImageThumb } from "./ImageThumb";
 import { ModelSwitcher } from "./ModelSwitcher";
 
 export interface MiniChatInputSettings {
@@ -22,6 +23,7 @@ export interface MiniChatInputSettings {
 export function MiniChatInput({
   sessionId,
   draft,
+  images = [],
   settings,
   disabled = false,
   onDismiss,
@@ -30,6 +32,8 @@ export function MiniChatInput({
 }: {
   sessionId: string;
   draft: string;
+  /** Images already on the message. This editor does not accept new ones. */
+  images?: string[];
   settings: MiniChatInputSettings;
   disabled?: boolean;
   onDismiss: () => void;
@@ -55,7 +59,8 @@ export function MiniChatInput({
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
-    if (disabled || !draft.trim() || !settings.modelId) return;
+    if (disabled || !settings.modelId) return;
+    if (!draft.trim() && images.length === 0) return;
     onSubmit(draft, settings);
   };
 
@@ -118,6 +123,13 @@ export function MiniChatInput({
         </div>
       </div>
       <div className="mx-3 border-t border-(--_dk-line)" />
+      {images.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5 px-3 pt-2">
+          {images.map((ref, index) => (
+            <ImageThumb key={`${ref}:${index}`} mediaRef={ref} />
+          ))}
+        </div>
+      ) : null}
       <div className="relative">
         <textarea
           ref={textareaRef}
@@ -133,7 +145,11 @@ export function MiniChatInput({
         />
         <button
           type="submit"
-          disabled={disabled || !draft.trim() || !settings.modelId}
+          disabled={
+            disabled ||
+            !settings.modelId ||
+            (!draft.trim() && images.length === 0)
+          }
           className={`${actionButtonGlass} absolute right-2 bottom-2 flex h-[30px] w-[30px] items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 disabled:cursor-not-allowed disabled:opacity-40`}
           title="Revert and resend"
         >

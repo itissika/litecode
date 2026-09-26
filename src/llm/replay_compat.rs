@@ -35,7 +35,9 @@ pub fn strip_foreign_ciphertext(
 ) -> usize {
     let mut stripped = 0;
     for (index, item) in items.iter_mut().enumerate() {
-        let Item::Reasoning(reasoning) = item else { continue };
+        let Item::Reasoning(reasoning) = item else {
+            continue;
+        };
         if reasoning.encrypted_content.is_none() {
             continue;
         }
@@ -60,9 +62,11 @@ mod tests {
         Item::Reasoning(ReasoningItem {
             id: Some("cc_rs_1".into()),
             summary: vec![],
-            content: Some(vec![ReasoningItemContent::ReasoningText(ReasoningTextContent {
-                text: "think".into(),
-            })]),
+            content: Some(vec![ReasoningItemContent::ReasoningText(
+                ReasoningTextContent {
+                    text: "think".into(),
+                },
+            )]),
             encrypted_content: encrypted.map(str::to_string),
             status: None,
         })
@@ -73,13 +77,23 @@ mod tests {
         let headers = vec![(5, "a".to_string()), (12, "b".to_string())];
         assert_eq!(
             producers_for_seqs(&[None, Some(3), Some(5), Some(10), Some(14)], &headers),
-            vec![None, None, Some("a".into()), Some("a".into()), Some("b".into())]
+            vec![
+                None,
+                None,
+                Some("a".into()),
+                Some("a".into()),
+                Some("b".into())
+            ]
         );
     }
 
     #[test]
     fn ciphertext_goes_back_only_to_its_producer_and_text_always_stays() {
-        let mut items = vec![reasoning(Some("own")), reasoning(Some("foreign")), reasoning(Some("unknown"))];
+        let mut items = vec![
+            reasoning(Some("own")),
+            reasoning(Some("foreign")),
+            reasoning(Some("unknown")),
+        ];
         let producers = vec![Some("p".to_string()), Some("q".to_string()), None];
         assert_eq!(strip_foreign_ciphertext(&mut items, &producers, "p"), 2);
         let ciphertexts: Vec<_> = items
@@ -90,6 +104,10 @@ mod tests {
             })
             .collect();
         assert_eq!(ciphertexts, vec![Some("own".into()), None, None]);
-        assert!(items.iter().all(|item| crate::types::item_text_preview(item) == "think"));
+        assert!(
+            items
+                .iter()
+                .all(|item| crate::types::item_text_preview(item) == "think")
+        );
     }
 }

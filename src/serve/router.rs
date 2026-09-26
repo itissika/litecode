@@ -68,6 +68,7 @@ pub fn router(state: ServeState, web_dist: PathBuf) -> Router {
         .route("/ws", get(ws::ws_handler))
         .nest("/api/workspace", workspace_router())
         .nest("/api/settings", settings::router())
+        .nest("/api/media", crate::serve::media::router())
         .fallback_service(ServeDir::new(web_dist))
         .layer(auth_layer)
         .layer(cors)

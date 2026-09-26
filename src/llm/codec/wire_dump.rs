@@ -201,7 +201,9 @@ impl Drop for Capture {
     /// One summary per request, whatever the outcome.
     fn drop(&mut self) {
         let elapsed_ms = self.started.elapsed().as_secs_f64() * 1000.0;
-        let Ok(stats) = self.stream.lock() else { return };
+        let Ok(stats) = self.stream.lock() else {
+            return;
+        };
         let received = stats.summary(elapsed_ms);
         let line = human_line(self.n, &self.codec, &self.sent, &received);
         let record = json!({
@@ -222,12 +224,19 @@ impl StreamStats {
         self.lines += 1;
         self.last_ms = ms;
         // `sse_data_payload` hides the `[DONE]` sentinel; it is a terminal here.
-        if line.trim_end_matches('\r').strip_prefix("data:").map(str::trim) == Some("[DONE]") {
+        if line
+            .trim_end_matches('\r')
+            .strip_prefix("data:")
+            .map(str::trim)
+            == Some("[DONE]")
+        {
             self.first_ms.get_or_insert(ms);
             self.terminal = Some("[DONE]".into());
             return;
         }
-        let Some(data) = super::sse::sse_data_payload(line) else { return };
+        let Some(data) = super::sse::sse_data_payload(line) else {
+            return;
+        };
         let data = data.trim();
         if data.is_empty() {
             return;
@@ -240,7 +249,12 @@ impl StreamStats {
         if let Some(kind) = value.get("type").and_then(Value::as_str) {
             // Responses dialect: the event type is the unit.
             *self.events.entry(kind.to_string()).or_default() += 1;
-            let delta_len = || value.get("delta").and_then(Value::as_str).map_or(0, |d| d.chars().count() as u64);
+            let delta_len = || {
+                value
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .map_or(0, |d| d.chars().count() as u64)
+            };
             match kind {
                 "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
                     self.reasoning_chars += delta_len()
@@ -262,11 +276,15 @@ impl StreamStats {
         if let Some(usage) = value.get("usage").filter(|u| !u.is_null()) {
             self.usage = Some(usage.clone());
         }
-        let Some(choice) = value.pointer("/choices/0") else { return };
+        let Some(choice) = value.pointer("/choices/0") else {
+            return;
+        };
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
             self.finish_reason = Some(reason.to_string());
         }
-        let Some(delta) = choice.get("delta") else { return };
+        let Some(delta) = choice.get("delta") else {
+            return;
+        };
         for key in ["reasoning_content", "reasoning"] {
             if let Some(text) = delta.get(key).and_then(Value::as_str) {
                 self.reasoning_chars += text.chars().count() as u64;
@@ -309,7 +327,11 @@ fn sent_stats(codec: &str, body: &Value) -> Value {
         "tools": body.get("tools").and_then(Value::as_array).map_or(0, Vec::len),
         "effort": body.get("reasoning_effort").or_else(|| body.pointer("/reasoning/effort")),
     });
-    let layered = if codec == "chat" { chat_sent(body) } else { responses_sent(body) };
+    let layered = if codec == "chat" {
+        chat_sent(body)
+    } else {
+        responses_sent(body)
+    };
     let mut merged = base;
     if let (Value::Object(target), Value::Object(extra)) = (&mut merged, layered) {
         target.extend(extra);
@@ -321,7 +343,12 @@ fn chat_sent(body: &Value) -> Value {
     let mut roles: BTreeMap<String, u64> = BTreeMap::new();
     let (mut assistant, mut with_tools, mut filled, mut empty, mut absent, mut chars) =
         (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
-    for message in body.get("messages").and_then(Value::as_array).into_iter().flatten() {
+    for message in body
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let role = message.get("role").and_then(Value::as_str).unwrap_or("?");
         *roles.entry(role.to_string()).or_default() += 1;
         if role != "assistant" {
@@ -363,8 +390,16 @@ fn responses_sent(body: &Value) -> Value {
     let (mut reasoning, mut encrypted, mut with_text, mut with_summary, mut ids) =
         (0u64, 0u64, 0u64, 0u64, 0u64);
     let mut chars = 0u64;
-    for item in body.get("input").and_then(Value::as_array).into_iter().flatten() {
-        let kind = item.get("type").and_then(Value::as_str).unwrap_or("message");
+    for item in body
+        .get("input")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let kind = item
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("message");
         let key = match (kind, item.get("role").and_then(Value::as_str)) {
             ("message", Some(role)) => format!("message:{role}"),
             (kind, _) => kind.to_string(),
@@ -377,7 +412,11 @@ fn responses_sent(body: &Value) -> Value {
             continue;
         }
         reasoning += 1;
-        if item.get("encrypted_content").and_then(Value::as_str).is_some_and(|c| !c.is_empty()) {
+        if item
+            .get("encrypted_content")
+            .and_then(Value::as_str)
+            .is_some_and(|c| !c.is_empty())
+        {
             encrypted += 1;
         }
         let text_len = |key: &str| -> u64 {
@@ -443,15 +482,24 @@ fn human_line(n: u64, codec: &str, sent: &Value, received: &Value) -> String {
         "#{n:04} {codec} {status} | sent: {} items, {replay}, ids {}, {}B | recv: ttfb {}ms, {}ms, reasoning {} / content {} chars, tool deltas {}, terminal {}",
         sent.get("items")
             .and_then(Value::as_object)
-            .map_or(0, |items| items.values().filter_map(Value::as_u64).sum::<u64>()),
+            .map_or(0, |items| items
+                .values()
+                .filter_map(Value::as_u64)
+                .sum::<u64>()),
         get(sent, "/ids_on_wire"),
         get(sent, "/body_bytes"),
-        received.get("first_byte_ms").and_then(Value::as_u64).map_or_else(|| "-".into(), |ms| ms.to_string()),
+        received
+            .get("first_byte_ms")
+            .and_then(Value::as_u64)
+            .map_or_else(|| "-".into(), |ms| ms.to_string()),
         get(received, "/elapsed_ms"),
         get(received, "/reasoning_chars"),
         get(received, "/content_chars"),
         get(received, "/tool_call_deltas"),
-        received.get("terminal").and_then(Value::as_str).unwrap_or("none"),
+        received
+            .get("terminal")
+            .and_then(Value::as_str)
+            .unwrap_or("none"),
     );
     if let Some(body) = received.get("error_body").and_then(Value::as_str) {
         line.push_str(&format!(" | error: {body}"));
@@ -515,7 +563,10 @@ mod tests {
     #[test]
     fn stream_fold_counts_both_dialects_and_the_terminal() {
         let mut chat = StreamStats::default();
-        chat.fold(r#"data: {"choices":[{"delta":{"reasoning_content":"abc"}}]}"#, 10.0);
+        chat.fold(
+            r#"data: {"choices":[{"delta":{"reasoning_content":"abc"}}]}"#,
+            10.0,
+        );
         chat.fold(r#"data: {"choices":[{"delta":{"content":"hi","tool_calls":[{"index":0}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5}}"#, 20.0);
         chat.fold("data: [DONE]", 30.0);
         let summary = chat.summary(31.0);
@@ -527,8 +578,14 @@ mod tests {
         assert_eq!(summary["usage"]["prompt_tokens"], 5);
 
         let mut responses = StreamStats::default();
-        responses.fold(r#"data: {"type":"response.reasoning_summary_text.delta","delta":"ab"}"#, 5.0);
-        responses.fold(r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":9}}}"#, 9.0);
+        responses.fold(
+            r#"data: {"type":"response.reasoning_summary_text.delta","delta":"ab"}"#,
+            5.0,
+        );
+        responses.fold(
+            r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":9}}}"#,
+            9.0,
+        );
         let summary = responses.summary(10.0);
         assert_eq!(summary["reasoning_chars"], 2);
         assert_eq!(summary["terminal"], "response.completed");

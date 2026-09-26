@@ -29,16 +29,26 @@ import {
   LITECODE_MONACO_THEME_LIGHT,
 } from "../theme/monaco";
 import { getTheme, THEME_CHANGE_EVENT } from "../lib/theme";
+import { BINARY_FILE_MESSAGE } from "../lib/fileKind";
 import { languageFromPath } from "../utils/language";
 import {
   isWysiwygMarkdownPath,
   resolveMdEditorView,
   WYSIWYG_MARKDOWN_MAX_CHARS,
 } from "../utils/wysiwygMarkdown";
+import { FileFallback } from "./fileview/FileFallback";
+import { ImagePreview } from "./fileview/ImagePreview";
+import { MediaPreview } from "./fileview/MediaPreview";
+import { SqlitePreview } from "./fileview/SqlitePreview";
 
 const MilkdownMarkdownEditor = lazy(async () => {
   const mod = await import("./MilkdownMarkdownEditor");
   return { default: mod.MilkdownMarkdownEditor };
+});
+
+const PdfPreview = lazy(async () => {
+  const mod = await import("./fileview/PdfPreview");
+  return { default: mod.PdfPreview };
 });
 
 export function EditorPane({
@@ -115,6 +125,13 @@ export function EditorPane({
     },
     [lspDesired, wsConnected, bindEditorToLsp],
   );
+
+  // The panel owns its read, the same way an agent panel owns its subscription.
+  // Every transition to connected (first connect and each reconnect) re-reads.
+  useEffect(() => {
+    if (!wsConnected) return;
+    void useEditorStore.getState().ensureReadable(filePath);
+  }, [wsConnected, filePath]);
 
   // Listen to dockview panel api events
   useEffect(() => {
@@ -220,16 +237,16 @@ export function EditorPane({
       <div className="relative min-h-0 flex-1 h-full">
         {tab ? (
           <>
-            {tab.loading && (
+            {tab.loading && tab.kind === "text" && (
               <div className="absolute inset-0 z-10 flex items-center justify-center bg-(--_dk-editor)/80 text-sm text-(--_dk-text-muted)">
                 Loading…
               </div>
             )}
-            {tab.error && (
-              <div className="border-b border-(--_dk-red-500) bg-(--_dk-red-500) px-3 py-1 text-xs text-(--_dk-red-500)">
+            {tab.error && tab.kind === "text" && tab.content ? (
+              <div className="border-b border-(--_dk-tag-danger-border) bg-(--_dk-tag-danger-bg) px-3 py-1 text-xs text-(--_dk-tag-danger-fg)">
                 {tab.error}
               </div>
-            )}
+            ) : null}
             {conflict && (
               <ConflictCard
                 path={conflict.path}
@@ -237,7 +254,33 @@ export function EditorPane({
                 onDismiss={() => clearConflict(conflict.path)}
               />
             )}
-            {useWysiwyg ? (
+            {tab.kind === "image" ? (
+              <ImagePreview path={filePath} diskRevision={tab.diskRevision} />
+            ) : tab.kind === "pdf" ? (
+              <Suspense
+                fallback={
+                  <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-muted)">
+                    Loading…
+                  </div>
+                }
+              >
+                <PdfPreview path={filePath} diskRevision={tab.diskRevision} />
+              </Suspense>
+            ) : tab.kind === "audio" || tab.kind === "video" ? (
+              <MediaPreview
+                path={filePath}
+                diskRevision={tab.diskRevision}
+                kind={tab.kind}
+              />
+            ) : tab.kind === "sqlite" ? (
+              <SqlitePreview path={filePath} diskRevision={tab.diskRevision} />
+            ) : tab.kind === "binary" ||
+              (tab.error && !tab.errorRetryable && tab.content === "") ? (
+              <FileFallback
+                path={filePath}
+                message={tab.error ?? BINARY_FILE_MESSAGE}
+              />
+            ) : useWysiwyg ? (
               tab.loading ? null : (
                 <div ref={milkdownHostRef} className="h-full">
                   <Suspense
@@ -327,8 +370,8 @@ export function EditorPane({
             )}
           </>
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-disabled)">
-            Open a file from the explorer
+          <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-muted)">
+            {wsConnected ? "Loading…" : "Waiting to reconnect…"}
           </div>
         )}
       </div>

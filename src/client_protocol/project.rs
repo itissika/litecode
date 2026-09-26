@@ -585,6 +585,7 @@ pub fn server_hello(
             "active_primary": active_primary,
             "primary_agents": primary_agents,
             "models": models,
+            "host_os": std::env::consts::OS,
         }),
     )
 }
@@ -603,6 +604,11 @@ pub fn model_infos(resolved: &crate::config::ResolvedConfig) -> Vec<ModelInfo> {
             label: model.display_label().to_string(),
             context_window: model.context_window,
             provider_id: model.provider_id.clone(),
+            modalities: model
+                .modalities
+                .iter()
+                .map(|modality| modality.as_str().to_string())
+                .collect(),
         })
         .collect()
 }

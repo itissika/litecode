@@ -27,6 +27,10 @@ describe("toolTitle", () => {
         session_id: "01ABCDEF",
       }).summary,
     ).toBe("auth middleware · in 01ABCDEF");
+    expect(toolTitle("litecode_workspace", {}).summary).toBe("panel");
+    expect(
+      toolTitle("litecode_workspace", { action: "refresh mcp" }).summary,
+    ).toBe("refresh mcp");
   });
 
   it("identifies both LSP action and target file", () => {

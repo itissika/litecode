@@ -24,6 +24,12 @@
   margin-bottom: 0;
 }
 
+.tool-card-markdown .agent-markdown > hr {
+  margin: 0.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--_dk-line);
+}
+
 .tool-card-markdown .agent-markdown > h1,
 .tool-card-markdown .agent-markdown > h2,
 .tool-card-markdown .agent-markdown > h3 {

@@ -19,6 +19,7 @@ use crate::tools::{
     glob::GlobTool,
     grep::GrepTool,
     kill_shell::KillShellTool,
+    litecode_workspace::LitecodeWorkspaceTool,
     lsp::LspTool,
     mcp_tool::McpTool,
     plan::PlanTool,
@@ -32,7 +33,6 @@ use crate::tools::{
     wait_shell::WaitShellTool,
     webfetch::WebFetchTool,
     websearch::WebSearchTool,
-    workspace_stats::WorkspaceStatsTool,
     write::WriteTool,
 };
 
@@ -59,6 +59,7 @@ fn builtin_tool(
 }
 
 fn instantiate_tool(
+    runtime: &RuntimeHandle,
     resolved: &ResolvedConfig,
     agent_id: &str,
     tool_id: &str,
@@ -136,8 +137,12 @@ fn instantiate_tool(
         return vec![Arc::new(SessionSearchTool::new(workspace_engines.clone()))];
     }
 
-    if tool_id == "workspace_stats" {
-        return vec![Arc::new(WorkspaceStatsTool)];
+    if tool_id == "litecode_workspace" {
+        return vec![Arc::new(LitecodeWorkspaceTool::new(
+            runtime.clone(),
+            Arc::clone(sessions),
+            agent_id.to_string(),
+        ))];
     }
 
     if tool_id == "lsp" {
@@ -211,8 +216,10 @@ pub async fn build_tool_list(
         if depth >= SUBAGENT_MAX_DEPTH && tool_id.starts_with("subagent_") {
             continue;
         }
-        // Tool-set gate: plan/todo are primary-only.
-        if depth >= SUBAGENT_MAX_DEPTH && matches!(tool_id.as_str(), "plan" | "todo") {
+        // Tool-set gate: primary-only tools (plan / todo / the workspace panel).
+        if depth >= SUBAGENT_MAX_DEPTH
+            && crate::config::schema::PRIMARY_ONLY_TOOL_IDS.contains(&tool_id.as_str())
+        {
             continue;
         }
 
@@ -250,6 +257,7 @@ pub async fn build_tool_list(
         }
 
         let new_tools = instantiate_tool(
+            runtime,
             resolved,
             agent_id,
             &tool_id,
@@ -386,6 +394,7 @@ mod tests {
         assert!(names.contains(&"subagent_stop"));
         assert!(names.contains(&"subagent_list"));
         assert!(names.contains(&"session_search"));
+        assert!(names.contains(&"litecode_workspace"));
     }
 
     #[test]
@@ -473,6 +482,10 @@ mod tests {
         assert!(!names.contains(&"subagent_list"));
         assert!(!names.contains(&"plan"));
         assert!(!names.contains(&"todo"));
+        assert!(
+            !names.contains(&"litecode_workspace"),
+            "the workspace panel is primary-only"
+        );
     }
 
     #[test]

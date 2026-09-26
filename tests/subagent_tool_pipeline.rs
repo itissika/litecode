@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use common::bindings::binding_safe_for;
 use common::scripted_provider::HangProvider;
-use common::{ScriptedProvider, TEST_PRIMARY_MODEL_REF, default_test_catalog, test_resolved, test_workspace};
+use common::{
+    ScriptedProvider, TEST_PRIMARY_MODEL_REF, default_test_catalog, test_resolved, test_workspace,
+};
 use litecode::config::resolved::resolve;
 use litecode::config::schema::{AgentProfile, AgentRole};
 use litecode::config::{TurnGuard, workspace::set_runtime_paths};

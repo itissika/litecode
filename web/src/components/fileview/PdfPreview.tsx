@@ -1,0 +1,97 @@
+import { useEffect, useRef, useState } from "react";
+import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+
+import { readBytes } from "../../api/workspace";
+import { useConnectionStore } from "../../stores/connectionStore";
+import { FileFallback } from "./FileFallback";
+
+/** Lazy entry: pdfjs stays out of the main bundle until a PDF tab opens. */
+export function PdfPreview({
+  path,
+  diskRevision,
+}: {
+  path: string;
+  diskRevision: number;
+}) {
+  const connected = useConnectionStore((s) => s.state === "connected");
+  const hostRef = useRef<HTMLDivElement>(null);
+  const successKey = useRef<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    if (!connected) return;
+    const key = `${path}\0${diskRevision}`;
+    if (successKey.current === key) return;
+    const host = hostRef.current;
+    if (!host) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void (async () => {
+      try {
+        const blob = await readBytes(path);
+        const data = new Uint8Array(await blob.arrayBuffer());
+        const pdfjs = await import("pdfjs-dist");
+        pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+        const doc = await pdfjs.getDocument({ data }).promise;
+        if (cancelled) {
+          await doc.destroy();
+          return;
+        }
+        host.replaceChildren();
+        for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
+          if (cancelled) break;
+          const page = await doc.getPage(pageNumber);
+          const viewport = page.getViewport({ scale: 1.25 });
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          canvas.className = "mx-auto mb-3 max-w-full bg-white";
+          const context = canvas.getContext("2d");
+          if (!context) continue;
+          host.appendChild(canvas);
+          await page.render({ canvasContext: context, viewport }).promise;
+          page.cleanup();
+        }
+        await doc.destroy();
+        if (cancelled) return;
+        successKey.current = key;
+        setReady(true);
+        setLoading(false);
+      } catch (err) {
+        if (cancelled) return;
+        successKey.current = null;
+        setLoading(false);
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [connected, path, diskRevision]);
+
+  useEffect(() => {
+    successKey.current = null;
+    setReady(false);
+  }, [path, diskRevision]);
+
+  if (error) return <FileFallback path={path} message={error} />;
+
+  return (
+    <div className="relative h-full overflow-auto bg-(--_dk-editor) p-4">
+      {loading ? (
+        <div className="absolute inset-0 flex items-center justify-center text-sm text-(--_dk-text-muted)">
+          Loading…
+        </div>
+      ) : null}
+      {!connected && !loading && !ready ? (
+        <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-muted)">
+          Waiting to reconnect…
+        </div>
+      ) : null}
+      <div ref={hostRef} />
+    </div>
+  );
+}

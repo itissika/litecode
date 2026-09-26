@@ -3,8 +3,8 @@ pub mod context;
 pub mod exec;
 pub mod llm_resolve;
 pub mod observer;
-pub(crate) mod phase;
 pub mod pending_auto_turn;
+pub(crate) mod phase;
 pub mod provider_registry;
 mod stream_projection;
 pub mod subagent_auto_turn;
@@ -48,7 +48,7 @@ use crate::session::{EventDraft, EventType};
 use crate::tool::ToolPipeline;
 use crate::tool::output;
 use crate::tool::registry::build_tool_list;
-use crate::types::{LitecodeError, Result, item_text_preview, user_text};
+use crate::types::{LitecodeError, Result, UserInput, user_input_matches, user_message};
 
 /// Shared runtime configuration for CLI and serve (Phase 4 R4.4).
 pub struct RuntimeHandle {
@@ -383,7 +383,7 @@ pub fn spawn_turn(
     runtime: &RuntimeHandle,
     session_id: String,
     sessions: Arc<SessionManager>,
-    input: String,
+    input: impl Into<UserInput>,
     permission_sink: Arc<dyn PermissionSink>,
     turn_id: String,
     opts: TurnOptions,
@@ -426,13 +426,14 @@ pub fn spawn_turn(
     let step_max = agent_loop.agent_config.max_steps;
     let workspace_paths = runtime.workspace.paths.clone();
     let turn_id_for_thread = turn_id.clone();
+    let user_input = input.into();
 
     let handle = std::thread::spawn(move || {
         set_runtime_paths(workspace_paths);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        rt.block_on(agent_loop.run_with_turn(&input, &turn_id_for_thread, step_max))
+        rt.block_on(agent_loop.run_with_turn(user_input, &turn_id_for_thread, step_max))
     });
 
     Ok(TurnHandle {
@@ -799,13 +800,13 @@ impl AgentRuntime {
 
     pub async fn run(&mut self, user_prompt: &str) -> Result<String> {
         let step_max = self.agent_config.max_steps;
-        self.run_with_turn(user_prompt, "local-turn", step_max)
+        self.run_with_turn(UserInput::text(user_prompt), "local-turn", step_max)
             .await
     }
 
     pub async fn run_with_turn(
         &mut self,
-        user_prompt: &str,
+        user_input: UserInput,
         turn_id: &str,
         step_max: u32,
     ) -> Result<String> {
@@ -866,7 +867,12 @@ impl AgentRuntime {
             self.tool_pipeline = Some(tool_pipeline);
         }
 
-        tracing::info!(session_id = %self.session_id, input = %user_prompt, "agent loop start");
+        tracing::info!(
+            session_id = %self.session_id,
+            input = %user_input.text,
+            images = user_input.images.len(),
+            "agent loop start"
+        );
 
         // Fresh per-turn meters (defensive if a prior turn exited without finalize).
         self.turn_token_stats = TurnTokenStats::default();
@@ -874,7 +880,7 @@ impl AgentRuntime {
 
         self.emit_internal(InternalEvent::TurnStarted {
             turn_id: turn_id.to_string(),
-            input: user_prompt.to_string(),
+            input: user_input.text.clone(),
             step_max,
         });
         self.emit_internal(InternalEvent::PhaseChanged {
@@ -908,10 +914,11 @@ impl AgentRuntime {
 
         let already_last_user = items
             .last()
-            .is_some_and(|m| item_text_preview(m) == user_prompt);
+            .is_some_and(|item| user_input_matches(item, &user_input));
         if !already_last_user {
-            items.push(user_text(user_prompt.to_string()));
-            working.push(WorkingRow::pending(user_text(user_prompt.to_string())));
+            let item = user_message(&user_input.text, &user_input.images);
+            items.push(item.clone());
+            working.push(WorkingRow::pending(item));
         }
 
         // User Items are complete before any model stream. Persist
@@ -1006,13 +1013,20 @@ impl AgentRuntime {
             TurnOutcome::Completed { .. } | TurnOutcome::MaxSteps { .. }
         );
         // Persist the final turn delta before TurnCompleted so the DB already
-        // contains the whole turn when the event lands.
+        // contains the whole turn when the event lands. On failure, seal rows
+        // still in flight and return: this path skips `finalize_agent_outcome`.
         if should_commit {
-            let commit_outcome = self.context_pipeline.commit_step_from_items(
+            let commit_outcome = match self.context_pipeline.commit_step_from_items(
                 &self.sessions,
                 &self.session_id,
                 &mut items,
-            )?;
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.seal_rows_still_in_flight();
+                    return Err(error);
+                }
+            };
             if !commit_outcome.discarded {
                 if commit_outcome.committed {
                     self.emit_internal(crate::runtime::observer::InternalEvent::StepCommitted);

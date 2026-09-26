@@ -38,12 +38,8 @@ impl AgentDeps for AgentRuntime {
         // Fail closed before request build when Items require unsupported modalities.
         crate::runtime::validate_llm_input_capabilities(&view.items, &self.turn_llm.model)?;
         let token_count = view.token_count;
-        let request = self.build_model_request(
-            &instructions,
-            view.items,
-            view.item_seqs,
-            token_count,
-        )?;
+        let request =
+            self.build_model_request(&instructions, view.items, view.item_seqs, token_count)?;
 
         // Default path: Responses SSE via complete_with_stream_events → authority
         // ResponseStreamEvent; observer forwards InternalEvent::StreamEvent.
@@ -164,17 +160,14 @@ impl AgentDeps for AgentRuntime {
                 .claim_pending_messages_for_turn(&self.session_id, &turn_id)
             && !claimed.is_empty()
         {
-            let merged = claimed
-                .iter()
-                .map(|message| message.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            if let Err(error) = self.sessions.append_user_message(&self.session_id, &merged) {
+            let merged = crate::session::manager::merge_pending(&claimed);
+            if let Err(error) = self.sessions.append_user_message(&self.session_id, merged) {
                 // The queue is the delivery contract: never drop it silently.
                 // Restore it in order and stop this injection — the message
                 // stays visible, and the end-of-turn flush retries it as a
                 // normal turn input.
-                self.sessions.restore_pending_messages(&self.session_id, claimed);
+                self.sessions
+                    .restore_pending_messages(&self.session_id, claimed);
                 return Err(crate::types::LitecodeError::Anyhow(error));
             }
             appended = true;
@@ -441,7 +434,8 @@ impl AgentRuntime {
             "provider_id": self.turn_llm.provider_id,
             "model_ref": self.turn_llm.model_ref,
         });
-        self.sessions.append_request_origin(&self.session_id, &record)
+        self.sessions
+            .append_request_origin(&self.session_id, &record)
     }
 
     /// Items in/out via `complete_with_stream_events` (Responses SSE by default).

@@ -2457,3 +2457,99 @@ async fn settings_put_subagent_strips_plan_and_todo_bindings() {
     assert!(!loaded.agents["worker"].tools.contains_key("todo"));
     assert!(loaded.agents["worker"].tools.contains_key("read"));
 }
+
+/// Keyless variant of [`seed_global_db`]: the fixture catalog exists, but no
+/// provider holds a credential, so no model is selectable yet.
+fn seed_global_db_without_key(path: &std::path::Path) {
+    let mut settings = default_test_global();
+    settings.provider_credentials.clear();
+    common::seed_test_catalog(path, common::TEST_CATALOG_ENDPOINT, 128_000);
+    write_global_db(path, &settings);
+}
+
+async fn next_json_frame<S>(socket: &mut S) -> Value
+where
+    S: futures_util::Stream<
+            Item = Result<
+                tokio_tungstenite::tungstenite::Message,
+                tokio_tungstenite::tungstenite::Error,
+            >,
+        > + Unpin,
+{
+    use futures_util::StreamExt;
+
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next())
+            .await
+            .expect("a frame within 10s")
+            .expect("socket open")
+            .expect("frame decodes");
+        if let tokio_tungstenite::tungstenite::Message::Text(text) = frame {
+            return serde_json::from_str(text.as_ref()).expect("json frame");
+        }
+    }
+}
+
+/// Read frames until `method` shows up, skipping the unrelated pushes.
+async fn wait_for_method<S>(socket: &mut S, method: &str) -> Value
+where
+    S: futures_util::Stream<
+            Item = Result<
+                tokio_tungstenite::tungstenite::Message,
+                tokio_tungstenite::tungstenite::Error,
+            >,
+        > + Unpin,
+{
+    for _ in 0..20 {
+        let frame = next_json_frame(socket).await;
+        if frame["method"] == serde_json::json!(method) {
+            return frame;
+        }
+    }
+    panic!("no {method} frame within 20 frames");
+}
+
+/// The key write commits and broadcasts before the REST handler reloads the
+/// runtime, so the `models/changed` this task pushes must apply the event's own
+/// docs first. Without that it ships the pre-key projection — an empty model
+/// list — and no later frame ever corrects it, leaving pickers dead until the
+/// next reconnect.
+///
+/// The write goes straight to the writer (no REST handler, so nothing else
+/// reloads the runtime): that is the ordering the push task has to survive.
+#[tokio::test]
+async fn provider_key_write_pushes_models_changed_with_the_new_models() {
+    let ws = TempDir::new().expect("ws");
+    let db_dir = TempDir::new().expect("db");
+    let db_path = db_dir.path().join("litecode.db");
+    seed_global_db_without_key(&db_path);
+
+    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path.clone());
+    let writer = state.settings_writer.clone();
+    let addr = spawn_server(state, web_dist).await;
+
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        .await
+        .expect("ws connect");
+
+    let hello = wait_for_method(&mut socket, "server/hello").await;
+    assert_eq!(
+        hello["params"]["models"].as_array().map(Vec::len),
+        Some(0),
+        "no credential yet, so nothing is selectable: {hello}"
+    );
+
+    writer
+        .write_provider_key(common::TEST_PROVIDER_ID, "sk-ws-fresh")
+        .expect("key write");
+
+    let changed = wait_for_method(&mut socket, "models/changed").await;
+    let models = changed["params"]["models"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !models.is_empty(),
+        "the push triggered by the key write must carry the newly selectable models: {changed}"
+    );
+}

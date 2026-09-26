@@ -3,7 +3,7 @@ import { create } from "zustand";
 import {
   applyTurnEventMeta,
   newPendingUserId,
-  userTextItem,
+  userItem,
 } from "../api/adapter";
 import type {
   AgentRunState,
@@ -26,8 +26,6 @@ import { useConnectionStore, attachSiblingStores } from "./connectionStore";
 import { appendComposerText } from "./composerDraft";
 import { useMessageStore, type TurnEndNotice } from "./messageStore";
 import { useNotificationStore } from "./notificationStore";
-import { toastLlmConfigFailure } from "../lib/settingsGuidance";
-import { useSettingsStore } from "./settingsStore";
 import { useToastStore } from "./toastStore";
 
 export interface PendingPermission {
@@ -225,12 +223,21 @@ function turnEndNoticeFrom(tf: TurnFinished): TurnEndNotice | null {
 interface TurnStore {
   byId: Map<string, TurnSlice>;
 
-  start: (sessionId: string, input: string, planExecution?: boolean) => boolean;
+  start: (
+    sessionId: string,
+    input: string,
+    planExecution?: boolean,
+    images?: string[],
+  ) => boolean;
   /**
    * Queue a message for the live turn (running / stopping). The ack carries the
    * full authority list; the broadcast may also have landed first.
    */
-  enqueuePending: (sessionId: string, text: string) => Promise<boolean>;
+  enqueuePending: (
+    sessionId: string,
+    text: string,
+    images?: string[],
+  ) => Promise<boolean>;
   /** Delete one queued message by its server id (idempotent). */
   removePending: (sessionId: string, id: string) => Promise<boolean>;
   /** Full authority list (snapshot hydrate or `session/pending_messages`). */
@@ -246,6 +253,7 @@ interface TurnStore {
     userAnchorK: number,
     input: string,
     settings: ReplaySettings,
+    images?: string[],
   ) => Promise<boolean>;
   compact: (sessionId: string) => void;
   cancel: (sessionId: string) => void;
@@ -329,9 +337,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
   return {
     byId: new Map(),
 
-    start: (sessionId, input, planExecution = false) => {
+    start: (sessionId, input, planExecution = false, images = []) => {
       const trimmed = input.trim();
-      if (!trimmed) return false;
+      if (!trimmed && images.length === 0) return false;
 
       const ws = useConnectionStore.getState();
       const current = getSlice(get().byId, sessionId);
@@ -346,7 +354,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
 
       const pending = {
         clientId: newPendingUserId(),
-        item: userTextItem(trimmed),
+        item: userItem(trimmed, images),
       };
       useMessageStore.getState().pushPendingUser(sessionId, pending);
 
@@ -360,6 +368,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         input: trimmed,
         session_id: sessionId,
         plan_execution: planExecution,
+        ...(images.length > 0
+          ? { images: images.map((ref) => ({ ref })) }
+          : {}),
       };
 
       clearSealWatchdog(sessionId);
@@ -405,30 +416,26 @@ export const useTurnStore = create<TurnStore>((set, get) => {
             error instanceof Error
               ? error.message
               : "Failed to start agent turn";
-          // Config / setup gaps → corner toast with full guidance (not the bell).
-          if (
-            useSettingsStore.getState().summary?.setup_guidance ||
-            /model_ref|no model configured|provider|not found|Settings/i.test(
-              message,
-            )
-          ) {
-            toastLlmConfigFailure(message);
-          } else {
-            useToastStore.getState().showToast(message, "error", 8000);
-          }
+          useToastStore.getState().showToast(message, "error", 8000);
         });
       return true;
     },
 
-    enqueuePending: async (sessionId, text) => {
+    enqueuePending: async (sessionId, text, images = []) => {
       const trimmed = text.trim();
-      if (!trimmed) return false;
+      if (!trimmed && images.length === 0) return false;
       const ws = useConnectionStore.getState();
       if (!ws.sendRpc) return false;
       try {
         const result = await ws.sendRpc<{ pending_messages?: PendingMessage[] }>(
           "session/pending-enqueue",
-          { text: trimmed, session_id: sessionId },
+          {
+            text: trimmed,
+            session_id: sessionId,
+            ...(images.length > 0
+              ? { images: images.map((ref) => ({ ref })) }
+              : {}),
+          },
         );
         if (Array.isArray(result?.pending_messages)) {
           get().applyPendingMessages(sessionId, result.pending_messages);
@@ -479,12 +486,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       // route, so the bubble stays until that row lands (messageStore seals it
       // by text). Only a snapshot or an explicit recall clears it.
       if (pending.length > 0) {
-        useMessageStore
-          .getState()
-          .setPendingQueue(
-            sessionId,
-            pending.map((message) => message.text),
-          );
+        useMessageStore.getState().setPendingQueue(sessionId, pending);
       }
     },
 
@@ -496,6 +498,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       appendComposerText(
         sessionId,
         list.map((message) => message.text).join("\n\n"),
+        list.flatMap((message) => message.images ?? []),
       );
       useMessageStore.getState().setPendingQueue(sessionId, null);
       const removed = await Promise.all(
@@ -507,17 +510,16 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (rest.length > 0) {
         useMessageStore
           .getState()
-          .setPendingQueue(
-            sessionId,
-            rest.map((message) => message.text),
-          );
+        useMessageStore.getState().setPendingQueue(sessionId, rest);
       }
       return removed.every(Boolean);
     },
 
-    replayFromAnchor: (sessionId, userAnchorK, input, settings) => {
+    replayFromAnchor: (sessionId, userAnchorK, input, settings, images = []) => {
       const trimmed = input.trim();
-      if (!trimmed || !settings.modelId) return Promise.resolve(false);
+      if ((!trimmed && images.length === 0) || !settings.modelId) {
+        return Promise.resolve(false);
+      }
 
       const existing = replayBySession.get(sessionId);
       if (existing) return existing;
@@ -572,7 +574,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           // `start` rejects concurrent user sends while replaying. Release the
           // workflow lock only for this synchronous, owned replacement start.
           patch(sessionId, { replaying: false });
-          if (!get().start(sessionId, trimmed)) {
+          if (!get().start(sessionId, trimmed, false, images)) {
             throw new Error("Unable to start the replacement turn");
           }
           return true;
@@ -580,7 +582,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           // The edited text lived only in the mini chat's draft and the panel is
           // already dismissed: hand it back to the composer instead of losing it
           // (the revert may well have already truncated the log).
-          appendComposerText(sessionId, trimmed);
+          appendComposerText(sessionId, trimmed, images);
           useToastStore
             .getState()
             .showToast(
@@ -742,16 +744,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           notify.add(sessionId, "Context compacted");
           break;
         case "error":
-          if (
-            useSettingsStore.getState().summary?.setup_guidance ||
-            /model_ref|no model configured|compaction|Settings → Agents|Settings -> Agents/i.test(
-              te.event.message,
-            )
-          ) {
-            toastLlmConfigFailure(te.event.message);
-          } else {
-            useToastStore.getState().showToast(te.event.message, "error", 8000);
-          }
+          useToastStore.getState().showToast(te.event.message, "error", 8000);
           break;
         case "snapshot_notice": {
           const level = te.event.level.toLowerCase();
@@ -1029,9 +1022,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         .getState()
         .setPendingQueue(
           sessionId,
-          pending.length > 0
-            ? pending.map((message) => message.text)
-            : null,
+          pending.length > 0 ? pending : null,
         );
     },
 

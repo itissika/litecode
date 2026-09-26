@@ -115,6 +115,9 @@ pub struct ModelInfo {
     /// Catalog provider id; the UI groups by it and picks a logo.
     #[serde(default)]
     pub provider_id: String,
+    /// Input modalities the model accepts (`text`, `image`, …).
+    #[serde(default)]
+    pub modalities: Vec<String>,
 }
 
 /// Wire handshake payload.
@@ -129,6 +132,9 @@ pub struct ServerHello {
     /// Selectable models for the model switcher (provider has a credential).
     #[serde(default)]
     pub models: Vec<ModelInfo>,
+    /// OS of the machine that holds the workspace files (`windows`, `linux`, `macos`).
+    #[serde(default)]
+    pub host_os: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

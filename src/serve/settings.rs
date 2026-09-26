@@ -11,8 +11,8 @@ use axum::routing::{get, post, put};
 use serde::{Deserialize, Serialize};
 
 use crate::config::schema::{
-    AgentProfile, AvailableTool, CustomToolDefinition, LogSettings, McpServerDefinition, ToolOrigin,
-    ToolPreset,
+    AgentProfile, AvailableTool, CustomToolDefinition, LogSettings, McpServerDefinition,
+    ToolOrigin, ToolPreset,
 };
 use crate::config::workspace::WorkspaceEnginesFile;
 use crate::config::{CommitAck, DocId};
@@ -86,7 +86,10 @@ pub fn router() -> Router<ServeState> {
     Router::new()
         .route("/", get(get_settings))
         .route("/llm", get(get_llm))
-        .route("/providers/{id}/key", put(put_provider_key).delete(delete_provider_key))
+        .route(
+            "/providers/{id}/key",
+            put(put_provider_key).delete(delete_provider_key),
+        )
         // The model ref travels in the body, never in the path: a ref carries two
         // slashes (`commandcode/deepseek/deepseek-v4-flash`).
         .route("/models/enabled", put(put_model_enabled))
@@ -156,7 +159,9 @@ fn require_catalog_provider(state: &ServeState, provider_id: &str) -> Option<Res
                 StatusCode::NOT_FOUND,
                 Json(ApiErr {
                     ok: false,
-                    error: format!("provider '{provider_id}' is not declared in the provider catalog"),
+                    error: format!(
+                        "provider '{provider_id}' is not declared in the provider catalog"
+                    ),
                 }),
             )
                 .into_response(),

@@ -17,7 +17,8 @@ pub use schema::{
 };
 pub use store::{
     CATALOG_FILE_NAME, CATALOG_SCHEMA, DEFAULT_CATALOG, INITIALIZED_MARKER, SCHEMA_FILE_NAME,
-    catalog_path_for_db, forget, load_for_db, read_and_parse, schema_path_for_db, shared_for_db,
+    SeedGap, SeedProviderGap, catalog_path_for_db, forget, load_for_db, read_and_parse,
+    schema_path_for_db, seed_gap, shared_for_db,
 };
 
 #[cfg(test)]

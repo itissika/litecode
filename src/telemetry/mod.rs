@@ -92,7 +92,10 @@ pub fn descendant_pids(roots: &[u32]) -> Vec<u32> {
 
 /// Pure BFS over a parent→children map; the visited set bounds the walk and
 /// guards against cycles caused by PID reuse.
-fn descendants_from_ppid_map(map: &std::collections::HashMap<u32, Vec<u32>>, roots: &[u32]) -> Vec<u32> {
+fn descendants_from_ppid_map(
+    map: &std::collections::HashMap<u32, Vec<u32>>,
+    roots: &[u32],
+) -> Vec<u32> {
     let mut seen: std::collections::HashSet<u32> = roots.iter().copied().collect();
     let mut queue: std::collections::VecDeque<u32> = roots.iter().copied().collect();
     let mut out = Vec::new();
@@ -114,7 +117,7 @@ fn descendants_from_ppid_map(map: &std::collections::HashMap<u32, Vec<u32>>, roo
 fn process_ppid_map() -> std::collections::HashMap<u32, Vec<u32>> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
 
@@ -165,7 +168,10 @@ fn process_ppid_map() -> std::collections::HashMap<u32, Vec<u32>> {
         let Some((_, rest)) = stat.rsplit_once(')') else {
             continue;
         };
-        let Some(ppid) = rest.split_whitespace().nth(1).and_then(|f| f.parse::<u32>().ok())
+        let Some(ppid) = rest
+            .split_whitespace()
+            .nth(1)
+            .and_then(|f| f.parse::<u32>().ok())
         else {
             continue;
         };
@@ -319,8 +325,7 @@ mod tests {
 
     fn ppid_map(pairs: &[(u32, u32)]) -> std::collections::HashMap<u32, Vec<u32>> {
         // (ppid, pid)
-        let mut map: std::collections::HashMap<u32, Vec<u32>> =
-            std::collections::HashMap::new();
+        let mut map: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
         for &(ppid, pid) in pairs {
             map.entry(ppid).or_default().push(pid);
         }

@@ -300,7 +300,9 @@ provider_id = "second"
         // Keyless providers contribute nothing; no key at all means no fallback.
         assert_eq!(multi(&[], &[]).fallback_model_ref(), None);
         assert_eq!(
-            multi(&[("second", "sk")], &[]).fallback_model_ref().as_deref(),
+            multi(&[("second", "sk")], &[])
+                .fallback_model_ref()
+                .as_deref(),
             Some("second/second-model")
         );
     }
@@ -308,7 +310,9 @@ provider_id = "second"
     #[test]
     fn repair_fills_empty_lost_and_unkeyed_refs_and_leaves_good_ones_alone() {
         let mut global = GlobalSettings::default();
-        global.provider_credentials.insert("first".into(), "sk".into());
+        global
+            .provider_credentials
+            .insert("first".into(), "sk".into());
         global.agents.insert(
             "empty".into(),
             AgentProfile {

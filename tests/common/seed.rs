@@ -116,7 +116,11 @@ pub fn test_catalog_windows(
 
 /// In-memory fixture catalog (no DB file needed) for fixtures that build a
 /// `ResolvedConfig` directly.
-pub fn test_catalog(endpoint: &str, context_window: usize, max_output: u32) -> Arc<ProviderCatalog> {
+pub fn test_catalog(
+    endpoint: &str,
+    context_window: usize,
+    max_output: u32,
+) -> Arc<ProviderCatalog> {
     Arc::new(
         ProviderCatalog::parse(
             &test_catalog_toml(endpoint, context_window, max_output),
@@ -151,8 +155,11 @@ pub fn seed_test_catalog_with(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("catalog dir");
     }
-    std::fs::write(&path, test_catalog_toml(endpoint, context_window, max_output))
-        .expect("write test catalog");
+    std::fs::write(
+        &path,
+        test_catalog_toml(endpoint, context_window, max_output),
+    )
+    .expect("write test catalog");
     path
 }
 

@@ -19,7 +19,7 @@ use std::sync::{Arc, RwLock};
 use crate::permission::{PermissionSink, deny_permission_sink};
 use crate::runtime::{RuntimeHandle, TurnOptions, spawn_turn};
 use crate::session::{LifecycleEvent, SessionManager};
-use crate::types::LitecodeError;
+use crate::types::{LitecodeError, UserInput};
 
 pub enum PendingFlush {
     Prepared {
@@ -27,7 +27,7 @@ pub enum PendingFlush {
         turn_id: String,
         primary_agent: String,
         project: String,
-        input: String,
+        input: UserInput,
         sink: Arc<dyn PermissionSink>,
     },
     SkippedBusy,
@@ -81,12 +81,8 @@ pub fn try_begin_pending_flush(
         Err(_) => return PendingFlush::SkippedSessionGone,
     };
 
-    let input = claimed
-        .iter()
-        .map(|message| message.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if let Err(error) = sessions.append_user_message(sid, &input) {
+    let input = crate::session::manager::merge_pending(&claimed);
+    if let Err(error) = sessions.append_user_message(sid, input.clone()) {
         tracing::warn!(session_id = sid, %error, "failed to persist pending messages");
         sessions.restore_pending_messages(sid, claimed);
         sessions.release_turn_reservation(sid, &turn_id);
@@ -171,8 +167,7 @@ fn maybe_spawn_pending_flush(
     session_id: &str,
 ) {
     let runtime_snap = runtime.read().expect("runtime lock").clone();
-    let decision =
-        try_begin_pending_flush(&runtime_snap, sessions, workspace_root, session_id);
+    let decision = try_begin_pending_flush(&runtime_snap, sessions, workspace_root, session_id);
     spawn_prepared_pending_flush(&runtime_snap, sessions, decision);
 }
 
@@ -215,9 +210,7 @@ mod tests {
     use crate::workspace::WorkspaceService;
     use std::sync::atomic::AtomicU64;
 
-    fn test_runtime(
-        root: &std::path::Path,
-    ) -> (RuntimeHandle, Arc<SessionManager>) {
+    fn test_runtime(root: &std::path::Path) -> (RuntimeHandle, Arc<SessionManager>) {
         let mut global = GlobalSettings::default();
         global.agents.insert(
             "default".into(),
@@ -306,7 +299,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!(session_id, sid);
-                assert_eq!(input, "first\n\nsecond");
+                assert_eq!(input.text, "first\n\nsecond");
+                assert!(input.images.is_empty());
                 assert!(sessions.pending_messages_snapshot(&sid).is_empty());
                 assert!(sessions.is_turn_running_blocking(&sid));
                 let events = sessions.data().events_blocking(&sid).unwrap();
@@ -315,6 +309,51 @@ mod tests {
                     .filter(|event| event.event_type == crate::session::EventType::ItemUser)
                     .count();
                 assert_eq!(user_rows, 1, "merged queue must be exactly one user row");
+                sessions.release_turn_reservation(&sid, &turn_id);
+            }
+            _ => panic!("expected prepared"),
+        }
+    }
+
+    #[test]
+    fn idle_flush_keeps_images_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let sid = sessions
+            .open_session_sync(&dir.path().display().to_string(), "default", None)
+            .unwrap();
+        let first = format!("litecode-media:{}.jpg", "aa".repeat(32));
+        let second = format!("litecode-media:{}.png", "bb".repeat(32));
+        sessions
+            .enqueue_user_input(
+                &sid,
+                UserInput {
+                    text: "look".into(),
+                    images: vec![first.clone()],
+                },
+            )
+            .unwrap();
+        sessions
+            .enqueue_user_input(
+                &sid,
+                UserInput {
+                    text: String::new(),
+                    images: vec![second.clone()],
+                },
+            )
+            .unwrap();
+        match try_begin_pending_flush(&runtime, &sessions, dir.path(), &sid) {
+            PendingFlush::Prepared { input, turn_id, .. } => {
+                assert_eq!(input.text, "look\n\n");
+                assert_eq!(input.images, vec![first.clone(), second.clone()]);
+                let events = sessions.data().events_blocking(&sid).unwrap();
+                let row = events
+                    .iter()
+                    .find(|event| event.event_type == crate::session::EventType::ItemUser)
+                    .expect("user row");
+                let body = row.data.to_string();
+                assert!(body.contains(&first));
+                assert!(body.contains(&second));
                 sessions.release_turn_reservation(&sid, &turn_id);
             }
             _ => panic!("expected prepared"),

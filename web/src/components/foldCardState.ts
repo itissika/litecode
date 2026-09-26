@@ -19,7 +19,9 @@
  * by its caller's current system state, including after a virtual-list remount.
  * This prevents an old live measurement from overriding a completed group.
  *
- * State is dropped per session when its panel closes (`clearFoldCardOpen`).
+ * State is dropped per session when its panel closes (`clearFoldCardOpen`),
+ * synchronously inside dockview's remove event — not in the panel's unmount
+ * effect, which runs too late to beat a reopen.
  */
 export type FoldCardOpenIntent = "none" | "keepopen" | "keepclosed";
 

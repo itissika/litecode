@@ -18,10 +18,10 @@ use crate::engines::code_search::{
 };
 use crate::types::{LitecodeError, Result};
 
-use super::{SEMANTIC_WINDOW, SessionHitLane, SessionTextHit, echo};
 use super::corpus::{self, SessionDoc};
 use super::ranking::{ContentRole, HitEvidence, LayerId, RankBand, RankKey};
 use super::slots::{Policy, SlotCfg};
+use super::{SEMANTIC_WINDOW, SessionHitLane, SessionTextHit, echo};
 
 use crate::session::SessionDataReader;
 
@@ -672,7 +672,6 @@ impl SessionSemanticIndex {
         self.remove_id(id);
         true
     }
-
 }
 
 /// Hash of the live key list.

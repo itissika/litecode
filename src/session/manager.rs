@@ -29,6 +29,25 @@ use crate::types::{LitecodeError, Result};
 pub struct PendingMessage {
     pub id: String,
     pub text: String,
+    /// `litecode-media:` refs, in paste order. Empty for a text-only queue entry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+}
+
+/// One user message from a claimed queue: texts joined the way the client
+/// seals the in-flight bubble (`"\n\n"`), images concatenated in order.
+pub fn merge_pending(messages: &[PendingMessage]) -> crate::types::UserInput {
+    crate::types::UserInput {
+        text: messages
+            .iter()
+            .map(|message| message.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        images: messages
+            .iter()
+            .flat_map(|message| message.images.iter().cloned())
+            .collect(),
+    }
 }
 
 /// Live turn bookkeeping without wire types.
@@ -87,6 +106,27 @@ impl SessionStatus {
 pub struct ChildCounts {
     pub total: usize,
     pub running: usize,
+}
+
+/// One session's live activity, read from the process registry.
+///
+/// Durable session facts (last write, preview) live in `sessions.db`; only the
+/// process knows which sessions hold a turn right now. Read-only projection for
+/// the workspace panel: never written back, never a control channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionActivityRow {
+    pub session_id: String,
+    /// Own activity only. A parent whose child is running stays `Idle` here —
+    /// the child row carries the running turn; use [`SessionManager::session_status`]
+    /// for the promoted `RunningWithSubagent` view.
+    pub status: SessionStatus,
+    /// When the current turn started, while the session is occupied by one.
+    pub turn_started_at_ms: Option<i64>,
+    /// Current step of the running turn as `(step, step_max)`.
+    pub step: Option<(u64, u32)>,
+    pub agent_id: String,
+    pub model_id: Option<String>,
+    pub parent_session_id: Option<String>,
 }
 
 impl SessionActivity {
@@ -1043,9 +1083,20 @@ impl SessionManager {
     /// Queue a user message for the live session. Never persisted: only the
     /// consuming append writes an `item/user` row.
     pub fn enqueue_pending_message(&self, session_id: &str, text: &str) -> Result<PendingMessage> {
+        self.enqueue_user_input(session_id, crate::types::UserInput::text(text))
+    }
+
+    /// Queue a composer payload. Image refs are stored as-is; the caller has
+    /// already checked they are `litecode-media:` names.
+    pub fn enqueue_user_input(
+        &self,
+        session_id: &str,
+        input: crate::types::UserInput,
+    ) -> Result<PendingMessage> {
         let message = PendingMessage {
             id: uuid::Uuid::new_v4().to_string(),
-            text: text.to_string(),
+            text: input.text,
+            images: input.images,
         };
         let mut records = self.records.lock().unwrap();
         let record = records.get_mut(session_id).ok_or_else(|| {
@@ -1256,6 +1307,29 @@ impl SessionManager {
         } else {
             SessionStatus::Idle
         })
+    }
+
+    /// Live activity of every session known to this process, sorted by id.
+    ///
+    /// Cheap: one lock, no I/O. Sessions that only exist on disk (from an
+    /// earlier process) are not included — count those with
+    /// `SessionDataReader::list_session_ids_blocking`.
+    pub fn activity_snapshot(&self) -> Vec<SessionActivityRow> {
+        let records = self.records.lock().unwrap();
+        let mut rows: Vec<SessionActivityRow> = records
+            .iter()
+            .map(|(session_id, record)| SessionActivityRow {
+                session_id: session_id.clone(),
+                status: record.activity.status(),
+                turn_started_at_ms: record.activity.progress().map(|p| p.started_at_ms),
+                step: record.activity.progress().map(|p| (p.step, p.step_max)),
+                agent_id: record.agent_id.clone(),
+                model_id: record.model_id.clone(),
+                parent_session_id: record.parent_session_id.clone(),
+            })
+            .collect();
+        rows.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        rows
     }
 
     /// Public descendant ids for session-level tooling; root excluded.
@@ -2159,8 +2233,13 @@ impl SessionManager {
     /// The only durable artifact of the memory-only pending queue: it must be
     /// indistinguishable from a message typed into the composer — same
     /// `item/user` kind, same revert-anchor status, same rendering.
-    pub fn append_user_message(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
-        let item = crate::types::user_text(text.to_string());
+    pub fn append_user_message(
+        &self,
+        session_id: &str,
+        input: impl Into<crate::types::UserInput>,
+    ) -> anyhow::Result<()> {
+        let input = input.into();
+        let item = crate::types::user_message(input.text, &input.images);
         let mut draft = EventDraft::surface_item(
             EventType::ItemUser,
             &item,
@@ -2870,6 +2949,59 @@ mod child_session_tests {
         assert_eq!(
             mgr.get_cached_progress(&sid).map(|p| p.turn_id),
             Some("t2".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn activity_snapshot_reports_running_turn_and_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db.to_str().unwrap().to_string(),
+        ));
+        let idle = mgr.open_session("/proj", "default", None).await.unwrap();
+        let running = mgr.open_session("/proj", "reviewer", None).await.unwrap();
+        assert!(
+            mgr.activity_snapshot()
+                .iter()
+                .all(|r| r.status == SessionStatus::Idle)
+        );
+
+        mgr.reserve_turn(&running, "t1".into(), 7, "reviewer", "/proj")
+            .unwrap();
+
+        let rows = mgr.activity_snapshot();
+        let row = rows
+            .iter()
+            .find(|r| r.session_id == running)
+            .expect("running session listed");
+        assert_eq!(row.status, SessionStatus::Running);
+        assert_eq!(row.step, Some((1, 7)));
+        assert!(row.turn_started_at_ms.is_some_and(|t| t > 0));
+        assert_eq!(row.agent_id, "reviewer");
+        assert_eq!(row.parent_session_id, None);
+
+        let idle_row = rows
+            .iter()
+            .find(|r| r.session_id == idle)
+            .expect("idle session listed");
+        assert_eq!(idle_row.status, SessionStatus::Idle);
+        assert_eq!(idle_row.turn_started_at_ms, None);
+
+        // Sorted by id so a panel renders a stable order.
+        let ids: Vec<String> = rows.iter().map(|r| r.session_id.clone()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted);
+
+        assert!(mgr.release_turn_reservation(&running, "t1"));
+        assert_eq!(
+            mgr.activity_snapshot()
+                .iter()
+                .find(|r| r.session_id == running)
+                .map(|r| r.status),
+            Some(SessionStatus::Idle)
         );
     }
 
@@ -3609,7 +3741,11 @@ mod pending_message_tests {
         let claimed = mgr.claim_pending_messages_for_turn(&sid, "t1").unwrap();
         assert_eq!(claimed.len(), 2);
         assert!(!mgr.has_pending_messages(&sid));
-        assert!(mgr.claim_pending_messages_for_turn(&sid, "t1").unwrap().is_empty());
+        assert!(
+            mgr.claim_pending_messages_for_turn(&sid, "t1")
+                .unwrap()
+                .is_empty()
+        );
 
         // A message queued after the claim survives a restore and lands after
         // the claimed block.
@@ -3691,17 +3827,11 @@ mod pending_message_tests {
             .try_begin_revert(&sid)
             .expect("revert after compact releases the lease")
             .expect("revert acquires a lease");
-        assert!(mgr.discard_pending_messages_for_revert(
-            &sid,
-            lease.operation_id()
-        ));
+        assert!(mgr.discard_pending_messages_for_revert(&sid, lease.operation_id()));
         assert!(!mgr.has_pending_messages(&sid));
         assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 0);
         // Idempotent, and still owned.
-        assert!(mgr.discard_pending_messages_for_revert(
-            &sid,
-            lease.operation_id()
-        ));
+        assert!(mgr.discard_pending_messages_for_revert(&sid, lease.operation_id()));
         drop(lease);
 
         // The cleared queue is not re-created: an idle claim finds nothing.

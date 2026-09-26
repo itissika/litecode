@@ -117,7 +117,7 @@ fn materialize_media_parts(
         .collect()
 }
 
-fn image_dimensions(bytes: &[u8], mime_type: &str) -> Option<(u32, u32)> {
+pub(crate) fn image_dimensions(bytes: &[u8], mime_type: &str) -> Option<(u32, u32)> {
     match mime_type {
         "image/png" => (bytes.len() >= 24 && bytes.starts_with(b"\x89PNG\r\n\x1a\n")).then(|| {
             (

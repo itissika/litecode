@@ -100,6 +100,9 @@ interface ConnectionStore {
   serverVersionChannel: string;
   /** Stable workspace identity from server/hello. */
   workspaceId: string;
+  /** Server OS from server/hello. Kept across a socket drop so the file
+      panel can still offer "open with the default app" while reconnecting. */
+  hostOs: string;
   /** Sessions currently subscribed on the live socket. Cleared on every
       drop so AgentPanels re-subscribe themselves on (re)connect. */
   subscribedSessions: Set<string>;
@@ -126,6 +129,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
       serverVersion: "",
       serverVersionChannel: "",
       workspaceId: "",
+      hostOs: "",
       subscribedSessions: new Set(),
 
       init: () => {
@@ -175,6 +179,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
           serverVersion: "",
           serverVersionChannel: "",
           workspaceId: "",
+          hostOs: "",
           subscribedSessions: new Set(),
         });
       },
@@ -233,7 +238,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
             }
             settings?.setRevision(hello.settings_revision);
             void useEngineStore.getState().ensureLoaded();
-            void settings?.notifySetupIfNeeded();
+            void settings?.noteWorkspaceReady();
             // hello.session_id is empty string in single-WS mode; only set
             // global info (project, workspace_id, models, settings_revision, etc.).
             set({
@@ -241,6 +246,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               serverVersion: hello.version ?? "",
               serverVersionChannel: hello.version_channel ?? "",
               workspaceId: hello.workspace_id ?? "",
+              hostOs: hello.host_os ?? "",
             });
             session?.onHello(hello);
             if (hello.project) {

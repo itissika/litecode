@@ -3,6 +3,7 @@
 //! Does not own session writes, schema migration, or ORT lifecycle.
 
 mod chunk;
+mod cjk;
 mod corpus;
 #[cfg(test)]
 mod dense_parity;
@@ -429,15 +430,13 @@ fn cmp_hits(a: &SessionTextHit, b: &SessionTextHit) -> std::cmp::Ordering {
 }
 
 /// Agent-facing final ordering: the explicit rank key first, then caller
-/// family, then the most recently updated session, then a stable
-/// `(session_id, seq)` for pagination.
+/// family, then the most recently updated session, then the later line in
+/// that session.
 ///
-/// The rank key is the relevance half — band (how strong the evidence is),
-/// coverage (how much of the query the row proved), content role and the
-/// producing layer's own order. Recency is deliberately *inside* that chain
-/// rather than above it: "newest first" is how equals are broken, not how
-/// relevance is decided.
-///
+/// Exact hits of one speaker are equal on the rank key — repetition is not a
+/// better match — so this is where they are ordered. A newer session is the
+/// more valuable reference. Recency never outranks a higher band or a higher
+/// speaker tier.
 pub fn sort_hits_for_agent(
     hits: &mut [SessionTextHit],
     prefer_session_ids: &[String],
@@ -457,7 +456,7 @@ pub fn sort_hits_for_agent(
                 ub.cmp(&ua)
             })
             .then_with(|| a.session_id.cmp(&b.session_id))
-            .then_with(|| a.seq.cmp(&b.seq))
+            .then_with(|| b.seq.cmp(&a.seq))
     });
 }
 
@@ -1576,15 +1575,59 @@ mod tests {
     }
 
     #[test]
+    fn exact_ties_follow_session_update_time_then_the_later_line() {
+        let mut repeated = ranked_hit("old", 1, SessionHitLane::Text, RankBand::Exact, 0);
+        repeated.rank.strength = 9_000;
+        let mut once = ranked_hit("new", 1, SessionHitLane::Text, RankBand::Exact, 9);
+        once.rank.strength = 100;
+        let early = ranked_hit("new", 2, SessionHitLane::Text, RankBand::Exact, 0);
+        let late = ranked_hit("new", 8, SessionHitLane::Text, RankBand::Exact, 0);
+        let mut hits = vec![repeated, early, once, late];
+        let updated = HashMap::from([("old".into(), 10_i64), ("new".into(), 50)]);
+        sort_hits_for_agent(&mut hits, &[], &updated);
+        let keys: Vec<_> = hits
+            .iter()
+            .map(|h| (h.session_id.as_str(), h.seq))
+            .collect();
+        assert_eq!(keys, vec![("new", 8), ("new", 2), ("new", 1), ("old", 1)]);
+    }
+
+    #[test]
+    fn a_newer_echo_does_not_pass_who_said_it() {
+        let mut human = ranked_hit("old", 1, SessionHitLane::Text, RankBand::Exact, 0);
+        human.rank.role = 0;
+        let mut echo = ranked_hit("new", 9, SessionHitLane::Text, RankBand::Exact, 0);
+        echo.rank.role = 2;
+        echo.rank.strength = 9_000;
+        let mut hits = vec![echo, human];
+        let updated = HashMap::from([("old".into(), 1_i64), ("new".into(), 100)]);
+        sort_hits_for_agent(&mut hits, &[], &updated);
+        assert_eq!(hits[0].session_id, "old");
+        assert_eq!(hits[0].rank.role, 0);
+    }
+
+    #[test]
     fn gate_drops_weak_semantic() {
-        let mut sem = vec![ranked_hit("s", 0, SessionHitLane::Semantic, RankBand::Fusion, 0)];
+        let mut sem = vec![ranked_hit(
+            "s",
+            0,
+            SessionHitLane::Semantic,
+            RankBand::Fusion,
+            0,
+        )];
         sem[0].score = 0.3;
         assert!(gate_semantic_hits(sem).is_empty());
     }
 
     #[test]
     fn gate_keeps_strong_semantic() {
-        let mut sem = vec![ranked_hit("s", 0, SessionHitLane::Semantic, RankBand::Fusion, 0)];
+        let mut sem = vec![ranked_hit(
+            "s",
+            0,
+            SessionHitLane::Semantic,
+            RankBand::Fusion,
+            0,
+        )];
         sem[0].score = 0.8;
         assert_eq!(gate_semantic_hits(sem).len(), 1);
     }
@@ -1593,13 +1636,23 @@ mod tests {
     fn fusion_keeps_the_row_both_lanes_found_and_rewards_the_agreement() {
         // The sparse lane found row a (with its literal span); the semantic lane
         // found the same row plus one it alone knows about.
-        let lexical = vec![ranked_hit("a", 1, SessionHitLane::Text, RankBand::Fusion, 1)];
+        let lexical = vec![ranked_hit(
+            "a",
+            1,
+            SessionHitLane::Text,
+            RankBand::Fusion,
+            1,
+        )];
         let semantic = vec![
             ranked_hit("a", 1, SessionHitLane::Semantic, RankBand::Fusion, 0),
             ranked_hit("b", 2, SessionHitLane::Semantic, RankBand::Fusion, 1),
         ];
         let fused = fuse_session_layers(lexical, semantic);
-        assert_eq!(fused.len(), 2, "one row is one hit, whichever lane found it");
+        assert_eq!(
+            fused.len(),
+            2,
+            "one row is one hit, whichever lane found it"
+        );
         assert_eq!(fused[0].session_id, "a");
         // The sparse hit owns the row: it is the one carrying the literal span.
         assert_eq!(fused[0].lane, SessionHitLane::Text);
@@ -1942,7 +1995,10 @@ mod tests {
             "0.85",
             "0.9",
         ] {
-            assert!(!lowered.contains(token), "{token} leaked into the view:\n{view}");
+            assert!(
+                !lowered.contains(token),
+                "{token} leaked into the view:\n{view}"
+            );
         }
     }
 

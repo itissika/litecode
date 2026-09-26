@@ -55,31 +55,21 @@ function labels(
 }
 
 describe("buildTabContextMenuItems", () => {
-  it("offers Close on a terminal tab when more than one terminal panel exists", () => {
+  it("keeps Close hidden on a terminal edge tab", () => {
     const terminal1 = makePanel("terminal", "edge");
     const terminal2 = makePanel("terminal", "edge");
     const items = buildTabContextMenuItems(
       makeParams(terminal1, [terminal1, terminal2]),
     );
 
-    expect(items).toContain("close");
-  });
-
-  it("hides Close on the last remaining terminal panel", () => {
-    const terminal = makePanel("terminal", "edge");
-    const items = buildTabContextMenuItems(makeParams(terminal, [terminal]));
-
     expect(items).not.toContain("close");
-  });
-
-  it("counts terminals across the whole layout, not just the panel's group", () => {
-    const inGroup = makePanel("terminal", "edge");
-    const elsewhere = makePanel("terminal", "edge");
-    const params = makeParams(inGroup, [inGroup, elsewhere]);
-    // The fake group contains only the right-clicked panel.
-    params.group = { panels: [inGroup] } as unknown as DockviewGroupPanel;
-
-    expect(buildTabContextMenuItems(params)).toContain("close");
+    expect(labels(items)).toEqual([
+      "Popout Window",
+      "separator",
+      "Maximize",
+      "separator",
+      "Rename",
+    ]);
   });
 
   it("keeps Close hidden for non-terminal edge panels even when terminals exist", () => {

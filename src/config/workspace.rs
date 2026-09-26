@@ -15,7 +15,6 @@ use super::schema::{CustomToolDefinition, McpServerDefinition, ToolReadiness};
 
 const CLAUDE_MD_SHELL: &str =
     "# Litecode workspace contract\n\n<!-- Add project instructions here -->\n";
-const LITECODE_DIR_GUIDE: &str = include_str!("litecode_dir_guide.md");
 thread_local! {
     static RUNTIME_PATHS: RefCell<Option<WorkspacePaths>> = const { RefCell::new(None) };
 }
@@ -380,8 +379,11 @@ pub fn init_workspace(workspace_root: &Path) -> Result<()> {
     std::fs::create_dir_all(litecode_dir.join("plan"))
         .map_err(|e| LitecodeError::Config(e.to_string()))?;
     // Product-owned map of this directory; always refresh so upgrades stay accurate.
-    std::fs::write(litecode_dir.join("README.md"), LITECODE_DIR_GUIDE)
-        .map_err(|e| LitecodeError::Config(e.to_string()))?;
+    std::fs::write(
+        litecode_dir.join("README.md"),
+        crate::config::guides::WORKSPACE_README,
+    )
+    .map_err(|e| LitecodeError::Config(e.to_string()))?;
 
     // File-revert snapshots live under ~/.litecode/snapshots — never in-tree.
     if let Err(e) = purge_legacy_in_workspace_snapshots(workspace_root) {
@@ -677,7 +679,7 @@ mod tests {
         init_workspace(root).unwrap();
         let guide = std::fs::read_to_string(&readme).unwrap();
         assert!(!guide.contains("stale custom notes"));
-        assert_eq!(guide, LITECODE_DIR_GUIDE);
+        assert_eq!(guide, crate::config::guides::WORKSPACE_README);
     }
 
     #[test]

@@ -2,6 +2,7 @@ pub mod bridge;
 pub mod gate;
 pub mod git_install;
 pub mod global_db;
+pub mod guides;
 pub mod log_filter;
 pub mod manager;
 pub mod path;
@@ -13,8 +14,7 @@ pub mod workspace;
 pub mod workspace_identity;
 
 pub use bridge::{
-    agent_config_for, agent_config_from_profile, primary_agent_infos,
-    warn_unresolved_agent_models,
+    agent_config_for, agent_config_from_profile, primary_agent_infos, warn_unresolved_agent_models,
 };
 pub use gate::{ApplyPlan, CommitAck, DocId, EvalView, PersistDoc};
 pub use manager::ConfigManager;

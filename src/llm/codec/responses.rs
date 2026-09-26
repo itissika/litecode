@@ -710,7 +710,10 @@ endpoint_type = "responses"
             .expect("the codec no longer rejects repeated ids");
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 4, "{input:?}");
-        assert!(input.iter().all(|item| item.get("id").is_none()), "{input:?}");
+        assert!(
+            input.iter().all(|item| item.get("id").is_none()),
+            "{input:?}"
+        );
         assert_eq!(request.input.len(), 4, "session-owned copy unchanged");
     }
 
@@ -803,9 +806,11 @@ endpoint_type = "responses"
             Item::Reasoning(ReasoningItem {
                 id: Some("cc_rs_1".into()),
                 summary: vec![],
-                content: Some(vec![ReasoningItemContent::ReasoningText(ReasoningTextContent {
-                    text: "plain text from another dialect".into(),
-                })]),
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "plain text from another dialect".into(),
+                    },
+                )]),
                 encrypted_content: None,
                 status: None,
             }),
@@ -814,9 +819,11 @@ endpoint_type = "responses"
                 summary: vec![SummaryPart::SummaryText(SummaryTextContent {
                     text: "what the other model thought".into(),
                 })],
-                content: Some(vec![ReasoningItemContent::ReasoningText(ReasoningTextContent {
-                    text: "raw text riding along".into(),
-                })]),
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "raw text riding along".into(),
+                    },
+                )]),
                 encrypted_content: None,
                 status: None,
             }),
@@ -825,9 +832,11 @@ endpoint_type = "responses"
                 summary: vec![SummaryPart::SummaryText(SummaryTextContent {
                     text: "own summary rides along".into(),
                 })],
-                content: Some(vec![ReasoningItemContent::ReasoningText(ReasoningTextContent {
-                    text: "raw text stripped from input".into(),
-                })]),
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "raw text stripped from input".into(),
+                    },
+                )]),
                 encrypted_content: Some("gAAAA".into()),
                 status: None,
             }),
@@ -836,7 +845,10 @@ endpoint_type = "responses"
         let body = request_body(&codec, &request);
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 3, "{input:?}");
-        assert!(input.iter().all(|item| item.get("id").is_none()), "{input:?}");
+        assert!(
+            input.iter().all(|item| item.get("id").is_none()),
+            "{input:?}"
+        );
         assert_eq!(input[1]["encrypted_content"], "gAAAA");
         assert!(input[1].get("content").is_none(), "{}", input[1]);
         assert_eq!(input[1]["summary"][0]["text"], "own summary rides along");
@@ -932,7 +944,10 @@ endpoint_type = "responses"
             .unwrap()
             .clone();
         assert_eq!(input.len(), 5, "{input:?}");
-        assert!(input.iter().all(|item| item.get("id").is_none()), "{input:?}");
+        assert!(
+            input.iter().all(|item| item.get("id").is_none()),
+            "{input:?}"
+        );
         assert_eq!(input[1]["content"][0]["text"], "I'll use a tool");
         assert_eq!(input[2]["type"], "function_call");
         assert_eq!(input[2]["call_id"], input[3]["call_id"]);

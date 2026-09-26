@@ -29,6 +29,11 @@ fn is_sqlite_ok(path: &Path) -> bool {
     s.contains("/src/session/data/sqlite/")
 }
 
+/// User-file SQLite preview. It never opens sessions.db.
+fn is_workspace_sqlite_preview(path: &Path) -> bool {
+    norm(path).ends_with("/src/workspace/sqlite_preview.rs")
+}
+
 fn is_global_db_ok(path: &Path) -> bool {
     let s = norm(path);
     s.contains("/src/config/global_db/")
@@ -86,7 +91,11 @@ fn sessions_db_sql_and_rusqlite_stay_in_sqlite_module() {
 
     let mut hits = Vec::new();
     for path in &files {
-        if is_sqlite_ok(path) || is_global_db_ok(path) || is_shared_error_type(path) {
+        if is_sqlite_ok(path)
+            || is_global_db_ok(path)
+            || is_shared_error_type(path)
+            || is_workspace_sqlite_preview(path)
+        {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(path) else {

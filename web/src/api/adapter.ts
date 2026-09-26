@@ -2,6 +2,7 @@ import type {
   FunctionCallItem,
   FunctionCallOutputItem,
   HumanRow,
+  InputContent,
   InputMessageItem,
   Item,
   JobExitReminderLogRow,
@@ -161,13 +162,32 @@ export function newPendingUserId(): string {
   return `pending-${nextPendingId}-${Date.now()}`;
 }
 
-/** Optimistic user text Item (OpenAI Responses shape). */
-export function userTextItem(text: string): MessageItem {
+/** Optimistic user Item (OpenAI Responses shape), text plus image refs. */
+export function userItem(text: string, images: string[] = []): MessageItem {
+  const content: InputContent[] = [];
+  if (text) content.push({ type: "input_text", text });
+  for (const ref of images) {
+    content.push({ type: "input_image", image_url: ref });
+  }
+  if (content.length === 0) content.push({ type: "input_text", text: "" });
   return {
     type: "message",
     role: "user",
-    content: [{ type: "input_text", text }],
+    content,
   };
+}
+
+/** Optimistic user text Item (OpenAI Responses shape). */
+export function userTextItem(text: string): MessageItem {
+  return userItem(text);
+}
+
+/** `litecode-media:` refs on a user message, in part order. */
+export function userImageRefs(item: Item): string[] {
+  if (!isUserMessage(item)) return [];
+  return item.content.flatMap((part) =>
+    part.type === "input_image" && part.image_url ? [part.image_url] : [],
+  );
 }
 
 export function isMessageItem(item: Item): item is MessageItem {

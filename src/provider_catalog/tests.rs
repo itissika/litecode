@@ -595,3 +595,55 @@ fn shared_catalog_is_loaded_once_per_path() {
     let third = store::shared_for_db(&db).unwrap();
     assert!(!std::sync::Arc::ptr_eq(&first, &third));
 }
+
+#[test]
+fn seed_gap_is_empty_when_the_loaded_catalog_has_every_shipped_id() {
+    let gap = store::seed_gap(&seeded());
+    assert!(gap.is_empty(), "{gap:?}");
+}
+
+#[test]
+fn seed_gap_names_a_missing_provider_and_ignores_an_extra_one() {
+    let empty = parse("version = 1\n").unwrap();
+    let gap = store::seed_gap(&empty);
+    assert!(
+        gap.missing_providers
+            .iter()
+            .any(|provider| provider.id == "openai"),
+        "{gap:?}"
+    );
+    assert!(
+        gap.missing_models
+            .iter()
+            .any(|model| model == "openai/gpt-5.6-sol"),
+        "{gap:?}"
+    );
+
+    let extra = parse(&format!(
+        "{}\n[[providers]]\nid = \"extra\"\nname = \"Extra\"\nendpoint = \"https://example.invalid/v1\"\nendpoint_type = \"responses\"\nauth = \"bearer\"\n\n[[models]]\nid = \"extra-model\"\nprovider_id = \"extra\"\ncontext_window = 256000\nmax_output = 128000\nmodalities = [\"text\"]\n",
+        store::DEFAULT_CATALOG
+    ))
+    .unwrap();
+    assert!(store::seed_gap(&extra).is_empty());
+}
+
+#[test]
+fn seed_gap_names_one_removed_model() {
+    let marker = "id = \"gpt-5.6-sol\"";
+    let start = store::DEFAULT_CATALOG.find(marker).expect("model");
+    let block_start = store::DEFAULT_CATALOG[..start]
+        .rfind("[[models]]")
+        .expect("block");
+    let after = &store::DEFAULT_CATALOG[start + marker.len()..];
+    let next = after
+        .find("[[models]]")
+        .map(|index| start + marker.len() + index)
+        .unwrap_or(store::DEFAULT_CATALOG.len());
+    let mut text = String::new();
+    text.push_str(&store::DEFAULT_CATALOG[..block_start]);
+    text.push_str(&store::DEFAULT_CATALOG[next..]);
+    let loaded = parse(&text).unwrap();
+    let gap = store::seed_gap(&loaded);
+    assert!(gap.missing_providers.is_empty(), "{gap:?}");
+    assert_eq!(gap.missing_models, vec!["openai/gpt-5.6-sol".to_string()]);
+}

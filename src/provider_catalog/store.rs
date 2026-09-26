@@ -147,3 +147,62 @@ fn atomic_write(path: &Path, contents: &str) -> Result<()> {
     std::fs::rename(&temp, path)?;
     Ok(())
 }
+
+/// A shipped provider the loaded catalog does not contain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeedProviderGap {
+    pub id: String,
+    pub endpoint: String,
+    pub endpoint_type: String,
+    pub auth: String,
+}
+
+/// Seed entries absent from the loaded catalog.
+///
+/// Id membership only: a user-added provider, or an edited endpoint on a
+/// provider that is still present, does not open a gap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeedGap {
+    pub missing_providers: Vec<SeedProviderGap>,
+    pub missing_models: Vec<String>,
+}
+
+impl SeedGap {
+    pub fn is_empty(&self) -> bool {
+        self.missing_providers.is_empty() && self.missing_models.is_empty()
+    }
+}
+
+fn embedded_seed() -> &'static ProviderCatalog {
+    static SEED: OnceLock<ProviderCatalog> = OnceLock::new();
+    SEED.get_or_init(|| {
+        ProviderCatalog::parse(DEFAULT_CATALOG, Path::new("<embedded-provider-catalog>"))
+            .expect("embedded provider catalog is valid")
+    })
+}
+
+/// Providers and models this build ships that `loaded` does not have.
+pub fn seed_gap(loaded: &ProviderCatalog) -> SeedGap {
+    let seed = embedded_seed();
+    let missing_providers = seed
+        .providers()
+        .iter()
+        .filter(|provider| loaded.provider(&provider.id).is_none())
+        .map(|provider| SeedProviderGap {
+            id: provider.id.clone(),
+            endpoint: provider.endpoint.clone(),
+            endpoint_type: provider.endpoint_type.as_str().to_string(),
+            auth: provider.auth.as_str().to_string(),
+        })
+        .collect();
+    let missing_models = seed
+        .models()
+        .iter()
+        .filter(|model| loaded.model(&model.reference).is_none())
+        .map(|model| model.reference.clone())
+        .collect();
+    SeedGap {
+        missing_providers,
+        missing_models,
+    }
+}

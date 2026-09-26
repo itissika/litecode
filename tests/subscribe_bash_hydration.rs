@@ -15,7 +15,10 @@ use litecode::optional::EngineManager;
 use litecode::runtime::RuntimeHandle;
 use litecode::session::manager::SessionManager;
 
-fn controller(sessions: Arc<SessionManager>, workspace_root: &std::path::Path) -> SessionController {
+fn controller(
+    sessions: Arc<SessionManager>,
+    workspace_root: &std::path::Path,
+) -> SessionController {
     let db = workspace_root.join("global-litecode.db");
     let mut baseline = common::test_resolved("default", &[]).global().clone();
     common::insert_test_llm_registry(&mut baseline, "test-key");

@@ -129,6 +129,10 @@ export function toolTitle(
         : fallbackSummary(input),
     };
   }
+  if (toolName === "litecode_workspace") {
+    const action = stringField(obj, "action");
+    return { summary: action ? truncate(action) : "panel" };
+  }
   if (["code_search", "session_search"].includes(toolName)) {
     const query = stringField(obj, "query");
     return {

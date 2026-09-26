@@ -25,7 +25,13 @@ fn windows_uses_git_bash() -> bool {
 }
 
 /// Interactive sessions use their owner's directed stream.
+///
+/// Human PTYs no longer answer cursor-position reports; xterm does. This
+/// test has no emulator, and both PowerShell and Git Bash block on DSR
+/// before they print, so the loop replies `\x1b[1;1R` itself.
 fn wait_for_terminal_data(
+    hub: &TerminalHub,
+    caller: &ConnectionId,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<litecode::terminal::TerminalEvent>,
     id: &str,
     needle: &str,
@@ -34,11 +40,19 @@ fn wait_for_terminal_data(
     use litecode::terminal::{TerminalEvent, TerminalEventKind};
     let start = Instant::now();
     let mut acc = String::new();
+    let mut replied = 0usize;
     while start.elapsed() < timeout {
         while let Ok(TerminalEvent { id: ev_id, kind }) = rx.try_recv() {
             if ev_id == id {
                 if let TerminalEventKind::Data(d) = kind {
                     acc.push_str(&d);
+                    // Count across the whole buffer so a report split on a
+                    // read boundary still gets exactly one reply.
+                    let seen = acc.matches("\u{1b}[6n").count();
+                    while replied < seen {
+                        let _ = hub.write(caller, id, b"\x1b[1;1R");
+                        replied += 1;
+                    }
                 }
             }
         }
@@ -80,7 +94,14 @@ fn interactive_echo_round_trip() {
     let cmd = b"echo LITECODE_PTY_OK\n";
 
     hub.write(&caller, &id, cmd).expect("write");
-    let out = wait_for_terminal_data(&mut events, &id, "LITECODE_PTY_OK", Duration::from_secs(10));
+    let out = wait_for_terminal_data(
+        &hub,
+        &caller,
+        &mut events,
+        &id,
+        "LITECODE_PTY_OK",
+        Duration::from_secs(10),
+    );
     assert!(
         out.contains("LITECODE_PTY_OK"),
         "expected marker in broadcast output, got: {out:?}"

@@ -94,8 +94,18 @@ fn result(sid: &str, seq: i64, call_id: &str, output: &str) -> SearchableRow {
 fn corpus() -> Vec<SearchableRow> {
     vec![
         // S1 — an ordinary turn about the auth module, without the query's noun.
-        row("S1", 0, "item/user", &user_text("please refactor the auth module")),
-        row("S1", 1, "item/assistant", &assistant_text("the auth module now has three files")),
+        row(
+            "S1",
+            0,
+            "item/user",
+            &user_text("please refactor the auth module"),
+        ),
+        row(
+            "S1",
+            1,
+            "item/assistant",
+            &assistant_text("the auth module now has three files"),
+        ),
         result("S1", 2, "c1", "compiled 12 files, 0 errors"),
         // S2 — the row the four-word query is actually about, plus a row made of
         // nothing but the query's glue.
@@ -112,14 +122,39 @@ fn corpus() -> Vec<SearchableRow> {
         call("S3", 0, "c3", "bash", r#"{"command":"grep NEEDLE_X src"}"#),
         result("S3", 1, "c3", "NEEDLE_X: 12 matches in 4 files"),
         // S4 — CJK: a full sentence and a fragment of it.
-        row("S4", 0, "item/user", &user_text("稀疏检索的噪音来自单词命中，不是排序")),
+        row(
+            "S4",
+            0,
+            "item/user",
+            &user_text("稀疏检索的噪音来自单词命中，不是排序"),
+        ),
         row("S4", 1, "item/assistant", &assistant_text("稀疏检索")),
         // S5 — a literal with one typo in it, plus prose sharing its shape.
-        row("S5", 0, "item/user", &user_text("unique_session_phrase lives here")),
-        row("S5", 1, "item/assistant", &assistant_text("unrelated prose about compression")),
+        row(
+            "S5",
+            0,
+            "item/user",
+            &user_text("unique_session_phrase lives here"),
+        ),
+        row(
+            "S5",
+            1,
+            "item/assistant",
+            &assistant_text("unrelated prose about compression"),
+        ),
         // S6 — the two-word query: one row is about it, one only shares a word.
-        row("S6", 0, "item/assistant", &assistant_text("the compression ratio is four to one")),
-        row("S6", 1, "item/user", &user_text("context compression happens at the turn boundary")),
+        row(
+            "S6",
+            0,
+            "item/assistant",
+            &assistant_text("the compression ratio is four to one"),
+        ),
+        row(
+            "S6",
+            1,
+            "item/user",
+            &user_text("context compression happens at the turn boundary"),
+        ),
         // S7 — a long row that mentions the two-word query's word repeatedly:
         // length alone must not buy it a place above the row that answers it.
         row(
@@ -340,15 +375,52 @@ fn live_corpus_probe() {
         "the auth refactor token",
         "sparse lane noise",
         "为什么稀疏检索有噪音",
+        // The Chinese queries this work started from: the long natural sentence
+        // that used to return nothing, the fragment that used to be a phantom
+        // hit, the two-word pair that used to need adjacency, and the mixed
+        // pair that used to be answered by its Latin half alone.
+        "重试次数能不能放大一点",
+        "网络连接总是断掉",
+        "配置落盘",
+        "落盘",
+        "网络连接",
+        "网络连接重试逻辑",
+        "codex 感知",
+        "retry 重试",
     ] {
-        let hits = index.search(Lane::Final, query, 20).expect("search");
+        let hits = index.search(Lane::Final, query, 60).expect("search");
         eprintln!("\n=== {query:?} ({} hits)", hits.len());
-        for hit in hits.iter().take(8) {
-            let layers: Vec<&str> = hit
-                .evidence
-                .iter()
-                .map(|e| e.layer.as_str())
-                .collect();
+        // The sessions behind the hits, in rank order: the board's own corpus
+        // contains sessions that quote these probes verbatim, so which sessions
+        // answer is more informative than the first eight rows.
+        let mut sessions: Vec<&str> = Vec::new();
+        for hit in &hits {
+            if !sessions.contains(&hit.session_id.as_str()) {
+                sessions.push(&hit.session_id);
+            }
+        }
+        eprintln!("  sessions: {sessions:?}");
+        // A session that quotes the probe back (an evaluation transcript, say)
+        // can fill the whole board with exact hits. The rows outside the loudest
+        // session are what says whether the lane found the corpus this work was
+        // about.
+        let loudest = sessions
+            .iter()
+            .max_by_key(|sid| hits.iter().filter(|h| h.session_id == **sid).count())
+            .copied();
+        for hit in hits
+            .iter()
+            .filter(|h| Some(h.session_id.as_str()) != loudest)
+            .take(5)
+        {
+            let layers: Vec<&str> = hit.evidence.iter().map(|e| e.layer.as_str()).collect();
+            eprintln!(
+                "  other: {} band={:?} strength={} role={:?} layers={:?}",
+                hit.row_key, hit.rank.band, hit.rank.strength, hit.role, layers
+            );
+        }
+        for hit in hits.iter().take(4) {
+            let layers: Vec<&str> = hit.evidence.iter().map(|e| e.layer.as_str()).collect();
             eprintln!(
                 "  {} band={:?} strength={} role={:?} layers={:?}",
                 hit.row_key, hit.rank.band, hit.rank.strength, hit.role, layers
@@ -492,7 +564,10 @@ fn a_narrowing_scope_keeps_the_same_order_within_the_session() {
         .filter(|key| key.starts_with("S2:"))
         .collect::<Vec<_>>();
     let scoped = ranked(dir.path(), "auth refactor token", Some("S2"));
-    assert_eq!(unscoped, scoped, "a session scope narrows, it does not re-rank");
+    assert_eq!(
+        unscoped, scoped,
+        "a session scope narrows, it does not re-rank"
+    );
 }
 
 #[test]
@@ -501,8 +576,13 @@ fn the_evidence_behind_each_judged_hit_names_its_layer() {
     build(dir.path());
     let index = sparse::open_read_only(&sparse::sparse_index_path(dir.path())).unwrap();
 
-    let hits = index.search(Lane::Final, "auth refactor token", DEPTH).unwrap();
-    let best = hits.iter().find(|h| h.row_key == "S2:0").expect("the answer");
+    let hits = index
+        .search(Lane::Final, "auth refactor token", DEPTH)
+        .unwrap();
+    let best = hits
+        .iter()
+        .find(|h| h.row_key == "S2:0")
+        .expect("the answer");
     assert_eq!(
         best.rank.band,
         super::ranking::RankBand::Exact,

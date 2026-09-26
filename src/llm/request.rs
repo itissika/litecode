@@ -61,4 +61,3 @@ impl ModelRequest {
         ThinkingSpec::Tier(ThinkingTier::default())
     }
 }
-

@@ -228,7 +228,10 @@ fn read_line_prefix_with_python_indent_is_rejected() {
 #[test]
 fn extra_space_from_read_gutter_is_whitespace_only() {
     let old = "             result.append(item.value)"; // 13 spaces; file has 12
-    let batch = plan_of(PY, &[(old, "            result.append(item.value * 2)", false)]);
+    let batch = plan_of(
+        PY,
+        &[(old, "            result.append(item.value * 2)", false)],
+    );
     assert!(
         matches!(
             rejected(&batch, 0).reason,

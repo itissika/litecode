@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 import { AppShellDockview } from "./dockview/AppShellDockview";
+import { ClickShield } from "./components/ClickShield";
 import { ToastHost } from "./components/ToastHost";
 import { installDebugConsole } from "./lib/debugTrace";
 import { useConnectionStore } from "./stores/connectionStore";
@@ -19,6 +20,7 @@ export default function App() {
     <>
       <AppShellDockview />
       <ToastHost />
+      <ClickShield />
     </>
   );
 }

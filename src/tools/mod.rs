@@ -8,6 +8,7 @@ pub mod file_path;
 pub mod glob;
 pub mod grep;
 pub mod kill_shell;
+pub mod litecode_workspace;
 pub mod lsp;
 pub mod lsp_feedback;
 pub mod mcp_tool;
@@ -19,7 +20,6 @@ pub mod todo;
 pub mod wait_shell;
 pub mod webfetch;
 pub mod websearch;
-pub mod workspace_stats;
 pub mod write;
 
 #[cfg(test)]

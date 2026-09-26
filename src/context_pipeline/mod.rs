@@ -361,7 +361,11 @@ impl ContextPipeline {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             (
                 project_items(&state.working),
-                state.working.iter().map(|row| row.log_seq).collect::<Vec<_>>(),
+                state
+                    .working
+                    .iter()
+                    .map(|row| row.log_seq)
+                    .collect::<Vec<_>>(),
             )
         };
         *turn_items = turn_view.clone();
@@ -370,6 +374,11 @@ impl ContextPipeline {
         Session::pad_unanswered_calls(&mut llm_items);
         let item_seqs = align_padded_item_seqs(&turn_view, &source_seqs, &llm_items);
         crate::runtime::project_llm_input_for_model(&mut llm_items, model);
+        let media_limit = media_budget::media_budget_limit(self.budget.context_window);
+        media_budget::apply_media_token_budget(&mut llm_items, media_limit);
+        // Refs stay small in the token count (image cost ignores URL length).
+        // Expand them only after budgeting, and only on this ephemeral view.
+        crate::session::media::resolve_user_media(&mut llm_items, &self.data_root);
 
         let token_count = self
             .budget

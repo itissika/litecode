@@ -1,1000 +1,22 @@
-import {
-  BrainIcon,
-  PencilIcon,
-  TerminalIcon,
-  WrenchIcon,
-} from "@phosphor-icons/react";
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type ReactNode,
-  type RefObject,
-} from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { memo, useMemo, type CSSProperties, type RefObject } from "react";
 
-import {
-  deriveUserAnchorK,
-  functionCallOutputText,
-  isFunctionCall,
-  isFunctionCallOutput,
-  isHiddenHumanRow,
-  isHumanUserRow,
-  isHumanViewKind,
-  isMessageItem,
-  isReasoningItem,
-  isTranscriptMarkRow,
-  itemFromRow,
-  itemPlainText,
-  projectionRowKey,
-  transcriptMarkKind,
-} from "../api/adapter";
-import type {
-  FunctionCallItem,
-  FunctionCallOutputItem,
-  HumanRow,
-  PendingMessage,
-} from "../api/types";
-import { AgentMarkdown } from "./AgentMarkdown";
-import { CategoryCount } from "./CategoryCount";
-import { FoldCard } from "./FoldCard";
-import { InlineToolRow } from "./InlineToolRow";
-import { requestFoldCardOpen } from "./foldCardState";
-import { useSessionStore } from "../stores/sessionStore";
+import type { HumanRow, PendingMessage } from "../api/types";
+import { canRevertFiles, projectBubbles } from "../lib/transcriptProjection";
 import { useMessageStore } from "../stores/messageStore";
-import { useEditorStore } from "../stores/editorStore";
 import { useTurnStore } from "../stores/turnStore";
-import { isInlineCall, processToolBucket } from "../lib/toolCategory";
-import { isBackgroundBashResult } from "../lib/bashLive";
-import { useStickToBottom } from "../lib/scrollStick";
-import { ToolCallCard } from "./ToolCallCard";
-import { isToolCallLive, processGroupAutoOpen } from "./toolCallStatus";
-import { MiniChatInput, type MiniChatInputSettings } from "./MiniChatInput";
+import { CompactingMark, TranscriptMarkForRow } from "./transcriptMarks";
+import { ItemBubble, type EditingUserAnchor } from "./transcript/ItemBubble";
+import { PendingQueueBubble } from "./transcript/PendingQueueBubble";
+import { useBottomPad, useBottomPadMotion } from "./transcript/useBottomPad";
 import {
-  CompactingMark,
-  TranscriptMark,
-  TranscriptMarkForRow,
-  jobExitDetail,
-  subagentExitDetail,
-} from "./transcriptMarks";
+  HISTORY_LOADER_HEIGHT,
+  useTranscriptViewport,
+} from "./transcript/useTranscriptViewport";
 
-type RenderNode =
-  | {
-      kind: "text";
-      text: string;
-      key: string;
-      streaming: boolean;
-      live: boolean;
-      incomplete?: boolean;
-    }
-  | {
-      kind: "reasoning";
-      text: string;
-      key: string;
-      streaming: boolean;
-      live: boolean;
-      incomplete?: boolean;
-    }
-  | {
-      kind: "compact_cut";
-      summary?: string;
-      key: string;
-      streaming: boolean;
-      live: false;
-    }
-  | {
-      kind: "job_exit";
-      detail?: string;
-      key: string;
-      streaming: boolean;
-      live: false;
-    }
-  | {
-      kind: "subagent_exit";
-      detail?: string;
-      childId?: string;
-      key: string;
-      streaming: boolean;
-      live: false;
-    }
-  | { kind: "plan"; key: string; streaming: boolean; live: false }
-  | { kind: "plan_execute"; key: string; streaming: boolean; live: false }
-  | {
-      kind: "tool";
-      call: FunctionCallItem;
-      output?: FunctionCallOutputItem;
-      key: string;
-      streaming: boolean;
-      live: boolean;
-    };
-
-export interface EditingUserAnchor {
-  bubbleKey: string;
-  userAnchorK: number;
-  draft: string;
-  settings: MiniChatInputSettings;
-  /** Height of the clicked bubble, used as the mini chat's expand-from value. */
-  startHeight: number;
-}
-
-function outputsByCallId(
-  rows: HumanRow[],
-): Map<string, FunctionCallOutputItem> {
-  const map = new Map<string, FunctionCallOutputItem>();
-  for (const row of rows) {
-    if (row.kind !== "item/tool_result") continue;
-    const item = itemFromRow(row);
-    if (item && isFunctionCallOutput(item)) map.set(item.call_id, item);
-  }
-  return map;
-}
-
-/**
- * Whether the log still holds this row in flight. The row's own `state` answers
- * it; a payload's `status` is provider content and may be absent entirely.
- */
-function rowInProgress(row: HumanRow): boolean {
-  return row.state === "in_progress";
-}
-
-/** Flatten HumanView rows into nodes; only `item/*` bodies are Items. */
-export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
-  const outputs = outputsByCallId(rows);
-  const outputInProgressByCallId = new Map<string, boolean>();
-  for (const row of rows) {
-    if (row.kind !== "item/tool_result") continue;
-    const item = itemFromRow(row);
-    if (item && isFunctionCallOutput(item)) {
-      outputInProgressByCallId.set(item.call_id, rowInProgress(row));
-    }
-  }
-  const nodes: RenderNode[] = [];
-  for (const row of rows) {
-    if (isHiddenHumanRow(row)) continue;
-    const streaming = rowInProgress(row);
-    const key = projectionRowKey(row);
-    const mark = transcriptMarkKind(row);
-    if (mark) {
-      const reminderText =
-        row.kind === "reminder/job_exit" && isMessageItem(row.body)
-          ? itemPlainText(row.body)
-          : "";
-      if (mark === "subagent_exit") {
-        const parsed = subagentExitDetail(reminderText);
-        nodes.push({
-          kind: "subagent_exit",
-          key,
-          streaming: false,
-          live: false,
-          detail: parsed.detail,
-          childId: parsed.childId,
-        });
-        continue;
-      }
-      const markDetail =
-        mark === "job_exit" ? jobExitDetail(reminderText) : undefined;
-      nodes.push({
-        kind: mark,
-        key,
-        streaming: false,
-        live: false,
-        ...(mark === "compact_cut" && row.kind === "compacted"
-          ? { summary: row.body.summary }
-          : {}),
-        ...(markDetail ? { detail: markDetail } : {}),
-      });
-      continue;
-    }
-    if (!isHumanViewKind(row.kind) || row.kind === "item/tool_result") continue;
-    const item = itemFromRow(row);
-    if (!item) continue;
-    if (row.kind === "item/tool_call" && isFunctionCall(item)) {
-      const output = outputs.get(item.call_id);
-      const live = isToolCallLive({
-        callStatus: item.status,
-        hasOutput: output != null,
-        outputInProgress: outputInProgressByCallId.get(item.call_id) === true,
-      });
-      nodes.push({
-        kind: "tool",
-        call: item,
-        output,
-        key,
-        streaming,
-        live,
-      });
-      continue;
-    }
-    if (row.kind === "item/assistant" && isReasoningItem(item)) {
-      const text = itemPlainText(item);
-      if (text) {
-        nodes.push({
-          kind: "reasoning",
-          text,
-          key,
-          streaming,
-          live: streaming,
-          incomplete: item.status === "incomplete",
-        });
-      }
-      continue;
-    }
-    if (
-      (row.kind === "item/user" || row.kind === "item/assistant") &&
-      isMessageItem(item)
-    ) {
-      const text = itemPlainText(item);
-      // Vendors emit whitespace-only content (e.g. "\n\n" before a tool call).
-      // Such a message renders as nothing, but as an `output` node it would cut
-      // the surrounding process group in half.
-      if (text.trim()) {
-        nodes.push({
-          kind: "text",
-          text,
-          key,
-          streaming,
-          live: streaming,
-          incomplete: item.status === "incomplete",
-        });
-      }
-    }
-  }
-  return nodes;
-}
-
-type NodeGroup = { type: "process" | "output" | "cut"; nodes: RenderNode[] };
-
-export function processGroupHasTerminalStop(nodes: RenderNode[]): boolean {
-  return nodes.some(
-    (node) =>
-      (node.kind === "reasoning" && node.incomplete === true) ||
-      (node.kind === "tool" &&
-        (node.call.status === "failed" || node.call.status === "incomplete")),
-  );
-}
-
-export function groupNodes(nodes: RenderNode[]): NodeGroup[] {
-  const groups: NodeGroup[] = [];
-  let current: NodeGroup | null = null;
-
-  for (const node of nodes) {
-    if (
-      node.kind === "compact_cut" ||
-      node.kind === "job_exit" ||
-      node.kind === "subagent_exit" ||
-      node.kind === "plan" ||
-      node.kind === "plan_execute"
-    ) {
-      groups.push({ type: "cut", nodes: [node] });
-      current = null;
-      continue;
-    }
-    const isProcess = node.kind === "reasoning" || node.kind === "tool";
-    const groupType = isProcess ? "process" : "output";
-    if (!current || current.type !== groupType) {
-      current = { type: groupType, nodes: [] };
-      groups.push(current);
-    }
-    current.nodes.push(node);
-  }
-  return groups;
-}
-
-export function NodeView({
-  node,
-  streaming = false,
-  projectRoot,
-  onOpenFile,
-  sessionId,
-  bubbleKey,
-}: {
-  node: RenderNode;
-  streaming?: boolean;
-  projectRoot?: string | null;
-  onOpenFile?: (path: string) => void;
-  sessionId?: string;
-  /** Stable bubble identity (projection key of the bubble's first row), used to
-   *  namespace this node's FoldCard state across virtual-list remounts. */
-  bubbleKey?: string;
-}) {
-  // The plan-execution mark names the plan the button launched; the row itself
-  // only carries the prompt text, so the path comes from the session pointer.
-  const activePlanPath = useTurnStore((s) =>
-    sessionId ? (s.byId.get(sessionId)?.activePlanPath ?? null) : null,
-  );
-  switch (node.kind) {
-    case "reasoning":
-      return (
-        <FoldCard
-          id={
-            bubbleKey && sessionId
-              ? `${sessionId}:${bubbleKey}:reasoning:${node.key}`
-              : undefined
-          }
-          className="text-sm"
-          contentClassName="text-(--_dk-text-secondary)"
-          icon={
-            <BrainIcon
-              size={13}
-              aria-hidden
-              className="shrink-0 text-(--_dk-text-muted)"
-            />
-          }
-          label={node.incomplete ? "Reasoning (incomplete)" : "Reasoning"}
-          autoOpen={node.live}
-          streaming={streaming}
-        >
-          <AgentMarkdown text={node.text} streaming={streaming} />
-        </FoldCard>
-      );
-    case "text":
-      return (
-        <div className="text-dk-base text-(--_dk-text-primary) pl-(--_dk-indent-card-head)">
-          <AgentMarkdown text={node.text} streaming={streaming} />
-          {node.incomplete && !streaming ? (
-            <div className="mt-1 text-dk-2xs italic text-(--_dk-text-disabled)">
-              Output incomplete
-            </div>
-          ) : null}
-        </div>
-      );
-    case "tool": {
-      // Background bash is the one call that goes inline on its RESULT rather
-      // than its name; foreground bash keeps the rich card.
-      const backgroundBash =
-        node.call.name === "bash" &&
-        isBackgroundBashResult(
-          node.output ? functionCallOutputText(node.output) : "",
-        );
-      if (isInlineCall(node.call.name, backgroundBash)) {
-        return (
-          <InlineToolRow
-            call={node.call}
-            output={node.output}
-            streaming={node.live}
-            sessionId={sessionId}
-          />
-        );
-      }
-      return (
-        <ToolCallCard
-          call={node.call}
-          output={node.output}
-          streaming={node.live}
-          projectRoot={projectRoot ?? null}
-          onOpenFile={(path) => onOpenFile?.(path)}
-          sessionId={sessionId}
-          foldCardId={
-            bubbleKey && sessionId
-              ? `${sessionId}:${bubbleKey}:tool:${node.call.call_id}`
-              : undefined
-          }
-        />
-      );
-    }
-    case "compact_cut":
-      return <TranscriptMark kind={node.kind} summary={node.summary} />;
-    case "job_exit":
-      return <TranscriptMark kind={node.kind} detail={node.detail} />;
-    case "subagent_exit":
-      return (
-        <TranscriptMark
-          kind={node.kind}
-          detail={node.detail}
-          childId={node.childId}
-        />
-      );
-    case "plan":
-      return <TranscriptMark kind={node.kind} />;
-    case "plan_execute":
-      return <TranscriptMark kind={node.kind} planPath={activePlanPath} />;
-  }
-}
-
-export function ProcessGroup({
-  nodes,
-  streaming,
-  autoOpen,
-  sessionId,
-  bubbleKey,
-  groupIndex,
-}: {
-  nodes: RenderNode[];
-  streaming: boolean;
-  autoOpen: boolean;
-  sessionId?: string;
-  /** Stable bubble identity, used to namespace this group's FoldCard state. */
-  bubbleKey?: string;
-  /** Index of this process group within its bubble (for a unique FoldCard id). */
-  groupIndex: number;
-}) {
-  const project = useSessionStore((s) => s.project);
-  const openFile = useEditorStore((s) => s.openFile);
-
-  const reasoningCount = nodes.filter((n) => n.kind === "reasoning").length;
-  let bashCount = 0;
-  let editCount = 0;
-  let toolCount = 0;
-  for (const node of nodes) {
-    if (node.kind !== "tool") continue;
-    const bucket = processToolBucket(node.call.name);
-    if (bucket === "bash") bashCount += 1;
-    else if (bucket === "edit") editCount += 1;
-    else if (bucket === "tool") toolCount += 1;
-  }
-
-  const ariaParts: string[] = [];
-  if (reasoningCount > 0) {
-    ariaParts.push(`${reasoningCount} reasoning`);
-  }
-  if (bashCount > 0) {
-    ariaParts.push(`${bashCount} bash`);
-  }
-  if (editCount > 0) {
-    ariaParts.push(`${editCount} edit`);
-  }
-  if (toolCount > 0) {
-    ariaParts.push(`${toolCount} tool${toolCount !== 1 ? "s" : ""}`);
-  }
-  const headerAriaLabel = ariaParts.join(", ") || "Process";
-
-  return (
-    <FoldCard
-      id={
-        bubbleKey && sessionId
-          ? `${sessionId}:${bubbleKey}:process:${groupIndex}`
-          : undefined
-      }
-      icon={null}
-      headerClassName="text-dk-sm text-(--_dk-text-secondary)"
-      label={
-        <span className="flex min-w-0 flex-1 items-center gap-2.5">
-          <CategoryCount
-            icon={
-              <BrainIcon
-                size={14}
-                aria-hidden
-                className="shrink-0 text-(--_dk-text-secondary)"
-              />
-            }
-            count={reasoningCount}
-            noun="reasoning"
-          />
-          <CategoryCount
-            icon={
-              <TerminalIcon
-                size={14}
-                aria-hidden
-                className="shrink-0 text-(--_dk-text-secondary)"
-              />
-            }
-            count={bashCount}
-            noun="bash"
-          />
-          <CategoryCount
-            icon={
-              <PencilIcon
-                size={14}
-                aria-hidden
-                className="shrink-0 text-(--_dk-text-secondary)"
-              />
-            }
-            count={editCount}
-            noun="edit"
-          />
-          <CategoryCount
-            icon={
-              <WrenchIcon
-                size={14}
-                aria-hidden
-                className="shrink-0 text-(--_dk-amber-500)"
-              />
-            }
-            count={toolCount}
-            noun="tool"
-          />
-        </span>
-      }
-      headerAriaLabel={headerAriaLabel}
-      autoOpen={autoOpen}
-      streaming={streaming}
-    >
-      <div className="space-y-1">
-        {nodes.map((node) => (
-          <NodeView
-            key={node.key}
-            node={node}
-            streaming={node.streaming}
-            projectRoot={project}
-            onOpenFile={(path) => void openFile(path)}
-            sessionId={sessionId}
-            bubbleKey={bubbleKey}
-          />
-        ))}
-      </div>
-    </FoldCard>
-  );
-}
-
-/**
- * Wrapper that animates the mini chat in by expanding its height from the
- * clicked bubble's height to its natural height, then hands off to auto-height
- * (so the textarea's own sizing takes over with no jitter). Width stays 100%
- * the whole time — the old width-based animation made the textarea measure
- * `scrollHeight` at the narrow start width, freezing a ~2x-tall height.
- */
-function MiniChatPanel({
-  startHeight,
-  miniPhase,
-  onDone,
-  children,
-}: {
-  startHeight: number;
-  miniPhase: "idle" | "entering" | "visible" | "exiting";
-  onDone: () => void;
-  children: ReactNode;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const measuredRef = useRef(false);
-  const [height, setHeight] = useState(startHeight);
-  const [opacity, setOpacity] = useState(0);
-
-  useEffect(() => {
-    if (miniPhase !== "entering" || measuredRef.current) return;
-    measuredRef.current = true;
-    const el = ref.current;
-    if (!el) return;
-    // The textarea is already sized at full width (child layout effect runs
-    // first), so scrollHeight is the mini chat's natural height.
-    const natural = el.scrollHeight;
-    // Defer to the next frame so the browser paints the start height first,
-    // then the height/opacity transition runs.
-    requestAnimationFrame(() => {
-      setHeight(natural);
-      setOpacity(1);
-    });
-  }, [miniPhase]);
-
-  return (
-    <div
-      ref={ref}
-      className={`relative z-10 w-full origin-bottom ${
-        miniPhase === "entering" || miniPhase === "exiting"
-          ? "overflow-hidden"
-          : "overflow-visible"
-      } ${miniPhase === "entering" ? "mini-chat-enter" : ""} ${
-        miniPhase === "exiting" ? "animate-mini-chat-exit" : ""
-      }`}
-      style={miniPhase === "entering" ? { height, opacity } : undefined}
-      onTransitionEnd={(e) => {
-        if (e.target !== e.currentTarget) return;
-        if (miniPhase !== "entering") return;
-        // Height always changes unless the mini chat is exactly as tall as the
-        // bubble; opacity always changes (0 -> 1), so either one finishing is a
-        // reliable "enter done" signal.
-        if (e.propertyName === "height" || e.propertyName === "opacity") {
-          onDone();
-        }
-      }}
-      onAnimationEnd={(e) => {
-        if (e.target !== e.currentTarget) return;
-        if (miniPhase === "exiting") onDone();
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-/** Bubble for a contiguous run of rows that share the same speaker side. */
-function ItemBubbleImpl({
-  rows,
-  userAnchorK,
-  showRevert,
-  readOnly,
-  sessionId,
-  bubbleKey,
-  editingAnchor,
-  followedByUser,
-  onEditAnchor,
-  onDismissEdit,
-  miniPhase,
-  onMiniAnimationEnd,
-}: {
-  rows: HumanRow[];
-  userAnchorK?: number;
-  showRevert: boolean;
-  readOnly: boolean;
-  isRunning: boolean;
-  sessionId: string;
-  /** Stable identity of this bubble (`min(seq)`). Namespaces
-   *  child FoldCard open-state so it survives virtual-list remounts. */
-  bubbleKey?: string;
-  showRevertFiles?: boolean;
-  /** The next bubble is a user message, so the last process group is complete. */
-  followedByUser: boolean;
-  editingAnchor: EditingUserAnchor | null;
-  onEditAnchor: (anchor: EditingUserAnchor) => void;
-  onDismissEdit: () => void;
-  miniPhase: "idle" | "entering" | "visible" | "exiting";
-  onMiniAnimationEnd: () => void;
-}) {
-  const sessionSettings = useSessionStore((s) => s.byId.get(sessionId));
-  const replayFromAnchor = useTurnStore((s) => s.replayFromAnchor);
-  const replaying = useTurnStore(
-    (s) => s.byId.get(sessionId)?.replaying ?? false,
-  );
-  const first = rows.find((r) => !isTranscriptMarkRow(r)) ?? rows[0];
-  const isUser = first != null && isHumanUserRow(first);
-  const nodes = rowsToNodes(rows);
-  const streaming =
-    rows.some((r) => rowInProgress(r)) || nodes.some((n) => n.streaming);
-  const hasContent = nodes.length > 0 || !streaming;
-  const groups = groupNodes(nodes);
-  const userText = nodes.find((node) => node.kind === "text")?.text ?? "";
-  const editing =
-    !readOnly &&
-    isUser &&
-    bubbleKey !== undefined &&
-    editingAnchor?.bubbleKey === bubbleKey &&
-    userAnchorK !== undefined;
-
-  const body = !hasContent ? (
-    <span className="inline-block h-4 w-2 bg-(--_dk-text-muted)" />
-  ) : (
-    groups.map((group, gi) => {
-      if (group.type === "cut") {
-        return group.nodes.map((n) => (
-          <NodeView
-            key={n.key}
-            node={n}
-            sessionId={sessionId}
-            bubbleKey={bubbleKey}
-          />
-        ));
-      }
-      if (group.type === "process") {
-        const groupLive = group.nodes.some(
-          (n) => n.kind !== "compact_cut" && n.live,
-        );
-        const followedByMessage =
-          groups[gi + 1]?.type === "output" || followedByUser;
-        const hasTerminalStop = processGroupHasTerminalStop(group.nodes);
-        const groupAutoOpen = processGroupAutoOpen({
-          followedByMessage,
-          hasTerminalStop,
-        });
-        return (
-          <ProcessGroup
-            // Index within this bubble — stable as the group grows and across
-            // live→seal (must NOT use row.id / first-node key; those remount).
-            key={`process-${gi}`}
-            nodes={group.nodes}
-            streaming={groupLive}
-            autoOpen={groupAutoOpen}
-            sessionId={sessionId}
-            bubbleKey={bubbleKey}
-            groupIndex={gi}
-          />
-        );
-      }
-      return group.nodes.map((n) => (
-        <NodeView
-          key={n.key}
-          node={n}
-          streaming={n.streaming}
-          sessionId={sessionId}
-          bubbleKey={bubbleKey}
-        />
-      ));
-    })
-  );
-
-  return (
-    <div className={isUser ? "py-4" : "py-2"}>
-      {isUser ? (
-        editing ? (
-          <MiniChatPanel
-            startHeight={editingAnchor.startHeight}
-            miniPhase={miniPhase}
-            onDone={onMiniAnimationEnd}
-          >
-            <MiniChatInput
-              sessionId={sessionId}
-              draft={editingAnchor.draft}
-              settings={editingAnchor.settings}
-              disabled={replaying}
-              onDismiss={onDismissEdit}
-              onChange={(draft, settings) => {
-                onEditAnchor({ ...editingAnchor, draft, settings });
-              }}
-              onSubmit={(input, settings) => {
-                onDismissEdit();
-                void replayFromAnchor(sessionId, userAnchorK, input, settings);
-              }}
-            />
-          </MiniChatPanel>
-        ) : (
-          <div
-            data-user-message-bubble
-            className={`flex items-start gap-2 ${readOnly ? "" : "cursor-text"}`}
-            onClick={(event) => {
-              if (
-                readOnly ||
-                !showRevert ||
-                userAnchorK === undefined ||
-                !bubbleKey ||
-                editing
-              )
-                return;
-              onEditAnchor({
-                bubbleKey,
-                userAnchorK,
-                draft: userText,
-                settings: {
-                  primaryId: sessionSettings?.activePrimary ?? "default",
-                  modelId: sessionSettings?.modelId ?? "",
-                  thinkingTier: sessionSettings?.thinkingTier ?? "medium",
-                  contextMode: sessionSettings?.contextMode ?? "standard",
-                },
-                startHeight: event.currentTarget.getBoundingClientRect().height,
-              });
-            }}
-          >
-            <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-accent-hover)" />
-            <div className="min-w-0 flex-1">{body}</div>
-          </div>
-        )
-      ) : (
-        <div className="flex items-start gap-2">
-          <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-text-muted)" />
-          <div className="min-w-0 flex-1">{body}</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Memoized so that during streaming only the bubble whose HumanRow set changed
-// re-renders. The store keeps unchanged HumanRow object references across a
-// flush (messageStore applies `[...messages]` but only replaces the one
-// streaming row), so an element-wise reference compare on `rows` lets every
-// other visible bubble bail — only the live HumanRow's bubble moves.
-export const ItemBubble = memo(
-  ItemBubbleImpl,
-  (prev, next) =>
-    prev.sessionId === next.sessionId &&
-    prev.isRunning === next.isRunning &&
-    prev.showRevert === next.showRevert &&
-    prev.readOnly === next.readOnly &&
-    prev.showRevertFiles === next.showRevertFiles &&
-    prev.userAnchorK === next.userAnchorK &&
-    prev.bubbleKey === next.bubbleKey &&
-    prev.followedByUser === next.followedByUser &&
-    prev.editingAnchor === next.editingAnchor &&
-    prev.rows.length === next.rows.length &&
-    prev.rows.every((r, i) => r === next.rows[i]),
-);
-
-function firstContentRow(group: HumanRow[]): HumanRow | undefined {
-  return group.find((row) => !isTranscriptMarkRow(row));
-}
+export type { EditingUserAnchor };
 
 /** Empty fallback so store selectors never allocate per snapshot. */
 const EMPTY_PENDING: PendingMessage[] = [];
-/** Virtual key of the trailing queued-batch bubble. */
-const QUEUE_BUBBLE_KEY = "__pending_queue__";
-
-/**
- * The queued batch, rendered where its durable message will land.
- *
- * It is not a log row: it wears the same markup as a durable user bubble (same
- * padding, bullet and text classes) so nothing moves when the real row
- * arrives — only a veil on the text says "not written yet". Clicking pulls the
- * whole batch back into the composer, but only while the server still holds it;
- * once it has been claimed the message is durable and recall would be a lie.
- */
-function PendingQueueBubble({
-  text,
-  canRecall,
-  onRecall,
-}: {
-  text: string;
-  canRecall: boolean;
-  onRecall: () => void;
-}) {
-  return (
-    <div className="py-4">
-      <div
-        data-pending-queue-bubble
-        role={canRecall ? "button" : undefined}
-        tabIndex={canRecall ? 0 : undefined}
-        aria-label={canRecall ? "Recall queued message" : undefined}
-        onClick={canRecall ? onRecall : undefined}
-        onKeyDown={
-          canRecall
-            ? (event) => {
-                if (event.key !== "Enter" && event.key !== " ") return;
-                event.preventDefault();
-                onRecall();
-              }
-            : undefined
-        }
-        className={`queued-bubble-enter group flex items-start gap-2 ${
-          canRecall ? "cursor-pointer" : ""
-        }`}
-      >
-        {/* Same bullet as a durable user bubble: the bubble differs only by the
-            veil, so nothing shifts when the real row takes over. */}
-        <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-accent-hover)" />
-        {/* Veil on the text only: dimming the glyph too made the bullet read
-            as a rendering artifact rather than a "not written yet" cue. */}
-        <div
-          className={`text-dk-base min-w-0 flex-1 text-(--_dk-text-primary) pl-(--_dk-indent-card-head) opacity-60 transition-opacity duration-200 ${
-            canRecall ? "group-hover:opacity-100" : ""
-          }`}
-        >
-          <AgentMarkdown text={text} streaming={false} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Group consecutive rows for display: each user message is its own bubble;
- * consecutive non-user Items (live shells or sealed) coalesce into one assistant bubble
- * so process/output grouping still works across Item atoms.
- *
- * Transcript marks (`compacted`, `reminder/job_exit`, including subagent
- * completion) are their own barrier (not pushed into the previous assistant
- * bubble, not glued onto the next user bubble).
- */
-export function groupRowsForBubbles(rows: HumanRow[]): HumanRow[][] {
-  const groups: HumanRow[][] = [];
-  let current: HumanRow[] = [];
-
-  const flush = () => {
-    if (current.length) {
-      groups.push(current);
-      current = [];
-    }
-  };
-
-  for (const row of rows) {
-    if (!isHumanViewKind(row.kind) || isHiddenHumanRow(row)) continue;
-    if (isTranscriptMarkRow(row)) {
-      flush();
-      groups.push([row]);
-      continue;
-    }
-    if (isHumanUserRow(row)) {
-      flush();
-      groups.push([row]);
-    } else {
-      current.push(row);
-    }
-  }
-  flush();
-  return groups;
-}
-
-const LIST_LOADER_KEY = "__list_loader__";
-const LIST_LOADER_HEIGHT = 40;
-/** Trailing transient "compacting…" row (not a real buffer item). */
-const COMPACTING_PENDING_KEY = "__compacting_pending__";
-const COMPACTING_LINE_HEIGHT = 22;
-
-/**
- * Stable virtual-item identity for a bubble: min(seq) in the group.
- */
-export function bubbleIdentity(bubbles: HumanRow[][], index: number): string {
-  const group = bubbles[index] ?? [];
-  let min: number | undefined;
-  for (const row of group) {
-    if (min === undefined || row.seq < min) min = row.seq;
-  }
-  return min === undefined ? String(index) : String(min);
-}
-
-/** True when this user-detail anchor can file-revert (`k <= max` from snapshot). */
-export function canRevertFiles(
-  k: number,
-  maxFileRevertK: number | null | undefined,
-): boolean {
-  return maxFileRevertK != null && k <= maxFileRevertK;
-}
-
-/** Find the virtual bubble that contains a transcript seq. */
-export function locateSeq(bubbles: HumanRow[][], seq: number): number | null {
-  for (let i = 0; i < bubbles.length; i++) {
-    if (bubbles[i]!.some((row) => row.seq === seq)) return i;
-  }
-  return null;
-}
-
-/** Find the virtual bubble + FoldCard ids for a live bash job's tool card. */
-export function locateBashTool(
-  bubbles: HumanRow[][],
-  callId: string,
-  sessionId: string,
-): { bubbleIndex: number; foldIds: string[] } | null {
-  for (let i = 0; i < bubbles.length; i++) {
-    const rows = bubbles[i]!;
-    const groups = groupNodes(rowsToNodes(rows));
-    const bubbleKey = bubbleIdentity(bubbles, i);
-    for (let gi = 0; gi < groups.length; gi++) {
-      const grouped = groups[gi]!;
-      for (const node of grouped.nodes) {
-        if (node.kind !== "tool" || node.call.call_id !== callId) continue;
-        const foldIds = [`${sessionId}:${bubbleKey}:tool:${callId}`];
-        if (grouped.type === "process") {
-          foldIds.unshift(`${sessionId}:${bubbleKey}:process:${gi}`);
-        }
-        return { bubbleIndex: i, foldIds };
-      }
-    }
-  }
-  return null;
-}
-
-function bashCallSelector(callId: string): string {
-  const escaped =
-    typeof CSS !== "undefined" && typeof CSS.escape === "function"
-      ? CSS.escape(callId)
-      : callId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  return `[data-bash-call-id="${escaped}"]`;
-}
-
-function seqHitSelector(seq: number): string {
-  return `[data-seq-hit~="${seq}"]`;
-}
-
-/**
- * Whether a measured size change should be compensated by shifting scrollTop.
- *
- * The library's default rule is "the changed item starts above the viewport →
- * adjust by the full delta", with one nuance (virtual-core `resizeItem`): a
- * *first* measurement (a key that was never sized) is always compensated, in
- * both scroll directions. Two things make that default wrong for this list:
- *
- *  - Streamed growth and FoldCard toggles change the *bottom* of an item that
- *    is still on screen (its start is above the viewport), so a full-delta
- *    adjustment yanks the reader's view down on every flush and every 240ms
- *    animation frame.
- *  - Native scroll anchoring cannot cover the rest of the cases for us: items
- *    are absolutely positioned (`position: absolute` + `translateY`), and
- *    Chromium's anchor-node selection skips out-of-flow boxes. Measured on
- *    Chromium: growing the content above the viewport moved a normal-flow
- *    scroller's scrollTop by the delta, while the identical change in an
- *    absolutely positioned item left scrollTop untouched.
- *
- * So compensate exactly what can silently shift a viewport the user is reading:
- * the estimate→actual delta of a never-measured item (history paging mounts a
- * page of them at once, each with a content-independent estimate), and any size
- * change of an item that is entirely above the viewport. Re-measurements of
- * already-sized on-screen items stay uncompensated — they are the streamed
- * growth / FoldCard animation case above.
- */
-export function shouldCompensateSizeChange(input: {
-  /** User is pinned to the end (bottom) of the list. */
-  stickToEnd: boolean;
-  /** The item already has a measured size, i.e. this is a re-measurement. */
-  measured: boolean;
-  /** Bottom edge of the changed item, in scroll coordinates. */
-  itemEnd: number;
-  /** Current scroll offset. */
-  scrollOffset: number;
-}): boolean {
-  if (input.stickToEnd) return true;
-  if (!input.measured) return true;
-  return input.itemEnd <= input.scrollOffset;
-}
 
 interface MessageListProps {
   messages: HumanRow[];
@@ -1017,6 +39,9 @@ interface MessageListProps {
   onDismissEdit?: () => void;
   miniPhase?: "idle" | "entering" | "visible" | "exiting";
   onMiniAnimationEnd?: () => void;
+  /** Composer dock is collapsed: its cards no longer float over the tail, so the
+   *  list is free to give back most of the bottom pad (see PAD_COLLAPSED). */
+  composerCollapsed?: boolean;
   /** Hard read-only boundary: user bubbles get no MiniChat/revert/replay and no
    *  text cursor. Not merely a noop handler — the writable affordances are not
    *  built at all. */
@@ -1042,9 +67,13 @@ export const MessageList = memo(function MessageList({
   onDismissEdit = () => {},
   miniPhase = "idle",
   onMiniAnimationEnd = () => {},
+  composerCollapsed = false,
   readOnly = false,
 }: MessageListProps) {
-  const bubbles = useMemo(() => groupRowsForBubbles(messages), [messages]);
+  const bubbles = useMemo(
+    () => projectBubbles(messages, userDetailBefore),
+    [messages, userDetailBefore],
+  );
   // Transient "compacting now" line: `compacting` is set on started and cleared
   // on succeeded/failed. Do not key off `turnPhase`, which can stay compacting
   // after the checkpoint lands.
@@ -1075,195 +104,39 @@ export const MessageList = memo(function MessageList({
     (s) => s.bySession.get(sessionId)?.landedQueueSeq ?? null,
   );
   const clearLandedQueueSeq = useMessageStore((s) => s.clearLandedQueueSeq);
-  const loader = canLoadMore ? 1 : 0;
   const compactingRows = compactingNow ? 1 : 0;
   const queueRows = pendingQueue ? 1 : 0;
-  const count = loader + bubbles.length + compactingRows + queueRows;
 
-  const [bottomPad, setBottomPad] = useState(0);
-  const [stickToEnd, setStickToEnd] = useState(true);
-  const onStickChangeRef = useRef(onStickChange);
-  onStickChangeRef.current = onStickChange;
-
-  useEffect(() => {
-    const measure = () => {
-      const el = scrollRef.current;
-      if (!el) return;
-      const h = el.getBoundingClientRect().height;
-      setBottomPad(h > 0 ? h / 2 : 0);
-    };
-    measure();
-    const raf = requestAnimationFrame(measure);
-    const ro = new ResizeObserver(measure);
-    const el = scrollRef.current;
-    if (el) ro.observe(el);
-    return () => {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
-    };
-  }, [scrollRef]);
-
-  const getItemKey = useCallback(
-    (index: number) => {
-      if (loader && index === 0) return LIST_LOADER_KEY;
-      const i = index - loader;
-      if (i >= bubbles.length) {
-        return i === bubbles.length + compactingRows
-          ? QUEUE_BUBBLE_KEY
-          : COMPACTING_PENDING_KEY;
-      }
-      return bubbleIdentity(bubbles, i);
-    },
-    [bubbles, loader, compactingRows],
-  );
-
-  const estimateSize = useCallback(
-    (index: number) => {
-      if (loader && index === 0) return LIST_LOADER_HEIGHT;
-      const i = index - loader;
-      if (i >= bubbles.length) {
-        // The queued bubble sits after the compacting line: it is the newest
-        // thing in the conversation, just like its durable row will be.
-        return i === bubbles.length + compactingRows
-          ? 88
-          : COMPACTING_LINE_HEIGHT;
-      }
-      const first = firstContentRow(bubbles[i] ?? []);
-      if (!first) return 28;
-      if (isHumanUserRow(first)) {
-        return editingAnchor?.bubbleKey === bubbleIdentity(bubbles, i)
-          ? 240
-          : 88;
-      }
-      return 240;
-    },
-    [bubbles, compactingRows, editingAnchor?.bubbleKey, loader],
-  );
-
-  // Human stick intent: true until the user scrolls up. The stick flag is an
-  // authoritative ref driven by gestures (see useStickToBottom); React state
-  // (`stickToEnd`) is synced from it for the virtualizer + Latest button.
-  // Note: `isAtEnd` only closes over `virtualizer` — it is invoked from the
-  // hook's gesture listeners, which run after this render, so declaring the
-  // virtualizer below is safe.
-  const { stickRef, setStick } = useStickToBottom({
-    ref: scrollRef,
-    active: true,
-    initialStick: true,
-    isAtEnd: () => virtualizer.isAtEnd(),
-    onStickChange: useCallback((next: boolean) => {
-      setStickToEnd(next);
-      onStickChangeRef.current?.(next);
-    }, []),
+  const pad = useBottomPad({ scrollRef, composerCollapsed });
+  const view = useTranscriptViewport({
+    bubbles,
+    compactingRows,
+    queueRows,
+    queueText: pendingQueue?.joined ?? null,
+    queueImageCount: pendingQueue?.images.length ?? 0,
+    canLoadMore,
+    loadingHistory,
+    onLoadMore,
+    scrollRef,
+    sessionId,
+    paddingEnd: pad.bottomPad,
+    padGrewRef: pad.padGrewRef,
+    editingBubbleKey: editingAnchor?.bubbleKey,
+    onStickChange,
+    jumpToEndRef,
+    revealBashRef,
+    revealSeqRef,
   });
-
-  const virtualizer = useVirtualizer({
-    count,
-    getScrollElement: () => scrollRef.current,
-    estimateSize,
-    overscan: 6,
-    getItemKey,
-    paddingEnd: bottomPad,
-    anchorTo: "end",
-    followOnAppend: stickToEnd,
+  useBottomPadMotion({
+    scrollRef,
+    composerCollapsed,
+    padCollapsed: pad.padCollapsed,
+    setPadCollapsed: pad.setPadCollapsed,
+    padGrewRef: pad.padGrewRef,
+    padGone: pad.padGone,
+    virtualizer: view.virtualizer,
+    setStick: view.setStick,
   });
-
-  // See shouldCompensateSizeChange for the rule. Briefly: while unpinned, an
-  // item that has never been measured must still be compensated — paging in
-  // history mounts a whole page of over/under-estimated items, and without the
-  // compensation each measurement shoves the visible content (native scroll
-  // anchoring does not help: the items are absolutely positioned).
-  // `stickRef` (not the async React state) is read so a stream flush that lands
-  // in the same frame as the wheel-unpin gesture still sees the unpinned intent.
-  // This predicate is a public instance property, not a VirtualizerOptions field
-  // in this version — assigned once per instance (idempotent on re-render, same
-  // pattern as the library's own setOptions).
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
-    item,
-    _delta,
-    instance,
-  ) =>
-    shouldCompensateSizeChange({
-      stickToEnd: stickRef.current,
-      measured: instance.itemSizeCache.has(item.key),
-      itemEnd: item.end,
-      scrollOffset: instance.scrollOffset ?? 0,
-    });
-
-  const virtualItems = virtualizer.getVirtualItems();
-
-  const pinToEnd = useCallback(() => {
-    setStick(true);
-    virtualizer.scrollToEnd();
-  }, [setStick, virtualizer]);
-
-  if (jumpToEndRef) jumpToEndRef.current = pinToEnd;
-
-  const revealBash = useCallback(
-    (callId: string) => {
-      setStick(false);
-      const located = locateBashTool(bubbles, callId, sessionId);
-      if (!located) return;
-      for (const foldId of located.foldIds) requestFoldCardOpen(foldId);
-      virtualizer.scrollToIndex(loader + located.bubbleIndex, {
-        align: "center",
-      });
-      const started = performance.now();
-      const tick = () => {
-        const el = document.querySelector(bashCallSelector(callId));
-        if (el instanceof HTMLElement) {
-          el.scrollIntoView({ block: "center", inline: "nearest" });
-          el.classList.remove("bash-view-reveal");
-          void el.offsetWidth;
-          el.classList.add("bash-view-reveal");
-          return;
-        }
-        if (performance.now() - started < 800) requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    },
-    [bubbles, loader, sessionId, setStick, virtualizer],
-  );
-  if (revealBashRef) revealBashRef.current = revealBash;
-
-  const revealSeq = useCallback(
-    (seq: number) => {
-      setStick(false);
-      const bubbleIndex = locateSeq(bubbles, seq);
-      if (bubbleIndex == null) return;
-      virtualizer.scrollToIndex(loader + bubbleIndex, {
-        align: "center",
-      });
-      const started = performance.now();
-      const tick = () => {
-        const el = document.querySelector(seqHitSelector(seq));
-        if (el instanceof HTMLElement) {
-          el.scrollIntoView({ block: "center", inline: "nearest" });
-          el.classList.remove("session-search-reveal");
-          void el.offsetWidth;
-          el.classList.add("session-search-reveal");
-          return;
-        }
-        if (performance.now() - started < 800) requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    },
-    [bubbles, loader, setStick, virtualizer],
-  );
-  if (revealSeqRef) revealSeqRef.current = revealSeq;
-
-  const totalSize = virtualizer.getTotalSize();
-  useLayoutEffect(() => {
-    if (!stickToEnd) return;
-    virtualizer.scrollToEnd();
-  }, [stickToEnd, totalSize, count, virtualizer]);
-
-  useEffect(() => {
-    if (!canLoadMore || loadingHistory) return;
-    if (virtualItems.some((item) => item.index === 0)) {
-      onLoadMore();
-    }
-  }, [canLoadMore, loadingHistory, onLoadMore, virtualItems]);
 
   const itemStyle = (start: number): CSSProperties => ({
     position: "absolute",
@@ -1273,111 +146,99 @@ export const MessageList = memo(function MessageList({
     transform: `translateY(${start}px)`,
   });
 
+  const showList =
+    bubbles.length + compactingRows + queueRows > 0 || canLoadMore;
+
   return (
     <div data-testid="message-list">
-      {count > 0 && (
+      {showList && (
         <div
           style={{
-            height: `${virtualizer.getTotalSize()}px`,
+            height: `${view.totalSize}px`,
             width: "100%",
             position: "relative",
           }}
         >
-          {virtualItems.map((virtualItem) => {
-            if (loader && virtualItem.index === 0) {
-              return (
-                <div
-                  key={virtualItem.key}
-                  data-index={0}
-                  style={{
-                    ...itemStyle(virtualItem.start),
-                    height: LIST_LOADER_HEIGHT,
-                  }}
-                  aria-busy={loadingHistory}
-                  aria-label={
-                    loadingHistory ? "Loading earlier items" : undefined
-                  }
-                />
-              );
-            }
-
-            const bubbleIndex = virtualItem.index - loader;
-            if (pendingQueue && bubbleIndex === bubbles.length + compactingRows) {
+          {canLoadMore ? (
+            <div
+              aria-busy={loadingHistory}
+              aria-label={loadingHistory ? "Loading earlier items" : undefined}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: HISTORY_LOADER_HEIGHT,
+              }}
+            />
+          ) : null}
+          {view.virtualItems.map((virtualItem) => {
+            if (
+              pendingQueue &&
+              virtualItem.index === bubbles.length + compactingRows
+            ) {
               return (
                 <div
                   key={virtualItem.key}
                   data-index={virtualItem.index}
-                  ref={virtualizer.measureElement}
+                  ref={view.virtualizer.measureElement}
                   style={itemStyle(virtualItem.start)}
                 >
                   <PendingQueueBubble
                     text={pendingQueue.joined}
+                    images={pendingQueue.images}
                     canRecall={!readOnly && pendingMessages.length > 0}
                     onRecall={() => void recallPending?.(sessionId)}
                   />
                 </div>
               );
             }
-            if (bubbleIndex >= bubbles.length) {
+            if (virtualItem.index >= bubbles.length) {
               return (
                 <div
                   key={virtualItem.key}
                   data-index={virtualItem.index}
-                  ref={virtualizer.measureElement}
+                  ref={view.virtualizer.measureElement}
                   style={itemStyle(virtualItem.start)}
                 >
                   <CompactingMark />
                 </div>
               );
             }
-            const group = bubbles[bubbleIndex];
-            if (!group) return null;
+            const bubble = bubbles[virtualItem.index];
+            if (!bubble) return null;
 
-            const cutOnly = group.every(isTranscriptMarkRow);
-            const first = firstContentRow(group);
-            const firstIdx = first ? messages.indexOf(first) : -1;
-            const sealed = first != null && first.seq >= 0;
-            const isUser = first != null && isHumanUserRow(first);
-            const showRevert = !readOnly && sealed && isUser && firstIdx >= 0;
-            const userAnchorK = showRevert
-              ? deriveUserAnchorK(messages, firstIdx, userDetailBefore)
-              : undefined;
+            const showRevert = !readOnly && bubble.userAnchorK !== undefined;
             const showRevertFiles =
-              userAnchorK !== undefined &&
-              canRevertFiles(userAnchorK, maxFileRevertK);
-            const nextBubbleFirst = firstContentRow(
-              bubbles[bubbleIndex + 1] ?? [],
-            );
-            const followedByUser =
-              nextBubbleFirst != null && isHumanUserRow(nextBubbleFirst);
-            const bubbleKey = bubbleIdentity(bubbles, bubbleIndex);
+              bubble.userAnchorK !== undefined &&
+              canRevertFiles(bubble.userAnchorK, maxFileRevertK);
             // The queue hands over to its durable row: "sending" — that row,
             // in the slot the bubble already occupied, settles in under the veil
             // instead of snapping to full opacity.
             const landedFromQueue =
               landedQueueSeq !== null &&
-              first != null &&
-              first.seq === landedQueueSeq;
+              bubble.first != null &&
+              bubble.first.seq === landedQueueSeq;
 
-            const item = cutOnly ? (
-              group.map((cut) => (
+            const item = bubble.markOnly ? (
+              bubble.rows.map((cut) => (
                 <TranscriptMarkForRow
-                  key={projectionRowKey(cut)}
+                  key={String(cut.seq)}
                   row={cut}
                   planPath={activePlanPath}
                 />
               ))
             ) : (
               <ItemBubble
-                rows={group}
-                userAnchorK={userAnchorK}
+                rows={bubble.rows}
+                userAnchorK={bubble.userAnchorK}
                 showRevert={showRevert}
                 showRevertFiles={showRevertFiles}
                 readOnly={readOnly}
                 isRunning={isRunning}
-                followedByUser={followedByUser}
+                followedByUser={bubble.followedByUser}
                 sessionId={sessionId}
-                bubbleKey={bubbleKey}
+                bubbleKey={bubble.key}
                 editingAnchor={editingAnchor ?? null}
                 onEditAnchor={onEditAnchor}
                 onDismissEdit={onDismissEdit}
@@ -1390,8 +251,8 @@ export const MessageList = memo(function MessageList({
               <div
                 key={virtualItem.key}
                 data-index={virtualItem.index}
-                data-seq-hit={group.map((row) => row.seq).join(" ")}
-                ref={virtualizer.measureElement}
+                data-seq-hit={bubble.rows.map((row) => row.seq).join(" ")}
+                ref={view.virtualizer.measureElement}
                 style={itemStyle(virtualItem.start)}
               >
                 {/* The positioned wrapper owns its own translateY, so the

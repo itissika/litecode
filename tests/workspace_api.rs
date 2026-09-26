@@ -540,3 +540,157 @@ async fn workspace_git_stage_commit_and_rejects_escape() {
         .expect("escape");
     assert_eq!(escape.status(), 403);
 }
+
+#[tokio::test]
+async fn workspace_preview_reads_and_open_guards() {
+    let _guard = WORKSPACE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("nul.txt"), b"a\0b").unwrap();
+    std::fs::write(dir.path().join("utf16.txt"), [0xFF, 0xFE, b'A', 0x00]).unwrap();
+    std::fs::write(dir.path().join("bad.txt"), [0xFF, 0x81]).unwrap();
+    std::fs::write(dir.path().join("pic.png"), b"\x89PNG\r\n").unwrap();
+    std::fs::write(dir.path().join("notes.db"), b"not a database").unwrap();
+    let big = std::fs::File::create(dir.path().join("big.png")).unwrap();
+    big.set_len(litecode::workspace::MAX_PREVIEW_BYTES + 1)
+        .unwrap();
+    drop(big);
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+
+    let db_path = dir.path().join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE items (id INTEGER, name TEXT);
+             INSERT INTO items VALUES (1, 'a');",
+        )
+        .unwrap();
+    }
+
+    let (state, _serve, web_dist) = test_state(dir.path().to_path_buf());
+    let addr = spawn_test_server(state, web_dist).await;
+    let client = test_http_client();
+    let base = format!("http://{addr}/api/workspace");
+
+    let nul = client
+        .get(format!("{base}/file?path=nul.txt"))
+        .send()
+        .await
+        .expect("nul");
+    assert_eq!(nul.status(), 415);
+    let nul_body: Value = nul.json().await.expect("nul json");
+    assert_eq!(nul_body["error"], "二进制，无法在这里显示");
+
+    let utf16 = client
+        .get(format!("{base}/file?path=utf16.txt"))
+        .send()
+        .await
+        .expect("utf16");
+    assert_eq!(utf16.status(), 415);
+    let utf16_body: Value = utf16.json().await.expect("utf16 json");
+    assert_eq!(utf16_body["error"], "这是 UTF-16，这里按 UTF-8 打开会损坏");
+
+    let bad = client
+        .get(format!("{base}/file?path=bad.txt"))
+        .send()
+        .await
+        .expect("bad utf8");
+    assert_eq!(bad.status(), 415);
+    let bad_body: Value = bad.json().await.expect("bad json");
+    assert!(
+        bad_body["error"].as_str().unwrap_or("").contains("GBK"),
+        "{bad_body}"
+    );
+
+    let png = client
+        .get(format!("{base}/bytes?path=pic.png"))
+        .send()
+        .await
+        .expect("png");
+    assert_eq!(png.status(), 200);
+    assert_eq!(
+        png.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("image/png")
+    );
+    assert_eq!(&png.bytes().await.unwrap()[..], &b"\x89PNG\r\n"[..]);
+
+    let too_big = client
+        .get(format!("{base}/bytes?path=big.png"))
+        .send()
+        .await
+        .expect("big");
+    assert_eq!(too_big.status(), 413);
+    let too_big_body: Value = too_big.json().await.expect("big json");
+    assert_eq!(too_big_body["error"], "文件太大，无法在面板里预览");
+
+    let sqlite: Value = client
+        .get(format!("{base}/sqlite?path=app.db"))
+        .send()
+        .await
+        .expect("sqlite")
+        .json()
+        .await
+        .expect("sqlite json");
+    assert_eq!(sqlite["ok"], true);
+    assert_eq!(sqlite["data"]["table"], "items");
+    assert_eq!(sqlite["data"]["rows"][0][1], "a");
+
+    let injected = client
+        .get(format!(
+            "{base}/sqlite?path=app.db&table={}",
+            urlencoding_table("items; DROP TABLE items")
+        ))
+        .send()
+        .await
+        .expect("injected");
+    assert_eq!(injected.status(), 400);
+
+    let not_db = client
+        .get(format!("{base}/sqlite?path=notes.db"))
+        .send()
+        .await
+        .expect("not db");
+    assert_eq!(not_db.status(), 400);
+
+    let missing = client
+        .post(format!("{base}/open"))
+        .json(&serde_json::json!({ "path": "nope.txt" }))
+        .send()
+        .await
+        .expect("missing open");
+    assert_eq!(missing.status(), 404);
+
+    let directory = client
+        .post(format!("{base}/open"))
+        .json(&serde_json::json!({ "path": "sub" }))
+        .send()
+        .await
+        .expect("dir open");
+    assert_eq!(directory.status(), 400);
+
+    let escape = client
+        .post(format!("{base}/open"))
+        .json(&serde_json::json!({ "path": "../secret.txt" }))
+        .send()
+        .await
+        .expect("escape open");
+    assert_eq!(escape.status(), 403);
+
+    #[cfg(not(windows))]
+    {
+        let unsupported = client
+            .post(format!("{base}/open"))
+            .json(&serde_json::json!({ "path": "pic.png" }))
+            .send()
+            .await
+            .expect("open");
+        assert_eq!(unsupported.status(), 501);
+    }
+}
+
+fn urlencoding_table(table: &str) -> String {
+    url::form_urlencoded::byte_serialize(table.as_bytes()).collect()
+}

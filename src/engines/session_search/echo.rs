@@ -14,8 +14,8 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use anyhow::Result;
 use crate::session::transcript_file::{SearchableRow, call_reads_sessions, load_blob_text};
+use anyhow::Result;
 use serde_json::Value;
 
 /// Call linkage of one `item/tool_call` row: which result belongs to it, and
@@ -43,8 +43,7 @@ pub fn call_info(row: &SearchableRow, data_root: &Path) -> Option<CallInfo> {
     }
     let call_id = v.get("call_id").and_then(Value::as_str)?.to_string();
     let name = v.get("name").and_then(Value::as_str).unwrap_or("");
-    let session_read =
-        call_reads_sessions(name, v.get("arguments").and_then(Value::as_str));
+    let session_read = call_reads_sessions(name, v.get("arguments").and_then(Value::as_str));
     Some(CallInfo {
         call_id,
         session_read,
@@ -169,7 +168,12 @@ mod tests {
             result_row("s1", 2, 1),
             call_row("s1", 3, "read", r#"{"file_path":"src/main.rs"}"#),
             result_row("s1", 4, 3),
-            call_row("s1", 5, "grep", r#"{"pattern":"x","path":".litecode/sessions"}"#),
+            call_row(
+                "s1",
+                5,
+                "grep",
+                r#"{"pattern":"x","path":".litecode/sessions"}"#,
+            ),
             result_row("s1", 6, 5),
             call_row("s1", 7, "session_search", r#"{"query":"auth"}"#),
             result_row("s1", 8, 7),
@@ -184,5 +188,4 @@ mod tests {
         assert!(keys.contains(&("s1".to_string(), 8)));
         assert!(!keys.contains(&("s1".to_string(), 10)));
     }
-
 }

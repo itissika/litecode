@@ -43,12 +43,28 @@ async fn completed_child_result_is_read_from_the_durable_turn() {
 
     let listed = harness.list("call_list_idle").await;
     assert_eq!(listed.level, ToolSignalLevel::Ok, "{}", listed.content);
-    assert!(listed.content.contains(&format!("- id: {child}")), "{}", listed.content);
-    assert!(listed.content.contains("agent: reviewer"), "{}", listed.content);
-    assert!(listed.content.contains("responsibility: test"), "{}", listed.content);
+    assert!(
+        listed.content.contains(&format!("- id: {child}")),
+        "{}",
+        listed.content
+    );
+    assert!(
+        listed.content.contains("agent: reviewer"),
+        "{}",
+        listed.content
+    );
+    assert!(
+        listed.content.contains("responsibility: test"),
+        "{}",
+        listed.content
+    );
     assert!(listed.content.contains("last_send:"), "{}", listed.content);
     assert!(listed.content.contains("state: idle"), "{}", listed.content);
-    assert!(listed.content.contains("reason: completed"), "{}", listed.content);
+    assert!(
+        listed.content.contains("reason: completed"),
+        "{}",
+        listed.content
+    );
     assert!(!listed.content.contains("turn_age:"), "{}", listed.content);
 
     let waited = harness
@@ -58,11 +74,27 @@ async fn completed_child_result_is_read_from_the_durable_turn() {
         )
         .await;
     assert_eq!(waited.level, ToolSignalLevel::Ok, "{}", waited.content);
-    assert!(waited.content.contains("status: settled"), "{}", waited.content);
-    assert!(waited.content.contains("reason: completed"), "{}", waited.content);
-    assert!(waited.content.contains("responsibility: test"), "{}", waited.content);
+    assert!(
+        waited.content.contains("status: settled"),
+        "{}",
+        waited.content
+    );
+    assert!(
+        waited.content.contains("reason: completed"),
+        "{}",
+        waited.content
+    );
+    assert!(
+        waited.content.contains("responsibility: test"),
+        "{}",
+        waited.content
+    );
     assert!(waited.content.contains("skipped: 1"), "{}", waited.content);
-    assert!(waited.content.contains("skipped_id: missing-id"), "{}", waited.content);
+    assert!(
+        waited.content.contains("skipped_id: missing-id"),
+        "{}",
+        waited.content
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -75,7 +107,11 @@ async fn wait_freezes_a_child_turn_and_returns_its_session_result() {
 
     let listed = harness.list("call_list_run").await;
     assert_eq!(listed.level, ToolSignalLevel::Ok, "{}", listed.content);
-    assert!(listed.content.contains("state: running"), "{}", listed.content);
+    assert!(
+        listed.content.contains("state: running"),
+        "{}",
+        listed.content
+    );
     assert!(listed.content.contains("turn_age:"), "{}", listed.content);
     assert!(listed.content.contains("step:"), "{}", listed.content);
 
@@ -212,7 +248,9 @@ async fn child_turn_reads_config_from_its_own_session_row() {
     harness.wait_child_settled(&child);
 
     let launch_calls = provider.captured();
-    let seed_call = launch_calls.last().expect("launch turn called the provider");
+    let seed_call = launch_calls
+        .last()
+        .expect("launch turn called the provider");
     assert_eq!(
         seed_call.0,
         api_model_id(&harness.resolved, common::TEST_PRIMARY_MODEL_REF)
@@ -255,7 +293,10 @@ async fn child_turn_reads_config_from_its_own_session_row() {
         "child thinking tier comes from its own row"
     );
     // Identity is untouched by knob writes.
-    assert_eq!(harness.sessions.agent_id(&child).as_deref(), Some("reviewer"));
+    assert_eq!(
+        harness.sessions.agent_id(&child).as_deref(),
+        Some("reviewer")
+    );
 }
 
 fn child_binding(
@@ -302,9 +343,8 @@ async fn child_binding_window_follows_its_own_context_mode() {
         common::test_catalog_windows("http://127.0.0.1:9", 200_000, 1_000_000, 8192),
     );
 
-    let sessions = common::test_sessions_manager(
-        resolved.paths().sessions_db.to_string_lossy().to_string(),
-    );
+    let sessions =
+        common::test_sessions_manager(resolved.paths().sessions_db.to_string_lossy().to_string());
     let project = cwd.to_string_lossy().to_string();
     let parent = sessions
         .open_session(&project, "default", Some(common::TEST_PRIMARY_MODEL_REF))
@@ -363,12 +403,9 @@ async fn child_identity_is_not_switchable_by_set_primary() {
     let child = harness.launch_reviewer("call_d1", "hi").await;
     harness.wait_child_settled(&child);
 
-    let mut ctrl = SessionController::new(
-        harness.runtime.clone(),
-        None,
-        Arc::clone(&harness.sessions),
-    )
-    .expect("controller");
+    let mut ctrl =
+        SessionController::new(harness.runtime.clone(), None, Arc::clone(&harness.sessions))
+            .expect("controller");
     ctrl.subscribe_checked(&child).await.expect("subscribe");
     let _ = ctrl.take_outgoing_for(&child);
 
@@ -379,11 +416,13 @@ async fn child_identity_is_not_switchable_by_set_primary() {
     let refusal = frames
         .iter()
         .find(|f| {
-            f["method"] == "agent/operation_result"
-                && f["params"]["op"] == "set_active_primary"
+            f["method"] == "agent/operation_result" && f["params"]["op"] == "set_active_primary"
         })
         .unwrap_or_else(|| panic!("set-primary answered on the wire: {frames:#?}"));
     assert_eq!(refusal["params"]["ok"], false);
     assert_eq!(refusal["params"]["error"]["code"], "invalid_request");
-    assert_eq!(harness.sessions.agent_id(&child).as_deref(), Some("reviewer"));
+    assert_eq!(
+        harness.sessions.agent_id(&child).as_deref(),
+        Some("reviewer")
+    );
 }

@@ -5,11 +5,13 @@ import { isCompactCutRow, projectionRowKey } from "../api/adapter";
 import {
   bubbleIdentity,
   canRevertFiles,
+  estimateUserBubbleHeight,
   groupRowsForBubbles,
   locateBashTool,
   locateSeq,
-  shouldCompensateSizeChange,
-} from "./MessageList";
+  projectBubbles,
+  trimPartialHead,
+} from "./transcriptProjection";
 
 const userRow: HumanRow = {
   seq: 0,
@@ -227,7 +229,7 @@ describe("locateBashTool", () => {
         status: "in_progress",
       },
     };
-    const bubbles = groupRowsForBubbles([userRow, liveReasoning, bashRow]);
+    const bubbles = projectBubbles([userRow, liveReasoning, bashRow], 0);
     const found = locateBashTool(bubbles, "c1", "session-1");
     expect(found?.bubbleIndex).toBe(1);
     expect(found?.foldIds[0]).toMatch(/:process:0$/);
@@ -237,78 +239,113 @@ describe("locateBashTool", () => {
 
 describe("locateSeq", () => {
   it("finds a user seq in its own bubble", () => {
-    const bubbles = groupRowsForBubbles([userRow, liveReasoning, liveTool]);
+    const bubbles = projectBubbles([userRow, liveReasoning, liveTool], 0);
     expect(locateSeq(bubbles, 0)).toBe(0);
   });
 
   it("finds merged assistant rows in the same bubble", () => {
-    const bubbles = groupRowsForBubbles([userRow, liveReasoning, liveTool]);
+    const bubbles = projectBubbles([userRow, liveReasoning, liveTool], 0);
     expect(locateSeq(bubbles, 1)).toBe(1);
     expect(locateSeq(bubbles, 2)).toBe(1);
     expect(locateSeq(bubbles, 99)).toBeNull();
   });
 });
-describe("shouldCompensateSizeChange", () => {
-  // The list is absolutely positioned, so Chromium's scroll anchoring never
-  // fires for it (verified: the same growth moved scrollTop in a normal-flow
-  // scroller and left it untouched for an abspos item). This predicate is the
-  // only compensation the list gets, so the cases below are the whole contract.
 
-  it("compensates a first measurement even while the user is unpinned", () => {
-    // History paging mounts a page of never-measured bubbles, each sized from a
-    // content-independent estimate: without this the measured delta shoves the
-    // viewport on every measurement (the "scroll up and the list jitters" bug).
-    expect(
-      shouldCompensateSizeChange({
-        stickToEnd: false,
-        measured: false,
-        itemEnd: 4000,
-        scrollOffset: 2000,
-      }),
-    ).toBe(true);
+function assistantRow(seq: number): HumanRow {
+  return {
+    seq,
+    kind: "item/assistant",
+    state: "final",
+    body: {
+      type: "message",
+      role: "assistant",
+      id: `a${seq}`,
+      status: "completed",
+      content: [{ type: "output_text", text: "x", annotations: [] }],
+    },
+  };
+}
+
+function userAt(seq: number): HumanRow {
+  return { ...userRow, seq };
+}
+
+describe("trimPartialHead", () => {
+  it("keeps a window that starts at seq 0", () => {
+    const rows = [assistantRow(0), userAt(1)];
+    expect(trimPartialHead(rows, 0)).toBe(rows);
   });
 
-  it("leaves a re-measurement of an on-screen item alone while unpinned", () => {
-    // Streamed growth / a FoldCard opening changes the bottom of the item the
-    // reader is looking at; compensating by the full delta pushes their view
-    // down once per flush and once per 240ms animation frame.
+  it("drops the assistant fragment before the first barrier", () => {
     expect(
-      shouldCompensateSizeChange({
-        stickToEnd: false,
-        measured: true,
-        itemEnd: 2600,
-        scrollOffset: 2000,
-      }),
-    ).toBe(false);
+      trimPartialHead([assistantRow(40), assistantRow(41), userAt(42)], 40).map(
+        (row) => row.seq,
+      ),
+    ).toEqual([42]);
   });
 
-  it("compensates a re-measurement of an item entirely above the viewport", () => {
-    expect(
-      shouldCompensateSizeChange({
-        stickToEnd: false,
-        measured: true,
-        itemEnd: 2000,
-        scrollOffset: 2000,
-      }),
-    ).toBe(true);
-    expect(
-      shouldCompensateSizeChange({
-        stickToEnd: false,
-        measured: true,
-        itemEnd: 1999,
-        scrollOffset: 2000,
-      }),
-    ).toBe(true);
+  it("renders nothing when the window has no barrier", () => {
+    expect(trimPartialHead([assistantRow(40), assistantRow(41)], 40)).toEqual(
+      [],
+    );
   });
 
-  it("always compensates while pinned to the end", () => {
-    expect(
-      shouldCompensateSizeChange({
-        stickToEnd: true,
-        measured: true,
-        itemEnd: 2600,
-        scrollOffset: 2000,
-      }),
-    ).toBe(true);
+  it("keeps the window when it already starts on a barrier", () => {
+    const rows = [userAt(40), assistantRow(41)];
+    expect(trimPartialHead(rows, 40)).toBe(rows);
+  });
+});
+
+describe("projectBubbles across a split assistant run", () => {
+  it("keeps keys of bubbles that were already visible after the missing head arrives", () => {
+    const before = projectBubbles(
+      trimPartialHead(
+        [assistantRow(40), assistantRow(41), userAt(42), assistantRow(43)],
+        40,
+      ),
+      1,
+    ).map((bubble) => bubble.key);
+    expect(before).toEqual(["42", "43"]);
+
+    const after = projectBubbles(
+      trimPartialHead(
+        [
+          userAt(30),
+          assistantRow(39),
+          assistantRow(40),
+          assistantRow(41),
+          userAt(42),
+          assistantRow(43),
+        ],
+        30,
+      ),
+      0,
+    ).map((bubble) => bubble.key);
+    expect(after).toEqual(["30", "39", "42", "43"]);
+    for (const key of before) expect(after).toContain(key);
+  });
+
+  it("numbers sealed user anchors from userDetailBefore", () => {
+    const bubbles = projectBubbles(
+      [userAt(1), assistantRow(2), userAt(3)],
+      4,
+    );
+    expect(bubbles.map((bubble) => bubble.userAnchorK)).toEqual([
+      4,
+      undefined,
+      5,
+    ]);
+    expect(bubbles[1]?.followedByUser).toBe(true);
+    expect(bubbles[0]?.followedByUser).toBe(false);
+  });
+});
+
+describe("estimateUserBubbleHeight", () => {
+  it("counts wrapped lines inside the 72ch measure", () => {
+    expect(estimateUserBubbleHeight("hi")).toBe(32 + 25);
+    expect(estimateUserBubbleHeight("a\nb")).toBe(32 + 50);
+    expect(estimateUserBubbleHeight("x".repeat(73))).toBe(32 + 50);
+    expect(estimateUserBubbleHeight("", 1)).toBe(32 + 128);
+    expect(estimateUserBubbleHeight("hi", 2)).toBe(32 + 25 + 128);
   });
 });

@@ -1,5 +1,18 @@
 import type { EngineStatus, EngineWarmupState } from "./settings";
 import { apiFetch } from "./auth";
+import { WorkspaceRequestError } from "../lib/workspaceError";
+
+async function errorFromResponse(res: Response): Promise<WorkspaceRequestError> {
+  const text = await res.text();
+  let message = text || `HTTP ${res.status}`;
+  try {
+    const body = JSON.parse(text) as { error?: unknown };
+    if (typeof body.error === "string" && body.error) message = body.error;
+  } catch {
+    // The body was not JSON; keep the raw text.
+  }
+  return new WorkspaceRequestError(message, res.status);
+}
 
 export type TreeEntryKind = "file" | "dir";
 
@@ -81,12 +94,52 @@ export async function fetchGlob(pattern: string): Promise<GlobListing> {
 export async function readFile(path: string): Promise<string> {
   const params = new URLSearchParams({ path });
   const res = await apiFetch(`/api/workspace/file?${params}`);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `HTTP ${res.status}`);
-  }
+  if (!res.ok) throw await errorFromResponse(res);
   const data = await parseJson<{ path: string; content: string }>(res);
   return data.content;
+}
+
+/** Authenticated bytes for an image, PDF, or media preview. */
+export async function readBytes(path: string): Promise<Blob> {
+  const params = new URLSearchParams({ path });
+  const res = await apiFetch(`/api/workspace/bytes?${params}`);
+  if (!res.ok) throw await errorFromResponse(res);
+  return res.blob();
+}
+
+export interface SqlitePreview {
+  path: string;
+  tables: string[];
+  table: string;
+  columns: string[];
+  rows: unknown[][];
+  offset: number;
+  limit: number;
+  truncated: boolean;
+}
+
+/** Read-only page of a SQLite file. `table` empty selects the first table. */
+export async function readSqlitePreview(
+  path: string,
+  table = "",
+  offset = 0,
+): Promise<SqlitePreview> {
+  const params = new URLSearchParams({ path, offset: String(offset) });
+  if (table) params.set("table", table);
+  const res = await apiFetch(`/api/workspace/sqlite?${params}`);
+  if (!res.ok) throw await errorFromResponse(res);
+  return parseJson<SqlitePreview>(res);
+}
+
+/** Windows server only. Other hosts respond 501. */
+export async function openWithDefaultApp(path: string): Promise<void> {
+  const res = await apiFetch("/api/workspace/open", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw await errorFromResponse(res);
+  await parseJson<{ opened: boolean }>(res);
 }
 
 export async function writeFile(path: string, content: string): Promise<void> {

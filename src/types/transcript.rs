@@ -4,9 +4,44 @@
 //! All atoms are [`async_openai::types::responses`] types (via [`crate::authority`]).
 
 use crate::authority::responses::{
-    AssistantRole, InputContent, InputMessage, InputRole, InputTextContent, OutputMessageContent,
-    OutputStatus, OutputTextContent,
+    AssistantRole, InputContent, InputImageContent, InputMessage, InputRole, InputTextContent,
+    OutputMessageContent, OutputStatus, OutputTextContent,
 };
+
+/// What the composer sends: plain text plus `litecode-media:` image refs.
+///
+/// Refs stay refs until the ephemeral model view. Auto-turns and plan
+/// execution use [`UserInput::text`] and carry no images.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UserInput {
+    pub text: String,
+    pub images: Vec<String>,
+}
+
+impl UserInput {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            images: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.trim().is_empty() && self.images.is_empty()
+    }
+}
+
+impl From<String> for UserInput {
+    fn from(text: String) -> Self {
+        Self::text(text)
+    }
+}
+
+impl From<&str> for UserInput {
+    fn from(text: &str) -> Self {
+        Self::text(text)
+    }
+}
 
 pub use crate::authority::responses::{
     FunctionCallOutputItemParam, FunctionToolCall, InputItem, Item, MessageItem, OutputItem,
@@ -21,13 +56,65 @@ pub type StreamEvents = ResponseStreamEvent;
 
 /// Build a user text `Item` using authority types only (no homemade message envelope).
 pub fn user_text(text: impl Into<String>) -> Item {
+    user_message(text, &[])
+}
+
+/// User `Item` with text and `input_image` parts.
+///
+/// `images` are `litecode-media:` refs (or any image URL the caller already
+/// resolved). An empty text part is omitted so an image-only message stays an
+/// image. Both empty still yields one empty text part.
+pub fn user_message(text: impl Into<String>, images: &[String]) -> Item {
+    let text = text.into();
+    let mut content = Vec::new();
+    if !text.is_empty() {
+        content.push(InputContent::InputText(InputTextContent { text }));
+    }
+    for image_url in images {
+        content.push(InputContent::InputImage(InputImageContent {
+            detail: Default::default(),
+            file_id: None,
+            image_url: Some(image_url.clone()),
+        }));
+    }
+    if content.is_empty() {
+        content.push(InputContent::InputText(InputTextContent {
+            text: String::new(),
+        }));
+    }
     Item::Message(MessageItem::Input(InputMessage {
-        content: vec![InputContent::InputText(InputTextContent {
-            text: text.into(),
-        })],
+        content,
         role: InputRole::User,
         status: None,
     }))
+}
+
+/// True when `item` is the user message `input` would persist.
+pub fn user_input_matches(item: &Item, input: &UserInput) -> bool {
+    let Item::Message(MessageItem::Input(message)) = item else {
+        return false;
+    };
+    if message.role != InputRole::User {
+        return false;
+    }
+    let text = message
+        .content
+        .iter()
+        .filter_map(|part| match part {
+            InputContent::InputText(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let images = message
+        .content
+        .iter()
+        .filter_map(|part| match part {
+            InputContent::InputImage(image) => image.image_url.clone(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    text == input.text && images == input.images
 }
 
 /// Build an assistant text `Item` (AgentView synthesis, never a user message).

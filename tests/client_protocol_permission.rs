@@ -26,6 +26,7 @@ fn server_hello_notification_serializes_correctly() {
             label: "Test Primary".into(),
             context_window: 128_000,
             provider_id: "test".into(),
+            modalities: vec!["text".into()],
         }],
     );
     let json = serde_json::to_string(&msg).expect("json");
@@ -39,11 +40,16 @@ fn server_hello_notification_serializes_correctly() {
     );
     let hello: litecode::client_protocol::protocol::ServerHello =
         serde_json::from_value(msg["params"].clone()).expect("hello params deserialize");
-    assert_eq!(hello.models.len(), 1, "models carries the active-model projection");
+    assert_eq!(
+        hello.models.len(),
+        1,
+        "models carries the active-model projection"
+    );
     assert_eq!(hello.models[0].id, "test/test-primary-model");
     assert_eq!(hello.models[0].api_model_id, "test-primary-model");
     assert_eq!(hello.models[0].provider_id, "test");
     assert_eq!(hello.models[0].context_window, 128_000);
+    assert_eq!(hello.host_os, std::env::consts::OS);
 }
 
 #[tokio::test]

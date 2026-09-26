@@ -1,14 +1,10 @@
 import React from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  MessageList,
-  NodeView,
-  ProcessGroup,
-  groupNodes,
-  rowsToNodes,
-} from "./MessageList";
+import { MessageList } from "./MessageList";
+import { groupNodes, rowsToNodes } from "../lib/transcriptProjection";
+import { NodeView, ProcessGroup } from "./transcript/NodeView";
 import type { HumanRow } from "../api/types";
 import { userTextItem } from "../api/adapter";
 import { useBashStore } from "../stores/bashStore";
@@ -18,35 +14,61 @@ import { clearFoldCardOpen } from "./foldCardState";
 const grantPermission = vi.fn();
 
 class ResizeObserverStub {
+  static last: ResizeObserverStub | null = null;
+  callback: ResizeObserverCallback;
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    ResizeObserverStub.last = this;
+  }
   observe() {}
   unobserve() {}
   disconnect() {}
 }
 vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+// jsdom ships no matchMedia; the list only asks it about reduced motion.
+vi.stubGlobal("matchMedia", () => ({ matches: false }));
+
+/** Options of the most recent useVirtualizer call (the pad assertions read it). */
+const virtualOptions = vi.hoisted(() => ({
+  current: null as null | { paddingEnd?: number },
+}));
+
+/** Every virtualizer.scrollToOffset call, so the glide can be asserted. */
+const virtualizerScrolls = vi.hoisted(() => [] as { offset: number }[]);
+
+/** Every virtualizer.scrollToEnd call, with its options. */
+const virtualizerEnds = vi.hoisted(() => [] as { behavior?: string }[]);
 
 vi.mock("@tanstack/react-virtual", () => ({
-  useVirtualizer: ({
-    count,
-    getItemKey,
-  }: {
+  useVirtualizer: (options: {
     count: number;
     getItemKey?: (index: number) => string | number;
-  }) => ({
-    getVirtualItems: () =>
-      Array.from({ length: count }, (_, index) => ({
-        key: getItemKey?.(index) ?? index,
-        index,
-        start: index * 200,
-        size: 200,
-        end: (index + 1) * 200,
-      })),
-    getTotalSize: () => count * 200,
-    measureElement: () => {},
-    scrollToEnd: () => {},
-    scrollToIndex: () => {},
-    isAtEnd: () => true,
-    options: {},
-  }),
+    paddingEnd?: number;
+  }) => {
+    const { count, getItemKey } = options;
+    virtualOptions.current = options;
+    return {
+      getVirtualItems: () =>
+        Array.from({ length: count }, (_, index) => ({
+          key: getItemKey?.(index) ?? index,
+          index,
+          start: index * 200,
+          size: 200,
+          end: (index + 1) * 200,
+        })),
+      getTotalSize: () => count * 200 + (options.paddingEnd ?? 0),
+      measureElement: () => {},
+      scrollToEnd: (opts?: { behavior?: string }) => {
+        virtualizerEnds.push(opts ?? {});
+      },
+      scrollToIndex: () => {},
+      scrollToOffset: (offset: number, opts: { behavior: string }) => {
+        virtualizerScrolls.push({ offset, ...opts });
+      },
+      isAtEnd: () => true,
+      options: {},
+    };
+  },
 }));
 
 const turnState = {
@@ -1127,3 +1149,137 @@ done
     expect(screen.queryByText(/^done$/)).toBeNull();
   });
 });
+
+describe("MessageList composer pad", () => {
+  const finalRow: HumanRow = {
+    seq: 4,
+    kind: "item/assistant",
+    state: "final",
+    body: {
+      type: "message",
+      id: "msg_pad",
+      role: "assistant",
+      status: "completed",
+      content: [{ type: "output_text", text: "done", annotations: [] }],
+    },
+  };
+
+  const renderList = (
+    composerCollapsed: boolean,
+    scrollRef: React.RefObject<HTMLDivElement | null>,
+  ) =>
+    render(
+      <MessageList
+        messages={[finalRow]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={false}
+        scrollRef={scrollRef}
+        sessionId="session-1"
+        composerCollapsed={composerCollapsed}
+      />,
+    );
+
+  it("pads the end by half the viewport, and by a fifth once collapsed", () => {
+    // The list only *reads* the scroll ref (its parent owns the element), so the
+    // test hands it a detached host with a real viewport height — jsdom reports
+    // 0×0 for every element.
+    const scrollRef = makeScrollRef();
+    const host = document.createElement("div");
+    Object.defineProperty(host, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ height: 800 }),
+    });
+    scrollRef.current = host;
+
+    const { rerender } = renderList(false, scrollRef);
+    // The observer the list subscribed with re-measures on resize.
+    ResizeObserverStub.last!.callback([], ResizeObserverStub.last! as never);
+
+    expect(virtualOptions.current?.paddingEnd).toBe(400);
+
+    rerender(
+      <MessageList
+        messages={[finalRow]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={false}
+        scrollRef={scrollRef}
+        sessionId="session-1"
+        composerCollapsed
+      />,
+    );
+    // Collapsed: the composer is out of the way, so two thirds of the clearance
+    // go too — the tail keeps a fifth of the pane so it never sits on the edge.
+    expect(virtualOptions.current?.paddingEnd).toBe(160);
+  });
+
+  it("glides the reader instead of letting the browser clamp the pad away", () => {
+    const scrollRef = makeScrollRef();
+    const host = document.createElement("div");
+    Object.defineProperties(host, {
+      getBoundingClientRect: {
+        configurable: true,
+        value: () => ({ height: 800 }),
+      },
+      // Expanded pad 400, collapsed 160 → the new end sits 240px higher up.
+      scrollHeight: { configurable: true, value: 4000 },
+      clientHeight: { configurable: true, value: 800 },
+      scrollTop: { configurable: true, writable: true, value: 3100 },
+    });
+    scrollRef.current = host;
+
+    const { rerender } = renderList(false, scrollRef);
+    rerender(
+      <MessageList
+        messages={[finalRow]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={false}
+        scrollRef={scrollRef}
+        sessionId="session-1"
+        composerCollapsed
+      />,
+    );
+
+    // The pad is held back until the glide lands: dropping it here is what the
+    // browser would answer with a 240px clamp.
+    expect(virtualOptions.current?.paddingEnd).toBe(400);
+    expect(virtualizerScrolls.at(-1)).toEqual({
+      offset: 2960,
+      behavior: "smooth",
+    });
+
+    act(() => {
+      host.dispatchEvent(new Event("scrollend"));
+    });
+
+    expect(virtualOptions.current?.paddingEnd).toBe(160);
+
+    // Expanding is clamp-free, so the pad returns at once and the pin is what
+    // moves the tail — glided, not snapped.
+    virtualizerEnds.length = 0;
+    rerender(
+      <MessageList
+        messages={[finalRow]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        userDetailBefore={0}
+        isRunning={false}
+        scrollRef={scrollRef}
+        sessionId="session-1"
+        composerCollapsed={false}
+      />,
+    );
+    expect(virtualOptions.current?.paddingEnd).toBe(400);
+    expect(virtualizerEnds.at(-1)).toEqual({ behavior: "smooth" });
+  });
+});
+

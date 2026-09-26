@@ -97,7 +97,7 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
             }],
         },
         "kill_shell" | "wait_shell" | "session_search" | "subagent_wait" | "subagent_stop"
-        | "subagent_list" | "subagent_send" | "workspace_stats" => ToolPolicy::allow_all(),
+        | "subagent_list" | "subagent_send" | "litecode_workspace" => ToolPolicy::allow_all(),
         "webfetch" | "websearch" | "code_search" | "lsp" => ToolPolicy {
             default: PermissionAction::Ask,
             default_id: super::policy::DEFAULT_RULE_ID.into(),

@@ -5,8 +5,8 @@ mod common;
 use std::sync::Arc;
 
 use common::{
-    TEST_PRIMARY_MODEL_REF, build_runtime_with_provider, fixture_responses_sse, serve_responses_queue,
-    test_agent, test_catalog,
+    TEST_PRIMARY_MODEL_REF, build_runtime_with_provider, fixture_responses_sse,
+    serve_responses_queue, test_agent, test_catalog,
 };
 use litecode::llm::provider_from_model;
 use litecode::provider_catalog::EndpointKind;

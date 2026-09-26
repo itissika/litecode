@@ -90,9 +90,7 @@ pub async fn authorize(
             match sink.ask_permission(&name, &eval.rule_id, &summary, cancel) {
                 AskOutcome::Aborted => return AuthResult::Aborted,
                 AskOutcome::Deny => {
-                    return AuthResult::Denied(permission_denied_by_user_message(
-                        &name, &summary,
-                    ));
+                    return AuthResult::Denied(permission_denied_by_user_message(&name, &summary));
                 }
                 AskOutcome::Allow { always } => {
                     if always {

@@ -74,9 +74,7 @@ fn bash_idle_uses_human_turn_order_and_releases_on_failure() {
     let reserve = src
         .find("reserve_turn")
         .expect("bash idle reserves before spawn");
-    let spawn = src
-        .find("spawn_turn(")
-        .expect("bash idle calls spawn_turn");
+    let spawn = src.find("spawn_turn(").expect("bash idle calls spawn_turn");
     let start = src
         .find(".start_turn(")
         .expect("bash idle calls start_turn");

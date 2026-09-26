@@ -193,10 +193,7 @@ impl LlmSettingsView {
                         .models_of(&provider.id)
                         .iter()
                         .map(|model| {
-                            CatalogModelView::from_model(
-                                model,
-                                enabled_for(&model.reference),
-                            )
+                            CatalogModelView::from_model(model, enabled_for(&model.reference))
                         })
                         .collect(),
                 }
@@ -684,33 +681,7 @@ impl SettingsWriter {
     }
 
     pub fn write_custom_tool(&self, id: &str, mut def: CustomToolDefinition) -> Result<CommitAck> {
-        validate_tool_id(id)?;
-        if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
-            return Err(LitecodeError::Config(format!(
-                "custom tool id '{id}' conflicts with a builtin tool"
-            )));
-        }
-        if def.name != id {
-            if def.name.is_empty() {
-                def.name = id.to_string();
-            } else {
-                return Err(LitecodeError::Config(format!(
-                    "custom tool body name '{}' must match path id '{id}'",
-                    def.name
-                )));
-            }
-        }
-        if def.command.trim().is_empty() {
-            return Err(LitecodeError::Config(
-                "custom tool command must not be empty".into(),
-            ));
-        }
-        if def.schema.schema_type.trim().is_empty() {
-            def.schema.schema_type = "object".into();
-        }
-        if def.timeout == 0 {
-            def.timeout = 120;
-        }
+        validate_custom_definition(id, &mut def)?;
 
         self.commit_partial(&[DocId::CustomToolsGlobal], |settings| {
             if let Some(existing) = settings.custom_tools.iter_mut().find(|t| t.name == id) {
@@ -824,33 +795,7 @@ impl SettingsWriter {
         id: &str,
         mut def: CustomToolDefinition,
     ) -> Result<CommitAck> {
-        validate_tool_id(id)?;
-        if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
-            return Err(LitecodeError::Config(format!(
-                "custom tool id '{id}' conflicts with a builtin tool"
-            )));
-        }
-        if def.name != id {
-            if def.name.is_empty() {
-                def.name = id.to_string();
-            } else {
-                return Err(LitecodeError::Config(format!(
-                    "custom tool body name '{}' must match path id '{id}'",
-                    def.name
-                )));
-            }
-        }
-        if def.command.trim().is_empty() {
-            return Err(LitecodeError::Config(
-                "custom tool command must not be empty".into(),
-            ));
-        }
-        if def.schema.schema_type.trim().is_empty() {
-            def.schema.schema_type = "object".into();
-        }
-        if def.timeout == 0 {
-            def.timeout = 120;
-        }
+        validate_custom_definition(id, &mut def)?;
         let root = workspace_root.to_path_buf();
         self.commit_workspace_file(DocId::CustomToolsWorkspace, move || {
             workspace::upsert_workspace_custom_tool(&root, def)
@@ -1085,7 +1030,7 @@ fn apply_preset_to_binding(tool_id: &str, binding: &mut AgentToolBinding, preset
     binding.last_applied_preset = Some(preset);
 }
 
-fn validate_mcp_definition(id: &str, def: &mut McpServerDefinition) -> Result<()> {
+pub(crate) fn validate_mcp_definition(id: &str, def: &mut McpServerDefinition) -> Result<()> {
     validate_tool_id(id)?;
     if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
         return Err(LitecodeError::Config(format!(
@@ -1118,7 +1063,42 @@ fn validate_mcp_definition(id: &str, def: &mut McpServerDefinition) -> Result<()
     Ok(())
 }
 
-fn validate_tool_id(id: &str) -> Result<()> {
+/// Custom tool rules shared by the settings page and `litecode_workspace refresh`.
+///
+/// Normalizes the body in place (empty name → id, empty schema type → object,
+/// `timeout: 0` → 120) and rejects ids the runtime could not bind.
+pub(crate) fn validate_custom_definition(id: &str, def: &mut CustomToolDefinition) -> Result<()> {
+    validate_tool_id(id)?;
+    if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
+        return Err(LitecodeError::Config(format!(
+            "custom tool id '{id}' conflicts with a builtin tool"
+        )));
+    }
+    if def.name != id {
+        if def.name.is_empty() {
+            def.name = id.to_string();
+        } else {
+            return Err(LitecodeError::Config(format!(
+                "custom tool body name '{}' must match path id '{id}'",
+                def.name
+            )));
+        }
+    }
+    if def.command.trim().is_empty() {
+        return Err(LitecodeError::Config(
+            "custom tool command must not be empty".into(),
+        ));
+    }
+    if def.schema.schema_type.trim().is_empty() {
+        def.schema.schema_type = "object".into();
+    }
+    if def.timeout == 0 {
+        def.timeout = 120;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_tool_id(id: &str) -> Result<()> {
     let valid = !id.is_empty()
         && id.chars().next().is_some_and(|c| c.is_ascii_lowercase())
         && id
@@ -1220,7 +1200,9 @@ max_output = 1024
     #[test]
     fn provider_key_write_stores_the_credential_and_masks_it() {
         let (_dir, _db, writer) = writer_with_catalog();
-        let ack = writer.write_provider_key("main", "sk-secret-value").unwrap();
+        let ack = writer
+            .write_provider_key("main", "sk-secret-value")
+            .unwrap();
         // The same commit heals the seeded agents' empty model_ref.
         assert_eq!(ack.docs, vec![DocId::Llm, DocId::Agents]);
 
@@ -1260,7 +1242,11 @@ max_output = 1024
         assert_eq!(ack.docs, vec![DocId::Llm]);
 
         let view = project(&writer);
-        assert_eq!(view.active_models.len(), 1, "the off model leaves the pickers");
+        assert_eq!(
+            view.active_models.len(),
+            1,
+            "the off model leaves the pickers"
+        );
         assert!(!view.active_models.iter().any(|m| m.reference == reference));
         // It keeps existing under its provider: switched off, not gone.
         let model = view
@@ -1276,10 +1262,12 @@ max_output = 1024
 
         // The exception is persisted as a row, so it survives a reopen.
         let reopened = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
-        assert!(!project(&reopened)
-            .active_models
-            .iter()
-            .any(|m| m.reference == reference));
+        assert!(
+            !project(&reopened)
+                .active_models
+                .iter()
+                .any(|m| m.reference == reference)
+        );
 
         // On again removes the row rather than flipping a flag.
         writer.set_model_enabled(&reference, true).unwrap();

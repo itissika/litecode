@@ -360,6 +360,7 @@ impl TerminalHub {
             Some(on_data),
             Some(on_exit),
             &[],
+            false,
         )?);
         self.sessions.lock().expect("sessions lock").insert(
             id.clone(),
@@ -635,6 +636,7 @@ impl TerminalHub {
             Some(on_data),
             Some(on_exit),
             pty::AGENT_NON_INTERACTIVE_ENV,
+            true,
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -797,7 +799,10 @@ pub(crate) fn agent_output_path(workspace_root: &Path, id: &str) -> TerminalResu
 /// outputs use. Not an id: nothing looks a spilled file up by name.
 pub(crate) fn bash_nonce() -> String {
     let bytes = Uuid::new_v4().into_bytes();
-    format!("{:02x}{:02x}{:02x}{:02x}", bytes[0], bytes[1], bytes[2], bytes[3])
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3]
+    )
 }
 
 #[cfg(test)]
