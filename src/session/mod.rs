@@ -46,5 +46,5 @@ pub use surface::{Surface, SurfaceOp, derive_messages, derive_transcript_items, 
 pub use task_state::{
     PlanRef, TaskReminders, TodoItem, TodoStatus, prune_stale_active_plan, render_todos,
 };
-pub use working::{WorkingRow, align_working, project_items};
+pub use working::{WorkingRow, project_items};
 pub use workspace_lock::{WorkspaceLock, WorkspaceWriteLease};

@@ -3,9 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use super::kinds::{
-    PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild, TodoSnap,
-};
+use super::kinds::{PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild, TodoSnap};
 use super::sources;
 
 /// Facts the seam already sensed. Sources do not reach back into the runtime.
@@ -15,7 +13,6 @@ pub struct SeamCtx {
     pub turn_id: String,
     pub step: u64,
     pub max_steps: u64,
-    pub model_ref: String,
     pub cwd: PathBuf,
 }
 
@@ -108,9 +105,6 @@ pub fn sync(ctx: &SeamCtx, view: &SpineReminderView, facts: &Facts) -> Vec<Remin
     if let Some(reminder) = sources::env(ctx, view) {
         out.push(reminder);
     }
-    if let Some(reminder) = sources::model(ctx, view) {
-        out.push(reminder);
-    }
     if let Some(reminder) = sources::tasks(view, &facts.tasks) {
         out.push(reminder);
     }
@@ -126,9 +120,7 @@ pub fn sync(ctx: &SeamCtx, view: &SpineReminderView, facts: &Facts) -> Vec<Remin
     if let Some(reminder) = sources::bash_exit(&facts.bash_exits, &facts.bash_running) {
         out.push(reminder);
     }
-    if let Some(reminder) =
-        sources::subagent_settled(&facts.settled, &facts.settled_detail)
-    {
+    if let Some(reminder) = sources::subagent_settled(&facts.settled, &facts.settled_detail) {
         out.push(reminder);
     }
     if let Some(reminder) = sources::step_budget(ctx, view) {
@@ -150,17 +142,15 @@ mod tests {
             turn_id: "t".into(),
             step,
             max_steps: 10,
-            model_ref: "openai/gpt".into(),
             cwd: PathBuf::from("/work"),
         }
     }
 
     #[test]
-    fn first_seam_writes_env_and_model_only() {
+    fn first_seam_writes_env_only() {
         let reminders = sync(&ctx(1), &SpineReminderView::default(), &Facts::default());
         let kinds: Vec<_> = reminders.iter().map(Reminder::kind).collect();
         assert!(kinds.contains(&ReminderKind::Env));
-        assert!(kinds.contains(&ReminderKind::Model));
         assert!(!kinds.contains(&ReminderKind::Tasks));
         assert!(!kinds.contains(&ReminderKind::StepBudget));
         let rendered = item_text_preview(&render_item(&reminders[0]));
@@ -185,29 +175,12 @@ mod tests {
             .iter()
             .find(|reminder| reminder.kind() == ReminderKind::BashExit)
             .unwrap();
-        assert!(bash.text().contains("The user stopped background bash bg-1 (Kill)."));
+        assert!(
+            bash.text()
+                .contains("The user stopped background bash bg-1 (Kill).")
+        );
         assert!(bash.text().contains("exit_code: 143"));
         assert!(!bash.text().contains("status: exited"));
-    }
-
-    #[test]
-    fn model_switch_names_the_previous_model() {
-        let first = sync(&ctx(1), &SpineReminderView::default(), &Facts::default());
-        let model = first
-            .into_iter()
-            .find(|reminder| reminder.kind() == ReminderKind::Model)
-            .unwrap();
-        assert!(model.text().contains("当前模型为 openai/gpt"));
-        let mut view = SpineReminderView::default();
-        view.latest_by_kind.insert(ReminderKind::Model, model);
-        let mut next = ctx(2);
-        next.model_ref = "openai/other".into();
-        let again = sync(&next, &view, &Facts::default());
-        let switched = again
-            .iter()
-            .find(|reminder| reminder.kind() == ReminderKind::Model)
-            .unwrap();
-        assert_eq!(switched.text(), "模型由 openai/gpt 切换为 openai/other");
     }
 
     #[test]
@@ -233,10 +206,18 @@ mod tests {
             ..SpineReminderView::default()
         };
         let first = sync(&ctx(1), &view, &facts);
-        assert!(first.iter().any(|reminder| reminder.kind() == ReminderKind::Tasks));
+        assert!(
+            first
+                .iter()
+                .any(|reminder| reminder.kind() == ReminderKind::Tasks)
+        );
         view.kinds_after_compacted.insert(ReminderKind::Tasks);
         let second = sync(&ctx(2), &view, &facts);
-        assert!(!second.iter().any(|reminder| reminder.kind() == ReminderKind::Tasks));
+        assert!(
+            !second
+                .iter()
+                .any(|reminder| reminder.kind() == ReminderKind::Tasks)
+        );
     }
 
     #[test]
@@ -271,7 +252,11 @@ mod tests {
     #[test]
     fn step_budget_once_per_turn_inside_the_window() {
         let early = sync(&ctx(1), &SpineReminderView::default(), &Facts::default());
-        assert!(!early.iter().any(|reminder| reminder.kind() == ReminderKind::StepBudget));
+        assert!(
+            !early
+                .iter()
+                .any(|reminder| reminder.kind() == ReminderKind::StepBudget)
+        );
         let late = sync(&ctx(8), &SpineReminderView::default(), &Facts::default());
         let budget = late
             .into_iter()
@@ -280,11 +265,19 @@ mod tests {
         let mut view = SpineReminderView::default();
         view.latest_by_kind.insert(ReminderKind::StepBudget, budget);
         let again = sync(&ctx(9), &view, &Facts::default());
-        assert!(!again.iter().any(|reminder| reminder.kind() == ReminderKind::StepBudget));
+        assert!(
+            !again
+                .iter()
+                .any(|reminder| reminder.kind() == ReminderKind::StepBudget)
+        );
         let mut other = ctx(8);
         other.turn_id = "other".into();
         let next_turn = sync(&other, &view, &Facts::default());
-        assert!(next_turn.iter().any(|reminder| reminder.kind() == ReminderKind::StepBudget));
+        assert!(
+            next_turn
+                .iter()
+                .any(|reminder| reminder.kind() == ReminderKind::StepBudget)
+        );
     }
 
     #[test]

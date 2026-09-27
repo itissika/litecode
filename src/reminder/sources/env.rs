@@ -1,7 +1,7 @@
 use chrono::Local;
 
-use crate::reminder::kinds::{EnvBody, Reminder, ReminderKind};
 use crate::reminder::engine::{SeamCtx, SpineReminderView};
+use crate::reminder::kinds::{EnvBody, Reminder, ReminderKind};
 
 pub(crate) fn env(ctx: &SeamCtx, view: &SpineReminderView) -> Option<Reminder> {
     let now = Local::now();

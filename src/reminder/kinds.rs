@@ -14,7 +14,6 @@ pub enum Visibility {
 #[serde(rename_all = "snake_case")]
 pub enum ReminderKind {
     Env,
-    Model,
     Tasks,
     Background,
     PlanChanged,
@@ -28,7 +27,6 @@ impl ReminderKind {
     pub fn name(self) -> &'static str {
         match self {
             Self::Env => "env",
-            Self::Model => "model",
             Self::Tasks => "tasks",
             Self::Background => "background",
             Self::PlanChanged => "plan_changed",
@@ -42,7 +40,6 @@ impl ReminderKind {
     pub fn wire(self) -> &'static str {
         match self {
             Self::Env => "reminder/env",
-            Self::Model => "reminder/model",
             Self::Tasks => "reminder/tasks",
             Self::Background => "reminder/background",
             Self::PlanChanged => "reminder/plan_changed",
@@ -56,7 +53,6 @@ impl ReminderKind {
     pub fn parse_wire(value: &str) -> Option<Self> {
         Some(match value {
             "reminder/env" => Self::Env,
-            "reminder/model" => Self::Model,
             "reminder/tasks" => Self::Tasks,
             "reminder/background" => Self::Background,
             "reminder/plan_changed" => Self::PlanChanged,
@@ -74,11 +70,11 @@ impl ReminderKind {
 
     pub fn visibility(self) -> Visibility {
         match self {
-            Self::BashExit | Self::SubagentSettled | Self::PlanChanged => Visibility::Visible,
+            Self::BashExit | Self::SubagentSettled => Visibility::Visible,
             Self::Env
-            | Self::Model
             | Self::Tasks
             | Self::Background
+            | Self::PlanChanged
             | Self::FilesChanged
             | Self::StepBudget => Visibility::Hidden,
         }
@@ -95,12 +91,6 @@ pub struct EnvBody {
     pub os: String,
     pub date: String,
     pub timezone: String,
-    pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelBody {
-    pub model_ref: String,
     pub text: String,
 }
 
@@ -204,7 +194,6 @@ pub struct StepBudgetBody {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Reminder {
     Env(EnvBody),
-    Model(ModelBody),
     Tasks(TasksBody),
     Background(BackgroundBody),
     PlanChanged(PlanChangedBody),
@@ -218,7 +207,6 @@ impl Reminder {
     pub fn kind(&self) -> ReminderKind {
         match self {
             Self::Env(_) => ReminderKind::Env,
-            Self::Model(_) => ReminderKind::Model,
             Self::Tasks(_) => ReminderKind::Tasks,
             Self::Background(_) => ReminderKind::Background,
             Self::PlanChanged(_) => ReminderKind::PlanChanged,
@@ -232,7 +220,6 @@ impl Reminder {
     pub fn text(&self) -> &str {
         match self {
             Self::Env(body) => &body.text,
-            Self::Model(body) => &body.text,
             Self::Tasks(body) => &body.text,
             Self::Background(body) => &body.text,
             Self::PlanChanged(body) => &body.text,
@@ -249,7 +236,6 @@ impl Reminder {
             (Self::Env(a), Self::Env(b)) => {
                 a.cwd == b.cwd && a.os == b.os && a.date == b.date && a.timezone == b.timezone
             }
-            (Self::Model(a), Self::Model(b)) => a.model_ref == b.model_ref,
             (Self::PlanChanged(a), Self::PlanChanged(b)) => {
                 a.relative_path == b.relative_path && a.revision == b.revision
             }

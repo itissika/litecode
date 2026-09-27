@@ -921,15 +921,12 @@ async fn child_exit_triggers_parent_auto_turn_reminder() {
             .data()
             .events_blocking(&parent)
             .expect("parent events");
-        if events
-            .iter()
-            .any(|event| {
-                matches!(
-                    event.event_type,
-                    EventType::Reminder(litecode::reminder::ReminderKind::SubagentSettled)
-                )
-            })
-        {
+        if events.iter().any(|event| {
+            matches!(
+                event.event_type,
+                EventType::Reminder(litecode::reminder::ReminderKind::SubagentSettled)
+            )
+        }) {
             break;
         }
         assert!(

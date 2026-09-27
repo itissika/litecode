@@ -5,7 +5,10 @@ pub(crate) fn background(view: &SpineReminderView, facts: &BackgroundFacts) -> O
     if view.compacted_head.is_none() {
         return None;
     }
-    if view.kinds_after_compacted.contains(&ReminderKind::Background) {
+    if view
+        .kinds_after_compacted
+        .contains(&ReminderKind::Background)
+    {
         return None;
     }
     let idle = facts.children_idle;

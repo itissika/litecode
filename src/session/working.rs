@@ -35,6 +35,12 @@ impl WorkingRow {
             item,
         }
     }
+
+    /// Replace the payload and keep `kind` in step with it. `log_seq` stays.
+    pub fn replace_item(&mut self, item: Item) {
+        self.kind = kind_for_item(&item);
+        self.item = item;
+    }
 }
 
 pub type GateRow = WorkingRow;
@@ -57,30 +63,17 @@ pub fn project_items(rows: &[WorkingRow]) -> Vec<Item> {
     rows.iter().map(|row| row.item.clone()).collect()
 }
 
-/// Keep prefix seqs, refresh payloads, treat extra items as unpersisted.
-pub fn align_working(rows: &mut Vec<WorkingRow>, items: &[Item]) {
-    rows.truncate(items.len());
-    for (i, item) in items.iter().enumerate() {
-        if i < rows.len() {
-            rows[i].item = item.clone();
-            rows[i].kind = kind_for_item(item);
-        } else {
-            rows.push(WorkingRow::pending(item.clone()));
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::user_text;
 
     #[test]
-    fn align_working_keeps_kind_in_sync_with_item() {
-        let mut rows = vec![WorkingRow::pending(user_text("a"))];
-        assert_eq!(rows[0].kind, SessionKind::ItemUser);
-        let asst = crate::types::assistant_text("b");
-        align_working(&mut rows, &[asst]);
-        assert_eq!(rows[0].kind, SessionKind::ItemAssistant);
+    fn replace_item_keeps_kind_in_sync() {
+        let mut row = WorkingRow::pending(user_text("a"));
+        assert_eq!(row.kind, SessionKind::ItemUser);
+        row.replace_item(crate::types::assistant_text("b"));
+        assert_eq!(row.kind, SessionKind::ItemAssistant);
+        assert!(row.log_seq.is_none());
     }
 }

@@ -88,10 +88,7 @@ fn parse_bash(inner: &str) -> BashExitBody {
         let line = lines[i].trim();
         if let Some(rest) = line.strip_prefix("Background bash ") {
             if let Some((job_id, tail)) = rest.split_once(" exited with code ") {
-                let exit_code = tail
-                    .trim_end_matches('.')
-                    .parse::<i32>()
-                    .unwrap_or(-1);
+                let exit_code = tail.trim_end_matches('.').parse::<i32>().unwrap_or(-1);
                 let (output_file, command, consumed) = following_fields(&lines[i + 1..]);
                 exits.push(BashExitEntry {
                     job_id: job_id.trim().to_string(),
@@ -131,7 +128,10 @@ fn parse_bash(inner: &str) -> BashExitBody {
                 running.push(RunningBash {
                     job_id: job_id.to_string(),
                     command: command.to_string(),
-                    output_file: file.trim().trim_matches(|c| c == '(' || c == ')').to_string(),
+                    output_file: file
+                        .trim()
+                        .trim_matches(|c| c == '(' || c == ')')
+                        .to_string(),
                 });
             }
         }

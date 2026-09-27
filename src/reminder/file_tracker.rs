@@ -34,7 +34,8 @@ impl FileTracker {
             self.order.remove(pos);
         }
         self.order.push_back(path.clone());
-        self.snaps.insert(path, snap_of(self.order.back().expect("pushed")));
+        self.snaps
+            .insert(path, snap_of(self.order.back().expect("pushed")));
         while self.order.len() > MAX_TRACKED {
             if let Some(old) = self.order.pop_front() {
                 self.snaps.remove(&old);
@@ -67,7 +68,10 @@ impl FileTracker {
         let mut changed = Vec::new();
         for path in paths {
             let next = snap_of(&path);
-            let differs = self.snaps.get(&path).is_none_or(|previous| previous != &next);
+            let differs = self
+                .snaps
+                .get(&path)
+                .is_none_or(|previous| previous != &next);
             if differs {
                 changed.push(path.clone());
             }

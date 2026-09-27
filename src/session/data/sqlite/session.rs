@@ -859,14 +859,32 @@ fn event_from_disk_row(
 ) -> Result<SessionEvent> {
     let seq = Seq::try_from(seq)
         .map_err(|_| LitecodeError::InvalidSessionEvent(format!("negative seq {seq}")))?;
+    let event_type_name = event_type.clone();
     let event_type = EventType::from_str_name(&event_type);
     let state = LogState::from_str_name(state.as_deref().unwrap_or("final"));
     let source_seqs = match source_seqs.as_deref() {
         None | Some("") => None,
         Some(raw) => Some(serde_json::from_str(raw)?),
     };
-    if matches!(event_type, EventType::Reminder(_))
-        || crate::reminder::ReminderKind::is_wire(&kind)
+    // Retired model reminders stay in the log for seq continuity. They are not
+    // a live kind, so they do not enter the spine and are not sent to the model.
+    if event_type_name == "reminder/model" || kind == "reminder/model" {
+        let data = match body.as_deref() {
+            Some(raw) if !raw.is_empty() => serde_json::from_str(raw)?,
+            _ => serde_json::Value::Null,
+        };
+        return Ok(SessionEvent {
+            seq,
+            time: created_at,
+            event_type: EventType::Unknown("reminder/model".into()),
+            data,
+            surface_op: None,
+            source_seqs,
+            ignorable: true,
+            state,
+        });
+    }
+    if matches!(event_type, EventType::Reminder(_)) || crate::reminder::ReminderKind::is_wire(&kind)
     {
         let data = match body.as_deref() {
             Some(raw) if !raw.is_empty() => serde_json::from_str(raw)?,
@@ -2774,6 +2792,34 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn retired_model_reminder_stays_off_the_spine() {
+        let event = event_from_disk_row(
+            "s",
+            6,
+            1,
+            "reminder/model".into(),
+            "\"append\"".into(),
+            None,
+            "reminder/model".into(),
+            Some(r#"{"kind":"model","model_ref":"a/b","text":"当前模型为 a/b"}"#.into()),
+            None,
+            None,
+            std::path::Path::new("."),
+        )
+        .unwrap();
+        assert!(event.ignorable);
+        assert!(event.surface_op.is_none());
+        assert!(!event.event_type.enters_spine());
+        let plan = crate::session::surface::plan_surface(
+            &crate::session::surface::Surface::default(),
+            &event,
+        )
+        .unwrap();
+        assert!(plan.is_none());
+        assert!(crate::reminder::hidden_kind("reminder/model"));
     }
 
     #[test]

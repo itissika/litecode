@@ -2173,7 +2173,9 @@ impl SessionManager {
         })?;
         match receipt.outcome {
             crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
-            other => Err(anyhow::anyhow!("append_reminder: unexpected outcome {other:?}")),
+            other => Err(anyhow::anyhow!(
+                "append_reminder: unexpected outcome {other:?}"
+            )),
         }
     }
 
@@ -3639,9 +3641,7 @@ mod plan_settle_tests {
     }
 
     fn plan_changed_reminder(mgr: &SessionManager, sid: &str) -> Option<crate::reminder::Reminder> {
-        let state = mgr
-            .with_entry_task_state(sid, |s| Ok(s.clone()))
-            .unwrap();
+        let state = mgr.with_entry_task_state(sid, |s| Ok(s.clone())).unwrap();
         let plan = state.active_plan.clone()?;
         let revision = crate::session::task_state::plan_file_revision(
             &mgr.plan_dir_path().join(format!("{}.md", plan.slug)),
@@ -3664,7 +3664,6 @@ mod plan_settle_tests {
             turn_id: "t".into(),
             step: 1,
             max_steps: 10,
-            model_ref: "m".into(),
             cwd: mgr.plan_dir_path(),
         };
         crate::reminder::sync(&ctx, &view, &facts)

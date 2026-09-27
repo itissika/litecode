@@ -149,10 +149,9 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 | kind | 触发 | HumanView | 何时写 |
 |---|---|---|---|
 | `reminder/env` | Diff | 隐藏 | 工作目录、系统、日期（精确到日）、时区相对脊骨上同 kind 最新一行变了 |
-| `reminder/model` | Diff | 隐藏 | 当前模型；切换时写「模型由 A 切换为 B」 |
 | `reminder/tasks` | Restore | 隐藏 | 脊骨以 `compacted` 开头、压缩后还没有这个 kind、待办或活动计划非空 |
 | `reminder/background` | Restore | 隐藏 | 同上，仍在跑的 bash 或子会话计数非空 |
-| `reminder/plan_changed` | Diff（按 revision） | 切痕「计划已更新 · 需重读」 | 磁盘 revision 与 `active_plan.revision` 不一致，且脊骨上没有同 path+revision 的这类行 |
+| `reminder/plan_changed` | Diff（按 revision） | 隐藏 | 磁盘 revision 与 `active_plan.revision` 不一致，且脊骨上没有同 path+revision 的这类行 |
 | `reminder/files_changed` | Event | 隐藏 | 外部改了本会话跟踪的文件。只列路径，不带内容 |
 | `reminder/bash_exit` | Event | 切痕「后台终端退出」 | 后台 bash 退出。`wait_shell` 自己消费的不进这里 |
 | `reminder/subagent_settled` | Event | 切痕「子会话结束」 | 后台子会话回合结束 |
@@ -164,7 +163,7 @@ bash 退出和子会话结束不再在 auto-turn 里先写提醒再把同一段�
 
 文件跟踪是会话上的 Live 状态，不进 SessionLog。工具管线在每次调用后把 `resource_keys` 里的文件路径交给 `FileTracker`；每个 tool batch 结束后 `absorb()` 重新快照，本会话自己的 edit / write / bash 副作用不报告。缝隙里先比 mtime 和长度，变了再用 hash 确认。最多跟踪 256 个文件（LRU）；超过 2MB 只比 mtime 和长度；删除也报告。进程重启后清空。
 
-打开旧库时一次性把 `reminder/job_exit`、`reminder/plan` 原地改成新 kind 和新 body，并剥掉 `compacted` 摘要里内嵌的 `<system-reminder>`。不改 `seq` 和 `next_seq`。
+打开旧库时一次性把 `reminder/job_exit`、`reminder/plan` 原地改成新 kind 和新 body，并剥掉 `compacted` 摘要里内嵌的 `<system-reminder>`。不改 `seq` 和 `next_seq`。已写入的 `reminder/model` 不再是活 kind：读入时不进脊骨、不发给模型，HumanView 隐藏。
 
 #### 系统代发的用户消息 — 不是人键入；body 仍是 user `Item`
 

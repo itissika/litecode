@@ -9,7 +9,7 @@ use litecode::session::data::command::{CommitKind, MutationId, SessionMutation};
 use litecode::session::event::spine_agent_item;
 use litecode::session::manager::SessionManager;
 use litecode::session::surface::project_working_pairs;
-use litecode::session::{WorkingRow, fold_surface, project_items};
+use litecode::session::{WorkingRow, fold_surface};
 use litecode::types::{item_text_preview, user_text};
 
 fn sessions() -> Arc<SessionManager> {
@@ -202,9 +202,7 @@ fn pipeline_begin_turn_pending_tail_has_no_log_seq() {
         fold_visible(&sessions, &sid)
     );
 
-    let mut items = project_items(&rows);
-    items.push(user_text("pending"));
-    litecode::session::align_working(&mut rows, &items);
+    rows.push(litecode::session::WorkingRow::pending(user_text("pending")));
     assert!(
         rows.last().is_some_and(|row| row.log_seq.is_none()),
         "unpersisted tail must not carry a seq"

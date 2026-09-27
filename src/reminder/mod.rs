@@ -10,13 +10,12 @@ pub mod migrate;
 mod sources;
 
 pub use engine::{
-    BackgroundFacts, Facts, SeamCtx, SpineNode, SpineReminderView, TaskFacts, sync,
-    view_from_spine,
+    BackgroundFacts, Facts, SeamCtx, SpineNode, SpineReminderView, TaskFacts, sync, view_from_spine,
 };
 pub use file_tracker::FileTracker;
 pub use kinds::{
     BackgroundBody, BashExitBody, BashExitEntry, ChildCountsBody, EnvBody, FilesChangedBody,
-    ModelBody, PlanChangedBody, PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild,
+    PlanChangedBody, PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild,
     StepBudgetBody, SubagentSettledBody, TasksBody, TodoSnap, Visibility,
 };
 
@@ -34,7 +33,10 @@ pub fn render_text(text: &str) -> String {
     format!("{SYSTEM_REMINDER_OPEN}\n{text}\n{SYSTEM_REMINDER_CLOSE}")
 }
 
-/// `true` when this log kind must not be rendered in HumanView.
+/// `true` when HumanView must not render this log kind.
+///
+/// Live kinds come from [`ReminderKind::hidden`]. `reminder/model` is retired:
+/// old rows stay in the log and are hidden, and they no longer enter the spine.
 pub fn hidden_kind(kind: &str) -> bool {
-    ReminderKind::parse_wire(kind).is_some_and(ReminderKind::hidden)
+    kind == "reminder/model" || ReminderKind::parse_wire(kind).is_some_and(ReminderKind::hidden)
 }

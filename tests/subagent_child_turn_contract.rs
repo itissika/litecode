@@ -168,10 +168,8 @@ async fn completion_reminder_resolves_the_reference_at_delivery_time() {
         .take_completions(&harness.parent_id);
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].child_session_id, child);
-    let detail = litecode::tools::subagent::status::format_batch_results(
-        &harness.sessions,
-        &completions,
-    );
+    let detail =
+        litecode::tools::subagent::status::format_batch_results(&harness.sessions, &completions);
     let facts = litecode::reminder::Facts {
         settled: vec![litecode::reminder::SettledChild {
             child_session_id: completions[0].child_session_id.clone(),
@@ -188,7 +186,6 @@ async fn completion_reminder_resolves_the_reference_at_delivery_time() {
             turn_id: "t".into(),
             step: 1,
             max_steps: 10,
-            model_ref: "m".into(),
             cwd: harness.dir.path().to_path_buf(),
         },
         &litecode::reminder::SpineReminderView::default(),

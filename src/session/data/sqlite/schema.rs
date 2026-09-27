@@ -271,9 +271,10 @@ fn migrate_reminders_v7(conn: &Connection) -> Result<()> {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         drop(stmt);
         for (session_id, seq, kind, body) in rows {
-            let Some((new_kind, new_body)) =
-                crate::reminder::migrate::rewrite_reminder_row(&kind, body.as_deref().unwrap_or(""))
-            else {
+            let Some((new_kind, new_body)) = crate::reminder::migrate::rewrite_reminder_row(
+                &kind,
+                body.as_deref().unwrap_or(""),
+            ) else {
                 continue;
             };
             tx.execute(
@@ -711,7 +712,10 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!((kind.as_str(), event_type.as_str(), seq), ("reminder/bash_exit", "reminder/bash_exit", 1));
+        assert_eq!(
+            (kind.as_str(), event_type.as_str(), seq),
+            ("reminder/bash_exit", "reminder/bash_exit", 1)
+        );
         let plan_kind: String = conn
             .query_row(
                 "SELECT kind FROM transcript_items WHERE seq = 2",
@@ -730,7 +734,9 @@ mod tests {
         assert!(!summary.contains("<system-reminder>"));
         assert!(summary.contains("prior"));
         let next: i64 = conn
-            .query_row("SELECT next_seq FROM sessions WHERE id = 's'", [], |row| row.get(0))
+            .query_row("SELECT next_seq FROM sessions WHERE id = 's'", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(next, 10);
 
@@ -745,7 +751,9 @@ mod tests {
             .unwrap();
         assert_eq!(kind_again, "reminder/bash_exit");
         let next_again: i64 = conn
-            .query_row("SELECT next_seq FROM sessions WHERE id = 's'", [], |row| row.get(0))
+            .query_row("SELECT next_seq FROM sessions WHERE id = 's'", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(next_again, 10);
     }
