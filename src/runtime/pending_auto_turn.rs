@@ -2,7 +2,7 @@
 //! holding them.
 //!
 //! A message queued mid-turn is normally consumed at the next request seam
-//! (`inject_background_reminders`). If the turn ends first — cancel, clean
+//! (`sync_request_seam`). If the turn ends first — cancel, clean
 //! completion, error, step limit — the queue must still be delivered: this
 //! listener starts the follow-up turn on the user's behalf, exactly like the
 //! bash / subagent auto-turns, but without their UI-subscriber gate: the
@@ -38,9 +38,9 @@ pub enum PendingFlush {
 /// Decide whether an idle session should start a turn for its queued messages.
 ///
 /// On `Prepared`, the turn is reserved, the queue drained, and the merged
-/// message already appended as one ordinary `item/user` row — the spawn then
-/// dedupes against it by text (`already_last_user`), so a spawn failure leaves
-/// the message durable instead of evaporating with the reservation.
+/// message already appended as one ordinary `item/user` row. The spawn wakes
+/// without writing a second user row, so a spawn failure leaves the message
+/// durable instead of evaporating with the reservation.
 pub fn try_begin_pending_flush(
     runtime: &RuntimeHandle,
     sessions: &SessionManager,
@@ -112,7 +112,7 @@ fn spawn_prepared_pending_flush(
         turn_id,
         primary_agent,
         project,
-        input,
+        input: _,
         sink,
     } = decision
     else {
@@ -123,7 +123,7 @@ fn spawn_prepared_pending_flush(
         runtime,
         session_id.clone(),
         Arc::clone(&sessions),
-        input,
+        crate::runtime::TurnInput::Wake,
         sink,
         turn_id.clone(),
         TurnOptions::default(),

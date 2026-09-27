@@ -90,7 +90,7 @@ async fn prepare(
     let prompt_baseline = ProviderPromptBaseline::default();
     prompt_baseline.record(last_prompt_tokens, items.len());
     pipeline
-        .prepare_step(
+        .compact_step(
             sessions,
             sid,
             litecode::llm::CompactLlmCall {
@@ -104,11 +104,9 @@ async fn prepare(
             &mut items,
             step,
             &cancel,
-            &TaskReminders::default(),
-            &model,
         )
-        .await
-        .map(|_| ())?;
+        .await?;
+    pipeline.build_view(sessions, sid, &prompt_baseline, &mut items, &model)?;
     *turn = pipeline.working_set();
     Ok(())
 }
@@ -371,7 +369,7 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
     let mut items = project_items(&turn);
     prompt_baseline.record(8_500, items.len());
     let compacted = pipeline
-        .prepare_step(
+        .compact_step(
             &sessions,
             &sid,
             litecode::llm::CompactLlmCall {
@@ -385,11 +383,12 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
             &mut items,
             1,
             &cancel,
-            &TaskReminders::default(),
-            &model,
         )
         .await
         .expect("under hard limit + cut=None must Ok");
+    pipeline
+        .build_view(&sessions, &sid, &prompt_baseline, &mut items, &model)
+        .expect("build_view");
     assert!(!compacted, "keep-recent skip must report did_compact=false");
     align_working(&mut turn, &items);
 
@@ -491,7 +490,7 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         .with_entry_task_state(&sid, |s| Ok(s.clone()))
         .unwrap();
     pipeline
-        .prepare_step(
+        .compact_step(
             &sessions,
             &sid,
             litecode::llm::CompactLlmCall {
@@ -505,11 +504,12 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
             &mut items,
             2,
             &cancel,
-            &task_state,
-            &model,
         )
         .await
-        .expect("compact with reminder");
+        .expect("compact");
+    pipeline
+        .build_view(&sessions, &sid, &prompt_baseline, &mut items, &model)
+        .expect("build_view");
     turn = pipeline.working_set();
 
     let summary = row_previews(&turn)
@@ -521,38 +521,59 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         "detector prefix must remain first, got {summary:?}"
     );
     assert!(
-        summary.contains("<system-reminder>"),
-        "reminder must ride on the checkpoint, got {summary:?}"
-    );
-    assert!(
-        summary.contains("[~] keep shipping"),
-        "todo reminder must sit after the label, got {summary:?}"
-    );
-    let extra_reminder_items = turn
-        .iter()
-        .filter(|r| {
-            let p = item_text_preview(&r.item);
-            p.starts_with("<system-reminder>")
-        })
-        .count();
-    assert_eq!(
-        extra_reminder_items, 0,
-        "must not push a separate user reminder item"
+        !summary.contains("<system-reminder>"),
+        "summary must not embed a reminder, got {summary:?}"
     );
 
+    let view = sessions.spine_reminder_view(&sid).unwrap();
+    assert!(view.compacted_head.is_some());
+    let facts = litecode::reminder::Facts {
+        tasks: litecode::reminder::TaskFacts {
+            todos: vec![litecode::reminder::TodoSnap {
+                id: "t1".into(),
+                content: "keep shipping".into(),
+                status: "in_progress".into(),
+                priority: None,
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let ctx = litecode::reminder::SeamCtx {
+        session_id: sid.clone(),
+        turn_id: "t".into(),
+        step: 2,
+        max_steps: 10,
+        model_ref: "m".into(),
+        cwd: dir.path().to_path_buf(),
+    };
+    let reminders = litecode::reminder::sync(&ctx, &view, &facts);
+    let tasks = reminders
+        .iter()
+        .find(|reminder| reminder.kind() == litecode::reminder::ReminderKind::Tasks)
+        .expect("restore tasks after compaction");
+    let restored = sessions.append_reminder(&sid, tasks).unwrap();
+    assert!(restored > view.compacted_head.unwrap());
+
     let conn = rusqlite::Connection::open(&db_path).unwrap();
-    let reminder_details: i64 = conn
+    let embedded: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM transcript_items
-             WHERE session_id = ?1 AND surface_op = '\"append\"' AND body LIKE '%system-reminder%'",
+             WHERE session_id = ?1 AND kind = 'compacted' AND body LIKE '%system-reminder%'",
             [&sid],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(
-        reminder_details, 0,
-        "reminder must not be persisted as a fake user detail"
-    );
+    assert_eq!(embedded, 0, "compacted summary must not embed a reminder");
+    let restore_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM transcript_items
+             WHERE session_id = ?1 AND kind = 'reminder/tasks'",
+            [&sid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(restore_rows, 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1419,8 +1440,8 @@ impl AgentDeps for PipelinePersistDeps {
         &self,
         _transcript: &mut Transcript,
         _step: u64,
-    ) -> litecode::types::Result<()> {
-        Ok(())
+    ) -> litecode::types::Result<bool> {
+        Ok(false)
     }
 
     fn emit_todo_progress(&mut self) {}

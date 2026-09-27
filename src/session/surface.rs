@@ -295,6 +295,31 @@ pub fn project_working_pairs(
     Ok(out)
 }
 
+/// Diff/Restore baseline folded from the current spine.
+pub fn spine_reminder_view(events: &[SessionEvent]) -> Result<crate::reminder::SpineReminderView> {
+    let surface = fold_surface(events)?;
+    let by_seq: std::collections::HashMap<Seq, &SessionEvent> =
+        events.iter().map(|event| (event.seq, event)).collect();
+    let mut nodes = Vec::with_capacity(surface.nodes.len());
+    for seq in surface.nodes {
+        let event = by_seq.get(&seq).ok_or_else(|| {
+            LitecodeError::InvalidSessionEvent(format!("surface seq {seq} missing from log"))
+        })?;
+        let node = match &event.event_type {
+            EventType::Compacted => crate::reminder::SpineNode::Compacted,
+            EventType::Reminder(_) => {
+                let reminder = serde_json::from_value(event.data.clone()).map_err(|e| {
+                    LitecodeError::InvalidSessionEvent(format!("reminder body at {seq}: {e}"))
+                })?;
+                crate::reminder::SpineNode::Reminder(reminder)
+            }
+            _ => crate::reminder::SpineNode::Other,
+        };
+        nodes.push((seq, node));
+    }
+    Ok(crate::reminder::view_from_spine(&nodes))
+}
+
 /// Human transcript: append-origin surface events only, seq ascending. Replace copies omitted.
 pub fn derive_transcript_items(events: &[SessionEvent]) -> Result<Vec<Item>> {
     let mut origin: Vec<&SessionEvent> = events
@@ -306,7 +331,7 @@ pub fn derive_transcript_items(events: &[SessionEvent]) -> Result<Vec<Item>> {
     for event in origin {
         if matches!(
             event.event_type,
-            EventType::ReminderJobExit | EventType::ReminderPlan | EventType::PlanExecute
+            EventType::Reminder(_) | EventType::PlanExecute
         ) {
             continue;
         }
@@ -560,18 +585,23 @@ mod tests {
     #[test]
     fn job_exit_appends_as_spine_item() {
         use crate::authority::responses::{InputRole, MessageItem};
+        use crate::reminder::{BashExitBody, BashExitEntry, Reminder};
 
+        let reminder = Reminder::BashExit(BashExitBody {
+            exits: vec![BashExitEntry {
+                job_id: "job-9".into(),
+                command: "echo".into(),
+                exit_code: 0,
+                killed: false,
+                output_file: "out".into(),
+            }],
+            running: vec![],
+            text: "Background bash job-9 exited with code 0.".into(),
+        });
         let mut log = EventLog::new();
         append_user(&mut log, "hi");
-        log.append(
-            EventDraft::surface_item(
-                EventType::ReminderJobExit,
-                &user_text("<system-reminder>\nBackground bash job-9 exited with code 0.\n</system-reminder>"),
-                SurfaceOp::Append,
-            )
-            .unwrap(),
-        )
-        .expect("job_exit");
+        log.append(EventDraft::reminder(&reminder).unwrap())
+            .expect("job_exit");
         assert_eq!(fold_surface(log.events()).expect("fold").nodes, vec![0, 1]);
         let agent = derive_messages(log.events()).expect("agent");
         assert_eq!(agent.len(), 2);

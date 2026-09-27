@@ -140,16 +140,31 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 |---|---|---|---|---|
 | `compacted` | 本行替换 `[from, to)`。被换行仍在 SessionLog | 切痕，不展示摘要 | 脊骨**最前**一条由 `summary` 装配的 assistant `Item`（不回写） | `{ summary, from, to }` |
 
-#### 后台任务事件 — 不是人键入；body 仍是 user `Item`
+#### `reminder/*` — 一条提醒独占一个 seq
 
-| kind | 脊骨 | HumanView | AgentView | body |
-|---|---|---|---|---|
-| `reminder/job_exit` | 追加 | 切痕，同 `compacted` | 原样 user `Item` | 与 `item/user` 相同的 message JSON |
-| `reminder/plan` | 追加 | 切痕「计划已更新 · 需重读」 | 原样 user `Item` | 与 `item/user` 相同的 message JSON |
+提醒只有一个写入口 `append_reminder`。body 是冻结的 `Reminder` JSON（结构化字段 + 写入时生成的 `text`），不是 `Item`。AgentView 对每个 reminder seq 投影恰好一个 user `Item`：`<system-reminder>\n{text}\n</system-reminder>`。已发送前缀不重写。锚点仍只认 `item/user`。
 
-后台 job 结束先以 `reminder/job_exit` 写入同一条 item 通道，再 `spawn_turn`；`already_last_user` 避免再写一条 `item/user`。锚点仍只认 `item/user`。
+只在请求缝隙、构建 view 之前追加。缝隙顺序：`sync_request_seam` → 必要时压缩 → 压缩后再 sync 一次 → `prepare_view`。同一缝隙内的写入顺序固定。
 
-计划执行回合若发现磁盘上的 active plan 自上次读取后被改过，先以 `reminder/plan` 写入一条一次性「先重读再执行」提示（`plan_execution_reminder`）。它与 `reminder/job_exit` 同构，只是 HumanView 渲染为计划切痕，不落进「后台终端退出」。
+| kind | 触发 | HumanView | 何时写 |
+|---|---|---|---|
+| `reminder/env` | Diff | 隐藏 | 工作目录、系统、日期（精确到日）、时区相对脊骨上同 kind 最新一行变了 |
+| `reminder/model` | Diff | 隐藏 | 当前模型；切换时写「模型由 A 切换为 B」 |
+| `reminder/tasks` | Restore | 隐藏 | 脊骨以 `compacted` 开头、压缩后还没有这个 kind、待办或活动计划非空 |
+| `reminder/background` | Restore | 隐藏 | 同上，仍在跑的 bash 或子会话计数非空 |
+| `reminder/plan_changed` | Diff（按 revision） | 切痕「计划已更新 · 需重读」 | 磁盘 revision 与 `active_plan.revision` 不一致，且脊骨上没有同 path+revision 的这类行 |
+| `reminder/files_changed` | Event | 隐藏 | 外部改了本会话跟踪的文件。只列路径，不带内容 |
+| `reminder/bash_exit` | Event | 切痕「后台终端退出」 | 后台 bash 退出。`wait_shell` 自己消费的不进这里 |
+| `reminder/subagent_settled` | Event | 切痕「子会话结束」 | 后台子会话回合结束 |
+| `reminder/step_budget` | 每 turn 最多一次 | 隐藏 | 剩余步数不超过 3 |
+
+隐藏行仍然下发，带 `hidden: true`，seq 游标保持连续。可见性只在 Rust 的 `ReminderKind::visibility` 声明；前端只认 `hidden`。
+
+bash 退出和子会话结束不再在 auto-turn 里先写提醒再把同一段文本当用户输入。它们只做非消费的「是否有待处理」检查，然后 `TurnInput::Wake`。首个缝隙写出对应行。回合中途的 bash 退出也不再拼进 tool result，而是在下一个请求缝隙独占一个 seq。
+
+文件跟踪是会话上的 Live 状态，不进 SessionLog。工具管线在每次调用后把 `resource_keys` 里的文件路径交给 `FileTracker`；每个 tool batch 结束后 `absorb()` 重新快照，本会话自己的 edit / write / bash 副作用不报告。缝隙里先比 mtime 和长度，变了再用 hash 确认。最多跟踪 256 个文件（LRU）；超过 2MB 只比 mtime 和长度；删除也报告。进程重启后清空。
+
+打开旧库时一次性把 `reminder/job_exit`、`reminder/plan` 原地改成新 kind 和新 body，并剥掉 `compacted` 摘要里内嵌的 `<system-reminder>`。不改 `seq` 和 `next_seq`。
 
 #### 系统代发的用户消息 — 不是人键入；body 仍是 user `Item`
 
@@ -157,7 +172,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 |---|---|---|---|---|
 | `plan/execute` | 追加 | 切痕「<计划文件> 开始执行」 | 原样 user `Item` | 与 `item/user` 相同的 message JSON |
 
-「执行计划」按钮由前端代发：文本是前端常量，后端以 `plan/execute` 落盘（**不是** `item/user`）。所以它**不**参与 revert 锚点（`SQL_ANCHOR_SEQ` 只数 `item/user`），也不落进「后台终端退出」。回合起点 `already_last_user` 按文本去重，故不会再补一条 `item/user`。
+「执行计划」按钮由前端代发：文本是前端常量，后端以 `plan/execute` 落盘（**不是** `item/user`）。所以它**不**参与 revert 锚点（`SQL_ANCHOR_SEQ` 只数 `item/user`），也不落进提醒切痕。写入成功后回合以 `TurnInput::Wake` 启动，运行时不再补一条 `item/user`。写入失败则退化为普通用户消息。排队中的用户消息同样先落成 `item/user`，再 Wake。
 
 #### 控制面 — 不进脊骨，两 View 都不读
 
@@ -186,7 +201,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 | 职责 | 模型原子 |
 | 身份 | 无（`ItemId` / `CallId` 都不是 `LogSeq`） |
 | 形状 | SDK `message` / `reasoning` / `function_call` / `function_call_output` |
-| 规则 | 人键入的 user `message` 记 `item/user`。后台退出记 `reminder/job_exit`，body 同形。AgentView 可另造带标记的 user/developer `Item`。bash、websearch 仍是 `function_call` |
+| 规则 | 人键入的 user `message` 记 `item/user`。提醒记 `reminder/<kind>`，body 是冻结的 `Reminder` JSON；AgentView 再投影成带 `<system-reminder>` 的 user `Item`。bash、websearch 仍是 `function_call` |
 
 ---
 
@@ -249,7 +264,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 
 ```text
 SessionLog → 脊骨 → GateRow（已入账行 log_seq 皆 Some）
-append  item/user | reminder/job_exit | item/* | compacted | 控制面
+append  item/user | reminder/* | plan/execute | item/* | compacted | 控制面
 seal    未闭合的 item/assistant 或 item/tool_call     → 取消本轮
 AgentView = 装配(脊骨)
 结束    已入账 LogSeq 不再当新行提交

@@ -14,5 +14,5 @@ pub use result::{ToolCallResult, ToolSignalLevel};
 pub use transcript::{
     FunctionCallOutputItemParam, FunctionToolCall, InputItem, Item, OutputItem, OutputMessage,
     ReasoningItem, Response, StreamEvents, Transcript, UserInput, assistant_text,
-    item_text_preview, user_input_matches, user_message, user_text,
+    item_text_preview, user_message, user_text,
 };

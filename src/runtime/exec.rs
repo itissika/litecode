@@ -57,43 +57,39 @@ impl AgentDeps for AgentRuntime {
         self.emit_phase(TurnPhase::ExecutingTools, step);
 
         let cancel = self.cancel.clone();
-        self.tool_pipeline
+        let result = self
+            .tool_pipeline
             .as_ref()
             .expect("tool_pipeline not initialized")
             .execute_batch_cancellable(tool_uses, transcript, move || cancel.is_cancelled())
-            .await
+            .await;
+        self.sessions.absorb_touched_files(&self.session_id);
+        result
     }
 
     async fn should_stop(&self, output: &[Item]) -> Result<bool> {
         Ok(should_stop_after_output(output))
     }
 
-    async fn compact_if_needed(&self, transcript: &mut Transcript, step: u64) -> Result<()> {
+    async fn compact_if_needed(&self, transcript: &mut Transcript, step: u64) -> Result<bool> {
         if self.is_cancelled() {
-            return Ok(());
+            return Ok(false);
         }
 
         let compaction_binding = self.runtime_handle.resolve_compaction_binding()?;
         let compaction_system = self.runtime_handle.compaction_system_prompt();
 
         // Fail-open: a stale-plan settlement error must not abort the turn.
-        let task_state = match self.sessions.settle_stale_plan(&self.session_id) {
-            Ok(state) => state,
-            Err(error) => {
-                tracing::warn!(
-                    session_id = %self.session_id,
-                    error = %error,
-                    "settle_stale_plan failed; continuing with current reminders"
-                );
-                Default::default()
-            }
-        };
+        if let Err(error) = self.sessions.settle_stale_plan(&self.session_id) {
+            tracing::warn!(
+                session_id = %self.session_id,
+                error = %error,
+                "settle_stale_plan failed; continuing with current reminders"
+            );
+        }
 
-        // Single computation: `prepare_step` reports whether a full compaction
-        // actually ran; phase/compaction events are driven from that truth so
-        // the wire always matches what happened (no duplicate budget math).
         self.context_pipeline
-            .prepare_step(
+            .compact_step(
                 &self.sessions,
                 &self.session_id,
                 compaction_binding.compact_call(),
@@ -103,52 +99,22 @@ impl AgentDeps for AgentRuntime {
                 transcript,
                 step,
                 &self.cancel,
-                &task_state,
-                &self.turn_llm.model,
             )
-            .await?;
-
-        Ok(())
+            .await
     }
 
-    fn inject_background_reminders(&mut self, transcript: &mut Transcript) -> Result<()> {
-        let mut appended = false;
-        if let Some(reminder) = self.plan_review_reminder.take() {
-            // Fail-open: the plan reminder only decorates the turn. A persist
-            // failure must degrade to "no reminder", never abort the turn.
-            match self
-                .sessions
-                .append_plan_reminder(&self.session_id, &crate::types::user_text(&reminder))
-            {
-                Ok(()) => appended = true,
-                Err(error) => tracing::warn!(
-                    session_id = %self.session_id,
-                    error = %error,
-                    "failed to persist plan reminder; continuing without it"
-                ),
-            }
-        }
+    fn prepare_view(&mut self, transcript: &mut Transcript, _step: u64) -> Result<()> {
+        self.context_pipeline.build_view(
+            &self.sessions,
+            &self.session_id,
+            &self.prompt_usage_baseline,
+            transcript,
+            &self.turn_llm.model,
+        )
+    }
 
-        let completions = self
-            .runtime_handle
-            .subagent_hub
-            .take_completions(&self.session_id);
-        if !completions.is_empty() {
-            let text = crate::tools::subagent::status::format_completion_reminder(
-                &self.sessions,
-                &completions,
-            );
-            if let Err(error) = self
-                .sessions
-                .append_job_exit(&self.session_id, &crate::types::user_text(&text))
-            {
-                self.runtime_handle
-                    .subagent_hub
-                    .restore_completions(&self.session_id, completions);
-                return Err(crate::types::LitecodeError::Anyhow(error));
-            }
-            appended = true;
-        }
+    fn sync_request_seam(&mut self, step: u64) -> Result<()> {
+        let mut appended = self.append_seam_reminders(step)?;
 
         // Queued user messages are drained last: they are the freshest input
         // and must sit closest to the next request. The claim is atomic with
@@ -162,10 +128,6 @@ impl AgentDeps for AgentRuntime {
         {
             let merged = crate::session::manager::merge_pending(&claimed);
             if let Err(error) = self.sessions.append_user_message(&self.session_id, merged) {
-                // The queue is the delivery contract: never drop it silently.
-                // Restore it in order and stop this injection — the message
-                // stays visible, and the end-of-turn flush retries it as a
-                // normal turn input.
                 self.sessions
                     .restore_pending_messages(&self.session_id, claimed);
                 return Err(crate::types::LitecodeError::Anyhow(error));
@@ -174,14 +136,6 @@ impl AgentDeps for AgentRuntime {
         }
 
         if appended {
-            *transcript = self.sessions.data().transcript_blocking(&self.session_id)?;
-            // The appended rows are durable now, so announce their arrival here
-            // instead of waiting for this step's own commit. The projection ships
-            // `buffer/item` on `StepCommitted` (or a seal restamp), so without
-            // this a claimed message stays parked in the client — bubble at the
-            // tail, below the answer that already consumed it — for a whole
-            // response, and every other runtime append (reminders, subagent
-            // completions) waits just as long to show up.
             self.emit_internal(InternalEvent::StepCommitted);
         }
         Ok(())
@@ -276,6 +230,236 @@ impl AgentDeps for AgentRuntime {
 }
 
 impl AgentRuntime {
+    /// Sense the seam and append one row per reminder. Subagent delivery is
+    /// fail-closed: a write error puts the completions back and stops the turn.
+    /// Other reminder writes are fail-open so a decoration cannot abort the turn.
+    fn append_seam_reminders(&mut self, step: u64) -> Result<bool> {
+        use crate::reminder::{
+            BashExitEntry, PlanPointer, RunningBash, SettledChild, TodoSnap,
+        };
+        use crate::reminder::{Facts, ReminderKind, SeamCtx, TaskFacts, sync};
+        use crate::tools::bash_status::display_output_path;
+
+        let cwd = self.base_ctx.cwd.clone();
+        let turn_id = self
+            .context_pipeline
+            .current_turn_id()
+            .unwrap_or_default();
+        let ctx = SeamCtx {
+            session_id: self.session_id.clone(),
+            turn_id,
+            step,
+            max_steps: u64::from(self.agent_config.max_steps),
+            model_ref: self.turn_llm.model_ref.clone(),
+            cwd: cwd.clone(),
+        };
+
+        let bash_notices = self
+            .runtime_ctx
+            .as_ref()
+            .and_then(|runtime| {
+                runtime
+                    .tools
+                    .iter()
+                    .find_map(|tool| tool.agent_terminal())
+            })
+            .map(|hub| hub.jobs.take_mailbox(&self.session_id))
+            .unwrap_or_default();
+        let bash_running = self
+            .runtime_ctx
+            .as_ref()
+            .and_then(|runtime| {
+                runtime
+                    .tools
+                    .iter()
+                    .find_map(|tool| tool.agent_terminal())
+            })
+            .map(|hub| hub.jobs.running(&self.session_id))
+            .unwrap_or_default();
+        let completions = self
+            .runtime_handle
+            .subagent_hub
+            .take_completions(&self.session_id);
+
+        let changed = self.sessions.take_changed_files(&self.session_id);
+        let changed_paths = changed
+            .iter()
+            .map(|path| display_output_path(path, &cwd))
+            .collect::<Vec<_>>();
+
+        let task_state = self
+            .sessions
+            .with_entry_task_state(&self.session_id, |state| Ok(state.clone()))
+            .unwrap_or_default();
+        let plan_disk_revision = task_state.active_plan.as_ref().and_then(|plan| {
+            let path = self
+                .sessions
+                .plan_dir_path()
+                .join(format!("{}.md", plan.slug));
+            crate::session::task_state::plan_file_revision(&path)
+        });
+        let counts = self.sessions.child_counts(&self.session_id);
+        let running_bash = bash_running
+            .iter()
+            .map(|job| RunningBash {
+                job_id: job.id.clone(),
+                command: job.command_preview.clone(),
+                output_file: display_output_path(&job.output_path, &cwd),
+            })
+            .collect::<Vec<_>>();
+        let bash_exits = bash_notices
+            .iter()
+            .map(|notice| BashExitEntry {
+                job_id: notice.bash_id.clone(),
+                command: notice.command_preview.clone(),
+                exit_code: notice.exit_code.map(|code| code as i32).unwrap_or(-1),
+                killed: notice.user_killed,
+                output_file: display_output_path(&notice.output_path, &cwd),
+            })
+            .collect::<Vec<_>>();
+        let settled = completions
+            .iter()
+            .map(|completion| {
+                let (agent, _) = crate::tools::subagent::status::session_labels(
+                    &self.sessions,
+                    &completion.child_session_id,
+                );
+                let reason = self
+                    .sessions
+                    .data()
+                    .turn_result_blocking(&completion.child_session_id, &completion.turn_id)
+                    .map(|result| result.reason)
+                    .unwrap_or_else(|_| "unknown".into());
+                SettledChild {
+                    child_session_id: completion.child_session_id.clone(),
+                    turn_id: completion.turn_id.clone(),
+                    agent: agent.unwrap_or_default(),
+                    reason,
+                }
+            })
+            .collect::<Vec<_>>();
+        let settled_detail = if completions.is_empty() {
+            String::new()
+        } else {
+            crate::tools::subagent::status::format_batch_results(&self.sessions, &completions)
+        };
+
+        let view = match self.sessions.spine_reminder_view(&self.session_id) {
+            Ok(view) => view,
+            Err(error) => {
+                self.restore_seam_sources(&bash_notices, completions);
+                return Err(error);
+            }
+        };
+        let facts = Facts {
+            tasks: TaskFacts {
+                todos: task_state
+                    .todos
+                    .iter()
+                    .map(|todo| TodoSnap {
+                        id: todo.id.clone(),
+                        content: todo.content.clone(),
+                        status: match todo.status {
+                            crate::session::task_state::TodoStatus::Pending => "pending",
+                            crate::session::task_state::TodoStatus::InProgress => "in_progress",
+                            crate::session::task_state::TodoStatus::Completed => "completed",
+                        }
+                        .to_string(),
+                        priority: todo.priority.clone(),
+                    })
+                    .collect(),
+                active_plan: task_state.active_plan.as_ref().map(|plan| PlanPointer {
+                    relative_path: plan.relative_path.clone(),
+                    slug: plan.slug.clone(),
+                }),
+                plan_disk_revision,
+                plan_seen_revision: task_state
+                    .active_plan
+                    .as_ref()
+                    .and_then(|plan| plan.revision.clone()),
+            },
+            background: crate::reminder::BackgroundFacts {
+                running_bash: running_bash.clone(),
+                children_running: counts.running,
+                children_idle: counts.total.saturating_sub(counts.running),
+            },
+            bash_exits,
+            bash_running: running_bash,
+            settled,
+            settled_detail,
+            changed_paths,
+        };
+        let reminders = sync(&ctx, &view, &facts);
+        let mut bash_written = false;
+        let mut subagent_written = false;
+        let mut appended = false;
+        for reminder in &reminders {
+            match self.sessions.append_reminder(&self.session_id, reminder) {
+                Ok(_) => {
+                    appended = true;
+                    match reminder.kind() {
+                        ReminderKind::BashExit => bash_written = true,
+                        ReminderKind::SubagentSettled => subagent_written = true,
+                        _ => {}
+                    }
+                }
+                Err(error) => {
+                    if reminder.kind() == ReminderKind::SubagentSettled {
+                        if !bash_written {
+                            self.restore_bash_mailbox(&bash_notices);
+                        }
+                        self.runtime_handle
+                            .subagent_hub
+                            .restore_completions(&self.session_id, completions.clone());
+                        return Err(crate::types::LitecodeError::Anyhow(error));
+                    }
+                    tracing::warn!(
+                        session_id = %self.session_id,
+                        kind = reminder.kind().wire(),
+                        error = %error,
+                        "failed to persist reminder"
+                    );
+                }
+            }
+        }
+        if !bash_written {
+            self.restore_bash_mailbox(&bash_notices);
+        }
+        if !subagent_written && !completions.is_empty() {
+            self.runtime_handle
+                .subagent_hub
+                .restore_completions(&self.session_id, completions);
+        }
+        Ok(appended)
+    }
+
+    fn restore_seam_sources(
+        &self,
+        notices: &[crate::terminal::ExitNotice],
+        completions: Vec<crate::tools::subagent::CompletionRef>,
+    ) {
+        self.restore_bash_mailbox(notices);
+        if !completions.is_empty() {
+            self.runtime_handle
+                .subagent_hub
+                .restore_completions(&self.session_id, completions);
+        }
+    }
+
+    fn restore_bash_mailbox(&self, notices: &[crate::terminal::ExitNotice]) {
+        if notices.is_empty() {
+            return;
+        }
+        let Some(runtime) = &self.runtime_ctx else {
+            return;
+        };
+        let Some(hub) = runtime.tools.iter().find_map(|tool| tool.agent_terminal()) else {
+            return;
+        };
+        hub.jobs
+            .restore_mailbox(&self.session_id, notices.to_vec());
+    }
+
     fn emit_llm_request_built(&self, request: &ModelRequest, token_count: usize) {
         // `token_estimate` is local budget telemetry only — never meter/ring truth.
         self.emit_internal(InternalEvent::LlmRequestBuilt {

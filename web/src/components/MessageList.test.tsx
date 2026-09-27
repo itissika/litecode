@@ -709,9 +709,14 @@ describe("MessageList reminder rows", () => {
   it("hides explicit reminder log rows without inspecting their text", () => {
     const reminder: HumanRow = {
       seq: 0,
-      kind: "reminder/job_exit",
+      kind: "reminder/bash_exit",
       state: "final",
-      body: userTextItem("hidden reminder"),
+      body: {
+        kind: "bash_exit",
+        exits: [],
+        running: [],
+        text: "hidden reminder",
+      },
     };
     render(
       <MessageList
@@ -1063,21 +1068,21 @@ describe("MessageList session-mount capsules route to single-line rows", () => {
 describe("MessageList job_exit mark", () => {
   const exitRow: HumanRow = {
     seq: 9,
-    kind: "reminder/job_exit",
+    kind: "reminder/bash_exit",
     state: "final",
     body: {
-      type: "message",
-      role: "user",
-      content: [
+      kind: "bash_exit",
+      exits: [
         {
-          type: "input_text",
-          text: `<system-reminder>
-Background bash bg_a exited with code 3.
-output_file: .litecode/bash/bg_a.output
-command: sleep 8
-</system-reminder>`,
+          job_id: "bg_a",
+          command: "sleep 8",
+          exit_code: 3,
+          killed: false,
+          output_file: ".litecode/bash/bg_a.output",
         },
       ],
+      running: [],
+      text: "Background bash bg_a exited with code 3.",
     },
   };
 
@@ -1098,12 +1103,8 @@ command: sleep 8
     const node = rowsToNodes([
       {
         ...exitRow,
-        body: {
-          type: "message",
-          role: "user",
-          content: [{ type: "input_text", text: "no detail" }],
-        },
-      } as HumanRow,
+        body: { kind: "bash_exit", exits: [], running: [], text: "no detail" },
+      },
     ])[0]!;
     expect(node.kind === "job_exit" && node.detail).toBeFalsy();
 
@@ -1113,26 +1114,23 @@ command: sleep 8
 });
 
 describe("MessageList subagent_exit mark", () => {
-  const reminder = `<system-reminder>
-source: subagent
-The following background child session turns settled.
-status: settled
-settled: 1
----
-child_session_id: child-abc
-turn_id: t1
-reason: cancelled
-agent: reviewer
-output:
-done
-</system-reminder>`;
-
   it("projects a one-line mark instead of the reminder body", () => {
     const row: HumanRow = {
       seq: 9,
-      kind: "reminder/job_exit",
+      kind: "reminder/subagent_settled",
       state: "final",
-      body: userTextItem(reminder),
+      body: {
+        kind: "subagent_settled",
+        settled: [
+          {
+            child_session_id: "child-abc",
+            turn_id: "t1",
+            agent: "reviewer",
+            reason: "cancelled",
+          },
+        ],
+        text: "source: subagent\noutput:\ndone",
+      },
     };
     const node = rowsToNodes([row])[0]!;
     expect(node).toMatchObject({

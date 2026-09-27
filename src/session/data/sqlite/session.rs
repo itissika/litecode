@@ -209,6 +209,8 @@ struct LogProjection {
     next_seq: Seq,
     active_max_seq: i64,
     items_by_seq: HashMap<Seq, Item>,
+    reminders_by_seq: HashMap<Seq, crate::reminder::Reminder>,
+    compacted_seqs: HashSet<Seq>,
     /// Seqs whose row is still in flight. Tracked from the log's own lifecycle
     /// state, never from the payload's `status` field.
     in_progress: HashSet<Seq>,
@@ -221,6 +223,8 @@ impl Default for LogProjection {
             next_seq: 0,
             active_max_seq: -1,
             items_by_seq: HashMap::new(),
+            reminders_by_seq: HashMap::new(),
+            compacted_seqs: HashSet::new(),
             in_progress: HashSet::new(),
         }
     }
@@ -238,6 +242,8 @@ impl LogProjection {
                 let shadowed: Vec<Seq> = self.surface.nodes[*start_idx..*start_idx + *len].to_vec();
                 for seq in shadowed {
                     self.items_by_seq.remove(&seq);
+                    self.reminders_by_seq.remove(&seq);
+                    self.compacted_seqs.remove(&seq);
                 }
             }
             apply_plan(&mut self.surface, plan);
@@ -258,6 +264,19 @@ impl LogProjection {
             && let Ok(assembled) = spine_agent_item(event)
         {
             self.items_by_seq.insert(event.seq, assembled);
+        }
+        if self.surface.nodes.contains(&event.seq) {
+            match &event.event_type {
+                EventType::Reminder(_) => {
+                    if let Ok(reminder) = serde_json::from_value(event.data.clone()) {
+                        self.reminders_by_seq.insert(event.seq, reminder);
+                    }
+                }
+                EventType::Compacted => {
+                    self.compacted_seqs.insert(event.seq);
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -414,7 +433,9 @@ fn insert_event_row(
     } else {
         encoded_tokens
     };
-    let item_type = if let Some(item) = item {
+    let item_type = if matches!(event.event_type, EventType::Reminder(_)) {
+        "message".to_string()
+    } else if let Some(item) = item {
         item_type_of(item)
     } else {
         event.event_type.as_str().to_string()
@@ -715,9 +736,12 @@ fn refresh_compact_pointers_from_log(tx: &Connection, session_id: &str) -> Resul
     let kept: Option<i64> = tx.query_row(
         "SELECT MIN(seq) FROM transcript_items
          WHERE session_id = ?1 AND seq >= ?2 AND seq < ?3
-           AND kind IN (
-             'item/user', 'item/assistant', 'item/tool_call', 'item/tool_result',
-             'reminder/job_exit', 'reminder/plan', 'plan/execute'
+           AND (
+             kind IN (
+               'item/user', 'item/assistant', 'item/tool_call', 'item/tool_result',
+               'plan/execute'
+             )
+             OR kind LIKE 'reminder/%'
            )",
         rusqlite::params![session_id, compacted.to as i64, seq],
         |row| row.get(0),
@@ -749,7 +773,25 @@ fn encode_detail_row(
     Ok((Some(body_json), None, token_estimate))
 }
 
+fn row_body_text(row: &TranscriptRow, data_root: &Path) -> Result<String> {
+    if let Some(body) = &row.body {
+        return Ok(body.clone());
+    }
+    if let Some(body_ref) = &row.body_ref {
+        return load_blob_text(body_ref, data_root);
+    }
+    Err(crate::types::LitecodeError::ToolExecution(format!(
+        "transcript row seq {} has no body",
+        row.seq
+    )))
+}
+
 fn row_to_item(row: &TranscriptRow, data_root: &Path) -> Result<Item> {
+    if crate::reminder::ReminderKind::is_wire(row.kind.as_str()) {
+        let raw = row_body_text(row, data_root)?;
+        let reminder: crate::reminder::Reminder = serde_json::from_str(&raw)?;
+        return Ok(crate::reminder::render_item(&reminder));
+    }
     match row.kind.as_str() {
         // During the storage cut-over compact still carries a serialized Item.
         // All ordinary item/* rows do too.
@@ -761,7 +803,7 @@ fn row_to_item(row: &TranscriptRow, data_root: &Path) -> Result<Item> {
             Ok(body.agent_item())
         }
         "compact_checkpoint" | "detail" | "item/user" | "item/assistant" | "item/tool_call"
-        | "item/tool_result" | "reminder/job_exit" | "reminder/plan" | "plan/execute" => {
+        | "item/tool_result" | "plan/execute" => {
             if let Some(body) = &row.body {
                 return serde_json::from_str(body).map_err(Into::into);
             }
@@ -823,6 +865,32 @@ fn event_from_disk_row(
         None | Some("") => None,
         Some(raw) => Some(serde_json::from_str(raw)?),
     };
+    if matches!(event_type, EventType::Reminder(_))
+        || crate::reminder::ReminderKind::is_wire(&kind)
+    {
+        let data = match body.as_deref() {
+            Some(raw) if !raw.is_empty() => serde_json::from_str(raw)?,
+            _ => {
+                return Err(LitecodeError::InvalidSessionEvent(format!(
+                    "reminder row {seq} has no body"
+                )));
+            }
+        };
+        let surface_op = match surface_op.as_str() {
+            "" => None,
+            raw => Some(serde_json::from_str(raw)?),
+        };
+        return Ok(SessionEvent {
+            seq,
+            time: created_at,
+            event_type,
+            data,
+            surface_op,
+            source_seqs,
+            ignorable: false,
+            state,
+        });
+    }
     if matches!(event_type, EventType::Compacted) {
         let data = match body.as_deref() {
             Some(raw) if !raw.is_empty() => serde_json::from_str(raw)?,
@@ -1623,10 +1691,25 @@ impl Session {
         let surface = fold_surface(&events)?;
         let node_set: HashSet<Seq> = surface.nodes.iter().copied().collect();
         let mut items_by_seq = HashMap::new();
+        let mut reminders_by_seq = HashMap::new();
+        let mut compacted_seqs = HashSet::new();
         let mut in_progress = HashSet::new();
         for event in &events {
             if event.state == LogState::InProgress {
                 in_progress.insert(event.seq);
+            }
+            if node_set.contains(&event.seq) {
+                match &event.event_type {
+                    EventType::Reminder(_) => {
+                        if let Ok(reminder) = serde_json::from_value(event.data.clone()) {
+                            reminders_by_seq.insert(event.seq, reminder);
+                        }
+                    }
+                    EventType::Compacted => {
+                        compacted_seqs.insert(event.seq);
+                    }
+                    _ => {}
+                }
             }
             let item = spine_agent_item(event).ok();
             if let Some(item) = item
@@ -1646,6 +1729,8 @@ impl Session {
             next_seq,
             active_max_seq,
             items_by_seq,
+            reminders_by_seq,
+            compacted_seqs,
             in_progress,
         };
         self.persisted_max_seq.set(projection.active_max_seq());
@@ -1688,14 +1773,27 @@ impl Session {
         if draft.time == 0 {
             draft.time = chrono::Utc::now().timestamp_millis();
         }
-        let item = if draft.event_type.is_item()
-            || matches!(
-                draft.event_type,
-                EventType::ReminderJobExit | EventType::ReminderPlan | EventType::PlanExecute
-            ) {
-            Some(serde_json::from_value::<Item>(draft.data.clone())?)
+        let (stored_item, cache_item, reminder_tokens) =
+            if matches!(draft.event_type, EventType::Reminder(_)) {
+                let reminder: crate::reminder::Reminder =
+                    serde_json::from_value(draft.data.clone())?;
+                let rendered = crate::reminder::render_item(&reminder);
+                let tokens = crate::session::estimate::compute_token_estimate(std::slice::from_ref(
+                    &rendered,
+                )) as i64;
+                (None, Some(rendered), tokens)
+            } else if draft.event_type.is_item()
+                || matches!(draft.event_type, EventType::PlanExecute)
+            {
+                let item = serde_json::from_value::<Item>(draft.data.clone())?;
+                (Some(item.clone()), Some(item), 0)
+            } else {
+                (None, None, 0)
+            };
+        let token_estimate = if token_estimate > 0 {
+            token_estimate
         } else {
-            None
+            reminder_tokens
         };
         let seq = projection.next_seq;
         let event = finalize_draft(seq, draft)?;
@@ -1710,7 +1808,7 @@ impl Session {
             &self.id,
             &self.data_root,
             &event,
-            item.as_ref(),
+            stored_item.as_ref(),
             &tid,
             turn_seq,
             kind,
@@ -1723,8 +1821,8 @@ impl Session {
             "UPDATE sessions SET next_seq = max(next_seq, ?1) WHERE id = ?2",
             rusqlite::params![seq.saturating_add(1) as i64, self.id],
         )?;
-        projection.apply_event(&event, item.as_ref())?;
-        Ok((seq, item))
+        projection.apply_event(&event, cache_item.as_ref())?;
+        Ok((seq, stored_item))
     }
 
     pub fn buffer_len(&self) -> usize {
@@ -2071,25 +2169,35 @@ impl Session {
         Ok(())
     }
 
-    /// Append a job-exit reminder as a normal spine Item with kind `reminder/job_exit`.
-    pub fn append_job_exit(&self, item: &Item) -> Result<Seq> {
-        let mut draft =
-            EventDraft::surface_item(EventType::ReminderJobExit, item, SurfaceOp::Append)?;
-        draft.time = message_timestamp(item);
+    /// Append one reminder. The row owns a new seq; the body is the reminder itself.
+    pub fn append_reminder(&self, reminder: &crate::reminder::Reminder) -> Result<Seq> {
+        let mut draft = EventDraft::reminder(reminder)?;
+        draft.time = chrono::Utc::now().timestamp_millis();
         match self.apply(SessionApply::Append(draft))? {
             ApplyOutcome::Appended(seq) => Ok(seq),
             _ => unreachable!("append operation must append"),
         }
     }
 
-    /// Append a plan-review reminder as a normal spine Item with kind `reminder/plan`.
-    pub fn append_plan_reminder(&self, item: &Item) -> Result<Seq> {
-        let mut draft = EventDraft::surface_item(EventType::ReminderPlan, item, SurfaceOp::Append)?;
-        draft.time = message_timestamp(item);
-        match self.apply(SessionApply::Append(draft))? {
-            ApplyOutcome::Appended(seq) => Ok(seq),
-            _ => unreachable!("append operation must append"),
-        }
+    /// Diff/Restore baseline from the live projection.
+    pub fn spine_reminder_view(&self) -> crate::reminder::SpineReminderView {
+        let projection = self.projection.borrow();
+        let nodes = projection
+            .surface
+            .nodes
+            .iter()
+            .map(|seq| {
+                let node = if projection.compacted_seqs.contains(seq) {
+                    crate::reminder::SpineNode::Compacted
+                } else if let Some(reminder) = projection.reminders_by_seq.get(seq) {
+                    crate::reminder::SpineNode::Reminder(reminder.clone())
+                } else {
+                    crate::reminder::SpineNode::Other
+                };
+                (*seq, node)
+            })
+            .collect::<Vec<_>>();
+        crate::reminder::view_from_spine(&nodes)
     }
 
     /// Append the plan-execution trigger message with kind `plan/execute`.
@@ -4569,18 +4677,32 @@ mod tests {
 
     #[test]
     fn job_exit_roundtrips_into_agent_working_set() {
+        use crate::reminder::{BashExitBody, BashExitEntry, Reminder};
         use crate::types::item_text_preview;
 
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         session.insert_detail_rows(&[user_text("hi")]).unwrap();
-        session
-            .append_job_exit(&user_text(
-                "<system-reminder>\nBackground bash bg-1 exited with code 0.\n</system-reminder>",
-            ))
-            .unwrap();
+        let reminder = Reminder::BashExit(BashExitBody {
+            exits: vec![BashExitEntry {
+                job_id: "bg-1".into(),
+                command: "echo".into(),
+                exit_code: 0,
+                killed: false,
+                output_file: "out".into(),
+            }],
+            running: vec![],
+            text: "Background bash bg-1 exited with code 0.".into(),
+        });
+        let seq = session.append_reminder(&reminder).unwrap();
+        assert_eq!(seq, 1);
         let events = session.load_events().unwrap();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[1].event_type, EventType::ReminderJobExit);
+        assert_eq!(
+            events[1].event_type,
+            EventType::Reminder(crate::reminder::ReminderKind::BashExit)
+        );
+        assert!(events[1].seq > events[0].seq);
+        assert_eq!(events[1].state, crate::session::model::LogState::Final);
         let working = session.load_working_set().unwrap();
         assert_eq!(working.len(), 2);
         assert_eq!(item_text_preview(&working[0].item), "hi");
@@ -4591,18 +4713,25 @@ mod tests {
 
     #[test]
     fn plan_reminder_roundtrips_into_agent_working_set() {
+        use crate::reminder::{PlanChangedBody, Reminder};
         use crate::types::item_text_preview;
 
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         session.insert_detail_rows(&[user_text("hi")]).unwrap();
         session
-            .append_plan_reminder(&user_text(
-                "<system-reminder>\n[Plan updated] .litecode/plan/calm.md changed since you last read it.\n</system-reminder>",
-            ))
+            .append_reminder(&Reminder::PlanChanged(PlanChangedBody {
+                relative_path: ".litecode/plan/calm.md".into(),
+                revision: "abc".into(),
+                text: "[Plan updated] .litecode/plan/calm.md changed since you last read it."
+                    .into(),
+            }))
             .unwrap();
         let events = session.load_events().unwrap();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[1].event_type, EventType::ReminderPlan);
+        assert_eq!(
+            events[1].event_type,
+            EventType::Reminder(crate::reminder::ReminderKind::PlanChanged)
+        );
         // The reminder reaches the agent's working set (unlike the human view).
         let working = session.load_working_set().unwrap();
         assert_eq!(working.len(), 2);

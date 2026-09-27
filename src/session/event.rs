@@ -3,6 +3,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
+use crate::reminder::{Reminder, ReminderKind, render_item};
 use crate::types::{Item, LitecodeError, Result, item_text_preview};
 
 use super::model::{CompactedBody, LogState};
@@ -20,8 +21,7 @@ pub enum EventType {
     ItemToolCall,
     ItemToolResult,
     Compacted,
-    ReminderJobExit,
-    ReminderPlan,
+    Reminder(ReminderKind),
     PlanExecute,
     TurnStart,
     TurnEnd,
@@ -54,8 +54,6 @@ impl EventType {
             "item/tool_call" => Self::ItemToolCall,
             "item/tool_result" => Self::ItemToolResult,
             "compacted" => Self::Compacted,
-            "reminder/job_exit" => Self::ReminderJobExit,
-            "reminder/plan" => Self::ReminderPlan,
             "plan/execute" => Self::PlanExecute,
             "turn/start" => Self::TurnStart,
             "turn/end" => Self::TurnEnd,
@@ -64,7 +62,13 @@ impl EventType {
             "assistant/chunk" => Self::AssistantChunk,
             "request/header" => Self::RequestHeader,
             "request/context" => Self::RequestContext,
-            other => Self::Unknown(other.to_string()),
+            other => {
+                if let Some(kind) = ReminderKind::parse_wire(other) {
+                    Self::Reminder(kind)
+                } else {
+                    Self::Unknown(other.to_string())
+                }
+            }
         }
     }
 
@@ -75,8 +79,7 @@ impl EventType {
             Self::ItemToolCall => "item/tool_call",
             Self::ItemToolResult => "item/tool_result",
             Self::Compacted => "compacted",
-            Self::ReminderJobExit => "reminder/job_exit",
-            Self::ReminderPlan => "reminder/plan",
+            Self::Reminder(kind) => kind.wire(),
             Self::PlanExecute => "plan/execute",
             Self::TurnStart => "turn/start",
             Self::TurnEnd => "turn/end",
@@ -97,8 +100,7 @@ impl EventType {
                 | Self::ItemToolCall
                 | Self::ItemToolResult
                 | Self::Compacted
-                | Self::ReminderJobExit
-                | Self::ReminderPlan
+                | Self::Reminder(_)
                 | Self::PlanExecute
         )
     }
@@ -114,7 +116,7 @@ impl EventType {
         self.is_item()
             || matches!(
                 self,
-                Self::Compacted | Self::ReminderJobExit | Self::ReminderPlan | Self::PlanExecute
+                Self::Compacted | Self::Reminder(_) | Self::PlanExecute
             )
     }
 
@@ -166,6 +168,19 @@ impl EventDraft {
     /// settles on arrival. Streaming uses [`Self::stream_item`] instead.
     pub fn surface_item(event_type: EventType, item: &Item, surface_op: SurfaceOp) -> Result<Self> {
         Self::item_with_state(event_type, item, surface_op, LogState::Final)
+    }
+
+    /// A reminder row. The durable body is the reminder, not an `Item`.
+    pub fn reminder(reminder: &Reminder) -> Result<Self> {
+        Ok(Self {
+            time: 0,
+            event_type: EventType::Reminder(reminder.kind()),
+            data: serde_json::to_value(reminder)?,
+            surface_op: Some(SurfaceOp::Append),
+            source_seqs: None,
+            ignorable: false,
+            state: LogState::Final,
+        })
     }
 
     /// A surface event opening (or re-writing) a row that is still streaming.
@@ -253,7 +268,21 @@ pub fn finalize_draft(seq: Seq, draft: EventDraft) -> Result<SessionEvent> {
 
     let frozen: Value = serde_json::from_str(&draft.data.to_string())?;
 
-    if matches!(draft.event_type, EventType::Compacted) {
+    if let EventType::Reminder(kind) = &draft.event_type {
+        let reminder: Reminder = serde_json::from_value(frozen.clone()).map_err(|e| {
+            LitecodeError::InvalidSessionEvent(format!("reminder body is invalid: {e}"))
+        })?;
+        if reminder.kind() != *kind {
+            return Err(LitecodeError::InvalidSessionEvent(
+                "reminder kind does not match its body".into(),
+            ));
+        }
+        if draft.surface_op.is_none() {
+            return Err(LitecodeError::InvalidSessionEvent(
+                "reminder event must carry surface_op".into(),
+            ));
+        }
+    } else if matches!(draft.event_type, EventType::Compacted) {
         let _compacted: CompactedBody = serde_json::from_value(frozen.clone()).map_err(|e| {
             LitecodeError::InvalidSessionEvent(format!("compacted body is invalid: {e}"))
         })?;
@@ -295,10 +324,14 @@ pub fn item_from_event(event: &SessionEvent) -> Result<Item> {
 
 /// AgentView assembly for a spine row. Compacted bodies are not `Item`.
 pub fn spine_agent_item(event: &SessionEvent) -> Result<Item> {
-    match event.event_type {
+    match &event.event_type {
         EventType::Compacted => {
             let body: CompactedBody = serde_json::from_value(event.data.clone())?;
             Ok(body.agent_item())
+        }
+        EventType::Reminder(_) => {
+            let reminder: Reminder = serde_json::from_value(event.data.clone())?;
+            Ok(render_item(&reminder))
         }
         _ => item_from_event(event),
     }

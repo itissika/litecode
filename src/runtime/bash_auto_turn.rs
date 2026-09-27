@@ -7,7 +7,6 @@ use crate::permission::{PermissionSink, deny_permission_sink};
 use crate::runtime::{RuntimeHandle, TurnOptions, spawn_turn};
 use crate::session::{LifecycleEvent, SessionManager};
 use crate::terminal::TerminalHub;
-use crate::tools::bash_status;
 use crate::types::LitecodeError;
 
 pub enum IdleAutoTurn {
@@ -16,7 +15,6 @@ pub enum IdleAutoTurn {
         turn_id: String,
         primary_agent: String,
         project: String,
-        input: String,
         sink: Arc<dyn PermissionSink>,
     },
     SkippedBusy,
@@ -26,7 +24,8 @@ pub enum IdleAutoTurn {
 }
 
 /// Decide whether an idle live session should start a turn for mailbox exits.
-/// On `Prepared`, the turn is reserved and the mailbox is drained.
+/// On `Prepared`, the turn is reserved. The mailbox stays pending so the first
+/// request seam can write `reminder/bash_exit`.
 pub fn try_begin_idle_auto_turn(
     hub: &TerminalHub,
     runtime: &RuntimeHandle,
@@ -67,18 +66,9 @@ pub fn try_begin_idle_auto_turn(
         Err(_) => return IdleAutoTurn::SkippedSessionGone,
     }
 
-    let notices = hub.jobs.take_mailbox(sid);
-    if notices.is_empty() {
+    if !hub.jobs.mailbox_pending(sid) {
         sessions.release_turn_reservation(sid, &turn_id);
         return IdleAutoTurn::SkippedEmptyMailbox;
-    }
-    let jobs = hub.jobs.running(sid);
-    let input = bash_status::format_exit_reminder(&notices, &jobs, workspace_root);
-    let append_result = sessions.append_job_exit(sid, &crate::types::user_text(&input));
-    if let Err(error) = append_result {
-        tracing::warn!(session_id = sid, %error, "failed to persist bash exit reminder");
-        sessions.release_turn_reservation(sid, &turn_id);
-        return IdleAutoTurn::SkippedSessionGone;
     }
     let sink = sessions
         .last_permission_sink(sid)
@@ -88,7 +78,6 @@ pub fn try_begin_idle_auto_turn(
         turn_id,
         primary_agent,
         project,
-        input,
         sink,
     }
 }
@@ -103,7 +92,6 @@ fn spawn_prepared_idle_auto_turn(
         turn_id,
         primary_agent,
         project,
-        input,
         sink,
     } = decision
     else {
@@ -114,7 +102,7 @@ fn spawn_prepared_idle_auto_turn(
         runtime,
         session_id.clone(),
         Arc::clone(&sessions),
-        input,
+        crate::runtime::TurnInput::Wake,
         sink,
         turn_id.clone(),
         TurnOptions::default(),
@@ -337,33 +325,22 @@ mod tests {
         let _ = sessions.attach(&sid);
         let id = spawn_echo(&hub, dir.path(), &sid);
         wait_job_exit(&hub, &id);
-        let notice = hub.jobs.notice_snapshot(&id).expect("notice");
-        let expected = bash_status::format_exit_reminder(
-            std::slice::from_ref(&notice),
-            &hub.jobs.running(&sid),
-            dir.path(),
-        );
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
             IdleAutoTurn::Prepared {
-                input,
                 turn_id,
                 session_id,
                 ..
             } => {
                 assert_eq!(session_id, sid);
-                assert_eq!(input, expected);
-                assert!(input.starts_with("<system-reminder>"));
-                assert!(!input.contains("status: exited"));
-                let events = sessions.data().events_blocking(&sid).unwrap();
-                assert_eq!(
-                    events.last().unwrap().event_type,
-                    crate::session::EventType::ReminderJobExit
+                assert!(
+                    sessions.data().events_blocking(&sid).unwrap().is_empty(),
+                    "the wake turn writes the reminder at the first seam, not here"
                 );
                 sessions.release_turn_reservation(&sid, &turn_id);
             }
             _ => panic!("expected prepared, got non-prepared variant"),
         }
-        assert!(hub.jobs.take_mailbox(&sid).is_empty());
+        assert!(hub.jobs.mailbox_pending(&sid));
         assert!(!sessions.is_session_busy_blocking(&sid));
     }
 
@@ -396,12 +373,8 @@ mod tests {
         assert!(hub.jobs.mailbox_pending(&sid));
         sessions.release_turn_reservation(&sid, "turn-busy");
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
-            IdleAutoTurn::Prepared { input, turn_id, .. } => {
-                assert!(
-                    input.contains("The user stopped background bash"),
-                    "got: {input}"
-                );
-                assert!(input.contains("(Kill)"));
+            IdleAutoTurn::Prepared { turn_id, .. } => {
+                assert!(hub.jobs.mailbox_pending(&sid));
                 sessions.release_turn_reservation(&sid, &turn_id);
             }
             _ => panic!("expected prepared after idle"),

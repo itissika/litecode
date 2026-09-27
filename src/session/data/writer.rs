@@ -649,33 +649,15 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 CommitKind::Sealed { seqs: vec![seq] },
             )
         }
-        SessionMutation::AppendJobExit {
+        SessionMutation::AppendReminder {
             session_id,
             expected_revision,
             operation_id,
-            item,
+            reminder,
         } => {
             let seq = {
                 let session = ensure_live(state, &session_id)?;
-                session.append_job_exit(&item)?
-            };
-            bump_receipt(
-                state,
-                &session_id,
-                &operation_id.0,
-                expected_revision,
-                CommitKind::Appended { seq },
-            )
-        }
-        SessionMutation::AppendPlanReminder {
-            session_id,
-            expected_revision,
-            operation_id,
-            item,
-        } => {
-            let seq = {
-                let session = ensure_live(state, &session_id)?;
-                session.append_plan_reminder(&item)?
+                session.append_reminder(&reminder)?
             };
             bump_receipt(
                 state,

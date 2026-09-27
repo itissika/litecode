@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::runtime::context::RuntimeContext;
+use crate::tool::write_lock::ResourceKey;
 use crate::types::{FunctionToolCall, ToolCallResult, Transcript};
 
 use super::executor::{outputs_from_tool_results, partition_tool_calls, run_tool};
@@ -9,6 +11,9 @@ use super::executor::{outputs_from_tool_results, partition_tool_calls, run_tool}
 pub struct ToolPipeline {
     runtime: Arc<RuntimeContext>,
     session_id: String,
+    /// Told which files a finished tool declared, so the reminder engine can
+    /// tell this session's writes from later external edits.
+    file_note: Option<Arc<dyn Fn(&[PathBuf]) + Send + Sync>>,
 }
 
 impl ToolPipeline {
@@ -16,7 +21,12 @@ impl ToolPipeline {
         Self {
             runtime,
             session_id: String::new(),
+            file_note: None,
         }
+    }
+
+    pub fn set_file_note(&mut self, hook: Arc<dyn Fn(&[PathBuf]) + Send + Sync>) {
+        self.file_note = Some(hook);
     }
 
     pub fn bind_session(&mut self, session_id: impl Into<String>) {
@@ -122,6 +132,7 @@ impl ToolPipeline {
                     }
                     match handle.await {
                         Ok((tool_use_id, result)) => {
+                            self.note_call(&tool_use_id, invocations);
                             results_by_id.insert(tool_use_id, result);
                             if is_cancelled() || cancel.is_cancelled() {
                                 for (id, remaining) in iter {
@@ -174,6 +185,7 @@ impl ToolPipeline {
                         self.runtime.session.clone(),
                     )
                     .await;
+                    self.note_invocation(tu);
                     results_by_id.insert(tool_use_id.clone(), result);
                     if is_cancelled() || cancel.is_cancelled() {
                         self.append_cancelled_outputs(invocations, results_by_id, transcript);
@@ -191,6 +203,43 @@ impl ToolPipeline {
         ));
 
         Ok(())
+    }
+
+    fn note_call(&self, call_id: &str, invocations: &[FunctionToolCall]) {
+        if let Some(invocation) = invocations.iter().find(|call| call.call_id == call_id) {
+            self.note_invocation(invocation);
+        }
+    }
+
+    fn note_invocation(&self, invocation: &FunctionToolCall) {
+        let Some(hook) = &self.file_note else {
+            return;
+        };
+        let input = serde_json::from_str(&invocation.arguments).unwrap_or(serde_json::Value::Null);
+        let Some(tool) = self
+            .runtime
+            .tools
+            .iter()
+            .find(|tool| tool.name() == invocation.name)
+        else {
+            return;
+        };
+        let mode = self
+            .runtime
+            .permission
+            .path_mode(invocation.name.as_str())
+            .to_tool_path_mode();
+        let paths = tool
+            .resource_keys(&input, mode, &self.runtime.ctx.cwd)
+            .into_iter()
+            .filter_map(|key| match key {
+                ResourceKey::File(path) => Some(PathBuf::from(path)),
+                ResourceKey::Workspace => None,
+            })
+            .collect::<Vec<_>>();
+        if !paths.is_empty() {
+            hook(&paths);
+        }
     }
 
     /// Join a spawned tool task. Cancellation must kill-and-wait inside the

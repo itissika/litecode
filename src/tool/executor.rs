@@ -418,7 +418,7 @@ pub async fn run_tool(
         output.content = Session::truncated_tool_result(&output.content, tool.max_result_size());
     }
 
-    let mut output = match output::finalize_tool_call_result(output, data_root, spill_threshold) {
+    let output = match output::finalize_tool_call_result(output, data_root, spill_threshold) {
         Ok(processed) => processed,
         Err(e) => {
             tracing::error!(tool = %tu_name, error = %e, "tool output processing failed");
@@ -427,22 +427,6 @@ pub async fn run_tool(
             )))
         }
     };
-    if tu_name != "wait_shell"
-        && let Some(hub) = tools.iter().find_map(|t| t.agent_terminal())
-    {
-        let notices = hub.jobs.take_mailbox(session_id);
-        if !notices.is_empty() {
-            let jobs = hub.jobs.running(session_id);
-            if !output.content.ends_with('\n') {
-                output.content.push('\n');
-            }
-            output
-                .content
-                .push_str(&crate::tools::bash_status::format_exit_reminder(
-                    &notices, &jobs, &ctx.cwd,
-                ));
-        }
-    }
     tracing::info!(
         tool = %tu_name,
         id = %tu_id,
@@ -1118,26 +1102,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mailbox_reminder_appended_to_next_tool_result() {
+    async fn mailbox_stays_pending_for_the_next_seam() {
         let dir = tempfile::tempdir().unwrap();
         let hub = Arc::new(crate::terminal::TerminalHub::new());
         let spawned = hub
             .spawn_command("echo hi", None, dir.path(), "sess", "")
             .unwrap();
         wait_job_exit(&hub, &spawned.id);
-        let notice = hub.jobs.notice_snapshot(&spawned.id).expect("notice");
-        let reminder = crate::tools::bash_status::format_exit_reminder(
-            &[notice],
-            &hub.jobs.running("sess"),
-            dir.path(),
-        );
         let tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(EchoTool),
             Arc::new(crate::tools::bash::BashTool::new(Arc::clone(&hub))),
         ];
         let result = run_named(tools, "echo_tool", "{}", "sess", dir.path()).await;
-        assert_eq!(result.content, format!("echo-ok\n{reminder}"));
-        assert!(hub.jobs.take_mailbox("sess").is_empty());
+        assert_eq!(result.content, "echo-ok");
+        assert!(!result.content.contains("<system-reminder>"));
+        assert!(hub.jobs.mailbox_pending("sess"));
     }
 
     #[tokio::test]

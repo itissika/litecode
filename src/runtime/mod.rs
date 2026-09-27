@@ -48,7 +48,7 @@ use crate::session::{EventDraft, EventType};
 use crate::tool::ToolPipeline;
 use crate::tool::output;
 use crate::tool::registry::build_tool_list;
-use crate::types::{LitecodeError, Result, UserInput, user_input_matches, user_message};
+use crate::types::{LitecodeError, Result, UserInput, user_message};
 
 /// Shared runtime configuration for CLI and serve (Phase 4 R4.4).
 pub struct RuntimeHandle {
@@ -341,12 +341,35 @@ pub enum AgentIdentity {
 /// row is the single source of model / tier / mode; tool-set depth is read from
 /// the session's durable `subagent_depth`. Don't reintroduce per-caller config
 /// arguments here (that is exactly how the child tier/mode gap appeared).
+/// What starts a turn. `Wake` does not append an `item/user`; the first request
+/// seam is the input (reminders, a message already written, or `plan/execute`).
+#[derive(Clone, Debug)]
+pub enum TurnInput {
+    User(UserInput),
+    Wake,
+}
+
+impl From<UserInput> for TurnInput {
+    fn from(input: UserInput) -> Self {
+        Self::User(input)
+    }
+}
+
+impl From<String> for TurnInput {
+    fn from(text: String) -> Self {
+        Self::User(UserInput::text(text))
+    }
+}
+
+impl From<&str> for TurnInput {
+    fn from(text: &str) -> Self {
+        Self::User(UserInput::text(text))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TurnOptions {
     pub identity: AgentIdentity,
-    /// One-shot harness reminder appended after the user message of the first
-    /// step. Kept out of `input` so the optimistic user row still seals by text.
-    pub plan_review_reminder: Option<String>,
 }
 
 impl TurnOptions {
@@ -383,7 +406,7 @@ pub fn spawn_turn(
     runtime: &RuntimeHandle,
     session_id: String,
     sessions: Arc<SessionManager>,
-    input: impl Into<UserInput>,
+    input: impl Into<TurnInput>,
     permission_sink: Arc<dyn PermissionSink>,
     turn_id: String,
     opts: TurnOptions,
@@ -411,7 +434,6 @@ pub fn spawn_turn(
         .unwrap_or(0);
     let (tx, rx) = mpsc::unbounded_channel::<InternalEnvelope>();
     let observer = ChannelObserver::new(tx);
-    let plan_review_reminder = opts.plan_review_reminder.clone();
     let mut agent_loop = runtime.build_runtime(
         session_id,
         sessions,
@@ -420,20 +442,19 @@ pub fn spawn_turn(
         permission_sink,
         observer,
     )?;
-    agent_loop.set_plan_review_reminder(plan_review_reminder);
 
     let cancel = agent_loop.cancel_token();
     let step_max = agent_loop.agent_config.max_steps;
     let workspace_paths = runtime.workspace.paths.clone();
     let turn_id_for_thread = turn_id.clone();
-    let user_input = input.into();
+    let turn_input = input.into();
 
     let handle = std::thread::spawn(move || {
         set_runtime_paths(workspace_paths);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        rt.block_on(agent_loop.run_with_turn(user_input, &turn_id_for_thread, step_max))
+        rt.block_on(agent_loop.run_with_turn(turn_input, &turn_id_for_thread, step_max))
     });
 
     Ok(TurnHandle {
@@ -469,8 +490,6 @@ pub struct AgentRuntime {
     pub(crate) turn_usage_totals: TurnTokenStats,
     /// Stored parameters for deferred build_tool_list (async MCP schema fetch).
     build_tool_params: Option<Arc<BuildToolParams>>,
-    /// One-shot plan reminder consumed by `inject_background_reminders`.
-    plan_review_reminder: Option<String>,
 }
 
 /// Parameters needed to call build_tool_list lazily on first turn.
@@ -569,17 +588,12 @@ impl AgentRuntime {
             turn_token_stats: TurnTokenStats::default(),
             turn_usage_totals: TurnTokenStats::default(),
             build_tool_params: Some(build_tool_params),
-            plan_review_reminder: None,
         };
         Ok(runtime)
     }
 
     pub fn sessions(&self) -> &Arc<SessionManager> {
         &self.sessions
-    }
-
-    pub(crate) fn set_plan_review_reminder(&mut self, reminder: Option<String>) {
-        self.plan_review_reminder = reminder;
     }
 
     /// Access the runtime context — panics if called before first turn (logic error).
@@ -800,16 +814,20 @@ impl AgentRuntime {
 
     pub async fn run(&mut self, user_prompt: &str) -> Result<String> {
         let step_max = self.agent_config.max_steps;
-        self.run_with_turn(UserInput::text(user_prompt), "local-turn", step_max)
+        self.run_with_turn(TurnInput::User(UserInput::text(user_prompt)), "local-turn", step_max)
             .await
     }
 
     pub async fn run_with_turn(
         &mut self,
-        user_input: UserInput,
+        input: TurnInput,
         turn_id: &str,
         step_max: u32,
     ) -> Result<String> {
+        let (user_input, wake) = match input {
+            TurnInput::Wake => (UserInput::text(""), true),
+            TurnInput::User(input) => (input, false),
+        };
         // Lazy-init: build tool list (async MCP schema fetch) on first turn.
         if self.tool_pipeline.is_none() {
             let params = self.build_tool_params.take().unwrap();
@@ -863,6 +881,11 @@ impl AgentRuntime {
             ));
             let mut tool_pipeline = ToolPipeline::new(Arc::clone(&runtime_ctx));
             tool_pipeline.bind_session(self.session_id.clone());
+            let note_sessions = Arc::clone(&self.sessions);
+            let note_sid = self.session_id.clone();
+            tool_pipeline.set_file_note(Arc::new(move |paths| {
+                note_sessions.note_touched_files(&note_sid, paths);
+            }));
             self.runtime_ctx = Some(runtime_ctx);
             self.tool_pipeline = Some(tool_pipeline);
         }
@@ -912,10 +935,7 @@ impl AgentRuntime {
         };
         let mut items = project_items(&working);
 
-        let already_last_user = items
-            .last()
-            .is_some_and(|item| user_input_matches(item, &user_input));
-        if !already_last_user {
+        if !wake {
             let item = user_message(&user_input.text, &user_input.images);
             items.push(item.clone());
             working.push(WorkingRow::pending(item));

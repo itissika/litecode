@@ -34,6 +34,9 @@ pub fn buffer_log_row(
     if let Some(child_id) = child_session_id {
         params["child_session_id"] = Value::String(child_id);
     }
+    if crate::reminder::hidden_kind(event.event_type.as_str()) {
+        params["hidden"] = Value::Bool(true);
+    }
     notification(super::protocol::methods::BUFFER_ITEM, params)
 }
 

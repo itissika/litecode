@@ -148,10 +148,10 @@ impl AgentDeps for FakeAgentDeps {
         Ok(false)
     }
 
-    async fn compact_if_needed(&self, _transcript: &mut Transcript, _step: u64) -> Result<()> {
+    async fn compact_if_needed(&self, _transcript: &mut Transcript, _step: u64) -> Result<bool> {
         self.compact_calls
             .set(self.compact_calls.get().saturating_add(1));
-        Ok(())
+        Ok(false)
     }
 
     fn emit_todo_progress(&mut self) {}

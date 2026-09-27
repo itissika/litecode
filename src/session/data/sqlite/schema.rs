@@ -8,7 +8,7 @@ use crate::types::{LitecodeError, Result};
 
 use super::conn::BUSY_TIMEOUT;
 
-pub const USER_VERSION: i32 = 6;
+pub const USER_VERSION: i32 = 7;
 
 const SESSIONS_REQUIRED_COLS: &[&str] = &[
     "schema_version",
@@ -249,7 +249,67 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
     }
     drop_legacy_fts(conn)?;
     drop_legacy_content_outbox(conn)?;
+    if user_version(conn)? < 7 && table_exists(conn, "transcript_items")? {
+        migrate_reminders_v7(conn)?;
+    }
     conn.execute_batch(&format!("PRAGMA user_version={USER_VERSION};"))?;
+    Ok(())
+}
+
+/// Rewrite legacy reminder rows in place. `seq` and `next_seq` stay put.
+fn migrate_reminders_v7(conn: &Connection) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "SELECT session_id, seq, kind, body FROM transcript_items
+             WHERE kind IN ('reminder/job_exit', 'reminder/plan')",
+        )?;
+        let rows: Vec<(String, i64, String, Option<String>)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        for (session_id, seq, kind, body) in rows {
+            let Some((new_kind, new_body)) =
+                crate::reminder::migrate::rewrite_reminder_row(&kind, body.as_deref().unwrap_or(""))
+            else {
+                continue;
+            };
+            tx.execute(
+                "UPDATE transcript_items
+                 SET kind = ?1, event_type = ?1, body = ?2
+                 WHERE session_id = ?3 AND seq = ?4",
+                rusqlite::params![new_kind, new_body, session_id, seq],
+            )?;
+        }
+
+        let mut compacted = tx.prepare(
+            "SELECT session_id, seq, body FROM transcript_items WHERE kind = 'compacted'",
+        )?;
+        let compacted_rows: Vec<(String, i64, String)> = compacted
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(compacted);
+        for (session_id, seq, body) in compacted_rows {
+            let Ok(mut parsed) =
+                serde_json::from_str::<crate::session::model::CompactedBody>(&body)
+            else {
+                continue;
+            };
+            let stripped = crate::reminder::migrate::strip_embedded_reminder(&parsed.summary);
+            if stripped == parsed.summary {
+                continue;
+            }
+            parsed.summary = stripped;
+            let encoded = serde_json::to_string(&parsed)?;
+            tx.execute(
+                "UPDATE transcript_items SET body = ?1 WHERE session_id = ?2 AND seq = ?3",
+                rusqlite::params![encoded, session_id, seq],
+            )?;
+        }
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -593,5 +653,100 @@ mod tests {
         .unwrap();
         let err = ensure_session_schema(&conn).unwrap_err();
         assert!(err.to_string().contains("incompatible"));
+    }
+
+    #[test]
+    fn reminder_v7_rewrites_rows_without_moving_seq() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        let job_body = serde_json::to_string(&crate::types::user_text(
+            "<system-reminder>\nBackground bash bg-1 exited with code 0.\noutput_file: out\ncommand: echo\nrunning: 0\n</system-reminder>",
+        ))
+        .unwrap();
+        let plan_body = serde_json::to_string(&crate::types::user_text(
+            "<system-reminder>\n[Plan updated] .litecode/plan/calm.md changed since you last read it. Read that file before starting execution.\n</system-reminder>",
+        ))
+        .unwrap();
+        let compacted = serde_json::json!({
+            "summary": "[Conversation summary]\nprior\n<system-reminder>\nTodos:\n- ship\n</system-reminder>",
+            "from": 0,
+            "to": 3
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO sessions (id, schema_version, project, agent_id, created_at, updated_at, next_seq)
+             VALUES ('s', ?1, '/p', 'default', 1, 1, 10)",
+            [SESSION_LOG_SCHEMA_VERSION],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transcript_items
+                (session_id, seq, item_type, kind, body, created_at, event_type, surface_op)
+             VALUES ('s', 1, 'message', 'reminder/job_exit', ?1, 1, 'reminder/job_exit', 'append')",
+            [&job_body],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transcript_items
+                (session_id, seq, item_type, kind, body, created_at, event_type, surface_op)
+             VALUES ('s', 2, 'message', 'reminder/plan', ?1, 1, 'reminder/plan', 'append')",
+            [&plan_body],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transcript_items
+                (session_id, seq, item_type, kind, body, created_at, event_type, surface_op)
+             VALUES ('s', 3, 'message', 'compacted', ?1, 1, 'compacted', '')",
+            [&compacted],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA user_version = 6;").unwrap();
+
+        ensure_session_schema(&conn).unwrap();
+
+        let (kind, event_type, seq): (String, String, i64) = conn
+            .query_row(
+                "SELECT kind, event_type, seq FROM transcript_items WHERE seq = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((kind.as_str(), event_type.as_str(), seq), ("reminder/bash_exit", "reminder/bash_exit", 1));
+        let plan_kind: String = conn
+            .query_row(
+                "SELECT kind FROM transcript_items WHERE seq = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(plan_kind, "reminder/plan_changed");
+        let summary: String = conn
+            .query_row(
+                "SELECT body FROM transcript_items WHERE seq = 3",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!summary.contains("<system-reminder>"));
+        assert!(summary.contains("prior"));
+        let next: i64 = conn
+            .query_row("SELECT next_seq FROM sessions WHERE id = 's'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(next, 10);
+
+        conn.execute_batch("PRAGMA user_version = 6;").unwrap();
+        ensure_session_schema(&conn).unwrap();
+        let kind_again: String = conn
+            .query_row(
+                "SELECT kind FROM transcript_items WHERE seq = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind_again, "reminder/bash_exit");
+        let next_again: i64 = conn
+            .query_row("SELECT next_seq FROM sessions WHERE id = 's'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(next_again, 10);
     }
 }

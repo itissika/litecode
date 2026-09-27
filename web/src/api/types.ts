@@ -183,6 +183,8 @@ interface LogRowEnvelope {
   state: LogRowState;
   /** Seqs this row cites (a compaction's shadowed range). */
   cites?: number[];
+  /** Hidden reminders stay in the log so seq cursors stay continuous. */
+  hidden?: boolean;
 }
 
 export interface ItemLogRow extends LogRowEnvelope {
@@ -196,15 +198,49 @@ export interface CompactedLogRow extends LogRowEnvelope {
   body: { summary: string; from: number; to: number };
 }
 
-export interface JobExitReminderLogRow extends LogRowEnvelope {
-  kind: "reminder/job_exit";
-  body: Item;
+export interface BashExitEntry {
+  job_id: string;
+  command: string;
+  exit_code: number;
+  killed: boolean;
+  output_file: string;
+}
+
+export interface BashExitReminderLogRow extends LogRowEnvelope {
+  kind: "reminder/bash_exit";
+  body: {
+    kind: "bash_exit";
+    exits: BashExitEntry[];
+    running: unknown[];
+    text: string;
+  };
+}
+
+export interface SettledChildBody {
+  child_session_id: string;
+  turn_id: string;
+  agent: string;
+  reason: string;
+}
+
+export interface SubagentSettledLogRow extends LogRowEnvelope {
+  kind: "reminder/subagent_settled";
+  body: {
+    kind: "subagent_settled";
+    settled: SettledChildBody[];
+    text: string;
+  };
 }
 
 /** A durable plan-review reminder: a system mark, never a chat bubble. */
-export interface PlanReminderLogRow extends LogRowEnvelope {
-  kind: "reminder/plan";
-  body: Item;
+export interface PlanChangedLogRow extends LogRowEnvelope {
+  kind: "reminder/plan_changed";
+  body: {
+    kind: "plan_changed";
+    relative_path: string;
+    revision: string;
+    text: string;
+  };
 }
 
 /** The system-issued plan-execution trigger. Body is a user `Item`, but the kind
@@ -223,8 +259,9 @@ export interface ControlLogRow extends LogRowEnvelope {
 export type WireBufferEvent =
   | ItemLogRow
   | CompactedLogRow
-  | JobExitReminderLogRow
-  | PlanReminderLogRow
+  | BashExitReminderLogRow
+  | SubagentSettledLogRow
+  | PlanChangedLogRow
   | PlanExecuteLogRow
   | ControlLogRow;
 

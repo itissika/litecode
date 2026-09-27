@@ -38,73 +38,110 @@ describe("readableCompactSummary", () => {
     );
   });
 
-  it("removes internal system-reminder blocks", () => {
-    const raw =
-      "[Conversation summary]\n<system-reminder>\nkeep recent tool results\n</system-reminder>\nProse body";
-    expect(readableCompactSummary(raw)).toBe("Prose body");
-  });
-
   it("returns clean text untouched", () => {
     expect(readableCompactSummary("Plain summary")).toBe("Plain summary");
   });
 });
 
 describe("jobExitDetail", () => {
-  it("reads the exit line of the background-exit reminder", () => {
+  it("reads the exit fields of the background-exit reminder", () => {
     expect(
-      jobExitDetail(
-        "<system-reminder>\nBackground bash bg_a exited with code 3.\noutput_file: .litecode/bash/bg_a.output\ncommand: sleep 8\n</system-reminder>",
-      ),
+      jobExitDetail({
+        kind: "bash_exit",
+        exits: [
+          {
+            job_id: "bg_a",
+            command: "sleep 8",
+            exit_code: 3,
+            killed: false,
+            output_file: ".litecode/bash/bg_a.output",
+          },
+        ],
+        running: [],
+        text: "Background bash bg_a exited with code 3.",
+      }),
     ).toBe("bg_a · exit code 3");
   });
 
   it("reads the user-Kill variant", () => {
     expect(
-      jobExitDetail(
-        "<system-reminder>\nThe user stopped background bash bg_b (Kill).\nexit_code: 137\noutput_file: .litecode/bash/bg_b.output\n</system-reminder>",
-      ),
+      jobExitDetail({
+        kind: "bash_exit",
+        exits: [
+          {
+            job_id: "bg_b",
+            command: "sleep",
+            exit_code: 137,
+            killed: true,
+            output_file: ".litecode/bash/bg_b.output",
+          },
+        ],
+        running: [],
+        text: "The user stopped background bash bg_b (Kill).",
+      }),
     ).toBe("bg_b · stopped by user (Kill)");
   });
 
-  it("returns undefined when the body carries no exit line", () => {
-    expect(jobExitDetail("plain reminder body")).toBeUndefined();
-    expect(jobExitDetail("")).toBeUndefined();
+  it("returns undefined when the body carries no exits", () => {
+    expect(
+      jobExitDetail({ kind: "bash_exit", exits: [], running: [], text: "" }),
+    ).toBeUndefined();
+    expect(jobExitDetail(undefined)).toBeUndefined();
   });
 });
 
 describe("subagentExitDetail", () => {
-  it("collapses a single child into agent and non-completed reason", () => {
+  it("collapses a single child into agent and reason", () => {
     expect(
-      subagentExitDetail(`<system-reminder>
-source: subagent
-status: settled
-settled: 1
----
-child_session_id: child-abc
-reason: cancelled
-agent: reviewer
-output:
-done
-</system-reminder>`),
+      subagentExitDetail([
+        {
+          child_session_id: "child-abc",
+          turn_id: "t1",
+          agent: "reviewer",
+          reason: "cancelled",
+        },
+      ]),
     ).toEqual({
       detail: "settled · reviewer · cancelled",
       childId: "child-abc",
     });
   });
 
-  it("keeps a completed single child to agent only", () => {
+  it("keeps a completed single child to agent and reason", () => {
     expect(
-      subagentExitDetail(
-        "source: subagent\nsettled: 1\nchild_session_id: c1\nreason: completed\nagent: explore\n",
-      ),
+      subagentExitDetail([
+        {
+          child_session_id: "c1",
+          turn_id: "t1",
+          agent: "explore",
+          reason: "completed",
+        },
+      ]),
     ).toEqual({ detail: "settled · explore · completed", childId: "c1" });
   });
 
   it("summarizes a batch as a count", () => {
     expect(
-      subagentExitDetail(
-        "settled: 3\nchild_session_id: a\nagent: one\n---\nchild_session_id: b\nagent: two\n",
-      ),
+      subagentExitDetail([
+        {
+          child_session_id: "a",
+          turn_id: "t1",
+          agent: "one",
+          reason: "completed",
+        },
+        {
+          child_session_id: "b",
+          turn_id: "t2",
+          agent: "two",
+          reason: "completed",
+        },
+        {
+          child_session_id: "c",
+          turn_id: "t3",
+          agent: "three",
+          reason: "completed",
+        },
+      ]),
     ).toEqual({ detail: "3 settled", childId: "a" });
   });
 });

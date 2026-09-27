@@ -25,7 +25,6 @@ use litecode::config::workspace::set_runtime_paths;
 use litecode::context_pipeline::{Context, ContextPipeline, ProviderPromptBaseline};
 use litecode::llm::{LlmProvider, ModelRequest};
 use litecode::session::manager::SessionManager;
-use litecode::session::task_state::TaskReminders;
 use litecode::session::{WorkingRow, project_items};
 use litecode::types::{Item, Result, StreamEvents, item_text_preview, user_text};
 use tokio_util::sync::CancellationToken;
@@ -336,8 +335,9 @@ async fn prepare_snapshot(
     let provider = common::ScriptedProvider::with_text("unused");
     let cancel = CancellationToken::new();
     let mut items = project_items(turn);
+    let baseline = ProviderPromptBaseline::default();
     pipeline
-        .prepare_step(
+        .compact_step(
             sessions,
             sid,
             litecode::llm::CompactLlmCall {
@@ -347,15 +347,16 @@ async fn prepare_snapshot(
             },
             "system",
             1024,
-            &ProviderPromptBaseline::default(),
+            &baseline,
             &mut items,
             step,
             &cancel,
-            &TaskReminders::default(),
-            &test_model(),
         )
         .await
-        .expect("prepare_step");
+        .expect("compact_step");
+    pipeline
+        .build_view(sessions, sid, &baseline, &mut items, &test_model())
+        .expect("build_view");
     *turn = pipeline.working_set();
     items_json(&pipeline.prepared_view().expect("prepared view").items)
 }
@@ -482,14 +483,21 @@ async fn job_exit_mid_turn_does_not_rewrite_already_sent_prefix() {
 
     let after_tools = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 2).await;
 
-    sessions
-        .append_job_exit(
-            &sid,
-            &user_text(
-                "<system-reminder>\nBackground bash bg-1 exited with code 0.\n</system-reminder>",
-            ),
-        )
-        .expect("append_job_exit while turn pipeline is live");
+    let reminder = litecode::reminder::Reminder::BashExit(litecode::reminder::BashExitBody {
+        exits: vec![litecode::reminder::BashExitEntry {
+            job_id: "bg-1".into(),
+            command: "echo hi".into(),
+            exit_code: 0,
+            killed: false,
+            output_file: ".litecode/bash/bg-1.output".into(),
+        }],
+        running: Vec::new(),
+        text: "Background bash bg-1 exited with code 0.\noutput_file: .litecode/bash/bg-1.output\ncommand: echo hi".into(),
+    });
+    let seq = sessions
+        .append_reminder(&sid, &reminder)
+        .expect("append bash exit while turn pipeline is live");
+    assert!(seq > 0, "a reminder allocates its own seq");
 
     let after_exit = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 3).await;
     assert_json_prefix(
@@ -660,4 +668,153 @@ async fn next_turn_reload_must_keep_sent_row_when_provider_reuses_id() {
         &next_turn,
         "next-turn reload after reused fc_1 must not rewrite the already-sent prefix",
     );
+}
+
+fn assert_seqs_strict_and_unsealed(sessions: &SessionManager, sid: &str) {
+    let events = sessions.data().events_blocking(sid).unwrap();
+    let mut prev: Option<u64> = None;
+    for event in &events {
+        if let Some(prev) = prev {
+            assert!(event.seq > prev, "seq must strictly increase");
+        }
+        prev = Some(event.seq);
+        if event.event_type.as_str().starts_with("reminder/") {
+            assert_eq!(
+                event.state,
+                litecode::session::LogState::Final,
+                "a reminder row is written final and never sealed"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn state_reminders_only_append_across_steps() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (sid, sessions) = setup_session(dir.path());
+    sessions
+        .insert_detail_rows(&sid, &[user_text("hist")])
+        .unwrap();
+    let ctx = test_context(dir.path());
+    let pipeline = ContextPipeline::new(10_000, ctx, dir.path().to_path_buf());
+    let mut turn = pipeline
+        .begin_turn_with_id(&sessions, &sid, Some("t1".into()))
+        .unwrap();
+    let first = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 1).await;
+
+    let seam = litecode::reminder::SeamCtx {
+        session_id: sid.clone(),
+        turn_id: "t1".into(),
+        step: 1,
+        max_steps: 10,
+        model_ref: "openai/gpt".into(),
+        cwd: dir.path().to_path_buf(),
+    };
+    let view = sessions.spine_reminder_view(&sid).unwrap();
+    let written: Vec<_> = litecode::reminder::sync(&seam, &view, &litecode::reminder::Facts::default());
+    assert!(written.len() >= 2, "first seam writes env and model");
+    for reminder in &written {
+        sessions.append_reminder(&sid, reminder).unwrap();
+    }
+    let second = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 2).await;
+    assert_json_prefix(&first, &second, "state reminders append");
+    assert!(second.len() > first.len());
+
+    let view = sessions.spine_reminder_view(&sid).unwrap();
+    let again = litecode::reminder::sync(&seam, &view, &litecode::reminder::Facts::default());
+    assert!(
+        again.iter().all(|reminder| {
+            !matches!(
+                reminder.kind(),
+                litecode::reminder::ReminderKind::Env | litecode::reminder::ReminderKind::Model
+            )
+        }),
+        "an unchanged env and model must not be rewritten"
+    );
+    let third = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 3).await;
+    assert_eq!(second, third, "a quiet seam leaves the sent prefix untouched");
+    assert_seqs_strict_and_unsealed(&sessions, &sid);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn restore_row_lands_after_compacted_and_prefix_stays() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (sid, sessions) = setup_session(dir.path());
+    sessions
+        .insert_detail_rows(&sid, &[user_text("hist"), user_text("more")])
+        .unwrap();
+    let ctx = test_context(dir.path());
+    let pipeline = ContextPipeline::new(10_000, ctx, dir.path().to_path_buf())
+        .with_keep_recent_tokens(1);
+    let mut turn = pipeline
+        .begin_turn_with_id(&sessions, &sid, Some("t1".into()))
+        .unwrap();
+    let provider = common::ScriptedProvider::with_text("compact summary");
+    let cancel = CancellationToken::new();
+    let mut items = project_items(&turn);
+    let baseline = ProviderPromptBaseline::default();
+    baseline.record(8_500, items.len());
+    let compacted = pipeline
+        .compact_step(
+            &sessions,
+            &sid,
+            litecode::llm::CompactLlmCall {
+                provider: &provider,
+                api_key: "key",
+                model: "m",
+            },
+            "system",
+            1024,
+            &baseline,
+            &mut items,
+            1,
+            &cancel,
+        )
+        .await
+        .expect("compact");
+    assert!(compacted, "the recorded baseline must force a compact");
+    pipeline
+        .build_view(&sessions, &sid, &baseline, &mut items, &test_model())
+        .expect("build_view");
+    turn = pipeline.working_set();
+    let after_compact = items_json(&pipeline.prepared_view().expect("view").items);
+
+    let view = sessions.spine_reminder_view(&sid).unwrap();
+    let head = view.compacted_head.expect("compacted head");
+    let facts = litecode::reminder::Facts {
+        tasks: litecode::reminder::TaskFacts {
+            todos: vec![litecode::reminder::TodoSnap {
+                id: "t1".into(),
+                content: "keep shipping".into(),
+                status: "in_progress".into(),
+                priority: None,
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let seam = litecode::reminder::SeamCtx {
+        session_id: sid.clone(),
+        turn_id: "t1".into(),
+        step: 2,
+        max_steps: 10,
+        model_ref: "m".into(),
+        cwd: dir.path().to_path_buf(),
+    };
+    let restored = litecode::reminder::sync(&seam, &view, &facts)
+        .into_iter()
+        .find(|reminder| reminder.kind() == litecode::reminder::ReminderKind::Tasks)
+        .expect("restore tasks");
+    let seq = sessions.append_reminder(&sid, &restored).unwrap();
+    assert!(seq > head, "restore row follows the compacted head");
+
+    let after_restore = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 2).await;
+    assert_json_prefix(&after_compact, &after_restore, "restore appends after the summary");
+    let last = item_text_preview(
+        &serde_json::from_value::<Item>(after_restore.last().cloned().unwrap()).unwrap(),
+    );
+    assert!(last.contains("keep shipping"), "restore text lands at the tail: {last:?}");
+    let quiet = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 3).await;
+    assert_json_prefix(&after_restore, &quiet, "a second view does not rewrite the restore prefix");
+    assert_seqs_strict_and_unsealed(&sessions, &sid);
 }

@@ -65,9 +65,14 @@ describe("kind-based HumanView rows", () => {
       },
       {
         seq: 2,
-        kind: "reminder/job_exit",
+        kind: "reminder/bash_exit",
         state: "final",
-        body: userTextItem("<system-reminder>not inspected</system-reminder>"),
+        body: {
+          kind: "bash_exit",
+          exits: [],
+          running: [],
+          text: "not inspected",
+        },
       },
       userRow(3, "u1"),
     ];
@@ -100,17 +105,39 @@ describe("kind-based HumanView rows", () => {
   it("shows subagent completion reminders as one-line marks, not hidden rows", () => {
     const subagent: HumanRow = {
       seq: 1,
-      kind: "reminder/job_exit",
+      kind: "reminder/subagent_settled",
       state: "final",
-      body: userTextItem(
-        "<system-reminder>\nsource: subagent\nstatus: settled\n</system-reminder>",
-      ),
+      body: {
+        kind: "subagent_settled",
+        settled: [
+          {
+            child_session_id: "child-abc",
+            turn_id: "t1",
+            agent: "reviewer",
+            reason: "completed",
+          },
+        ],
+        text: "source: subagent",
+      },
     };
     const other: HumanRow = {
       seq: 2,
-      kind: "reminder/job_exit",
+      kind: "reminder/bash_exit",
       state: "final",
-      body: userTextItem("Background bash bg_1 exited"),
+      body: {
+        kind: "bash_exit",
+        exits: [
+          {
+            job_id: "bg_1",
+            command: "echo",
+            exit_code: 0,
+            killed: false,
+            output_file: "out",
+          },
+        ],
+        running: [],
+        text: "Background bash bg_1 exited",
+      },
     };
     expect(isHiddenHumanRow(subagent)).toBe(false);
     expect(isTranscriptMarkRow(subagent)).toBe(true);
@@ -120,14 +147,29 @@ describe("kind-based HumanView rows", () => {
     expect(transcriptMarkKind(other)).toBe("job_exit");
   });
 
+  it("hides a reminder when the row says so, without a second kind list", () => {
+    const hidden: HumanRow = {
+      seq: 8,
+      kind: "reminder/env",
+      state: "final",
+      hidden: true,
+      body: { kind: "env", text: "cwd" },
+    } as unknown as HumanRow;
+    expect(isHiddenHumanRow(hidden)).toBe(true);
+    expect(isHumanViewKind("reminder/env")).toBe(false);
+  });
+
   it("shows a plan-review reminder as a plan mark, never a job exit", () => {
     const plan: HumanRow = {
       seq: 3,
-      kind: "reminder/plan",
+      kind: "reminder/plan_changed",
       state: "final",
-      body: userTextItem(
-        "<system-reminder>\n[Plan updated] .litecode/plan/calm.md changed since you last read it.\n</system-reminder>",
-      ),
+      body: {
+        kind: "plan_changed",
+        relative_path: ".litecode/plan/calm.md",
+        revision: "abc",
+        text: "[Plan updated] .litecode/plan/calm.md",
+      },
     };
     expect(isHiddenHumanRow(plan)).toBe(false);
     expect(isHumanUserRow(plan)).toBe(false);
@@ -156,9 +198,14 @@ describe("kind-based HumanView rows", () => {
     expect(
       optimisticUserSealText({
         seq: 2,
-        kind: "reminder/plan",
+        kind: "reminder/plan_changed",
         state: "final",
-        body: userTextItem("hi"),
+        body: {
+          kind: "plan_changed",
+          relative_path: ".litecode/plan/calm.md",
+          revision: "",
+          text: "hi",
+        },
       }),
     ).toBeNull();
   });

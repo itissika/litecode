@@ -160,7 +160,8 @@ impl SlotCfg {
         match kind {
             "item/user" | "item/assistant" | "item/tool_call" | "item/tool_result"
             | "compacted" => true,
-            "plan/execute" | "reminder/job_exit" | "reminder/plan" => true,
+            "plan/execute" => true,
+            _ if kind.starts_with("reminder/") => true,
             "turn/start" | "turn/end" => self.index_when,
             _ => false,
         }
@@ -264,6 +265,9 @@ mod tests {
         assert_eq!(classify("compacted", "compacted"), Slot::Summary);
         assert_eq!(classify("turn/start", "turn/end"), Slot::When);
         assert_eq!(classify("plan/execute", "message"), Slot::Other);
+        assert_eq!(classify("reminder/bash_exit", "message"), Slot::Other);
+        assert!(SlotCfg::default().kind_included("reminder/env"));
+        assert!(SlotCfg::default().kind_included("reminder/bash_exit"));
     }
 
     #[test]

@@ -2,8 +2,6 @@ import type { ReactNode } from "react";
 import { X } from "@phosphor-icons/react";
 import type { HumanRow } from "../api/types";
 import {
-  isMessageItem,
-  itemPlainText,
   transcriptMarkKind,
   type TranscriptMarkKind,
 } from "../api/adapter";
@@ -38,13 +36,9 @@ function MarkLine({
 }
 
 /** Clean compact summary for display: drop the "[Conversation summary]" /
- *  "[Aggressive summary]" label prefix and any internal `<system-reminder>`
- *  block, leaving the readable prose. */
+ *  "[Aggressive summary]" label prefix, leaving the readable prose. */
 export function readableCompactSummary(raw: string): string {
-  return raw
-    .replace(/^\[(?:Conversation|Aggressive) summary\]\s*/i, "")
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")
-    .trim();
+  return raw.replace(/^\[(?:Conversation|Aggressive) summary\]\s*/i, "").trim();
 }
 
 /** Cut mark between transcript items — not a divider bubble, not summary text.
@@ -236,22 +230,21 @@ export function TranscriptMarkForRow({
 }) {
   const kind = transcriptMarkKind(row);
   if (!kind) return null;
-  const text =
-    row.kind === "reminder/job_exit" && isMessageItem(row.body)
-      ? itemPlainText(row.body)
-      : "";
-  const sub = kind === "subagent_exit" ? subagentExitDetail(text) : undefined;
+  const sub =
+    row.kind === "reminder/subagent_settled"
+      ? subagentExitDetail(row.body.settled)
+      : undefined;
   return (
     <TranscriptMark
       kind={kind}
       summary={
-        kind === "compact_cut" && "summary" in row.body
-          ? String(row.body.summary)
+        kind === "compact_cut" && row.kind === "compacted"
+          ? row.body.summary
           : undefined
       }
       detail={
-        kind === "job_exit"
-          ? jobExitDetail(text)
+        row.kind === "reminder/bash_exit"
+          ? jobExitDetail(row.body)
           : kind === "subagent_exit"
             ? sub?.detail
             : undefined

@@ -169,16 +169,6 @@ fn append_skipped(out: &mut String, skipped: &[(String, String)]) {
     }
 }
 
-pub fn format_completion_reminder(
-    sessions: &SessionManager,
-    completions: &[CompletionRef],
-) -> String {
-    let mut inner =
-        String::from("source: subagent\nThe following background child session turns settled.\n");
-    inner.push_str(&format_batch_results(sessions, completions));
-    format!("<system-reminder>\n{}</system-reminder>", inner.trim_end())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

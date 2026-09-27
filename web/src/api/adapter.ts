@@ -5,11 +5,12 @@ import type {
   InputContent,
   InputMessageItem,
   Item,
-  JobExitReminderLogRow,
+  BashExitReminderLogRow,
   MessageItem,
   OutputMessageItem,
+  PlanChangedLogRow,
   PlanExecuteLogRow,
-  PlanReminderLogRow,
+  SubagentSettledLogRow,
   ReasoningItem,
   TurnMeta,
   WireEvent,
@@ -35,15 +36,21 @@ export function isCompactCutRow(row: HumanRow): boolean {
 }
 
 /** A durable background job event: visible as a system mark, never a chat bubble. */
-export function isJobExitReminderRow(
+export function isBashExitReminderRow(
   row: HumanRow,
-): row is JobExitReminderLogRow {
-  return row.kind === "reminder/job_exit";
+): row is BashExitReminderLogRow {
+  return row.kind === "reminder/bash_exit";
+}
+
+export function isSubagentSettledRow(
+  row: HumanRow,
+): row is SubagentSettledLogRow {
+  return row.kind === "reminder/subagent_settled";
 }
 
 /** A durable plan-review reminder: a system mark, never a chat bubble. */
-export function isPlanReminderRow(row: HumanRow): row is PlanReminderLogRow {
-  return row.kind === "reminder/plan";
+export function isPlanChangedRow(row: HumanRow): row is PlanChangedLogRow {
+  return row.kind === "reminder/plan_changed";
 }
 
 /** The system-issued plan-execution trigger: a system mark, never a chat bubble. */
@@ -62,8 +69,9 @@ export type TranscriptMarkKind =
 export function isTranscriptMarkRow(row: HumanRow): boolean {
   return (
     isCompactCutRow(row) ||
-    isJobExitReminderRow(row) ||
-    isPlanReminderRow(row) ||
+    isBashExitReminderRow(row) ||
+    isSubagentSettledRow(row) ||
+    isPlanChangedRow(row) ||
     isPlanExecuteRow(row)
   );
 }
@@ -71,9 +79,9 @@ export function isTranscriptMarkRow(row: HumanRow): boolean {
 export function transcriptMarkKind(row: HumanRow): TranscriptMarkKind | null {
   if (isCompactCutRow(row)) return "compact_cut";
   if (isPlanExecuteRow(row)) return "plan_execute";
-  if (isPlanReminderRow(row)) return "plan";
-  if (isSubagentExitReminderRow(row)) return "subagent_exit";
-  if (isJobExitReminderRow(row)) return "job_exit";
+  if (isPlanChangedRow(row)) return "plan";
+  if (isSubagentSettledRow(row)) return "subagent_exit";
+  if (isBashExitReminderRow(row)) return "job_exit";
   return null;
 }
 
@@ -98,14 +106,10 @@ export function optimisticUserSealText(row: HumanRow): string | null {
 
 /** Injected and control-plane rows remain in the log but are hidden in HumanView. */
 export function isHiddenHumanRow(row: HumanRow): boolean {
-  return row.kind.startsWith("turn/") || row.kind.startsWith("request/");
-}
-
-export function isSubagentExitReminderRow(row: HumanRow): boolean {
   return (
-    isJobExitReminderRow(row) &&
-    isMessageItem(row.body) &&
-    /^source: subagent$/m.test(itemPlainText(row.body))
+    row.hidden === true ||
+    row.kind.startsWith("turn/") ||
+    row.kind.startsWith("request/")
   );
 }
 
@@ -115,8 +119,9 @@ const HUMAN_VIEW_KINDS = new Set([
   "item/tool_call",
   "item/tool_result",
   "compacted",
-  "reminder/job_exit",
-  "reminder/plan",
+  "reminder/bash_exit",
+  "reminder/subagent_settled",
+  "reminder/plan_changed",
   "plan/execute",
 ]);
 

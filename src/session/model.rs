@@ -39,8 +39,6 @@ pub enum SessionKind {
     ItemToolResult,
     #[serde(rename = "compacted")]
     Compacted,
-    #[serde(rename = "reminder/job_exit")]
-    ReminderJobExit,
     #[serde(rename = "turn/start")]
     TurnStart,
     #[serde(rename = "turn/end")]
@@ -61,7 +59,6 @@ impl SessionKind {
             Self::ItemToolCall => "item/tool_call",
             Self::ItemToolResult => "item/tool_result",
             Self::Compacted => "compacted",
-            Self::ReminderJobExit => "reminder/job_exit",
             Self::TurnStart => "turn/start",
             Self::TurnEnd => "turn/end",
             Self::RequestHeader => "request/header",
@@ -78,7 +75,6 @@ impl SessionKind {
                 | Self::ItemToolCall
                 | Self::ItemToolResult
                 | Self::Compacted
-                | Self::ReminderJobExit
         )
     }
 

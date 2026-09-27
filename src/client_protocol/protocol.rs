@@ -292,6 +292,9 @@ pub struct WireBufferEvent {
     pub surface_op: Option<crate::session::surface::SurfaceOp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_session_id: Option<String>,
+    /// Hidden reminders stay on the wire so seq cursors stay continuous.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 /// RPC result for `buffer/load`.

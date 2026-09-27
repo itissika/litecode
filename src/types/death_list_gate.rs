@@ -49,7 +49,7 @@ const PHASE5_OUTSIDE_ADAPTER: &[&str] = &[
 const PHASE5_CLIENT_PROTOCOL_EXACT: &[&str] = &["\"messages\": items", "\"messages\": items_value"];
 
 /// Phase 3: chat JSON construction banned outside adapter (and authority/transcript
-/// serde smoke strings). Matches the old PreparedView.formatted / tail_reminders wire shape.
+/// serde smoke strings). Matches the old PreparedView.formatted wire shape.
 const CHAT_ROLE_USER_NEEDLE: &str = "\"role\": \"user\"";
 
 /// Phase 3: PreparedView must not resurrect a `formatted` chat JSON field.

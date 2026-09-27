@@ -6,7 +6,6 @@ pub mod keep_recent;
 pub mod media_budget;
 pub mod summary;
 pub mod system;
-pub mod tail_reminders;
 pub mod view;
 
 use std::path::PathBuf;
@@ -16,7 +15,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::session::manager::SessionManager;
 use crate::session::store::Session;
-use crate::session::task_state::TaskReminders;
 use crate::session::working::{WorkingRow, align_working, project_items};
 use crate::types::{Item, LitecodeError, Result, Transcript};
 
@@ -246,13 +244,12 @@ impl ContextPipeline {
         state.prepared = None;
     }
 
-    /// Snip + compact + capability projection.
-    /// Compact anti-forgetting reminder rides on the checkpoint Item (label first).
-    /// Synthetic unanswered-call pads exist only on the ephemeral LLM view.
+    /// Compact when the budget says so. Does not build the model view.
     ///
-    /// `model` is the turn LLM definition: unsupported modalities are replaced with
-    /// text placeholders on the ephemeral LLM view only (persisted transcript untouched).
-    pub async fn prepare_step(
+    /// Returns whether a compaction ran. Callers that compact sync the request
+    /// seam again before [`Self::build_view`], so restored reminders land after
+    /// the summary row.
+    pub async fn compact_step(
         &self,
         sessions: &SessionManager,
         session_id: &str,
@@ -263,8 +260,6 @@ impl ContextPipeline {
         turn_items: &mut Transcript,
         step: u64,
         cancel: &CancellationToken,
-        task_state: &TaskReminders,
-        model: &crate::provider_catalog::ResolvedModel,
     ) -> Result<bool> {
         // Returns whether a full compaction ran — single source of truth for
         // the caller's phase/compaction events (no duplicate budget math).
@@ -289,10 +284,6 @@ impl ContextPipeline {
             .take(committed_len)
             .filter_map(|row| row.log_seq)
             .collect();
-        let reminder = tail_reminders::build_compaction_content(
-            task_state,
-            Some(sessions.child_counts(session_id)),
-        );
 
         let compacted = self
             .compact
@@ -307,7 +298,6 @@ impl ContextPipeline {
                 &mut transcript,
                 committed_len,
                 &persisted_seqs,
-                reminder.as_deref(),
                 step,
                 cancel,
             )
@@ -350,13 +340,22 @@ impl ContextPipeline {
             });
             self.state.lock().unwrap_or_else(|e| e.into_inner()).working = rows;
         }
+        Ok(compacted)
+    }
 
-        // Crash / force-kill recovery: dangling FunctionCalls must be padded on
-        // the ephemeral LLM view so Chat providers accept the request. Do not
-        // persist synthetic outputs as `detail` — the disk keeps the hanging
-        // FunctionCall until a real result or abort seal. Keep the source seq
-        // sidecar aligned by preserving original order and assigning `None` only
-        // to inserted pads; do not use provider IDs as a history index.
+    /// Build the ephemeral model view from the current working set.
+    ///
+    /// Reloads the log first so reminders appended after compaction are in the
+    /// view. Synthetic unanswered-call pads exist only on this view.
+    pub fn build_view(
+        &self,
+        sessions: &SessionManager,
+        session_id: &str,
+        prompt_baseline: &ProviderPromptBaseline,
+        turn_items: &mut Transcript,
+        model: &crate::provider_catalog::ResolvedModel,
+    ) -> Result<()> {
+        self.sync_turn_working(sessions, session_id, turn_items);
         let (turn_view, source_seqs) = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             (
@@ -391,7 +390,7 @@ impl ContextPipeline {
             token_count,
             instructions: None,
         });
-        Ok(compacted)
+        Ok(())
     }
 
     /// Persist item delta since the last commit.

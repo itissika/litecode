@@ -14,54 +14,50 @@ import {
   userImageRefs,
 } from "../api/adapter";
 import type {
+  BashExitReminderLogRow,
   FunctionCallItem,
   FunctionCallOutputItem,
   HumanRow,
+  SubagentSettledLogRow,
 } from "../api/types";
 import { isToolCallLive } from "./toolCallLive";
 
-/**
- * Exit detail carried by a background-terminal reminder body, e.g.
- * `Background bash bg_a exited with code 3.` → `bg_a · exit code 3`, or the
- * user-Kill variant → `bg_a · stopped by user (Kill)`. `undefined` when the
- * body carries no recognizable exit line (nothing extra to show).
- */
-export function jobExitDetail(text: string): string | undefined {
-  const exited = /^Background bash (\S+) exited with code (-?\d+)\.$/m.exec(
-    text,
-  );
-  if (exited) return `${exited[1]} · exit code ${exited[2]}`;
-  const stopped = /^The user stopped background bash (\S+) \(Kill\)\.$/m.exec(
-    text,
-  );
-  if (stopped) return `${stopped[1]} · stopped by user (Kill)`;
-  return undefined;
+/** Exit detail from a `reminder/bash_exit` body. Empty exits show the plain mark. */
+export function jobExitDetail(
+  body: BashExitReminderLogRow["body"] | undefined,
+): string | undefined {
+  const exits = body?.exits ?? [];
+  if (exits.length === 0) return undefined;
+  return exits
+    .map((exit) =>
+      exit.killed
+        ? `${exit.job_id} · stopped by user (Kill)`
+        : `${exit.job_id} · exit code ${exit.exit_code}`,
+    )
+    .join(", ");
 }
 
-export function subagentExitDetail(text: string): {
+export function subagentExitDetail(
+  settled: SubagentSettledLogRow["body"]["settled"] | undefined,
+): {
   detail: string;
   childId?: string;
 } {
-  const ids = [...text.matchAll(/^child_session_id: (\S+)/gm)].map(
-    (match) => match[1]!,
-  );
-  const agents = [...text.matchAll(/^agent: (\S+)/gm)].map(
-    (match) => match[1]!,
-  );
-  const reasons = [...text.matchAll(/^reason: (\S+)/gm)].map(
-    (match) => match[1]!,
-  );
-  const settled = /^settled: (\d+)/m.exec(text);
-  const n = settled ? Number(settled[1]) : ids.length || 1;
+  const children = settled ?? [];
+  const n = children.length || 1;
+  const first = children[0];
   const who =
     n === 1
-      ? agents[0] || (ids[0] ? ids[0].slice(0, 8) : undefined)
+      ? first?.agent ||
+        (first?.child_session_id
+          ? first.child_session_id.slice(0, 8)
+          : undefined)
       : undefined;
-  const reason = n === 1 && reasons.length === 1 ? reasons[0] : undefined;
+  const reason = n === 1 && first?.reason ? first.reason : undefined;
   const parts: string[] = n > 1 ? [`${n} settled`] : ["settled"];
   if (who) parts.push(who);
   if (reason) parts.push(reason);
-  return { detail: parts.join(" · "), childId: ids[0] };
+  return { detail: parts.join(" · "), childId: first?.child_session_id };
 }
 
 export type RenderNode =
@@ -159,12 +155,8 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
     const key = projectionRowKey(row);
     const mark = transcriptMarkKind(row);
     if (mark) {
-      const reminderText =
-        row.kind === "reminder/job_exit" && isMessageItem(row.body)
-          ? itemPlainText(row.body)
-          : "";
-      if (mark === "subagent_exit") {
-        const parsed = subagentExitDetail(reminderText);
+      if (mark === "subagent_exit" && row.kind === "reminder/subagent_settled") {
+        const parsed = subagentExitDetail(row.body.settled);
         nodes.push({
           kind: "subagent_exit",
           key,
@@ -176,7 +168,9 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
         continue;
       }
       const markDetail =
-        mark === "job_exit" ? jobExitDetail(reminderText) : undefined;
+        mark === "job_exit" && row.kind === "reminder/bash_exit"
+          ? jobExitDetail(row.body)
+          : undefined;
       nodes.push({
         kind: mark,
         key,
@@ -304,8 +298,8 @@ export function groupNodes(nodes: RenderNode[]): NodeGroup[] {
  * consecutive non-user Items (live shells or sealed) coalesce into one assistant bubble
  * so process/output grouping still works across Item atoms.
  *
- * Transcript marks (`compacted`, `reminder/job_exit`, including subagent
- * completion) are their own barrier (not pushed into the previous assistant
+ * Transcript marks (`compacted`, visible reminders) are their own barrier
+ * (not pushed into the previous assistant
  * bubble, not glued onto the next user bubble).
  */
 export function groupRowsForBubbles(rows: HumanRow[]): HumanRow[][] {

@@ -37,12 +37,19 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
         }
 
         deps.begin_step(step);
-        if let Err(error) = deps.inject_background_reminders(transcript) {
+        if let Err(error) = deps.sync_request_seam(step) {
             return TurnOutcome::Error(error);
         }
 
-        if let Err(e) = deps.compact_if_needed(transcript, step).await {
-            return TurnOutcome::Error(e);
+        let compacted = match deps.compact_if_needed(transcript, step).await {
+            Ok(compacted) => compacted,
+            Err(e) => return TurnOutcome::Error(e),
+        };
+        if compacted && let Err(error) = deps.sync_request_seam(step) {
+            return TurnOutcome::Error(error);
+        }
+        if let Err(error) = deps.prepare_view(transcript, step) {
+            return TurnOutcome::Error(error);
         }
 
         let output = match deps.call_model().await {
@@ -269,8 +276,8 @@ mod pending_continue_tests {
             Ok(true)
         }
 
-        async fn compact_if_needed(&self, _transcript: &mut Transcript, _step: u64) -> Result<()> {
-            Ok(())
+        async fn compact_if_needed(&self, _transcript: &mut Transcript, _step: u64) -> Result<bool> {
+            Ok(false)
         }
 
         fn emit_todo_progress(&mut self) {}

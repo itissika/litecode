@@ -13,7 +13,7 @@ use crate::session::manager::SessionManager;
 use crate::types::{Item, LitecodeError, Result, Transcript, item_text_preview};
 
 use super::budget::{BudgetPolicy, ProviderPromptBaseline};
-use super::summary::compact_summary_message_with_reminder;
+use super::summary::compact_summary_message;
 
 /// Wall-clock cap for the compact LLM call.
 ///
@@ -66,15 +66,7 @@ impl CompactPolicy {
             .into_iter()
             .filter_map(|row| row.log_seq)
             .collect();
-        let reminder = sessions
-            .settle_stale_plan(session_id)
-            .ok()
-            .and_then(|state| {
-                crate::context_pipeline::tail_reminders::build_compaction_content(
-                    &state,
-                    Some(sessions.child_counts(session_id)),
-                )
-            });
+        let _ = sessions.settle_stale_plan(session_id);
         let did = Self::compact_transcript(
             budget,
             sessions,
@@ -86,7 +78,6 @@ impl CompactPolicy {
             transcript,
             prefix_len,
             &persisted_seqs,
-            reminder.as_deref(),
             cancel,
             CompactionTrigger::Manual,
             operation_id,
@@ -119,7 +110,6 @@ impl CompactPolicy {
         transcript: &mut Transcript,
         persisted_prefix_len: usize,
         persisted_seqs: &[Seq],
-        reminder: Option<&str>,
         step: u64,
         cancel: &CancellationToken,
     ) -> Result<bool> {
@@ -167,7 +157,6 @@ impl CompactPolicy {
                 transcript,
                 persisted_prefix_len,
                 persisted_seqs,
-                reminder,
                 cancel,
                 CompactionTrigger::Auto,
                 None,
@@ -202,7 +191,6 @@ impl CompactPolicy {
         transcript: &mut Transcript,
         persisted_prefix_len: usize,
         persisted_seqs: &[Seq],
-        reminder: Option<&str>,
         cancel: &CancellationToken,
         trigger: CompactionTrigger,
         operation_id: Option<&str>,
@@ -289,7 +277,6 @@ impl CompactPolicy {
             summary_max_tokens,
             cut,
             transcript,
-            reminder,
             session_id,
             cancel,
         )
@@ -331,7 +318,7 @@ impl CompactPolicy {
         let summary_item = transcript
             .first()
             .cloned()
-            .unwrap_or_else(|| compact_summary_message_with_reminder(&summary, false, reminder));
+            .unwrap_or_else(|| compact_summary_message(&summary, false));
 
         if let Err(e) =
             sessions.mutate_blocking(crate::session::data::command::SessionMutation::Compact {
@@ -396,7 +383,6 @@ impl CompactPolicy {
         max_tokens: u32,
         cut: usize,
         transcript: &mut Transcript,
-        reminder: Option<&str>,
         session_id: &str,
         cancel: &CancellationToken,
     ) -> Result<String> {
@@ -423,9 +409,7 @@ impl CompactPolicy {
         }
 
         transcript.clear();
-        transcript.push(compact_summary_message_with_reminder(
-            &summary, false, reminder,
-        ));
+        transcript.push(compact_summary_message(&summary, false));
         transcript.extend(kept);
 
         tracing::info!(

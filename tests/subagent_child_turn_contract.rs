@@ -168,10 +168,37 @@ async fn completion_reminder_resolves_the_reference_at_delivery_time() {
         .take_completions(&harness.parent_id);
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].child_session_id, child);
-    let reminder = litecode::tools::subagent::status::format_completion_reminder(
+    let detail = litecode::tools::subagent::status::format_batch_results(
         &harness.sessions,
         &completions,
     );
+    let facts = litecode::reminder::Facts {
+        settled: vec![litecode::reminder::SettledChild {
+            child_session_id: completions[0].child_session_id.clone(),
+            turn_id: completions[0].turn_id.clone(),
+            agent: "reviewer".into(),
+            reason: "completed".into(),
+        }],
+        settled_detail: detail,
+        ..Default::default()
+    };
+    let reminders = litecode::reminder::sync(
+        &litecode::reminder::SeamCtx {
+            session_id: harness.parent_id.clone(),
+            turn_id: "t".into(),
+            step: 1,
+            max_steps: 10,
+            model_ref: "m".into(),
+            cwd: harness.dir.path().to_path_buf(),
+        },
+        &litecode::reminder::SpineReminderView::default(),
+        &facts,
+    );
+    let settled = reminders
+        .iter()
+        .find(|reminder| reminder.kind() == litecode::reminder::ReminderKind::SubagentSettled)
+        .expect("subagent reminder");
+    let reminder = litecode::reminder::render_text(settled.text());
     assert!(reminder.starts_with("<system-reminder>"));
     assert!(reminder.contains("source: subagent"));
     assert!(reminder.contains("reason: completed"));

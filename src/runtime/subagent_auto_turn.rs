@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use crate::permission::{PermissionSink, deny_permission_sink};
 use crate::runtime::{RuntimeHandle, TurnOptions, spawn_turn};
 use crate::session::{LifecycleEvent, SessionManager};
-use crate::tools::subagent::{SubagentHub, status::format_completion_reminder};
+use crate::tools::subagent::SubagentHub;
 use crate::types::LitecodeError;
 
 pub enum IdleAutoTurn {
@@ -15,7 +15,6 @@ pub enum IdleAutoTurn {
         turn_id: String,
         primary_agent: String,
         project: String,
-        input: String,
         sink: Arc<dyn PermissionSink>,
     },
     SkippedBusy,
@@ -24,8 +23,9 @@ pub enum IdleAutoTurn {
     SkippedSessionGone,
 }
 
-/// Decide whether an idle live session should start a turn for mailbox exits.
-/// On `Prepared`, the turn is reserved and the mailbox is drained.
+/// Decide whether an idle live session should start a turn for settled children.
+/// On `Prepared`, the turn is reserved. Completions stay pending so the first
+/// request seam can write `reminder/subagent_settled`.
 pub fn try_begin_idle_auto_turn(
     hub: &SubagentHub,
     runtime: &RuntimeHandle,
@@ -66,18 +66,9 @@ pub fn try_begin_idle_auto_turn(
         Err(_) => return IdleAutoTurn::SkippedSessionGone,
     }
 
-    let completions = hub.take_completions(sid);
-    if completions.is_empty() {
+    if !hub.has_pending(sid) {
         sessions.release_turn_reservation(sid, &turn_id);
         return IdleAutoTurn::SkippedEmptyMailbox;
-    }
-    let input = format_completion_reminder(sessions, &completions);
-    let append_result = sessions.append_job_exit(sid, &crate::types::user_text(&input));
-    if let Err(error) = append_result {
-        tracing::warn!(session_id = sid, %error, "failed to persist subagent exit reminder");
-        hub.restore_completions(sid, completions);
-        sessions.release_turn_reservation(sid, &turn_id);
-        return IdleAutoTurn::SkippedSessionGone;
     }
     let sink = sessions
         .last_permission_sink(sid)
@@ -87,7 +78,6 @@ pub fn try_begin_idle_auto_turn(
         turn_id,
         primary_agent,
         project,
-        input,
         sink,
     }
 }
@@ -102,7 +92,6 @@ fn spawn_prepared_idle_auto_turn(
         turn_id,
         primary_agent,
         project,
-        input,
         sink,
     } = decision
     else {
@@ -113,7 +102,7 @@ fn spawn_prepared_idle_auto_turn(
         runtime,
         session_id.clone(),
         Arc::clone(&sessions),
-        input,
+        crate::runtime::TurnInput::Wake,
         sink,
         turn_id.clone(),
         TurnOptions::default(),
@@ -350,24 +339,19 @@ mod tests {
             .unwrap();
         let _ = sessions.attach(&sid);
         queue_completion(&hub, &sid);
-        let pending = hub.take_completions(&sid);
-        let expected = format_completion_reminder(&sessions, &pending);
-        hub.restore_completions(&sid, pending);
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
             IdleAutoTurn::Prepared {
-                input,
                 turn_id,
                 session_id,
                 ..
             } => {
                 assert_eq!(session_id, sid);
-                assert_eq!(input, expected);
-                assert!(input.starts_with("<system-reminder>"));
+                assert!(hub.has_pending(&sid));
                 sessions.release_turn_reservation(&sid, &turn_id);
             }
             _ => panic!("expected prepared, got non-prepared variant"),
         }
-        assert!(hub.take_completions(&sid).is_empty());
+        assert!(hub.has_pending(&sid));
         assert!(!sessions.is_session_busy_blocking(&sid));
     }
 }

@@ -154,17 +154,11 @@ pub enum SessionMutation {
         seq: Seq,
         item: Item,
     },
-    AppendJobExit {
+    AppendReminder {
         session_id: String,
         expected_revision: u64,
         operation_id: MutationId,
-        item: Item,
-    },
-    AppendPlanReminder {
-        session_id: String,
-        expected_revision: u64,
-        operation_id: MutationId,
-        item: Item,
+        reminder: crate::reminder::Reminder,
     },
     AppendPlanExecute {
         session_id: String,
@@ -247,8 +241,7 @@ impl SessionMutation {
             | Self::BeginStreamItem { operation_id, .. }
             | Self::UpdateStreamItem { operation_id, .. }
             | Self::SealStreamItem { operation_id, .. }
-            | Self::AppendJobExit { operation_id, .. }
-            | Self::AppendPlanReminder { operation_id, .. }
+            | Self::AppendReminder { operation_id, .. }
             | Self::AppendPlanExecute { operation_id, .. }
             | Self::SealInProgress { operation_id, .. }
             | Self::CommitTurnDelta { operation_id, .. }
@@ -272,8 +265,7 @@ impl SessionMutation {
             | Self::BeginStreamItem { session_id, .. }
             | Self::UpdateStreamItem { session_id, .. }
             | Self::SealStreamItem { session_id, .. }
-            | Self::AppendJobExit { session_id, .. }
-            | Self::AppendPlanReminder { session_id, .. }
+            | Self::AppendReminder { session_id, .. }
             | Self::AppendPlanExecute { session_id, .. }
             | Self::SealInProgress { session_id, .. }
             | Self::CommitTurnDelta { session_id, .. }
@@ -309,10 +301,7 @@ impl SessionMutation {
             | Self::SealStreamItem {
                 expected_revision, ..
             }
-            | Self::AppendJobExit {
-                expected_revision, ..
-            }
-            | Self::AppendPlanReminder {
+            | Self::AppendReminder {
                 expected_revision, ..
             }
             | Self::AppendPlanExecute {
@@ -432,6 +421,10 @@ pub enum SessionRead {
     RequestOrigins {
         session_id: String,
     },
+    /// Diff/Restore baseline for the reminder engine, folded from the live spine.
+    SpineReminderView {
+        session_id: String,
+    },
     /// Bodies for exactly these rows, so an incremental refresh decodes only what
     /// is new instead of the whole corpus.
     SearchableRowsFor {
@@ -481,6 +474,7 @@ pub enum ReadValue {
     /// each LLM request, used to decide whether a replayed item identity still
     /// belongs to the endpoint being called.
     RequestOrigins(Vec<(i64, serde_json::Value)>),
+    SpineReminders(crate::reminder::SpineReminderView),
     Changes(Vec<SessionChange>),
     Empty,
 }

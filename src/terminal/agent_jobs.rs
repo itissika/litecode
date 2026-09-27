@@ -385,7 +385,22 @@ impl AgentJobRegistry {
         Self::take_notice_from_mailbox(&mut g, session_id, bash_id);
     }
 
-    /// Drain unconsumed exits for `session_id` (next tool result reminder).
+    /// Put notices back after a seam failed to persist them. Newer arrivals stay behind.
+    pub fn restore_mailbox(&self, session_id: &str, notices: Vec<ExitNotice>) {
+        if notices.is_empty() {
+            return;
+        }
+        let mut g = self.inner.lock().expect("jobs lock");
+        let queue = g.mailbox.entry(session_id.to_string()).or_default();
+        for notice in notices.into_iter().rev() {
+            if queue.iter().any(|existing| existing.bash_id == notice.bash_id) {
+                continue;
+            }
+            queue.push_front(notice);
+        }
+    }
+
+    /// Drain unconsumed exits for `session_id` (next request-seam reminder).
     pub fn take_mailbox(&self, session_id: &str) -> Vec<ExitNotice> {
         let mut g = self.inner.lock().expect("jobs lock");
         g.mailbox

@@ -89,34 +89,6 @@ pub fn user_message(text: impl Into<String>, images: &[String]) -> Item {
     }))
 }
 
-/// True when `item` is the user message `input` would persist.
-pub fn user_input_matches(item: &Item, input: &UserInput) -> bool {
-    let Item::Message(MessageItem::Input(message)) = item else {
-        return false;
-    };
-    if message.role != InputRole::User {
-        return false;
-    }
-    let text = message
-        .content
-        .iter()
-        .filter_map(|part| match part {
-            InputContent::InputText(text) => Some(text.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let images = message
-        .content
-        .iter()
-        .filter_map(|part| match part {
-            InputContent::InputImage(image) => image.image_url.clone(),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    text == input.text && images == input.images
-}
-
 /// Build an assistant text `Item` (AgentView synthesis, never a user message).
 pub fn assistant_text(text: impl Into<String>) -> Item {
     Item::Message(MessageItem::Output(OutputMessage {

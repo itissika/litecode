@@ -215,6 +215,8 @@ pub struct SessionRecord {
     pub parent_call_id: Option<String>,
     pub project: Option<String>,
     last_permission_sink: Option<Arc<dyn crate::permission::PermissionSink>>,
+    /// Files this process has seen the session touch. Not durable.
+    file_tracker: crate::reminder::FileTracker,
 }
 
 impl SessionRecord {
@@ -243,6 +245,7 @@ impl SessionRecord {
             parent_call_id: meta.parent_call_id.clone(),
             project: Some(meta.project.clone()),
             last_permission_sink: None,
+            file_tracker: crate::reminder::FileTracker::default(),
         }
     }
 }
@@ -689,43 +692,6 @@ impl SessionManager {
             Ok(())
         })?;
         self.save_task_state(session_id)
-    }
-
-    /// Compare the active plan file with the revision the session last saw.
-    ///
-    /// Execution turns call this before spawning: when the on-disk Markdown was
-    /// edited outside the session, the agent gets a reminder to read it before
-    /// executing. The revision is only advanced after a completed read/edit tool
-    /// call in the turn, so an ignored reminder fires again next time. `None`
-    /// means the file is unchanged (or missing; stale settlement owns that case).
-    pub fn plan_execution_reminder(&self, session_id: &str) -> anyhow::Result<Option<String>> {
-        // Fail-open: this only decorates an execution turn, so a lock/entry
-        // failure degrades to "no reminder" instead of interrupting the turn.
-        let plan = match self.with_entry_task_state(session_id, |s| Ok(s.active_plan.clone())) {
-            Ok(plan) => plan,
-            Err(error) => {
-                tracing::warn!(
-                    session_id,
-                    error = %error,
-                    "plan_execution_reminder: task state unavailable; skipping"
-                );
-                return Ok(None);
-            }
-        };
-        let Some(plan) = plan else {
-            return Ok(None);
-        };
-        let path = self.plan_dir_path().join(format!("{}.md", plan.slug));
-        let Some(revision) = crate::session::task_state::plan_file_revision(&path) else {
-            return Ok(None);
-        };
-        if plan.revision.as_deref() == Some(revision.as_str()) {
-            return Ok(None);
-        }
-        Ok(Some(format!(
-            "<system-reminder>\n[Plan updated] {} changed since you last read it. Read that file before starting execution.\n</system-reminder>",
-            plan.relative_path
-        )))
     }
 
     /// Drop an active-plan pointer whose plan file is gone, just before a model call.
@@ -1335,6 +1301,37 @@ impl SessionManager {
     /// Public descendant ids for session-level tooling; root excluded.
     pub fn descendant_session_ids(&self, session_id: &str) -> Vec<String> {
         self.collect_child_ids_blocking(session_id)
+    }
+
+    /// Remember files a tool in this session just touched.
+    pub fn note_touched_files(&self, session_id: &str, paths: &[std::path::PathBuf]) {
+        let Ok(mut records) = self.records.lock() else {
+            return;
+        };
+        if let Some(record) = records.get_mut(session_id) {
+            record.file_tracker.record_paths(paths);
+        }
+    }
+
+    /// Re-snapshot tracked files after this session's own tool batch.
+    pub fn absorb_touched_files(&self, session_id: &str) {
+        let Ok(mut records) = self.records.lock() else {
+            return;
+        };
+        if let Some(record) = records.get_mut(session_id) {
+            record.file_tracker.absorb();
+        }
+    }
+
+    /// External changes since the last snapshot. Updates the snapshots.
+    pub fn take_changed_files(&self, session_id: &str) -> Vec<std::path::PathBuf> {
+        let Ok(mut records) = self.records.lock() else {
+            return Vec::new();
+        };
+        records
+            .get_mut(session_id)
+            .map(|record| record.file_tracker.take_changes())
+            .unwrap_or_default()
     }
 
     /// Live child-session counts for the whole subtree: total and non-idle.
@@ -2162,19 +2159,36 @@ impl SessionManager {
         Ok(())
     }
 
-    pub fn append_job_exit(
+    pub fn append_reminder(
         &self,
         session_id: &str,
-        item: &crate::types::Item,
-    ) -> anyhow::Result<()> {
+        reminder: &crate::reminder::Reminder,
+    ) -> anyhow::Result<crate::session::event::Seq> {
         let expected = self.expected_revision(session_id);
-        self.mutate_blocking(SessionMutation::AppendJobExit {
+        let receipt = self.mutate_blocking(SessionMutation::AppendReminder {
             session_id: session_id.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),
-            item: item.clone(),
+            reminder: reminder.clone(),
         })?;
-        Ok(())
+        match receipt.outcome {
+            crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
+            other => Err(anyhow::anyhow!("append_reminder: unexpected outcome {other:?}")),
+        }
+    }
+
+    pub fn spine_reminder_view(
+        &self,
+        session_id: &str,
+    ) -> crate::types::Result<crate::reminder::SpineReminderView> {
+        match self.data.read_blocking(SessionRead::SpineReminderView {
+            session_id: session_id.to_string(),
+        })? {
+            crate::session::data::command::ReadValue::SpineReminders(view) => Ok(view),
+            _ => Err(crate::types::LitecodeError::SessionStorage(
+                "unexpected spine reminder view".into(),
+            )),
+        }
     }
 
     /// Record the origin of one LLM request (`request/header`).
@@ -2247,22 +2261,6 @@ impl SessionManager {
         )?;
         draft.time = chrono::Utc::now().timestamp_millis();
         self.apply(session_id, SessionApply::Append(draft))?;
-        Ok(())
-    }
-
-    /// Persist a plan-review reminder as a dedicated `reminder/plan` spine Item.
-    pub fn append_plan_reminder(
-        &self,
-        session_id: &str,
-        item: &crate::types::Item,
-    ) -> anyhow::Result<()> {
-        let expected = self.expected_revision(session_id);
-        self.mutate_blocking(SessionMutation::AppendPlanReminder {
-            session_id: session_id.to_string(),
-            expected_revision: expected,
-            operation_id: MutationId::new(),
-            item: item.clone(),
-        })?;
         Ok(())
     }
 
@@ -3640,32 +3638,57 @@ mod plan_settle_tests {
         ));
     }
 
+    fn plan_changed_reminder(mgr: &SessionManager, sid: &str) -> Option<crate::reminder::Reminder> {
+        let state = mgr
+            .with_entry_task_state(sid, |s| Ok(s.clone()))
+            .unwrap();
+        let plan = state.active_plan.clone()?;
+        let revision = crate::session::task_state::plan_file_revision(
+            &mgr.plan_dir_path().join(format!("{}.md", plan.slug)),
+        );
+        let view = mgr.spine_reminder_view(sid).unwrap();
+        let facts = crate::reminder::Facts {
+            tasks: crate::reminder::TaskFacts {
+                active_plan: Some(crate::reminder::PlanPointer {
+                    relative_path: plan.relative_path,
+                    slug: plan.slug,
+                }),
+                plan_disk_revision: revision,
+                plan_seen_revision: state.active_plan.and_then(|plan| plan.revision),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let ctx = crate::reminder::SeamCtx {
+            session_id: sid.to_string(),
+            turn_id: "t".into(),
+            step: 1,
+            max_steps: 10,
+            model_ref: "m".into(),
+            cwd: mgr.plan_dir_path(),
+        };
+        crate::reminder::sync(&ctx, &view, &facts)
+            .into_iter()
+            .find(|reminder| reminder.kind() == crate::reminder::ReminderKind::PlanChanged)
+    }
+
     #[test]
-    fn plan_execution_reminder_tracks_external_edit_until_seen() {
+    fn plan_changed_reminder_tracks_external_edit_until_recorded() {
         let (_dir, mgr, sid) = setup();
         write_plan_file(&mgr, "calm-river", "# v1");
         let rev1 = crate::session::task_state::plan_content_revision(b"# v1");
         seed_active_plan_with_revision(&mgr, &sid, "calm-river", Some(rev1.clone()));
-
-        assert!(mgr.plan_execution_reminder(&sid).unwrap().is_none());
+        assert!(plan_changed_reminder(&mgr, &sid).is_none());
 
         write_plan_file(&mgr, "calm-river", "# v2");
-        let reminder = mgr
-            .plan_execution_reminder(&sid)
-            .unwrap()
-            .expect("external edit must produce a reminder");
-        assert!(reminder.contains(".litecode/plan/calm-river.md"));
-        assert!(reminder.contains("Read that file before starting execution"));
-
-        // An ignored reminder stays dirty: the agent has not seen rev2 yet.
+        let reminder = plan_changed_reminder(&mgr, &sid).expect("external edit");
+        assert!(reminder.text().contains(".litecode/plan/calm-river.md"));
+        mgr.append_reminder(&sid, &reminder).unwrap();
         assert!(
-            mgr.plan_execution_reminder(&sid)
-                .unwrap()
-                .expect("unseen revision must keep reminding")
-                .contains(".litecode/plan/calm-river.md")
+            plan_changed_reminder(&mgr, &sid).is_none(),
+            "the same revision is not written twice"
         );
 
-        // A completed read/edit advances the seen revision exactly once.
         let rev2 = crate::session::task_state::plan_content_revision(b"# v2");
         mgr.update_active_plan_revision(&sid, "calm-river", &rev2)
             .unwrap();
@@ -3681,7 +3704,7 @@ mod plan_settle_tests {
             mgr.data().meta_blocking(&sid).unwrap().plan_revision,
             Some(rev2)
         );
-        assert!(mgr.plan_execution_reminder(&sid).unwrap().is_none());
+        assert!(plan_changed_reminder(&mgr, &sid).is_none());
     }
 }
 

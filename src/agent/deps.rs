@@ -20,12 +20,17 @@ pub trait AgentDeps {
 
     async fn should_stop(&self, output: &[Item]) -> Result<bool>;
 
-    async fn compact_if_needed(&self, transcript: &mut Transcript, step: u64) -> Result<()>;
+    /// Compact when the budget says so. `Ok(true)` means a compaction ran and
+    /// the caller must sync the request seam again before building the view.
+    async fn compact_if_needed(&self, transcript: &mut Transcript, step: u64) -> Result<bool>;
 
-    /// Inject independently delivered harness reminders (background
-    /// completions, plan-review notices) before the next request is prepared.
-    /// Default is a no-op for test/runtime clients without such work.
-    fn inject_background_reminders(&mut self, _transcript: &mut Transcript) -> Result<()> {
+    /// Append harness reminders and queued user messages before the view is built.
+    fn sync_request_seam(&mut self, _step: u64) -> Result<()> {
+        Ok(())
+    }
+
+    /// Build the ephemeral model view from the log after the seam (and any compact).
+    fn prepare_view(&mut self, _transcript: &mut Transcript, _step: u64) -> Result<()> {
         Ok(())
     }
 

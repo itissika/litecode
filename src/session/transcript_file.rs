@@ -269,6 +269,9 @@ fn row_item(row: &SearchableRow, data_root: &Path) -> Result<Option<Item>> {
     } else {
         return Ok(None);
     };
+    if row.kind.starts_with("reminder/") {
+        return Ok(None);
+    }
     if let Ok(item) = serde_json::from_str::<Item>(&json) {
         return Ok(Some(item));
     }

@@ -116,6 +116,12 @@ pub fn execute(
         SessionRead::ChangeLogSince { last_change_id } => {
             Ok(ReadValue::Changes(change_log_since(conn, last_change_id)?))
         }
+        SessionRead::SpineReminderView { session_id } => {
+            let events = load_events(conn, &session_id, data_root)?;
+            Ok(ReadValue::SpineReminders(
+                crate::session::surface::spine_reminder_view(&events)?,
+            ))
+        }
         SessionRead::RequestOrigins { session_id } => Ok(ReadValue::RequestOrigins(
             request_origins(conn, &session_id)?,
         )),

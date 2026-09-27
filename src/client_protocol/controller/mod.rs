@@ -707,6 +707,7 @@ impl Projection {
                 .map(|item| output::encode_client_item(item, &data_root))
                 .transpose()?;
             let child_session_id = self.child_session_id_for_encoded(encoded.as_ref());
+            let hidden = crate::reminder::hidden_kind(event.event_type.as_str());
             out.push(crate::client_protocol::protocol::WireBufferEvent {
                 seq: event.seq,
                 event_type: event.event_type,
@@ -715,6 +716,7 @@ impl Projection {
                 state: event.state,
                 surface_op: event.surface_op,
                 child_session_id,
+                hidden,
             });
         }
         let user_detail_before = self
