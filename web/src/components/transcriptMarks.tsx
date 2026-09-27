@@ -111,21 +111,6 @@ export function JobExitMark({ detail }: { detail?: string }) {
 }
 
 /**
- * One-line plan-review mark: the active plan changed on disk since the agent
- * last read it, so a `plan_execution` turn was nudged to re-read it first.
- * A system mark — it must never fall into `JobExitMark` ("background terminal exited").
- */
-export function PlanUpdateMark() {
-  return (
-    <MarkLine role="status" label="Plan updated" testId="plan-update-mark">
-      <span className="text-dk-2xs text-(--_dk-text-disabled)">
-        计划已更新 · 需重读
-      </span>
-    </MarkLine>
-  );
-}
-
-/**
  * One-line mark for the system-issued plan-execution trigger. The body is a
  * user `Item`, but the row kind is `plan/execute`: humans see which plan was
  * launched, and the row is deliberately not a revert anchor.
@@ -214,8 +199,6 @@ export function TranscriptMark({
       return <JobExitMark detail={detail} />;
     case "subagent_exit":
       return <SubagentExitMark detail={detail} childId={childId} />;
-    case "plan":
-      return <PlanUpdateMark />;
     case "plan_execute":
       return <PlanExecuteMark planPath={planPath} />;
   }

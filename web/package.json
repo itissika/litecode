@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.1.1",
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@milkdown/crepe": "^7.22.1",
@@ -20,6 +21,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
+    "@xyflow/react": "^12.12.0",
     "dockview-react": "^7.0.2",
     "mermaid": "^11.15.0",
     "monaco-editor": "^0.55.1",

@@ -18,14 +18,23 @@ import {
   UsersIcon,
   WrenchIcon,
 } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
+
+import { LitecodeMark } from "./LitecodeMark";
 
 export type ToolStatus = "running" | "ok" | "warning" | "failed" | "unknown";
 
-type Glyph = typeof WrenchIcon;
+/** Props the tool row hands a glyph; Phosphor icons and the brand mark share them. */
+type GlyphProps = {
+  size?: number;
+  weight?: "fill";
+  className?: string;
+};
 
-// Glyph per built-in tool name. `mcp_*` tools share PlugsConnected; unknown
-// tools fall back to a generic wrench.
+type Glyph = ComponentType<GlyphProps>;
+
+// Glyph per built-in tool name. `litecode_workspace` uses the product mark,
+// `mcp_*` tools share PlugsConnected; unknown tools fall back to a wrench.
 const NAME_GLYPH: Record<string, Glyph> = {
   bash: TerminalIcon,
   wait_shell: HourglassIcon,
@@ -38,18 +47,21 @@ const NAME_GLYPH: Record<string, Glyph> = {
   edit: PencilIcon,
   grep: MagnifyingGlassIcon,
   glob: FilesIcon,
+  session_search: MagnifyingGlassIcon,
   todo: ListChecksIcon,
   plan: StrategyIcon,
   code_search: CodeIcon,
   lsp: BracketsCurlyIcon,
+  litecode_workspace: LitecodeMark,
   subagent: UsersIcon,
   subagent_launch: UsersIcon,
   subagent_list: UsersIcon,
   webfetch: GlobeIcon,
+  websearch: GlobeIcon,
   custom: PuzzlePieceIcon,
 };
 
-function glyphFor(name: string): Glyph {
+export function glyphFor(name: string): Glyph {
   if (name in NAME_GLYPH) return NAME_GLYPH[name];
   if (name.startsWith("mcp_")) return PlugsConnectedIcon;
   return WrenchIcon;

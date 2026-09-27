@@ -37,6 +37,15 @@ contextBridge.exposeInMainWorld("litecode", {
     const mode = ipcRenderer.sendSync("litecode:get-session-mode") as string | undefined;
     return mode === "remote" ? "remote" : "local";
   },
+  loadLayout: (): string | null => {
+    const raw = ipcRenderer.sendSync("litecode:load-layout") as
+      | string
+      | undefined;
+    return typeof raw === "string" && raw.length > 0 ? raw : null;
+  },
+  saveLayout: (payload: string): void => {
+    void ipcRenderer.invoke("litecode:save-layout", payload);
+  },
   pickFolder: async (): Promise<string | null> => {
     return (await ipcRenderer.invoke("litecode:pick-folder")) as string | null;
   },

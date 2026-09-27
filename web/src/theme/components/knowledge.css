@@ -1,0 +1,302 @@
+/* Knowledge browser (side list) and the graph canvas.
+   React Flow's stylesheet is imported before this file so these rules win. */
+
+.knowledge-card {
+  position: relative;
+  border-radius: var(--radius-md);
+}
+
+.knowledge-card.is-disabled {
+  opacity: 0.55;
+}
+
+.knowledge-card.is-pending .foldcard {
+  outline: 1px dashed var(--_dk-amber-500);
+  outline-offset: -1px;
+}
+
+.knowledge-card.has-error .foldcard {
+  box-shadow: inset 2px 0 0 var(--_dk-red-500);
+}
+
+.knowledge-card.is-focused {
+  background: var(--_dk-accent-halo);
+}
+
+.knowledge-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  border-radius: var(--radius-md);
+  animation: knowledge-flash 0.9s ease;
+}
+
+@keyframes knowledge-flash {
+  0% {
+    background: var(--_dk-accent-glow);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.knowledge-foldcard .foldcard-scroll {
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;
+  padding: 0.15rem 0.4rem 0.45rem var(--_dk-indent-card-body);
+}
+
+.knowledge-foldcard .foldcard-scroll-frame {
+  background: transparent;
+}
+
+.knowledge-status {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 0 0.3rem;
+  color: var(--_dk-text-muted);
+}
+
+.knowledge-status.is-enabled {
+  color: var(--_dk-emerald-500);
+}
+
+.knowledge-status.is-disabled {
+  color: var(--_dk-text-disabled);
+}
+
+.knowledge-status.is-pending {
+  color: var(--_dk-amber-500);
+}
+
+.knowledge-count {
+  flex-shrink: 0;
+  min-width: 1rem;
+  border-radius: 999px;
+  padding: 0 0.28rem;
+  text-align: center;
+  line-height: 1.3;
+}
+
+.knowledge-count.is-error {
+  color: var(--_dk-red-500);
+}
+
+.knowledge-count.is-warning {
+  color: var(--_dk-amber-500);
+}
+
+.knowledge-markdown {
+  color: var(--_dk-text-body);
+  font-size: var(--_dk-text-xs);
+  line-height: 1.45;
+}
+
+.knowledge-markdown p,
+.knowledge-markdown ul,
+.knowledge-markdown ol {
+  margin: 0 0 0.35rem;
+}
+
+.knowledge-markdown p:last-child,
+.knowledge-markdown ul:last-child,
+.knowledge-markdown ol:last-child {
+  margin-bottom: 0;
+}
+
+.knowledge-markdown ul,
+.knowledge-markdown ol {
+  padding-left: 1.1rem;
+}
+
+.knowledge-inline-code,
+.knowledge-code {
+  font-family: var(--_dk-font-code);
+}
+
+.knowledge-inline-code {
+  padding: 0 0.2em;
+  border-radius: 0.2rem;
+  background: var(--_dk-side);
+}
+
+.knowledge-code {
+  margin: 0.3rem 0;
+  padding: 0.35rem 0.45rem;
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  background: var(--_dk-side);
+}
+
+.knowledge-ref {
+  display: inline;
+  margin: 0 0.05em;
+  padding: 0 0.22em;
+  border: none;
+  border-radius: 0.25rem;
+  background: var(--_dk-accent-glow);
+  color: var(--_dk-accent-hover);
+  font-family: var(--_dk-font-code);
+  font-size: 0.92em;
+  cursor: pointer;
+}
+
+.knowledge-ref:hover {
+  text-decoration: underline;
+}
+
+.knowledge-ref.is-warning {
+  color: var(--_dk-amber-500);
+}
+
+.knowledge-ref.is-invalid {
+  background: transparent;
+  color: var(--_dk-red-500);
+  text-decoration: underline wavy;
+  cursor: default;
+}
+
+.knowledge-issues {
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.knowledge-issues li.is-error {
+  color: var(--_dk-red-500);
+}
+
+.knowledge-issues li.is-warning {
+  color: var(--_dk-amber-500);
+}
+
+.knowledge-graph {
+  background: var(--_dk-editor);
+  color: var(--_dk-text-body);
+}
+
+.knowledge-graph .react-flow {
+  background: var(--_dk-editor);
+}
+
+.knowledge-graph .react-flow__node-knowledge {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.knowledge-graph .react-flow__handle {
+  width: 6px;
+  height: 6px;
+  border: none;
+  background: var(--_dk-text-muted);
+}
+
+.knowledge-graph .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--_dk-line);
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+.knowledge-graph .react-flow__controls-button {
+  border-bottom-color: var(--_dk-line);
+  background: var(--_dk-surface-raised);
+  fill: var(--_dk-text-secondary);
+}
+
+.knowledge-graph .react-flow__controls-button:hover {
+  background: var(--_dk-hover);
+}
+
+.knowledge-graph .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--_dk-line);
+  border-radius: var(--radius-sm);
+  background: var(--_dk-editor);
+}
+
+.knowledge-graph .react-flow__attribution {
+  background: transparent;
+  color: var(--_dk-text-muted);
+}
+
+.knowledge-flow-card {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  flex-direction: column;
+  gap: 0.35rem;
+  overflow: hidden;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--_dk-line-visible);
+  border-radius: var(--radius-md);
+  background: var(--_dk-surface-raised);
+  color: var(--_dk-text-body);
+  font-size: var(--_dk-text-xs);
+}
+
+.knowledge-flow-card.is-pending {
+  border-style: dashed;
+  border-color: var(--_dk-amber-500);
+}
+
+.knowledge-flow-card.is-disabled {
+  opacity: 0.5;
+}
+
+.knowledge-flow-card.has-error {
+  border-color: var(--_dk-red-500);
+}
+
+.knowledge-flow-card.is-focused {
+  box-shadow: 0 0 0 1px var(--_dk-accent-ring);
+}
+
+.knowledge-flow-card.is-dimmed {
+  opacity: 0.32;
+}
+
+.knowledge-flow-preview {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--_dk-text-secondary);
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.knowledge-legend {
+  position: absolute;
+  bottom: 0.6rem;
+  left: 0.6rem;
+  display: flex;
+  gap: 0.75rem;
+  pointer-events: none;
+  color: var(--_dk-text-muted);
+  font-size: var(--_dk-text-xs);
+}
+
+.knowledge-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.knowledge-legend-line {
+  display: inline-block;
+  width: 1.1rem;
+  height: 0;
+  border-top: 1.5px solid var(--_dk-text-muted);
+}
+
+.knowledge-legend-line.is-warning {
+  border-top-style: dashed;
+  border-top-color: var(--_dk-amber-500);
+}

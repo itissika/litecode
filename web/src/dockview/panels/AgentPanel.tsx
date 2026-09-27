@@ -18,6 +18,7 @@ import { useTurnStore } from "../../stores/turnStore";
 import { displayMessages, useMessageStore } from "../../stores/messageStore";
 import {
   clearPendingReveal,
+  fallbackSessionTitle,
   getPendingReveal,
   subscribePendingReveal,
 } from "../../lib/sessionPanelNav";
@@ -125,8 +126,8 @@ export function AgentPanel(props: IDockviewPanelProps) {
 
   // Mirror the session-list preview as the tab title. The default dockview
   // tab clamps/truncates the text, so we get the same "summary" form the
-  // SessionItem shows. Falls back to a short id until the list has loaded
-  // (and thus populated the preview) for this session.
+  // SessionItem shows. Falls back to "NEW" for a writable session that has no
+  // preview yet (a freshly created one); a child keeps its short id.
   const preview = useSessionStore(
     (s) => s.sessions.find((x) => x.id === sessionId)?.preview?.trim() ?? "",
   );
@@ -149,8 +150,8 @@ export function AgentPanel(props: IDockviewPanelProps) {
   const knownChild = session !== undefined && !!session.parent_session_id;
   const writable = !knownChild && (explicitRootIntent || session !== undefined);
   useEffect(() => {
-    props.api.setTitle(preview || sessionId.slice(0, 8));
-  }, [props.api, sessionId, preview]);
+    props.api.setTitle(preview || fallbackSessionTitle(sessionId, writable));
+  }, [props.api, sessionId, preview, writable]);
 
   const close = () => {
     props.api.close();

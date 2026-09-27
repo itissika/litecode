@@ -201,10 +201,13 @@ pub async fn handle_jsonrpc(
                 cwd,
             };
             match tokio::task::spawn_blocking(move || hub.create(&caller, opts)).await {
-                Ok(Ok(term_id)) => emit(
+                Ok(Ok(created)) => emit(
                     sink,
-                    serde_json::to_value(ok_response(id, serde_json::json!({ "id": term_id })))
-                        .unwrap(),
+                    serde_json::to_value(ok_response(
+                        id,
+                        serde_json::json!({ "id": created.id, "shell": created.shell }),
+                    ))
+                    .unwrap(),
                 ),
                 Ok(Err(error)) => emit(
                     sink,

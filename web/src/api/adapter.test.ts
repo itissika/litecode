@@ -159,11 +159,12 @@ describe("kind-based HumanView rows", () => {
     expect(isHumanViewKind("reminder/env")).toBe(false);
   });
 
-  it("shows a plan-review reminder as a plan mark, never a job exit", () => {
+  it("hides a plan-review reminder; plan execution stays its own mark", () => {
     const plan: HumanRow = {
       seq: 3,
       kind: "reminder/plan_changed",
       state: "final",
+      hidden: true,
       body: {
         kind: "plan_changed",
         relative_path: ".litecode/plan/calm.md",
@@ -171,10 +172,10 @@ describe("kind-based HumanView rows", () => {
         text: "[Plan updated] .litecode/plan/calm.md",
       },
     };
-    expect(isHiddenHumanRow(plan)).toBe(false);
-    expect(isHumanUserRow(plan)).toBe(false);
-    expect(isTranscriptMarkRow(plan)).toBe(true);
-    expect(transcriptMarkKind(plan)).toBe("plan");
+    expect(isHiddenHumanRow(plan)).toBe(true);
+    expect(isHumanViewKind(plan.kind)).toBe(false);
+    expect(isTranscriptMarkRow(plan)).toBe(false);
+    expect(transcriptMarkKind(plan)).toBeNull();
   });
 
   it("shows the plan-execution trigger as its own mark, not a user bubble", () => {

@@ -393,7 +393,10 @@ impl AgentJobRegistry {
         let mut g = self.inner.lock().expect("jobs lock");
         let queue = g.mailbox.entry(session_id.to_string()).or_default();
         for notice in notices.into_iter().rev() {
-            if queue.iter().any(|existing| existing.bash_id == notice.bash_id) {
+            if queue
+                .iter()
+                .any(|existing| existing.bash_id == notice.bash_id)
+            {
                 continue;
             }
             queue.push_front(notice);

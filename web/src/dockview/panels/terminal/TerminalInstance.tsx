@@ -11,6 +11,8 @@ import {
   terminalCreate,
   terminalResize,
   terminalWrite,
+  trackCommandLine,
+  useTerminalTabs,
 } from "../../../lib/litecodeTerminal";
 import { useConnectionStore } from "../../../stores/connectionStore";
 import { THEME_CHANGE_EVENT } from "../../../lib/theme";
@@ -46,11 +48,13 @@ function terminalTheme(): { background: string; foreground: string } {
 }
 
 export function TerminalInstance({
+  tabKey,
   cwd,
   active,
   expanded,
   onExited,
 }: {
+  tabKey: string;
   cwd?: string;
   active: boolean;
   expanded: boolean;
@@ -69,14 +73,19 @@ export function TerminalInstance({
   const activeRef = useRef(active);
   const cwdRef = useRef(cwd);
   const onExitedRef = useRef(onExited);
+  const tabKeyRef = useRef(tabKey);
   expandedRef.current = expanded;
   activeRef.current = active;
   cwdRef.current = cwd;
   onExitedRef.current = onExited;
+  tabKeyRef.current = tabKey;
 
   // Generation token: bumped when a create is abandoned so the late RPC
   // cannot bind an orphan pty.
   const reqRef = useRef(0);
+  // Interactive line the tab's label summarizes: keystrokes (not shell output)
+  // are the only command source a raw pty offers.
+  const commandLineRef = useRef("");
   const creatingRef = useRef(false);
   const fitRafRef = useRef<number | null>(null);
   const lastColsRef = useRef(-1);
@@ -260,11 +269,12 @@ export function TerminalInstance({
     const myReq = ++reqRef.current;
     try {
       resizeTo(dims.cols, dims.rows);
-      const id = await terminalCreate({
+      const created = await terminalCreate({
         cols: dims.cols,
         rows: dims.rows,
         cwd: cwdRef.current,
       });
+      const id = created.id;
       if (myReq !== reqRef.current) {
         discardTerminal(id);
         await terminalClose(id).catch(() => {});
@@ -272,6 +282,9 @@ export function TerminalInstance({
       }
       idRef.current = id;
       hadSessionRef.current = true;
+      if (created.shell) {
+        useTerminalTabs.getState().noteShell(tabKeyRef.current, created.shell);
+      }
       unbindRef.current?.();
       // ConPTY consumes the shell's `\x1b[?2004h`, so xterm never learns that
       // readline already has bracketed paste on. Arm it once after the first
@@ -363,6 +376,19 @@ export function TerminalInstance({
     fitRef.current = fit;
 
     const onData = term.onData((data) => {
+      // Full-screen apps (vim, less, …) own the alternate buffer: their keys are
+      // not shell commands, so the tracker neither adopts nor accumulates them —
+      // otherwise the first command typed after quitting the app would carry
+      // whatever was typed inside it.
+      if (term.buffer.active.type === "alternate") {
+        commandLineRef.current = "";
+      } else {
+        const tracked = trackCommandLine(commandLineRef.current, data);
+        commandLineRef.current = tracked.line;
+        for (const command of tracked.commands) {
+          useTerminalTabs.getState().noteCommand(tabKeyRef.current, command);
+        }
+      }
       const id = idRef.current;
       if (!id) return;
       void terminalWrite(id, data).catch((e) => {

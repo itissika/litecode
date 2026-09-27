@@ -15,6 +15,7 @@ import {
 
 import { InstanceRegistry, normalizeWorkspace } from "./instance-registry";
 import { handshakeUrl } from "./handshake-url";
+import { readWorkspaceLayout, writeWorkspaceLayout } from "./layout-file";
 import { writeHubPage } from "./hub";
 import {
   assertIpcSurface,
@@ -858,6 +859,18 @@ function registerIpc(): void {
   handleTrusted("litecode:set-ui-theme", "both", (_e, theme: string) => {
     const next: UiThemeName = theme === "light" ? "light" : "default";
     writeUiTheme(next);
+  });
+
+  // Dockview snapshots: browser storage in a local workbench is keyed by the
+  // sidecar's ephemeral port, so only the host can keep them across launches.
+  // Keyed by `currentWorkspace`; null (hub, remote) means no host storage.
+  onTrusted("litecode:load-layout", "workbench", (event) => {
+    event.returnValue =
+      readWorkspaceLayout(app.getPath("userData"), currentWorkspace) ?? undefined;
+  });
+
+  handleTrusted("litecode:save-layout", "workbench", (_e, payload: unknown) => {
+    writeWorkspaceLayout(app.getPath("userData"), currentWorkspace, payload);
   });
 
   handleTrusted("litecode:pick-folder", "hub", async (event) => {

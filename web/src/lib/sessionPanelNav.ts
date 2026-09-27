@@ -44,10 +44,22 @@ export function clearPendingReveal(expectedGen?: number): void {
 
 type DockviewApi = NonNullable<ReturnType<typeof getDockviewApi>>;
 
+/** Tab/panel title for a session panel with no preview to summarize yet. A
+ *  writable root reads "NEW" — a freshly created session has no message to
+ *  summarize, and an id slice names nothing the user can recognize. Everything
+ *  else (a subagent child, an unclassified id) keeps the short id so it stays
+ *  traceable. */
+export function fallbackSessionTitle(
+  sessionId: string,
+  isRoot: boolean,
+): string {
+  return isRoot ? "NEW" : sessionId.slice(0, 8);
+}
+
 /** Where a newly-added session panel should land: the first grid group, or a
  *  fresh group when the grid is empty. Shared by both panel flavours so the
  *  positioning logic is not copy-pasted. */
-function gridPosition(api: DockviewApi): { referenceGroup: string } {
+export function gridPosition(api: DockviewApi): { referenceGroup: string } {
   const gridGroups = api.groups.filter((g) => g.api.location.type === "grid");
   if (gridGroups.length === 0) {
     const group = api.addGroup();
@@ -90,7 +102,7 @@ export function openSessionPanel(sessionId: string, revealSeq?: number): void {
   api.addPanel({
     id: `agent-${sessionId}`,
     component: "agent",
-    title: sessionId.slice(0, 8),
+    title: fallbackSessionTitle(sessionId, true),
     params: { sessionId, sessionKind: "root" },
     tabComponent: "agent",
     position: gridPosition(api),
@@ -116,7 +128,7 @@ export function openSubagentPanel(childId: string, revealSeq?: number): void {
   api.addPanel({
     id: `subagent-${childId}`,
     component: "subagent",
-    title: childId.slice(0, 8),
+    title: fallbackSessionTitle(childId, false),
     params: { sessionId: childId },
     tabComponent: "agent",
     position: gridPosition(api),

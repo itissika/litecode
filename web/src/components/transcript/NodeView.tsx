@@ -143,8 +143,6 @@ export function NodeView({
           childId={node.childId}
         />
       );
-    case "plan":
-      return <TranscriptMark kind={node.kind} />;
     case "plan_execute":
       return <TranscriptMark kind={node.kind} planPath={activePlanPath} />;
   }

@@ -34,6 +34,40 @@ const LAYOUT_STORAGE_KEY = "litecode-dockview-layout-v2";
 const LAYOUT_SCHEMA_VERSION = 3;
 let isRestoring = false;
 
+/**
+ * Where a snapshot lives. The desktop host keeps one file per local workspace,
+ * because a local workbench is served from `http://127.0.0.1:<ephemeral port>`
+ * (see desktop/src/sidecar.ts): browser storage is keyed by origin, so its
+ * bucket changes every launch and a snapshot saved there is unreachable next
+ * boot. Everywhere else browser storage is stable — the dev server, a
+ * fixed-port `serve`, a remote workbench — so it stays the store there.
+ */
+interface LayoutStore {
+  load: () => string | null;
+  save: (payload: string) => void;
+}
+
+/** Exported for tests; the workbench is the only production caller. */
+export function layoutStore(): LayoutStore {
+  const host = window.litecode;
+  if (
+    typeof host?.loadLayout === "function" &&
+    typeof host.saveLayout === "function" &&
+    host.getSessionMode?.() === "local"
+  ) {
+    return {
+      load: () => host.loadLayout?.() ?? null,
+      save: (payload) => host.saveLayout?.(payload),
+    };
+  }
+  return {
+    load: () => localStorage.getItem(LAYOUT_STORAGE_KEY),
+    save: (payload) => {
+      localStorage.setItem(LAYOUT_STORAGE_KEY, payload);
+    },
+  };
+}
+
 function preventCrossZoneDrop(event: DockviewWillDropEvent, api: DockviewApi) {
   const panel = event.panel;
   const data = event.getData();
@@ -95,7 +129,8 @@ export function useDockviewConfig() {
       }
     });
 
-    const saved = localStorage.getItem(LAYOUT_STORAGE_KEY);
+    const store = layoutStore();
+    const saved = store.load();
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -151,8 +186,7 @@ export function useDockviewConfig() {
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         const data = api.toJSON();
-        localStorage.setItem(
-          LAYOUT_STORAGE_KEY,
+        store.save(
           JSON.stringify({
             schemaVersion: LAYOUT_SCHEMA_VERSION,
             layout: data,

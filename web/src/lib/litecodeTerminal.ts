@@ -92,20 +92,26 @@ attachSiblingStores({
   },
 });
 
+export interface CreatedTerminal {
+  id: string;
+  /** Shell program label (`bash` / `powershell` / …), when the server reports it. */
+  shell?: string;
+}
+
 export async function terminalCreate(opts?: {
   cols?: number;
   rows?: number;
   cwd?: string;
-}): Promise<string> {
+}): Promise<CreatedTerminal> {
   const result = await useConnectionStore
     .getState()
-    .sendRpc<{ id: string }>("terminal/create", {
+    .sendRpc<CreatedTerminal>("terminal/create", {
       cols: opts?.cols ?? 80,
       rows: opts?.rows ?? 24,
       ...(opts?.cwd ? { cwd: opts.cwd } : {}),
     });
   if (!result?.id) throw new Error("terminal/create missing id");
-  return result.id;
+  return { id: result.id, shell: result.shell };
 }
 
 export async function terminalWrite(id: string, data: string): Promise<void> {
@@ -128,10 +134,85 @@ export async function terminalClose(id: string): Promise<void> {
   await useConnectionStore.getState().sendRpc("terminal/close", { id });
 }
 
+/** Cap on a tracked command line — a row label, not a transcript. */
+const COMMAND_LINE_MAX = 200;
+
+/** Index just past the escape sequence starting at `start` (which holds ESC). */
+function escapeEnd(data: string, start: number): number {
+  let i = start + 1;
+  if (i >= data.length) return i;
+  const next = data[i]!;
+  if (next === "[") {
+    i += 1;
+    while (i < data.length) {
+      const code = data.charCodeAt(i);
+      if (code >= 0x40 && code <= 0x7e) return i + 1; // final byte
+      i += 1;
+    }
+    return i;
+  }
+  if (next === "]") {
+    i += 1;
+    while (i < data.length) {
+      const code = data.charCodeAt(i);
+      if (code === 0x07) return i + 1; // BEL
+      if (code === 0x1b && data[i + 1] === "\\") return i + 2; // ST
+      i += 1;
+    }
+    return i;
+  }
+  return i + 1; // SS3 / two-char sequence
+}
+
+/**
+ * Track the interactive line a keystroke chunk edits.
+ *
+ * Returns the line left in the buffer plus every command this chunk submitted
+ * (a `\r`). Escape sequences — arrows, function keys, bracketed-paste markers —
+ * are skipped, so history recall does not corrupt the line; Ctrl-C / Ctrl-U /
+ * Ctrl-L clear it; Tab and the remaining control keys are ignored. This is the
+ * best a raw pty gives us: the shell never reports what it ran.
+ */
+export function trackCommandLine(
+  line: string,
+  data: string,
+): { line: string; commands: string[] } {
+  let next = line;
+  const commands: string[] = [];
+  for (let i = 0; i < data.length; i += 1) {
+    const ch = data[i]!;
+    if (ch === "\x1b") {
+      i = escapeEnd(data, i) - 1;
+      continue;
+    }
+    if (ch === "\r" || ch === "\n") {
+      const command = next.trim();
+      next = "";
+      if (command) commands.push(command);
+      continue;
+    }
+    if (ch === "\x7f" || ch === "\b") {
+      next = next.slice(0, -1);
+      continue;
+    }
+    if (ch === "\x03" || ch === "\x15" || ch === "\x0c") {
+      next = "";
+      continue;
+    }
+    if (ch.charCodeAt(0) < 0x20) continue;
+    if (next.length < COMMAND_LINE_MAX) next += ch;
+  }
+  return { line: next, commands };
+}
+
 export interface TerminalTab {
   key: string;
   cwd?: string;
   title: string;
+  /** Shell backing this tab (`bash`, `powershell`, …) once the pty exists. */
+  shell?: string;
+  /** Last command line the user submitted in this tab. */
+  lastCommand?: string;
 }
 
 interface TerminalTabsState {
@@ -140,6 +221,8 @@ interface TerminalTabsState {
   open: (cwd?: string) => string;
   close: (key: string) => void;
   activate: (key: string) => void;
+  noteShell: (key: string, shell: string) => void;
+  noteCommand: (key: string, command: string) => void;
 }
 
 let keySeq = 0;
@@ -179,5 +262,24 @@ export const useTerminalTabs = create<TerminalTabsState>((set, get) => ({
   },
   activate: (key) => {
     if (get().tabs.some((tab) => tab.key === key)) set({ activeKey: key });
+  },
+  noteShell: (key, shell) => {
+    if (!shell) return;
+    set((state) => ({
+      tabs: state.tabs.map((tab) =>
+        tab.key === key && tab.shell !== shell ? { ...tab, shell } : tab,
+      ),
+    }));
+  },
+  noteCommand: (key, command) => {
+    const trimmed = command.trim();
+    if (!trimmed) return;
+    set((state) => ({
+      tabs: state.tabs.map((tab) =>
+        tab.key === key && tab.lastCommand !== trimmed
+          ? { ...tab, lastCommand: trimmed }
+          : tab,
+      ),
+    }));
   },
 }));

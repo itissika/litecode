@@ -70,6 +70,16 @@ pub fn shell_command(command: &str) -> ShellSpec {
     }
 }
 
+/// Display label for the shell program (`bash.exe` → `bash`), so a terminal
+/// tab can name the shell it is running.
+pub fn shell_label(spec: &ShellSpec) -> String {
+    let stem = spec.program.file_stem().map(|stem| stem.to_string_lossy());
+    match stem {
+        Some(stem) if !stem.is_empty() => stem.to_ascii_lowercase(),
+        _ => spec.program.to_string_lossy().to_ascii_lowercase(),
+    }
+}
+
 /// Resolve working directory for a session (LAP workspace root when unset).
 pub fn resolve_cwd(workdir: Option<&Path>) -> PathBuf {
     match workdir {
@@ -98,6 +108,22 @@ mod tests {
         {
             assert!(!s.program.as_os_str().is_empty());
         }
+    }
+
+    #[test]
+    fn shell_label_uses_the_program_stem() {
+        let spec = ShellSpec {
+            program: PathBuf::from("/usr/bin/bash.exe"),
+            args: Vec::new(),
+        };
+        assert_eq!(shell_label(&spec), "bash");
+        let windows = ShellSpec {
+            program: PathBuf::from(
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            ),
+            args: Vec::new(),
+        };
+        assert_eq!(shell_label(&windows), "powershell");
     }
 
     #[test]

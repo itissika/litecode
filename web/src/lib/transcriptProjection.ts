@@ -106,7 +106,6 @@ export type RenderNode =
       streaming: boolean;
       live: false;
     }
-  | { kind: "plan"; key: string; streaming: boolean; live: false }
   | { kind: "plan_execute"; key: string; streaming: boolean; live: false }
   | {
       kind: "tool";
@@ -275,7 +274,6 @@ export function groupNodes(nodes: RenderNode[]): NodeGroup[] {
       node.kind === "compact_cut" ||
       node.kind === "job_exit" ||
       node.kind === "subagent_exit" ||
-      node.kind === "plan" ||
       node.kind === "plan_execute"
     ) {
       groups.push({ type: "cut", nodes: [node] });

@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 
 import {
   SettingsApiError,
+  SUBAGENT_SERIES_TOOL_IDS,
   isAgentVisible,
   isConfigurableTool,
   putLog,
@@ -29,11 +30,13 @@ describe("settings helpers", () => {
   it("identifies NONE tools without preset", () => {
     expect(isConfigurableTool("read")).toBe(true);
     expect(isConfigurableTool("plan")).toBe(false);
-    expect(isConfigurableTool("subagent_launch")).toBe(false);
-    expect(isConfigurableTool("subagent_wait")).toBe(false);
-    expect(isConfigurableTool("subagent_stop")).toBe(false);
+    expect(isConfigurableTool("todo")).toBe(false);
     expect(isConfigurableTool("mcp_github")).toBe(false);
     expect(isConfigurableTool("echo_py")).toBe(true);
+    // The whole subagent series is fixed-behavior, none of it carries a preset.
+    for (const id of SUBAGENT_SERIES_TOOL_IDS) {
+      expect(isConfigurableTool(id)).toBe(false);
+    }
   });
 
   it("filters visible agent roles", () => {

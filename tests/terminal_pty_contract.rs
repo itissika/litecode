@@ -82,7 +82,8 @@ fn interactive_echo_round_trip() {
                 cwd: Some(root.clone()),
             },
         )
-        .expect("create interactive");
+        .expect("create interactive")
+        .id;
 
     #[cfg(windows)]
     let cmd: &[u8] = if windows_uses_git_bash() {

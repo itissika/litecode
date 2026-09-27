@@ -95,6 +95,15 @@ pub struct ExecResult {
     pub capture: TeeCapture,
 }
 
+/// A freshly created interactive session: the pty id plus the shell that backs
+/// it (`bash` / `powershell` / …), so the client can label the tab before the
+/// user has run anything.
+#[derive(Debug, Clone)]
+pub struct CreatedTerminal {
+    pub id: String,
+    pub shell: String,
+}
+
 /// Create options for an interactive human session.
 #[derive(Debug, Clone)]
 pub struct CreateOptions {
@@ -285,7 +294,11 @@ impl TerminalHub {
     }
 
     /// Interactive shell session owned by one WebSocket connection.
-    pub fn create(&self, caller: &ConnectionId, opts: CreateOptions) -> TerminalResult<String> {
+    pub fn create(
+        &self,
+        caller: &ConnectionId,
+        opts: CreateOptions,
+    ) -> TerminalResult<CreatedTerminal> {
         if !self
             .connections
             .lock()
@@ -386,7 +399,10 @@ impl TerminalHub {
             session,
             exit_sent,
         );
-        Ok(id)
+        Ok(CreatedTerminal {
+            id,
+            shell: shell::shell_label(&shell),
+        })
     }
 
     fn owned_session(
@@ -875,7 +891,8 @@ mod tests {
                     cwd: None,
                 },
             )
-            .expect("human pty");
+            .expect("human pty")
+            .id;
         assert!(matches!(
             hub.kill(&id),
             Err(TerminalError::SessionNotFound(_))

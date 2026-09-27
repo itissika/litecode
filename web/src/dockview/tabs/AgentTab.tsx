@@ -1,6 +1,7 @@
 import type { IDockviewPanelProps } from "dockview-react";
 
 import { useSessionStore } from "../../stores/sessionStore";
+import { fallbackSessionTitle } from "../../lib/sessionPanelNav";
 import {
   SessionStatusDot,
   deriveSessionStatus,
@@ -12,7 +13,9 @@ import {
  * status dot (vertical bar + pulse, same as SessionItem) followed by the title
  * and a hover close button.
  */
-export function AgentTab(props: IDockviewPanelProps<{ sessionId?: string }>) {
+export function AgentTab(
+  props: IDockviewPanelProps<{ sessionId?: string; sessionKind?: string }>,
+) {
   const sessionId = props.params.sessionId ?? "";
   const session = useSessionStore((s) =>
     s.sessions.find((x) => x.id === sessionId),
@@ -21,12 +24,18 @@ export function AgentTab(props: IDockviewPanelProps<{ sessionId?: string }>) {
   // Subscribe to the preview directly so the tab shows the live summary instead
   // of relying on setTitle() propagating to api.title.
   const preview = (session?.preview ?? "").trim();
+  // Same rule as AgentPanel's writability: a known non-child session, or a
+  // trusted root entry (a freshly created session the list has not seen yet).
+  // A blank root reads "NEW"; a child or unclassified id keeps its short id.
+  const rootPanel =
+    !session?.parent_session_id &&
+    (session !== undefined || props.params.sessionKind === "root");
 
   return (
     <div className="flex items-center gap-1.5 px-1.5 h-full w-full group transition-colors duration-120 hover:brightness-125 active:brightness-75">
       <SessionStatusDot status={status}>
         <span className="text-xs truncate flex-1 min-w-0 select-none">
-          {preview || sessionId.slice(0, 8)}
+          {preview || fallbackSessionTitle(sessionId, rootPanel)}
         </span>
       </SessionStatusDot>
       <button

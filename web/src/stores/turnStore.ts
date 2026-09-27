@@ -295,17 +295,7 @@ function deriveRunState(turn: TurnSnapshot | null | undefined): AgentRunState {
   return "running";
 }
 
-export const OPTIMISTIC_USER_SEAL_MS = 2500;
-
 const replayBySession = new Map<string, Promise<boolean>>();
-const sealWatchdogBySession = new Map<string, number>();
-
-function clearSealWatchdog(sessionId: string): void {
-  const timer = sealWatchdogBySession.get(sessionId);
-  if (timer === undefined) return;
-  window.clearTimeout(timer);
-  sealWatchdogBySession.delete(sessionId);
-}
 
 function waitForTurnIdle(sessionId: string): Promise<void> {
   if (getSlice(useTurnStore.getState().byId, sessionId).runState === "idle") {
@@ -373,41 +363,12 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           : {}),
       };
 
-      clearSealWatchdog(sessionId);
-      const sealWatchdog = window.setTimeout(() => {
-        sealWatchdogBySession.delete(sessionId);
-        const still = useMessageStore
-          .getState()
-          .bySession.get(sessionId)?.pendingUser;
-        if (still?.clientId !== pending.clientId) return;
-        debugTrace("turn", "start.unsealed", {
-          sessionId,
-          clientId: pending.clientId,
-          currentTurnId: getSlice(get().byId, sessionId).currentTurnId,
-        });
-        useMessageStore
-          .getState()
-          .discardOptimisticUserMessage(sessionId, pending.clientId);
-        const current = getSlice(get().byId, sessionId);
-        if (current.currentTurnId == null) {
-          patch(sessionId, { runState: "idle", currentTurnId: null });
-        }
-        useToastStore
-          .getState()
-          .showToast(
-            "Message was not saved. Try sending again.",
-            "error",
-            8000,
-          );
-      }, OPTIMISTIC_USER_SEAL_MS);
-      sealWatchdogBySession.set(sessionId, sealWatchdog);
-
-      // Use send (fire-and-forget) for agent/run
+      // Fire-and-forget. A rejected RPC is the only client-side failure:
+      // the durable user row and the turn both arrive from the backend.
       useConnectionStore
         .getState()
         .sendRpc("agent/run", startPayload)
         .catch((error: unknown) => {
-          clearSealWatchdog(sessionId);
           patch(sessionId, { runState: "idle", currentTurnId: null });
           useMessageStore
             .getState()

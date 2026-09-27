@@ -8,7 +8,6 @@ import type {
   BashExitReminderLogRow,
   MessageItem,
   OutputMessageItem,
-  PlanChangedLogRow,
   PlanExecuteLogRow,
   SubagentSettledLogRow,
   ReasoningItem,
@@ -48,11 +47,6 @@ export function isSubagentSettledRow(
   return row.kind === "reminder/subagent_settled";
 }
 
-/** A durable plan-review reminder: a system mark, never a chat bubble. */
-export function isPlanChangedRow(row: HumanRow): row is PlanChangedLogRow {
-  return row.kind === "reminder/plan_changed";
-}
-
 /** The system-issued plan-execution trigger: a system mark, never a chat bubble. */
 export function isPlanExecuteRow(row: HumanRow): row is PlanExecuteLogRow {
   return row.kind === "plan/execute";
@@ -63,7 +57,6 @@ export type TranscriptMarkKind =
   | "compact_cut"
   | "job_exit"
   | "subagent_exit"
-  | "plan"
   | "plan_execute";
 
 export function isTranscriptMarkRow(row: HumanRow): boolean {
@@ -71,7 +64,6 @@ export function isTranscriptMarkRow(row: HumanRow): boolean {
     isCompactCutRow(row) ||
     isBashExitReminderRow(row) ||
     isSubagentSettledRow(row) ||
-    isPlanChangedRow(row) ||
     isPlanExecuteRow(row)
   );
 }
@@ -79,7 +71,6 @@ export function isTranscriptMarkRow(row: HumanRow): boolean {
 export function transcriptMarkKind(row: HumanRow): TranscriptMarkKind | null {
   if (isCompactCutRow(row)) return "compact_cut";
   if (isPlanExecuteRow(row)) return "plan_execute";
-  if (isPlanChangedRow(row)) return "plan";
   if (isSubagentSettledRow(row)) return "subagent_exit";
   if (isBashExitReminderRow(row)) return "job_exit";
   return null;
@@ -121,7 +112,6 @@ const HUMAN_VIEW_KINDS = new Set([
   "compacted",
   "reminder/bash_exit",
   "reminder/subagent_settled",
-  "reminder/plan_changed",
   "plan/execute",
 ]);
 

@@ -9,6 +9,8 @@ import { SubagentReadOnlyPanel } from "../panels/SubagentReadOnlyPanel";
 import { AboutPanel } from "../panels/AboutPanel";
 import { SessionListPanel } from "../panels/SessionListPanel";
 import { TerminalPanel } from "../panels/TerminalPanel";
+import { KnowledgePanel } from "../panels/KnowledgePanel";
+import { KnowledgeGraphPanel } from "../panels/KnowledgeGraphPanel";
 
 import { EdgeTab } from "../tabs/EdgeTab";
 import { EditorTab } from "../tabs/EditorTab";
@@ -27,6 +29,8 @@ export const panelComponents: Record<
   about: AboutPanel, // registered; not in the default layout, kept for a future standalone panel
   sessions: SessionListPanel, // persistent Sessions panel on the right
   terminal: TerminalPanel,
+  knowledge: KnowledgePanel,
+  knowledgeGraph: KnowledgeGraphPanel,
 };
 
 export const tabComponents: Record<

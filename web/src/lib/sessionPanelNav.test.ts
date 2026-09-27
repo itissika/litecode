@@ -4,6 +4,7 @@ import { setDockviewApi, useConnectionStore } from "../stores/connectionStore";
 import {
   classifySession,
   clearPendingReveal,
+  fallbackSessionTitle,
   getPendingReveal,
   openKnownSessionPanel,
   openSessionPanel,
@@ -64,6 +65,8 @@ describe("sessionPanelNav", () => {
       expect.objectContaining({
         id: "agent-sess-new",
         component: "agent",
+        // No preview to summarize yet: the tab reads NEW, not an id slice.
+        title: "NEW",
         params: { sessionId: "sess-new", sessionKind: "root" },
         position: { referenceGroup: "g1" },
       }),
@@ -81,11 +84,11 @@ describe("sessionPanelNav", () => {
     } as never);
 
     openSubagentPanel("child-new", 7);
-
     expect(addPanel).toHaveBeenCalledWith(
       expect.objectContaining({
         id: "subagent-child-new",
         component: "subagent",
+        title: "child-ne",
         params: { sessionId: "child-new" },
         position: { referenceGroup: "g1" },
       }),
@@ -131,6 +134,13 @@ describe("sessionPanelNav", () => {
 
     expect(setActive).toHaveBeenCalled();
     expect(addPanel).not.toHaveBeenCalled();
+  });
+});
+
+describe("fallbackSessionTitle", () => {
+  it("reads NEW for a root, and keeps the short id for a child or unknown panel", () => {
+    expect(fallbackSessionTitle("abcdef123456", true)).toBe("NEW");
+    expect(fallbackSessionTitle("abcdef123456", false)).toBe("abcdef12");
   });
 });
 

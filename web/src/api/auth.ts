@@ -70,6 +70,13 @@ export interface LitecodeDesktopBridge {
   /** Shared UI theme (hub + workbench); persisted in Electron userData. */
   getUiTheme?: () => "default" | "light";
   setUiTheme?: (theme: "default" | "light") => Promise<void>;
+  /**
+   * Dockview snapshot store. The host owns one file per local workspace, because
+   * a local workbench's browser storage is keyed by the sidecar's ephemeral
+   * port. Remote workbenches fall back to browser storage.
+   */
+  loadLayout?: () => string | null;
+  saveLayout?: (payload: string) => void;
   /** Home remote wizard (managed SSH). */
   listRemoteHistory?: () => Promise<
     Array<{

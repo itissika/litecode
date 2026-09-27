@@ -73,6 +73,18 @@ export function ensureGitPanel(api: DockviewApi) {
   });
 }
 
+/** Ensure the read-only Knowledge panel exists on the left edge. */
+export function ensureKnowledgePanel(api: DockviewApi) {
+  if (api.getPanel("workspace-knowledge")) return;
+  api.addPanel({
+    id: "workspace-knowledge",
+    component: "knowledge",
+    title: "Knowledge",
+    tabComponent: "edge",
+    position: { referenceGroup: ensureEdge(api, "left") },
+  });
+}
+
 /** Ensure the Sessions panel exists on the right edge. */
 export function ensureSessionsPanel(api: DockviewApi) {
   if (api.getPanel("sessions")) return;
@@ -123,6 +135,7 @@ export function ensureDefaultPanels(api: DockviewApi) {
   ensureExplorerPanel(api);
   ensureSearchPanel(api);
   ensureGitPanel(api);
+  ensureKnowledgePanel(api);
   ensureSessionsPanel(api);
   ensureTerminalPanel(api);
   removeLegacyTerminalPanels(api);

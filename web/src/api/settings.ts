@@ -583,14 +583,24 @@ export async function putEnginesDoc(
   });
 }
 
-/** Tools with fixed behavior — only `enabled`, no preset (CONFIG §2.5). */
-export const NONE_TOOL_IDS = new Set([
-  "plan",
-  "todo",
+/** The subagent series: one closed loop of fixed-behavior tools. */
+export const SUBAGENT_SERIES_TOOL_IDS = [
   "subagent_launch",
   "subagent_wait",
   "subagent_stop",
   "subagent_list",
+  "subagent_send",
+] as const;
+
+/**
+ * Tools with fixed behavior — only `enabled`, no preset (CONFIG §2.5). Mirrors
+ * the backend's `core_none_tools()`; the whole subagent series belongs here, so
+ * derive it from the series instead of re-listing (subagent_send drifted once).
+ */
+export const NONE_TOOL_IDS = new Set<string>([
+  "plan",
+  "todo",
+  ...SUBAGENT_SERIES_TOOL_IDS,
 ]);
 
 /** MCP catalog ids (`mcp_*`) have no ALL/SAFE — bind is on/off only. */
@@ -610,14 +620,6 @@ export interface AgentListItem {
 }
 
 export const PROTECTED_AGENT_IDS = new Set(["default", "compaction"]);
-
-export const SUBAGENT_SERIES_TOOL_IDS = [
-  "subagent_launch",
-  "subagent_wait",
-  "subagent_stop",
-  "subagent_list",
-  "subagent_send",
-] as const;
 
 export function isSubagentBindableTool(entry: AvailableTool): boolean {
   if ((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes(entry.id)) {

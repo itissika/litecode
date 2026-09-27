@@ -9,7 +9,6 @@ import { useNotificationStore } from "./notificationStore";
 import { useToastStore } from "./toastStore";
 import {
   EMPTY_SLICE,
-  OPTIMISTIC_USER_SEAL_MS,
   shouldApplyTurnEnd,
   useTurnStore,
 } from "./turnStore";
@@ -760,7 +759,7 @@ describe("turnStore convergence", () => {
     ).toBeNull();
   });
 
-  it("agent/run ack without buffer/item toasts once the optimistic user stays unsealed", async () => {
+  it("agent/run ack without a buffer row does not invent a save failure", async () => {
     vi.useFakeTimers();
     const sessionId = "s-silent";
     const sendRpc = vi.fn(async () => ({ started: true }));
@@ -768,33 +767,16 @@ describe("turnStore convergence", () => {
 
     try {
       expect(useTurnStore.getState().start(sessionId, "just sent")).toBe(true);
-      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(10_000);
 
       const slice = useMessageStore.getState().bySession.get(sessionId)!;
       expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe(
         "running",
       );
       expect(slice.pendingUser).toBeTruthy();
-      expect(
-        slice.display.some((row) => row.seq < 0 && row.kind === "item/user"),
-      ).toBe(true);
       expect(useToastStore.getState().toasts).toEqual([]);
       expect(useTurnStore.getState().start(sessionId, "again")).toBe(false);
       expect(sendRpc).toHaveBeenCalledTimes(1);
-
-      await vi.advanceTimersByTimeAsync(OPTIMISTIC_USER_SEAL_MS);
-
-      expect(
-        useMessageStore.getState().bySession.get(sessionId)?.pendingUser,
-      ).toBeNull();
-      expect(useTurnStore.getState().byId.get(sessionId)!.runState).toBe(
-        "idle",
-      );
-      expect(useToastStore.getState().toasts.map((t) => t.message)).toContain(
-        "Message was not saved. Try sending again.",
-      );
-      expect(useTurnStore.getState().start(sessionId, "again")).toBe(true);
-      expect(sendRpc).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }

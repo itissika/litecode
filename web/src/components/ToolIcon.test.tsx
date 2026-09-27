@@ -1,10 +1,41 @@
 import { cleanup, render } from "@testing-library/react";
+import {
+  GlobeIcon,
+  MagnifyingGlassIcon,
+  WrenchIcon,
+} from "@phosphor-icons/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ToolIcon } from "./ToolIcon";
+import { LitecodeMark } from "./LitecodeMark";
+import { ToolIcon, glyphFor } from "./ToolIcon";
 
 afterEach(() => {
   cleanup();
+});
+
+describe("tool glyph mapping", () => {
+  it("uses the inline brand mark for the litecode workspace tool", () => {
+    expect(glyphFor("litecode_workspace")).toBe(LitecodeMark);
+    const { container } = render(
+      <ToolIcon name="litecode_workspace" status="ok" />,
+    );
+    // Path data only — no webfont dependency in a 12px row.
+    expect(
+      container.querySelector("svg.tool-icon-glyph path")?.getAttribute("d"),
+    ).toBeTruthy();
+  });
+
+  it("covers the search and network tools", () => {
+    expect(glyphFor("grep")).toBe(MagnifyingGlassIcon);
+    expect(glyphFor("session_search")).toBe(MagnifyingGlassIcon);
+    expect(glyphFor("webfetch")).toBe(GlobeIcon);
+    expect(glyphFor("websearch")).toBe(GlobeIcon);
+  });
+
+  it("reserves the generic wrench for unknown tools", () => {
+    expect(glyphFor("mystery_tool")).toBe(WrenchIcon);
+    expect(glyphFor("mcp_github")).not.toBe(WrenchIcon);
+  });
 });
 
 describe("ToolIcon settle animation", () => {
