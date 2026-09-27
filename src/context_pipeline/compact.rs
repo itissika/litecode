@@ -8,8 +8,8 @@ use crate::llm::{CompactLlmCall, ModelRequest};
 use crate::runtime::observer::{
     CompactionFailKind, CompactionStage, CompactionTrigger, InternalEvent,
 };
-use crate::session::event::Seq;
 use crate::session::manager::SessionManager;
+use crate::session::working::{WorkingRow, project_items};
 use crate::types::{Item, LitecodeError, Result, Transcript, item_text_preview};
 
 use super::budget::{BudgetPolicy, ProviderPromptBaseline};
@@ -41,12 +41,12 @@ impl CompactPolicy {
         llm: CompactLlmCall<'_>,
         system_prompt: &str,
         max_tokens: u32,
-        transcript: &mut Transcript,
         cancel: &CancellationToken,
         operation_id: Option<&str>,
     ) -> Result<bool> {
-        crate::session::store::Session::snip_stale_results(transcript);
-        if !Self::can_compact(budget, transcript) {
+        let mut rows = sessions.data().working_set_blocking(session_id)?;
+        let items = project_items(&rows);
+        if !Self::can_compact(budget, &items) {
             emit_compact_lifecycle(
                 sessions,
                 session_id,
@@ -59,13 +59,6 @@ impl CompactPolicy {
             return Err(LitecodeError::NothingToCompact);
         }
         let prompt_baseline = ProviderPromptBaseline::default();
-        let prefix_len = transcript.len();
-        let persisted_seqs: Vec<Seq> = sessions
-            .data()
-            .working_set_blocking(session_id)?
-            .into_iter()
-            .filter_map(|row| row.log_seq)
-            .collect();
         let _ = sessions.settle_stale_plan(session_id);
         let did = Self::compact_transcript(
             budget,
@@ -75,9 +68,7 @@ impl CompactPolicy {
             system_prompt,
             max_tokens,
             &prompt_baseline,
-            transcript,
-            prefix_len,
-            &persisted_seqs,
+            &mut rows,
             cancel,
             CompactionTrigger::Manual,
             operation_id,
@@ -107,9 +98,7 @@ impl CompactPolicy {
         system_prompt: &str,
         max_tokens: u32,
         prompt_baseline: &ProviderPromptBaseline,
-        transcript: &mut Transcript,
-        persisted_prefix_len: usize,
-        persisted_seqs: &[Seq],
+        rows: &mut Vec<WorkingRow>,
         step: u64,
         cancel: &CancellationToken,
     ) -> Result<bool> {
@@ -120,9 +109,8 @@ impl CompactPolicy {
             return Ok(false);
         }
 
-        crate::session::store::Session::snip_stale_results(transcript);
-
-        let token_count = budget.token_count_with_baseline(transcript, prompt_baseline);
+        let items = project_items(rows);
+        let token_count = budget.token_count_with_baseline(&items, prompt_baseline);
         budget.log_iteration(step, token_count);
 
         if budget.should_compact(token_count) {
@@ -130,18 +118,15 @@ impl CompactPolicy {
                 return Ok(false);
             }
 
-            // Know whether keep-recent has anything to discard in the persisted
-            // prefix. Length mismatch is Error, never skip.
-            let prefix_len = require_persisted_prefix(transcript.len(), persisted_prefix_len)?;
-            if find_keep_recent_cut(&transcript[..prefix_len], budget.keep_recent_tokens).is_none()
-            {
+            let prefix_len = persisted_prefix_len(rows);
+            if find_keep_recent_cut(&items[..prefix_len], budget.keep_recent_tokens).is_none() {
                 tracing::debug!(
                     keep_recent_tokens = budget.keep_recent_tokens,
-                    transcript_len = transcript.len(),
-                    persisted_prefix_len = prefix_len,
+                    transcript_len = items.len(),
+                    prefix_len,
                     "keep-recent: entire persisted prefix within keep window, skipping compact"
                 );
-                budget.enforce_hard_limit_with_baseline(transcript, prompt_baseline)?;
+                budget.enforce_hard_limit_with_baseline(&items, prompt_baseline)?;
                 return Ok(false);
             }
 
@@ -154,9 +139,7 @@ impl CompactPolicy {
                 system_prompt,
                 max_tokens,
                 prompt_baseline,
-                transcript,
-                persisted_prefix_len,
-                persisted_seqs,
+                rows,
                 cancel,
                 CompactionTrigger::Auto,
                 None,
@@ -169,12 +152,13 @@ impl CompactPolicy {
             // Defensive: if compact was skipped (e.g. cut race),
             // still enforce the hard limit so over-budget tokens cannot slip through.
             if !did_compact {
-                budget.enforce_hard_limit_with_baseline(transcript, prompt_baseline)?;
+                let items = project_items(rows);
+                budget.enforce_hard_limit_with_baseline(&items, prompt_baseline)?;
             }
             return Ok(did_compact);
         }
 
-        budget.enforce_hard_limit_with_baseline(transcript, prompt_baseline)?;
+        budget.enforce_hard_limit_with_baseline(&items, prompt_baseline)?;
         Ok(false)
     }
 
@@ -188,9 +172,7 @@ impl CompactPolicy {
         system_prompt: &str,
         max_tokens: u32,
         prompt_baseline: &ProviderPromptBaseline,
-        transcript: &mut Transcript,
-        persisted_prefix_len: usize,
-        persisted_seqs: &[Seq],
+        rows: &mut Vec<WorkingRow>,
         cancel: &CancellationToken,
         trigger: CompactionTrigger,
         operation_id: Option<&str>,
@@ -199,51 +181,27 @@ impl CompactPolicy {
             return Ok(false);
         }
 
-        let prefix_len = match require_persisted_prefix(transcript.len(), persisted_prefix_len) {
-            Ok(n) => n,
-            Err(e) => {
-                emit_compact_failed(sessions, session_id, trigger, operation_id, &e);
-                return Err(e);
-            }
-        };
-        let snapshot = transcript.clone();
-        let tail = transcript.split_off(prefix_len);
+        let snapshot = rows.clone();
+        let prefix_len = persisted_prefix_len(rows);
+        let tail = rows.split_off(prefix_len);
+        let mut transcript = project_items(rows);
 
-        let Some(cut) = find_keep_recent_cut(transcript, budget.keep_recent_tokens) else {
+        let Some(cut) = find_keep_recent_cut(&transcript, budget.keep_recent_tokens) else {
             tracing::debug!(
                 keep_recent_tokens = budget.keep_recent_tokens,
                 prefix_len,
                 "keep-recent: entire persisted prefix within keep window, skipping compact"
             );
-            *transcript = snapshot;
+            *rows = snapshot;
             return Ok(false);
         };
 
-        // Map in-memory cut → original DB seq from the persist working set.
-        if persisted_seqs.len() != persisted_prefix_len {
-            let err = LitecodeError::ToolExecution(format!(
-                "compact cut map: persisted prefix len {persisted_prefix_len} != working seqs {}",
-                persisted_seqs.len()
-            ));
-            *transcript = snapshot;
-            emit_compact_lifecycle(
-                sessions,
-                session_id,
-                trigger,
-                CompactionStage::Failed,
-                operation_id,
-                Some(CompactionFailKind::Failed),
-                Some(err.to_string()),
-            );
-            return Err(err.into());
-        }
-        let kept_from_seq = match persisted_seqs.get(cut).copied() {
+        let kept_from_seq = match rows.get(cut).and_then(|row| row.log_seq) {
             Some(seq) => seq as i64,
             None => {
-                *transcript = snapshot;
+                *rows = snapshot;
                 let err = LitecodeError::ToolExecution(format!(
-                    "compact cut {cut} out of range (persisted prefix len={})",
-                    persisted_seqs.len()
+                    "compact cut {cut} has no log seq (persisted prefix len={prefix_len})"
                 ));
                 emit_compact_lifecycle(
                     sessions,
@@ -254,7 +212,7 @@ impl CompactPolicy {
                     Some(CompactionFailKind::Failed),
                     Some(err.to_string()),
                 );
-                return Err(err.into());
+                return Err(err);
             }
         };
 
@@ -276,7 +234,7 @@ impl CompactPolicy {
             system_prompt,
             summary_max_tokens,
             cut,
-            transcript,
+            &mut transcript,
             session_id,
             cancel,
         )
@@ -284,14 +242,14 @@ impl CompactPolicy {
         {
             Ok(s) => s,
             Err(e) => {
-                *transcript = snapshot;
+                *rows = snapshot;
                 emit_compact_failed(sessions, session_id, trigger, operation_id, &e);
                 return Err(e);
             }
         };
 
         if cancel.is_cancelled() {
-            *transcript = snapshot;
+            *rows = snapshot;
             let err = LitecodeError::Canceled;
             emit_compact_failed(sessions, session_id, trigger, operation_id, &err);
             return Err(err);
@@ -299,11 +257,11 @@ impl CompactPolicy {
 
         let final_count = {
             let mut view = transcript.clone();
-            view.extend(tail.iter().cloned());
+            view.extend(tail.iter().map(|row| row.item.clone()));
             budget.token_count_with_baseline(&view, prompt_baseline)
         };
         if final_count > limit {
-            *transcript = snapshot;
+            *rows = snapshot;
             tracing::error!(
                 final_count,
                 limit,
@@ -328,10 +286,10 @@ impl CompactPolicy {
                 summary: summary_item,
                 token_estimate: final_count as i64,
                 kept_from: Some(kept_from_seq as crate::session::event::Seq),
-                expected_prefix: Some(persisted_prefix_len),
+                expected_prefix: Some(prefix_len),
             })
         {
-            *transcript = snapshot;
+            *rows = snapshot;
             emit_compact_lifecycle(
                 sessions,
                 session_id,
@@ -344,11 +302,11 @@ impl CompactPolicy {
             return Err(e.into());
         }
 
-        // Align in-memory working set with the folded log, plus unpersisted tail.
-        let mut model: Transcript = match sessions.data().working_set_blocking(session_id) {
-            Ok(rows) => rows.into_iter().map(|row| row.item).collect(),
+        // One reload. The pending tail was split off before the summary call.
+        let mut model = match sessions.data().working_set_blocking(session_id) {
+            Ok(loaded) => loaded,
             Err(e) => {
-                *transcript = snapshot;
+                *rows = snapshot;
                 emit_compact_lifecycle(
                     sessions,
                     session_id,
@@ -362,7 +320,7 @@ impl CompactPolicy {
             }
         };
         model.extend(tail);
-        *transcript = model;
+        *rows = model;
 
         prompt_baseline.clear();
         emit_compact_lifecycle(
@@ -563,14 +521,11 @@ fn emit_compact_failed(
     );
 }
 
-/// Compact only the claimed persist prefix. A stale-high cursor is Error, not `min()`.
-fn require_persisted_prefix(transcript_len: usize, persisted_prefix_len: usize) -> Result<usize> {
-    if persisted_prefix_len > transcript_len {
-        return Err(LitecodeError::ToolExecution(format!(
-            "compact cut map: persisted prefix len {persisted_prefix_len} > in-memory working set {transcript_len}"
-        )));
-    }
-    Ok(persisted_prefix_len)
+/// Leading rows that already have a `log_seq`. Pending rows sit after them.
+fn persisted_prefix_len(rows: &[WorkingRow]) -> usize {
+    rows.iter()
+        .position(|row| row.log_seq.is_none())
+        .unwrap_or(rows.len())
 }
 
 #[cfg(test)]
@@ -710,21 +665,6 @@ mod tests {
         .await
         .expect("provider answered");
         assert_eq!(summary, "## summary\nkept");
-    }
-
-    #[test]
-    fn persisted_prefix_gate_errors_when_cursor_exceeds_memory() {
-        let err = require_persisted_prefix(8, 10).expect_err("stale-high cursor must fail-closed");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("persisted prefix len 10") && msg.contains("working set 8"),
-            "got {msg}"
-        );
-    }
-
-    #[test]
-    fn persisted_prefix_gate_keeps_exact_cursor_when_tail_exists() {
-        assert_eq!(require_persisted_prefix(12, 10).unwrap(), 10);
     }
 
     #[test]

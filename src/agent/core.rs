@@ -3,24 +3,23 @@ use super::outcome::TurnOutcome;
 use crate::authority::responses::{
     FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall, OutputStatus,
 };
-use crate::types::{Item, LitecodeError, Transcript, item_text_preview};
+use crate::types::{Item, LitecodeError, item_text_preview};
 
 /// Agent loop on authority Items — no second-truth assembly.
 ///
-/// Data flow per step:
-/// 1. `prepare_step` (via `compact_if_needed`) → ephemeral `PreparedView` Items
-/// 2. `call_model` → `output: Vec<Item>` (completed or incomplete seal)
-/// 3. Append **all** output Items verbatim to the transcript
-/// 4. Persist Item delta (FunctionCall visible before tools run)
-/// 5. If complete FunctionCalls present and not cancelled → `execute_tools`
-///    appends FunctionCallOutput only
-/// 6. Persist again when tools ran; otherwise step already persisted at 4
+/// The pipeline's working rows are the turn. Each step only holds the items
+/// it just produced:
+///
+/// 1. `compact_if_needed` then `prepare_view` → ephemeral `PreparedView`
+/// 2. `call_model` → this step's output Items
+/// 3. `persist_new` those items (a streamed row is claimed by its id)
+/// 4. If complete FunctionCalls are present → `execute_tools` appends outputs
+/// 5. `persist_new` the outputs
 ///
 /// Cancellation is a seal, not a discard: once `call_model` returns Items they
-/// are extended and persisted. User abort mid-stream is sealed as incomplete
-/// Items by the codec. Incomplete FunctionCalls are not executed; interrupted
-/// outputs are appended so the next turn never sees a dangling FunctionCall.
-pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> TurnOutcome {
+/// are persisted. Incomplete FunctionCalls are not executed; interrupted
+/// outputs are persisted so the next turn never sees a dangling FunctionCall.
+pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
     let mut final_text = String::new();
     let mut step = 0u64;
     let max_steps = deps.max_steps() as u64;
@@ -41,14 +40,14 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
             return TurnOutcome::Error(error);
         }
 
-        let compacted = match deps.compact_if_needed(transcript, step).await {
+        let compacted = match deps.compact_if_needed(step).await {
             Ok(compacted) => compacted,
             Err(e) => return TurnOutcome::Error(e),
         };
         if compacted && let Err(error) = deps.sync_request_seam(step) {
             return TurnOutcome::Error(error);
         }
-        if let Err(error) = deps.prepare_view(transcript, step) {
+        if let Err(error) = deps.prepare_view(step) {
             return TurnOutcome::Error(error);
         }
 
@@ -57,11 +56,7 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
             Err(LitecodeError::Canceled) => {
                 return TurnOutcome::Cancelled { final_text };
             }
-            Err(LitecodeError::LlmStreamInterrupted {
-                message,
-                mut partial,
-            }) => {
-                let persist_at = transcript.len();
+            Err(LitecodeError::LlmStreamInterrupted { message, partial }) => {
                 let tool_uses: Vec<FunctionToolCall> = partial
                     .iter()
                     .filter_map(|item| match item {
@@ -69,13 +64,14 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
                         _ => None,
                     })
                     .collect();
-                transcript.append(&mut partial);
-                append_interrupted_outputs(
-                    transcript,
+                let pads = interrupted_outputs(
+                    &partial,
                     &tool_uses,
                     "the LLM stream was interrupted before a result arrived",
                 );
-                if let Some(outcome) = persist_or_stop(deps, transcript, persist_at, &final_text) {
+                let mut step_items = partial;
+                step_items.extend(pads);
+                if let Some(outcome) = persist_or_stop(deps, &step_items, &final_text) {
                     return outcome;
                 }
                 return TurnOutcome::Error(LitecodeError::Llm(message));
@@ -119,12 +115,7 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
             final_text = text;
         }
 
-        let persist_at = transcript.len();
-        if !output.is_empty() {
-            transcript.extend(output.iter().cloned());
-        }
-
-        if let Some(outcome) = persist_or_stop(deps, transcript, persist_at, &final_text) {
+        if let Some(outcome) = persist_or_stop(deps, &output, &final_text) {
             return outcome;
         }
 
@@ -132,33 +123,30 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
             deps.is_cancelled() || tool_uses.iter().any(function_call_must_not_execute);
 
         if !tool_uses.is_empty() && skip_tools {
-            let before_pad = transcript.len();
-            append_interrupted_outputs(
-                transcript,
+            let pads = interrupted_outputs(
+                &output,
                 &tool_uses,
                 "the user cancelled the turn before a result arrived",
             );
-            if let Some(outcome) = persist_or_stop(deps, transcript, before_pad, &final_text) {
+            if let Some(outcome) = persist_or_stop(deps, &pads, &final_text) {
                 return outcome;
             }
             return TurnOutcome::Cancelled { final_text };
         }
 
         if !tool_uses.is_empty() {
-            let before_tools = transcript.len();
-            match deps.execute_tools(&tool_uses, transcript).await {
+            let mut outputs = Vec::new();
+            match deps.execute_tools(&tool_uses, &mut outputs).await {
                 Ok(()) => {}
                 Err(LitecodeError::Canceled) => {
-                    if let Some(outcome) =
-                        persist_or_stop(deps, transcript, before_tools, &final_text)
-                    {
+                    if let Some(outcome) = persist_or_stop(deps, &outputs, &final_text) {
                         return outcome;
                     }
                     return TurnOutcome::Cancelled { final_text };
                 }
                 Err(e) => return TurnOutcome::Error(e),
             }
-            if let Some(outcome) = persist_or_stop(deps, transcript, before_tools, &final_text) {
+            if let Some(outcome) = persist_or_stop(deps, &outputs, &final_text) {
                 return outcome;
             }
             deps.emit_todo_progress();
@@ -189,17 +177,12 @@ pub async fn run(deps: &mut impl AgentDeps, transcript: &mut Transcript) -> Turn
 
     TurnOutcome::Completed { final_text }
 }
-fn persist_or_stop(
-    deps: &impl AgentDeps,
-    transcript: &mut Transcript,
-    persist_at: usize,
-    final_text: &str,
-) -> Option<TurnOutcome> {
-    match deps.persist_items(transcript) {
-        Err(e) => {
-            transcript.truncate(persist_at);
-            Some(TurnOutcome::Error(e))
-        }
+fn persist_or_stop(deps: &impl AgentDeps, items: &[Item], final_text: &str) -> Option<TurnOutcome> {
+    if items.is_empty() {
+        return None;
+    }
+    match deps.persist_new(items) {
+        Err(e) => Some(TurnOutcome::Error(e)),
         // `true` means persist skipped a write because the log shrank (回退).
         // User 取消 is `is_cancelled()` plus 封口, not projection length.
         Ok(true) => Some(TurnOutcome::Cancelled {
@@ -216,32 +199,33 @@ fn function_call_must_not_execute(fc: &FunctionToolCall) -> bool {
     )
 }
 
-fn append_interrupted_outputs(
-    transcript: &mut Transcript,
+fn interrupted_outputs(
+    step_items: &[Item],
     tool_uses: &[FunctionToolCall],
     reason: &str,
-) {
-    let answered: std::collections::HashSet<String> = transcript
+) -> Vec<Item> {
+    let answered: std::collections::HashSet<String> = step_items
         .iter()
         .filter_map(|item| match item {
             Item::FunctionCallOutput(out) => Some(out.call_id.clone()),
             _ => None,
         })
         .collect();
-    for fc in tool_uses {
-        if answered.contains(&fc.call_id) {
-            continue;
-        }
-        transcript.push(Item::FunctionCallOutput(FunctionCallOutputItemParam {
-            call_id: fc.call_id.clone(),
-            output: FunctionCallOutput::Text(format!(
-                "tool '{}' was interrupted: {reason}",
-                fc.name
-            )),
-            id: None,
-            status: None,
-        }));
-    }
+    tool_uses
+        .iter()
+        .filter(|fc| !answered.contains(&fc.call_id))
+        .map(|fc| {
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                call_id: fc.call_id.clone(),
+                output: FunctionCallOutput::Text(format!(
+                    "tool '{}' was interrupted: {reason}",
+                    fc.name
+                )),
+                id: None,
+                status: None,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -276,7 +260,7 @@ mod pending_continue_tests {
             Ok(true)
         }
 
-        async fn compact_if_needed(&self, _transcript: &mut Transcript, _step: u64) -> Result<bool> {
+        async fn compact_if_needed(&self, _step: u64) -> Result<bool> {
             Ok(false)
         }
 
@@ -291,7 +275,7 @@ mod pending_continue_tests {
             10
         }
 
-        fn persist_items(&self, _items: &mut Vec<Item>) -> Result<bool> {
+        fn persist_new(&self, _items: &[Item]) -> Result<bool> {
             Ok(false)
         }
 
@@ -315,8 +299,7 @@ mod pending_continue_tests {
             requests: Cell::new(0),
             pending: Cell::new(true),
         };
-        let mut transcript: Transcript = Vec::new();
-        let outcome = crate::agent::run(&mut deps, &mut transcript).await;
+        let outcome = crate::agent::run(&mut deps).await;
         assert!(matches!(outcome, TurnOutcome::Completed { .. }));
         assert_eq!(
             deps.requests.get(),
@@ -333,8 +316,7 @@ mod pending_continue_tests {
             requests: Cell::new(0),
             pending: Cell::new(false),
         };
-        let mut transcript: Transcript = Vec::new();
-        let outcome = crate::agent::run(&mut deps, &mut transcript).await;
+        let outcome = crate::agent::run(&mut deps).await;
         assert!(matches!(outcome, TurnOutcome::Completed { .. }));
         assert_eq!(deps.requests.get(), 1);
     }

@@ -19,7 +19,7 @@ use litecode::context_pipeline::{
 };
 use litecode::session::manager::SessionManager;
 use litecode::session::task_state::TaskReminders;
-use litecode::session::{WorkingRow, align_working, project_items};
+use litecode::session::{WorkingRow, project_items};
 use litecode::types::{
     FunctionToolCall, Item, LitecodeError, Transcript, item_text_preview, user_text,
 };
@@ -86,9 +86,9 @@ async fn prepare(
     let provider = ScriptedProvider::with_text("compact summary");
     let cancel = CancellationToken::new();
     let model = test_model();
-    let mut items = project_items(turn);
+    pipeline.stage_working(turn.clone());
     let prompt_baseline = ProviderPromptBaseline::default();
-    prompt_baseline.record(last_prompt_tokens, items.len());
+    prompt_baseline.record(last_prompt_tokens, turn.len());
     pipeline
         .compact_step(
             sessions,
@@ -101,12 +101,11 @@ async fn prepare(
             "system",
             1024,
             &prompt_baseline,
-            &mut items,
             step,
             &cancel,
         )
         .await?;
-    pipeline.build_view(sessions, sid, &prompt_baseline, &mut items, &model)?;
+    pipeline.build_view(sessions, sid, &prompt_baseline, &model)?;
     *turn = pipeline.working_set();
     Ok(())
 }
@@ -157,7 +156,7 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
         .collect();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
 
-    let mut transcript = sessions.data().transcript_blocking(&sid).unwrap();
+    let transcript = sessions.data().transcript_blocking(&sid).unwrap();
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
     let estimate = budget.token_count(&transcript, 0);
     assert!(!budget.should_compact(estimate));
@@ -174,14 +173,14 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
         },
         "system",
         1024,
-        &mut transcript,
         &CancellationToken::new(),
         None,
     )
     .await
     .unwrap();
     assert!(compacted);
-    assert!(transcript.len() < seed.len());
+    let surface = sessions.data().transcript_blocking(&sid).unwrap();
+    assert!(surface.len() < seed.len());
 
     let history = sessions.data().events_blocking(&sid).unwrap();
     assert_eq!(
@@ -366,7 +365,7 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
     let cancel = CancellationToken::new();
     let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
-    let mut items = project_items(&turn);
+    let items = project_items(&turn);
     prompt_baseline.record(8_500, items.len());
     let compacted = pipeline
         .compact_step(
@@ -380,17 +379,16 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
             "system",
             1024,
             &prompt_baseline,
-            &mut items,
             1,
             &cancel,
         )
         .await
         .expect("under hard limit + cut=None must Ok");
     pipeline
-        .build_view(&sessions, &sid, &prompt_baseline, &mut items, &model)
+        .build_view(&sessions, &sid, &prompt_baseline, &model)
         .expect("build_view");
     assert!(!compacted, "keep-recent skip must report did_compact=false");
-    align_working(&mut turn, &items);
+    turn = pipeline.working_set();
 
     let after: Vec<String> = row_previews(&turn);
     assert_eq!(
@@ -457,6 +455,200 @@ async fn compact_eats_only_persisted_prefix_and_keeps_uncommitted_tail() {
     );
 }
 
+/// Auto-compact succeeds, then the next request is built from the folded log
+/// plus anything the post-compact seam appended. Kept tool calls must appear
+/// once: splicing the pre-compact transcript back on repeats their ids and the
+/// provider rejects the request.
+#[tokio::test(flavor = "current_thread")]
+async fn compact_rebuild_does_not_repeat_kept_call_ids() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let mut seed: Vec<Item> = (0..40).map(|i| user_text(format!("seed-{i}"))).collect();
+    seed.push(function_call_item(
+        "c-kept",
+        "read",
+        r#"{"file_path":"a.rs"}"#,
+        "fc_kept",
+    ));
+    seed.push(Item::FunctionCallOutput(FunctionCallOutputItemParam {
+        call_id: "c-kept".into(),
+        output: FunctionCallOutput::Text("file contents".into()),
+        id: None,
+        status: None,
+    }));
+    seed.push(user_text("after-tools"));
+    sessions.insert_detail_rows(&sid, &seed).unwrap();
+
+    let ctx = test_context(dir.path());
+    let pipeline =
+        ContextPipeline::new(10_000, ctx, dir.path().to_path_buf()).with_keep_recent_tokens(80);
+    let turn = pipeline.begin_turn(&sessions, &sid).unwrap();
+    let provider = ScriptedProvider::with_text("compact summary");
+    let cancel = CancellationToken::new();
+    let model = test_model();
+    let prompt_baseline = ProviderPromptBaseline::default();
+    let items = project_items(&turn);
+    prompt_baseline.record(8_500, items.len());
+    let compacted = pipeline
+        .compact_step(
+            &sessions,
+            &sid,
+            litecode::llm::CompactLlmCall {
+                provider: &provider,
+                api_key: "key",
+                model: "m",
+            },
+            "system",
+            1024,
+            &prompt_baseline,
+            1,
+            &cancel,
+        )
+        .await
+        .expect("compact succeeds");
+    assert!(compacted, "fixture must cross the keep-recent cut");
+
+    // The real loop appends restored reminders after compact, before the request.
+    sessions
+        .append_reminder(
+            &sid,
+            &litecode::reminder::Reminder::Env(litecode::reminder::EnvBody {
+                cwd: "/proj".into(),
+                os: "test".into(),
+                date: "2026-09-27".into(),
+                timezone: "+00:00".into(),
+                text: "Environment: cwd /proj; os test; date 2026-09-27; timezone +00:00.".into(),
+            }),
+        )
+        .unwrap();
+
+    pipeline
+        .build_view(&sessions, &sid, &prompt_baseline, &model)
+        .expect("build_view");
+    let prepared = pipeline.prepared_view().expect("prepared view").items;
+    let call_ids: Vec<&str> = prepared
+        .iter()
+        .filter_map(|item| match item {
+            Item::FunctionCall(call) => Some(call.call_id.as_str()),
+            Item::FunctionCallOutput(output) => Some(output.call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let kept = call_ids.iter().filter(|id| **id == "c-kept").count();
+    assert_eq!(
+        kept,
+        2,
+        "the kept call and its output each appear once, got {call_ids:?}\n{}",
+        prepared
+            .iter()
+            .map(item_text_preview)
+            .collect::<Vec<_>>()
+            .join("\n---\n")
+    );
+    assert!(
+        prepared
+            .iter()
+            .any(|item| item_text_preview(item).contains("after-tools")),
+        "the keep window must survive"
+    );
+    assert_eq!(
+        prepared
+            .iter()
+            .filter(|item| item_text_preview(item).contains("seed-0"))
+            .count(),
+        0,
+        "discarded prefix must not be spliced back onto the request"
+    );
+}
+
+/// A pending tail is not in the log. A reminder appended after compact must not
+/// make the next view drop that tail or splice it by position.
+#[tokio::test(flavor = "current_thread")]
+async fn compact_keeps_pending_tail_after_post_compact_reminder() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let seed: Vec<Item> = (0..30).map(|i| user_text(format!("seed-{i}"))).collect();
+    sessions.insert_detail_rows(&sid, &seed).unwrap();
+
+    let ctx = test_context(dir.path());
+    let pipeline =
+        ContextPipeline::new(10_000, ctx, dir.path().to_path_buf()).with_keep_recent_tokens(1);
+    let mut turn = pipeline.begin_turn(&sessions, &sid).unwrap();
+    turn.push(WorkingRow::pending(user_text("pending-tail-x")));
+    pipeline.stage_working(turn.clone());
+
+    let provider = ScriptedProvider::with_text("compact summary");
+    let cancel = CancellationToken::new();
+    let model = test_model();
+    let prompt_baseline = ProviderPromptBaseline::default();
+    let items = project_items(&turn);
+    prompt_baseline.record(8_500, items.len());
+    let compacted = pipeline
+        .compact_step(
+            &sessions,
+            &sid,
+            litecode::llm::CompactLlmCall {
+                provider: &provider,
+                api_key: "key",
+                model: "m",
+            },
+            "system",
+            1024,
+            &prompt_baseline,
+            1,
+            &cancel,
+        )
+        .await
+        .expect("compact succeeds");
+    assert!(compacted, "fixture must compact");
+
+    sessions
+        .append_reminder(
+            &sid,
+            &litecode::reminder::Reminder::Env(litecode::reminder::EnvBody {
+                cwd: "/proj".into(),
+                os: "test".into(),
+                date: "2026-09-27".into(),
+                timezone: "+00:00".into(),
+                text: "Environment: cwd /proj; os test; date 2026-09-27; timezone +00:00.".into(),
+            }),
+        )
+        .unwrap();
+    pipeline
+        .build_view(&sessions, &sid, &prompt_baseline, &model)
+        .expect("build_view");
+
+    let prepared = pipeline.prepared_view().expect("prepared view").items;
+    let previews: Vec<String> = prepared.iter().map(item_text_preview).collect();
+    let tail_at: Vec<usize> = previews
+        .iter()
+        .enumerate()
+        .filter(|(_, preview)| preview.contains("pending-tail-x"))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        tail_at.len(),
+        1,
+        "pending tail must survive once, got {previews:?}"
+    );
+    let reminder_at = previews
+        .iter()
+        .position(|preview| preview.contains("<system-reminder>"))
+        .expect("post-compact reminder");
+    assert!(
+        tail_at[0] > reminder_at,
+        "pending tail follows the reminder, got {previews:?}"
+    );
+    let conn_tail = sessions
+        .data()
+        .transcript_blocking(&sid)
+        .unwrap()
+        .iter()
+        .filter(|item| item_text_preview(item).contains("pending-tail-x"))
+        .count();
+    assert_eq!(conn_tail, 0, "pending tail must not be written by compact");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -484,11 +676,8 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
     let cancel = CancellationToken::new();
     let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
-    let mut items = project_items(&turn);
+    let items = project_items(&turn);
     prompt_baseline.record(8_500, items.len());
-    let task_state = sessions
-        .with_entry_task_state(&sid, |s| Ok(s.clone()))
-        .unwrap();
     pipeline
         .compact_step(
             &sessions,
@@ -501,14 +690,13 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
             "system",
             1024,
             &prompt_baseline,
-            &mut items,
             2,
             &cancel,
         )
         .await
         .expect("compact");
     pipeline
-        .build_view(&sessions, &sid, &prompt_baseline, &mut items, &model)
+        .build_view(&sessions, &sid, &prompt_baseline, &model)
         .expect("build_view");
     turn = pipeline.working_set();
 
@@ -544,7 +732,6 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         turn_id: "t".into(),
         step: 2,
         max_steps: 10,
-        model_ref: "m".into(),
         cwd: dir.path().to_path_buf(),
     };
     let reminders = litecode::reminder::sync(&ctx, &view, &facts);
@@ -1436,11 +1623,7 @@ impl AgentDeps for PipelinePersistDeps {
         Ok(true)
     }
 
-    async fn compact_if_needed(
-        &self,
-        _transcript: &mut Transcript,
-        _step: u64,
-    ) -> litecode::types::Result<bool> {
+    async fn compact_if_needed(&self, _step: u64) -> litecode::types::Result<bool> {
         Ok(false)
     }
 
@@ -1456,14 +1639,14 @@ impl AgentDeps for PipelinePersistDeps {
         50
     }
 
-    fn persist_items(&self, items: &mut Vec<Item>) -> litecode::types::Result<bool> {
+    fn persist_new(&self, items: &[Item]) -> litecode::types::Result<bool> {
         if let Some(k) = self.revert_k.take() {
             self.sessions
                 .entry_revert_to_user_anchor(&self.session_id, k)?;
         }
         Ok(self
             .pipeline
-            .commit_step_from_items(&self.sessions, &self.session_id, items)?
+            .persist_new(&self.sessions, &self.session_id, items)?
             .discarded)
     }
 
@@ -1481,7 +1664,7 @@ async fn agent_persist_after_revert_does_not_replay_or_pad() {
     }
     let ctx = test_context(dir.path());
     let pipeline = ContextPipeline::new(10_000, ctx, dir.path().to_path_buf());
-    let mut working = pipeline.begin_turn(&sessions, &sid).unwrap();
+    let working = pipeline.begin_turn(&sessions, &sid).unwrap();
     assert_eq!(working.len(), 2);
 
     let mut deps = PipelinePersistDeps {
@@ -1500,20 +1683,12 @@ async fn agent_persist_after_revert_does_not_replay_or_pad() {
         revert_k: Cell::new(Some(1)),
         execute_calls: Cell::new(0),
     };
-    let mut transcript = project_items(&working);
-    let outcome = agent::run(&mut deps, &mut transcript).await;
+    let outcome = agent::run(&mut deps).await;
     assert!(
         matches!(outcome, litecode::agent::TurnOutcome::Cancelled { .. }),
         "got {outcome:?}"
     );
     assert_eq!(deps.execute_calls.get(), 0);
-    assert_eq!(transcript.len(), 1);
-    assert!(
-        !transcript
-            .iter()
-            .any(|i| matches!(i, Item::FunctionCall(_) | Item::FunctionCallOutput(_))),
-        "reverted prefix must not grow interrupted residue: {transcript:?}"
-    );
     let db = deps
         .sessions
         .data()
@@ -1677,10 +1852,10 @@ async fn compact_then_send_message_matches_run_with_turn() {
         items.len()
     );
     assert_eq!(
-        pipeline.persisted_prefix_len(),
+        pipeline.working_set().len(),
         3,
         "BLAST-begin_turn: cursor is surface len {}, log len is {log_len}",
-        pipeline.persisted_prefix_len()
+        pipeline.working_set().len()
     );
 
     items.push(WorkingRow::pending(user_text("after compact")));
@@ -1691,7 +1866,7 @@ async fn compact_then_send_message_matches_run_with_turn() {
         !user_commit.discarded,
         "BLAST-user-commit: Discarded after compact+new user (silent Cancelled). \
          cursor={} log_len={} surface_now={} items={}",
-        pipeline.persisted_prefix_len(),
+        pipeline.working_set().len(),
         sessions
             .data()
             .events_blocking(&sid)
@@ -1753,7 +1928,7 @@ async fn compact_then_send_message_matches_run_with_turn() {
     assert!(
         !seal_commit.discarded,
         "BLAST-seal-commit: Discarded after persist_item+commit. seq={added_seq} cursor={} items={}",
-        pipeline.persisted_prefix_len(),
+        pipeline.working_set().len(),
         items.len()
     );
     assert!(
@@ -1767,7 +1942,7 @@ async fn compact_then_send_message_matches_run_with_turn() {
     );
 
     let mut prepared = sessions.data().working_set_blocking(&sid).unwrap();
-    let prefix_before_prepare = pipeline.persisted_prefix_len();
+    let prefix_before_prepare = pipeline.working_set().len();
     prepare(&pipeline, &sessions, &sid, &ctx, &mut prepared, 1, 0)
         .await
         .expect("BLAST-prepare_step after compact+user+assistant");
@@ -1778,7 +1953,7 @@ async fn compact_then_send_message_matches_run_with_turn() {
          prepared_len={} items_len={} cursor_now={}",
         prepared.len(),
         items.len(),
-        pipeline.persisted_prefix_len()
+        pipeline.working_set().len()
     );
 }
 
@@ -1826,8 +2001,7 @@ async fn compact_then_agent_run_persists_assistant() {
         revert_k: Cell::new(None),
         execute_calls: Cell::new(0),
     };
-    let mut transcript = project_items(&working);
-    let outcome = agent::run(&mut deps, &mut transcript).await;
+    let outcome = agent::run(&mut deps).await;
     assert!(
         matches!(outcome, litecode::agent::TurnOutcome::Completed { .. }),
         "BLAST-agent-run: expected Completed after compact+new user, got {outcome:?}"

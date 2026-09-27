@@ -8,15 +8,17 @@ pub mod summary;
 pub mod system;
 pub mod view;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::llm::item_id_of;
 use crate::session::manager::SessionManager;
 use crate::session::store::Session;
-use crate::session::working::{WorkingRow, align_working, project_items};
-use crate::types::{Item, LitecodeError, Result, Transcript};
+use crate::session::working::{WorkingRow, project_items};
+use crate::types::{Item, LitecodeError, Result};
 
 pub use budget::{BudgetPolicy, ProviderPromptBaseline, manual_compact_eligible};
 pub use compact::CompactPolicy;
@@ -38,9 +40,8 @@ struct PipelineState {
     hot: HotView,
     prepared: Option<PreparedView>,
     working: Vec<WorkingRow>,
-    /// Model-visible working-set length — compact cut mapping only, not persist.
-    surface_len: usize,
-    /// Last observed log `MAX(seq)` (`-1` if empty). Discarded iff the table is shorter.
+    /// Last observed log `MAX(seq)` (`-1` if empty). A later commit treats a
+    /// smaller cursor as a revert and discards the turn's tail.
     log_max_seq: i64,
     turn_id: Option<String>,
 }
@@ -80,6 +81,31 @@ fn align_padded_item_seqs(
     aligned
 }
 
+/// Bind this step's items onto stream rows opened after `cursor`. A provider
+/// id is only unique inside one call, so older rows are not candidates.
+fn attach_step_items(rows: &mut Vec<WorkingRow>, items: &[Item], cursor: i64) {
+    let mut used = HashSet::new();
+    for item in items {
+        let bound = item_id_of(item).and_then(|id| {
+            rows.iter().position(|row| {
+                let Some(seq) = row.log_seq else {
+                    return false;
+                };
+                (seq as i64) > cursor
+                    && !used.contains(&seq)
+                    && item_id_of(&row.item).as_deref() == Some(id.as_str())
+            })
+        });
+        if let Some(index) = bound {
+            let seq = rows[index].log_seq.expect("bound row has a seq");
+            used.insert(seq);
+            rows[index].replace_item(item.clone());
+        } else {
+            rows.push(WorkingRow::pending(item.clone()));
+        }
+    }
+}
+
 impl ContextPipeline {
     pub fn new(context_window: usize, _ctx: Context, data_root: PathBuf) -> Self {
         Self {
@@ -90,7 +116,6 @@ impl ContextPipeline {
                 hot: HotView::new(),
                 prepared: None,
                 working: Vec::new(),
-                surface_len: 0,
                 log_max_seq: -1,
                 turn_id: None,
             }),
@@ -166,7 +191,6 @@ impl ContextPipeline {
 
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.turn_id = turn_id;
-        state.surface_len = rows.len();
         state.log_max_seq = max_seq;
         state.working = rows.clone();
         state.hot.replace(project_items(&rows));
@@ -174,70 +198,49 @@ impl ContextPipeline {
         Ok(rows)
     }
 
-    pub fn persisted_prefix_len(&self) -> usize {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .surface_len
-    }
-
-    /// Reattach unpersisted `turn_items` onto a persisted prefix.
-    /// Persisted length comes from the prefix, never from a fresh log fold.
-    fn merge_unpersisted_tail(persisted: Vec<WorkingRow>, turn_items: &[Item]) -> Vec<WorkingRow> {
-        let persisted_len = persisted.len();
-        let mut rows = persisted;
-        for item in turn_items.iter().skip(persisted_len).cloned() {
-            rows.push(WorkingRow::pending(item));
-        }
-        rows
-    }
-
-    /// Use the turn window when the log max seq is unchanged. Reload from fold
-    /// when the window is empty or the log was truncated (or otherwise moved).
-    fn sync_turn_working(
-        &self,
-        sessions: &SessionManager,
-        session_id: &str,
-        turn_items: &mut Transcript,
-    ) {
-        let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
-        let must_reload = {
-            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.working.is_empty() || max_seq != state.log_max_seq
-        };
-        if must_reload {
-            if let Ok(from_log) = sessions.data().working_set_blocking(session_id) {
-                let persisted_len = from_log.len();
-                let rows = Self::merge_unpersisted_tail(from_log, turn_items);
-                *turn_items = project_items(&rows);
-                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                state.working = rows;
-                state.surface_len = persisted_len;
-                state.log_max_seq = max_seq;
-            }
-            return;
-        }
-        let persisted: Vec<WorkingRow> = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .working
-            .iter()
-            .filter(|row| row.log_seq.is_some())
-            .cloned()
-            .collect();
-        let persisted_len = persisted.len();
-        let rows = Self::merge_unpersisted_tail(persisted, turn_items);
-        *turn_items = project_items(&rows);
+    /// Install rows the caller already holds (a `begin_turn` load plus pending
+    /// tails) without writing them.
+    pub fn stage_working(&self, rows: Vec<WorkingRow>) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.working = rows;
-        state.surface_len = persisted_len;
+    }
+
+    /// Reload when the log cursor moved. Pending rows (`log_seq == None`) are
+    /// appended after the fold. A shorter log is a revert: drop the pending
+    /// tail and leave `log_max_seq` so the next commit still sees the shrink.
+    fn sync_turn_working(&self, sessions: &SessionManager, session_id: &str) {
+        let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
+        let (must_reload, shrunk, pending) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let shrunk = !state.working.is_empty() && max_seq < state.log_max_seq;
+            let must_reload = state.working.is_empty() || max_seq != state.log_max_seq;
+            let pending: Vec<WorkingRow> = state
+                .working
+                .iter()
+                .filter(|row| row.log_seq.is_none())
+                .cloned()
+                .collect();
+            (must_reload, shrunk, pending)
+        };
+        if !must_reload {
+            return;
+        }
+        let Ok(mut rows) = sessions.data().working_set_blocking(session_id) else {
+            return;
+        };
+        if !shrunk {
+            rows.extend(pending);
+        }
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.working = rows;
+        if !shrunk {
+            state.log_max_seq = max_seq;
+        }
     }
 
     pub fn end_turn(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.turn_id = None;
-        state.surface_len = 0;
         state.log_max_seq = -1;
         state.working.clear();
         state.hot.replace(Vec::new());
@@ -257,7 +260,6 @@ impl ContextPipeline {
         compact_system: &str,
         compact_max_tokens: u32,
         prompt_baseline: &ProviderPromptBaseline,
-        turn_items: &mut Transcript,
         step: u64,
         cancel: &CancellationToken,
     ) -> Result<bool> {
@@ -267,24 +269,8 @@ impl ContextPipeline {
             return Ok(false);
         }
 
-        self.sync_turn_working(sessions, session_id, turn_items);
-
-        let mut transcript = turn_items.clone();
-        let committed_len = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .surface_len;
-        let persisted_seqs: Vec<crate::session::event::Seq> = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .working
-            .iter()
-            .take(committed_len)
-            .filter_map(|row| row.log_seq)
-            .collect();
-
+        self.sync_turn_working(sessions, session_id);
+        let mut rows = self.working_set();
         let compacted = self
             .compact
             .compact_if_needed(
@@ -295,9 +281,7 @@ impl ContextPipeline {
                 compact_system,
                 compact_max_tokens,
                 prompt_baseline,
-                &mut transcript,
-                committed_len,
-                &persisted_seqs,
+                &mut rows,
                 step,
                 cancel,
             )
@@ -308,37 +292,12 @@ impl ContextPipeline {
         }
 
         if compacted {
-            let persisted = sessions.data().working_set_blocking(session_id)?;
+            // `compact_if_needed` already reloaded the fold once and put the
+            // pending tail back. Do not load the log again.
             let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
-            let mut rows = persisted;
-            for item in transcript.iter().skip(rows.len()) {
-                rows.push(WorkingRow::pending(item.clone()));
-            }
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.surface_len = rows.iter().filter(|r| r.log_seq.is_some()).count();
             state.log_max_seq = max_seq;
             state.working = rows;
-        } else {
-            let mut rows = self
-                .state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .working
-                .clone();
-            let valid_call_ids: std::collections::HashSet<String> = rows
-                .iter()
-                .filter_map(|row| match &row.item {
-                    Item::FunctionCall(fc) => Some(fc.call_id.clone()),
-                    _ => None,
-                })
-                .collect();
-            rows.retain(|row| {
-                !matches!(
-                    &row.item,
-                    Item::FunctionCallOutput(out) if !valid_call_ids.contains(&out.call_id)
-                )
-            });
-            self.state.lock().unwrap_or_else(|e| e.into_inner()).working = rows;
         }
         Ok(compacted)
     }
@@ -352,10 +311,9 @@ impl ContextPipeline {
         sessions: &SessionManager,
         session_id: &str,
         prompt_baseline: &ProviderPromptBaseline,
-        turn_items: &mut Transcript,
         model: &crate::provider_catalog::ResolvedModel,
     ) -> Result<()> {
-        self.sync_turn_working(sessions, session_id, turn_items);
+        self.sync_turn_working(sessions, session_id);
         let (turn_view, source_seqs) = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             (
@@ -367,7 +325,6 @@ impl ContextPipeline {
                     .collect::<Vec<_>>(),
             )
         };
-        *turn_items = turn_view.clone();
 
         let mut llm_items = turn_view.clone();
         Session::pad_unanswered_calls(&mut llm_items);
@@ -407,23 +364,26 @@ impl ContextPipeline {
         self.commit_step_with_turn(sessions, session_id, rows, "")
     }
 
-    pub fn commit_step_from_items(
+    /// Commit `items` produced by this step.
+    ///
+    /// Rows the stream already opened (`seq` above the cursor at view-build
+    /// time) are claimed by provider item id. Everything else is a pending
+    /// tail. A failed commit leaves those new rows out of `state.working`.
+    pub fn persist_new(
         &self,
         sessions: &SessionManager,
         session_id: &str,
-        items: &mut Vec<Item>,
+        items: &[Item],
     ) -> Result<CommitStepOutcome> {
-        // The log's own working set is the authority on what is already durable.
-        // The stream projector writes rows as items arrive, so `state.working` is
-        // stale by the time the agent hands its items back — a pending row for an
-        // item that already has a `seq` is what appends a second copy of it.
-        // Starting from the reloaded rows binds every item to the row it owns, in
-        // output order, and leaves only genuinely new items pending.
-        let mut rows = sessions.data().working_set_blocking(session_id)?;
-        align_working(&mut rows, items);
-        let outcome = self.commit_step(sessions, session_id, &mut rows)?;
-        *items = project_items(&rows);
-        Ok(outcome)
+        let cursor = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .log_max_seq;
+        self.sync_turn_working(sessions, session_id);
+        let mut rows = self.working_set();
+        attach_step_items(&mut rows, items, cursor);
+        self.commit_step(sessions, session_id, &mut rows)
     }
 
     pub fn commit_step_with_turn(
@@ -465,7 +425,6 @@ impl ContextPipeline {
         };
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.working = rows.clone();
-        state.surface_len = rows.len();
         state.log_max_seq = sessions.entry_wire_seq_cursor(session_id).0;
         state.hot.replace(project_items(rows));
         if clear_prepared {
@@ -504,20 +463,6 @@ impl ContextPipeline {
 mod turn_window_tests {
     use super::*;
     use crate::types::user_text;
-
-    #[test]
-    fn merge_unpersisted_tail_keys_off_persisted_prefix() {
-        let persisted = vec![
-            WorkingRow::persisted(0, user_text("a")),
-            WorkingRow::persisted(1, user_text("b")),
-        ];
-        let items = vec![user_text("a"), user_text("b"), user_text("c")];
-        let rows = ContextPipeline::merge_unpersisted_tail(persisted, &items);
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].log_seq, Some(0));
-        assert_eq!(rows[1].log_seq, Some(1));
-        assert_eq!(rows[2].log_seq, None);
-    }
 
     #[test]
     fn padding_alignment_uses_order_not_provider_ids() {
@@ -603,8 +548,12 @@ mod stream_commit_tests {
             .insert_detail_rows(&sid, &[user_text("go")])
             .expect("user row");
 
-        // What the stream projector does as the model talks: open, then settle.
         let streamed = assistant("asst_stream", "hello");
+        let pipeline = ContextPipeline::new(0, test_context(), PathBuf::from("/p"));
+        // The view cursor is the user row. The stream opens its row after that.
+        pipeline
+            .begin_turn_with_id(&sessions, &sid, Some("turn-1".into()))
+            .expect("turn");
         let seq = sessions
             .begin_stream_item(&sid, &streamed, "turn-1")
             .expect("open");
@@ -619,17 +568,22 @@ mod stream_commit_tests {
             "user row plus one streamed row: {before:?}"
         );
 
-        let pipeline = ContextPipeline::new(0, test_context(), PathBuf::from("/p"));
-        let mut items = vec![user_text("go"), streamed];
         pipeline
-            .commit_step_from_items(&sessions, &sid, &mut items)
+            .persist_new(&sessions, &sid, &[streamed])
             .expect("commit");
 
         let after = persisted_seqs(&sessions, &sid);
         assert_eq!(
             after, before,
-            "the commit must bind the streamed item to the row it already owns"
+            "persist_new must bind the streamed item to the row it already owns, not append"
         );
-        assert_eq!(items.len(), 2);
+        let owned = sessions
+            .data()
+            .working_set_blocking(&sid)
+            .expect("working")
+            .into_iter()
+            .find(|row| row.log_seq == Some(seq))
+            .expect("streamed seq");
+        assert_eq!(item_id_of(&owned.item).as_deref(), Some("asst_stream"));
     }
 }

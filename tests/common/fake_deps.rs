@@ -65,8 +65,11 @@ pub struct FakeAgentDeps {
     pub execute_calls: Cell<u32>,
     pub stop_on_text: bool,
     pub compact_calls: Cell<u64>,
-    /// Ordered snapshots from `persist_items` (for timing assertions).
+    /// Ordered snapshots from `persist_new` (for timing assertions).
     pub persist_log: RefCell<Vec<PersistSnapshot>>,
+    /// Items accepted by `persist_new`, in order. The loop no longer holds a
+    /// turn transcript, so tests read this instead.
+    pub landed: RefCell<Vec<Item>>,
 }
 
 impl Default for FakeAgentDeps {
@@ -82,6 +85,7 @@ impl Default for FakeAgentDeps {
             stop_on_text: true,
             compact_calls: Cell::new(0),
             persist_log: RefCell::new(Vec::new()),
+            landed: RefCell::new(Vec::new()),
         }
     }
 }
@@ -148,7 +152,7 @@ impl AgentDeps for FakeAgentDeps {
         Ok(false)
     }
 
-    async fn compact_if_needed(&self, _transcript: &mut Transcript, _step: u64) -> Result<bool> {
+    async fn compact_if_needed(&self, _step: u64) -> Result<bool> {
         self.compact_calls
             .set(self.compact_calls.get().saturating_add(1));
         Ok(false)
@@ -166,7 +170,7 @@ impl AgentDeps for FakeAgentDeps {
         self.max_steps
     }
 
-    fn persist_items(&self, items: &mut Vec<Item>) -> Result<bool> {
+    fn persist_new(&self, items: &[Item]) -> Result<bool> {
         if self.persist_fail {
             return Err(LitecodeError::ToolExecution("persist failed".into()));
         }
@@ -174,6 +178,7 @@ impl AgentDeps for FakeAgentDeps {
             len: items.len(),
             types: items.iter().map(item_type_name).collect(),
         });
+        self.landed.borrow_mut().extend(items.iter().cloned());
         Ok(false)
     }
 

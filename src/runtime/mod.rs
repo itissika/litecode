@@ -814,8 +814,12 @@ impl AgentRuntime {
 
     pub async fn run(&mut self, user_prompt: &str) -> Result<String> {
         let step_max = self.agent_config.max_steps;
-        self.run_with_turn(TurnInput::User(UserInput::text(user_prompt)), "local-turn", step_max)
-            .await
+        self.run_with_turn(
+            TurnInput::User(UserInput::text(user_prompt)),
+            "local-turn",
+            step_max,
+        )
+        .await
     }
 
     pub async fn run_with_turn(
@@ -933,11 +937,8 @@ impl AgentRuntime {
                 Some(turn_id.to_string()),
             )?
         };
-        let mut items = project_items(&working);
-
         if !wake {
             let item = user_message(&user_input.text, &user_input.images);
-            items.push(item.clone());
             working.push(WorkingRow::pending(item));
         }
 
@@ -975,8 +976,6 @@ impl AgentRuntime {
                 );
             }
         }
-
-        items = project_items(&working);
 
         let (_last_seq, next_seq) = self.sessions.entry_wire_seq_cursor(&self.session_id);
         let anchor_k = next_seq as i64;
@@ -1017,7 +1016,7 @@ impl AgentRuntime {
         }
 
         tracing::info!(
-            item_count = items.len(),
+            item_count = self.context_pipeline.working_set().len(),
             anchor_k,
             "session transcript loaded"
         );
@@ -1025,8 +1024,9 @@ impl AgentRuntime {
         self.emit_todo_progress();
         self.emit_plan_changed();
 
-        let outcome = crate::agent::run(self, &mut items).await;
-        self.sync_active_plan_revision_after_turn(&items);
+        let outcome = crate::agent::run(self).await;
+        let settled = project_items(&self.context_pipeline.working_set());
+        self.sync_active_plan_revision_after_turn(&settled);
 
         let should_commit = matches!(
             outcome,
@@ -1035,11 +1035,18 @@ impl AgentRuntime {
         // Persist the final turn delta before TurnCompleted so the DB already
         // contains the whole turn when the event lands. On failure, seal rows
         // still in flight and return: this path skips `finalize_agent_outcome`.
-        if should_commit {
-            let commit_outcome = match self.context_pipeline.commit_step_from_items(
+        if should_commit
+            && self
+                .context_pipeline
+                .working_set()
+                .iter()
+                .any(|row| row.log_seq.is_none())
+        {
+            let mut pending = self.context_pipeline.working_set();
+            let commit_outcome = match self.context_pipeline.commit_step(
                 &self.sessions,
                 &self.session_id,
-                &mut items,
+                &mut pending,
             ) {
                 Ok(outcome) => outcome,
                 Err(error) => {
@@ -1115,7 +1122,7 @@ impl AgentRuntime {
 
         tracing::info!(
             session_id = %self.session_id,
-            total_items = items.len(),
+            total_items = self.context_pipeline.working_set().len(),
             "agent loop complete"
         );
         self.context_pipeline.end_turn();

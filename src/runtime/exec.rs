@@ -71,7 +71,7 @@ impl AgentDeps for AgentRuntime {
         Ok(should_stop_after_output(output))
     }
 
-    async fn compact_if_needed(&self, transcript: &mut Transcript, step: u64) -> Result<bool> {
+    async fn compact_if_needed(&self, step: u64) -> Result<bool> {
         if self.is_cancelled() {
             return Ok(false);
         }
@@ -96,19 +96,17 @@ impl AgentDeps for AgentRuntime {
                 &compaction_system,
                 crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
                 &self.prompt_usage_baseline,
-                transcript,
                 step,
                 &self.cancel,
             )
             .await
     }
 
-    fn prepare_view(&mut self, transcript: &mut Transcript, _step: u64) -> Result<()> {
+    fn prepare_view(&mut self, _step: u64) -> Result<()> {
         self.context_pipeline.build_view(
             &self.sessions,
             &self.session_id,
             &self.prompt_usage_baseline,
-            transcript,
             &self.turn_llm.model,
         )
     }
@@ -153,12 +151,10 @@ impl AgentDeps for AgentRuntime {
         self.agent_config.max_steps
     }
 
-    fn persist_items(&self, items: &mut Vec<Item>) -> Result<bool> {
-        let outcome = self.context_pipeline.commit_step_from_items(
-            &self.sessions,
-            &self.session_id,
-            items,
-        )?;
+    fn persist_new(&self, items: &[Item]) -> Result<bool> {
+        let outcome = self
+            .context_pipeline
+            .persist_new(&self.sessions, &self.session_id, items)?;
         if outcome.discarded {
             // 回退 shortened the log; do not append this turn's tail.
             return Ok(true);
@@ -234,46 +230,30 @@ impl AgentRuntime {
     /// fail-closed: a write error puts the completions back and stops the turn.
     /// Other reminder writes are fail-open so a decoration cannot abort the turn.
     fn append_seam_reminders(&mut self, step: u64) -> Result<bool> {
-        use crate::reminder::{
-            BashExitEntry, PlanPointer, RunningBash, SettledChild, TodoSnap,
-        };
+        use crate::reminder::{BashExitEntry, PlanPointer, RunningBash, SettledChild, TodoSnap};
         use crate::reminder::{Facts, ReminderKind, SeamCtx, TaskFacts, sync};
         use crate::tools::bash_status::display_output_path;
 
         let cwd = self.base_ctx.cwd.clone();
-        let turn_id = self
-            .context_pipeline
-            .current_turn_id()
-            .unwrap_or_default();
+        let turn_id = self.context_pipeline.current_turn_id().unwrap_or_default();
         let ctx = SeamCtx {
             session_id: self.session_id.clone(),
             turn_id,
             step,
             max_steps: u64::from(self.agent_config.max_steps),
-            model_ref: self.turn_llm.model_ref.clone(),
             cwd: cwd.clone(),
         };
 
         let bash_notices = self
             .runtime_ctx
             .as_ref()
-            .and_then(|runtime| {
-                runtime
-                    .tools
-                    .iter()
-                    .find_map(|tool| tool.agent_terminal())
-            })
+            .and_then(|runtime| runtime.tools.iter().find_map(|tool| tool.agent_terminal()))
             .map(|hub| hub.jobs.take_mailbox(&self.session_id))
             .unwrap_or_default();
         let bash_running = self
             .runtime_ctx
             .as_ref()
-            .and_then(|runtime| {
-                runtime
-                    .tools
-                    .iter()
-                    .find_map(|tool| tool.agent_terminal())
-            })
+            .and_then(|runtime| runtime.tools.iter().find_map(|tool| tool.agent_terminal()))
             .map(|hub| hub.jobs.running(&self.session_id))
             .unwrap_or_default();
         let completions = self
@@ -456,8 +436,7 @@ impl AgentRuntime {
         let Some(hub) = runtime.tools.iter().find_map(|tool| tool.agent_terminal()) else {
             return;
         };
-        hub.jobs
-            .restore_mailbox(&self.session_id, notices.to_vec());
+        hub.jobs.restore_mailbox(&self.session_id, notices.to_vec());
     }
 
     fn emit_llm_request_built(&self, request: &ModelRequest, token_count: usize) {
@@ -567,7 +546,6 @@ impl AgentRuntime {
             input,
             tools: tool_schemas,
             max_output_tokens: self.turn_llm.max_tokens,
-            temperature: self.agent_config.temperature,
             thinking: crate::platform_knobs::ThinkingSpec::Tier(self.turn_llm.thinking_tier),
             // Session binding only — never agent.model_ref (decoupled sticky model).
             // No turn-level JSON intent: `model.json_output` is a capability the
@@ -905,7 +883,6 @@ mod estimate_body_bytes_tests {
             input,
             tools: vec![],
             max_output_tokens: 64,
-            temperature: 0.0,
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: None,

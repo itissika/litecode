@@ -334,7 +334,7 @@ async fn prepare_snapshot(
 ) -> Vec<serde_json::Value> {
     let provider = common::ScriptedProvider::with_text("unused");
     let cancel = CancellationToken::new();
-    let mut items = project_items(turn);
+    pipeline.stage_working(turn.clone());
     let baseline = ProviderPromptBaseline::default();
     pipeline
         .compact_step(
@@ -348,14 +348,13 @@ async fn prepare_snapshot(
             "system",
             1024,
             &baseline,
-            &mut items,
             step,
             &cancel,
         )
         .await
         .expect("compact_step");
     pipeline
-        .build_view(sessions, sid, &baseline, &mut items, &test_model())
+        .build_view(sessions, sid, &baseline, &test_model())
         .expect("build_view");
     *turn = pipeline.working_set();
     items_json(&pipeline.prepared_view().expect("prepared view").items)
@@ -707,12 +706,12 @@ async fn state_reminders_only_append_across_steps() {
         turn_id: "t1".into(),
         step: 1,
         max_steps: 10,
-        model_ref: "openai/gpt".into(),
         cwd: dir.path().to_path_buf(),
     };
     let view = sessions.spine_reminder_view(&sid).unwrap();
-    let written: Vec<_> = litecode::reminder::sync(&seam, &view, &litecode::reminder::Facts::default());
-    assert!(written.len() >= 2, "first seam writes env and model");
+    let written: Vec<_> =
+        litecode::reminder::sync(&seam, &view, &litecode::reminder::Facts::default());
+    assert!(written.len() >= 1, "first seam writes env");
     for reminder in &written {
         sessions.append_reminder(&sid, reminder).unwrap();
     }
@@ -723,16 +722,16 @@ async fn state_reminders_only_append_across_steps() {
     let view = sessions.spine_reminder_view(&sid).unwrap();
     let again = litecode::reminder::sync(&seam, &view, &litecode::reminder::Facts::default());
     assert!(
-        again.iter().all(|reminder| {
-            !matches!(
-                reminder.kind(),
-                litecode::reminder::ReminderKind::Env | litecode::reminder::ReminderKind::Model
-            )
-        }),
-        "an unchanged env and model must not be rewritten"
+        again
+            .iter()
+            .all(|reminder| { !matches!(reminder.kind(), litecode::reminder::ReminderKind::Env) }),
+        "an unchanged env must not be rewritten"
     );
     let third = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 3).await;
-    assert_eq!(second, third, "a quiet seam leaves the sent prefix untouched");
+    assert_eq!(
+        second, third,
+        "a quiet seam leaves the sent prefix untouched"
+    );
     assert_seqs_strict_and_unsealed(&sessions, &sid);
 }
 
@@ -744,16 +743,15 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
         .insert_detail_rows(&sid, &[user_text("hist"), user_text("more")])
         .unwrap();
     let ctx = test_context(dir.path());
-    let pipeline = ContextPipeline::new(10_000, ctx, dir.path().to_path_buf())
-        .with_keep_recent_tokens(1);
+    let pipeline =
+        ContextPipeline::new(10_000, ctx, dir.path().to_path_buf()).with_keep_recent_tokens(1);
     let mut turn = pipeline
         .begin_turn_with_id(&sessions, &sid, Some("t1".into()))
         .unwrap();
     let provider = common::ScriptedProvider::with_text("compact summary");
     let cancel = CancellationToken::new();
-    let mut items = project_items(&turn);
     let baseline = ProviderPromptBaseline::default();
-    baseline.record(8_500, items.len());
+    baseline.record(8_500, turn.len());
     let compacted = pipeline
         .compact_step(
             &sessions,
@@ -766,7 +764,6 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
             "system",
             1024,
             &baseline,
-            &mut items,
             1,
             &cancel,
         )
@@ -774,7 +771,7 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
         .expect("compact");
     assert!(compacted, "the recorded baseline must force a compact");
     pipeline
-        .build_view(&sessions, &sid, &baseline, &mut items, &test_model())
+        .build_view(&sessions, &sid, &baseline, &test_model())
         .expect("build_view");
     turn = pipeline.working_set();
     let after_compact = items_json(&pipeline.prepared_view().expect("view").items);
@@ -798,7 +795,6 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
         turn_id: "t1".into(),
         step: 2,
         max_steps: 10,
-        model_ref: "m".into(),
         cwd: dir.path().to_path_buf(),
     };
     let restored = litecode::reminder::sync(&seam, &view, &facts)
@@ -809,12 +805,23 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
     assert!(seq > head, "restore row follows the compacted head");
 
     let after_restore = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 2).await;
-    assert_json_prefix(&after_compact, &after_restore, "restore appends after the summary");
+    assert_json_prefix(
+        &after_compact,
+        &after_restore,
+        "restore appends after the summary",
+    );
     let last = item_text_preview(
         &serde_json::from_value::<Item>(after_restore.last().cloned().unwrap()).unwrap(),
     );
-    assert!(last.contains("keep shipping"), "restore text lands at the tail: {last:?}");
+    assert!(
+        last.contains("keep shipping"),
+        "restore text lands at the tail: {last:?}"
+    );
     let quiet = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 3).await;
-    assert_json_prefix(&after_restore, &quiet, "a second view does not rewrite the restore prefix");
+    assert_json_prefix(
+        &after_restore,
+        &quiet,
+        "a second view does not rewrite the restore prefix",
+    );
     assert_seqs_strict_and_unsealed(&sessions, &sid);
 }

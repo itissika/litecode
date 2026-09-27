@@ -241,7 +241,6 @@ impl SessionController {
                 compaction_binding.compact_call(),
                 &compaction_system,
                 crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
-                &mut transcript,
                 &cancel,
                 Some(&op_id),
             )

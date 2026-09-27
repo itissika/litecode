@@ -1,31 +1,32 @@
-//! Product-path agent loop regressions on authority `Item` / `Transcript`.
+//! Product-path agent loop regressions on authority `Item`s.
 //!
 //! Restored spirit of `docs/phase1-removed-tests/integration/agent_loop.rs`
-//! without Message/ContentBlock/StreamOutput.
+//! without Message/ContentBlock/StreamOutput. The loop no longer holds a turn
+//! transcript; accepted step items land in `FakeAgentDeps::landed`.
 
 mod common;
 
 use common::fake_deps::{FakeAgentDeps, assistant_text_item, function_call_item};
 use litecode::agent;
-use litecode::types::{Item, item_text_preview, user_text};
+use litecode::types::{Item, item_text_preview};
 
 #[tokio::test(flavor = "current_thread")]
 async fn single_text_response_stops_loop() {
     let mut deps = FakeAgentDeps::with_text_response("done");
-    let mut transcript = vec![user_text("hi")];
 
-    let outcome = agent::run(&mut deps, &mut transcript).await;
+    let outcome = agent::run(&mut deps).await;
     match outcome {
         litecode::agent::TurnOutcome::Completed { final_text } => {
             assert_eq!(final_text, "done");
         }
         other => panic!("expected Completed, got {other:?}"),
     }
+    let landed = deps.landed.borrow();
     assert!(
-        transcript
+        landed
             .iter()
             .any(|item| { matches!(item, Item::Message(_)) && item_text_preview(item) == "done" }),
-        "transcript must contain assistant text Item: {transcript:?}"
+        "landed items must contain assistant text Item: {landed:?}"
     );
 }
 
@@ -40,32 +41,30 @@ async fn function_call_then_text_grows_transcript() {
         )],
         vec![assistant_text_item("final", "msg_final")],
     ]);
-    let mut transcript = vec![user_text("go")];
-    let before = transcript.len();
 
-    let outcome = agent::run(&mut deps, &mut transcript).await;
+    let outcome = agent::run(&mut deps).await;
     match outcome {
         litecode::agent::TurnOutcome::Completed { final_text } => {
             assert_eq!(final_text, "final");
         }
         other => panic!("expected Completed, got {other:?}"),
     }
+    let landed = deps.landed.borrow();
     assert!(
-        transcript.len() > before + 1,
-        "tool round must grow transcript (before={before}, after={})",
-        transcript.len()
+        landed.iter().any(|i| matches!(i, Item::FunctionCall(_))),
+        "FunctionCall Item must be persisted"
     );
     assert!(
-        transcript
-            .iter()
-            .any(|i| matches!(i, Item::FunctionCall(_))),
-        "FunctionCall Item must remain in transcript"
-    );
-    assert!(
-        transcript
+        landed
             .iter()
             .any(|i| matches!(i, Item::FunctionCallOutput(_))),
         "execute_tools must append FunctionCallOutput"
+    );
+    assert!(
+        landed
+            .iter()
+            .any(|item| matches!(item, Item::Message(_)) && item_text_preview(item) == "final"),
+        "final assistant text must be persisted: {landed:?}"
     );
 }
 
@@ -80,9 +79,8 @@ async fn tool_step_persists_function_call_before_output() {
         )],
         vec![assistant_text_item("final", "msg_final")],
     ]);
-    let mut transcript = vec![user_text("go")];
 
-    let outcome = agent::run(&mut deps, &mut transcript).await;
+    let outcome = agent::run(&mut deps).await;
     assert!(
         matches!(outcome, litecode::agent::TurnOutcome::Completed { .. }),
         "expected Completed, got {outcome:?}"
@@ -127,8 +125,7 @@ async fn max_steps_with_perpetual_tools() {
     deps.max_steps = 1;
     deps.stop_on_text = false;
 
-    let mut transcript = vec![user_text("loop")];
-    let outcome = agent::run(&mut deps, &mut transcript).await;
+    let outcome = agent::run(&mut deps).await;
     assert!(
         matches!(outcome, litecode::agent::TurnOutcome::MaxSteps { .. }),
         "expected MaxSteps, got {outcome:?}"
@@ -139,9 +136,8 @@ async fn max_steps_with_perpetual_tools() {
 async fn cancelled_breaks_loop() {
     let mut deps = FakeAgentDeps::with_text_response("never returned");
     deps.cancelled.set(true);
-    let mut transcript = vec![user_text("stop")];
 
-    let outcome = agent::run(&mut deps, &mut transcript).await;
+    let outcome = agent::run(&mut deps).await;
     match outcome {
         litecode::agent::TurnOutcome::Cancelled { final_text } => {
             assert!(final_text.is_empty());
@@ -153,11 +149,8 @@ async fn cancelled_breaks_loop() {
         "cancel before call_model must not persist a model row"
     );
     assert!(
-        !transcript
-            .iter()
-            .any(|item| matches!(item, Item::Message(_))
-                && item_text_preview(item) == "never returned"),
-        "cancel before stream must not leave a model Item: {transcript:?}"
+        deps.landed.borrow().is_empty(),
+        "cancel before stream must not leave a model Item"
     );
 }
 
@@ -165,20 +158,20 @@ async fn cancelled_breaks_loop() {
 async fn cancelled_after_model_persists_output() {
     let mut deps = FakeAgentDeps::with_text_response("partial");
     deps.cancel_after_model = true;
-    let mut transcript = vec![user_text("hi")];
 
-    let outcome = agent::run(&mut deps, &mut transcript).await;
+    let outcome = agent::run(&mut deps).await;
     match outcome {
         litecode::agent::TurnOutcome::Cancelled { final_text } => {
             assert_eq!(final_text, "partial");
         }
         other => panic!("expected Cancelled, got {other:?}"),
     }
+    let landed = deps.landed.borrow();
     assert!(
-        transcript
+        landed
             .iter()
             .any(|item| matches!(item, Item::Message(_)) && item_text_preview(item) == "partial"),
-        "cancelled after model must keep sealed Item: {transcript:?}"
+        "cancelled after model must keep sealed Item: {landed:?}"
     );
     assert!(
         !deps.persist_log.borrow().is_empty(),
@@ -193,15 +186,15 @@ async fn cancelled_after_stream_skips_tool_execution() {
         "call_1", "read", "{}", "fc_1",
     )]]);
     deps.cancel_after_model = true;
-    let mut transcript = vec![user_text("go")];
-    let outcome = agent::run(&mut deps, &mut transcript).await;
+    let outcome = agent::run(&mut deps).await;
     assert!(
         matches!(outcome, litecode::agent::TurnOutcome::Cancelled { .. }),
         "revert/cancel after stream must interrupt before tools, got {outcome:?}"
     );
     assert_eq!(deps.execute_calls.get(), 0);
     assert!(
-        transcript
+        deps.landed
+            .borrow()
             .iter()
             .any(|i| matches!(i, Item::FunctionCallOutput(_))),
         "open FunctionCall still in the working set must be sealed interrupted"
@@ -220,27 +213,25 @@ async fn incomplete_function_call_is_not_executed() {
             namespace: None,
         },
     )]]);
-    let mut transcript = vec![user_text("go")];
-    let outcome = agent::run(&mut deps, &mut transcript).await;
+    let outcome = agent::run(&mut deps).await;
     assert!(
         matches!(outcome, litecode::agent::TurnOutcome::Cancelled { .. }),
         "incomplete FC must stop the turn, got {outcome:?}"
     );
     assert_eq!(deps.execute_calls.get(), 0);
+    let landed = deps.landed.borrow();
     assert!(
-        transcript
-            .iter()
-            .any(|i| matches!(i, Item::FunctionCall(_))),
+        landed.iter().any(|i| matches!(i, Item::FunctionCall(_))),
         "FunctionCall must remain"
     );
     assert!(
-        transcript
+        landed
             .iter()
             .any(|i| matches!(i, Item::FunctionCallOutput(_))),
         "interrupted FunctionCallOutput must be appended"
     );
     assert!(
-        !transcript.iter().any(|i| {
+        !landed.iter().any(|i| {
             matches!(i, Item::FunctionCallOutput(out) if match &out.output {
                 litecode::authority::responses::FunctionCallOutput::Text(s) => s == "fake result",
                 _ => false,
@@ -254,16 +245,13 @@ async fn incomplete_function_call_is_not_executed() {
 async fn persist_failure_rolls_back_working_set() {
     let mut deps = FakeAgentDeps::with_text_response("gone");
     deps.persist_fail = true;
-    let mut transcript = vec![user_text("hi")];
-    let before = transcript.len();
-    let outcome = agent::run(&mut deps, &mut transcript).await;
+    let outcome = agent::run(&mut deps).await;
     assert!(
         matches!(outcome, litecode::agent::TurnOutcome::Error(_)),
         "expected Error, got {outcome:?}"
     );
-    assert_eq!(
-        transcript.len(),
-        before,
-        "persist failure must not leave model output in the working set: {transcript:?}"
+    assert!(
+        deps.landed.borrow().is_empty(),
+        "persist failure must not land the model output"
     );
 }

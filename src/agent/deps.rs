@@ -8,10 +8,9 @@ pub trait AgentDeps {
     /// transcript slice. Returns output Items to append verbatim to the transcript.
     async fn call_model(&mut self) -> Result<Vec<Item>>;
 
-    /// Execute tools for the given function calls. FunctionCall Items are already
-    /// in `transcript` (from model output); this only appends FunctionCallOutput Items.
-    /// On cancellation it appends an "interrupted" output for every call before
-    /// returning `Canceled`, so the transcript stays valid for the next turn.
+    /// Execute tools for the given function calls. Appends FunctionCallOutput
+    /// Items only. On cancellation it appends an "interrupted" output for every
+    /// call before returning `Canceled`.
     async fn execute_tools(
         &self,
         tool_uses: &[FunctionToolCall],
@@ -22,7 +21,7 @@ pub trait AgentDeps {
 
     /// Compact when the budget says so. `Ok(true)` means a compaction ran and
     /// the caller must sync the request seam again before building the view.
-    async fn compact_if_needed(&self, transcript: &mut Transcript, step: u64) -> Result<bool>;
+    async fn compact_if_needed(&self, step: u64) -> Result<bool>;
 
     /// Append harness reminders and queued user messages before the view is built.
     fn sync_request_seam(&mut self, _step: u64) -> Result<()> {
@@ -30,7 +29,7 @@ pub trait AgentDeps {
     }
 
     /// Build the ephemeral model view from the log after the seam (and any compact).
-    fn prepare_view(&mut self, _transcript: &mut Transcript, _step: u64) -> Result<()> {
+    fn prepare_view(&mut self, _step: u64) -> Result<()> {
         Ok(())
     }
 
@@ -50,10 +49,9 @@ pub trait AgentDeps {
 
     fn max_steps(&self) -> u32;
 
-    /// Persist the uncommitted suffix. `Ok(true)` means the log was truncated
-    /// under this turn: `items` was replaced with the DB prefix and the delta
-    /// was not written.
-    fn persist_items(&self, items: &mut Vec<Item>) -> Result<bool>;
+    /// Persist this step's new items. `Ok(true)` means the log was truncated
+    /// under this turn and the delta was not written.
+    fn persist_new(&self, items: &[Item]) -> Result<bool>;
 
     /// Called at the start of each agent-loop step; drives step/phase telemetry.
     fn begin_step(&mut self, step: u64);
