@@ -47,7 +47,7 @@
     "quirk": {
       "type": "string",
       "description": "Named non-universal protocol behavior, implemented by the codec for the provider's endpoint_type.",
-      "enum": ["omit_temperature_when_thinking", "thinking_type_switch", "reasoning_replay"]
+      "enum": ["thinking_type_switch", "reasoning_replay"]
     },
     "reasoning_key": {
       "type": "string",
@@ -167,11 +167,6 @@
           "type": "boolean",
           "default": false,
           "description": "Responses: send text.format = {\"type\":\"json_object\"}."
-        },
-        "temperature": {
-          "type": "boolean",
-          "default": true,
-          "description": "false never sends temperature."
         },
         "stream_usage": {
           "type": "boolean",

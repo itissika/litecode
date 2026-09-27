@@ -49,8 +49,6 @@ pub struct AgentConfig {
     pub system_prompt: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default = "default_temperature")]
-    pub temperature: f64,
     #[serde(default = "default_max_steps")]
     pub max_steps: u32,
 }
@@ -62,7 +60,6 @@ impl Default for AgentConfig {
             model_ref: default_model_ref(),
             system_prompt: String::new(),
             description: String::new(),
-            temperature: default_temperature(),
             max_steps: default_max_steps(),
         }
     }
@@ -80,10 +77,6 @@ fn default_model_ref() -> String {
     "default".into()
 }
 
-fn default_temperature() -> f64 {
-    0.7
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +86,6 @@ mod tests {
         let config = AgentConfig::default();
         assert_eq!(config.role, "primary");
         assert_eq!(config.model_ref, "default");
-        assert_eq!(config.temperature, default_temperature());
+        assert_eq!(config.max_steps, default_max_steps());
     }
 }

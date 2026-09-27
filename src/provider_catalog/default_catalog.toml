@@ -48,9 +48,9 @@ name = "DeepSeek"
 endpoint = "https://api.deepseek.com"
 endpoint_type = "responses"
 auth = "bearer"
-# DeepSeek ignores temperature while it thinks, and hard-requires every earlier
-# assistant turn's reasoning text to be passed back in thinking mode.
-quirks = ["omit_temperature_when_thinking", "reasoning_replay"]
+# DeepSeek hard-requires every earlier assistant turn's reasoning text to be
+# passed back in thinking mode.
+quirks = ["reasoning_replay"]
 
 [[providers]]
 id = "mimo"
@@ -141,8 +141,6 @@ auth = "bearer"
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── OpenAI ───────────────────────────────────────────────────────────────────
-# GPT-5.x reasoning models reject temperature (GPT-5.4 only accepts it when the
-# effort is "none"), so it is disabled instead of sent on every turn.
 
 [[models]]
 id = "gpt-5.6-sol"
@@ -151,7 +149,6 @@ label = "GPT-5.6 Sol"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -165,7 +162,6 @@ label = "GPT-5.6 Terra"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -179,7 +175,6 @@ label = "GPT-5.6 Luna"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -284,7 +279,6 @@ endpoint_type = "chat_completions"
 context_window = 256000
 context_window_max = 1000000
 max_output = 32768
-temperature = false
 modalities = ["text"]
 # K3 accepts low/high/max. Temperature is fixed at 1.0, so it is omitted.
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
@@ -297,7 +291,6 @@ endpoint_type = "chat_completions"
 context_window = 256000
 context_window_max = 1048576
 max_output = 32768
-temperature = false
 modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
@@ -313,7 +306,6 @@ endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -326,7 +318,6 @@ endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -339,7 +330,6 @@ endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -352,7 +342,6 @@ endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -365,7 +354,6 @@ endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -409,7 +397,6 @@ label = "Kimi K3"
 context_window = 256000
 context_window_max = 1000000
 max_output = 32768
-temperature = false
 modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
@@ -445,7 +432,6 @@ endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -458,7 +444,6 @@ endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -501,7 +486,6 @@ label = "Kimi K3"
 context_window = 256000
 context_window_max = 1000000
 max_output = 32768
-temperature = false
 modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
@@ -525,7 +509,6 @@ endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -538,7 +521,6 @@ endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -551,7 +533,6 @@ endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -564,7 +545,6 @@ endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-temperature = false
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
@@ -597,7 +577,6 @@ label = "Kimi K3"
 context_window = 256000
 context_window_max = 1000000
 max_output = 32768
-temperature = false
 modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
@@ -754,7 +733,6 @@ quirks = []
 context_window = 256000
 context_window_max = 1048576
 max_output = 128000
-temperature = false
 modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
@@ -767,7 +745,6 @@ quirks = []
 context_window = 256000
 context_window_max = 1048576
 max_output = 32768
-temperature = false
 modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
@@ -779,7 +756,6 @@ endpoint_type = "chat_completions"
 quirks = []
 context_window = 256000
 max_output = 32768
-temperature = false
 modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 

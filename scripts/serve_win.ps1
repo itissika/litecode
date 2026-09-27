@@ -15,9 +15,10 @@
 #   ./scripts/serve_win.ps1 -Wire             # capture + summarize every LLM request/stream
 #   ./scripts/serve_win.ps1 -Wire -WireDir D:\wire
 #
-# -Wire sets LITECODE_LLM_WIRE (default .litecode\wire). Each run writes
-# <dir>\<stamp>\ with the exact request bodies, raw SSE lines, and index.jsonl
-# (one layered summary per request). Watch live: ./scripts/wire_watch.ps1
+# -Wire sets LITECODE_LLM_WIRE (default .litecode\wire). Each session writes
+# <dir>\<session_id>\ : summary.jsonl (one record per request), meta.json,
+# <n>.<codec>.request.json, and <n>.<codec>.response.sse.jsonl.
+# Watch live: ./scripts/wire_watch.ps1
 #
 # -Cuda runs `cargo run --features ort-cuda` against target\cuda-accel (same
 # dir as dev_win.ps1 -Cuda), so toggling CUDA never invalidates the plain CPU

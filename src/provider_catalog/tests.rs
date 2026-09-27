@@ -183,7 +183,6 @@ fn seed_declares_reasoning_summaries_only_for_the_gpt_family() {
 fn seed_provider_quirks_land_on_their_models() {
     let catalog = seeded();
     let flash = catalog.model("deepseek/deepseek-flash").unwrap();
-    assert!(flash.has_quirk(ProviderQuirk::OmitTemperatureWhenThinking));
     assert!(flash.has_quirk(ProviderQuirk::ReasoningReplay));
     let ark = catalog.model("ark-coding/doubao-seed-2.1-turbo").unwrap();
     assert!(ark.has_quirk(ProviderQuirk::ThinkingTypeSwitch));
@@ -771,4 +770,18 @@ fn seed_gap_names_one_removed_model() {
     let gap = store::seed_gap(&loaded);
     assert!(gap.missing_providers.is_empty(), "{gap:?}");
     assert_eq!(gap.missing_models, vec!["openai/gpt-5.6-sol".to_string()]);
+    let blocks = store::seed_blocks(&gap);
+    assert!(
+        blocks.contains("[[models]]") && blocks.contains("id = \"gpt-5.6-sol\""),
+        "{blocks}"
+    );
+    assert!(
+        blocks.contains("OpenAI"),
+        "the comment above the table travels with the block:\n{blocks}"
+    );
+    assert!(
+        !blocks.contains("id = \"gpt-5.6-terra\""),
+        "entries already in the file are left out:\n{blocks}"
+    );
+    assert!(store::seed_blocks(&store::seed_gap(&seeded())).is_empty());
 }

@@ -8,8 +8,8 @@
 #   ./scripts/serve.sh --release       # cargo run --release (rebuilds release first)
 #   ./scripts/serve.sh --no-cleanup    # skip killing stale processes / freeing ports
 #   ./scripts/serve.sh --wire [DIR]    # capture + summarize every LLM request/stream
-#                                      # (default .litecode/wire; one line per request
-#                                      # in <DIR>/<stamp>/index.jsonl)
+#                                      # (default .litecode/wire; one session folder,
+#                                      # summary in <DIR>/<session>/summary.jsonl)
 #   ./scripts/serve.sh -- --workspace /path/to/project
 #
 # One process = one workspace. Changing folder requires restarting this script
@@ -277,7 +277,7 @@ run_api_local() {
     echo "    ws:     ws://$BIND/ws"
     if [[ -n "$WIRE_DIR" ]]; then
         mkdir -p "$WIRE_DIR"
-        echo "    wire:   capture ON -> $WIRE_DIR/<stamp>/ (watch: tail -F $WIRE_DIR/*/index.jsonl)"
+        echo "    wire:   capture ON -> $WIRE_DIR/<session>/ (watch: ./scripts/wire_watch.ps1 or tail -F $WIRE_DIR/*/summary.jsonl)"
         LITECODE_CHANNEL=dev LITECODE_LLM_WIRE="$WIRE_DIR" cargo "${cargo_args[@]}" &
     else
         LITECODE_CHANNEL=dev cargo "${cargo_args[@]}" &

@@ -109,7 +109,6 @@ pub fn agent_config_from_profile(profile: &AgentProfile) -> AgentConfig {
         model_ref: profile.model_ref.clone(),
         system_prompt: profile.system_prompt.clone(),
         description: profile.description.clone(),
-        temperature: profile.temperature,
         max_steps: profile.max_steps,
     }
 }

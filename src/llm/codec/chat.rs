@@ -145,9 +145,6 @@ impl ChatCompletionsCodec {
             "messages": messages,
             "stream": stream,
         });
-        if model.temperature {
-            body["temperature"] = serde_json::json!(params.temperature);
-        }
         if params.max_output_tokens > 0 {
             body["max_tokens"] = Value::from(params.max_output_tokens);
         }
@@ -476,7 +473,6 @@ headers = { "x-opencode-session" = "{{session_id}}" }
             input: vec![user_text("hi")],
             tools: vec![],
             max_output_tokens: 64,
-            temperature: 0.2,
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: Some("ses_1".into()),
@@ -493,13 +489,13 @@ headers = { "x-opencode-session" = "{{session_id}}" }
         assert_eq!(body["stream"], true);
         assert_eq!(body["stream_options"]["include_usage"], true);
         assert_eq!(body["max_tokens"], 64);
-        assert_eq!(body["temperature"], 0.2);
+        assert!(body.get("temperature").is_none(), "{body}");
         assert!(body.get("tools").is_none());
     }
 
     #[test]
     fn model_flags_drive_optional_fields() {
-        let body = codec("temperature = false\nstream_usage = false\n")
+        let body = codec("stream_usage = false\n")
             .encode_body(&sample_request(), true)
             .unwrap();
         assert!(body.get("temperature").is_none(), "{body}");

@@ -181,6 +181,118 @@ fn embedded_seed() -> &'static ProviderCatalog {
     })
 }
 
+/// One embedded table (`[[providers]]` or `[[models]]`) plus the comment lines
+/// that sit above its header.
+struct CatalogTable {
+    provider_id: Option<String>,
+    id: String,
+    text: String,
+}
+
+/// TOML this build ships for the entries in `gap`, in catalog order.
+///
+/// Comments directly above each table travel with it. Entries the file already
+/// has are left out. An empty gap prints nothing.
+pub fn seed_blocks(gap: &SeedGap) -> String {
+    if gap.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for table in catalog_tables(DEFAULT_CATALOG) {
+        let keep = match &table.provider_id {
+            None => gap
+                .missing_providers
+                .iter()
+                .any(|provider| provider.id == table.id),
+            Some(provider_id) => {
+                let reference = format!("{provider_id}/{}", table.id);
+                gap.missing_models.iter().any(|model| model == &reference)
+            }
+        };
+        if !keep {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&table.text);
+    }
+    out
+}
+
+fn catalog_tables(source: &str) -> Vec<CatalogTable> {
+    let lines: Vec<&str> = source.lines().collect();
+    let headers: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| {
+            let trimmed = line.trim();
+            trimmed == "[[providers]]" || trimmed == "[[models]]"
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let mut tables = Vec::with_capacity(headers.len());
+    for (index, &header) in headers.iter().enumerate() {
+        let next = headers.get(index + 1).copied().unwrap_or(lines.len());
+        let mut end = next;
+        while end > header && lines[end - 1].trim().is_empty() {
+            end -= 1;
+        }
+        let mut start = header;
+        while start > 0 {
+            let previous = lines[start - 1].trim();
+            if previous.is_empty() || previous.starts_with('#') {
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+        while start < header && lines[start].trim().is_empty() {
+            start += 1;
+        }
+        let body = &lines[header..end];
+        let Some(id) = assignment(body, "id") else {
+            continue;
+        };
+        let kind = lines[header].trim();
+        let provider_id = if kind == "[[models]]" {
+            assignment(body, "provider_id")
+        } else {
+            None
+        };
+        if kind == "[[models]]" && provider_id.is_none() {
+            continue;
+        }
+        let mut text = lines[start..end].join("\n");
+        text.push('\n');
+        tables.push(CatalogTable {
+            provider_id,
+            id,
+            text,
+        });
+    }
+    tables
+}
+
+fn assignment(lines: &[&str], key: &str) -> Option<String> {
+    let prefix = format!("{key} = ");
+    for line in lines {
+        let Some(rest) = line.trim().strip_prefix(&prefix) else {
+            continue;
+        };
+        let rest = rest.trim().trim_end_matches(',');
+        let quoted = rest
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .or_else(|| {
+                rest.strip_prefix('\'')
+                    .and_then(|value| value.strip_suffix('\''))
+            });
+        return Some(quoted.unwrap_or(rest).to_string());
+    }
+    None
+}
+
 /// Providers and models this build ships that `loaded` does not have.
 pub fn seed_gap(loaded: &ProviderCatalog) -> SeedGap {
     let seed = embedded_seed();

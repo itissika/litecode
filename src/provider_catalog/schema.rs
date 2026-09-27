@@ -162,8 +162,6 @@ impl UsagePatch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderQuirk {
-    /// DeepSeek: thinking mode ignores temperature, so omit it while a tier is sent.
-    OmitTemperatureWhenThinking,
     /// Ark Coding (Doubao Responses): send `thinking.type` next to
     /// `reasoning.effort`; the low tier disables thinking.
     ThinkingTypeSwitch,
@@ -174,11 +172,7 @@ pub enum ProviderQuirk {
 }
 
 impl ProviderQuirk {
-    pub const ALL: &'static [ProviderQuirk] = &[
-        Self::OmitTemperatureWhenThinking,
-        Self::ThinkingTypeSwitch,
-        Self::ReasoningReplay,
-    ];
+    pub const ALL: &'static [ProviderQuirk] = &[Self::ThinkingTypeSwitch, Self::ReasoningReplay];
 }
 
 /// Which field a Chat Completions replay writes reasoning back into.
@@ -298,9 +292,6 @@ pub struct RawModel {
     pub tool_call: bool,
     #[serde(default)]
     pub json_output: bool,
-    /// `false` = never send `temperature`.
-    #[serde(default = "default_true")]
-    pub temperature: bool,
     /// `stream_options.include_usage`.
     #[serde(default = "default_true")]
     pub stream_usage: bool,

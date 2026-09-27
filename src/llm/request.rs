@@ -24,7 +24,6 @@ pub struct ModelRequest {
     pub input: Vec<Item>,
     pub tools: Vec<ToolDef>,
     pub max_output_tokens: u32,
-    pub temperature: f64,
     pub thinking: ThinkingSpec,
     pub json_output: bool,
     /// Litecode session id. Chat Completions vendors that have a session
@@ -35,6 +34,7 @@ pub struct ModelRequest {
 
 impl ModelRequest {
     /// One-shot compaction summarizer: no tools, thinking off, caller output cap.
+    /// Sampling knobs such as temperature are not set; the provider default stands.
     pub fn compact(
         model: impl Into<String>,
         system: &str,
@@ -47,7 +47,6 @@ impl ModelRequest {
             instructions: system.to_string(),
             input: vec![user_text(prompt)],
             max_output_tokens,
-            temperature: 0.3,
             tools: vec![],
             thinking: ThinkingSpec::Off,
             json_output: false,

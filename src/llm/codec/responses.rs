@@ -135,12 +135,6 @@ impl ResponsesCodec {
             }
         }
 
-        let send_temperature = model.temperature
-            && !(model.has_quirk(ProviderQuirk::OmitTemperatureWhenThinking) && thinking_active);
-        if send_temperature {
-            body["temperature"] = serde_json::json!(params.temperature);
-        }
-
         // An empty tools array is omitted for every provider: it carries no
         // information and some vendors reject it.
         if !tools.is_empty() {
@@ -442,7 +436,7 @@ id = "deepseek"
 name = "DeepSeek"
 endpoint = "https://api.deepseek.com"
 endpoint_type = "responses"
-quirks = ["omit_temperature_when_thinking", "reasoning_replay"]
+quirks = ["reasoning_replay"]
 "#;
 
     const ARK_PROVIDER: &str = r#"
@@ -499,7 +493,6 @@ endpoint_type = "responses"
             input: vec![],
             tools: vec![],
             max_output_tokens: 64,
-            temperature: 0.0,
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: None,
@@ -525,7 +518,7 @@ endpoint_type = "responses"
         assert_eq!(body["model"], "m");
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_output_tokens"], 64);
-        assert_eq!(body["temperature"], 0.0);
+        assert!(body.get("temperature").is_none(), "{body}");
         assert_eq!(body["reasoning"]["effort"], "medium");
         assert!(body.get("tools").is_none(), "empty tools are omitted");
         assert!(body.get("store").is_none());
@@ -600,7 +593,7 @@ endpoint_type = "responses"
     }
 
     #[test]
-    fn deepseek_omits_temperature_while_thinking_and_keeps_it_when_off() {
+    fn thinking_off_does_not_send_temperature() {
         let codec = ResponsesCodec::new(deepseek(
             "reasoning = { tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }",
         ))
@@ -612,7 +605,9 @@ endpoint_type = "responses"
         );
         let mut request = sample_request();
         request.thinking = ThinkingSpec::Off;
-        assert_eq!(request_body(&codec, &request)["temperature"], 0.0);
+        let off = request_body(&codec, &request);
+        assert!(off.get("temperature").is_none(), "{off}");
+        assert_eq!(off["reasoning"]["effort"], "none");
     }
 
     #[test]

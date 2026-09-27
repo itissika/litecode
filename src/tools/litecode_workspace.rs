@@ -21,7 +21,7 @@ use crate::config::workspace::{read_workspace_custom_tools, read_workspace_mcp};
 use crate::context_pipeline::Context;
 use crate::engines::session_search::short_session_ref;
 use crate::mcp::{McpRunState, McpServerSnapshot};
-use crate::provider_catalog::{SeedGap, read_and_parse, seed_gap};
+use crate::provider_catalog::{SeedGap, read_and_parse, seed_blocks, seed_gap};
 use crate::runtime::RuntimeHandle;
 use crate::session::SessionDataReader;
 use crate::session::manager::{SessionActivityRow, SessionManager, SessionStatus};
@@ -54,8 +54,12 @@ const ASK_HUMAN: &str = "If you actually need it, ask a human to enable it in Se
      Agents. Otherwise stay silent.";
 const NEED_RESTART_NEXT: &str = "Tell the human to restart the current LiteCode. The file \
      takes effect only after that restart.";
-const PROVIDER_OUTDATED_NEXT: &str = "`guide provider`, then ask the human. If they agree, \
-     add only those entries yourself. This tool will not write the file.";
+const PROVIDER_OUTDATED_NEXT: &str = "`seed` prints the missing blocks. Ask the human. If they \
+     agree, paste those blocks into the existing file and keep their other edits. This tool \
+     will not write the file.";
+const SEED_PASTE: &str = "Ask the human. If they agree, paste the blocks below into the existing \
+     file and keep their other edits. Then run `refresh provider`. This tool will not write the \
+     file.";
 const PROVIDER_FIX_NEXT: &str =
     "Fix the file, then run `refresh provider` again. This tool will not write the file.";
 
@@ -96,6 +100,16 @@ const COMMANDS: &[CommandSpec] = &[
         help: "`guide` lists topics. `guide <topic>` prints that topic.",
     },
     CommandSpec {
+        name: "seed",
+        usage: "seed",
+        summary: "missing provider and model blocks from this build",
+        help: "`seed` prints the `[[providers]]` and `[[models]]` blocks this build ships that \
+               `provider-catalog.toml` does not have yet, including the comments above each \
+               block. Ask the human, then paste the blocks into the existing file. Entries \
+               already in the file are left out. A file that already has them, or that fails \
+               validation, prints no blocks. This tool will not write the file.",
+    },
+    CommandSpec {
         name: "refresh",
         usage: "refresh [excludes|mcp|custom_tools|provider|all]",
         summary: "whether those files will be accepted",
@@ -119,6 +133,7 @@ enum Action {
         limit: Option<usize>,
     },
     Guide(Option<GuideTopic>),
+    Seed,
     Refresh(Option<RefreshTarget>),
 }
 
@@ -165,6 +180,13 @@ fn parse_action(raw: &str) -> Result<Action, String> {
                 .ok_or_else(|| format!("# error\n\nunknown guide topic '{topic}'\n\n{TOPICS}\n")),
             _ => Err(usage_error("guide")),
         },
+        "seed" => {
+            if rest.is_empty() {
+                Ok(Action::Seed)
+            } else {
+                Err(usage_error("seed"))
+            }
+        }
         "refresh" => match rest.as_slice() {
             [] | ["all"] => Ok(Action::Refresh(None)),
             [topic] => match *topic {
@@ -304,6 +326,7 @@ impl LitecodeWorkspaceTool {
                 Some(topic) => ToolCallResult::ok(guides::topic(topic)),
                 None => ToolCallResult::ok(guides::GUIDE_INDEX),
             },
+            Ok(Action::Seed) => self.seed(),
             Ok(Action::Refresh(target)) => self.refresh(target),
         }
     }
@@ -494,6 +517,44 @@ impl LitecodeWorkspaceTool {
                 out.push_str(&seed_gap_lines(&disk_gap));
                 out.push_str(&format!("- next: {PROVIDER_OUTDATED_NEXT}\n"));
                 (out, None)
+            }
+        }
+    }
+
+    /// Original seed tables for whatever `provider_picture` calls outdated.
+    /// Configured, need-restart, and rejected files print no blocks.
+    fn seed(&self) -> ToolCallResult {
+        let catalog = self.runtime.resolved.catalog();
+        let path = catalog.path();
+        let loaded_gap = seed_gap(catalog);
+        if !path.is_file() {
+            return seed_outdated(&loaded_gap);
+        }
+        match read_and_parse(path) {
+            Err(error) => {
+                let message = one_line(&reason(&error));
+                ToolCallResult::ok(format!(
+                    "# seed\n\n- rejected: {message}\n- next: {PROVIDER_FIX_NEXT}\n"
+                ))
+                .with_warning(format!(
+                    "provider-catalog.toml failed validation: {message}"
+                ))
+            }
+            Ok(disk) => {
+                let disk_gap = seed_gap(&disk);
+                if disk_gap.is_empty() && !loaded_gap.is_empty() {
+                    ToolCallResult::ok(format!(
+                        "# seed\n\n- seed: need restart\n- next: {NEED_RESTART_NEXT}\n"
+                    ))
+                } else if disk_gap.is_empty() {
+                    ToolCallResult::ok(
+                        "# seed\n\n- seed: configured\n\nThis build's entries are already loaded. \
+                         There is no seed text to paste.\n"
+                            .to_string(),
+                    )
+                } else {
+                    seed_outdated(&disk_gap)
+                }
             }
         }
     }
@@ -848,7 +909,9 @@ impl Tool for LitecodeWorkspaceTool {
     fn description(&self, _ctx: &Context) -> String {
         "Facade for this workspace: excludes, MCP servers, custom tools, sessions, and whether \
          provider-catalog.toml is behind this build's seed. `seed: outdated` lists entries still \
-         missing from the file. `seed: need restart` means the file already has them; tell the \
+         missing from the file. `seed` prints those entries as `[[providers]]` and `[[models]]` \
+         blocks from this build, comments included; ask the human, then paste the blocks into \
+         the existing file. `seed: need restart` means the file already has them; tell the \
          human to restart the current LiteCode, and do not edit again. `refresh` (and \
          `refresh all`) validates excludes, MCP, custom tools, and the provider catalog; a \
          rejected provider file names the error. An MCP server or custom tool that is off for \
@@ -858,7 +921,9 @@ impl Tool for LitecodeWorkspaceTool {
     }
 
     fn max_result_size(&self) -> usize {
-        12_000
+        // `seed` prints the missing catalog tables. A first-run file can be
+        // missing every shipped block, which is larger than the panel.
+        256_000
     }
 }
 
@@ -932,6 +997,20 @@ fn run_state_label(snapshot: Option<&McpServerSnapshot>) -> String {
         ),
         _ => "stopped".to_string(),
     }
+}
+
+fn seed_outdated(gap: &SeedGap) -> ToolCallResult {
+    let blocks = seed_blocks(gap);
+    let mut out = String::from("# seed\n\n- seed: outdated\n\n");
+    out.push_str(SEED_PASTE);
+    out.push_str("\n\n```toml\n");
+    if blocks.is_empty() {
+        out.push_str(&seed_gap_lines(gap));
+    } else {
+        out.push_str(&blocks);
+    }
+    out.push_str("```\n");
+    ToolCallResult::ok(out)
 }
 
 fn seed_gap_lines(gap: &SeedGap) -> String {
@@ -1312,6 +1391,7 @@ mod tests {
             Ok(Action::Refresh(Some(RefreshTarget::Provider)))
         );
         assert_eq!(parse_action("refresh all"), Ok(Action::Refresh(None)));
+        assert_eq!(parse_action("seed"), Ok(Action::Seed));
     }
 
     #[test]
@@ -1928,7 +2008,9 @@ mod tests {
             outdated.content
         );
         assert!(
-            outdated.content.contains("`guide provider`"),
+            outdated
+                .content
+                .contains("`seed` prints the missing blocks"),
             "{}",
             outdated.content
         );
@@ -1979,6 +2061,20 @@ mod tests {
             "{}",
             outdated.content
         );
+        let pasted = run(&tool, &execution(root, &sessions, ""), "seed");
+        assert!(
+            pasted.content.contains("```toml")
+                && pasted.content.contains("[[providers]]")
+                && pasted.content.contains("id = \"openai\"")
+                && pasted.content.contains(SEED_PASTE),
+            "{}",
+            pasted.content
+        );
+        assert!(
+            !pasted.content.contains("- seed: need restart"),
+            "an open gap prints the blocks, not a restart:\n{}",
+            pasted.content
+        );
 
         std::fs::write(&path, DEFAULT_CATALOG).unwrap();
         let ready = run(&tool, &execution(root, &sessions, ""), "status");
@@ -1999,9 +2095,17 @@ mod tests {
             ready.content
         );
         assert!(
-            !ready.content.contains("`guide provider`"),
-            "a closed gap does not send the agent back to the guide:\n{}",
+            !ready.content.contains("`seed` prints the missing blocks"),
+            "a closed gap does not print seed blocks:\n{}",
             ready.content
+        );
+        let quiet = run(&tool, &execution(root, &sessions, ""), "seed");
+        assert!(
+            quiet.content.contains("- seed: need restart")
+                && !quiet.content.contains("```toml")
+                && !quiet.content.contains("id = \"openai\""),
+            "a closed gap does not print the seed text again:\n{}",
+            quiet.content
         );
 
         let refreshed = run(&tool, &execution(root, &sessions, ""), "refresh");
