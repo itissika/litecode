@@ -1,8 +1,8 @@
 use crate::config::AgentConfig;
-use crate::config::global_db::{builtin_prompt_for, is_builtin_prompt_marker};
+use crate::config::global_db::{CITATION_PROMPT, builtin_prompt_for, is_builtin_prompt_marker};
 use crate::context_pipeline::env::Context;
 
-/// Unified entry: body + CLAUDE.md. Hidden agents get body only.
+/// Unified entry: body + citation rules + CLAUDE.md. Hidden agents get body only.
 pub fn build_system_prompt(
     agent_id: &str,
     agent_config: &AgentConfig,
@@ -12,8 +12,17 @@ pub fn build_system_prompt(
     if agent_config.role == "hidden" {
         return body;
     }
+    let body = append_citations(&body);
     let claude_md = ctx.and_then(|c| c.claude_md.as_deref()).unwrap_or("");
     splice_claude_md(&body, claude_md)
+}
+
+fn append_citations(body: &str) -> String {
+    let suffix = CITATION_PROMPT.trim();
+    if body.trim().is_empty() {
+        return suffix.to_string();
+    }
+    format!("{}\n\n{suffix}", body.trim_end())
 }
 
 fn resolve_body(agent_id: &str, stored: &str) -> String {
@@ -38,7 +47,13 @@ fn splice_claude_md(body: &str, claude_md: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::WorkspacePaths;
-    use crate::config::global_db::{COMPACTION_PROMPT, DEFAULT_PROMPT, ORCHESTRATOR_PROMPT};
+    use crate::config::global_db::{
+        CITATION_PROMPT, COMPACTION_PROMPT, DEFAULT_PROMPT, ORCHESTRATOR_PROMPT,
+    };
+
+    fn with_citations(body: &str) -> String {
+        format!("{}\n\n{}", body.trim_end(), CITATION_PROMPT.trim())
+    }
 
     fn make_ctx(claude_md: Option<&str>, agents_md: Option<&str>) -> Context {
         Context {
@@ -64,7 +79,10 @@ mod tests {
         let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), None);
         assert!(prompt.starts_with("You are a General Purpose Agent in LiteCode."));
         assert!(!prompt.contains("You are litecode"));
-        assert_eq!(prompt, DEFAULT_PROMPT.trim());
+        assert_eq!(prompt, with_citations(DEFAULT_PROMPT));
+        assert!(prompt.contains("file:src/auth/validate.ts#L42"));
+        assert!(!prompt.contains("file_path:line_number"));
+        assert!(!prompt.contains("owner/repo#123"));
     }
 
     #[test]
@@ -75,14 +93,17 @@ mod tests {
             None,
         );
         assert!(prompt.starts_with("You are LiteCode's Orchestrator."));
-        assert_eq!(prompt, ORCHESTRATOR_PROMPT.trim());
+        assert_eq!(prompt, with_citations(ORCHESTRATOR_PROMPT));
+        assert!(prompt.contains("# Citations"));
+        assert!(!prompt.contains("file_path:line_number"));
     }
 
     #[test]
     fn user_override_replaces_builtin() {
         let prompt =
             build_system_prompt("default", &cfg("primary", "You are a custom agent."), None);
-        assert_eq!(prompt, "You are a custom agent.");
+        assert_eq!(prompt, with_citations("You are a custom agent."));
+        assert!(prompt.contains("# Citations"));
         assert!(!prompt.contains("General Purpose Agent"));
     }
 
@@ -92,6 +113,10 @@ mod tests {
         let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), Some(&ctx));
         assert!(prompt.contains("<context from=\"CLAUDE.md\">"));
         assert!(prompt.contains("# contract"));
+        assert!(
+            prompt.find("# Citations").unwrap()
+                < prompt.find("<context from=\"CLAUDE.md\">").unwrap()
+        );
         assert!(!prompt.contains("never splice agents md"));
         assert!(!prompt.contains("AGENTS.md"));
     }
@@ -105,6 +130,7 @@ mod tests {
             Some(&ctx),
         );
         assert_eq!(prompt, COMPACTION_PROMPT.trim());
+        assert!(!prompt.contains("# Citations"));
         assert!(!prompt.contains("CLAUDE.md"));
         assert!(!prompt.contains("# contract"));
     }
@@ -121,6 +147,7 @@ mod tests {
         let prompt = build_system_prompt("explore", &cfg("subagent", "builtin:explore"), None);
         assert!(prompt.contains("Explore Purpose Agent"));
         assert!(prompt.contains("READ-ONLY"));
+        assert!(prompt.contains("# Citations"));
     }
 
     #[test]
@@ -128,5 +155,6 @@ mod tests {
         let prompt = build_system_prompt("general", &cfg("subagent", "builtin:general"), None);
         assert!(prompt.starts_with("You are general,"));
         assert!(prompt.contains("# Collaboration"));
+        assert!(prompt.contains("# Citations"));
     }
 }

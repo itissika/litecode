@@ -25,6 +25,9 @@
 #     when that is smaller. context_window_max is the model's own maximum.
 #   * max_output is capped at 128000, or the model's own maximum when smaller.
 #   * extra_body is the escape hatch: it is merged into the request body as-is.
+#   * quirks on a provider are the default for its models. A model that writes
+#     quirks replaces that list; an empty list clears it. Leave the key off to
+#     inherit.
 
 version = 1
 
@@ -92,6 +95,46 @@ endpoint_type = "chat_completions"
 auth = "bearer"
 # One effort vocabulary across the whole catalog, so it is declared once here.
 tiers = { low = "low", medium = "high", high = "max" }
+
+# Chat Completions. Omitting `thinking` leaves the official default, enabled.
+# `thinking` is a codec-owned key, so preserved thinking (`clear_thinking`)
+# cannot be declared here.
+[[providers]]
+id = "zhipu"
+name = "智谱"
+endpoint = "https://open.bigmodel.cn/api/paas/v4"
+endpoint_type = "chat_completions"
+auth = "bearer"
+
+# Separate key and base from Coding Plan. Doubao stays on Responses so the
+# thinking switch applies. Other families are Chat Completions and clear that
+# switch; the chat codec would ignore it, but the model should not carry it.
+[[providers]]
+id = "ark-agent"
+name = "火山方舟 Agent Plan"
+endpoint = "https://ark.cn-beijing.volces.com/api/plan/v3"
+endpoint_type = "responses"
+auth = "bearer"
+quirks = ["thinking_type_switch"]
+
+# Plan key and base only. Chat Completions. GLM-5.2 is the one model whose
+# docs accept `reasoning_effort`; the others are switched with `thinking.type`,
+# which this codec owns, so they declare no reasoning control.
+[[providers]]
+id = "tencent-token"
+name = "腾讯云 Token Plan"
+endpoint = "https://api.lkeap.cloud.tencent.com/plan/v3"
+endpoint_type = "chat_completions"
+auth = "bearer"
+
+# Plan key (`sk-sp-`) and base only. Responses, where `reasoning.effort` is the
+# documented control. Image and video generation use a different API.
+[[providers]]
+id = "aliyun-token"
+name = "阿里云百炼 Token Plan"
+endpoint = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+endpoint_type = "responses"
+auth = "bearer"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Models
@@ -557,3 +600,380 @@ max_output = 32768
 temperature = false
 modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+# ── Zhipu ────────────────────────────────────────────────────────────────────
+# GLM-5.2 accepts `none` as thinking off. `low` and `medium` both map to
+# `high` on the official API, so the clamp is written explicitly.
+# GLM-5.3 rejects `disabled` and any effort outside low/high/max.
+
+[[models]]
+id = "glm-5.2"
+provider_id = "zhipu"
+label = "GLM-5.2"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { off = "none", low = "high", medium = "high", high = "max" } }
+
+[[models]]
+id = "glm-5.3"
+provider_id = "zhipu"
+label = "GLM-5.3"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+# ── Ark Agent Plan ───────────────────────────────────────────────────────────
+
+[[models]]
+id = "doubao-seed-2.1-pro"
+provider_id = "ark-agent"
+label = "Doubao Seed 2.1 Pro"
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text", "image"]
+reasoning = { tiers = { off = "disabled", low = "low", medium = "medium", high = "high" } }
+extra_body = { store = false }
+
+[[models]]
+id = "doubao-seed-2.1-lite"
+provider_id = "ark-agent"
+label = "Doubao Seed 2.1 Lite"
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text", "image"]
+reasoning = { tiers = { off = "disabled", low = "low", medium = "medium", high = "high" } }
+extra_body = { store = false }
+
+[[models]]
+id = "doubao-seed-evolving"
+provider_id = "ark-agent"
+label = "Doubao Seed Evolving"
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text", "image"]
+reasoning = { tiers = { off = "disabled", low = "low", medium = "medium", high = "high" } }
+extra_body = { store = false }
+
+[[models]]
+id = "doubao-seed-2.0-mini"
+provider_id = "ark-agent"
+label = "Doubao Seed 2.0 Mini"
+context_window = 256000
+max_output = 128000
+modalities = ["text", "image"]
+reasoning = { tiers = { off = "disabled", low = "low", medium = "medium", high = "high" } }
+extra_body = { store = false }
+
+# Chat Completions on the same base. Image input is not implemented by that codec.
+
+[[models]]
+id = "glm-5.3"
+provider_id = "ark-agent"
+label = "GLM-5.3"
+endpoint_type = "chat_completions"
+quirks = []
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "glm-latest"
+provider_id = "ark-agent"
+label = "GLM Latest"
+endpoint_type = "chat_completions"
+quirks = []
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "glm-5.3-flash"
+provider_id = "ark-agent"
+label = "GLM-5.3 Flash"
+endpoint_type = "chat_completions"
+quirks = []
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "deepseek-v4-pro"
+provider_id = "ark-agent"
+label = "DeepSeek V4 Pro"
+endpoint_type = "chat_completions"
+quirks = []
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "deepseek-v4-flash"
+provider_id = "ark-agent"
+label = "DeepSeek V4 Flash"
+endpoint_type = "chat_completions"
+quirks = []
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "deepseek-v4.1-flash"
+provider_id = "ark-agent"
+label = "DeepSeek V4.1 Flash"
+endpoint_type = "chat_completions"
+quirks = []
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "kimi-k3"
+provider_id = "ark-agent"
+label = "Kimi K3"
+endpoint_type = "chat_completions"
+quirks = []
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+temperature = false
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "kimi-k2.8-preview"
+provider_id = "ark-agent"
+label = "Kimi K2.8 Preview"
+endpoint_type = "chat_completions"
+quirks = []
+context_window = 256000
+context_window_max = 1048576
+max_output = 32768
+temperature = false
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "kimi-k2.7-code"
+provider_id = "ark-agent"
+label = "Kimi K2.7 Code"
+endpoint_type = "chat_completions"
+quirks = []
+context_window = 256000
+max_output = 32768
+temperature = false
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "minimax-m3"
+provider_id = "ark-agent"
+label = "MiniMax M3"
+endpoint_type = "chat_completions"
+quirks = []
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text"]
+
+# ── Tencent Token Plan ───────────────────────────────────────────────────────
+
+[[models]]
+id = "glm-5.2"
+provider_id = "tencent-token"
+label = "GLM-5.2"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { off = "none", low = "high", medium = "high", high = "max" } }
+
+[[models]]
+id = "glm-5.1"
+provider_id = "tencent-token"
+label = "GLM-5.1"
+context_window = 200000
+context_window_max = 200000
+max_output = 128000
+modalities = ["text"]
+
+[[models]]
+id = "glm-5"
+provider_id = "tencent-token"
+label = "GLM-5"
+context_window = 200000
+context_window_max = 200000
+max_output = 128000
+modalities = ["text"]
+
+[[models]]
+id = "deepseek-v4-pro-202606"
+provider_id = "tencent-token"
+label = "DeepSeek V4 Pro"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+
+[[models]]
+id = "deepseek-v4-flash-202605"
+provider_id = "tencent-token"
+label = "DeepSeek V4 Flash"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+
+[[models]]
+id = "minimax-m2.7"
+provider_id = "tencent-token"
+label = "MiniMax M2.7"
+context_window = 192000
+context_window_max = 192000
+max_output = 128000
+modalities = ["text"]
+
+[[models]]
+id = "hy3"
+provider_id = "tencent-token"
+label = "Hy3"
+context_window = 256000
+max_output = 128000
+modalities = ["text"]
+
+[[models]]
+id = "auto"
+provider_id = "tencent-token"
+label = "Auto"
+context_window = 256000
+max_output = 128000
+modalities = ["text"]
+
+[[models]]
+id = "tc-code-latest"
+provider_id = "tencent-token"
+label = "TC Code Latest"
+context_window = 256000
+max_output = 128000
+modalities = ["text"]
+
+# ── Alibaba Token Plan ───────────────────────────────────────────────────────
+# Top effort is `max`, so the response echo is normalized. Vision models are
+# the ones the plan lists as understanding images.
+
+[[models]]
+id = "qwen3.8-max"
+provider_id = "aliyun-token"
+label = "Qwen3.8 Max"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "qwen3.8-flash"
+provider_id = "aliyun-token"
+label = "Qwen3.8 Flash"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "qwen3.7-max"
+provider_id = "aliyun-token"
+label = "Qwen3.7 Max"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "qwen3.7-plus"
+provider_id = "aliyun-token"
+label = "Qwen3.7 Plus"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "qwen3.6-flash"
+provider_id = "aliyun-token"
+label = "Qwen3.6 Flash"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
+
+[[models]]
+id = "deepseek-v4-pro"
+provider_id = "aliyun-token"
+label = "DeepSeek V4 Pro"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "deepseek-v4-pro-0813"
+provider_id = "aliyun-token"
+label = "DeepSeek V4 Pro 0813"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "deepseek-v4-flash-0731"
+provider_id = "aliyun-token"
+label = "DeepSeek V4 Flash 0731"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "glm-5.2"
+provider_id = "aliyun-token"
+label = "GLM-5.2"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { tiers = { off = "none", low = "high", medium = "high", high = "max" } }

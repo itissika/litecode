@@ -55,6 +55,26 @@
   font-size: var(--_dk-text-2xs);
 }
 
+.agent-citation {
+  vertical-align: baseline;
+  max-width: min(18rem, 100%);
+  margin-inline: 0.125rem;
+  overflow: hidden;
+  font-weight: 400;
+  text-decoration: none;
+}
+
+.agent-markdown a.agent-citation,
+.agent-markdown a.agent-citation:hover {
+  text-decoration: none;
+}
+
+.agent-citation-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
 .agent-markdown-inline-code {
   border-radius: 0.25rem;
   background: var(--_dk-surface-raised);

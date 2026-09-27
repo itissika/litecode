@@ -27,6 +27,7 @@ export function NodeView({
   onOpenFile,
   sessionId,
   bubbleKey,
+  citations = false,
 }: {
   node: RenderNode;
   streaming?: boolean;
@@ -36,6 +37,8 @@ export function NodeView({
   /** Stable bubble identity (projection key of the bubble's first row), used to
    *  namespace this node's FoldCard state across virtual-list remounts. */
   bubbleKey?: string;
+  /** Turn file and web links in assistant prose into citation chips. */
+  citations?: boolean;
 }) {
   // The plan-execution mark names the plan the button launched; the row itself
   // only carries the prompt text, so the path comes from the session pointer.
@@ -64,7 +67,11 @@ export function NodeView({
           autoOpen={node.live}
           streaming={streaming}
         >
-          <AgentMarkdown text={node.text} streaming={streaming} />
+          <AgentMarkdown
+            text={node.text}
+            streaming={streaming}
+            citations={citations}
+          />
         </FoldCard>
       );
     case "images":
@@ -78,7 +85,11 @@ export function NodeView({
     case "text":
       return (
         <div className="text-dk-base text-(--_dk-text-primary) pl-(--_dk-indent-card-head)">
-          <AgentMarkdown text={node.text} streaming={streaming} />
+          <AgentMarkdown
+            text={node.text}
+            streaming={streaming}
+            citations={citations}
+          />
           {node.incomplete && !streaming ? (
             <div className="mt-1 text-dk-2xs italic text-(--_dk-text-disabled)">
               Output incomplete
@@ -257,6 +268,7 @@ export function ProcessGroup({
             onOpenFile={(path) => void openFile(path)}
             sessionId={sessionId}
             bubbleKey={bubbleKey}
+            citations
           />
         ))}
       </div>

@@ -11,6 +11,7 @@ use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 
 use super::WorkspaceError;
+use super::citations::{self, CitationQuery, MAX_CITATION_BATCH};
 use super::git::{self, GitError};
 use super::service::WorkspaceService;
 use super::tree::TreeEntry;
@@ -83,6 +84,16 @@ struct SqliteQuery {
 #[derive(Debug, Deserialize)]
 struct OpenBody {
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CitationsBody {
+    refs: Vec<CitationQuery>,
+}
+
+#[derive(Serialize)]
+struct CitationsData {
+    refs: Vec<citations::CitationHit>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,6 +199,7 @@ pub fn router() -> Router<ServeState> {
         .route("/bytes", get(get_bytes))
         .route("/sqlite", get(get_sqlite))
         .route("/open", post(post_open))
+        .route("/citations", post(post_citations))
         .route("/git/status", get(get_git_status))
         .route("/git/log", get(get_git_log))
         .route("/git/stage", post(post_git_stage))
@@ -606,6 +618,32 @@ async fn get_sqlite(State(state): State<ServeState>, Query(query): Query<SqliteQ
         Err(e) => open_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("sqlite task join: {e}"),
+        ),
+    }
+}
+
+async fn post_citations(
+    State(state): State<ServeState>,
+    Json(body): Json<CitationsBody>,
+) -> Response {
+    if body.refs.len() > MAX_CITATION_BATCH {
+        return open_error(
+            StatusCode::BAD_REQUEST,
+            format!("at most {MAX_CITATION_BATCH} citations"),
+        );
+    }
+    let workspace = state.workspace.clone();
+    let refs = body.refs;
+    match tokio::task::spawn_blocking(move || citations::resolve_citations(&workspace, &refs)).await
+    {
+        Ok(hits) => Json(ApiOk {
+            ok: true,
+            data: CitationsData { refs: hits },
+        })
+        .into_response(),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("citations task join: {e}"),
         ),
     }
 }

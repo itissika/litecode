@@ -1,22 +1,29 @@
 import type { JSX } from "react";
 
+import { AlibabaCloudLogo } from "./providerLogos/AlibabaCloudLogo";
 import { CommandCodeLogo } from "./providerLogos/CommandCodeLogo";
 import { DeepSeekLogo } from "./providerLogos/DeepSeekLogo";
 import { OpenAILogo } from "./providerLogos/OpenAILogo";
 import { OpenCodeLogo } from "./providerLogos/OpenCodeLogo";
+import { TencentCloudLogo } from "./providerLogos/TencentCloudLogo";
 import { VolcengineLogo } from "./providerLogos/VolcengineLogo";
 import { XiaomiLogo } from "./providerLogos/XiaomiLogo";
+import { ZhipuLogo } from "./providerLogos/ZhipuLogo";
 
 /** Catalog provider id → brand mark. */
 export const PROVIDER_LOGOS: Record<string, () => JSX.Element> = {
   openai: OpenAILogo,
   deepseek: DeepSeekLogo,
   mimo: XiaomiLogo,
-  // 火山方舟 Coding Plan — Volcengine (parent brand of Doubao/Ark).
+  // 火山方舟 Coding Plan / Agent Plan — Volcengine (parent brand of Doubao/Ark).
   "ark-coding": VolcengineLogo,
+  "ark-agent": VolcengineLogo,
   opencode: OpenCodeLogo,
   "opencode-go": OpenCodeLogo,
   commandcode: CommandCodeLogo,
+  zhipu: ZhipuLogo,
+  "tencent-token": TencentCloudLogo,
+  "aliyun-token": AlibabaCloudLogo,
 };
 
 /** Neutral mark for providers without a brand asset. */

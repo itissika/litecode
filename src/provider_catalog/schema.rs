@@ -254,7 +254,8 @@ pub struct RawProvider {
     /// one effort vocabulary. Model-level tiers win.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiers: Option<ReasoningTiers>,
-    /// Named non-universal behaviors this provider's codec path opts into.
+    /// Default quirks for every model on this provider. A model that writes
+    /// `quirks` replaces the list; an empty list clears it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quirks: Vec<ProviderQuirk>,
     /// Extra request headers. `{{session_id}}` is the only allowed placeholder.
@@ -278,6 +279,10 @@ pub struct RawModel {
     /// Overrides the provider protocol.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_type: Option<EndpointKind>,
+    /// Replaces the provider quirk list when present. `Some([])` clears every
+    /// inherited quirk. Absent means inherit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quirks: Option<Vec<ProviderQuirk>>,
     /// Default context budget.
     #[serde(default = "default_context_window")]
     pub context_window: usize,

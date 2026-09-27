@@ -113,7 +113,7 @@
         "quirks": {
           "type": "array",
           "items": { "$ref": "#/definitions/quirk" },
-          "description": "Opt into named vendor behaviors for this provider."
+          "description": "Default quirk list for this provider's models. A model that writes quirks replaces the list."
         },
         "headers": {
           "type": "object",
@@ -135,6 +135,11 @@
         "endpoint_type": {
           "allOf": [{ "$ref": "#/definitions/endpoint_kind" }],
           "description": "Overrides the provider protocol."
+        },
+        "quirks": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/quirk" },
+          "description": "Replaces the provider quirk list. Omit to inherit. An empty array clears every inherited quirk."
         },
         "context_window": {
           "type": "integer",

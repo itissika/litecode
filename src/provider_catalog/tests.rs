@@ -191,6 +191,131 @@ fn seed_provider_quirks_land_on_their_models() {
         ark.extra_body.get("store").and_then(|v| v.as_bool()),
         Some(false)
     );
+    // Chat models on this host inherit the switch and do not declare their own
+    // list. The chat codec never executes it; tightening that is a behavior change.
+    let glm = catalog.model("ark-coding/glm-5.3").unwrap();
+    assert_eq!(glm.endpoint_type, EndpointKind::ChatCompletions);
+    assert!(glm.has_quirk(ProviderQuirk::ThinkingTypeSwitch));
+}
+
+#[test]
+fn model_quirks_replace_the_provider_list_when_declared() {
+    let catalog = parse(
+        r#"
+version = 1
+
+[[providers]]
+id = "p"
+name = "P"
+endpoint = "https://x.example/v1"
+endpoint_type = "responses"
+quirks = ["thinking_type_switch", "reasoning_replay"]
+
+[[models]]
+id = "inherit"
+provider_id = "p"
+
+[[models]]
+id = "only-replay"
+provider_id = "p"
+quirks = ["reasoning_replay"]
+
+[[models]]
+id = "cleared"
+provider_id = "p"
+quirks = []
+
+[[models]]
+id = "chat"
+provider_id = "p"
+endpoint_type = "chat_completions"
+"#,
+    )
+    .unwrap();
+
+    let inherit = catalog.model("p/inherit").unwrap();
+    assert!(inherit.has_quirk(ProviderQuirk::ThinkingTypeSwitch));
+    assert!(inherit.has_quirk(ProviderQuirk::ReasoningReplay));
+
+    let only = catalog.model("p/only-replay").unwrap();
+    assert!(!only.has_quirk(ProviderQuirk::ThinkingTypeSwitch));
+    assert!(only.has_quirk(ProviderQuirk::ReasoningReplay));
+
+    let cleared = catalog.model("p/cleared").unwrap();
+    assert!(cleared.quirks.is_empty());
+
+    let chat = catalog.model("p/chat").unwrap();
+    assert_eq!(chat.endpoint_type, EndpointKind::ChatCompletions);
+    assert!(chat.has_quirk(ProviderQuirk::ThinkingTypeSwitch));
+}
+
+#[test]
+fn explicit_thinking_switch_on_a_chat_model_is_refused() {
+    let message = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nendpoint_type = \"chat_completions\"\nquirks = [\"thinking_type_switch\"]\n",
+    );
+    assert!(message.contains("thinking_type_switch"), "{message}");
+}
+
+#[test]
+fn seed_gateway_hosts_keep_each_models_dialect() {
+    let catalog = seeded();
+
+    let zhipu_52 = catalog.model("zhipu/glm-5.2").unwrap();
+    assert_eq!(
+        zhipu_52.request_url,
+        "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+    );
+    assert_eq!(zhipu_52.reasoning_off.as_deref(), Some("none"));
+    assert!(
+        catalog
+            .model("zhipu/glm-5.3")
+            .unwrap()
+            .reasoning_off
+            .is_none()
+    );
+
+    let doubao = catalog.model("ark-agent/doubao-seed-2.1-pro").unwrap();
+    assert_eq!(
+        doubao.request_url,
+        "https://ark.cn-beijing.volces.com/api/plan/v3/responses"
+    );
+    assert!(doubao.has_quirk(ProviderQuirk::ThinkingTypeSwitch));
+    assert!(doubao.supports(Modality::Image));
+
+    let agent_glm = catalog.model("ark-agent/glm-5.3").unwrap();
+    assert_eq!(
+        agent_glm.request_url,
+        "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions"
+    );
+    assert!(agent_glm.quirks.is_empty());
+    assert!(!agent_glm.supports(Modality::Image));
+
+    let tencent_glm = catalog.model("tencent-token/glm-5.2").unwrap();
+    assert_eq!(tencent_glm.reasoning_off.as_deref(), Some("none"));
+    assert!(
+        catalog
+            .model("tencent-token/deepseek-v4-pro-202606")
+            .unwrap()
+            .reasoning
+            .is_none()
+    );
+
+    let qwen = catalog.model("aliyun-token/qwen3.8-max").unwrap();
+    assert_eq!(
+        qwen.request_url,
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/responses"
+    );
+    assert_eq!(qwen.reasoning_off.as_deref(), Some("none"));
+    assert_eq!(qwen.usage_patch, UsagePatch::MapMaxEffortToXhigh);
+    assert!(qwen.supports(Modality::Image));
+    assert!(
+        catalog
+            .model("aliyun-token/deepseek-v4-pro")
+            .unwrap()
+            .quirks
+            .is_empty()
+    );
 }
 
 #[test]

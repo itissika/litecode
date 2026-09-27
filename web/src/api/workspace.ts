@@ -419,6 +419,32 @@ export interface EnginesDetail {
   lsp: LspEngineDetail;
 }
 
+export interface CitationRefRequest {
+  path: string;
+  line?: number;
+  symbol?: string;
+}
+
+export interface CitationRefHit {
+  exists: boolean;
+  path?: string;
+  line?: number | null;
+}
+
+/** Batch existence check. Does not return file contents. */
+export async function resolveCitations(
+  refs: CitationRefRequest[],
+): Promise<CitationRefHit[]> {
+  const res = await apiFetch("/api/workspace/citations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refs }),
+  });
+  if (!res.ok) throw await errorFromResponse(res);
+  const data = await parseJson<{ refs: CitationRefHit[] }>(res);
+  return data.refs;
+}
+
 export async function retrievalSearch(body: {
   query: string;
   corpus?: "code" | "session";

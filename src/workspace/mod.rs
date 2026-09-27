@@ -1,5 +1,6 @@
 mod agent_path;
 mod change;
+mod citations;
 pub mod file_ops;
 pub mod filter;
 mod git;

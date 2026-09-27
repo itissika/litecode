@@ -694,3 +694,101 @@ async fn workspace_preview_reads_and_open_guards() {
 fn urlencoding_table(table: &str) -> String {
     url::form_urlencoded::byte_serialize(table.as_bytes()).collect()
 }
+
+#[tokio::test]
+async fn workspace_citations_resolve_without_file_bodies() {
+    let _guard = WORKSPACE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("lines.txt"),
+        "alpha\nbeta LEAK_LINES_BODY\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("sym.rs"),
+        "fn other() {}\nfn unique_citation_symbol() {}\n",
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join("subdir")).unwrap();
+    let outside_name = format!(
+        "secret-citation-{}.txt",
+        dir.path().file_name().unwrap().to_string_lossy()
+    );
+    let outside = dir.path().parent().unwrap().join(&outside_name);
+    std::fs::write(&outside, "SECRET_CITATION_BODY").unwrap();
+
+    let (state, _serve, web_dist) = test_state(dir.path().to_path_buf());
+    let addr = spawn_test_server(state, web_dist).await;
+    let client = test_http_client();
+    let url = format!("http://{addr}/api/workspace/citations");
+
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "refs": [
+                {"path": "lines.txt"},
+                {"path": "lines.txt", "line": 2},
+                {"path": "lines.txt", "line": 50},
+                {"path": "missing.ts"},
+                {"path": format!("../{outside_name}")},
+                {"path": "subdir"},
+                {"path": "sym.rs", "symbol": "unique_citation_symbol"},
+                {"path": "sym.rs", "symbol": "not_a_symbol"},
+                {"path": "lines.txt", "line": 2, "symbol": "not_a_symbol"}
+            ]
+        }))
+        .send()
+        .await
+        .expect("citations");
+    assert_eq!(resp.status(), 200);
+    let raw = resp.text().await.expect("body");
+    assert!(!raw.contains("LEAK_LINES_BODY"));
+    assert!(!raw.contains("SECRET_CITATION_BODY"));
+    assert!(!raw.contains("alpha"));
+    let body: Value = serde_json::from_str(&raw).expect("json");
+    assert_eq!(body["ok"], true);
+    let refs = body["data"]["refs"].as_array().expect("refs");
+    assert_eq!(refs.len(), 9);
+
+    assert_eq!(refs[0]["exists"], true);
+    assert_eq!(refs[0]["path"], "lines.txt");
+    assert!(refs[0]["line"].is_null());
+
+    assert_eq!(refs[1]["exists"], true);
+    assert_eq!(refs[1]["line"], 2);
+
+    assert_eq!(refs[2]["exists"], true);
+    assert!(refs[2]["line"].is_null());
+
+    assert_eq!(refs[3]["exists"], false);
+    assert!(refs[3]["path"].is_null());
+
+    assert_eq!(refs[4]["exists"], false);
+    assert!(refs[4]["path"].is_null());
+
+    assert_eq!(refs[5]["exists"], false);
+
+    assert_eq!(refs[6]["exists"], true);
+    assert_eq!(refs[6]["line"], 2);
+
+    assert_eq!(refs[7]["exists"], true);
+    assert!(refs[7]["line"].is_null());
+
+    assert_eq!(refs[8]["exists"], true);
+    assert_eq!(refs[8]["line"], 2);
+
+    let too_many: Vec<_> = (0..65)
+        .map(|i| serde_json::json!({"path": format!("f{i}.txt")}))
+        .collect();
+    let limited = client
+        .post(&url)
+        .json(&serde_json::json!({ "refs": too_many }))
+        .send()
+        .await
+        .expect("limit");
+    assert_eq!(limited.status(), 400);
+
+    let _ = std::fs::remove_file(&outside);
+}

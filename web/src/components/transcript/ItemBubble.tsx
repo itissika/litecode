@@ -194,6 +194,7 @@ function ItemBubbleImpl({
           streaming={n.streaming}
           sessionId={sessionId}
           bubbleKey={bubbleKey}
+          citations={!isUser}
         />
       ));
     })

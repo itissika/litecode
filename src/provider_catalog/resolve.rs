@@ -1,8 +1,9 @@
 //! Validated catalog: immutable indexes the runtime resolves against.
 //!
 //! Built once per process from [super::schema::RawCatalog]. Inheritance
-//! (endpoint, protocol, tiers) and default landing happen here and nowhere
-//! else, so no runtime path re-derives a value or matches on a provider id.
+//! (endpoint, protocol, tiers, quirks) and default landing happen here and
+//! nowhere else, so no runtime path re-derives a value or matches on a
+//! provider id.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -251,6 +252,20 @@ fn resolve_model(
         None => provider.endpoint.clone(),
     };
     let endpoint_type = model.endpoint_type.unwrap_or(provider.endpoint_type);
+    // Absent inherits. Present replaces the whole list, including an empty one.
+    let quirks = match &model.quirks {
+        Some(quirks) => quirks.clone(),
+        None => provider.quirks.clone(),
+    };
+    if model.quirks.is_some()
+        && quirks.contains(&ProviderQuirk::ThinkingTypeSwitch)
+        && endpoint_type != EndpointKind::Responses
+    {
+        return Err(format!(
+            "quirk '{}' is only implemented by the responses codec",
+            "thinking_type_switch"
+        ));
+    }
 
     if model.context_window == 0 {
         return Err("context_window must be > 0".into());
@@ -316,7 +331,7 @@ fn resolve_model(
         request_url: endpoint_type.request_url(&endpoint),
         endpoint_type,
         auth: provider.auth,
-        quirks: provider.quirks.clone(),
+        quirks,
         headers: provider.headers.clone(),
         context_window: model.context_window,
         context_window_max,

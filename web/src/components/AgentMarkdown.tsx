@@ -4,6 +4,10 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import {
+  citationUrlTransform,
+  isHttpCitation,
+} from "../lib/citationRef";
+import {
   getMarkdownHighlighter,
   isSupportedHighlightLang,
   SHIKI_THEME_DARK,
@@ -12,6 +16,7 @@ import {
 } from "../lib/shiki";
 import { isMermaidLang } from "../lib/mermaid";
 import { useStreamingBuffer } from "../lib/streamingBuffer";
+import { FileCitationChip, WebCitationChip } from "./CitationChip";
 import { MermaidBlock } from "./MermaidBlock";
 
 const GENERIC_LANGS = new Set(["", "text", "txt", "plain", "plaintext"]);
@@ -96,11 +101,14 @@ function MarkdownCodeBlock({ code, lang }: { code: string; lang: string }) {
 interface AgentMarkdownProps {
   text: string;
   streaming?: boolean;
+  /** Assistant prose only. Other callers keep ordinary links. */
+  citations?: boolean;
 }
 
 export const AgentMarkdown = memo(function AgentMarkdown({
   text,
   streaming = false,
+  citations = false,
 }: AgentMarkdownProps) {
   const displayText = useStreamingBuffer(text, streaming);
   const components = useMemo(
@@ -125,16 +133,29 @@ export const AgentMarkdown = memo(function AgentMarkdown({
       em: ({ children }: { children?: ReactNode }) => (
         <em className="italic">{children}</em>
       ),
-      a: ({ href, children }: { href?: string; children?: ReactNode }) => (
-        <a
-          href={href}
-          className="text-(--_dk-accent-hover) underline hover:text-(--_dk-accent-hover)"
-          target="_blank"
-          rel="noreferrer"
-        >
-          {children}
-        </a>
-      ),
+      a: ({ href, children }: { href?: string; children?: ReactNode }) => {
+        if (href && /^file:/i.test(href)) {
+          if (!citations) return <>{children}</>;
+          return (
+            <FileCitationChip href={href} streaming={streaming}>
+              {children}
+            </FileCitationChip>
+          );
+        }
+        if (citations && href && isHttpCitation(href)) {
+          return <WebCitationChip href={href}>{children}</WebCitationChip>;
+        }
+        return (
+          <a
+            href={href}
+            className="text-(--_dk-accent-hover) underline hover:text-(--_dk-accent-hover)"
+            target="_blank"
+            rel="noreferrer"
+          >
+            {children}
+          </a>
+        );
+      },
       table: ({ children }: { children?: ReactNode }) => (
         <div className="agent-markdown-table-wrap mb-2 last:mb-0">
           <table className="agent-markdown-table">{children}</table>
@@ -196,12 +217,16 @@ export const AgentMarkdown = memo(function AgentMarkdown({
         <h3 className="mb-1 text-dk-xl font-medium last:mb-0">{children}</h3>
       ),
     }),
-    [streaming],
+    [citations, streaming],
   );
 
   return (
     <div className="agent-markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        urlTransform={citationUrlTransform}
+        components={components}
+      >
         {displayText}
       </ReactMarkdown>
     </div>
