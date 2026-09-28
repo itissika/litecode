@@ -1,7 +1,7 @@
-import folders from "./knowledge.folders.json";
-import raw from "./knowledge.fixture.json";
+import { knowledgeFromFiles } from "./document";
+import { knowledgeCorpusFiles } from "./corpus";
 
-import type { KnowledgeFolder, KnowledgeNode } from "./types";
+const indexed = knowledgeFromFiles(knowledgeCorpusFiles);
 
-export const knowledgeFixture = raw as KnowledgeNode[];
-export const knowledgeFolderFixture = folders as KnowledgeFolder[];
+export const knowledgeFixture = indexed.nodes;
+export const knowledgeFolderFixture = indexed.folders;

@@ -1,8 +1,0 @@
-[
-  { "id": 1, "name": "内核", "parentId": null },
-  { "id": 2, "name": "上下文", "parentId": 1 },
-  { "id": 3, "name": "供应商", "parentId": null },
-  { "id": 4, "name": "采样", "parentId": 3 },
-  { "id": 5, "name": "问题示例", "parentId": null },
-  { "id": 6, "name": "知识库", "parentId": null }
-]

@@ -16,6 +16,7 @@ export function openKnowledgeGraphPanel(): void {
     id: KNOWLEDGE_GRAPH_PANEL_ID,
     component: "knowledgeGraph",
     title: "Knowledge Graph",
+    tabComponent: "knowledgeGraph",
     position: gridPosition(api),
   });
 }

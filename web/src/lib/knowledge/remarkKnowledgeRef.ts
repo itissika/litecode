@@ -62,7 +62,7 @@ function walk(node: MdastNode): void {
 }
 
 /**
- * Turn `[[key]]` in prose into `knowledge:` links.
+ * Turn `[[node : key]]` in prose into `knowledge:` links.
  * Code and inline code are separate AST nodes, so they are left alone.
  */
 export function remarkKnowledgeRef() {

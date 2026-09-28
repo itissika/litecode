@@ -2,40 +2,53 @@ export type KnowledgeStatus = "enabled" | "disabled" | "pending";
 
 /** Organizational container. Folders do not participate in citations. */
 export interface KnowledgeFolder {
-  id: number;
+  /** Path relative to `.litecode/knowledge`, forward slashes. */
+  id: string;
   name: string;
-  parentId: number | null;
+  parentId: string | null;
 }
 
-/** One knowledge node. Relations store ids; the body refers to other nodes by key. */
+/** One knowledge node. `id` is the declared key when that key is unique. */
 export interface KnowledgeNode {
-  id: number;
+  id: string;
   key: string;
+  /** Markdown body, without the leading `node` declaration fence. */
   value: string;
-  relations: number[];
+  /** One-line summary from the declaration block. */
+  summary: string;
+  /** Keys declared with `ref :` in this file, in source order. */
+  relations: string[];
   status: KnowledgeStatus;
-  /** Folder that holds this node. `null` / omitted = root of the list and canvas. */
-  folderId?: number | null;
+  /** Canvas origin relative to the parent folder. `null` = laid out on open. */
+  x: number | null;
+  y: number | null;
+  /** Expanded card size. `null` = fit the content. */
+  w: number | null;
+  h: number | null;
+  /** Folder that holds this node. `null` = root of the list and canvas. */
+  folderId?: string | null;
+  /** Path of the source file relative to `.litecode/knowledge`. */
+  path: string;
 }
 
 export type KnowledgeIssueCode =
-  | "duplicate_id"
   | "duplicate_key"
   | "empty_key"
-  | "dangling_relation"
+  | "filename_mismatch"
   | "self_relation"
   | "unknown_marker"
   | "unregistered_marker"
+  | "dangling_relation"
   | "unused_relation"
   | "inactive_target";
 
 export type KnowledgeIssueSeverity = "error" | "warning";
 
 export interface KnowledgeIssue {
-  nodeId: number;
+  nodeId: string;
   severity: KnowledgeIssueSeverity;
   code: KnowledgeIssueCode;
   message: string;
-  /** Key or id the problem is about, when there is one. */
+  /** Key the problem is about, when there is one. */
   ref?: string;
 }

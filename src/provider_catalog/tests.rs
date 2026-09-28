@@ -688,6 +688,53 @@ fn first_run_seeds_the_file_and_registers_initialized() {
 }
 
 #[test]
+fn a_catalog_this_build_cannot_load_is_upgraded_and_the_previous_text_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("litecode.db");
+    store::forget(&db);
+    store::load_for_db(&db).expect("seed");
+
+    let path = store::catalog_path_for_db(&db);
+    let broken = "\
+version = 1
+
+[[providers]]
+id = \"deepseek\"
+name = \"DeepSeek\"
+endpoint = \"https://proxy.example/v1\"
+endpoint_type = \"responses\"
+quirks = [\"omit_temperature_when_thinking\", \"reasoning_replay\"]
+";
+    std::fs::write(&path, broken).unwrap();
+    store::forget(&db);
+    let catalog = store::load_for_db(&db).expect("upgrade");
+    assert_eq!(
+        catalog.provider("deepseek").unwrap().endpoint,
+        "https://proxy.example/v1"
+    );
+    let upgraded = std::fs::read_to_string(&path).unwrap();
+    assert!(!upgraded.contains("omit_temperature"), "{upgraded}");
+    let backup = path.with_file_name("provider-catalog.toml.bak");
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), broken);
+
+    store::forget(&db);
+    store::load_for_db(&db).expect("reload");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        upgraded,
+        "a catalog that already loads is not rewritten"
+    );
+
+    std::fs::write(&path, "version = [\n").unwrap();
+    store::forget(&db);
+    let message = store::load_for_db(&db)
+        .expect_err("syntax errors are not upgraded")
+        .to_string();
+    assert!(message.contains("not valid TOML"), "{message}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "version = [\n");
+}
+
+#[test]
 fn initialized_catalog_that_disappears_is_an_error_not_a_reseed() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("litecode.db");

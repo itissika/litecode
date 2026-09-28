@@ -7,6 +7,7 @@
 //! [EndpointKind](schema::EndpointKind). Adding a provider that speaks an
 //! existing protocol is a TOML edit plus a restart.
 
+pub(crate) mod migrate;
 pub mod resolve;
 pub mod schema;
 pub mod store;

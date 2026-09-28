@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { DockviewApi } from "dockview-react";
 
 import { WorkspaceRequestError } from "../lib/workspaceError";
 import { useEditorStore } from "./editorStore";
@@ -353,5 +354,63 @@ describe("markdown editor view", () => {
       path: "docs/readme.md",
       line: 2,
     });
+  });
+});
+
+function gridGroup(id: string, components: string[]) {
+  return {
+    api: { id, location: { type: "grid" as const } },
+    panels: components.map((component, index) => ({
+      id: `${component}-${index}`,
+      api: { component, setActive: vi.fn() },
+    })),
+  };
+}
+
+function fakeDockview(
+  groups: ReturnType<typeof gridGroup>[],
+  activeGroupId: string,
+): DockviewApi & { addPanel: ReturnType<typeof vi.fn> } {
+  const addPanel = vi.fn();
+  return {
+    groups,
+    activeGroup: groups.find((group) => group.api.id === activeGroupId),
+    getPanel: () => undefined,
+    addPanel,
+    addGroup: vi.fn(() => ({ id: "new" })),
+  } as unknown as DockviewApi & { addPanel: ReturnType<typeof vi.fn> };
+}
+
+describe("editor panel placement", () => {
+  beforeEach(() => {
+    mockedReadFile.mockResolvedValue("body");
+  });
+
+  it("opens a file beside the agent group instead of inside it", async () => {
+    const api = fakeDockview([gridGroup("agent", ["agent"])], "agent");
+    useEditorStore.getState().setDockviewApi(api);
+    await useEditorStore.getState().openFile("src/a.ts");
+    expect(api.addPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        component: "editor",
+        position: { referenceGroup: "agent", direction: "right" },
+      }),
+    );
+    useEditorStore.getState().setDockviewApi(null);
+  });
+
+  it("reuses an editor group that is not the agent group", async () => {
+    const api = fakeDockview(
+      [gridGroup("agent", ["agent"]), gridGroup("editors", ["editor"])],
+      "agent",
+    );
+    useEditorStore.getState().setDockviewApi(api);
+    await useEditorStore.getState().openFile("src/b.ts");
+    expect(api.addPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        position: { referenceGroup: "editors" },
+      }),
+    );
+    useEditorStore.getState().setDockviewApi(null);
   });
 });

@@ -2,18 +2,31 @@ export type KnowledgeSegment =
   | { type: "text"; value: string }
   | { type: "ref"; key: string };
 
+/**
+ * Declaration keys may include letters, numbers, `_`, `-`, and single spaces:
+ * `seq`, `knowledge 概念概述`. Slashes and brackets stay out so the key can be
+ * a path segment and a `[[node : key]]` marker.
+ */
+export const KNOWLEDGE_KEY = /^[\p{L}\p{N}_][\p{L}\p{N}_-]*(?: [\p{L}\p{N}_-]+)*$/u;
+
+const REF_SOURCE = "\\[\\[\\s*node\\s*:\\s*([^\\]\\r\\n]+?)\\s*\\]\\]";
+
 /** Compare and look up keys after trimming. The stored key is left unchanged. */
 export function normalizeKey(key: string): string {
   return key.trim();
 }
 
+export function isKnowledgeKey(key: string): boolean {
+  return KNOWLEDGE_KEY.test(key);
+}
+
 function refPattern(): RegExp {
-  return /\[\[([^\]\n]+?)\]\]/g;
+  return new RegExp(REF_SOURCE, "g");
 }
 
 /**
- * Split one text run into literal pieces and `[[key]]` markers.
- * Whitespace-only markers stay literal text.
+ * Split one text run into literal pieces and `[[node : key]]` markers.
+ * Bare `[[seq]]` stays literal text. Whitespace inside the marker is allowed.
  */
 export function splitKnowledgeRefs(text: string): KnowledgeSegment[] {
   const out: KnowledgeSegment[] = [];
@@ -21,7 +34,7 @@ export function splitKnowledgeRefs(text: string): KnowledgeSegment[] {
   for (const match of text.matchAll(refPattern())) {
     const key = normalizeKey(match[1] ?? "");
     const start = match.index ?? 0;
-    if (!key) continue;
+    if (!key || !isKnowledgeKey(key)) continue;
     if (start > last) out.push({ type: "text", value: text.slice(last, start) });
     out.push({ type: "ref", key });
     last = start + match[0].length;

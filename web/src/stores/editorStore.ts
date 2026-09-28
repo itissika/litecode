@@ -267,6 +267,48 @@ async function loadReadable(
   }
 }
 
+const AGENT_PANEL_COMPONENTS = new Set(["agent", "subagent"]);
+
+function groupHasAgent(group: DockviewApi["groups"][number]): boolean {
+  return group.panels.some((panel) =>
+    AGENT_PANEL_COMPONENTS.has(panel.api.component),
+  );
+}
+
+/** Editor tabs sit beside the agent group. Dropping Monaco into the agent's
+ *  own tab strip crowds the conversation. */
+function editorPanelPosition(dockviewApi: DockviewApi): {
+  referenceGroup: string;
+  direction?: "right";
+} {
+  const gridGroups = dockviewApi.groups.filter(
+    (group) => group.api.location.type === "grid",
+  );
+  const active = dockviewApi.activeGroup;
+  if (
+    active &&
+    active.api.location.type === "grid" &&
+    !groupHasAgent(active)
+  ) {
+    return { referenceGroup: active.api.id };
+  }
+  const editorGroup = gridGroups.find(
+    (group) =>
+      !groupHasAgent(group) &&
+      group.panels.some((panel) => panel.api.component === "editor"),
+  );
+  if (editorGroup) return { referenceGroup: editorGroup.api.id };
+  const agentGroup = gridGroups.find((group) => groupHasAgent(group));
+  if (agentGroup) {
+    return { referenceGroup: agentGroup.api.id, direction: "right" };
+  }
+  if (gridGroups.length === 0) {
+    const group = dockviewApi.addGroup();
+    return { referenceGroup: group.id };
+  }
+  return { referenceGroup: gridGroups[0]!.api.id };
+}
+
 function addEditorPanel(dockviewApi: DockviewApi, path: string) {
   const existing = dockviewApi.getPanel(path);
   if (existing) {
@@ -274,28 +316,14 @@ function addEditorPanel(dockviewApi: DockviewApi, path: string) {
     return;
   }
   const fileName = fileNameFromPath(path);
-  const gridGroups = dockviewApi.groups.filter(
-    (g) => g.api.location.type === "grid",
-  );
-  const panel = {
+  dockviewApi.addPanel({
     id: path,
     component: "editor",
     title: fileName,
     tabComponent: "editor",
     params: { filePath: path },
-  };
-  if (gridGroups.length === 0) {
-    const group = dockviewApi.addGroup();
-    dockviewApi.addPanel({
-      ...panel,
-      position: { referenceGroup: group.id },
-    });
-  } else {
-    dockviewApi.addPanel({
-      ...panel,
-      position: { referenceGroup: gridGroups[0].api.id },
-    });
-  }
+    position: editorPanelPosition(dockviewApi),
+  });
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({

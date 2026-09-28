@@ -10,8 +10,14 @@ function node(
 ): KnowledgeNode {
   return {
     value: "",
+    summary: "",
     relations: [],
     status: "enabled",
+    path: `${partial.key}.md`,
+    x: null,
+    y: null,
+    w: null,
+    h: null,
     ...partial,
   };
 }
@@ -22,25 +28,22 @@ describe("layoutKnowledgeGraph", () => {
     validateKnowledge(knowledgeFixture),
   );
 
-  it("places every node and skips dangling or self relations", () => {
+  it("places every node and skips self relations", () => {
     expect(laid.nodes).toHaveLength(knowledgeFixture.length);
     expect(
       laid.nodes.every(
-        (node) => Number.isFinite(node.x) && Number.isFinite(node.y),
+        (item) => Number.isFinite(item.x) && Number.isFinite(item.y),
       ),
     ).toBe(true);
     expect(laid.edges.some((edge) => edge.source === edge.target)).toBe(false);
-    expect(laid.edges.some((edge) => edge.target === "9999")).toBe(false);
-    expect(laid.edges.some((edge) => edge.source === "17")).toBe(false);
+    expect(laid.edges.some((edge) => edge.source === "loopback")).toBe(false);
   });
 
-  it("classifies relation edges by registration vs inactive target", () => {
-    const sampling = laid.edges.find((edge) => edge.id === "19-18");
+  it("classifies a citation of a disabled node as inactive", () => {
+    const sampling = laid.edges.find((edge) => edge.id === "sampling-temperature");
     expect(sampling?.variant).toBe("inactive");
-    const sessionToSeq = laid.edges.find((edge) => edge.id === "1-2");
+    const sessionToSeq = laid.edges.find((edge) => edge.id === "session-seq");
     expect(sessionToSeq?.variant).toBe("solid");
-    const draftLink = laid.edges.find((edge) => edge.id === "21-20");
-    expect(draftLink?.variant).toBe("inactive");
   });
 
   it("nests folder frames and keeps members parent-relative", () => {
@@ -50,13 +53,17 @@ describe("layoutKnowledgeGraph", () => {
       knowledgeFolderFixture,
     );
     expect(laidWithFolders.nodes).toHaveLength(knowledgeFixture.length);
-    const context = laidWithFolders.folders.find((folder) => folder.folderId === 2);
-    const kernel = laidWithFolders.folders.find((folder) => folder.folderId === 1);
-    const item = laidWithFolders.nodes.find((node) => node.nodeId === 4);
-    const dockview = laidWithFolders.nodes.find((node) => node.nodeId === 12);
+    const context = laidWithFolders.folders.find(
+      (folder) => folder.folderId === "内核/上下文",
+    );
+    const kernel = laidWithFolders.folders.find((folder) => folder.folderId === "内核");
+    const item = laidWithFolders.nodes.find((entry) => entry.nodeId === "item");
+    const dockview = laidWithFolders.nodes.find(
+      (entry) => entry.nodeId === "dockview",
+    );
     expect(kernel?.parentId).toBeNull();
-    expect(context?.parentId).toBe("folder:1");
-    expect(item?.parentId).toBe("folder:2");
+    expect(context?.parentId).toBe("folder:内核");
+    expect(item?.parentId).toBe("folder:内核/上下文");
     expect(item && item.y).toBeGreaterThanOrEqual(28);
     expect(dockview?.parentId).toBeNull();
     expect(kernel).toBeDefined();
@@ -64,13 +71,19 @@ describe("layoutKnowledgeGraph", () => {
     expect(kernel!.width).toBeGreaterThan(context!.width);
   });
 
-  it("marks a registered-but-unused relation as unused", () => {
+  it("draws a solid edge for a resolved body citation", () => {
     const nodes = [
-      node({ id: 1, key: "host", value: "plain", relations: [2] }),
-      node({ id: 2, key: "peer" }),
+      node({
+        id: "host",
+        key: "host",
+        value: "[[node : peer]]",
+        relations: ["peer"],
+      }),
+      node({ id: "peer", key: "peer" }),
     ];
     const edges = layoutKnowledgeGraph(nodes, validateKnowledge(nodes)).edges;
     expect(edges).toHaveLength(1);
-    expect(edges[0]?.variant).toBe("unused");
+    expect(edges[0]?.variant).toBe("solid");
+    expect(edges[0]?.id).toBe("host-peer");
   });
 });

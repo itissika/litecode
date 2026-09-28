@@ -13,13 +13,13 @@ export const KNOWLEDGE_NODE_MAX_HEIGHT = 560;
 export const KNOWLEDGE_FOLDER_HEADER = 28;
 export const KNOWLEDGE_FOLDER_PAD = 16;
 
-export function knowledgeFolderFlowId(folderId: number): string {
+export function knowledgeFolderFlowId(folderId: string): string {
   return `folder:${folderId}`;
 }
 
 export interface LaidOutNode {
   id: string;
-  nodeId: number;
+  nodeId: string;
   /** React Flow parent id. `null` when the node sits on the canvas root. */
   parentId: string | null;
   x: number;
@@ -28,7 +28,7 @@ export interface LaidOutNode {
 
 export interface LaidOutFolder {
   id: string;
-  folderId: number;
+  folderId: string;
   parentId: string | null;
   x: number;
   y: number;
@@ -47,7 +47,7 @@ export interface LaidOutEdge {
 
 function edgeVariant(
   issues: KnowledgeIssue[],
-  sourceId: number,
+  sourceId: string,
   targetKey: string,
 ): KnowledgeEdgeVariant {
   const inactive = issues.some(
@@ -57,13 +57,6 @@ function edgeVariant(
       issue.ref === targetKey,
   );
   if (inactive) return "inactive";
-  const unused = issues.some(
-    (issue) =>
-      issue.nodeId === sourceId &&
-      issue.code === "unused_relation" &&
-      issue.ref === targetKey,
-  );
-  if (unused) return "unused";
   return "solid";
 }
 
@@ -71,20 +64,26 @@ function collectEdges(
   nodes: KnowledgeNode[],
   issues: KnowledgeIssue[],
 ): LaidOutEdge[] {
-  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const byKey = new Map<string, KnowledgeNode>();
+  for (const node of nodes) {
+    const key = normalizeKey(node.key);
+    if (key && !byKey.has(key)) byKey.set(key, node);
+  }
   const edges: LaidOutEdge[] = [];
   const seen = new Set<string>();
   for (const node of nodes) {
+    const ownKey = normalizeKey(node.key);
     for (const rel of node.relations) {
-      if (rel === node.id || !byId.has(rel)) continue;
-      const id = `${node.id}-${rel}`;
+      if (rel === ownKey) continue;
+      const target = byKey.get(rel);
+      if (!target) continue;
+      const id = `${node.id}-${target.id}`;
       if (seen.has(id)) continue;
       seen.add(id);
-      const target = byId.get(rel)!;
       edges.push({
         id,
-        source: String(node.id),
-        target: String(rel),
+        source: node.id,
+        target: target.id,
         variant: edgeVariant(issues, node.id, normalizeKey(target.key)),
       });
     }
@@ -148,11 +147,11 @@ interface GroupLayout {
 }
 
 function layoutContainer(
-  folderId: number | null,
+  folderId: string | null,
   nodes: KnowledgeNode[],
   folders: KnowledgeFolder[],
   edges: LaidOutEdge[],
-  seen: Set<number>,
+  seen: Set<string>,
 ): GroupLayout {
   if (folderId != null) {
     if (seen.has(folderId)) {
@@ -211,14 +210,16 @@ function layoutContainer(
   const directNodes: LaidOutNode[] = [];
   for (const node of childNodes) {
     const pos = placed.get(`n:${node.id}`) ?? { x: 0, y: 0 };
-    contentWidth = Math.max(contentWidth, pos.x + KNOWLEDGE_NODE_WIDTH);
-    contentHeight = Math.max(contentHeight, pos.y + KNOWLEDGE_NODE_HEIGHT);
+    const x = node.x ?? pos.x + pad;
+    const y = node.y ?? pos.y + chrome;
+    contentWidth = Math.max(contentWidth, x + KNOWLEDGE_NODE_WIDTH);
+    contentHeight = Math.max(contentHeight, y + KNOWLEDGE_NODE_HEIGHT);
     directNodes.push({
-      id: String(node.id),
+      id: node.id,
       nodeId: node.id,
       parentId: parentKey,
-      x: pos.x + pad,
-      y: pos.y + chrome,
+      x,
+      y,
     });
   }
 
@@ -269,20 +270,20 @@ function layoutFlat(
 ): LaidOutNode[] {
   const placed = placeBoxes(
     nodes.map((node) => ({
-      key: String(node.id),
+      key: node.id,
       width: KNOWLEDGE_NODE_WIDTH,
       height: KNOWLEDGE_NODE_HEIGHT,
     })),
     edges,
   );
   return nodes.map((node) => {
-    const pos = placed.get(String(node.id)) ?? { x: 0, y: 0 };
+    const pos = placed.get(node.id) ?? { x: 0, y: 0 };
     return {
-      id: String(node.id),
+      id: node.id,
       nodeId: node.id,
       parentId: null,
-      x: pos.x + 16,
-      y: pos.y + 16,
+      x: node.x ?? pos.x + 16,
+      y: node.y ?? pos.y + 16,
     };
   });
 }
@@ -301,6 +302,6 @@ export function layoutKnowledgeGraph(
   if (folders.length === 0) {
     return { nodes: layoutFlat(nodes, edges), folders: [], edges };
   }
-  const grouped = layoutContainer(null, nodes, folders, edges, new Set());
+  const grouped = layoutContainer(null, nodes, folders, edges, new Set<string>());
   return { nodes: grouped.nodes, folders: grouped.folders, edges };
 }

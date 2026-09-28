@@ -15,6 +15,7 @@ import { KnowledgeGraphPanel } from "../panels/KnowledgeGraphPanel";
 import { EdgeTab } from "../tabs/EdgeTab";
 import { EditorTab } from "../tabs/EditorTab";
 import { AgentTab } from "../tabs/AgentTab";
+import { KnowledgeGraphTab } from "../tabs/KnowledgeGraphTab";
 
 export const panelComponents: Record<
   string,
@@ -40,4 +41,5 @@ export const tabComponents: Record<
   edge: EdgeTab,
   editor: EditorTab,
   agent: AgentTab,
+  knowledgeGraph: KnowledgeGraphTab,
 };

@@ -4,7 +4,10 @@
 //! in [super::resolve], built once per process from a validated raw catalog.
 //!
 //! Unknown fields, unknown enum values, duplicate ids and dangling references
-//! are hard errors: the product never guesses a value that is not written down.
+//! are hard errors on the strict parse. A file that fails it is upgraded by
+//! [super::migrate] before it is kept: unknown keys and enum values are dropped,
+//! and an entry that still cannot load is replaced by the embedded seed entry
+//! with the same id. The product does not invent a mapping between old and new fields.
 
 use std::collections::BTreeMap;
 
@@ -173,6 +176,20 @@ pub enum ProviderQuirk {
 
 impl ProviderQuirk {
     pub const ALL: &'static [ProviderQuirk] = &[Self::ThinkingTypeSwitch, Self::ReasoningReplay];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ThinkingTypeSwitch => "thinking_type_switch",
+            Self::ReasoningReplay => "reasoning_replay",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|quirk| quirk.as_str() == value.trim())
+    }
 }
 
 /// Which field a Chat Completions replay writes reasoning back into.

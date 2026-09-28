@@ -36,6 +36,7 @@ describe("openKnowledgeGraphPanel", () => {
         id: "knowledge-graph",
         component: "knowledgeGraph",
         title: "Knowledge Graph",
+        tabComponent: "knowledgeGraph",
         position: { referenceGroup: "g1" },
       }),
     );

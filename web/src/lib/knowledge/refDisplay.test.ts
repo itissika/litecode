@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { knowledgeFixture } from "./fixture";
 import { bodyMarkerKeys, chipForMarker, relationStripChips } from "./refDisplay";
 import { normalizeKey } from "./markers";
+import type { KnowledgeNode } from "./types";
 
 function node(key: string) {
   return knowledgeFixture.find((item) => item.key === key)!;
@@ -25,18 +26,28 @@ describe("refDisplay", () => {
     expect(chip.jumpable).toBe(false);
   });
 
-  it("shows unused registered relations in the strip, not dangling ids", () => {
-    const { byId } = index();
-    const draft = node("draft-link");
-    const keys = bodyMarkerKeys(draft.value);
-    const strip = relationStripChips(draft, byId, keys);
-    expect(strip.map((c) => c.key)).toEqual(["knowledge"]);
+  it("shows a relation that the body never cites", () => {
+    const source: KnowledgeNode = {
+      id: "draft",
+      key: "draft",
+      value: "plain",
+      relations: ["knowledge"],
+      status: "enabled",
+      path: "draft.md",
+      summary: "",
+      x: null,
+      y: null,
+      w: null,
+      h: null,
+    };
+    const target = node("knowledge");
+    const byId = new Map<string, KnowledgeNode>([
+      [source.id, source],
+      [target.id, target],
+    ]);
+    const strip = relationStripChips(source, byId, bodyMarkerKeys(source.value));
+    expect(strip.map((chip) => chip.key)).toEqual(["knowledge"]);
     expect(strip[0]?.tone).toBe("warning");
-
-    const dangling = node("dangling");
-    expect(relationStripChips(dangling, byId, bodyMarkerKeys(dangling.value))).toEqual(
-      [],
-    );
   });
 
   it("keeps inactive body citations out of the relation strip", () => {

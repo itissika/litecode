@@ -5,7 +5,7 @@ export type RefChipTone = "normal" | "disabled" | "warning" | "error";
 
 export interface RefChipModel {
   key: string;
-  targetId: number | null;
+  targetId: string | null;
   tone: RefChipTone;
   jumpable: boolean;
 }
@@ -14,21 +14,21 @@ export function bodyMarkerKeys(value: string): Set<string> {
   return new Set(extractMarkers(value).map((marker) => normalizeKey(marker)));
 }
 
-/** Chip state for a `[[key]]` marker in prose. */
+/** Chip state for a `[[node : key]]` marker in prose. */
 export function chipForMarker(
   source: KnowledgeNode,
   marker: string,
   byKey: Map<string, KnowledgeNode>,
 ): RefChipModel {
   const key = normalizeKey(marker);
+  if (!source.relations.includes(key)) {
+    return { key, targetId: null, tone: "error", jumpable: false };
+  }
   const target = byKey.get(key);
   if (!target) {
     return { key, targetId: null, tone: "error", jumpable: false };
   }
-  if (target.id === source.id) {
-    return { key, targetId: target.id, tone: "error", jumpable: false };
-  }
-  if (!source.relations.includes(target.id)) {
+  if (normalizeKey(target.key) === normalizeKey(source.key)) {
     return { key, targetId: target.id, tone: "error", jumpable: false };
   }
   if (target.status === "disabled") {
@@ -46,16 +46,18 @@ export function chipForMarker(
  */
 export function relationStripChips(
   source: KnowledgeNode,
-  byId: Map<number, KnowledgeNode>,
+  byId: Map<string, KnowledgeNode>,
   bodyKeys: Set<string>,
 ): RefChipModel[] {
   const chips: RefChipModel[] = [];
-  const seen = new Set<number>();
+  const seen = new Set<string>();
   for (const rel of source.relations) {
     if (seen.has(rel)) continue;
     seen.add(rel);
-    if (rel === source.id) continue;
-    const target = byId.get(rel);
+    if (rel === normalizeKey(source.key)) continue;
+    const target = byId.get(rel) ?? [...byId.values()].find(
+      (node) => normalizeKey(node.key) === rel,
+    );
     if (!target) continue;
     const key = normalizeKey(target.key);
     const inBody = bodyKeys.has(key);

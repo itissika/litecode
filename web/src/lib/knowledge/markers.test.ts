@@ -4,40 +4,47 @@ import { extractMarkers, knowledgePreview, splitKnowledgeRefs } from "./markers"
 import { remarkKnowledgeRef } from "./remarkKnowledgeRef";
 
 describe("splitKnowledgeRefs", () => {
-  it("splits markers out of surrounding text and trims the key", () => {
-    expect(splitKnowledgeRefs("see [[ seq ]] now")).toEqual([
+  it("splits a node citation and keeps the key", () => {
+    expect(splitKnowledgeRefs("see [[ node : seq ]] now")).toEqual([
       { type: "text", value: "see " },
       { type: "ref", key: "seq" },
       { type: "text", value: " now" },
     ]);
   });
 
-  it("leaves a whitespace-only marker as text", () => {
-    expect(splitKnowledgeRefs("[[ ]]")).toEqual([
-      { type: "text", value: "[[ ]]" },
+  it("accepts a tight colon", () => {
+    expect(splitKnowledgeRefs("[[node:seq]]")).toEqual([
+      { type: "ref", key: "seq" },
+    ]);
+  });
+
+  it("leaves bare double brackets as text", () => {
+    expect(splitKnowledgeRefs("[[seq]] and [[ ]]")).toEqual([
+      { type: "text", value: "[[seq]] and [[ ]]" },
     ]);
   });
 });
 
 describe("extractMarkers", () => {
   it("reads every prose marker", () => {
-    expect(extractMarkers("[[session]] and [[seq]]")).toEqual([
+    expect(extractMarkers("[[node : session]] and [[node : seq]]")).toEqual([
       "session",
       "seq",
     ]);
   });
 
-  it("ignores fenced blocks, tilde fences, and inline code", () => {
+  it("ignores fenced blocks, tilde fences, inline code, and bare brackets", () => {
     const markdown = [
-      "keep [[session]]",
+      "keep [[node : session]]",
       "```ts",
-      "[[seq]]",
+      "[[node : seq]]",
       "```",
-      "also `[[revert]]` stays code",
+      "also `[[node : revert]]` stays code",
       "~~~",
-      "[[compact]]",
+      "[[node : compact]]",
       "~~~",
-      "end [[item]]",
+      "end [[node : item]]",
+      "not [[providers]]",
     ].join("\n");
     expect(extractMarkers(markdown)).toEqual(["session", "item"]);
   });
@@ -45,7 +52,7 @@ describe("extractMarkers", () => {
 
 describe("knowledgePreview", () => {
   it("drops fences and unwraps markers", () => {
-    const value = "alpha [[seq]]\n\n```\n[[hidden]]\n```\nbeta";
+    const value = "alpha [[node : seq]]\n\n```\n[[node : hidden]]\n```\nbeta";
     expect(knowledgePreview(value, 2)).toBe("alpha seq\nbeta");
   });
 });
@@ -57,12 +64,12 @@ describe("remarkKnowledgeRef", () => {
       children: [
         {
           type: "paragraph",
-          children: [{ type: "text", value: "see [[seq]]" }],
+          children: [{ type: "text", value: "see [[node : seq]]" }],
         },
-        { type: "code", value: "[[seq]]" },
+        { type: "code", value: "[[node : seq]]" },
         {
           type: "paragraph",
-          children: [{ type: "inlineCode", value: "[[revert]]" }],
+          children: [{ type: "inlineCode", value: "[[node : revert]]" }],
         },
       ],
     };
@@ -75,10 +82,10 @@ describe("remarkKnowledgeRef", () => {
         children: [{ type: "text", value: "seq" }],
       },
     ]);
-    expect(tree.children[1]).toEqual({ type: "code", value: "[[seq]]" });
+    expect(tree.children[1]).toEqual({ type: "code", value: "[[node : seq]]" });
     expect(tree.children[2]?.children?.[0]).toEqual({
       type: "inlineCode",
-      value: "[[revert]]",
+      value: "[[node : revert]]",
     });
   });
 });

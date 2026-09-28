@@ -14,7 +14,7 @@ import {
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
 import { KnowledgeRefChip } from "./KnowledgeRefChip";
 
-const KnowledgeSourceContext = createContext<number | null>(null);
+const KnowledgeSourceContext = createContext<string | null>(null);
 
 function knowledgeUrlTransform(url: string): string {
   if (parseKnowledgeRef(url)) return url;
@@ -75,7 +75,7 @@ export function KnowledgeInlineBody({
   sourceId,
   text,
 }: {
-  sourceId: number;
+  sourceId: string;
   text: string;
 }) {
   const segments = knowledgeFirstLineSegments(text);
@@ -101,7 +101,7 @@ export function KnowledgeMarkdown({
   sourceId,
   text,
 }: {
-  sourceId: number;
+  sourceId: string;
   text: string;
 }) {
   return (

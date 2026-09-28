@@ -3,9 +3,13 @@
 # LiteCode provider catalog - the single source of truth for LLM providers and
 # models. A provider or model that is not written here does not exist in the app.
 #
-# This file belongs to you: LiteCode seeds it once and never rewrites it, so your
-# comments and edits survive every upgrade. Edit it, then RESTART LiteCode - the
-# catalog is read exactly once, at process start.
+# This file belongs to you: LiteCode seeds it once. A file that already loads is
+# left untouched, so comments and edits survive an ordinary upgrade. A file this
+# build cannot load is upgraded at startup: unknown keys and enum values are
+# dropped, a provider or model that still cannot load is replaced by the
+# embedded entry with the same id, and a document that still cannot load is
+# replaced by this seed. The previous text is saved as provider-catalog.toml.bak.
+# Edit it, then RESTART LiteCode - the catalog is read exactly once, at process start.
 #
 # Rules worth knowing:
 #   * endpoint is the API base only. The path (/responses, /chat/completions) is

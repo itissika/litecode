@@ -1,8 +1,10 @@
 //! Catalog file lifecycle: stable location, first-run seeding, strict loading.
 //!
 //! The catalog lives next to the global database and is a *user* file: it is
-//! seeded once and never rewritten afterwards. The editor schema next to it is
-//! product-managed and may be refreshed on every start.
+//! seeded once. A file that already loads is never rewritten. A file this build
+//! cannot load is upgraded by [super::migrate] and the previous text is kept
+//! beside it. The editor schema next to the catalog is product-managed and may
+//! be refreshed on every start.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -42,9 +44,12 @@ pub fn schema_path_for_db(db_path: &Path) -> PathBuf {
 /// Load the catalog that belongs to `db_path`.
 ///
 /// - not initialized + file missing: seed from the embedded catalog;
-/// - not initialized + file present: validate, then register initialized;
+/// - not initialized + file present: load (upgrading if this build cannot), then
+///   register initialized;
 /// - initialized + file missing: hard error (never silently re-seed);
-/// - unreadable / bad TOML / bad semantics: hard error naming the file.
+/// - unreadable, or text that is not TOML: hard error naming the file;
+/// - TOML this build cannot load: upgrade, keep the previous text in
+///   `provider-catalog.toml.bak`, then load the upgraded file.
 pub fn load_for_db(db_path: &Path) -> Result<Arc<ProviderCatalog>> {
     let path = catalog_path_for_db(db_path);
     let conn = global_db::open(db_path)?;
@@ -52,7 +57,7 @@ pub fn load_for_db(db_path: &Path) -> Result<Arc<ProviderCatalog>> {
 
     if !initialized {
         if path.is_file() {
-            let catalog = read_and_parse(&path)?;
+            let catalog = load_catalog_file(&path)?;
             global_db::meta_set(&conn, INITIALIZED_MARKER, "1")?;
             write_schema_if_changed(&schema_path_for_db(db_path))?;
             return Ok(Arc::new(catalog));
@@ -73,9 +78,55 @@ pub fn load_for_db(db_path: &Path) -> Result<Arc<ProviderCatalog>> {
             INITIALIZED_MARKER
         )));
     }
-    let catalog = read_and_parse(&path)?;
+    let catalog = load_catalog_file(&path)?;
     write_schema_if_changed(&schema_path_for_db(db_path))?;
     Ok(Arc::new(catalog))
+}
+
+/// Strict parse, or the startup upgrade when the text is TOML this build rejects.
+fn load_catalog_file(path: &Path) -> Result<ProviderCatalog> {
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        LitecodeError::Config(format!(
+            "provider catalog {} could not be read: {error}",
+            path.display()
+        ))
+    })?;
+    match ProviderCatalog::parse(&text, path) {
+        Ok(catalog) => Ok(catalog),
+        Err(error) => {
+            let Some(upgraded) = super::migrate::upgrade(&text, path) else {
+                return Err(error);
+            };
+            let backup = backup_path(path);
+            std::fs::write(&backup, &text).map_err(|error| {
+                LitecodeError::Config(format!(
+                    "provider catalog {} could not be backed up to {}: {error}",
+                    path.display(),
+                    backup.display()
+                ))
+            })?;
+            std::fs::write(path, &upgraded.text).map_err(|error| {
+                LitecodeError::Config(format!(
+                    "provider catalog {} could not be upgraded: {error}",
+                    path.display()
+                ))
+            })?;
+            tracing::warn!(
+                path = %path.display(),
+                backup = %backup.display(),
+                "provider catalog did not match this build and was upgraded"
+            );
+            Ok(upgraded.catalog)
+        }
+    }
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(CATALOG_FILE_NAME);
+    path.with_file_name(format!("{name}.bak"))
 }
 
 /// Parse a catalog file strictly.

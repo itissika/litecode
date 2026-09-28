@@ -1,4 +1,4 @@
-import { ArrowsOutSimple, Folder, WarningCircle } from "@phosphor-icons/react";
+import { Folder } from "@phosphor-icons/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   Background,
@@ -6,44 +6,29 @@ import {
   MarkerType,
   MiniMap,
   ReactFlow,
-  NodeResizeControl,
   applyNodeChanges,
   useReactFlow,
   useNodesState,
-  Handle,
-  Position,
   type Edge,
   type Node,
   type NodeChange,
   type NodeProps,
 } from "@xyflow/react";
 
-import { FoldCard } from "../FoldCard";
+import { fitKnowledgeFolders } from "../../lib/knowledge/fitFolders";
 import {
   KNOWLEDGE_NODE_HEIGHT,
-  KNOWLEDGE_NODE_MAX_HEIGHT,
-  KNOWLEDGE_NODE_MAX_WIDTH,
-  KNOWLEDGE_NODE_MIN_HEIGHT,
-  KNOWLEDGE_NODE_MIN_WIDTH,
   KNOWLEDGE_NODE_WIDTH,
   layoutKnowledgeGraph,
   type LaidOutEdge,
 } from "../../lib/knowledge/layoutGraph";
-import { normalizeKey } from "../../lib/knowledge/markers";
-import { fitKnowledgeFolders } from "../../lib/knowledge/fitFolders";
-import { knowledgeListAlert, nodeHasError } from "../../lib/knowledge/validate";
-import type { KnowledgeIssue } from "../../lib/knowledge/types";
+import { nodeHasError } from "../../lib/knowledge/validate";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
-import {
-  KnowledgeInlineBody,
-  KnowledgeMarkdown,
-} from "./KnowledgeMarkdown";
+import { KnowledgeFlowCard } from "./KnowledgeFlowCard";
 import { KnowledgeRelationEdge } from "./KnowledgeRelationEdge";
 
-const NO_ISSUES: KnowledgeIssue[] = [];
-
-type KnowledgeNodeData = { nodeId: number };
-type KnowledgeFolderData = { folderId: number };
+type KnowledgeNodeData = { nodeId: string };
+type KnowledgeFolderData = { folderId: string };
 type KnowledgeFlowNodeType =
   | Node<KnowledgeNodeData, "knowledge">
   | Node<KnowledgeFolderData, "knowledgeFolder">;
@@ -108,18 +93,17 @@ function cssDimension(
   return fallback;
 }
 
-function defaultNodeStyle(): CSSProperties {
+function cardStyle(
+  open: boolean,
+  width: number | null | undefined,
+  height: number | null | undefined,
+): CSSProperties {
+  if (!open) {
+    return { width: KNOWLEDGE_NODE_WIDTH, height: KNOWLEDGE_NODE_HEIGHT };
+  }
   return {
-    width: KNOWLEDGE_NODE_WIDTH,
-    height: KNOWLEDGE_NODE_HEIGHT,
-  };
-}
-
-function nodeStyleFromPrev(prev: KnowledgeFlowNodeType | undefined): CSSProperties {
-  if (!prev?.style) return defaultNodeStyle();
-  return {
-    width: cssDimension(prev.style.width, KNOWLEDGE_NODE_WIDTH),
-    height: cssDimension(prev.style.height, KNOWLEDGE_NODE_HEIGHT),
+    width: width ?? KNOWLEDGE_NODE_WIDTH,
+    height: height ?? undefined,
   };
 }
 
@@ -134,118 +118,6 @@ function flowNodeSize(node: Node | undefined): { w: number; h: number } {
     cssDimension(node?.style?.height, KNOWLEDGE_NODE_HEIGHT);
   return { w, h };
 }
-
-const KnowledgeFlowNode = memo(function KnowledgeFlowNode({
-  data,
-}: NodeProps<Node<KnowledgeNodeData, "knowledge">>) {
-  const node = useKnowledgeStore((s) => s.byId.get(data.nodeId));
-  const focusedId = useKnowledgeStore((s) => s.focusedId);
-  const focusNode = useKnowledgeStore((s) =>
-    focusedId == null ? undefined : s.byId.get(focusedId),
-  );
-  const graphOpen = useKnowledgeStore((s) => s.graphExpanded.has(data.nodeId));
-  const toggleGraph = useKnowledgeStore((s) => s.toggleGraph);
-  const issues = useKnowledgeStore(
-    (s) => s.issuesByNode.get(data.nodeId) ?? NO_ISSUES,
-  );
-
-  if (!node) return null;
-
-  const listAlert = knowledgeListAlert(issues, node.status);
-  const disabled = node.status === "disabled";
-
-  const focused = focusedId === node.id;
-  let dimmed = false;
-  if (focusedId != null && !focused && focusNode) {
-    const linked =
-      focusNode.relations.includes(node.id) ||
-      node.relations.includes(focusedId);
-    dimmed = !linked;
-  }
-
-  const key = normalizeKey(node.key);
-
-  return (
-    <>
-      <Handle type="target" position={Position.Left} isConnectable={false} />
-      <div
-        className={[
-          "knowledge-flow-card",
-          graphOpen ? "is-expanded" : "",
-          focused ? "is-focused" : "",
-          dimmed ? "is-dimmed" : "",
-        ]
-          .filter(Boolean)
-          .join(" ")}
-      >
-        {node.status === "disabled" && !focused ? (
-          <div className="knowledge-flow-disabled-veil" aria-hidden />
-        ) : null}
-        <FoldCard
-          className="knowledge-flow-foldcard"
-          showArrow={false}
-          summaryMode
-          instantBody
-          edgeBlur={false}
-          open={graphOpen}
-          onToggle={(next) => {
-            if (next === graphOpen) return;
-            toggleGraph(node.id);
-          }}
-          label={
-            <span className="flex min-w-0 items-center gap-1">
-              {listAlert ? (
-                <WarningCircle
-                  size={12}
-                  weight="fill"
-                  className={
-                    listAlert === "red"
-                      ? "knowledge-list-alert is-red"
-                      : "knowledge-list-alert is-amber"
-                  }
-                  aria-label={
-                    listAlert === "red"
-                      ? "Reference problem"
-                      : "Pending review"
-                  }
-                />
-              ) : null}
-              <span
-                className={[
-                  "knowledge-card-title knowledge-node-title truncate font-mono",
-                  disabled ? "is-disabled" : "text-(--_dk-text-primary)",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-              >
-                {key}
-              </span>
-            </span>
-          }
-          headerAriaLabel={key}
-          summary={
-            <KnowledgeInlineBody sourceId={node.id} text={node.value} />
-          }
-          frameColor="transparent"
-          contentClassName="knowledge-markdown"
-        >
-          <KnowledgeMarkdown sourceId={node.id} text={node.value} />
-        </FoldCard>
-        <NodeResizeControl
-          position="bottom-right"
-          minWidth={KNOWLEDGE_NODE_MIN_WIDTH}
-          minHeight={KNOWLEDGE_NODE_MIN_HEIGHT}
-          maxWidth={KNOWLEDGE_NODE_MAX_WIDTH}
-          maxHeight={KNOWLEDGE_NODE_MAX_HEIGHT}
-          className="knowledge-flow-resize-handle"
-        >
-          <ArrowsOutSimple size={10} weight="bold" aria-hidden />
-        </NodeResizeControl>
-      </div>
-      <Handle type="source" position={Position.Right} isConnectable={false} />
-    </>
-  );
-});
 
 const KnowledgeFolderNode = memo(function KnowledgeFolderNode({
   data,
@@ -263,15 +135,17 @@ const KnowledgeFolderNode = memo(function KnowledgeFolderNode({
 });
 
 const nodeTypes = {
-  knowledge: KnowledgeFlowNode,
+  knowledge: KnowledgeFlowCard,
   knowledgeFolder: KnowledgeFolderNode,
 };
 const edgeTypes = { knowledgeRelation: KnowledgeRelationEdge };
 
 function buildFlowNode(
   node: ReturnType<typeof layoutKnowledgeGraph>["nodes"][number],
-  focusedId: number | null,
+  focusedId: string | null,
   prev: KnowledgeFlowNodeType | undefined,
+  open: boolean,
+  saved: { w: number | null; h: number | null } | undefined,
 ): KnowledgeFlowNodeType {
   return {
     id: node.id,
@@ -282,7 +156,7 @@ function buildFlowNode(
     draggable: true,
     connectable: false,
     zIndex: node.nodeId === focusedId ? 10 : 1,
-    style: nodeStyleFromPrev(prev),
+    style: cardStyle(open, saved?.w, saved?.h),
   };
 }
 
@@ -327,7 +201,7 @@ function folderDepth(
 function toFlowEdges(
   edges: LaidOutEdge[],
   colors: GraphColors,
-  focusedId: number | null,
+  focusedId: string | null,
 ): Edge[] {
   return edges.map((edge) => {
     const hot =
@@ -397,6 +271,8 @@ export function KnowledgeGraph() {
   const issues = useKnowledgeStore((s) => s.issues);
   const byId = useKnowledgeStore((s) => s.byId);
   const focusedId = useKnowledgeStore((s) => s.focusedId);
+  const graphExpanded = useKnowledgeStore((s) => s.graphExpanded);
+  const structureNonce = useKnowledgeStore((s) => s.structureNonce);
   const selectFromGraph = useKnowledgeStore((s) => s.selectFromGraph);
   const clearCanvasFocus = useKnowledgeStore((s) => s.clearCanvasFocus);
   const colors = useGraphColors();
@@ -410,13 +286,42 @@ export function KnowledgeGraph() {
       setFlowNodes((current) =>
         fitKnowledgeFolders(applyNodeChanges(changes, current)),
       );
+      const state = useKnowledgeStore.getState();
+      for (const change of changes) {
+        if (
+          change.type === "position" &&
+          change.dragging === false &&
+          change.position
+        ) {
+          void state.saveNode(change.id, {
+            x: change.position.x,
+            y: change.position.y,
+          });
+        }
+        if (
+          change.type === "dimensions" &&
+          change.resizing === false &&
+          change.dimensions &&
+          state.graphExpanded.has(change.id)
+        ) {
+          void state.saveNode(change.id, {
+            w: change.dimensions.width,
+            h: change.dimensions.height,
+          });
+        }
+      }
     },
     [setFlowNodes],
   );
 
+  const seenStructure = useRef(structureNonce);
   useEffect(() => {
+    const fresh = structureNonce !== seenStructure.current;
+    seenStructure.current = structureNonce;
     setFlowNodes((current) => {
-      const prevById = new Map(current.map((node) => [node.id, node]));
+      const prevById = fresh
+        ? new Map<string, KnowledgeFlowNodeType>()
+        : new Map(current.map((node) => [node.id, node]));
       const folderByFlowId = new Map(
         laid.folders.map((folder) => [folder.id, folder]),
       );
@@ -433,13 +338,26 @@ export function KnowledgeGraph() {
         });
       const cardNodes = laid.nodes.map((node) => {
         const prev = prevById.get(node.id);
-        const zIndex = node.nodeId === focusedId ? 10 : 1;
-        if (prev?.type === "knowledge" && prev.zIndex === zIndex) return prev;
-        return buildFlowNode(node, focusedId, prev);
+        const source = byId.get(node.nodeId);
+        return buildFlowNode(
+          node,
+          focusedId,
+          prev,
+          graphExpanded.has(node.nodeId),
+          source,
+        );
       });
       return fitKnowledgeFolders([...folderNodes, ...cardNodes]);
     });
-  }, [laid.folders, laid.nodes, focusedId, setFlowNodes]);
+  }, [
+    laid.folders,
+    laid.nodes,
+    focusedId,
+    graphExpanded,
+    byId,
+    setFlowNodes,
+    structureNonce,
+  ]);
 
   const flowEdges = useMemo(
     () => toFlowEdges(laid.edges, colors, focusedId),
@@ -455,8 +373,7 @@ export function KnowledgeGraph() {
         edgeTypes={edgeTypes}
         onNodeClick={(_, node) => {
           if (node.type !== "knowledge") return;
-          const id = Number(node.id);
-          if (Number.isInteger(id)) selectFromGraph(id);
+          selectFromGraph(node.id);
         }}
         onPaneClick={() => clearCanvasFocus()}
         onNodesChange={onNodesChange}
@@ -479,7 +396,7 @@ export function KnowledgeGraph() {
           bgColor={colors.panel}
           maskColor={colors.mask}
           nodeColor={(node) => {
-            const knowledge = byId.get(Number(node.id));
+            const knowledge = byId.get(node.id);
             if (!knowledge) return colors.muted;
             if (nodeHasError(issues, knowledge.id)) return colors.red;
             if (knowledge.status === "pending") return colors.amber;
