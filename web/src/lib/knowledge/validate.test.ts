@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { knowledgeFixture } from "./fixture";
 import type { KnowledgeNode } from "./types";
-import { validateKnowledge } from "./validate";
+import { groupIssues, knowledgeListAlert, validateKnowledge } from "./validate";
 
 function node(partial: Partial<KnowledgeNode> & Pick<KnowledgeNode, "id" | "key">): KnowledgeNode {
   return {
@@ -148,5 +148,24 @@ describe("knowledge fixture", () => {
     ]);
     expect(of("session")).toEqual([]);
     expect(of("temperature")).toEqual([]);
+  });
+});
+
+describe("knowledgeListAlert", () => {
+  const issuesByNode = groupIssues(validateKnowledge(knowledgeFixture));
+  const nodeByKey = new Map(knowledgeFixture.map((n) => [n.key, n]));
+
+  function alertFor(key: string) {
+    const node = nodeByKey.get(key)!;
+    return knowledgeListAlert(issuesByNode.get(node.id) ?? [], node.status);
+  }
+
+  it("flags reference faults and pending review", () => {
+    expect(alertFor("broken-marker")).toBe("red");
+    expect(alertFor("draft-link")).toBe("red");
+    expect(alertFor("knowledge")).toBe("amber");
+    expect(alertFor("session")).toBeNull();
+    expect(alertFor("sampling")).toBeNull();
+    expect(alertFor("temperature")).toBeNull();
   });
 });

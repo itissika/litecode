@@ -1,5 +1,12 @@
 export type KnowledgeStatus = "enabled" | "disabled" | "pending";
 
+/** Organizational container. Folders do not participate in citations. */
+export interface KnowledgeFolder {
+  id: number;
+  name: string;
+  parentId: number | null;
+}
+
 /** One knowledge node. Relations store ids; the body refers to other nodes by key. */
 export interface KnowledgeNode {
   id: number;
@@ -7,6 +14,8 @@ export interface KnowledgeNode {
   value: string;
   relations: number[];
   status: KnowledgeStatus;
+  /** Folder that holds this node. `null` / omitted = root of the list and canvas. */
+  folderId?: number | null;
 }
 
 export type KnowledgeIssueCode =

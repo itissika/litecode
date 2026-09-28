@@ -5,6 +5,7 @@ import {
   screen,
   act,
 } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FoldCard } from "./FoldCard";
@@ -48,6 +49,33 @@ function header() {
 afterEach(() => {
   cleanup();
   clearFoldCardOpen(SESSION);
+});
+
+describe("FoldCard summary mode", () => {
+  it("keeps the summary visible while collapsed and shows children when open", () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <FoldCard
+          label="node"
+          summaryMode
+          summary="one-line"
+          open={open}
+          onToggle={setOpen}
+        >
+          full body
+        </FoldCard>
+      );
+    }
+    render(<Harness />);
+    const header = screen.getByRole("button", { name: "node" });
+    expect(screen.getByText("one-line")).toBeTruthy();
+    expect(screen.queryByText("full body")).toBeNull();
+    fireEvent.animationEnd(header);
+    fireEvent.click(header);
+    expect(screen.queryByText("one-line")).toBeNull();
+    expect(screen.getByText("full body")).toBeTruthy();
+  });
 });
 
 describe("FoldCard mount defaults", () => {

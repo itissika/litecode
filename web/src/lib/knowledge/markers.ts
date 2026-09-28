@@ -98,6 +98,15 @@ export function extractMarkers(markdown: string): string[] {
   return keys;
 }
 
+/** First non-empty prose line as literal/ref segments (for one-line summaries). */
+export function knowledgeFirstLineSegments(value: string): KnowledgeSegment[] {
+  for (const line of scanProse(value).prose) {
+    if (!line.trim()) continue;
+    return splitKnowledgeRefs(line);
+  }
+  return [{ type: "text", value: "" }];
+}
+
 /** First lines of a value, with markers reduced to their key, for card previews. */
 export function knowledgePreview(value: string, lines = 3): string {
   return scanProse(value)

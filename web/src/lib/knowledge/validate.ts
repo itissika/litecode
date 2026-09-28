@@ -160,3 +160,24 @@ export function nodeHasError(
     (issue) => issue.nodeId === nodeId && issue.severity === "error",
   );
 }
+
+const RED_LIST_ALERT_CODES = new Set<KnowledgeIssue["code"]>([
+  "dangling_relation",
+  "unknown_marker",
+  "unregistered_marker",
+  "unused_relation",
+]);
+
+/** Side-list row: red = bad/missing refs or unused relation; amber = pending review. */
+export function knowledgeListAlert(
+  issues: KnowledgeIssue[],
+  status: KnowledgeNode["status"],
+): "red" | "amber" | null {
+  const hasRed = issues.some(
+    (issue) =>
+      issue.severity === "error" || RED_LIST_ALERT_CODES.has(issue.code),
+  );
+  if (hasRed) return "red";
+  if (status === "pending") return "amber";
+  return null;
+}

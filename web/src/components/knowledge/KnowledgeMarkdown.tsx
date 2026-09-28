@@ -5,12 +5,14 @@ import ReactMarkdown, {
 } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { normalizeKey } from "../../lib/knowledge/markers";
+import { chipForMarker } from "../../lib/knowledge/refDisplay";
+import { knowledgeFirstLineSegments } from "../../lib/knowledge/markers";
 import {
   parseKnowledgeRef,
   remarkKnowledgeRef,
 } from "../../lib/knowledge/remarkKnowledgeRef";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
+import { KnowledgeRefChip } from "./KnowledgeRefChip";
 
 const KnowledgeSourceContext = createContext<number | null>(null);
 
@@ -19,48 +21,22 @@ function knowledgeUrlTransform(url: string): string {
   return defaultUrlTransform(url);
 }
 
-function KnowledgeRefChip({ marker }: { marker: string }) {
+function BodyRefChip({ marker }: { marker: string }) {
   const sourceId = useContext(KnowledgeSourceContext);
-  const target = useKnowledgeStore((s) => s.byKey.get(normalizeKey(marker)));
   const source = useKnowledgeStore((s) =>
     sourceId == null ? undefined : s.byId.get(sourceId),
   );
-  const focus = useKnowledgeStore((s) => s.focus);
-
-  let invalid: string | null = null;
-  let warning: string | null = null;
-  if (!target) invalid = `键「${marker}」不存在`;
-  else if (!source) invalid = "没有来源节点";
-  else if (target.id === source.id) invalid = "不能引用自己";
-  else if (!source.relations.includes(target.id)) {
-    invalid = `「${marker}」未在关系列登记`;
-  } else if (source.status === "enabled" && target.status !== "enabled") {
-    warning =
-      target.status === "disabled"
-        ? `「${marker}」已禁用`
-        : `「${marker}」待审阅`;
-  }
-
+  const byKey = useKnowledgeStore((s) => s.byKey);
+  const focusCanvas = useKnowledgeStore((s) => s.focusCanvas);
+  if (!source) return <span>{marker}</span>;
+  const model = chipForMarker(source, marker, byKey);
   return (
-    <button
-      type="button"
-      className={
-        invalid
-          ? "knowledge-ref is-invalid"
-          : warning
-            ? "knowledge-ref is-warning"
-            : "knowledge-ref"
-      }
-      title={invalid ?? warning ?? `打开 ${marker}`}
-      aria-invalid={invalid ? true : undefined}
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (!invalid && target) focus(target.id);
+    <KnowledgeRefChip
+      model={model}
+      onActivate={() => {
+        if (model.targetId != null) focusCanvas(model.targetId);
       }}
-    >
-      {marker}
-    </button>
+    />
   );
 }
 
@@ -73,7 +49,7 @@ const components: Components = {
   em: ({ children }) => <em>{children}</em>,
   a: ({ href, children }) => {
     const key = parseKnowledgeRef(href);
-    if (key) return <KnowledgeRefChip marker={key} />;
+    if (key) return <BodyRefChip marker={key} />;
     return (
       <a href={href} target="_blank" rel="noreferrer">
         {children}
@@ -93,6 +69,33 @@ const components: Components = {
     return <code className="knowledge-inline-code">{raw}</code>;
   },
 };
+
+/** One prose line with `[[key]]` chips — for graph card summaries. */
+export function KnowledgeInlineBody({
+  sourceId,
+  text,
+}: {
+  sourceId: number;
+  text: string;
+}) {
+  const segments = knowledgeFirstLineSegments(text);
+  return (
+    <KnowledgeSourceContext.Provider value={sourceId}>
+      <div className="knowledge-inline-body">
+        {segments.map((segment, index) => {
+          if (segment.type === "text") {
+            return segment.value ? (
+              <span key={index} className="knowledge-inline-text">
+                {segment.value}
+              </span>
+            ) : null;
+          }
+          return <BodyRefChip key={index} marker={segment.key} />;
+        })}
+      </div>
+    </KnowledgeSourceContext.Provider>
+  );
+}
 
 export function KnowledgeMarkdown({
   sourceId,

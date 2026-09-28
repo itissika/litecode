@@ -9,6 +9,8 @@ afterEach(() => {
   useKnowledgeStore.setState({
     focusedId: null,
     focusNonce: 0,
+    flashId: null,
+    flashNonce: 0,
     expanded: new Set(),
   });
 });
@@ -18,14 +20,14 @@ describe("KnowledgeMarkdown", () => {
     render(<KnowledgeMarkdown sourceId={1} text="see [[seq]]" />);
     fireEvent.click(screen.getByRole("button", { name: "seq" }));
     expect(useKnowledgeStore.getState().focusedId).toBe(2);
-    expect(useKnowledgeStore.getState().expanded.has(2)).toBe(true);
+    expect(useKnowledgeStore.getState().expanded.has(2)).toBe(false);
   });
 
   it("marks an unknown key and does not focus", () => {
     render(<KnowledgeMarkdown sourceId={14} text="[[not-a-node]]" />);
     const chip = screen.getByRole("button", { name: "not-a-node" });
     expect(chip.getAttribute("aria-invalid")).toBe("true");
-    expect(chip.getAttribute("title") ?? "").toContain("不存在");
+    expect(chip.hasAttribute("disabled")).toBe(true);
     fireEvent.click(chip);
     expect(useKnowledgeStore.getState().focusedId).toBeNull();
   });

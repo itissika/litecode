@@ -45,6 +45,13 @@ interface FoldCardProps {
   /** Disable the top/bottom edge-blur bands (default: on). Compact surfaces like
    *  popovers usually want them off. */
   edgeBlur?: boolean;
+  /** When set, a one-line summary stays visible while collapsed (body hidden). */
+  summaryMode?: boolean;
+  summary?: ReactNode;
+  /** Header chevron (default: shown). */
+  showArrow?: boolean;
+  /** Skip the body grid-row expand/collapse transition (compact surfaces). */
+  instantBody?: boolean;
   children: ReactNode;
 }
 
@@ -75,6 +82,10 @@ export function FoldCard({
   contentClassName = "",
   frameColor,
   edgeBlur = true,
+  summaryMode = false,
+  summary,
+  showArrow = true,
+  instantBody = false,
   children,
 }: FoldCardProps) {
   // The persisted state is the user's explicit preference only. If there is no
@@ -97,7 +108,9 @@ export function FoldCard({
   // mount (streaming, or restored from persisted state) must also start ready:
   // otherwise it would mount collapsed, measure short, then pop open 260ms
   // later and jitter the virtual list.
-  const [ready, setReady] = useState(streaming === true || open === true);
+  const [ready, setReady] = useState(
+    summaryMode || streaming === true || open === true,
+  );
   useLayoutEffect(() => {
     if (open && !ready) setReady(true);
   }, [open, ready]);
@@ -263,7 +276,9 @@ export function FoldCard({
   };
 
   return (
-    <div className={`foldcard min-w-0 max-w-full ${className}`.trim()}>
+    <div
+      className={`foldcard min-w-0 max-w-full ${instantBody ? "foldcard-instant-body" : ""} ${className}`.trim()}
+    >
       <div
         role="button"
         tabIndex={0}
@@ -278,19 +293,21 @@ export function FoldCard({
             : "text-xs text-(--_dk-text-muted)"
         }`}
       >
-        <svg
-          width="10"
-          height="10"
-          viewBox="0 0 10 10"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className={`foldcard-arrow ${FOLDCARD_HEADER_TONE} shrink-0 ${bodyOpen ? "is-open" : ""}`}
-        >
-          <path d="M3 1.5l4 3.5-4 3.5" />
-        </svg>
+        {showArrow ? (
+          <svg
+            width="10"
+            height="10"
+            viewBox="0 0 10 10"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`foldcard-arrow ${FOLDCARD_HEADER_TONE} shrink-0 ${bodyOpen ? "is-open" : ""}`}
+          >
+            <path d="M3 1.5l4 3.5-4 3.5" />
+          </svg>
+        ) : null}
         {icon != null ? (
           <span className={`${FOLDCARD_HEADER_TONE} inline-flex shrink-0`}>
             {icon}
@@ -306,6 +323,14 @@ export function FoldCard({
           )}
         </span>
       </div>
+      {summaryMode && summary != null ? (
+        <>
+          <div className="foldcard-summary-divider" aria-hidden />
+          {!wantOpen ? (
+            <div className="foldcard-summary">{summary}</div>
+          ) : null}
+        </>
+      ) : null}
       <div
         ref={bodyRef}
         className={`foldcard-body ${bodyOpen ? "is-open" : ""}`}

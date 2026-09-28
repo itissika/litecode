@@ -510,6 +510,10 @@
   transition: grid-template-rows 240ms ease;
 }
 
+.foldcard-instant-body .foldcard-body {
+  transition: none;
+}
+
 .foldcard-body.is-open {
   grid-template-rows: 1fr;
 }
