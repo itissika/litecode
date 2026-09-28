@@ -32,7 +32,7 @@ export function KnowledgeRefChip({
       type="button"
       className={toneClass(model.tone)}
       title={title}
-      aria-label={model.key}
+      aria-label={model.label}
       aria-invalid={model.tone === "error" ? true : undefined}
       disabled={!model.jumpable}
       onClick={(event) => {
@@ -42,7 +42,7 @@ export function KnowledgeRefChip({
       }}
     >
       <Icon size={10} weight="fill" className="knowledge-ref-icon" aria-hidden />
-      {model.key}
+      {model.label}
     </button>
   );
 }

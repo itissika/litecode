@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { knowledgeFixture, knowledgeFolderFixture } from "../../lib/knowledge/fixture";
+import { mentionSource } from "../../lib/knowledge/markers";
 import { knowledgeSnapshot, useKnowledgeStore } from "../../stores/knowledgeStore";
 import { KnowledgeMarkdown } from "./KnowledgeMarkdown";
 
@@ -25,7 +26,7 @@ afterEach(() => {
 
 describe("KnowledgeMarkdown", () => {
   it("jumps to a registered citation", () => {
-    render(<KnowledgeMarkdown sourceId="session" text="see [[node : seq]]" />);
+    render(<KnowledgeMarkdown sourceId="session" text={`see ${mentionSource("seq")}`} />);
     fireEvent.click(screen.getByRole("button", { name: "seq" }));
     expect(useKnowledgeStore.getState().focusedId).toBe("seq");
     expect(useKnowledgeStore.getState().expanded.has("seq")).toBe(false);
@@ -33,7 +34,7 @@ describe("KnowledgeMarkdown", () => {
 
   it("marks an unknown key and does not focus", () => {
     render(
-      <KnowledgeMarkdown sourceId="broken-marker" text="[[node : not-a-node]]" />,
+      <KnowledgeMarkdown sourceId="broken-marker" text={mentionSource("not-a-node")} />,
     );
     const chip = screen.getByRole("button", { name: "not-a-node" });
     expect(chip.getAttribute("aria-invalid")).toBe("true");
@@ -44,13 +45,13 @@ describe("KnowledgeMarkdown", () => {
 
   it("does not turn a marker inside a code block into a citation", () => {
     render(
-      <KnowledgeMarkdown sourceId="session" text={"```\n[[node : seq]]\n```"} />,
+      <KnowledgeMarkdown sourceId="session" text={`\`\`\`\n${mentionSource("seq")}\n\`\`\``} />,
     );
     expect(screen.queryByRole("button", { name: "seq" })).toBeNull();
   });
 
   it("does not treat a bare double-bracket as a citation", () => {
-    render(<KnowledgeMarkdown sourceId="session" text="see [[seq]]" />);
+    render(<KnowledgeMarkdown sourceId="session" text="see [[seq]] and @seq" />);
     expect(screen.queryByRole("button", { name: "seq" })).toBeNull();
   });
 });

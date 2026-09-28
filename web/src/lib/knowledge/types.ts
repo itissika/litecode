@@ -16,7 +16,7 @@ export interface KnowledgeNode {
   value: string;
   /** One-line summary from the declaration block. */
   summary: string;
-  /** Keys declared with `ref :` in this file, in source order. */
+  /** Keys of mentions in the body, first-seen order. */
   relations: string[];
   status: KnowledgeStatus;
   /** Canvas origin relative to the parent folder. `null` = laid out on open. */
@@ -36,10 +36,7 @@ export type KnowledgeIssueCode =
   | "empty_key"
   | "filename_mismatch"
   | "self_relation"
-  | "unknown_marker"
-  | "unregistered_marker"
   | "dangling_relation"
-  | "unused_relation"
   | "inactive_target";
 
 export type KnowledgeIssueSeverity = "error" | "warning";

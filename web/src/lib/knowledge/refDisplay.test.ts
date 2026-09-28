@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { knowledgeFixture } from "./fixture";
-import { bodyMarkerKeys, chipForMarker, relationStripChips } from "./refDisplay";
+import { chipForMarker, relationStripChips } from "./refDisplay";
 import { normalizeKey } from "./markers";
 import type { KnowledgeNode } from "./types";
 
@@ -18,7 +18,7 @@ function index() {
 }
 
 describe("refDisplay", () => {
-  it("puts prose faults on markers only", () => {
+  it("marks a mention whose id does not exist", () => {
     const { byKey } = index();
     const broken = node("broken-marker");
     const chip = chipForMarker(broken, "not-a-node", byKey);
@@ -26,7 +26,7 @@ describe("refDisplay", () => {
     expect(chip.jumpable).toBe(false);
   });
 
-  it("shows a relation that the body never cites", () => {
+  it("does not invent a chip for a relation the body never cites", () => {
     const source: KnowledgeNode = {
       id: "draft",
       key: "draft",
@@ -45,16 +45,16 @@ describe("refDisplay", () => {
       [source.id, source],
       [target.id, target],
     ]);
-    const strip = relationStripChips(source, byId, bodyMarkerKeys(source.value));
-    expect(strip.map((chip) => chip.key)).toEqual(["knowledge"]);
-    expect(strip[0]?.tone).toBe("warning");
+    expect(relationStripChips(source, byId)).toEqual([]);
   });
 
-  it("keeps inactive body citations out of the relation strip", () => {
+  it("shows an inactive mention with its label", () => {
     const { byId, byKey } = index();
     const sampling = node("sampling");
-    const keys = bodyMarkerKeys(sampling.value);
-    expect(relationStripChips(sampling, byId, keys)).toEqual([]);
+    const strip = relationStripChips(sampling, byId);
+    expect(strip.map((chip) => chip.key)).toEqual(["temperature"]);
+    expect(strip[0]?.label).toBe("temperature");
+    expect(strip[0]?.tone).toBe("disabled");
     const chip = chipForMarker(sampling, "temperature", byKey);
     expect(chip.tone).toBe("disabled");
     expect(chip.jumpable).toBe(true);

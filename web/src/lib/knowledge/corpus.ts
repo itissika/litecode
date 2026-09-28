@@ -1,9 +1,9 @@
 import { renderKnowledgeMarkdown, type KnowledgeSourceFile } from "./document";
-import { extractMarkers, knowledgePreview } from "./markers";
+import { knowledgePreview, mentionSource } from "./markers";
 import type { KnowledgeStatus } from "./types";
 
 function ref(key: string): string {
-  return `[[node : ${key}]]`;
+  return mentionSource(key);
 }
 
 function file(
@@ -11,14 +11,7 @@ function file(
   key: string,
   status: KnowledgeStatus,
   body: string,
-  refs?: string[],
 ): KnowledgeSourceFile {
-  const declared = refs ?? [];
-  if (!refs) {
-    for (const marker of extractMarkers(body)) {
-      if (!declared.includes(marker)) declared.push(marker);
-    }
-  }
   return {
     path,
     markdown: renderKnowledgeMarkdown({
@@ -26,7 +19,6 @@ function file(
       status,
       body,
       summary: knowledgePreview(body, 1),
-      refs: declared,
     }),
   };
 }
@@ -125,7 +117,6 @@ export const knowledgeCorpusFiles: KnowledgeSourceFile[] = [
     "broken-marker",
     "enabled",
     `正文里有一个没有定义过的标识 ${ref("not-a-node")}，校验应该挡住它。\n\n\`\`\`\n${ref("seq")}\n\`\`\``,
-    [],
   ),
   file(
     "问题示例/loopback.md",

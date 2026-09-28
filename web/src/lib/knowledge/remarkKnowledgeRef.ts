@@ -36,8 +36,8 @@ function nodesFromText(value: string): MdastNode[] {
     }
     nodes.push({
       type: "link",
-      url: knowledgeRefHref(segment.key),
-      children: [{ type: "text", value: segment.key }],
+      url: knowledgeRefHref(segment.id),
+      children: [{ type: "text", value: segment.label }],
     });
   }
   return nodes;
@@ -62,7 +62,8 @@ function walk(node: MdastNode): void {
 }
 
 /**
- * Turn `[[node : key]]` in prose into `knowledge:` links.
+ * Turn a Mention shortcode in prose into a `knowledge:` link.
+ * The link target is `id`. The link text is `label`.
  * Code and inline code are separate AST nodes, so they are left alone.
  */
 export function remarkKnowledgeRef() {

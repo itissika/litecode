@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { knowledgeFixture } from "./fixture";
+import { mentionSource } from "./markers";
 import type { KnowledgeIssue, KnowledgeNode } from "./types";
 import {
   groupIssues,
@@ -38,8 +39,7 @@ describe("validateKnowledge", () => {
       node({
         id: "session",
         key: "session",
-        value: "uses [[node : seq]]",
-        relations: ["seq"],
+        value: `uses ${mentionSource("seq")}`,
       }),
       node({ id: "seq", key: "seq", value: "a number" }),
     ]);
@@ -70,7 +70,7 @@ describe("validateKnowledge", () => {
   it("flags a self citation and an unknown marker", () => {
     expect(
       codes(
-        [node({ id: "loop", key: "loop", value: "[[node : loop]]", relations: ["loop"] })],
+        [node({ id: "loop", key: "loop", value: mentionSource("loop") })],
         "loop",
       ),
     ).toEqual(["self_relation"]);
@@ -78,13 +78,12 @@ describe("validateKnowledge", () => {
       node({
         id: "session",
         key: "session",
-        value: "[[node : missing]] and [[node : seq]]",
+        value: `${mentionSource("missing")} and ${mentionSource("seq")}`,
       }),
       node({ id: "seq", key: "seq" }),
     ];
     expect(codes(nodes, "session")).toEqual([
-      "unregistered_marker",
-      "unregistered_marker",
+      "dangling_relation",
     ]);
   });
 
@@ -93,8 +92,7 @@ describe("validateKnowledge", () => {
       node({
         id: "sampling",
         key: "sampling",
-        value: "[[node : temperature]] and [[node : knowledge]]",
-        relations: ["temperature", "knowledge"],
+        value: `${mentionSource("temperature")} and ${mentionSource("knowledge")}`,
       }),
       node({ id: "temperature", key: "temperature", status: "disabled" }),
       node({ id: "knowledge", key: "knowledge", status: "pending" }),
@@ -120,7 +118,7 @@ describe("validateKnowledge", () => {
       node({
         id: "note",
         key: "note",
-        value: "prose\n```\n[[node : seq]]\n```\n`[[node : revert]]`",
+        value: `prose\n\`\`\`\n${mentionSource("seq")}\n\`\`\`\n\`${mentionSource("revert")}\``,
       }),
     ]);
     expect(issues).toEqual([]);
@@ -135,8 +133,8 @@ describe("validateKnowledge", () => {
 
   it("allows a cycle", () => {
     const issues = validateKnowledge([
-      node({ id: "session", key: "session", value: "[[node : seq]]", relations: ["seq"] }),
-      node({ id: "seq", key: "seq", value: "[[node : session]]", relations: ["session"] }),
+      node({ id: "session", key: "session", value: mentionSource("seq") }),
+      node({ id: "seq", key: "seq", value: mentionSource("session") }),
     ]);
     expect(issues).toEqual([]);
   });
@@ -163,7 +161,7 @@ describe("knowledge fixture", () => {
 
     const present = new Set(issues.map((issue) => issue.code));
     expect(present).toEqual(
-      new Set(["unregistered_marker", "self_relation", "inactive_target"]),
+      new Set(["dangling_relation", "self_relation", "inactive_target"]),
     );
   });
 
@@ -176,7 +174,7 @@ describe("knowledge fixture", () => {
         )
         .map((issue) => issue.code);
 
-    expect(of("broken-marker")).toEqual(["unregistered_marker"]);
+    expect(of("broken-marker")).toEqual(["dangling_relation"]);
     expect(of("loopback")).toEqual(["self_relation"]);
     expect(of("sampling")).toEqual(["inactive_target"]);
     expect(of("session")).toEqual([]);
@@ -206,8 +204,8 @@ describe("knowledgeTitleTone", () => {
     const fault: KnowledgeIssue = {
       nodeId: "temperature",
       severity: "error",
-      code: "unknown_marker",
-      message: "正文标识「missing」不存在",
+      code: "dangling_relation",
+      message: "引用「missing」不存在",
     };
     expect(knowledgeTitleTone([fault], "disabled")).toBe("error");
   });

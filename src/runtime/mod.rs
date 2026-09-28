@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::{AgentDeps, TurnOutcome};
 use crate::config::bridge::agent_config_for;
-use crate::config::workspace::set_runtime_paths;
+use crate::config::workspace::{contract_snapshot_for_turn, set_runtime_paths};
 use crate::config::{AgentConfig, ConfigManager, ResolvedConfig, WorkspaceState, log_filter};
 use crate::context_pipeline::{Context, build_context};
 use crate::context_pipeline::{ContextPipeline, ProviderPromptBaseline};
@@ -526,7 +526,11 @@ impl AgentRuntime {
         max_steps_override: Option<u32>,
     ) -> Result<Self> {
         let cancel = cancel.unwrap_or_default();
-        let resolved = runtime.resolved.clone();
+        let mut resolved = runtime.resolved.clone();
+        // Turn-local overlay. The process contract stays the startup snapshot
+        // and is only the fallback when this read fails.
+        let contract = contract_snapshot_for_turn(resolved.workspace_root(), resolved.contract());
+        resolved.workspace_mut().contract = contract;
         let runtime_handle = runtime.clone();
 
         let mut agent_config = agent_config_for(&resolved, agent_name)?;

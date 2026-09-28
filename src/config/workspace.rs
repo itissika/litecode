@@ -405,6 +405,18 @@ pub fn read_contract(workspace_root: &Path) -> String {
     }
 }
 
+/// Contract string for one new turn. Does not mutate the process workspace.
+///
+/// `Found` (including an empty file) and `Missing` both replace `fallback`.
+/// `IoError` keeps `fallback` so a transient read does not blank the prompt.
+pub fn contract_snapshot_for_turn(workspace_root: &Path, fallback: &str) -> String {
+    match read_contract_result(workspace_root) {
+        ContractRead::Found(content) => content,
+        ContractRead::Missing => String::new(),
+        ContractRead::IoError(_) => fallback.to_string(),
+    }
+}
+
 /// Outcome of reading `CLAUDE.md` — distinguishes missing file from IO failure (G16).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractRead {
@@ -738,6 +750,39 @@ mod tests {
         assert_ne!(result, ContractRead::Missing);
         assert!(matches!(result, ContractRead::IoError(_)));
         assert!(read_contract(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn contract_snapshot_for_turn_reads_disk_over_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "# fresh\n").unwrap();
+        assert_eq!(
+            contract_snapshot_for_turn(dir.path(), "# startup\n"),
+            "# fresh\n"
+        );
+    }
+
+    #[test]
+    fn contract_snapshot_for_turn_missing_or_empty_clears() {
+        let missing = tempfile::tempdir().unwrap();
+        assert_eq!(
+            contract_snapshot_for_turn(missing.path(), "# startup\n"),
+            ""
+        );
+
+        let empty = tempfile::tempdir().unwrap();
+        std::fs::write(empty.path().join("CLAUDE.md"), "").unwrap();
+        assert_eq!(contract_snapshot_for_turn(empty.path(), "# startup\n"), "");
+    }
+
+    #[test]
+    fn contract_snapshot_for_turn_io_error_keeps_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("CLAUDE.md")).unwrap();
+        assert_eq!(
+            contract_snapshot_for_turn(dir.path(), "# startup\n"),
+            "# startup\n"
+        );
     }
 
     #[test]

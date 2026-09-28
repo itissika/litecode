@@ -1,4 +1,11 @@
-import { extractMarkers, isKnowledgeKey, knowledgePreview, normalizeKey } from "./markers";
+import {
+  extractMarkers,
+  isKnowledgeKey,
+  knowledgePreview,
+  mentionSource,
+  normalizeKey,
+  replaceMentionKey,
+} from "./markers";
 import type {
   KnowledgeFolder,
   KnowledgeNode,
@@ -19,7 +26,7 @@ export interface ParsedKnowledgeFile {
   key: string;
   status: KnowledgeStatus;
   summary: string;
-  /** Declared `ref :` keys, in source order. */
+  /** Mention ids in the body, first-seen order. */
   refs: string[];
   /** Body after the declaration fence. The fence itself is not included. */
   body: string;
@@ -28,8 +35,10 @@ export interface ParsedKnowledgeFile {
   y: number | null;
   w: number | null;
   h: number | null;
-  /** True when the fence contains a `summary` or `ref` line. */
-  hasMeta: boolean;
+  /** True when the fence contains a `summary` line. */
+  hasSummary: boolean;
+  /** True when the fence still has a legacy `ref :` line. */
+  hadRefLine: boolean;
 }
 
 const OPEN_FENCE = /^(?:[ \t]*\r?\n)*```node[ \t]*\r?\n/;
@@ -59,10 +68,19 @@ function parseCoord(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function pushRef(refs: string[], value: string): void {
-  const key = normalizeKey(value);
-  if (!isKnowledgeKey(key) || refs.includes(key)) return;
-  refs.push(key);
+function citedIds(body: string): string[] {
+  return extractMarkers(body);
+}
+
+/** `[[node : key]]` from files written before Mention shortcodes. */
+const LEGACY_MARKER = /\[\[\s*node\s*:\s*([^\]\r\n]+?)\s*\]\]/g;
+
+function rewriteLegacyMentions(body: string): string {
+  return body.replace(LEGACY_MARKER, (full, raw: string) => {
+    const key = normalizeKey(raw);
+    if (!isKnowledgeKey(key)) return full;
+    return mentionSource(key);
+  });
 }
 
 /**
@@ -79,9 +97,9 @@ export function parseKnowledgeMarkdown(
   let key = "";
   let status: KnowledgeStatus = "enabled";
   let summary = "";
-  const refs: string[] = [];
   let body = source;
-  let hasMeta = false;
+  let hasSummary = false;
+  let hadRefLine = false;
   let x: number | null = null;
   let y: number | null = null;
   let w: number | null = null;
@@ -107,11 +125,10 @@ export function parseKnowledgeMarkdown(
           const parsed = parseStatus(value);
           if (parsed) status = parsed;
         } else if (name === "summary") {
-          hasMeta = true;
+          hasSummary = true;
           summary = value;
         } else if (name === "ref") {
-          hasMeta = true;
-          pushRef(refs, value);
+          hadRefLine = true;
         } else if (name === "x") x = parseCoord(value);
         else if (name === "y") y = parseCoord(value);
         else if (name === "w") w = parseCoord(value);
@@ -124,14 +141,15 @@ export function parseKnowledgeMarkdown(
     key,
     status,
     summary,
-    refs,
+    refs: citedIds(body),
     body,
     folderId: folderIdOf(normalizedPath),
     x,
     y,
     w,
     h,
-    hasMeta,
+    hasSummary,
+    hadRefLine,
   };
 }
 
@@ -146,7 +164,6 @@ export function renderKnowledgeMarkdown(doc: {
   status: KnowledgeStatus;
   body: string;
   summary?: string;
-  refs?: string[];
   x?: number | null;
   y?: number | null;
   w?: number | null;
@@ -158,7 +175,6 @@ export function renderKnowledgeMarkdown(doc: {
     `node : ${doc.key}`,
     `status : ${doc.status}`,
     `summary : ${doc.summary ?? ""}`,
-    ...(doc.refs ?? []).map((ref) => `ref : ${ref}`),
   ];
   for (const line of [
     coordLine("x", doc.x),
@@ -173,20 +189,20 @@ export function renderKnowledgeMarkdown(doc: {
 }
 
 /**
- * Files written before summary and ref lines existed get those lines once.
- * A fence that already has either field is left unchanged.
+ * Rewrite a legacy file once. `[[node : key]]` becomes a Mention shortcode,
+ * `ref :` lines are dropped, and a missing summary is filled from the body.
+ * A file that already uses shortcodes and has a summary is left unchanged.
  */
 export function upgradeKnowledgeMarkdown(markdown: string): string | null {
   const parsed = parseKnowledgeMarkdown("node.md", markdown);
-  if (!parsed.key || parsed.hasMeta) return null;
-  const refs: string[] = [];
-  for (const marker of extractMarkers(parsed.body)) pushRef(refs, marker);
+  if (!parsed.key) return null;
+  const body = rewriteLegacyMentions(parsed.body);
+  if (body === parsed.body && !parsed.hadRefLine && parsed.hasSummary) return null;
   return renderKnowledgeMarkdown({
     key: normalizeKey(parsed.key),
     status: parsed.status,
-    summary: knowledgePreview(parsed.body, 1),
-    refs,
-    body: parsed.body,
+    summary: parsed.summary || knowledgePreview(body, 1),
+    body,
     x: parsed.x,
     y: parsed.y,
     w: parsed.w,
@@ -194,32 +210,9 @@ export function upgradeKnowledgeMarkdown(markdown: string): string | null {
   });
 }
 
-const MARKER_KEY = /\[\[\s*node\s*:\s*([^\]\r\n]+?)\s*\]\]/g;
-
-/** Rewrite `[[node : from]]` markers. Declaration lines are left alone. */
+/** Rewrite mention ids. Declaration lines are left alone. */
 export function replaceKnowledgeKey(text: string, from: string, to: string): string {
-  const source = normalizeKey(from);
-  const target = normalizeKey(to);
-  if (!source || source === target) return text;
-  return text.replace(MARKER_KEY, (full, key: string) =>
-    key === source ? `[[node : ${target}]]` : full,
-  );
-}
-
-/** `ref : key` lines, one per declared reference. */
-export function formatRefBlock(refs: string[]): string {
-  return refs.map((ref) => `ref : ${ref}`).join("\n");
-}
-
-/** Keep complete `ref : key` lines. Incomplete lines are ignored. */
-export function parseRefBlock(text: string): string[] {
-  const refs: string[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    const field = /^\s*ref\s*:\s*(.+?)\s*$/.exec(line);
-    const key = field?.[1];
-    if (key) pushRef(refs, key);
-  }
-  return refs;
+  return replaceMentionKey(text, from, to);
 }
 
 function addFolderChain(ids: Set<string>, dir: string): void {

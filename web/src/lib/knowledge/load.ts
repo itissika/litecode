@@ -37,7 +37,6 @@ export async function writeKnowledgeNode(
       key: node.key,
       status: node.status,
       summary: node.summary,
-      refs: node.relations,
       body: node.value,
       x: node.x,
       y: node.y,
@@ -216,7 +215,6 @@ export async function createKnowledgeNode(
       key,
       status: "enabled",
       summary: "",
-      refs: [],
       body: "",
     }),
   );

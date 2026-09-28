@@ -14,8 +14,7 @@ import {
   KNOWLEDGE_NODE_MIN_HEIGHT,
   KNOWLEDGE_NODE_MIN_WIDTH,
 } from "../../lib/knowledge/layoutGraph";
-import { formatRefBlock, parseRefBlock } from "../../lib/knowledge/document";
-import { knowledgePreview, normalizeKey } from "../../lib/knowledge/markers";
+import { extractMarkers, knowledgePreview, normalizeKey } from "../../lib/knowledge/markers";
 import { knowledgeTitleTone } from "../../lib/knowledge/validate";
 import type { KnowledgeIssue } from "../../lib/knowledge/types";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
@@ -45,24 +44,16 @@ export function KnowledgeFlowCard({
   const [keyDraft, setKeyDraft] = useState("");
   const [keyError, setKeyError] = useState<string | null>(null);
   const [summaryDraft, setSummaryDraft] = useState("");
-  const [refDraft, setRefDraft] = useState("");
   const [bodyDraft, setBodyDraft] = useState("");
   const [summaryDirty, setSummaryDirty] = useState(false);
-  const [refDirty, setRefDirty] = useState(false);
   const [bodyDirty, setBodyDirty] = useState(false);
   const summaryTimer = useRef<number | null>(null);
-  const refTimer = useRef<number | null>(null);
   const bodyTimer = useRef<number | null>(null);
 
   useEffect(() => {
     if (!node || summaryDirty) return;
     setSummaryDraft(node.summary);
   }, [node, summaryDirty]);
-
-  useEffect(() => {
-    if (!node || refDirty) return;
-    setRefDraft(formatRefBlock(node.relations));
-  }, [node, refDirty]);
 
   useEffect(() => {
     if (!node || bodyDirty) return;
@@ -223,43 +214,30 @@ export function KnowledgeFlowCard({
               }}
             />
             <KnowledgeSourceField
-              label="引用"
-              kind="refs"
-              rows={3}
-              value={refDraft}
-              candidates={refCandidates}
-              onChange={(next) => {
-                setRefDraft(next);
-                setRefDirty(true);
-                if (refTimer.current != null) window.clearTimeout(refTimer.current);
-                refTimer.current = window.setTimeout(() => {
-                  void saveNode(node.id, { relations: parseRefBlock(next) });
-                }, 400);
-              }}
-              onBlur={() => {
-                if (refTimer.current != null) window.clearTimeout(refTimer.current);
-                void saveNode(node.id, { relations: parseRefBlock(refDraft) });
-                setRefDirty(false);
-              }}
-            />
-            <KnowledgeSourceField
               label="正文"
               kind="body"
+              sourceId={node.id}
               className="is-fill"
               rows={5}
               value={bodyDraft}
-              candidates={node.relations}
+              candidates={refCandidates}
               onChange={(next) => {
                 setBodyDraft(next);
                 setBodyDirty(true);
                 if (bodyTimer.current != null) window.clearTimeout(bodyTimer.current);
                 bodyTimer.current = window.setTimeout(() => {
-                  void saveNode(node.id, { value: next });
+                  void saveNode(node.id, {
+                    value: next,
+                    relations: extractMarkers(next),
+                  });
                 }, 400);
               }}
               onBlur={() => {
                 if (bodyTimer.current != null) window.clearTimeout(bodyTimer.current);
-                void saveNode(node.id, { value: bodyDraft });
+                void saveNode(node.id, {
+                  value: bodyDraft,
+                  relations: extractMarkers(bodyDraft),
+                });
                 setBodyDirty(false);
               }}
             />

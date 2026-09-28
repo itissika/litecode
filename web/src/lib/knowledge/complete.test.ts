@@ -1,19 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import { applyCompletion, completionAt } from "./complete";
 import {
   parseKnowledgeMarkdown,
   renderKnowledgeMarkdown,
   replaceKnowledgeKey,
   upgradeKnowledgeMarkdown,
 } from "./document";
+import { mentionSource } from "./markers";
 
 describe("upgradeKnowledgeMarkdown", () => {
-  it("adds summary and ref lines when the fence has neither", () => {
+  it("rewrites a legacy marker, drops ref lines, and fills a missing summary", () => {
     const markdown = [
       "```node",
       "node : session",
       "status : enabled",
+      "ref : unused",
       "```",
       "",
       "见 [[node : seq]]。",
@@ -23,41 +24,26 @@ describe("upgradeKnowledgeMarkdown", () => {
     const parsed = parseKnowledgeMarkdown("session.md", upgraded ?? "");
     expect(parsed.summary).toBe("见 seq。");
     expect(parsed.refs).toEqual(["seq"]);
+    expect(parsed.body).toContain(mentionSource("seq"));
+    expect(parsed.hadRefLine).toBe(false);
+    expect(upgraded).not.toContain("ref :");
+    expect(upgraded).not.toContain("[[node");
     expect(upgradeKnowledgeMarkdown(upgraded ?? "")).toBeNull();
   });
 });
 
 describe("replaceKnowledgeKey", () => {
-  it("rewrites markers and leaves the declaration line", () => {
+  it("rewrites the id and a matching label, and leaves the declaration", () => {
     const markdown = renderKnowledgeMarkdown({
       key: "session",
       status: "enabled",
       summary: "",
-      refs: ["seq"],
-      body: "见 [[node:seq]]。",
+      body: `见 ${mentionSource("seq")} 与 ${mentionSource("other", "seq")}。`,
     });
     const next = replaceKnowledgeKey(markdown, "seq", "sequence");
     expect(next).toContain("node : session");
-    expect(next).toContain("[[node : sequence]]");
-    expect(next).not.toContain("[[node:seq]]");
-  });
-});
-
-describe("completionAt", () => {
-  it("completes a ref line and a body marker from the given keys", () => {
-    const ref = completionAt("refs", "ref : se", 8, ["seq", "session"]);
-    expect(ref?.items).toEqual(["seq", "session"]);
-    const applied = applyCompletion("refs", "ref : se", ref!, "seq");
-    expect(applied.text).toBe("ref : seq");
-
-    const body = completionAt("body", "见 [[node : se", 13, ["seq"]);
-    expect(body?.items).toEqual(["seq"]);
-    expect(applyCompletion("body", "见 [[node : se", body!, "seq").text).toBe(
-      "见 [[node : seq]]",
-    );
-  });
-
-  it("ignores a bare double bracket", () => {
-    expect(completionAt("body", "[[se", 4, ["seq"])).toBeNull();
+    expect(next).toContain(mentionSource("sequence"));
+    expect(next).toContain(mentionSource("other", "sequence"));
+    expect(next).not.toContain('id="seq"');
   });
 });

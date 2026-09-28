@@ -736,6 +736,130 @@
   padding: 0.25rem 0.35rem;
 }
 
+.knowledge-source-input.is-invalid {
+  color: var(--_dk-red-500);
+}
+
+.knowledge-source-body {
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.knowledge-source-body .ProseMirror {
+  flex: 1 1 auto;
+  min-height: 100%;
+  outline: none;
+}
+
+.knowledge-source-body .ProseMirror p {
+  margin: 0;
+}
+
+.knowledge-mention-menu {
+  z-index: 1100;
+  max-width: 16rem;
+  max-height: 8rem;
+  overflow: auto;
+  padding: 0.15rem;
+  border: 1px solid var(--_dk-line-visible);
+  border-radius: var(--radius-sm);
+  background: var(--_dk-surface-raised);
+}
+
+.knowledge-mention-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.knowledge-mention-empty {
+  padding: 0.15rem 0.3rem;
+  color: var(--_dk-text-muted);
+  font-family: var(--_dk-font-code);
+  font-size: var(--_dk-text-xs);
+}
+
+.knowledge-token-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+
+.knowledge-slash-input {
+  min-height: 1.6rem;
+}
+
+.knowledge-token.is-invalid {
+  background: transparent;
+  color: var(--_dk-red-500);
+}
+
+.knowledge-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  max-width: 100%;
+  margin: 0 0.05rem;
+  padding: 0 0.05rem 0 0.35rem;
+  border-radius: 999px;
+  background: var(--_dk-accent-glow);
+  color: var(--_dk-accent-hover);
+  font-family: var(--_dk-font-code);
+  font-size: var(--_dk-text-xs);
+  line-height: 1.35;
+  vertical-align: baseline;
+  user-select: none;
+}
+
+.knowledge-token-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.knowledge-token-label {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.knowledge-token-remove {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 0.9rem;
+  height: 0.9rem;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.knowledge-token-remove:hover {
+  background: var(--_dk-ix-bg-selected);
+}
+
+.knowledge-token-text {
+  white-space: pre-wrap;
+}
+
+.knowledge-token-invalid {
+  color: var(--_dk-red-500);
+  white-space: pre-wrap;
+}
+
 .knowledge-complete-list {
   position: absolute;
   z-index: 4;

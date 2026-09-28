@@ -118,8 +118,9 @@ interface KnowledgeStore {
   /** Write one node's declaration block and body. */
   saveNode: (id: string, patch: KnowledgeNodePatch) => Promise<void>;
   /**
-   * Rename a declaration. Rewrites `ref :` lines and `[[node : key]]` markers
-   * in the other files. Rejects a key that is illegal or already declared.
+   * Rename a declaration. Rewrites mention `id`s, and `label`s that equal the
+   * old declaration, in the other files. Rejects a key that is illegal or
+   * already declared.
    */
   renameNode: (id: string, nextKey: string) => Promise<KnowledgeRenameResult>;
   /** Create a directory under `.litecode/knowledge`. `parentId` null is the root. */
@@ -132,7 +133,7 @@ interface KnowledgeStore {
     folderId: string | null,
     key: string,
   ) => Promise<KnowledgeCreateResult>;
-  /** Delete one markdown file. Other files keep their `ref :` lines. */
+  /** Delete one markdown file. Other files keep their mention shortcodes. */
   deleteNode: (id: string) => Promise<void>;
   /** Delete a directory and the nodes inside it. */
   deleteFolder: (id: string) => Promise<void>;

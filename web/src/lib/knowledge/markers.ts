@@ -1,15 +1,16 @@
 export type KnowledgeSegment =
   | { type: "text"; value: string }
-  | { type: "ref"; key: string };
+  | { type: "ref"; id: string; label: string };
 
 /**
  * Declaration keys may include letters, numbers, `_`, `-`, and single spaces:
- * `seq`, `knowledge 概念概述`. Slashes and brackets stay out so the key can be
- * a path segment and a `[[node : key]]` marker.
+ * `seq`, `knowledge 概念概述`. Quotes and brackets stay out so the key can be
+ * a path segment and a Mention shortcode attribute.
  */
 export const KNOWLEDGE_KEY = /^[\p{L}\p{N}_][\p{L}\p{N}_-]*(?: [\p{L}\p{N}_-]+)*$/u;
 
-const REF_SOURCE = "\\[\\[\\s*node\\s*:\\s*([^\\]\\r\\n]+?)\\s*\\]\\]";
+/** TipTap Mention markdown: `[@ id="seq" label="seq"]`. `id` then `label`, double quotes. */
+const SHORTCODE_SOURCE = String.raw`\[@ id="([^"]*)" label="([^"]*)"\]`;
 
 /** Compare and look up keys after trimming. The stored key is left unchanged. */
 export function normalizeKey(key: string): string {
@@ -20,23 +21,29 @@ export function isKnowledgeKey(key: string): boolean {
   return KNOWLEDGE_KEY.test(key);
 }
 
-function refPattern(): RegExp {
-  return new RegExp(REF_SOURCE, "g");
+/** One mention as TipTap writes it. `label` defaults to `id`. */
+export function mentionSource(id: string, label = id): string {
+  return `[@ id="${id}" label="${label}"]`;
+}
+
+function shortcodePattern(): RegExp {
+  return new RegExp(SHORTCODE_SOURCE, "g");
 }
 
 /**
- * Split one text run into literal pieces and `[[node : key]]` markers.
- * Bare `[[seq]]` stays literal text. Whitespace inside the marker is allowed.
+ * Split one text run into literal pieces and Mention shortcodes.
+ * Plain `@seq` and any other bracket form stay literal text.
  */
 export function splitKnowledgeRefs(text: string): KnowledgeSegment[] {
   const out: KnowledgeSegment[] = [];
   let last = 0;
-  for (const match of text.matchAll(refPattern())) {
-    const key = normalizeKey(match[1] ?? "");
+  for (const match of text.matchAll(shortcodePattern())) {
+    const id = normalizeKey(match[1] ?? "");
     const start = match.index ?? 0;
-    if (!key || !isKnowledgeKey(key)) continue;
+    if (!id || !isKnowledgeKey(id)) continue;
     if (start > last) out.push({ type: "text", value: text.slice(last, start) });
-    out.push({ type: "ref", key });
+    const label = match[2] ?? "";
+    out.push({ type: "ref", id, label: label || id });
     last = start + match[0].length;
   }
   if (last < text.length) out.push({ type: "text", value: text.slice(last) });
@@ -44,7 +51,7 @@ export function splitKnowledgeRefs(text: string): KnowledgeSegment[] {
   return out;
 }
 
-/** Replace an inline code span with spaces so markers inside it disappear. */
+/** Replace an inline code span with spaces so shortcodes inside it disappear. */
 function maskInlineCode(line: string): string {
   let out = "";
   let i = 0;
@@ -97,18 +104,44 @@ function scanProse(markdown: string): FenceScan {
   return { prose };
 }
 
-/**
- * Keys cited in prose. Fenced blocks and inline code are not citations —
- * the same exclusion the markdown renderer gets from the AST.
- */
-export function extractMarkers(markdown: string): string[] {
-  const keys: string[] = [];
+export interface KnowledgeMention {
+  id: string;
+  label: string;
+}
+
+/** Mentions in prose, first id wins. Fenced blocks and inline code are not mentions. */
+export function extractMentions(markdown: string): KnowledgeMention[] {
+  const mentions: KnowledgeMention[] = [];
+  const seen = new Set<string>();
   for (const line of scanProse(markdown).prose) {
     for (const segment of splitKnowledgeRefs(line)) {
-      if (segment.type === "ref") keys.push(segment.key);
+      if (segment.type !== "ref" || seen.has(segment.id)) continue;
+      seen.add(segment.id);
+      mentions.push({ id: segment.id, label: segment.label });
     }
   }
-  return keys;
+  return mentions;
+}
+
+/** Ids cited in prose, first-seen order. */
+export function extractMarkers(markdown: string): string[] {
+  return extractMentions(markdown).map((mention) => mention.id);
+}
+
+/**
+ * Rewrite mention ids that equal `from`. A label equal to the old id is
+ * rewritten too. The `node :` declaration is not a shortcode, so it stays.
+ */
+export function replaceMentionKey(text: string, from: string, to: string): string {
+  const source = normalizeKey(from);
+  const target = normalizeKey(to);
+  if (!source || source === target) return text;
+  return text.replace(shortcodePattern(), (full, id: string, label: string) => {
+    const idKey = normalizeKey(id);
+    const labelKey = normalizeKey(label);
+    if (idKey !== source && labelKey !== source) return full;
+    return mentionSource(idKey === source ? target : id, labelKey === source ? target : label);
+  });
 }
 
 /** First non-empty prose line as literal/ref segments (for one-line summaries). */
@@ -120,11 +153,15 @@ export function knowledgeFirstLineSegments(value: string): KnowledgeSegment[] {
   return [{ type: "text", value: "" }];
 }
 
-/** First lines of a value, with markers reduced to their key, for card previews. */
+/** First lines of a value, with mentions reduced to their label, for card previews. */
 export function knowledgePreview(value: string, lines = 3): string {
   return scanProse(value)
     .prose.join("\n")
-    .replace(refPattern(), (_match, key: string) => normalizeKey(key))
+    .replace(shortcodePattern(), (full, id: string, label: string) => {
+      const key = normalizeKey(id);
+      if (!isKnowledgeKey(key)) return full;
+      return label || key;
+    })
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0)

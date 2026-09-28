@@ -5,20 +5,20 @@ import {
   parseKnowledgeMarkdown,
   renderKnowledgeMarkdown,
 } from "./document";
-import { extractMarkers } from "./markers";
+import { extractMarkers, mentionSource } from "./markers";
 
 describe("parseKnowledgeMarkdown", () => {
   it("reads the leading node fence and leaves the body", () => {
     const markdown = renderKnowledgeMarkdown({
       key: "seq",
       status: "disabled",
-      body: "以 [[node : session]] 递增。",
+      body: `以 ${mentionSource("session")} 递增。`,
     });
     const parsed = parseKnowledgeMarkdown("内核/seq.md", markdown);
     expect(parsed.key).toBe("seq");
     expect(parsed.status).toBe("disabled");
     expect(parsed.folderId).toBe("内核");
-    expect(parsed.body).toBe("以 [[node : session]] 递增。\n");
+    expect(parsed.body).toBe(`以 ${mentionSource("session")} 递增。\n`);
     expect(extractMarkers(parsed.body)).toEqual(["session"]);
   });
 
@@ -55,8 +55,7 @@ describe("knowledgeFromFiles", () => {
         markdown: renderKnowledgeMarkdown({
           key: "session",
           status: "enabled",
-          body: "见 [[node:seq]] 与 [[node : seq]]。",
-          refs: ["seq"],
+          body: `见 ${mentionSource("seq")} 与 ${mentionSource("seq")}。`,
         }),
       },
       {

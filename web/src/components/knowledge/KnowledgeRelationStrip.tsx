@@ -1,4 +1,4 @@
-import { bodyMarkerKeys, relationStripChips } from "../../lib/knowledge/refDisplay";
+import { relationStripChips } from "../../lib/knowledge/refDisplay";
 import type { KnowledgeNode } from "../../lib/knowledge/types";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
 import { KnowledgeRefChip } from "./KnowledgeRefChip";
@@ -6,8 +6,7 @@ import { KnowledgeRefChip } from "./KnowledgeRefChip";
 export function KnowledgeRelationStrip({ node }: { node: KnowledgeNode }) {
   const byId = useKnowledgeStore((s) => s.byId);
   const focusCanvas = useKnowledgeStore((s) => s.focusCanvas);
-  const bodyKeys = bodyMarkerKeys(node.value);
-  const chips = relationStripChips(node, byId, bodyKeys);
+  const chips = relationStripChips(node, byId);
   if (chips.length === 0) return null;
 
   return (

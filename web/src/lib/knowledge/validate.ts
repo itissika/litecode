@@ -63,23 +63,8 @@ export function validateKnowledge(nodes: KnowledgeNode[]): KnowledgeIssue[] {
       });
     }
 
-    const declared = new Set(node.relations.map((ref) => normalizeKey(ref)));
-    for (const marker of new Set(extractMarkers(node.value))) {
-      const markerKey = normalizeKey(marker);
-      if (!declared.has(markerKey)) {
-        issues.push({
-          nodeId: node.id,
-          severity: "error",
-          code: "unregistered_marker",
-          message: `正文标识「${markerKey}」未在引用声明中登记`,
-          ref: markerKey,
-        });
-      }
-    }
-
     const seen = new Set<string>();
-    for (const ref of node.relations) {
-      const refKey = normalizeKey(ref);
+    for (const refKey of extractMarkers(node.value)) {
       if (!refKey || seen.has(refKey)) continue;
       seen.add(refKey);
       if (refKey === key) {
@@ -87,7 +72,7 @@ export function validateKnowledge(nodes: KnowledgeNode[]): KnowledgeIssue[] {
           nodeId: node.id,
           severity: "error",
           code: "self_relation",
-          message: "引用声明指向自己",
+          message: "引用指向自己",
           ref: refKey,
         });
         continue;
@@ -98,19 +83,10 @@ export function validateKnowledge(nodes: KnowledgeNode[]): KnowledgeIssue[] {
           nodeId: node.id,
           severity: "error",
           code: "dangling_relation",
-          message: `引用声明「${refKey}」不存在`,
+          message: `引用「${refKey}」不存在`,
           ref: refKey,
         });
         continue;
-      }
-      if (!extractMarkers(node.value).some((marker) => normalizeKey(marker) === refKey)) {
-        issues.push({
-          nodeId: node.id,
-          severity: "warning",
-          code: "unused_relation",
-          message: `引用声明「${refKey}」未在正文使用`,
-          ref: refKey,
-        });
       }
       if (node.status === "enabled" && target.status !== "enabled") {
         issues.push({

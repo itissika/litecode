@@ -1,4 +1,4 @@
-import { createContext, useContext } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 import ReactMarkdown, {
   defaultUrlTransform,
   type Components,
@@ -21,7 +21,17 @@ function knowledgeUrlTransform(url: string): string {
   return defaultUrlTransform(url);
 }
 
-function BodyRefChip({ marker }: { marker: string }) {
+function inlineText(children: ReactNode): string {
+  if (typeof children === "string" || typeof children === "number") return String(children);
+  if (Array.isArray(children)) return children.map((child) => inlineText(child)).join("");
+  if (children && typeof children === "object" && "props" in children) {
+    const props = (children as { props?: { children?: ReactNode } }).props;
+    return inlineText(props?.children);
+  }
+  return "";
+}
+
+function BodyRefChip({ marker, label }: { marker: string; label: string }) {
   const sourceId = useContext(KnowledgeSourceContext);
   const source = useKnowledgeStore((s) =>
     sourceId == null ? undefined : s.byId.get(sourceId),
@@ -29,7 +39,7 @@ function BodyRefChip({ marker }: { marker: string }) {
   const byKey = useKnowledgeStore((s) => s.byKey);
   const focusCanvas = useKnowledgeStore((s) => s.focusCanvas);
   if (!source) return <span>{marker}</span>;
-  const model = chipForMarker(source, marker, byKey);
+  const model = chipForMarker(source, marker, byKey, label);
   return (
     <KnowledgeRefChip
       model={model}
@@ -49,7 +59,7 @@ const components: Components = {
   em: ({ children }) => <em>{children}</em>,
   a: ({ href, children }) => {
     const key = parseKnowledgeRef(href);
-    if (key) return <BodyRefChip marker={key} />;
+    if (key) return <BodyRefChip marker={key} label={inlineText(children) || key} />;
     return (
       <a href={href} target="_blank" rel="noreferrer">
         {children}
@@ -70,7 +80,7 @@ const components: Components = {
   },
 };
 
-/** One prose line with `[[key]]` chips — for graph card summaries. */
+/** One prose line with mention chips — for graph card summaries. */
 export function KnowledgeInlineBody({
   sourceId,
   text,
@@ -90,7 +100,7 @@ export function KnowledgeInlineBody({
               </span>
             ) : null;
           }
-          return <BodyRefChip key={index} marker={segment.key} />;
+          return <BodyRefChip key={index} marker={segment.id} label={segment.label} />;
         })}
       </div>
     </KnowledgeSourceContext.Provider>
