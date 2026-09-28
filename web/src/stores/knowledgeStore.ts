@@ -110,6 +110,11 @@ interface KnowledgeStore {
   error: string | null;
   /** Read the public or private tree, seeding private when both are missing. */
   load: () => Promise<void>;
+  /**
+   * Re-read the corpus from disk. Used when a knowledge panel becomes active.
+   * Keeps expansion, focus, and canvas positions unless files or folders moved.
+   */
+  refreshFromDisk: () => Promise<void>;
   /** Write one node's declaration block and body. */
   saveNode: (id: string, patch: KnowledgeNodePatch) => Promise<void>;
   /**
@@ -257,6 +262,63 @@ async function closeEditor(rel: string): Promise<void> {
 }
 
 let loadInflight: Promise<void> | null = null;
+let refreshInflight: Promise<void> | null = null;
+let hydrated = false;
+
+function sameCorpus(
+  nodes: KnowledgeNode[],
+  folders: KnowledgeFolder[],
+  root: string,
+  loaded: {
+    nodes: KnowledgeNode[];
+    folders: KnowledgeFolder[];
+    root: string;
+  },
+): boolean {
+  if (root !== loaded.root) return false;
+  if (nodes.length !== loaded.nodes.length) return false;
+  if (folders.length !== loaded.folders.length) return false;
+  for (let i = 0; i < folders.length; i++) {
+    const current = folders[i];
+    const next = loaded.folders[i];
+    if (
+      current.id !== next.id ||
+      current.name !== next.name ||
+      current.parentId !== next.parentId
+    ) {
+      return false;
+    }
+  }
+  for (let i = 0; i < nodes.length; i++) {
+    const current = nodes[i];
+    const next = loaded.nodes[i];
+    if (current.path !== next.path) return false;
+    if ((current.folderId ?? null) !== (next.folderId ?? null)) return false;
+    if (!sameNode(current, next)) return false;
+  }
+  return true;
+}
+
+function structureChanged(
+  nodes: KnowledgeNode[],
+  folders: KnowledgeFolder[],
+  loaded: { nodes: KnowledgeNode[]; folders: KnowledgeFolder[] },
+): boolean {
+  if (nodes.length !== loaded.nodes.length) return true;
+  if (folders.length !== loaded.folders.length) return true;
+  for (let i = 0; i < folders.length; i++) {
+    if (folders[i].id !== loaded.folders[i].id) return true;
+    if (folders[i].parentId !== loaded.folders[i].parentId) return true;
+  }
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i].id !== loaded.nodes[i].id) return true;
+    if (nodes[i].path !== loaded.nodes[i].path) return true;
+    if ((nodes[i].folderId ?? null) !== (loaded.nodes[i].folderId ?? null)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
   ...empty,
@@ -277,6 +339,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       set({ loading: true, error: null });
       try {
         const loaded = await loadKnowledgeFromWorkspace();
+        hydrated = true;
         set({
           ...knowledgeSnapshot(loaded.nodes, loaded.folders),
           root: loaded.root,
@@ -293,6 +356,50 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       }
     })();
     return loadInflight;
+  },
+  refreshFromDisk: () => {
+    if (!hydrated || loadInflight) return get().load();
+    if (refreshInflight) return refreshInflight;
+    refreshInflight = (async () => {
+      try {
+        const loaded = await loadKnowledgeFromWorkspace();
+        const latest = get();
+        if (sameCorpus(latest.nodes, latest.folders, latest.root, loaded)) {
+          return;
+        }
+        const nodeIds = new Set(loaded.nodes.map((node) => node.id));
+        const folderIds = new Set(loaded.folders.map((folder) => folder.id));
+        const moved = structureChanged(latest.nodes, latest.folders, loaded);
+        set({
+          ...knowledgeSnapshot(loaded.nodes, loaded.folders),
+          expanded: aliveIds(latest.expanded, nodeIds),
+          expandedFolders: aliveIds(latest.expandedFolders, folderIds),
+          graphExpanded: aliveIds(latest.graphExpanded, nodeIds),
+          focusedId:
+            latest.focusedId != null && nodeIds.has(latest.focusedId)
+              ? latest.focusedId
+              : null,
+          focusNonce: latest.focusNonce,
+          flashId:
+            latest.flashId != null && nodeIds.has(latest.flashId)
+              ? latest.flashId
+              : null,
+          flashNonce: latest.flashNonce,
+          structureNonce: moved
+            ? latest.structureNonce + 1
+            : latest.structureNonce,
+          root: loaded.root,
+          visibility: loaded.visibility,
+          loading: false,
+          error: null,
+        });
+      } catch (err) {
+        set({ error: diskError(err) });
+      } finally {
+        refreshInflight = null;
+      }
+    })();
+    return refreshInflight;
   },
   saveNode: async (id, patch) => {
     const current = get().byId.get(id);

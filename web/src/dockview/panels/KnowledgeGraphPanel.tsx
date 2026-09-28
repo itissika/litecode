@@ -3,6 +3,7 @@ import type { IDockviewPanelProps } from "dockview-react";
 import { ReactFlowProvider } from "@xyflow/react";
 
 import { KnowledgeGraph } from "../../components/knowledge/KnowledgeGraph";
+import { useKnowledgeStore } from "../../stores/knowledgeStore";
 
 export function KnowledgeGraphPanel({ api }: IDockviewPanelProps) {
   const [visible, setVisible] = useState(() => api.isVisible);
@@ -12,7 +13,13 @@ export function KnowledgeGraphPanel({ api }: IDockviewPanelProps) {
     const sub = api.onDidVisibilityChange((event) => {
       setVisible(event.isVisible);
     });
-    return () => sub.dispose();
+    const active = api.onDidActiveChange((event) => {
+      if (event.isActive) void useKnowledgeStore.getState().refreshFromDisk();
+    });
+    return () => {
+      sub.dispose();
+      active.dispose();
+    };
   }, [api]);
 
   return (
