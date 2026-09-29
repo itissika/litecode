@@ -3,6 +3,7 @@ import Document from "@tiptap/extension-document";
 import Mention from "@tiptap/extension-mention";
 import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
+import { PluginKey } from "@tiptap/pm/state";
 import {
   EditorContent,
   NodeViewWrapper,
@@ -22,8 +23,15 @@ import {
   type Ref,
 } from "react";
 
-import { bodyToContent, knowledgeMentionOptions } from "../../lib/knowledge/mentionDoc";
+import { fetchGlob } from "../../api/workspace";
+import { fileLabel } from "../../lib/knowledge/markers";
+import {
+  bodyToContent,
+  fileMentionOptions,
+  knowledgeMentionOptions,
+} from "../../lib/knowledge/mentionDoc";
 import { chipForMarker } from "../../lib/knowledge/refDisplay";
+import { useEditorStore } from "../../stores/editorStore";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
 
 type MentionAttrs = { id: string; label: string };
@@ -42,9 +50,13 @@ function mentionItems(candidates: readonly string[], query: string, limit = 8): 
  * Suggestion popup from the TipTap mention example:
  * ReactRenderer plus `props.mount`, which positions the list with Floating UI.
  */
+const nodeMentionKey = new PluginKey("knowledgeNodeMention");
+const fileMentionKey = new PluginKey("knowledgeFileMention");
+
 function mentionSuggestion(candidatesRef: { current: readonly string[] }) {
   return {
     char: "@",
+    pluginKey: nodeMentionKey,
     items: ({ query }: { query: string }) => mentionItems(candidatesRef.current, query),
     render: () => {
       let component: ReactRenderer<MentionListHandle> | null = null;
@@ -81,13 +93,18 @@ function MentionList({
   ref,
   items,
   command,
-}: SuggestionProps<string, MentionAttrs> & { ref?: Ref<MentionListHandle> }) {
+  labelFor,
+  loading,
+}: SuggestionProps<string, MentionAttrs> & {
+  ref?: Ref<MentionListHandle>;
+  labelFor?: (item: string) => string;
+}) {
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   function selectItem(index: number) {
     const item = items[index];
     if (!item) return;
-    command({ id: item, label: item });
+    command({ id: item, label: labelFor ? labelFor(item) : item });
   }
 
   useEffect(() => {
@@ -114,7 +131,9 @@ function MentionList({
   }));
 
   if (items.length === 0) {
-    return <div className="knowledge-mention-empty">没有匹配</div>;
+    return (
+      <div className="knowledge-mention-empty">{loading ? "搜索中" : "未找到"}</div>
+    );
   }
 
   return (
@@ -138,6 +157,64 @@ function MentionList({
       ))}
     </div>
   );
+}
+
+async function fileCandidates(query: string): Promise<string[]> {
+  const cleaned = query
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/[*?[\]]/g, "");
+  if (!cleaned || cleaned.includes("..")) return [];
+  try {
+    const listing = await fetchGlob(`**/${cleaned}*`);
+    const paths: string[] = [];
+    for (const entry of listing.entries) {
+      if (entry.kind !== "file" && entry.kind !== "dir") continue;
+      paths.push(entry.path.replaceAll("\\", "/"));
+      if (paths.length === 8) break;
+    }
+    return paths;
+  } catch {
+    return [];
+  }
+}
+
+function fileMentionSuggestion() {
+  return {
+    char: "/",
+    pluginKey: fileMentionKey,
+    items: ({ query }: { query: string }) => fileCandidates(query),
+    render: () => {
+      let component: ReactRenderer<MentionListHandle> | null = null;
+      let unmount: (() => void) | null = null;
+      const labelFor = (path: string) => fileLabel(path);
+      return {
+        onStart: (props: SuggestionProps<string, MentionAttrs>) => {
+          component = new ReactRenderer(MentionList, {
+            props: { ...props, labelFor },
+            editor: props.editor,
+            className: "knowledge-mention-menu",
+          });
+          unmount = props.mount(component.element, {
+            autoUpdate: { animationFrame: true },
+          });
+        },
+        onUpdate(props: SuggestionProps<string, MentionAttrs>) {
+          component?.updateProps({ ...props, labelFor });
+        },
+        onKeyDown(props: { event: KeyboardEvent }) {
+          return component?.ref?.onKeyDown(props) ?? false;
+        },
+        onExit() {
+          unmount?.();
+          unmount = null;
+          component?.destroy();
+          component = null;
+        },
+      };
+    },
+  };
 }
 
 function stopChipEvent(event: MouseEvent) {
@@ -181,6 +258,59 @@ function KnowledgeMentionChip({
         </button>
       ) : (
         <span className="knowledge-token-label">{label}</span>
+      )}
+      <button
+        type="button"
+        className="knowledge-token-remove nodrag"
+        aria-label={`移除 ${label}`}
+        onMouseDown={stopChipEvent}
+        onClick={(event) => {
+          stopChipEvent(event);
+          deleteNode();
+        }}
+      >
+        <X size={10} weight="bold" />
+      </button>
+    </NodeViewWrapper>
+  );
+}
+
+/** Workspace path capsule. Blue until a check marks the path missing, then red. */
+function FileMentionChip({
+  node,
+  deleteNode,
+  sourceIdRef,
+}: ReactNodeViewProps & { sourceIdRef: { current: string } }) {
+  const path = String(node.attrs.id ?? "");
+  const label = String(node.attrs.label ?? fileLabel(path));
+  const missing = useKnowledgeStore((state) =>
+    (state.issuesByNode.get(sourceIdRef.current) ?? []).some(
+      (issue) => issue.code === "missing_file" && issue.ref === path,
+    ),
+  );
+
+  return (
+    <NodeViewWrapper
+      as="span"
+      className={
+        missing ? "knowledge-token is-file is-missing" : "knowledge-token is-file"
+      }
+    >
+      {missing ? (
+        <span className="knowledge-token-label">{label}</span>
+      ) : (
+        <button
+          type="button"
+          className="knowledge-token-label nodrag"
+          aria-label={label}
+          onMouseDown={stopChipEvent}
+          onClick={(event) => {
+            stopChipEvent(event);
+            void useEditorStore.getState().openFile(path);
+          }}
+        >
+          {label}
+        </button>
       )}
       <button
         type="button"
@@ -242,6 +372,15 @@ export function KnowledgeBodyEditor({
           );
         },
       }).configure(knowledgeMentionOptions(mentionSuggestion(candidatesRef))),
+      Mention.extend({
+        name: "fileMention",
+        addNodeView() {
+          return ReactNodeViewRenderer(
+            (props) => <FileMentionChip {...props} sourceIdRef={sourceIdRef} />,
+            { as: "span" },
+          );
+        },
+      }).configure(fileMentionOptions(fileMentionSuggestion())),
     ],
     [],
   );

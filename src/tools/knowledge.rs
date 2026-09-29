@@ -65,6 +65,7 @@ impl KnowledgeTool {
         };
         match verb {
             "" => self.board(workspace),
+            "guide" => guide(args),
             "list" => self.list(workspace, args),
             "refs" => self.refs(workspace, args),
             "check" => self.check(workspace, args),
@@ -79,7 +80,7 @@ impl KnowledgeTool {
         if corpus.root.is_none() {
             return ToolCallResult::ok(view::missing_board());
         }
-        let issues = issues_of(&corpus);
+        let issues = issues_of(workspace, &corpus);
         let now = SystemTime::now();
         let reminder = reminder::section(workspace, &corpus);
         ToolCallResult::ok(view::dashboard(
@@ -90,6 +91,7 @@ impl KnowledgeTool {
             now,
             corpus.root.as_deref(),
             root::ignored(workspace),
+            &corpus.unknown,
         ))
     }
 
@@ -139,7 +141,7 @@ impl KnowledgeTool {
             };
             return ToolCallResult::ok(format!("{title}\n\n{body}"));
         }
-        let issues = issues_of(&corpus);
+        let issues = issues_of(workspace, &corpus);
         let now = SystemTime::now();
         let body = view::cards(
             nodes,
@@ -174,7 +176,7 @@ impl KnowledgeTool {
                 "refs seq",
             );
         };
-        let issues = issues_of(&corpus);
+        let issues = issues_of(workspace, &corpus);
         let now = SystemTime::now();
         let card_issues = node_issues(&issues, &node.id);
         let card = view::node_card(
@@ -244,7 +246,7 @@ impl KnowledgeTool {
         let Some(root) = corpus.root.clone() else {
             return ToolCallResult::ok(view::missing_board());
         };
-        let issues = issues_of(&corpus);
+        let issues = issues_of(workspace, &corpus);
         let now = SystemTime::now();
         let scope = args
             .first()
@@ -374,7 +376,7 @@ impl KnowledgeTool {
             quote_key(&key)
         );
         let corpus = Corpus::load(workspace);
-        let issues = issues_of(&corpus);
+        let issues = issues_of(workspace, &corpus);
         let now = SystemTime::now();
         let Some(node) = corpus.by_key(&key) else {
             return ToolCallResult::ok(format!("# Created\n\nWrote `{full}`.\n\n{next}"));
@@ -424,7 +426,7 @@ impl KnowledgeTool {
         let current_id = current.id.clone();
         let current_path = current.path.clone();
         if from == to {
-            let issues = issues_of(&corpus);
+            let issues = issues_of(workspace, &corpus);
             let card = view::node_card(
                 1,
                 current,
@@ -510,7 +512,7 @@ impl KnowledgeTool {
             deleted.push(old);
         }
         let corpus = Corpus::load(workspace);
-        let issues = issues_of(&corpus);
+        let issues = issues_of(workspace, &corpus);
         let now = SystemTime::now();
         let incoming = corpus.incoming(&to).len();
         let card = corpus.by_key(&to).map(|node| {
@@ -608,7 +610,7 @@ fn is_write(input: &Value) -> bool {
     )
 }
 
-fn issues_of(corpus: &Corpus) -> Vec<Issue> {
+fn issues_of(workspace: &Path, corpus: &Corpus) -> Vec<Issue> {
     let checks: Vec<validate::CheckNode<'_>> = corpus
         .nodes
         .iter()
@@ -621,7 +623,9 @@ fn issues_of(corpus: &Corpus) -> Vec<Issue> {
             path: &node.path,
         })
         .collect();
-    validate::validate(&checks)
+    validate::validate(&checks, &|path| {
+        crate::knowledge::mentions::workspace_file_exists(workspace, path)
+    })
 }
 
 fn node_issues(issues: &[Issue], id: &str) -> Vec<Issue> {
@@ -663,10 +667,18 @@ fn too_many(syntax: &str, example: &str) -> ToolCallResult {
     )
 }
 
+fn guide(args: &[String]) -> ToolCallResult {
+    if !args.is_empty() {
+        return usage("guide takes no arguments", "guide", "guide");
+    }
+    ToolCallResult::ok(view::guide().to_string())
+}
+
 fn unknown_command(other: &str) -> ToolCallResult {
     ToolCallResult::error(format!(
         "# `{other}` is not a knowledge command\n\n\
 - `knowledge`\n\
+- `knowledge guide`\n\
 - `knowledge list [folder]`\n\
 - `knowledge refs <key>`\n\
 - `knowledge check [key or folder]`\n\
@@ -826,8 +838,8 @@ mod tests {
             .execute(serde_json::json!({ "command": "" }), ctx(dir.path()))
             .await;
         assert!(missing.content.contains("# Welcome"));
-        assert!(missing.content.contains("starter nodes"));
-        assert!(missing.content.contains("do not produce the same files"));
+        assert!(missing.content.contains("creates `.litecode/knowledge`"));
+        assert!(!missing.content.contains("starter nodes"));
         assert!(!missing.content.contains("# Status"));
 
         let created = tool
@@ -889,7 +901,7 @@ mod tests {
         let corpus = Corpus::load(dir.path());
         assert!(corpus.by_key("order").is_some());
         assert!(corpus.by_key("seq").is_none());
-        let issues = issues_of(&corpus);
+        let issues = issues_of(dir.path(), &corpus);
         assert!(issues.iter().all(|issue| issue.code != "dangling_relation"));
         assert!(issues.iter().all(|issue| issue.code != "duplicate_key"));
 
@@ -990,6 +1002,7 @@ mod tests {
             )
             .await;
         assert!(unknown.content.contains("is not a knowledge command"));
+        assert!(unknown.content.contains("knowledge guide"));
         assert!(unknown.content.contains("knowledge list [folder]"));
         assert!(unknown.content.contains("knowledge rename <old key> <new key>"));
 
@@ -1084,5 +1097,112 @@ mod tests {
             .await;
         assert!(same.content.contains("# Unchanged"));
         assert!(!same.content.contains("# Renamed"));
+    }
+
+    #[tokio::test]
+    async fn guide_states_the_rules_without_reading_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = KnowledgeTool::new(ide_at(dir.path()));
+        let guide = tool
+            .execute(serde_json::json!({ "command": "guide" }), ctx(dir.path()))
+            .await;
+        assert_eq!(guide.level, crate::types::ToolSignalLevel::Ok);
+        assert!(guide.content.contains("A missing status is treated as `enabled`."));
+        assert!(guide.content.contains("## Check"));
+        assert!(guide.content.contains("[@ file=\"src/a.rs\" label=\"a.rs\"]"));
+        assert!(guide.content.contains("A file citation path is not in the workspace."));
+        assert!(!guide.content.contains("mtime"));
+        assert!(!guide.content.contains("[[node"));
+        assert!(!dir.path().join(".litecode").exists());
+        let extra = tool
+            .execute(
+                serde_json::json!({ "command": "guide extra" }),
+                ctx(dir.path()),
+            )
+            .await;
+        assert!(extra.content.contains("guide takes no arguments"));
+    }
+
+    #[tokio::test]
+    async fn missing_file_citation_is_an_error_until_the_path_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = KnowledgeTool::new(ide_at(dir.path()));
+        plant(
+            dir.path(),
+            "seq.md",
+            "seq",
+            Status::Enabled,
+            "see [@ file=\"src/a.rs\" label=\"a.rs\"] and [@ id=\"nope\" label=\"nope\"]",
+        );
+        let missing = tool
+            .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
+            .await;
+        assert!(missing.content.contains("File \"src/a.rs\" does not exist."));
+        assert!(missing.content.contains("Citation \"nope\" does not exist."));
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/a.rs"), "fn main() {}\n").unwrap();
+        let found = tool
+            .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
+            .await;
+        assert!(!found.content.contains("src/a.rs"));
+        plant(
+            dir.path(),
+            "seq.md",
+            "seq",
+            Status::Enabled,
+            "dir [@ file=\"src\" label=\"src\"]",
+        );
+        let folder = tool
+            .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
+            .await;
+        assert!(!folder.content.contains("does not exist"));
+        plant(
+            dir.path(),
+            "seq.md",
+            "seq",
+            Status::Enabled,
+            "```\n[@ file=\"missing.rs\" label=\"missing.rs\"]\n```\n",
+        );
+        let fenced = tool
+            .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
+            .await;
+        assert!(!fenced.content.contains("missing.rs"));
+        plant(
+            dir.path(),
+            "seq.md",
+            "seq",
+            Status::Enabled,
+            "[@ file=\"../secret\" label=\"secret\"]",
+        );
+        let escaped = tool
+            .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
+            .await;
+        assert!(escaped.content.contains("File \"../secret\" does not exist."));
+    }
+
+    #[tokio::test]
+    async fn plain_markdown_stays_on_disk_and_is_not_a_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".litecode").join("knowledge");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("notes.md"), "just a note\n").unwrap();
+        fs::write(root.join("broken.md"), "```node\nnode : a/b\nstatus : enabled\nsummary : \n```\n").unwrap();
+        let tool = KnowledgeTool::new(ide_at(dir.path()));
+        let board = tool
+            .execute(serde_json::json!({ "command": "" }), ctx(dir.path()))
+            .await;
+        assert!(board.content.contains("These files are not nodes and were left in place:"));
+        assert!(board.content.contains("`notes.md`"));
+        assert!(!board.content.contains("`broken.md`"));
+        assert!(board.content.contains("**a/b**") || board.content.contains("a/b"));
+        assert!(root.join("notes.md").is_file());
+        let text = fs::read_to_string(root.join("notes.md")).unwrap();
+        assert_eq!(text, "just a note\n");
+        let checked = tool
+            .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
+            .await;
+        assert!(checked.content.contains("not valid"));
+        assert!(!checked.content.contains("notes.md"));
+        assert!(!checked.content.contains("Declaration is missing"));
     }
 }

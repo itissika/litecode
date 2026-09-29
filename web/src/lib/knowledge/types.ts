@@ -1,5 +1,15 @@
 export type KnowledgeStatus = "enabled" | "disabled" | "pending";
 
+/** A markdown file in the knowledge tree with no `node` declaration. */
+export interface KnowledgeUnknownFile {
+  /** Path relative to the knowledge root, forward slashes. */
+  path: string;
+  /** File name, including `.md`. */
+  name: string;
+  /** Folder that holds this file. `null` = the corpus root. */
+  folderId: string | null;
+}
+
 /** Organizational container. Folders do not participate in citations. */
 export interface KnowledgeFolder {
   /** Path relative to `.litecode/knowledge`, forward slashes. */
@@ -21,7 +31,7 @@ export interface KnowledgeNode {
   status: KnowledgeStatus;
   /** Raw `status` text when it is not enabled, disabled, or pending. */
   invalidStatus?: string | null;
-  /** Canvas origin relative to the parent folder. `null` = laid out on open. */
+  /** World coordinates on the canvas. `null` = laid out until dragged. */
   x: number | null;
   y: number | null;
   /** Expanded card size. `null` = fit the content. */
@@ -42,7 +52,8 @@ export type KnowledgeIssueCode =
   | "self_relation"
   | "dangling_relation"
   | "inactive_target"
-  | "invalid_status";
+  | "invalid_status"
+  | "missing_file";
 
 export type KnowledgeIssueSeverity = "error" | "warning";
 

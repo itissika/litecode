@@ -19,12 +19,72 @@ Do not record trivia or details that will change.";
 const BUTTONS: &str = "\
 > Use knowledge to look things up. Edit bodies with read and edit. Run check after changes. Quote a key or folder that contains spaces.
 - `knowledge`: open this board
+- `knowledge guide`: syntax, checks, and notes
 - `knowledge list [folder]`: list nodes; a folder only narrows the scope
 - `knowledge refs <key>`: one node and its citations
 - `knowledge check [key or folder]`: list validation issues
 - `knowledge create <key> [folder]`: create a pending node
 - `knowledge rename <old key> <new key>`: rename a node and its citations
 This tool cannot delete a node or change its status. People do that in the knowledge panel. Do not delete the files yourself.";
+
+const GUIDE: &str = r#"# Guide
+
+## Syntax
+
+A markdown file is a node. A folder only nests files. It is not a node and cannot be cited.
+
+The declaration is a `node` fence at the start of the file. Blank lines before it are allowed. Any other text before it means the file has no declaration.
+
+```node
+node : seq
+status : enabled
+summary : one line
+```
+
+`node` is the identity, unique in the library. A key may contain letters, digits, `_`, and `-`. A single space may separate words, as in `old key`. It must start with a letter, a digit, or `_`. Consecutive spaces, a slash, quotes, and brackets are not a key.
+
+`status` is `enabled`, `disabled`, or `pending`. A missing status is treated as `enabled`.
+
+`summary` is one line. The body is the markdown after the fence.
+
+The only node citation is `[@ id="seq" label="seq"]`. Lookup uses `id`. `label` is the visible text. `id` comes first, and both values use double quotes.
+
+A file citation is `[@ file="src/a.rs" label="a.rs"]`. It names a workspace path, not a node. A file and a directory both count. `..` and an absolute path are not a path.
+
+A citation inside a fence (` ``` ` or `~~~`), inside inline code, or written as `@seq` or `/src/a.rs` is ordinary text.
+
+The file is named `<key>.md`. If the name differs, the key is still the identity.
+
+`x`, `y`, `w`, and `h` in the fence are canvas layout. Unrecognized field lines are kept. A `ref` line is ignored.
+
+## Check
+
+Errors:
+
+- The status is not `enabled`, `disabled`, or `pending`.
+- The declaration is missing, or the key is not valid.
+- The same key is declared more than once.
+- A citation `id` is the node's own key.
+- A citation `id` matches no node.
+- A file citation path is not in the workspace.
+
+Warnings:
+
+- The file name does not match the key.
+- An enabled node cites a disabled or pending node.
+
+## Notes
+
+- `knowledge create` writes a pending node. This command does not delete a node or change its status.
+- `knowledge rename` changes the key, the file name, and citation `id`s. A `label` equal to the old key changes too. Editing `node :` or the file name by hand does not.
+- Edit the body in place and leave the fence as it is, so layout fields and unrecognized lines stay.
+- Quote a key that contains a space.
+- A markdown file with no `node` declaration is not a node. It is left in place.
+"#;
+
+pub fn guide() -> &'static str {
+    GUIDE
+}
 
 pub struct Counts {
     pub total: usize,
@@ -206,11 +266,22 @@ pub fn missing_board() -> String {
         section(
             "# Welcome",
             &format!(
-                "{WELCOME}\n\n`knowledge create \"<key>\"` creates `.litecode/knowledge`. Opening the knowledge panel creates the starter nodes. Those two paths do not produce the same files."
+                "{WELCOME}\n\n`knowledge create \"<key>\"` creates `.litecode/knowledge`."
             ),
         ),
         section("# Buttons", BUTTONS),
     ])
+}
+
+fn unrecognized_note(paths: &[String]) -> String {
+    if paths.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["These files are not nodes and were left in place:".to_string()];
+    for path in paths {
+        lines.push(format!("- `{path}`"));
+    }
+    lines.join("\n")
 }
 
 fn root_note(root: Option<&str>, ignored_root: Option<&str>) -> String {
@@ -254,6 +325,7 @@ pub fn dashboard(
     now: SystemTime,
     root: Option<&str>,
     ignored_root: Option<&str>,
+    unknown: &[String],
 ) -> String {
     let refs: Vec<&Node> = nodes.iter().collect();
     let stats = counts(&refs, issues, &incoming);
@@ -283,6 +355,11 @@ pub fn dashboard(
     if !note.is_empty() {
         status.push_str("\n\n");
         status.push_str(&note);
+    }
+    let unrecognized = unrecognized_note(unknown);
+    if !unrecognized.is_empty() {
+        status.push_str("\n\n");
+        status.push_str(&unrecognized);
     }
     join_sections(&[
         section("# Welcome", WELCOME),
@@ -376,6 +453,7 @@ mod tests {
             now,
             Some(".litecode/knowledge"),
             None,
+            &[],
         );
         assert!(board.contains("# Welcome"));
         assert!(board.contains("human-owned"));
@@ -438,7 +516,16 @@ mod tests {
             reference: Some("warn".into()),
         }];
         let incoming = |_: &str| 1;
-        let board = dashboard(&nodes, &issues, incoming, None, now, Some("knowledge"), None);
+        let board = dashboard(
+            &nodes,
+            &issues,
+            incoming,
+            None,
+            now,
+            Some("knowledge"),
+            None,
+            &[],
+        );
         let recent = board.split("## Worth noting").next().unwrap();
         assert!(recent.contains("**seq**"));
         assert!(!recent.contains("**warn**"));
@@ -458,10 +545,32 @@ mod tests {
                 Duration::from_secs(index * 60),
             ));
         }
-        let board = dashboard(&nodes, &[], |_| 1, None, now, None, None);
+        let board = dashboard(&nodes, &[], |_| 1, None, now, None, None, &[]);
         assert!(board.contains("2 more omitted"));
         assert!(board.contains("knowledge check"));
         assert!(board.contains("knowledge list"));
+    }
+
+    #[test]
+    fn unrecognized_files_are_named_in_status_and_are_not_nodes() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let board = dashboard(
+            &[],
+            &[],
+            |_| 0,
+            None,
+            now,
+            Some(".litecode/knowledge"),
+            None,
+            &["notes.md".into(), "内核/scratch.md".into()],
+        );
+        assert!(board.contains("These files are not nodes and were left in place:"));
+        assert!(board.contains("`notes.md`"));
+        assert!(board.contains("`内核/scratch.md`"));
+        assert!(board.contains("Total 0"));
+        assert!(!board.contains("(no declaration)"));
+        assert!(guide().contains("treated as `enabled`"));
+        assert!(!guide().contains("[[node"));
     }
 
     #[test]

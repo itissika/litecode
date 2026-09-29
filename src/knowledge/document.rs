@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::mentions::{self, normalize_key};
+use super::mentions;
 
 static OPEN_FENCE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:[ \t]*\r?\n)*```node[ \t]*\r?\n").expect("open fence")
@@ -16,9 +16,6 @@ static CLOSE_FENCE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\r?\n```[ \t]*(?:\r?\n|$)").expect("close fence"));
 static FIELD_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$").expect("field line")
-});
-static LEGACY_MARKER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[\[\s*node\s*:\s*([^\]\r\n]+?)\s*\]\]").expect("legacy marker")
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,8 +59,6 @@ pub struct ParsedFile {
     pub y: Option<f64>,
     pub w: Option<f64>,
     pub h: Option<f64>,
-    pub has_summary: bool,
-    pub had_ref_line: bool,
     pub extras: Vec<String>,
 }
 
@@ -75,8 +70,6 @@ pub fn parse_knowledge_markdown(path: &str, markdown: &str) -> ParsedFile {
     let mut invalid_status = None;
     let mut summary = String::new();
     let mut body = source.to_string();
-    let mut has_summary = false;
-    let mut had_ref_line = false;
     let mut x = None;
     let mut y = None;
     let mut w = None;
@@ -111,10 +104,9 @@ pub fn parse_knowledge_markdown(path: &str, markdown: &str) -> ParsedFile {
                         invalid_status = Some(value.to_string());
                     }
                 } else if name == "summary" {
-                    has_summary = true;
                     summary = value.to_string();
                 } else if name == "ref" {
-                    had_ref_line = true;
+                    // Ignored. Not a citation and not written back.
                 } else if name == "x" {
                     x = parse_coord(value);
                 } else if name == "y" {
@@ -144,8 +136,6 @@ pub fn parse_knowledge_markdown(path: &str, markdown: &str) -> ParsedFile {
         y,
         w,
         h,
-        has_summary,
-        had_ref_line,
         extras,
     }
 }
@@ -207,47 +197,6 @@ pub fn render_knowledge_markdown(doc: RenderDoc<'_>) -> String {
 fn coord_line(name: &str, value: Option<f64>) -> Option<String> {
     let value = value.filter(|n| n.is_finite())?;
     Some(format!("{name} : {}", value.round() as i64))
-}
-
-pub fn upgrade_knowledge_markdown(markdown: &str) -> Option<String> {
-    let parsed = parse_knowledge_markdown("node.md", markdown);
-    if parsed.key.is_empty() {
-        return None;
-    }
-    let body = rewrite_legacy_mentions(&parsed.body);
-    if body == parsed.body && !parsed.had_ref_line && parsed.has_summary {
-        return None;
-    }
-    let summary = if parsed.summary.is_empty() {
-        mentions::knowledge_preview(&body, 1)
-    } else {
-        parsed.summary.clone()
-    };
-    Some(render_knowledge_markdown(RenderDoc {
-        key: &normalize_key(&parsed.key),
-        status: parsed.status,
-        invalid_status: parsed.invalid_status.as_deref(),
-        body: &body,
-        summary: &summary,
-        x: parsed.x,
-        y: parsed.y,
-        w: parsed.w,
-        h: parsed.h,
-        extras: &parsed.extras,
-    }))
-}
-
-fn rewrite_legacy_mentions(body: &str) -> String {
-    LEGACY_MARKER
-        .replace_all(body, |caps: &regex::Captures| {
-            let full = caps.get(0).map(|m| m.as_str()).unwrap_or("");
-            let key = normalize_key(caps.get(1).map(|m| m.as_str()).unwrap_or(""));
-            if !mentions::is_knowledge_key(&key) {
-                return full.to_string();
-            }
-            mentions::mention_source(&key, &key)
-        })
-        .into_owned()
 }
 
 fn parse_coord(value: &str) -> Option<f64> {

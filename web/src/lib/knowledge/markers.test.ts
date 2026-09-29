@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { extractMarkers, knowledgePreview, mentionSource, splitKnowledgeRefs } from "./markers";
+import {
+  extractFileRefs,
+  extractMarkers,
+  fileMentionSource,
+  isWorkspaceFileRef,
+  knowledgePreview,
+  mentionSource,
+  splitBodyRefs,
+  splitKnowledgeRefs,
+} from "./markers";
 import { remarkKnowledgeRef } from "./remarkKnowledgeRef";
 
 const seq = mentionSource("seq");
@@ -96,5 +105,34 @@ describe("remarkKnowledgeRef", () => {
       type: "inlineCode",
       value: mentionSource("revert"),
     });
+  });
+});
+
+describe("file citations", () => {
+  it("keeps a file citation out of node markers and out of code", () => {
+    const file = fileMentionSource("src/a.rs");
+    const markdown = [
+      `see ${file} and ${mentionSource("seq")}`,
+      "```",
+      fileMentionSource("skip.rs"),
+      "```",
+      `\`${fileMentionSource("nope.rs")}\``,
+    ].join("\n");
+    expect(extractMarkers(markdown)).toEqual(["seq"]);
+    expect(extractFileRefs(markdown)).toEqual(["src/a.rs"]);
+    expect(splitBodyRefs(`see ${file}`)).toEqual([
+      { type: "text", value: "see " },
+      { type: "file", path: "src/a.rs", label: "a.rs" },
+    ]);
+    expect(knowledgePreview(file, 1)).toBe("a.rs");
+  });
+
+  it("rejects a parent segment and an absolute path", () => {
+    expect(isWorkspaceFileRef("src/a.rs")).toBe(true);
+    expect(isWorkspaceFileRef("src")).toBe(true);
+    expect(isWorkspaceFileRef("../secret")).toBe(false);
+    expect(isWorkspaceFileRef("/etc/passwd")).toBe(false);
+    expect(isWorkspaceFileRef("C:/abs")).toBe(false);
+    expect(isWorkspaceFileRef("src/../a.rs")).toBe(false);
   });
 });

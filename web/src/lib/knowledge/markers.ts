@@ -12,6 +12,9 @@ export const KNOWLEDGE_KEY = /^[\p{L}\p{N}_][\p{L}\p{N}_-]*(?: [\p{L}\p{N}_-]+)*
 /** TipTap Mention markdown: `[@ id="seq" label="seq"]`. `id` then `label`, double quotes. */
 const SHORTCODE_SOURCE = String.raw`\[@ id="([^"]*)" label="([^"]*)"\]`;
 
+/** Workspace path mention: `[@ file="src/a.rs" label="a.rs"]`. Not a node citation. */
+const FILE_SHORTCODE_SOURCE = String.raw`\[@ file="([^"]*)" label="([^"]*)"\]`;
+
 /** Compare and look up keys after trimming. The stored key is left unchanged. */
 export function normalizeKey(key: string): string {
   return key.trim();
@@ -26,8 +29,37 @@ export function mentionSource(id: string, label = id): string {
   return `[@ id="${id}" label="${label}"]`;
 }
 
+/** Visible text for a workspace path: the last segment. */
+export function fileLabel(path: string): string {
+  const slash = path.replaceAll("\\", "/");
+  const name = slash.slice(slash.lastIndexOf("/") + 1);
+  return name || path;
+}
+
+/** One file mention as TipTap writes it. `label` defaults to the file name. */
+export function fileMentionSource(path: string, label = fileLabel(path)): string {
+  return `[@ file="${path}" label="${label}"]`;
+}
+
+/**
+ * A workspace-relative path. `..`, `.`, an empty segment, and an absolute path
+ * (leading slash or a drive letter) are not paths this library can check.
+ */
+export function isWorkspaceFileRef(path: string): boolean {
+  const slash = path.replaceAll("\\", "/");
+  if (!slash || slash.length > 512) return false;
+  if (slash.startsWith("/")) return false;
+  if (slash.charAt(1) === ":") return false;
+  const parts = slash.split("/");
+  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
+}
+
 function shortcodePattern(): RegExp {
   return new RegExp(SHORTCODE_SOURCE, "g");
+}
+
+function filePattern(): RegExp {
+  return new RegExp(FILE_SHORTCODE_SOURCE, "g");
 }
 
 /**
@@ -104,6 +136,76 @@ function scanProse(markdown: string): FenceScan {
   return { prose };
 }
 
+export type BodySegment =
+  | { type: "text"; value: string }
+  | { type: "ref"; id: string; label: string }
+  | { type: "file"; path: string; label: string };
+
+/** Split one text run into prose, node mentions, and file mentions, in order. */
+export function splitBodyRefs(text: string): BodySegment[] {
+  const hits: Array<{
+    start: number;
+    end: number;
+    kind: "ref" | "file";
+    a: string;
+    b: string;
+  }> = [];
+  for (const match of text.matchAll(shortcodePattern())) {
+    const id = normalizeKey(match[1] ?? "");
+    if (!id || !isKnowledgeKey(id)) continue;
+    const start = match.index ?? 0;
+    const label = match[2] ?? "";
+    hits.push({
+      start,
+      end: start + match[0].length,
+      kind: "ref",
+      a: id,
+      b: label || id,
+    });
+  }
+  for (const match of text.matchAll(filePattern())) {
+    const path = (match[1] ?? "").trim();
+    if (!path) continue;
+    const start = match.index ?? 0;
+    const label = match[2] ?? "";
+    hits.push({
+      start,
+      end: start + match[0].length,
+      kind: "file",
+      a: path,
+      b: label || fileLabel(path),
+    });
+  }
+  hits.sort((left, right) => left.start - right.start || left.end - right.end);
+  const out: BodySegment[] = [];
+  let last = 0;
+  for (const hit of hits) {
+    if (hit.start < last) continue;
+    if (hit.start > last) out.push({ type: "text", value: text.slice(last, hit.start) });
+    if (hit.kind === "ref") out.push({ type: "ref", id: hit.a, label: hit.b });
+    else out.push({ type: "file", path: hit.a, label: hit.b });
+    last = hit.end;
+  }
+  if (last < text.length) out.push({ type: "text", value: text.slice(last) });
+  if (out.length === 0) out.push({ type: "text", value: text });
+  return out;
+}
+
+/** File paths cited in prose. Fenced blocks and inline code are not citations. */
+export function extractFileRefs(markdown: string): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const line of scanProse(markdown).prose) {
+    for (const match of line.matchAll(filePattern())) {
+      const path = (match[1] ?? "").trim();
+      if (!path || seen.has(path)) continue;
+      seen.add(path);
+      paths.push(path);
+    }
+  }
+  return paths;
+}
+
 export interface KnowledgeMention {
   id: string;
   label: string;
@@ -162,10 +264,15 @@ function clipChars(value: string, max: number): string {
 }
 
 function replaceShortcodesWithLabels(text: string): string {
-  return text.replace(shortcodePattern(), (full, id: string, label: string) => {
+  const nodes = text.replace(shortcodePattern(), (full, id: string, label: string) => {
     const key = normalizeKey(id);
     if (!isKnowledgeKey(key)) return full;
     return label || key;
+  });
+  return nodes.replace(filePattern(), (full, path: string, label: string) => {
+    const cleaned = path.trim();
+    if (!cleaned) return full;
+    return label || fileLabel(cleaned);
   });
 }
 

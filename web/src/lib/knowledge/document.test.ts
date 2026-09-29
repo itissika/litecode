@@ -98,4 +98,29 @@ describe("knowledgeFromFiles", () => {
     ]);
     expect(new Set(nodes.map((node) => node.id)).size).toBe(2);
   });
+
+  it("keeps a file with no declaration out of the node list", () => {
+    const { nodes, unknown, folders } = knowledgeFromFiles(
+      [
+        { path: "notes.md", markdown: "hello\n" },
+        {
+          path: "内核/scratch.md",
+          markdown: "# scratch\n",
+        },
+        {
+          path: "内核/bad.md",
+          markdown: ["```node", "node : a/b", "status : enabled", "summary :", "```", ""].join(
+            "\n",
+          ),
+        },
+      ],
+      ["内核"],
+    );
+    expect(nodes.map((node) => node.path)).toEqual(["内核/bad.md"]);
+    expect(unknown).toEqual([
+      { path: "notes.md", name: "notes.md", folderId: null },
+      { path: "内核/scratch.md", name: "scratch.md", folderId: "内核" },
+    ]);
+    expect(folders.map((folder) => folder.id)).toContain("内核");
+  });
 });

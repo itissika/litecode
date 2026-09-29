@@ -58,7 +58,8 @@ function parentDepth(id: string, parentOf: Map<string, string | undefined>): num
 /**
  * Resize each folder so it wraps its direct children with stable padding.
  * Innermost folders update first; each ancestor then wraps the new box.
- * Child positions shift with the folder origin so absolute placement stays put.
+ * Flow positions are parent-relative. Shifting the frame and the children
+ * by opposite deltas keeps each child's world position.
  */
 export function fitKnowledgeFolders<T extends FitNode>(nodes: T[]): T[] {
   const folders = nodes.filter((node) => node.type === "knowledgeFolder");

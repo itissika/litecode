@@ -1,5 +1,14 @@
-import { isKnowledgeKey, extractMarkers, normalizeKey } from "./markers";
+import {
+  extractFileRefs,
+  extractMarkers,
+  isKnowledgeKey,
+  isWorkspaceFileRef,
+  normalizeKey,
+} from "./markers";
 import type { KnowledgeIssue, KnowledgeNode } from "./types";
+
+/** Paths already looked up. A missing key has not been checked yet. */
+export type KnowledgeFilePresence = Readonly<Record<string, boolean>>;
 
 function statusLabel(status: KnowledgeNode["status"]): string {
   if (status === "disabled") return "disabled";
@@ -109,6 +118,35 @@ export function validateKnowledge(nodes: KnowledgeNode[]): KnowledgeIssue[] {
     }
   }
 
+  return issues;
+}
+
+/**
+ * File citations that are not in the workspace.
+ * An illegal path (`..`, absolute) is an error immediately.
+ * A legal path is an error only after a check has recorded it as absent.
+ */
+export function missingFileIssues(
+  nodes: KnowledgeNode[],
+  presence: KnowledgeFilePresence,
+): KnowledgeIssue[] {
+  const issues: KnowledgeIssue[] = [];
+  for (const node of nodes) {
+    const seen = new Set<string>();
+    for (const path of extractFileRefs(node.value)) {
+      if (seen.has(path)) continue;
+      seen.add(path);
+      const illegal = !isWorkspaceFileRef(path);
+      if (!illegal && presence[path] !== false) continue;
+      issues.push({
+        nodeId: node.id,
+        severity: "error",
+        code: "missing_file",
+        message: `File "${path}" does not exist.`,
+        ref: path,
+      });
+    }
+  }
   return issues;
 }
 

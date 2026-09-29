@@ -23,6 +23,11 @@ import {
   type LaidOutEdge,
 } from "../../lib/knowledge/layoutGraph";
 import { nodeHasError } from "../../lib/knowledge/validate";
+import {
+  worldToFlow,
+  worldWritesForPositionChanges,
+  type WorldPoint,
+} from "../../lib/knowledge/world";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
 import { KnowledgeFlowCard } from "./KnowledgeFlowCard";
 import { KnowledgeRelationEdge } from "./KnowledgeRelationEdge";
@@ -32,6 +37,9 @@ type KnowledgeFolderData = { folderId: string };
 type KnowledgeFlowNodeType =
   | Node<KnowledgeNodeData, "knowledge">
   | Node<KnowledgeFolderData, "knowledgeFolder">;
+
+/** Canvas grid: the Background dot pitch, and the step dragged nodes snap to. */
+const GRID_SIZE = 18;
 
 interface GraphColors {
   muted: string;
@@ -140,22 +148,60 @@ const nodeTypes = {
 };
 const edgeTypes = { knowledgeRelation: KnowledgeRelationEdge };
 
+// The canvas runs with zIndexMode="manual", so this ladder is the whole
+// stacking order: folders 0, edges 0 (React Flow's own), cards 1, focused
+// card 10, expanded card 20, focused+expanded card 30, dragged card 40.
+const CARD_Z = 1;
+const CARD_Z_FOCUSED = 10;
+const CARD_Z_EXPANDED = 20;
+const CARD_Z_FOCUSED_EXPANDED = 30;
+const CARD_Z_DRAGGING = 40;
+
+/** Stacking rank of one canvas card. An expanded card grows over its
+ *  neighbours, so it rises above every collapsed card; the focused expanded
+ *  card sits on top of all of them, and a dragged card outranks everything
+ *  while the gesture lasts. */
+export function knowledgeCardZIndex(
+  open: boolean,
+  focused: boolean,
+  dragging: boolean,
+): number {
+  if (dragging) return CARD_Z_DRAGGING;
+  if (open) return focused ? CARD_Z_FOCUSED_EXPANDED : CARD_Z_EXPANDED;
+  return focused ? CARD_Z_FOCUSED : CARD_Z;
+}
+
+function flowPosition(
+  world: WorldPoint,
+  parentId: string | null,
+  folderWorld: ReadonlyMap<string, WorldPoint>,
+): WorldPoint {
+  return worldToFlow(world, parentId ? (folderWorld.get(parentId) ?? null) : null);
+}
+
 function buildFlowNode(
   node: ReturnType<typeof layoutKnowledgeGraph>["nodes"][number],
   focusedId: string | null,
+  draggingId: string | null,
   prev: KnowledgeFlowNodeType | undefined,
   open: boolean,
   saved: { w: number | null; h: number | null } | undefined,
+  position: WorldPoint,
 ): KnowledgeFlowNodeType {
+  const zIndex = knowledgeCardZIndex(
+    open,
+    node.nodeId === focusedId,
+    node.nodeId === draggingId,
+  );
   return {
     id: node.id,
     type: "knowledge",
-    position: prev?.position ?? { x: node.x, y: node.y },
+    position: prev?.position ?? position,
     parentId: node.parentId ?? undefined,
     data: { nodeId: node.nodeId },
     draggable: true,
     connectable: false,
-    zIndex: node.nodeId === focusedId ? 10 : 1,
+    zIndex,
     style: cardStyle(open, saved?.w, saved?.h),
   };
 }
@@ -163,13 +209,14 @@ function buildFlowNode(
 function buildFolderNode(
   folder: ReturnType<typeof layoutKnowledgeGraph>["folders"][number],
   prev: KnowledgeFlowNodeType | undefined,
+  position: WorldPoint,
 ): KnowledgeFlowNodeType {
   const width = cssDimension(prev?.style?.width, folder.width);
   const height = cssDimension(prev?.style?.height, folder.height);
   return {
     id: folder.id,
     type: "knowledgeFolder",
-    position: prev?.position ?? { x: folder.x, y: folder.y },
+    position: prev?.position ?? position,
     parentId: folder.parentId ?? undefined,
     data: { folderId: folder.folderId },
     dragHandle: ".knowledge-flow-folder-label",
@@ -281,23 +328,20 @@ export function KnowledgeGraph() {
     [nodes, issues, folders],
   );
   const [flowNodes, setFlowNodes] = useNodesState<KnowledgeFlowNodeType>([]);
+  const flowRef = useRef(flowNodes);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   const onNodesChange = useCallback(
     (changes: NodeChange<KnowledgeFlowNodeType>[]) => {
-      setFlowNodes((current) =>
-        fitKnowledgeFolders(applyNodeChanges(changes, current)),
+      const next = fitKnowledgeFolders(
+        applyNodeChanges(changes, flowRef.current),
       );
+      flowRef.current = next;
+      setFlowNodes(next);
       const state = useKnowledgeStore.getState();
+      for (const write of worldWritesForPositionChanges(changes, next)) {
+        void state.saveNode(write.id, { x: write.x, y: write.y });
+      }
       for (const change of changes) {
-        if (
-          change.type === "position" &&
-          change.dragging === false &&
-          change.position
-        ) {
-          void state.saveNode(change.id, {
-            x: change.position.x,
-            y: change.position.y,
-          });
-        }
         if (
           change.type === "dimensions" &&
           change.resizing === false &&
@@ -325,6 +369,9 @@ export function KnowledgeGraph() {
       const folderByFlowId = new Map(
         laid.folders.map((folder) => [folder.id, folder]),
       );
+      const folderWorld = new Map(
+        laid.folders.map((folder) => [folder.id, { x: folder.x, y: folder.y }]),
+      );
       const folderNodes = [...laid.folders]
         .sort(
           (a, b) =>
@@ -334,7 +381,11 @@ export function KnowledgeGraph() {
         .map((folder) => {
           const prev = prevById.get(folder.id);
           if (prev?.type === "knowledgeFolder") return prev;
-          return buildFolderNode(folder, prev);
+          return buildFolderNode(
+            folder,
+            prev,
+            flowPosition({ x: folder.x, y: folder.y }, folder.parentId, folderWorld),
+          );
         });
       const cardNodes = laid.nodes.map((node) => {
         const prev = prevById.get(node.id);
@@ -342,17 +393,22 @@ export function KnowledgeGraph() {
         return buildFlowNode(
           node,
           focusedId,
+          draggingId,
           prev,
           graphExpanded.has(node.nodeId),
           source,
+          flowPosition({ x: node.x, y: node.y }, node.parentId, folderWorld),
         );
       });
-      return fitKnowledgeFolders([...folderNodes, ...cardNodes]);
+      const next = fitKnowledgeFolders([...folderNodes, ...cardNodes]);
+      flowRef.current = next;
+      return next;
     });
   }, [
     laid.folders,
     laid.nodes,
     focusedId,
+    draggingId,
     graphExpanded,
     byId,
     setFlowNodes,
@@ -377,17 +433,26 @@ export function KnowledgeGraph() {
         }}
         onPaneClick={() => clearCanvasFocus()}
         onNodesChange={onNodesChange}
+        onNodeDragStart={(_, node) => {
+          if (node.type === "knowledge") setDraggingId(node.id);
+        }}
+        onNodeDragStop={() => setDraggingId(null)}
         nodesDraggable
         nodeDragThreshold={4}
+        snapToGrid
+        snapGrid={[GRID_SIZE, GRID_SIZE]}
         nodesConnectable={false}
         edgesReconnectable={false}
         elementsSelectable
         deleteKeyCode={null}
         minZoom={0.2}
         maxZoom={1.5}
+        // Manual: the 'basic' default lets an edge inherit its endpoint's
+        // z-index, so a focused card pushed its lines above every other card.
+        zIndexMode="manual"
         proOptions={{ hideAttribution: false }}
       >
-        <Background color={colors.line} gap={18} size={1} />
+        <Background color={colors.line} gap={GRID_SIZE} size={1} />
         <Controls showInteractive={false} />
         <MiniMap
           pannable

@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { TreeEntry } from "../../api/workspace";
 import { KNOWLEDGE_ROOT } from "./document";
 import {
-  KNOWLEDGE_PRIVATE_ROOT,
   KNOWLEDGE_PUBLIC_ROOT,
   createKnowledgeFolder,
   createKnowledgeNode,
@@ -13,7 +11,6 @@ import {
   knowledgeNodeRel,
   loadKnowledgeFromWorkspace,
 } from "./load";
-import { knowledgeSeedFiles } from "./seed";
 
 vi.mock("../../api/workspace", () => ({
   fetchTree: vi.fn(),
@@ -39,84 +36,59 @@ const mockedCreate = vi.mocked(createFile);
 const mockedMkdir = vi.mocked(mkdir);
 const mockedDelete = vi.mocked(deletePath);
 
-function entriesUnder(root: string, dir: string): TreeEntry[] {
-  const prefix = `${dir.replace(/\/$/, "")}/`;
-  const childDirs = new Set<string>();
-  const files: TreeEntry[] = [];
-  for (const file of knowledgeSeedFiles) {
-    const full = `${root}/${file.path}`;
-    if (!full.startsWith(prefix)) continue;
-    const rel = full.slice(prefix.length);
-    const slash = rel.indexOf("/");
-    if (slash === -1) {
-      files.push({ name: rel, path: full, kind: "file" });
-    } else {
-      childDirs.add(rel.slice(0, slash));
-    }
-  }
-  return [
-    ...[...childDirs].map((name) => ({
-      name,
-      path: `${prefix}${name}`,
-      kind: "dir" as const,
-    })),
-    ...files,
-  ];
-}
+const seqMarkdown = [
+  "```node",
+  "node : seq",
+  "status : enabled",
+  "summary : 序号",
+  "```",
+  "",
+  "正文",
+  "",
+].join("\n");
 
 describe("loadKnowledgeFromWorkspace", () => {
-  it("seeds the private tree when neither location exists", async () => {
+  it("leaves an empty private corpus when neither location exists", async () => {
     mockedCreate.mockClear();
     mockedMkdir.mockClear();
-    mockedCreate.mockResolvedValue(undefined);
-    mockedMkdir.mockResolvedValue(KNOWLEDGE_PRIVATE_ROOT);
-    mockedRead.mockImplementation(async (path: string) => {
-      const rel = path.slice(`${KNOWLEDGE_PRIVATE_ROOT}/`.length);
-      const file = knowledgeSeedFiles.find((item) => item.path === rel);
-      if (!file) throw new Error(`missing ${path}`);
-      return file.markdown;
-    });
-    let misses = 2;
-    mockedTree.mockImplementation(async (dir = "") => {
-      if (misses > 0) {
-        misses -= 1;
-        throw new Error("not found");
-      }
-      return entriesUnder(KNOWLEDGE_PRIVATE_ROOT, dir);
+    mockedTree.mockImplementation(async () => {
+      throw new Error("not found");
     });
 
     const loaded = await loadKnowledgeFromWorkspace();
-    expect(mockedMkdir).toHaveBeenCalledWith(KNOWLEDGE_PRIVATE_ROOT);
-    expect(mockedCreate).toHaveBeenCalledTimes(knowledgeSeedFiles.length);
-    expect(mockedCreate).toHaveBeenCalledWith(
-      `${KNOWLEDGE_PRIVATE_ROOT}/knowledge入门/文件夹关系/knowledge 概念概述.md`,
-      expect.stringContaining("node : knowledge 概念概述"),
-    );
+    expect(mockedMkdir).not.toHaveBeenCalled();
+    expect(mockedCreate).not.toHaveBeenCalled();
     expect(loaded.visibility).toBe("private");
     expect(loaded.root).toBe(KNOWLEDGE_ROOT);
-    expect(loaded.nodes).toHaveLength(knowledgeSeedFiles.length);
-    expect(
-      loaded.nodes.find((node) => node.key === "knowledge 概念概述")?.folderId,
-    ).toBe("knowledge入门/文件夹关系");
+    expect(loaded.nodes).toEqual([]);
+    expect(loaded.unknown).toEqual([]);
   });
 
-  it("reads a public knowledge directory without seeding", async () => {
+  it("reads a public knowledge directory without creating files", async () => {
     mockedCreate.mockClear();
+    mockedMkdir.mockClear();
     mockedTree.mockImplementation(async (dir = "") => {
-      if (dir === KNOWLEDGE_PUBLIC_ROOT || dir.startsWith(`${KNOWLEDGE_PUBLIC_ROOT}/`)) {
-        return entriesUnder(KNOWLEDGE_PUBLIC_ROOT, dir);
+      if (dir === KNOWLEDGE_PUBLIC_ROOT) {
+        return [
+          { name: "seq.md", path: `${KNOWLEDGE_PUBLIC_ROOT}/seq.md`, kind: "file" },
+          { name: "notes.md", path: `${KNOWLEDGE_PUBLIC_ROOT}/notes.md`, kind: "file" },
+        ];
       }
       throw new Error("not found");
     });
     mockedRead.mockImplementation(async (path: string) => {
-      const rel = path.slice(`${KNOWLEDGE_PUBLIC_ROOT}/`.length);
-      return knowledgeSeedFiles.find((item) => item.path === rel)?.markdown ?? "";
+      if (path.endsWith("/notes.md")) return "plain note\n";
+      return seqMarkdown;
     });
 
     const loaded = await loadKnowledgeFromWorkspace();
     expect(mockedCreate).not.toHaveBeenCalled();
+    expect(mockedMkdir).not.toHaveBeenCalled();
     expect(loaded.visibility).toBe("public");
-    expect(loaded.nodes.map((node) => node.key)).toContain("knowledge agent 入门");
+    expect(loaded.nodes.map((node) => node.key)).toEqual(["seq"]);
+    expect(loaded.unknown).toEqual([
+      { path: "notes.md", name: "notes.md", folderId: null },
+    ]);
   });
 });
 

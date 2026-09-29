@@ -23,10 +23,7 @@ function file(
   };
 }
 
-/**
- * The earlier concept corpus, kept for tests. New workspaces are seeded from
- * `seed.ts` instead.
- */
+/** Fixture corpus for tests. */
 export const knowledgeCorpusFiles: KnowledgeSourceFile[] = [
   file(
     "内核/session.md",

@@ -7,7 +7,11 @@ import { knowledgePreview, normalizeKey } from "../../lib/knowledge/markers";
 import { openKnowledgeGraphPanel } from "../../lib/knowledge/panel";
 import { isVisibleInScrollParent } from "../../lib/knowledge/scrollVisible";
 import { knowledgeTitleTone } from "../../lib/knowledge/validate";
-import type { KnowledgeIssue, KnowledgeNode } from "../../lib/knowledge/types";
+import type {
+  KnowledgeIssue,
+  KnowledgeNode,
+  KnowledgeUnknownFile,
+} from "../../lib/knowledge/types";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
 
 const NO_ISSUES: KnowledgeIssue[] = [];
@@ -154,6 +158,17 @@ function KnowledgeCard({
   );
 }
 
+function KnowledgeUnknownRow({ file }: { file: KnowledgeUnknownFile }) {
+  return (
+    <div
+      className="truncate px-2 py-0.5 font-mono text-dk-xs text-(--_dk-text-muted)"
+      title="Unrecognized"
+    >
+      ?{file.name}
+    </div>
+  );
+}
+
 function belongsToFolder(
   folderId: string | null | undefined,
   parentId: string | null,
@@ -260,6 +275,7 @@ function KnowledgeFolderBranch({
 }) {
   const folders = useKnowledgeStore((s) => s.folders);
   const nodes = useKnowledgeStore((s) => s.nodes);
+  const unknown = useKnowledgeStore((s) => s.unknown);
   const expandedFolders = useKnowledgeStore((s) => s.expandedFolders);
   const toggleFolder = useKnowledgeStore((s) => s.toggleFolder);
   const known = useMemo(
@@ -271,6 +287,9 @@ function KnowledgeFolderBranch({
   );
   const childNodes = nodes.filter((node) =>
     belongsToFolder(node.folderId, parentId, known),
+  );
+  const childUnknown = unknown.filter((file) =>
+    belongsToFolder(file.folderId, parentId, known),
   );
 
   return (
@@ -358,6 +377,9 @@ function KnowledgeFolderBranch({
           onDragHover={onDragHover}
           onDrop={onDrop}
         />
+      ))}
+      {childUnknown.map((file) => (
+        <KnowledgeUnknownRow key={file.path} file={file} />
       ))}
     </>
   );

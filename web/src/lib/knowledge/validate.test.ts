@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { knowledgeFixture } from "./fixture";
-import { mentionSource } from "./markers";
+import { fileMentionSource, mentionSource } from "./markers";
 import type { KnowledgeIssue, KnowledgeNode } from "./types";
 import {
   groupIssues,
   knowledgeListAlert,
   knowledgeTitleTone,
+  missingFileIssues,
   validateKnowledge,
 } from "./validate";
 
@@ -129,6 +130,34 @@ describe("validateKnowledge", () => {
       node({ id: "note", key: "note", value: "see [[seq]] and [[providers]]" }),
     ]);
     expect(issues).toEqual([]);
+  });
+
+  it("reports a missing file only after the path has been checked", () => {
+    const cited = node({
+      id: "note",
+      key: "note",
+      value: `${fileMentionSource("src/a.rs")} ${fileMentionSource("../secret")}`,
+    });
+    expect(missingFileIssues([cited], {})).toEqual([
+      expect.objectContaining({
+        code: "missing_file",
+        message: 'File "../secret" does not exist.',
+        ref: "../secret",
+      }),
+    ]);
+    expect(missingFileIssues([cited], { "src/a.rs": true })).toEqual([
+      expect.objectContaining({ ref: "../secret" }),
+    ]);
+    expect(missingFileIssues([cited], { "src/a.rs": false })).toEqual([
+      expect.objectContaining({
+        message: 'File "src/a.rs" does not exist.',
+        ref: "src/a.rs",
+      }),
+      expect.objectContaining({ ref: "../secret" }),
+    ]);
+    expect(validateKnowledge([cited]).some((issue) => issue.code === "missing_file")).toBe(
+      false,
+    );
   });
 
   it("allows a cycle", () => {

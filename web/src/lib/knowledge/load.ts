@@ -16,10 +16,13 @@ import {
   upgradeKnowledgeMarkdown,
   type KnowledgeSourceFile,
 } from "./document";
-import { knowledgeSeedFiles } from "./seed";
-import type { KnowledgeFolder, KnowledgeNode } from "./types";
+import type {
+  KnowledgeFolder,
+  KnowledgeNode,
+  KnowledgeUnknownFile,
+} from "./types";
 
-/** Gitignored copy. Created when a workspace has no knowledge directory yet. */
+/** Gitignored copy under `.litecode/knowledge`. */
 export const KNOWLEDGE_PRIVATE_ROOT = KNOWLEDGE_ROOT;
 
 /** Workspace-root copy. Git can track it. */
@@ -68,7 +71,7 @@ async function listChildren(dir: string): Promise<TreeEntry[]> {
   }));
 }
 
-/** Walk one knowledge directory. A missing root throws so the caller can seed it. */
+/** Walk one knowledge directory. A missing root throws. */
 export async function readKnowledgeTree(root: string): Promise<{
   files: KnowledgeSourceFile[];
   directories: string[];
@@ -101,16 +104,6 @@ export async function readKnowledgeTree(root: string): Promise<{
   return { files, directories };
 }
 
-/** Create the onboarding tree under `root`. */
-export async function seedKnowledgeWorkspace(
-  root: string = KNOWLEDGE_PRIVATE_ROOT,
-): Promise<void> {
-  await mkdir(root);
-  for (const file of knowledgeSeedFiles) {
-    await createFile(knowledgeDiskPath(root, file.path), file.markdown);
-  }
-}
-
 export async function knowledgeRootExists(root: string): Promise<boolean> {
   try {
     const entries = await fetchTree(root, 1);
@@ -122,40 +115,50 @@ export async function knowledgeRootExists(root: string): Promise<boolean> {
 
 /**
  * Public `knowledge/` wins when it exists. Otherwise use `.litecode/knowledge`.
- * When neither exists, create the private tree and the onboarding nodes.
+ * When neither exists, the caller keeps an empty private corpus and writes nothing.
  */
 export async function locateKnowledgeRoot(): Promise<{
   root: string;
   visibility: KnowledgeVisibility;
-}> {
+} | null> {
   if (await knowledgeRootExists(KNOWLEDGE_PUBLIC_ROOT)) {
     return { root: KNOWLEDGE_PUBLIC_ROOT, visibility: "public" };
   }
   if (await knowledgeRootExists(KNOWLEDGE_PRIVATE_ROOT)) {
     return { root: KNOWLEDGE_PRIVATE_ROOT, visibility: "private" };
   }
-  await seedKnowledgeWorkspace(KNOWLEDGE_PRIVATE_ROOT);
-  return { root: KNOWLEDGE_PRIVATE_ROOT, visibility: "private" };
+  return null;
 }
 
-/** Read the on-disk corpus, seeding the private tree when both locations are missing. */
+/** Read the on-disk corpus. A workspace with no knowledge directory stays empty. */
 export async function loadKnowledgeFromWorkspace(): Promise<{
   nodes: KnowledgeNode[];
   folders: KnowledgeFolder[];
+  unknown: KnowledgeUnknownFile[];
   root: string;
   visibility: KnowledgeVisibility;
 }> {
   const located = await locateKnowledgeRoot();
+  if (!located) {
+    return {
+      nodes: [],
+      folders: [],
+      unknown: [],
+      root: KNOWLEDGE_PRIVATE_ROOT,
+      visibility: "private",
+    };
+  }
   const loaded = await readKnowledgeSnapshot(located.root);
-  return { ...loaded, ...located };
+  return { ...loaded, root: located.root, visibility: located.visibility };
 }
 
-/** Re-read an existing corpus. Does not create the sample tree. */
+/** Re-read an existing corpus. Does not create a directory. */
 export async function readKnowledgeSnapshot(
   root: string,
 ): Promise<{
   nodes: KnowledgeNode[];
   folders: KnowledgeFolder[];
+  unknown: KnowledgeUnknownFile[];
 }> {
   const tree = await readKnowledgeTree(root);
   return knowledgeFromFiles(tree.files, tree.directories);

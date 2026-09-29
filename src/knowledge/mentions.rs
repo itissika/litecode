@@ -13,6 +13,10 @@ static SHORTCODE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"\[@ id="([^"]*)" label="([^"]*)"\]"#).expect("shortcode pattern")
 });
 
+static FILE_SHORTCODE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\[@ file="([^"]*)" label="([^"]*)"\]"#).expect("file shortcode pattern")
+});
+
 pub fn normalize_key(key: &str) -> String {
     key.trim().to_string()
 }
@@ -29,6 +33,44 @@ pub fn mention_source(id: &str, label: &str) -> String {
 pub struct Mention {
     pub id: String,
     pub label: String,
+}
+
+/// Workspace-relative path. `..`, `.`, an empty segment, and an absolute path are not.
+pub fn is_workspace_file_ref(path: &str) -> bool {
+    let slash = path.replace('\\', "/");
+    if slash.is_empty() || slash.len() > 512 {
+        return false;
+    }
+    if slash.starts_with('/') || slash.chars().nth(1) == Some(':') {
+        return false;
+    }
+    slash
+        .split('/')
+        .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+/// True when `rel` is a file or directory inside `workspace`.
+pub fn workspace_file_exists(workspace: &std::path::Path, rel: &str) -> bool {
+    if !is_workspace_file_ref(rel) {
+        return false;
+    }
+    workspace.join(rel.replace('\\', "/")).exists()
+}
+
+/// File paths cited in prose. Fenced blocks and inline code are not citations.
+pub fn extract_file_refs(markdown: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in scan_prose(markdown) {
+        for caps in FILE_SHORTCODE.captures_iter(&line) {
+            let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+            if path.is_empty() || !seen.insert(path.to_string()) {
+                continue;
+            }
+            paths.push(path.to_string());
+        }
+    }
+    paths
 }
 
 pub fn extract_markers(markdown: &str) -> Vec<String> {
@@ -200,7 +242,7 @@ fn flush_preview_text(text: &mut String, out: &mut String) {
 }
 
 fn replace_shortcodes_with_labels(text: &str) -> String {
-    SHORTCODE
+    let nodes = SHORTCODE
         .replace_all(text, |caps: &regex::Captures| {
             let full = caps.get(0).map(|m| m.as_str()).unwrap_or("");
             let id = normalize_key(caps.get(1).map(|m| m.as_str()).unwrap_or(""));
@@ -209,6 +251,21 @@ fn replace_shortcodes_with_labels(text: &str) -> String {
             }
             let label = caps.get(2).map(|m| m.as_str()).unwrap_or("");
             if label.is_empty() { id } else { label.to_string() }
+        })
+        .into_owned();
+    FILE_SHORTCODE
+        .replace_all(&nodes, |caps: &regex::Captures| {
+            let full = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+            let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+            if path.is_empty() {
+                return full.to_string();
+            }
+            let label = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            if label.is_empty() {
+                path.rsplit('/').next().unwrap_or(path).to_string()
+            } else {
+                label.to_string()
+            }
         })
         .into_owned()
 }
@@ -329,6 +386,34 @@ mod tests {
         let inside = format!("`{hidden}`");
         assert!(knowledge_preview(&inside, 1).contains("id=\"hidden\""));
         assert!(extract_markers(&inside).is_empty());
+    }
+
+    #[test]
+    fn file_refs_skip_code_and_reject_escapes() {
+        let value = "\
+see [@ file=\"src/a.rs\" label=\"a.rs\"]
+```
+[@ file=\"skip.rs\" label=\"skip.rs\"]
+```
+`[@ file=\"nope.rs\" label=\"nope.rs\"]`
+[@ file=\"../secret\" label=\"secret\"]
+[@ file=\"/etc/passwd\" label=\"passwd\"]
+";
+        assert_eq!(
+            extract_file_refs(value),
+            vec![
+                "src/a.rs".to_string(),
+                "../secret".to_string(),
+                "/etc/passwd".to_string(),
+            ]
+        );
+        assert!(extract_markers(value).is_empty());
+        assert!(is_workspace_file_ref("src/a.rs"));
+        assert!(is_workspace_file_ref("src"));
+        assert!(!is_workspace_file_ref("../secret"));
+        assert!(!is_workspace_file_ref("/etc/passwd"));
+        assert!(!is_workspace_file_ref("C:/abs"));
+        assert!(!is_workspace_file_ref("src/../a.rs"));
     }
 
     #[test]

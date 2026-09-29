@@ -1,7 +1,13 @@
 import { create } from "zustand";
 
 import { replaceKnowledgeKey } from "../lib/knowledge/document";
-import { isKnowledgeKey, normalizeKey } from "../lib/knowledge/markers";
+import { workspacePathsExist } from "../lib/knowledge/files";
+import {
+  extractFileRefs,
+  isKnowledgeKey,
+  isWorkspaceFileRef,
+  normalizeKey,
+} from "../lib/knowledge/markers";
 import {
   createKnowledgeFolder,
   createKnowledgeNode,
@@ -24,11 +30,17 @@ import type {
   KnowledgeFolder,
   KnowledgeIssue,
   KnowledgeNode,
+  KnowledgeUnknownFile,
 } from "../lib/knowledge/types";
-import { groupIssues, validateKnowledge } from "../lib/knowledge/validate";
+import {
+  groupIssues,
+  missingFileIssues,
+  validateKnowledge,
+  type KnowledgeFilePresence,
+} from "../lib/knowledge/validate";
 import { useWorkspaceChangeStore } from "./workspaceChangeStore";
 
-function indexNodes(nodes: KnowledgeNode[]) {
+function indexNodes(nodes: KnowledgeNode[], presence: KnowledgeFilePresence) {
   const byId = new Map<string, KnowledgeNode>();
   const byKey = new Map<string, KnowledgeNode>();
   for (const node of nodes) {
@@ -36,7 +48,10 @@ function indexNodes(nodes: KnowledgeNode[]) {
     const key = normalizeKey(node.key);
     if (key && !byKey.has(key)) byKey.set(key, node);
   }
-  const issues = validateKnowledge(nodes);
+  const issues = [
+    ...validateKnowledge(nodes),
+    ...missingFileIssues(nodes, presence),
+  ];
   return { nodes, byId, byKey, issues, issuesByNode: groupIssues(issues) };
 }
 
@@ -51,10 +66,12 @@ function indexFolders(folders: KnowledgeFolder[]) {
 export function knowledgeSnapshot(
   nodes: KnowledgeNode[],
   folders: KnowledgeFolder[],
+  filePresence: KnowledgeFilePresence = {},
 ) {
   return {
-    ...indexNodes(nodes),
+    ...indexNodes(nodes, filePresence),
     ...indexFolders(folders),
+    filePresence,
     expandedFolders: new Set(folders.map((folder) => folder.id)),
   };
 }
@@ -94,6 +111,8 @@ interface KnowledgeStore {
   folderById: Map<string, KnowledgeFolder>;
   issues: KnowledgeIssue[];
   issuesByNode: Map<string, KnowledgeIssue[]>;
+  /** Markdown files with no declaration. Shown in the side list, not on the canvas. */
+  unknown: KnowledgeUnknownFile[];
   expanded: Set<string>;
   expandedFolders: Set<string>;
   graphExpanded: Set<string>;
@@ -105,20 +124,28 @@ interface KnowledgeStore {
   flashNonce: number;
   /** Bumps when folders or files move, so the canvas drops stale positions. */
   structureNonce: number;
+  /**
+   * Workspace paths already checked. `false` means the path is absent.
+   * A path that is not here has not been checked, so its capsule stays blue.
+   */
+  filePresence: KnowledgeFilePresence;
   /** Directory that currently holds the corpus. */
   root: string;
   visibility: KnowledgeVisibility;
   loading: boolean;
   error: string | null;
-  /** Read the public or private tree, seeding private when both are missing. */
+  /** Read the public or private tree. A missing tree stays empty. */
   load: () => Promise<void>;
   /**
    * Re-read the corpus from disk. Used when a knowledge panel becomes active.
    * Keeps expansion, focus, and canvas positions unless files or folders moved.
    */
   refreshFromDisk: () => Promise<void>;
-  /** Write one node's declaration block and body. */
-  saveNode: (id: string, patch: KnowledgeNodePatch) => Promise<void>;
+  /**
+   * Write one node's declaration block and body.
+   * Resolves `false` when the write fails, so the caller can keep the unsaved mark.
+   */
+  saveNode: (id: string, patch: KnowledgeNodePatch) => Promise<boolean>;
   /**
    * Rename a declaration. Rewrites mention `id`s, and `label`s that equal the
    * old declaration, in the other files. Rejects a key that is illegal or
@@ -197,6 +224,64 @@ function aliveIds(ids: Iterable<string>, alive: Set<string>): Set<string> {
   return new Set([...ids].filter((id) => alive.has(id)));
 }
 
+function citedFilePaths(nodes: KnowledgeNode[]): string[] {
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const node of nodes) {
+    for (const path of extractFileRefs(node.value)) {
+      if (!isWorkspaceFileRef(path) || seen.has(path)) continue;
+      seen.add(path);
+      paths.push(path);
+    }
+  }
+  return paths;
+}
+
+let fileCheckGen = 0;
+
+/** Stat cited paths and fold the result into the issue list. */
+function scheduleFileCheck(
+  set: (partial: Partial<KnowledgeStore>) => void,
+  get: () => KnowledgeStore,
+) {
+  const nodes = get().nodes;
+  const paths = citedFilePaths(nodes);
+  const gen = ++fileCheckGen;
+  if (paths.length === 0) {
+    if (Object.keys(get().filePresence).length === 0) return;
+    const issues = [
+      ...validateKnowledge(nodes),
+      ...missingFileIssues(nodes, {}),
+    ];
+    set({
+      filePresence: {},
+      issues,
+      issuesByNode: groupIssues(issues),
+    });
+    return;
+  }
+  void (async () => {
+    const found = await workspacePathsExist(paths);
+    if (gen !== fileCheckGen) return;
+    const current = get().nodes;
+    const presence: Record<string, boolean> = {};
+    for (const path of citedFilePaths(current)) {
+      if (Object.prototype.hasOwnProperty.call(found, path)) {
+        presence[path] = found[path] ?? false;
+      }
+    }
+    const issues = [
+      ...validateKnowledge(current),
+      ...missingFileIssues(current, presence),
+    ];
+    set({
+      filePresence: presence,
+      issues,
+      issuesByNode: groupIssues(issues),
+    });
+  })();
+}
+
 async function applyDisk(
   set: (partial: Partial<KnowledgeStore>) => void,
   get: () => KnowledgeStore,
@@ -206,7 +291,7 @@ async function applyDisk(
   const nodeIds = new Set(loaded.nodes.map((node) => node.id));
   const folderIds = new Set(loaded.folders.map((folder) => folder.id));
   set({
-    ...knowledgeSnapshot(loaded.nodes, loaded.folders),
+    ...knowledgeSnapshot(loaded.nodes, loaded.folders, get().filePresence),
     expanded: aliveIds(state.expanded, nodeIds),
     expandedFolders: aliveIds(state.expandedFolders, folderIds),
     graphExpanded: aliveIds(state.graphExpanded, nodeIds),
@@ -219,9 +304,11 @@ async function applyDisk(
       state.flashId != null && nodeIds.has(state.flashId) ? state.flashId : null,
     flashNonce: state.flashNonce,
     structureNonce: state.structureNonce + 1,
+    unknown: loaded.unknown,
     loading: false,
     error: null,
   });
+  scheduleFileCheck(set, get);
 }
 
 function folderContains(
@@ -268,17 +355,32 @@ let loadInflight: Promise<void> | null = null;
 let refreshInflight: Promise<void> | null = null;
 let hydrated = false;
 
+function sameUnknown(
+  current: KnowledgeUnknownFile[],
+  next: KnowledgeUnknownFile[],
+): boolean {
+  if (current.length !== next.length) return false;
+  for (let i = 0; i < current.length; i++) {
+    if (current[i].path !== next[i].path) return false;
+    if ((current[i].folderId ?? null) !== (next[i].folderId ?? null)) return false;
+  }
+  return true;
+}
+
 function sameCorpus(
   nodes: KnowledgeNode[],
   folders: KnowledgeFolder[],
+  unknown: KnowledgeUnknownFile[],
   root: string,
   loaded: {
     nodes: KnowledgeNode[];
     folders: KnowledgeFolder[];
+    unknown: KnowledgeUnknownFile[];
     root: string;
   },
 ): boolean {
   if (root !== loaded.root) return false;
+  if (!sameUnknown(unknown, loaded.unknown)) return false;
   if (nodes.length !== loaded.nodes.length) return false;
   if (folders.length !== loaded.folders.length) return false;
   for (let i = 0; i < folders.length; i++) {
@@ -329,6 +431,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
   graphExpanded: new Set<string>(),
   root: KNOWLEDGE_PRIVATE_ROOT,
   visibility: "private",
+  unknown: [],
   structureNonce: 0,
   focusedId: null,
   focusNonce: 0,
@@ -344,13 +447,15 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
         const loaded = await loadKnowledgeFromWorkspace();
         hydrated = true;
         set({
-          ...knowledgeSnapshot(loaded.nodes, loaded.folders),
+          ...knowledgeSnapshot(loaded.nodes, loaded.folders, get().filePresence),
           root: loaded.root,
           visibility: loaded.visibility,
+          unknown: loaded.unknown,
           structureNonce: get().structureNonce + 1,
           loading: false,
           error: null,
         });
+        scheduleFileCheck(set, get);
       } catch (err) {
         const message = err instanceof Error ? err.message : "无法读取知识库";
         set({ loading: false, error: message });
@@ -367,14 +472,23 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       try {
         const loaded = await loadKnowledgeFromWorkspace();
         const latest = get();
-        if (sameCorpus(latest.nodes, latest.folders, latest.root, loaded)) {
+        if (
+          sameCorpus(
+            latest.nodes,
+            latest.folders,
+            latest.unknown,
+            latest.root,
+            loaded,
+          )
+        ) {
+          scheduleFileCheck(set, get);
           return;
         }
         const nodeIds = new Set(loaded.nodes.map((node) => node.id));
         const folderIds = new Set(loaded.folders.map((folder) => folder.id));
         const moved = structureChanged(latest.nodes, latest.folders, loaded);
         set({
-          ...knowledgeSnapshot(loaded.nodes, loaded.folders),
+          ...knowledgeSnapshot(loaded.nodes, loaded.folders, get().filePresence),
           expanded: aliveIds(latest.expanded, nodeIds),
           expandedFolders: aliveIds(latest.expandedFolders, folderIds),
           graphExpanded: aliveIds(latest.graphExpanded, nodeIds),
@@ -393,9 +507,11 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
             : latest.structureNonce,
           root: loaded.root,
           visibility: loaded.visibility,
+          unknown: loaded.unknown,
           loading: false,
           error: null,
         });
+        scheduleFileCheck(set, get);
       } catch (err) {
         set({ error: diskError(err) });
       } finally {
@@ -406,32 +522,40 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
   },
   saveNode: async (id, patch) => {
     const current = get().byId.get(id);
-    if (!current) return;
+    if (!current) return false;
     const next = {
       ...current,
       ...patch,
       ...(patch.status !== undefined ? { invalidStatus: null } : {}),
     };
-    if (sameNode(current, next)) return;
+    if (sameNode(current, next)) return true;
     const nodes = get().nodes.map((node) => (node.id === id ? next : node));
-    set((state) => ({
-      ...knowledgeSnapshot(nodes, state.folders),
-      expanded: state.expanded,
-      expandedFolders: state.expandedFolders,
-      graphExpanded: state.graphExpanded,
-      focusedId: state.focusedId,
-      focusNonce: state.focusNonce,
-      flashId: state.flashId,
-      flashNonce: state.flashNonce,
-      loading: state.loading,
-      error: null,
-    }));
+    const hold = (state: KnowledgeStore, listed: KnowledgeNode[], message: string | null) => {
+      set({
+        ...knowledgeSnapshot(listed, state.folders, state.filePresence),
+        expanded: state.expanded,
+        expandedFolders: state.expandedFolders,
+        graphExpanded: state.graphExpanded,
+        focusedId: state.focusedId,
+        focusNonce: state.focusNonce,
+        flashId: state.flashId,
+        flashNonce: state.flashNonce,
+        loading: state.loading,
+        error: message,
+      });
+    };
+    hold(get(), nodes, null);
     try {
       await writeKnowledgeNode(next, get().root);
     } catch (err) {
       const message = err instanceof Error ? err.message : "无法写入知识库";
-      set({ error: message });
+      const state = get();
+      const restored = state.nodes.map((node) => (node.id === id ? current : node));
+      hold(state, restored, message);
+      return false;
     }
+    if (patch.value !== undefined) scheduleFileCheck(set, get);
+    return true;
   },
   renameNode: async (id, rawKey) => {
     const state = get();
@@ -464,7 +588,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
     const changed = nodes.filter((node, index) => node !== state.nodes[index]);
     const remap = (value: string) => (value === id ? nextId : value);
     set({
-      ...knowledgeSnapshot(nodes, state.folders),
+      ...knowledgeSnapshot(nodes, state.folders, state.filePresence),
       expanded: new Set([...state.expanded].map(remap)),
       expandedFolders: state.expandedFolders,
       graphExpanded: new Set([...state.graphExpanded].map(remap)),
@@ -501,7 +625,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       if (parentId) expandedFolders.add(parentId);
       expandedFolders.add(rel);
       set({
-        ...knowledgeSnapshot(loaded.nodes, loaded.folders),
+        ...knowledgeSnapshot(loaded.nodes, loaded.folders, get().filePresence),
         expanded: aliveIds(state.expanded, nodeIds),
         expandedFolders,
         graphExpanded: aliveIds(state.graphExpanded, nodeIds),
@@ -516,6 +640,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
             : null,
         flashNonce: state.flashNonce,
         structureNonce: state.structureNonce + 1,
+        unknown: loaded.unknown,
         loading: false,
         error: null,
       });
@@ -546,7 +671,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       if (folderId) expandedFolders.add(folderId);
       const focusedId = created && nodeIds.has(created.id) ? created.id : null;
       set({
-        ...knowledgeSnapshot(loaded.nodes, loaded.folders),
+        ...knowledgeSnapshot(loaded.nodes, loaded.folders, get().filePresence),
         expanded: aliveIds(state.expanded, nodeIds),
         expandedFolders,
         graphExpanded: aliveIds(state.graphExpanded, nodeIds),
@@ -555,6 +680,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
         flashId: focusedId,
         flashNonce: state.flashNonce + 1,
         structureNonce: state.structureNonce + 1,
+        unknown: loaded.unknown,
         loading: false,
         error: null,
       });
@@ -650,7 +776,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
         state.focusedId == null ? null : remap(state.focusedId);
       const flashId = state.flashId == null ? null : remap(state.flashId);
       set({
-        ...knowledgeSnapshot(loaded.nodes, loaded.folders),
+        ...knowledgeSnapshot(loaded.nodes, loaded.folders, get().filePresence),
         expanded: aliveIds([...state.expanded].map(remap), nodeIds),
         expandedFolders: aliveIds(
           [...state.expandedFolders].map(remap),
@@ -662,6 +788,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
         flashId: flashId != null && nodeIds.has(flashId) ? flashId : null,
         flashNonce: state.flashNonce,
         structureNonce: state.structureNonce + 1,
+        unknown: loaded.unknown,
         loading: false,
         error: null,
       });

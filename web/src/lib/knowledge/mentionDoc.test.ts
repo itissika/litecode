@@ -5,8 +5,8 @@ import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
 import { describe, expect, it } from "vitest";
 
-import { mentionSource } from "./markers";
-import { bodyToContent, knowledgeMentionOptions } from "./mentionDoc";
+import { fileMentionSource, mentionSource } from "./markers";
+import { bodyToContent, fileMentionOptions, knowledgeMentionOptions } from "./mentionDoc";
 
 function textOf(source: string) {
   const editor = new Editor({
@@ -16,6 +16,7 @@ function textOf(source: string) {
       Paragraph,
       Text,
       Mention.configure(knowledgeMentionOptions({ char: "@" })),
+      Mention.extend({ name: "fileMention" }).configure(fileMentionOptions({ char: "/" })),
     ],
     content: bodyToContent(source),
   });
@@ -32,6 +33,11 @@ describe("bodyToContent", () => {
 
   it("leaves a shortcode whose id is not a key as text", () => {
     const source = '[@ id="bad/key" label="bad/key"]';
+    expect(textOf(source)).toBe(source);
+  });
+
+  it("round-trips a file citation without turning it into a node citation", () => {
+    const source = `见 ${mentionSource("seq")} 与 ${fileMentionSource("src/a.rs")}`;
     expect(textOf(source)).toBe(source);
   });
 

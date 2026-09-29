@@ -1,7 +1,9 @@
 //! Corpus checks. Error codes match the frontend `KnowledgeIssueCode` set.
 
 use super::document::{self, Status};
-use super::mentions::{extract_markers, is_knowledge_key, normalize_key};
+use super::mentions::{
+    extract_file_refs, extract_markers, is_knowledge_key, is_workspace_file_ref, normalize_key,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -36,7 +38,7 @@ pub struct CheckNode<'a> {
     pub path: &'a str,
 }
 
-pub fn validate<'a>(nodes: &[CheckNode<'a>]) -> Vec<Issue> {
+pub fn validate<'a>(nodes: &[CheckNode<'a>], file_exists: &dyn Fn(&str) -> bool) -> Vec<Issue> {
     let mut key_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for node in nodes {
         let key = normalize_key(node.key);
@@ -137,6 +139,24 @@ pub fn validate<'a>(nodes: &[CheckNode<'a>]) -> Vec<Issue> {
                 }
                 Some(_) => {}
             }
+        }
+
+        let mut seen_files = std::collections::HashSet::new();
+        for path in extract_file_refs(node.value) {
+            if !seen_files.insert(path.clone()) {
+                continue;
+            }
+            let present = is_workspace_file_ref(&path) && file_exists(&path);
+            if present {
+                continue;
+            }
+            issues.push(Issue {
+                node_id: node.id.to_string(),
+                severity: Severity::Error,
+                code: "missing_file".into(),
+                message: format!("File \"{path}\" does not exist."),
+                reference: Some(path),
+            });
         }
     }
     issues

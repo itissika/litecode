@@ -31,6 +31,8 @@ pub struct Node {
 pub struct Corpus {
     pub root: Option<String>,
     pub nodes: Vec<Node>,
+    /// Markdown files with no `node` declaration. Left on disk.
+    pub unknown: Vec<String>,
 }
 
 impl Corpus {
@@ -39,14 +41,17 @@ impl Corpus {
             return Self {
                 root: None,
                 nodes: Vec::new(),
+                unknown: Vec::new(),
             };
         };
         let mut files = Vec::new();
         walk(workspace, &root, &root, &mut files);
         files.sort_by(|a, b| a.parsed.path.cmp(&b.parsed.path));
+        let (nodes, unknown) = nodes_from_parsed(files);
         Self {
             root: Some(root),
-            nodes: nodes_from_parsed(files),
+            nodes,
+            unknown,
         }
     }
 
@@ -135,9 +140,18 @@ fn walk(workspace: &Path, root: &str, dir_rel: &str, out: &mut Vec<LoadedFile>) 
     }
 }
 
-fn nodes_from_parsed(files: Vec<LoadedFile>) -> Vec<Node> {
+fn nodes_from_parsed(files: Vec<LoadedFile>) -> (Vec<Node>, Vec<String>) {
+    let mut unknown = Vec::new();
+    let mut declared = Vec::new();
+    for file in files {
+        if normalize_key(&file.parsed.key).is_empty() {
+            unknown.push(file.parsed.path.clone());
+        } else {
+            declared.push(file);
+        }
+    }
     let mut key_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for file in &files {
+    for file in &declared {
         let key = normalize_key(&file.parsed.key);
         if !is_knowledge_key(&key) {
             continue;
@@ -145,7 +159,7 @@ fn nodes_from_parsed(files: Vec<LoadedFile>) -> Vec<Node> {
         *key_counts.entry(key).or_insert(0) += 1;
     }
     let mut used = std::collections::HashSet::new();
-    files
+    let nodes = declared
         .into_iter()
         .map(|file| {
             let key = normalize_key(&file.parsed.key);
@@ -177,7 +191,8 @@ fn nodes_from_parsed(files: Vec<LoadedFile>) -> Vec<Node> {
                 modified: file.modified,
             }
         })
-        .collect()
+        .collect();
+    (nodes, unknown)
 }
 
 #[cfg(test)]
@@ -227,7 +242,9 @@ mod fixture_tests {
                 path: &node.path,
             })
             .collect();
-        let mut issues: Vec<_> = validate::validate(&checks)
+        let mut issues: Vec<_> = validate::validate(&checks, &|path| {
+            crate::knowledge::mentions::workspace_file_exists(&workspace, path)
+        })
             .into_iter()
             .map(|issue| format!("{}:{}", issue.node_id, issue.code))
             .collect();

@@ -90,7 +90,11 @@ mod tests {
         let root = dir.join(".litecode").join("knowledge");
         fs::create_dir_all(&root).unwrap();
         let file = root.join("seq.md");
-        fs::write(&file, "node\n").unwrap();
+        fs::write(
+            &file,
+            "```node\nnode : seq\nstatus : enabled\nsummary : \n```\n",
+        )
+        .unwrap();
         let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
         let handle = fs::OpenOptions::new().write(true).open(&file).unwrap();
         handle.set_modified(mtime).unwrap();

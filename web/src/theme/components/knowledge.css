@@ -412,8 +412,13 @@
   border-left: 1px solid var(--_dk-line);
 }
 
+/* The folder frame is decoration; the header label is its drag handle. React
+   Flow writes `pointer-events` inline on every node wrapper (a draggable node
+   gets `all`), so the stylesheet needs !important to keep the frame itself
+   out of hit-testing: the body then behaves like blank canvas — a click clears
+   the canvas focus, a drag pans — while the label opts back in below. */
 .react-flow__node-knowledgeFolder {
-  pointer-events: none;
+  pointer-events: none !important;
 }
 
 .knowledge-flow-folder {
@@ -529,22 +534,32 @@
   overflow-y: auto;
 }
 
-.knowledge-flow-resize-handle {
+/* React Flow ships its own bottom-right handle (5px, blue, translated half
+   outside the corner). The card clips overflow, so only a sliver of that showed
+   and the grip icon never read. Five classes out-specify React Flow's
+   `.react-flow__resize-control.handle.bottom.right` — its sheet is imported
+   first in index.css — and the grip now sits fully inside the card. */
+.knowledge-flow-card .react-flow__resize-control.knowledge-flow-resize-handle.bottom.right {
+  inset: auto 0 0 auto;
+  translate: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
+  width: 20px;
+  height: 20px;
   border: none;
-  border-radius: 2px;
+  border-radius: 0 0 var(--radius-md) 0;
   background: transparent;
   color: var(--_dk-text-muted);
   cursor: nwse-resize;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
-.knowledge-flow-resize-handle:hover {
-  color: var(--_dk-text-secondary);
+.knowledge-flow-card .knowledge-flow-resize-handle:hover {
   background: var(--_dk-ix-bg-selected);
+  color: var(--_dk-text-primary);
 }
 
 .knowledge-flow-foldcard .foldcard-title {
@@ -644,7 +659,7 @@
 .knowledge-key-button,
 .knowledge-key-input {
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   padding: 0;
   border: none;
   background: transparent;
@@ -660,6 +675,11 @@
 
 .knowledge-key-input[aria-invalid="true"] {
   outline-color: var(--_dk-red-500);
+}
+
+.knowledge-flow-title-fill {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .knowledge-flow-caret {
@@ -721,6 +741,14 @@
 
 .knowledge-source-label {
   color: var(--_dk-text-muted);
+}
+
+.knowledge-save-mark {
+  flex-shrink: 0;
+  color: var(--_dk-text-muted);
+  font-family: var(--_dk-font-code);
+  font-size: var(--_dk-text-xs);
+  line-height: 1;
 }
 
 .knowledge-source-input {
@@ -792,9 +820,15 @@
   min-height: 1.6rem;
 }
 
-.knowledge-token.is-invalid {
+.knowledge-token.is-invalid,
+.knowledge-token.is-file.is-missing {
   background: transparent;
   color: var(--_dk-red-500);
+}
+
+.knowledge-token.is-file {
+  background: color-mix(in srgb, var(--_dk-cat-blue) 14%, transparent);
+  color: var(--_dk-cat-blue);
 }
 
 .knowledge-token {
@@ -803,15 +837,41 @@
   gap: 0.1rem;
   max-width: 100%;
   margin: 0 0.05rem;
-  padding: 0 0.05rem 0 0.35rem;
+  padding: 0.1rem 0.16rem 0.1rem 0.4rem;
   border-radius: 999px;
-  background: var(--_dk-accent-glow);
-  color: var(--_dk-accent-hover);
+  /* Green tint derives from the theme-bound emerald, so it reads cleanly in
+     both themes (same color-mix pattern as the tag tokens). */
+  background: color-mix(in srgb, var(--_dk-emerald-500) 14%, transparent);
+  color: var(--_dk-emerald-500);
   font-family: var(--_dk-font-code);
   font-size: var(--_dk-text-xs);
   line-height: 1.35;
   vertical-align: baseline;
   user-select: none;
+  transition:
+    scale 120ms ease,
+    filter 140ms ease;
+}
+
+/* Light theme's emerald (#00d459) is a display green — as 11px label text on
+   the pale surface it washes out, so step the label toward the theme ink. The
+   14% tinted background reads fine as is; invalid chips stay red. */
+:root[data-dv-theme="light"] .knowledge-token:not(.is-invalid) {
+  color: color-mix(in srgb, var(--_dk-emerald-500) 50%, var(--_dk-text-primary));
+}
+
+/* Brighten + grow on hover, darken + shrink on press (filter, because the
+   colour tokens can't brighten). A transition reads from the state being
+   entered, so press gets its own shorter duration. Invalid chips stay put. */
+.knowledge-token:not(.is-invalid):not(.is-missing):hover {
+  filter: brightness(1.18);
+  scale: 1.06;
+}
+
+.knowledge-token:not(.is-invalid):not(.is-missing):active {
+  filter: brightness(0.88);
+  scale: 0.94;
+  transition-duration: 80ms;
 }
 
 .knowledge-token-label {
@@ -893,5 +953,11 @@ button.knowledge-token-label {
 .knowledge-complete-item.is-active,
 .knowledge-complete-item:hover {
   background: var(--_dk-ix-bg-selected);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .knowledge-token {
+    transition: none;
+  }
 }
 

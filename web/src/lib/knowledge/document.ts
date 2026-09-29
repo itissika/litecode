@@ -10,6 +10,7 @@ import type {
   KnowledgeFolder,
   KnowledgeNode,
   KnowledgeStatus,
+  KnowledgeUnknownFile,
 } from "./types";
 
 /** Workspace-relative root for on-disk knowledge nodes. */
@@ -262,27 +263,50 @@ function foldersFromIds(ids: Set<string>): KnowledgeFolder[] {
     });
 }
 
+function fileName(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash === -1 ? path : path.slice(slash + 1);
+}
+
 /**
  * Turn source files into nodes and folders.
- * A unique legal key becomes the node id. A missing, illegal, or duplicate key
- * keeps the file path as the id so both copies can still render.
+ * A file with no declaration is unknown: it stays on disk and is not a node.
+ * A unique legal key becomes the node id. An illegal or duplicate key keeps
+ * the file path as the id so both copies can still render.
  */
 export function knowledgeFromFiles(
   files: KnowledgeSourceFile[],
   directories: string[] = [],
-): { nodes: KnowledgeNode[]; folders: KnowledgeFolder[] } {
+): {
+  nodes: KnowledgeNode[];
+  folders: KnowledgeFolder[];
+  unknown: KnowledgeUnknownFile[];
+} {
   const parsed = files.map((file) =>
     parseKnowledgeMarkdown(file.path, file.markdown),
   );
-  const keyCounts = new Map<string, number>();
+  const unknown: KnowledgeUnknownFile[] = [];
+  const declared: ParsedKnowledgeFile[] = [];
   for (const file of parsed) {
+    if (!normalizeKey(file.key)) {
+      unknown.push({
+        path: file.path,
+        name: fileName(file.path),
+        folderId: file.folderId,
+      });
+    } else {
+      declared.push(file);
+    }
+  }
+  const keyCounts = new Map<string, number>();
+  for (const file of declared) {
     const key = normalizeKey(file.key);
     if (!isKnowledgeKey(key)) continue;
     keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
   }
 
   const usedIds = new Set<string>();
-  const nodes: KnowledgeNode[] = parsed.map((file) => {
+  const nodes: KnowledgeNode[] = declared.map((file) => {
     const key = normalizeKey(file.key);
     const unique = isKnowledgeKey(key) && keyCounts.get(key) === 1;
     let id = unique ? key : file.path;
@@ -311,5 +335,8 @@ export function knowledgeFromFiles(
   for (const node of nodes) {
     if (node.folderId) addFolderChain(folderIds, node.folderId);
   }
-  return { nodes, folders: foldersFromIds(folderIds) };
+  for (const file of unknown) {
+    if (file.folderId) addFolderChain(folderIds, file.folderId);
+  }
+  return { nodes, folders: foldersFromIds(folderIds), unknown };
 }

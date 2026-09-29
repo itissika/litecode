@@ -2,6 +2,9 @@ import { type ReactNode } from "react";
 
 import { KnowledgeBodyEditor } from "./KnowledgeBodyEditor";
 
+/** Card edit glyph. Hidden when the card is idle. */
+export type CardSaveMark = "dirty" | "saving" | "saved";
+
 export function KnowledgeSourceField({
   label,
   kind,
@@ -51,6 +54,17 @@ export function KnowledgeSourceField({
       singleLine={singleLine}
       className={className}
     />
+  );
+}
+
+export function SaveGlyph({ mark }: { mark: CardSaveMark | null }) {
+  if (!mark) return null;
+  const glyph = mark === "dirty" ? "·" : mark === "saving" ? "…" : "✓";
+  const label = mark === "dirty" ? "未保存" : mark === "saving" ? "保存中" : "已保存";
+  return (
+    <span className="knowledge-save-mark" aria-label={label}>
+      {glyph}
+    </span>
   );
 }
 
