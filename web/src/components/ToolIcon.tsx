@@ -1,4 +1,5 @@
 import {
+  BookOpenIcon,
   BracketsCurlyIcon,
   CodeIcon,
   FilePlusIcon,
@@ -46,6 +47,7 @@ const NAME_GLYPH: Record<string, Glyph> = {
   write: FilePlusIcon,
   edit: PencilIcon,
   grep: MagnifyingGlassIcon,
+  knowledge: BookOpenIcon,
   glob: FilesIcon,
   session_search: MagnifyingGlassIcon,
   todo: ListChecksIcon,

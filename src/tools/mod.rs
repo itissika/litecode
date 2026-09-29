@@ -8,6 +8,7 @@ pub mod file_path;
 pub mod glob;
 pub mod grep;
 pub mod kill_shell;
+pub mod knowledge;
 pub mod litecode_workspace;
 pub mod lsp;
 pub mod lsp_feedback;

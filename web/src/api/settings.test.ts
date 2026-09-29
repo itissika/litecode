@@ -100,6 +100,9 @@ describe("settings helpers", () => {
     expect(isSubagentBindableTool(launch)).toBe(false);
     expect(isSubagentBindableTool(plan)).toBe(false);
     expect(
+      isSubagentBindableTool({ id: "knowledge", kind: "core", origin: "builtin" }),
+    ).toBe(false);
+    expect(
       (SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes(
         "subagent_launch",
       ),

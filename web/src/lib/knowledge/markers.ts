@@ -153,16 +153,80 @@ export function knowledgeFirstLineSegments(value: string): KnowledgeSegment[] {
   return [{ type: "text", value: "" }];
 }
 
+const PREVIEW_CODE_CHARS = 24;
+
+function clipChars(value: string, max: number): string {
+  const chars = Array.from(value);
+  if (chars.length <= max) return value;
+  return `${chars.slice(0, max).join("")}…`;
+}
+
+function replaceShortcodesWithLabels(text: string): string {
+  return text.replace(shortcodePattern(), (full, id: string, label: string) => {
+    const key = normalizeKey(id);
+    if (!isKnowledgeKey(key)) return full;
+    return label || key;
+  });
+}
+
+/** Show inline code, clipped. Shortcodes are replaced only outside code spans. */
+function showInlineCode(line: string): string {
+  let out = "";
+  let text = "";
+  let i = 0;
+  const flush = () => {
+    if (!text) return;
+    out += replaceShortcodesWithLabels(text);
+    text = "";
+  };
+  while (i < line.length) {
+    if (line[i] !== "`") {
+      text += line[i];
+      i += 1;
+      continue;
+    }
+    let ticks = 0;
+    while (line[i + ticks] === "`") ticks += 1;
+    const closer = "`".repeat(ticks);
+    const closeAt = line.indexOf(closer, i + ticks);
+    if (closeAt === -1) {
+      text += line.slice(i);
+      break;
+    }
+    flush();
+    out += `\`${clipChars(line.slice(i + ticks, closeAt), PREVIEW_CODE_CHARS)}\``;
+    i = closeAt + ticks;
+  }
+  flush();
+  return out;
+}
+
+function previewLines(markdown: string): string[] {
+  const prose: string[] = [];
+  let fenceChar = "";
+  let fenceLen = 0;
+  for (const line of markdown.split("\n")) {
+    if (fenceLen > 0) {
+      const closed = new RegExp(
+        `^ {0,3}${fenceChar}{${fenceLen},}\\s*$`,
+      ).test(line);
+      if (closed) fenceLen = 0;
+      continue;
+    }
+    const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (open) {
+      fenceChar = open[1]![0]!;
+      fenceLen = open[1]!.length;
+      continue;
+    }
+    prose.push(showInlineCode(line));
+  }
+  return prose;
+}
+
 /** First lines of a value, with mentions reduced to their label, for card previews. */
 export function knowledgePreview(value: string, lines = 3): string {
-  return scanProse(value)
-    .prose.join("\n")
-    .replace(shortcodePattern(), (full, id: string, label: string) => {
-      const key = normalizeKey(id);
-      if (!isKnowledgeKey(key)) return full;
-      return label || key;
-    })
-    .split("\n")
+  return previewLines(value)
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .slice(0, lines)

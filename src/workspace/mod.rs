@@ -17,6 +17,7 @@ mod tree;
 mod watcher;
 
 pub use change::WorkspaceChange;
+pub use git::{WorktreeDrift, drift_since};
 pub use filter::{
     ExcludeMatcher, FilterLayers, FilterPreset, RelPathCtx, path_excluded, rel_path_under,
     walk_builder,

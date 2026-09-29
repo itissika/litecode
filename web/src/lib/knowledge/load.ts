@@ -36,12 +36,14 @@ export async function writeKnowledgeNode(
     renderKnowledgeMarkdown({
       key: node.key,
       status: node.status,
+      invalidStatus: node.invalidStatus,
       summary: node.summary,
       body: node.value,
       x: node.x,
       y: node.y,
       w: node.w,
       h: node.h,
+      extras: node.extras,
     }),
   );
 }

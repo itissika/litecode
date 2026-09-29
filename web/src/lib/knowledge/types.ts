@@ -19,6 +19,8 @@ export interface KnowledgeNode {
   /** Keys of mentions in the body, first-seen order. */
   relations: string[];
   status: KnowledgeStatus;
+  /** Raw `status` text when it is not enabled, disabled, or pending. */
+  invalidStatus?: string | null;
   /** Canvas origin relative to the parent folder. `null` = laid out on open. */
   x: number | null;
   y: number | null;
@@ -29,6 +31,8 @@ export interface KnowledgeNode {
   folderId?: string | null;
   /** Path of the source file relative to `.litecode/knowledge`. */
   path: string;
+  /** Declaration lines this app does not own. Written back unchanged. */
+  extras?: string[];
 }
 
 export type KnowledgeIssueCode =
@@ -37,7 +41,8 @@ export type KnowledgeIssueCode =
   | "filename_mismatch"
   | "self_relation"
   | "dangling_relation"
-  | "inactive_target";
+  | "inactive_target"
+  | "invalid_status";
 
 export type KnowledgeIssueSeverity = "error" | "warning";
 

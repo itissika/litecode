@@ -26,6 +26,7 @@ import type {
   KnowledgeNode,
 } from "../lib/knowledge/types";
 import { groupIssues, validateKnowledge } from "../lib/knowledge/validate";
+import { useWorkspaceChangeStore } from "./workspaceChangeStore";
 
 function indexNodes(nodes: KnowledgeNode[]) {
   const byId = new Map<string, KnowledgeNode>();
@@ -75,6 +76,7 @@ function sameNode(a: KnowledgeNode, b: KnowledgeNode): boolean {
     a.summary === b.summary &&
     a.value === b.value &&
     a.status === b.status &&
+    (a.invalidStatus ?? null) === (b.invalidStatus ?? null) &&
     a.x === b.x &&
     a.y === b.y &&
     a.w === b.w &&
@@ -405,7 +407,11 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
   saveNode: async (id, patch) => {
     const current = get().byId.get(id);
     if (!current) return;
-    const next = { ...current, ...patch };
+    const next = {
+      ...current,
+      ...patch,
+      ...(patch.status !== undefined ? { invalidStatus: null } : {}),
+    };
     if (sameNode(current, next)) return;
     const nodes = get().nodes.map((node) => (node.id === id ? next : node));
     set((state) => ({
@@ -739,3 +745,21 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
     })),
   collapseAll: () => set({ expanded: new Set() }),
 }));
+
+function pathUnderKnowledgeRoot(path: string, root: string): boolean {
+  const norm = path.replaceAll("\\", "/");
+  return norm === root || norm.startsWith(`${root}/`);
+}
+
+let knowledgeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+useWorkspaceChangeStore.subscribe((state, prev) => {
+  if (!state.last || state.last === prev.last) return;
+  const root = useKnowledgeStore.getState().root;
+  if (!state.last.paths.some((path) => pathUnderKnowledgeRoot(path, root))) return;
+  if (knowledgeRefreshTimer) clearTimeout(knowledgeRefreshTimer);
+  knowledgeRefreshTimer = setTimeout(() => {
+    knowledgeRefreshTimer = null;
+    void useKnowledgeStore.getState().refreshFromDisk();
+  }, 150);
+});

@@ -6,6 +6,7 @@ pub mod config;
 pub mod context_pipeline;
 pub mod engines;
 pub mod ide_base;
+pub mod knowledge;
 pub mod llm;
 pub mod lsp;
 pub mod mcp;

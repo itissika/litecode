@@ -27,6 +27,10 @@ describe("toolTitle", () => {
         session_id: "01ABCDEF",
       }).summary,
     ).toBe("auth middleware · in 01ABCDEF");
+    expect(toolTitle("knowledge", {}).summary).toBe("board");
+    expect(toolTitle("knowledge", { command: "refs seq" }).summary).toBe(
+      "refs seq",
+    );
     expect(toolTitle("litecode_workspace", {}).summary).toBe("panel");
     expect(
       toolTitle("litecode_workspace", { action: "refresh mcp" }).summary,

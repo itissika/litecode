@@ -1,0 +1,63 @@
+{
+  "files": [
+    {
+      "path": "bad-status.md",
+      "key": "bad-status",
+      "status": "enabled",
+      "invalidStatus": "nope",
+      "summary": "bad",
+      "refs": [],
+      "extras": []
+    },
+    {
+      "path": "pending-note.md",
+      "key": "pending-note",
+      "status": "pending",
+      "invalidStatus": null,
+      "summary": "待审",
+      "refs": [],
+      "extras": []
+    },
+    {
+      "path": "内核/alias.md",
+      "key": "other-name",
+      "status": "enabled",
+      "invalidStatus": null,
+      "summary": "别名",
+      "refs": [],
+      "extras": []
+    },
+    {
+      "path": "内核/note.md",
+      "key": "note",
+      "status": "enabled",
+      "invalidStatus": null,
+      "summary": "坏引用",
+      "refs": ["missing"],
+      "extras": []
+    },
+    {
+      "path": "内核/seq.md",
+      "key": "seq",
+      "status": "enabled",
+      "invalidStatus": null,
+      "summary": "序号",
+      "refs": ["session"],
+      "extras": ["tags : a"]
+    },
+    {
+      "path": "内核/session.md",
+      "key": "session",
+      "status": "enabled",
+      "invalidStatus": null,
+      "summary": "会话",
+      "refs": ["seq"],
+      "extras": []
+    }
+  ],
+  "issues": [
+    { "node": "bad-status", "code": "invalid_status" },
+    { "node": "note", "code": "dangling_relation" },
+    { "node": "other-name", "code": "filename_mismatch" }
+  ]
+}

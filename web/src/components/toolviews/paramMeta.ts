@@ -25,6 +25,7 @@ export const TOOL_PARAM_META: Record<string, ToolParamConfig> = {
   subagent_list: { primary: [] },
   session_search: { primary: ["query", "session_id"] },
   litecode_workspace: { primary: ["action"] },
+  knowledge: { primary: ["command"] },
 };
 
 export interface MetaField {

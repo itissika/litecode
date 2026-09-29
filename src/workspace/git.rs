@@ -3,7 +3,7 @@
 //! Never points `GIT_DIR` at Litecode snapshot repos. Snapshot tracking stays
 //! in `session::snapshot` and must not be called from this module.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -335,6 +335,101 @@ pub fn status(workspace: &Path) -> Result<GitStatus, GitError> {
         upstream_behind,
         staged,
         changes,
+    })
+}
+
+/// How much the worktree has moved since a moment in the past.
+///
+/// `since_unix` is the knowledge-maintenance time. The baseline commit is the
+/// last commit strictly older than that instant. Tracked drift comes from
+/// `git diff --numstat`; untracked files are counted from status and add no
+/// line totals. Paths under `exclude_prefixes` are left out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorktreeDrift {
+    pub files: u32,
+    pub added: u32,
+    pub deleted: u32,
+}
+
+pub fn drift_since(
+    workspace: &Path,
+    since_unix: u64,
+    exclude_prefixes: &[&str],
+) -> Result<Option<WorktreeDrift>, GitError> {
+    if !is_git_repo(workspace) {
+        return Ok(None);
+    }
+    assert_not_snapshot_repo(workspace)?;
+    let before = format!("--before=@{since_unix}");
+    let rev = match run_git(workspace, &["rev-list", "-1", &before, "HEAD"]) {
+        Ok((0, stdout, _)) => {
+            let rev = stdout_text(stdout);
+            if rev.is_empty() {
+                return Ok(None);
+            }
+            rev
+        }
+        Ok(_) => return Ok(None),
+        Err(GitError::GitMissing) => return Err(GitError::GitMissing),
+        Err(_) => return Ok(None),
+    };
+    let numstat = run_git_ok(workspace, &["diff", "--numstat", &rev])?;
+    let text = String::from_utf8_lossy(&numstat);
+    let mut files = 0u32;
+    let mut added = 0u32;
+    let mut deleted = 0u32;
+    let mut seen = HashSet::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(3, '\t');
+        let add = parts.next().unwrap_or("0");
+        let del = parts.next().unwrap_or("0");
+        let Some(path) = parts.next() else {
+            continue;
+        };
+        let path = unquote_git_path(path);
+        if path_excluded(&path, exclude_prefixes) || !seen.insert(path) {
+            continue;
+        }
+        files += 1;
+        added = added.saturating_add(parse_numstat(add));
+        deleted = deleted.saturating_add(parse_numstat(del));
+    }
+    let snapshot = status(workspace)?;
+    for file in snapshot.changes.iter().filter(|file| file.untracked) {
+        if path_excluded(&file.path, exclude_prefixes) {
+            continue;
+        }
+        if seen.insert(file.path.clone()) {
+            files = files.saturating_add(1);
+        }
+    }
+    Ok(Some(WorktreeDrift {
+        files,
+        added,
+        deleted,
+    }))
+}
+
+fn parse_numstat(field: &str) -> u32 {
+    field.parse().unwrap_or(0)
+}
+
+fn unquote_git_path(raw: &str) -> String {
+    let raw = raw.trim();
+    let Some(inner) = raw.strip_prefix('"').and_then(|value| value.strip_suffix('"')) else {
+        return raw.to_string();
+    };
+    inner.replace("\\\\", "\\").replace("\\\"", "\"")
+}
+
+fn path_excluded(path: &str, prefixes: &[&str]) -> bool {
+    let path = path.trim_start_matches("./").trim_start_matches('/');
+    prefixes.iter().any(|prefix| {
+        let prefix = prefix.trim_matches('/');
+        !prefix.is_empty() && (path == prefix || path.starts_with(&format!("{prefix}/")))
     })
 }
 

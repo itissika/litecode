@@ -50,6 +50,20 @@ describe("knowledgePreview", () => {
     const value = `alpha ${mentionSource("seq", "序号")}\n\n\`\`\`\n${seq}\n\`\`\`\nbeta`;
     expect(knowledgePreview(value, 2)).toBe("alpha 序号\nbeta");
   });
+
+  it("keeps inline code and still ignores a citation inside it or a fence", () => {
+    const hidden = mentionSource("hidden");
+    const value = `see \`node : seq\` and ${mentionSource("seq", "序号")}\n\`\`\`\n${hidden}\n\`\`\`\n`;
+    expect(knowledgePreview(value, 3)).toBe("see `node : seq` and 序号");
+    expect(extractMarkers(value)).toEqual(["seq"]);
+    expect(extractMarkers(`\`${hidden}\``)).toEqual([]);
+    expect(knowledgePreview(`\`${hidden}\``, 1)).toContain('id="hidden"');
+  });
+
+  it("clips inline code past 24 characters", () => {
+    const long = "a".repeat(30);
+    expect(knowledgePreview(`\`${long}\``, 1)).toBe(`\`${"a".repeat(24)}…\``);
+  });
 });
 
 describe("remarkKnowledgeRef", () => {

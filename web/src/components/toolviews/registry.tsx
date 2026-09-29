@@ -49,6 +49,7 @@ export const TOOL_VIEWS: Record<
   subagent_list: SubagentListToolView,
   session_search: SessionSearchToolView,
   litecode_workspace: WorkspaceToolView,
+  knowledge: WorkspaceToolView,
 };
 
 /** Returns the dedicated view for a tool, or undefined for fallback rendering. */
@@ -76,6 +77,7 @@ const OUTPUT_OWNED_BY_VIEW: ReadonlySet<string> = new Set([
   "write",
   "session_search",
   "litecode_workspace",
+  "knowledge",
 ]);
 
 export function viewOwnsOutput(name: string): boolean {

@@ -91,7 +91,7 @@ pub const SUBAGENT_SERIES_TOOL_IDS: &[&str] = &[
 ];
 
 /// Task-board and panel tools. Subagent role does not bind these (tool-set gate).
-pub const PRIMARY_ONLY_TOOL_IDS: &[&str] = &["plan", "todo", "litecode_workspace"];
+pub const PRIMARY_ONLY_TOOL_IDS: &[&str] = &["plan", "todo", "litecode_workspace", "knowledge"];
 
 fn default_temperature() -> f64 {
     0.7

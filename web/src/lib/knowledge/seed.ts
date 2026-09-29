@@ -60,19 +60,23 @@ summary : 一句人话
   file(
     `${rules}.md`,
     rules,
-    "声明要唯一，引用的 id 必须指向另一个节点。",
-    `\`node :\` 全库唯一。字母、数字、空格、\`_\`、\`-\` 可以用。空声明、重复、带斜杠是错误。
+    "A key is unique. A citation id must point at another node.",
+    `\`node :\` is unique in the library. Letters, digits, spaces, \`_\`, and \`-\` are allowed. Consecutive spaces are not. An empty declaration, a duplicate, or a slash is an error.
 
-引用只有 ${ref(syntax)} 这一种：\`[@ id="声明" label="声明"]\`。查找只认 \`id\`。指向自己或不存在的声明是错误。引用禁用或待审节点、文件名和声明不一致，是警告。
+The only citation is ${ref(syntax)}: \`[@ id="declaration" label="declaration"]\`. Lookup uses \`id\` only. A citation that points at itself or at a missing declaration is an error. Citing a disabled or pending node, or a filename that does not match the declaration, is a warning.
 
-代码块、行内代码和 \`@seq\` 不是引用。`,
+Status is only \`enabled\`, \`disabled\`, or \`pending\`.
+
+Fenced code, inline code, and \`@seq\` are not citations.`,
   ),
   file(
     `${agent}.md`,
     agent,
-    "用 read 和 edit 改这些 md，就能和人一起维护知识库。",
-    `用 read 和 edit 改这些 md。先读 ${ref(overview)}，语法见 ${ref(syntax)}，规则见 ${ref(rules)}。
+    "Edit the body with read and edit. Create, rename, and check go through the knowledge tool.",
+    `Edit the body with read and edit. Create, rename, and check go through the knowledge tool. Quote a key that contains spaces.
 
-改 \`node :\` 等于改名，要同时改其他文件里的 \`id\`，以及与旧声明相同的 \`label\`。删除前先确认没有别的节点还在引用它。`,
+Read ${ref(overview)} first. Syntax is in ${ref(syntax)}. Rules are in ${ref(rules)}.
+
+Deleting a node and enabling it are human actions in the knowledge panel. Do not delete the files yourself.`,
   ),
 ];

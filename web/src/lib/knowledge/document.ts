@@ -25,6 +25,8 @@ export interface ParsedKnowledgeFile {
   path: string;
   key: string;
   status: KnowledgeStatus;
+  /** Raw status text when it is not one of the three legal values. */
+  invalidStatus: string | null;
   summary: string;
   /** Mention ids in the body, first-seen order. */
   refs: string[];
@@ -39,6 +41,8 @@ export interface ParsedKnowledgeFile {
   hasSummary: boolean;
   /** True when the fence still has a legacy `ref :` line. */
   hadRefLine: boolean;
+  /** Field lines this parser does not own, in source order. */
+  extras: string[];
 }
 
 const OPEN_FENCE = /^(?:[ \t]*\r?\n)*```node[ \t]*\r?\n/;
@@ -96,6 +100,7 @@ export function parseKnowledgeMarkdown(
   const open = OPEN_FENCE.exec(source);
   let key = "";
   let status: KnowledgeStatus = "enabled";
+  let invalidStatus: string | null = null;
   let summary = "";
   let body = source;
   let hasSummary = false;
@@ -104,6 +109,7 @@ export function parseKnowledgeMarkdown(
   let y: number | null = null;
   let w: number | null = null;
   let h: number | null = null;
+  const extras: string[] = [];
   if (open) {
     const afterOpen = source.slice(open[0].length);
     const close = CLOSE_FENCE.exec(afterOpen);
@@ -115,7 +121,10 @@ export function parseKnowledgeMarkdown(
         const trimmed = line.trim();
         if (!trimmed) continue;
         const field = FIELD_LINE.exec(trimmed);
-        if (!field) continue;
+        if (!field) {
+          extras.push(trimmed);
+          continue;
+        }
         const name = field[1] ?? "";
         const value = (field[2] ?? "").trim();
         if (name === "node" && !sawNode) {
@@ -123,7 +132,12 @@ export function parseKnowledgeMarkdown(
           key = value;
         } else if (name === "status") {
           const parsed = parseStatus(value);
-          if (parsed) status = parsed;
+          if (parsed) {
+            status = parsed;
+            invalidStatus = null;
+          } else {
+            invalidStatus = value;
+          }
         } else if (name === "summary") {
           hasSummary = true;
           summary = value;
@@ -133,6 +147,7 @@ export function parseKnowledgeMarkdown(
         else if (name === "y") y = parseCoord(value);
         else if (name === "w") w = parseCoord(value);
         else if (name === "h") h = parseCoord(value);
+        else if (name !== "ref") extras.push(trimmed);
       }
     }
   }
@@ -140,6 +155,7 @@ export function parseKnowledgeMarkdown(
     path: normalizedPath,
     key,
     status,
+    invalidStatus,
     summary,
     refs: citedIds(body),
     body,
@@ -150,6 +166,7 @@ export function parseKnowledgeMarkdown(
     h,
     hasSummary,
     hadRefLine,
+    extras,
   };
 }
 
@@ -162,18 +179,20 @@ function coordLine(name: string, value: number | null | undefined): string | nul
 export function renderKnowledgeMarkdown(doc: {
   key: string;
   status: KnowledgeStatus;
+  invalidStatus?: string | null;
   body: string;
   summary?: string;
   x?: number | null;
   y?: number | null;
   w?: number | null;
   h?: number | null;
+  extras?: string[];
 }): string {
   const body = doc.body.replace(/\s+$/, "");
   const lines = [
     "```node",
     `node : ${doc.key}`,
-    `status : ${doc.status}`,
+    `status : ${doc.invalidStatus != null ? doc.invalidStatus : doc.status}`,
     `summary : ${doc.summary ?? ""}`,
   ];
   for (const line of [
@@ -183,6 +202,10 @@ export function renderKnowledgeMarkdown(doc: {
     coordLine("h", doc.h),
   ]) {
     if (line) lines.push(line);
+  }
+  for (const extra of doc.extras ?? []) {
+    const trimmed = extra.trim();
+    if (trimmed) lines.push(trimmed);
   }
   lines.push("```", "", body, "");
   return lines.join("\n");
@@ -201,12 +224,14 @@ export function upgradeKnowledgeMarkdown(markdown: string): string | null {
   return renderKnowledgeMarkdown({
     key: normalizeKey(parsed.key),
     status: parsed.status,
+    invalidStatus: parsed.invalidStatus,
     summary: parsed.summary || knowledgePreview(body, 1),
     body,
     x: parsed.x,
     y: parsed.y,
     w: parsed.w,
     h: parsed.h,
+    extras: parsed.extras,
   });
 }
 
@@ -270,12 +295,14 @@ export function knowledgeFromFiles(
       summary: file.summary,
       relations: file.refs,
       status: file.status,
+      invalidStatus: file.invalidStatus,
       folderId: file.folderId,
       path: file.path,
       x: file.x,
       y: file.y,
       w: file.w,
       h: file.h,
+      extras: file.extras,
     };
   });
 

@@ -2,9 +2,9 @@ import { isKnowledgeKey, extractMarkers, normalizeKey } from "./markers";
 import type { KnowledgeIssue, KnowledgeNode } from "./types";
 
 function statusLabel(status: KnowledgeNode["status"]): string {
-  if (status === "disabled") return "已禁用";
-  if (status === "pending") return "待审阅";
-  return "启用";
+  if (status === "disabled") return "disabled";
+  if (status === "pending") return "pending";
+  return "enabled";
 }
 
 function fileStem(path: string): string {
@@ -30,19 +30,28 @@ export function validateKnowledge(nodes: KnowledgeNode[]): KnowledgeIssue[] {
 
   for (const node of nodes) {
     const key = normalizeKey(node.key);
+    if (node.invalidStatus != null) {
+      issues.push({
+        nodeId: node.id,
+        severity: "error",
+        code: "invalid_status",
+        message: `Status "${node.invalidStatus}" is not valid. Use enabled, disabled, or pending.`,
+        ref: node.invalidStatus,
+      });
+    }
     if (!key) {
       issues.push({
         nodeId: node.id,
         severity: "error",
         code: "empty_key",
-        message: "声明缺失",
+        message: "Declaration is missing.",
       });
     } else if (!isKnowledgeKey(key)) {
       issues.push({
         nodeId: node.id,
         severity: "error",
         code: "empty_key",
-        message: `键「${key}」不合法`,
+        message: `Key "${key}" is not valid.`,
         ref: key,
       });
     } else if ((keyCounts.get(key) ?? 0) > 1) {
@@ -50,7 +59,7 @@ export function validateKnowledge(nodes: KnowledgeNode[]): KnowledgeIssue[] {
         nodeId: node.id,
         severity: "error",
         code: "duplicate_key",
-        message: `键「${key}」重复`,
+        message: `Key "${key}" is duplicated.`,
         ref: key,
       });
     } else if (node.path && fileStem(node.path) !== key) {
@@ -58,7 +67,7 @@ export function validateKnowledge(nodes: KnowledgeNode[]): KnowledgeIssue[] {
         nodeId: node.id,
         severity: "warning",
         code: "filename_mismatch",
-        message: `文件名「${fileStem(node.path)}」与声明「${key}」不一致`,
+        message: `Filename "${fileStem(node.path)}" does not match declaration "${key}".`,
         ref: key,
       });
     }
@@ -72,7 +81,7 @@ export function validateKnowledge(nodes: KnowledgeNode[]): KnowledgeIssue[] {
           nodeId: node.id,
           severity: "error",
           code: "self_relation",
-          message: "引用指向自己",
+          message: "Citation points at itself.",
           ref: refKey,
         });
         continue;
@@ -83,7 +92,7 @@ export function validateKnowledge(nodes: KnowledgeNode[]): KnowledgeIssue[] {
           nodeId: node.id,
           severity: "error",
           code: "dangling_relation",
-          message: `引用「${refKey}」不存在`,
+          message: `Citation "${refKey}" does not exist.`,
           ref: refKey,
         });
         continue;
@@ -93,7 +102,7 @@ export function validateKnowledge(nodes: KnowledgeNode[]): KnowledgeIssue[] {
           nodeId: node.id,
           severity: "warning",
           code: "inactive_target",
-          message: `引用了${statusLabel(target.status)}的「${refKey}」`,
+          message: `Cites ${statusLabel(target.status)} "${refKey}".`,
           ref: refKey,
         });
       }

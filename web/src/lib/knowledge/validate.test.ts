@@ -64,7 +64,7 @@ describe("validateKnowledge", () => {
     const illegal = validateKnowledge([
       node({ id: "bad.md", key: "a/b", path: "bad.md" }),
     ]);
-    expect(illegal.map((issue) => issue.message)).toEqual(["键「a/b」不合法"]);
+    expect(illegal.map((issue) => issue.message)).toEqual(["Key \"a/b\" is not valid."]);
   });
 
   it("flags a self citation and an unknown marker", () => {
@@ -205,7 +205,7 @@ describe("knowledgeTitleTone", () => {
       nodeId: "temperature",
       severity: "error",
       code: "dangling_relation",
-      message: "引用「missing」不存在",
+      message: "Citation \"missing\" does not exist.",
     };
     expect(knowledgeTitleTone([fault], "disabled")).toBe("error");
   });

@@ -600,6 +600,7 @@ export const SUBAGENT_SERIES_TOOL_IDS = [
 export const NONE_TOOL_IDS = new Set<string>([
   "plan",
   "todo",
+  "knowledge",
   ...SUBAGENT_SERIES_TOOL_IDS,
 ]);
 
@@ -628,6 +629,7 @@ export function isSubagentBindableTool(entry: AvailableTool): boolean {
   return (
     entry.id !== "plan" &&
     entry.id !== "todo" &&
+    entry.id !== "knowledge" &&
     entry.id !== "litecode_workspace"
   );
 }

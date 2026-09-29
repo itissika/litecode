@@ -11,7 +11,7 @@ use super::builtin_prompts::{
 use super::store;
 use super::tools::{core_configurable_tools, core_none_tools, network_core_tools};
 
-pub const SEED_REVISION: &str = "14";
+pub const SEED_REVISION: &str = "15";
 
 pub fn seed(conn: &Connection) -> Result<()> {
     let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);
@@ -655,6 +655,27 @@ mod tests {
             .unwrap();
         assert_eq!(general_todo, 0);
 
+        for agent in ["default", "orchestrator"] {
+            let knowledge: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'knowledge'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(knowledge, 1, "{agent} should bind knowledge");
+        }
+        for agent in ["explore", "general"] {
+            let knowledge: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'knowledge'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(knowledge, 0, "{agent} should not bind knowledge");
+        }
+
         let general_launch: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'general' AND tool_id = 'subagent_launch'",
@@ -839,5 +860,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(orch_prompt, "builtin:orchestrator");
+    }
+
+    #[test]
+    fn ensure_rebinds_knowledge_on_primary_and_strips_it_from_subagents() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate::migrate(&conn).unwrap();
+        seed(&conn).unwrap();
+        conn.execute(
+            "DELETE FROM agent_tools WHERE agent_id = 'default' AND tool_id = 'knowledge'",
+            [],
+        )
+        .unwrap();
+        bind_none(&conn, "explore", "knowledge").unwrap();
+        ensure_core_bindings(&conn).unwrap();
+        let default_knowledge: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'default' AND tool_id = 'knowledge'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(default_knowledge, 1);
+        let explore_knowledge: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'knowledge'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(explore_knowledge, 0);
     }
 }

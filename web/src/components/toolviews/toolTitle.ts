@@ -129,6 +129,10 @@ export function toolTitle(
         : fallbackSummary(input),
     };
   }
+  if (toolName === "knowledge") {
+    const command = stringField(obj, "command");
+    return { summary: command ? truncate(command) : "board" };
+  }
   if (toolName === "litecode_workspace") {
     const action = stringField(obj, "action");
     return { summary: action ? truncate(action) : "panel" };
