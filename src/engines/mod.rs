@@ -209,6 +209,20 @@ pub fn engine_index_work(workspace_root: &Path) -> code_search::IndexWork {
     )
 }
 
+/// Stops the path-index thread when the last [`WorkspaceEngines`] owner goes away.
+///
+/// The worker holds its own `Arc<PathIndex>`, so `PathIndex`'s destructor never
+/// runs while that thread is alive. This guard is what `detach`s it.
+struct PathIndexKeep {
+    index: Arc<PathIndex>,
+}
+
+impl Drop for PathIndexKeep {
+    fn drop(&mut self) {
+        self.index.detach();
+    }
+}
+
 /// The single owner of workspace-scoped LSP and retrieval services.
 #[derive(Clone)]
 pub struct WorkspaceEngines {
@@ -216,7 +230,7 @@ pub struct WorkspaceEngines {
     last_errors: Arc<RwLock<HashMap<String, String>>>,
     code_search: Arc<CodeSearchEngine>,
     lsp: Arc<LspEngine>,
-    path_index: Arc<PathIndex>,
+    path_index: Arc<PathIndexKeep>,
     refresh_busy: Arc<AtomicBool>,
     session_refresh_busy: Arc<AtomicBool>,
     session_reader: Arc<RwLock<Option<SessionDataReader>>>,
@@ -228,7 +242,9 @@ impl WorkspaceEngines {
         let last_errors = Arc::new(RwLock::new(HashMap::new()));
         let code_search = Arc::new(CodeSearchEngine::new());
         let lsp = Arc::new(LspEngine::new());
-        let path_index = Arc::new(PathIndex::new());
+        let path_index = Arc::new(PathIndexKeep {
+            index: Arc::new(PathIndex::new()),
+        });
 
         let state_ref = Arc::clone(&states);
         let error_ref = Arc::clone(&last_errors);
@@ -270,7 +286,7 @@ impl WorkspaceEngines {
     }
 
     pub fn path_index(&self) -> Arc<PathIndex> {
-        Arc::clone(&self.path_index)
+        Arc::clone(&self.path_index.index)
     }
 
     /// Unified retrieval surface: corpus × modality. Unsupported pairs fail closed.
@@ -728,13 +744,12 @@ impl WorkspaceEngines {
                 self.stop(id);
             }
         }
-        self.path_index.attach(root);
     }
 
     pub fn stop_all(&self) {
         self.stop("code_search");
         self.stop("lsp");
-        self.path_index.detach();
+        self.path_index.index.detach();
     }
 
     /// Single index refresh: auto-starts engine if needed; Warm path rebuilds or syncs.
@@ -1099,6 +1114,39 @@ mod tests {
     use crate::session::{SessionData, WorkspaceWriteLease};
     use crate::types::user_text;
     use tempfile::TempDir;
+
+    #[test]
+    fn reconcile_does_not_start_the_path_index() {
+        let dir = TempDir::new().unwrap();
+        let workspace = crate::config::resolved::WorkspaceState::new(dir.path());
+        let resolved = crate::config::resolved::resolve_without_catalog(
+            crate::config::schema::GlobalSettings::default(),
+            workspace,
+        );
+        let engines = WorkspaceEngines::new();
+        engines.reconcile(&resolved);
+        assert_eq!(engines.path_index().spawn_count_for_test(), 0);
+        let cli = include_str!("../cli/cli.rs");
+        let start = cli
+            .find("workspace_engines.reconcile(&resolved);")
+            .expect("cli reconciles engines");
+        let tail = &cli[start..start + 400];
+        assert!(
+            !tail.contains("path_index"),
+            "cli must not attach the path index after reconcile"
+        );
+    }
+
+    #[test]
+    fn dropping_the_engines_stops_the_path_index_thread() {
+        let dir = TempDir::new().unwrap();
+        let engines = WorkspaceEngines::new();
+        let index = engines.path_index();
+        index.attach(dir.path());
+        assert_eq!(index.spawn_count_for_test(), 1);
+        drop(engines);
+        assert!(index.worker_stopped_for_test());
+    }
 
     #[test]
     fn workspace_engines_routes_session_text() {

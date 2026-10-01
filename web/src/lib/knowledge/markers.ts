@@ -101,7 +101,7 @@ export function symbolMentionSource(
  */
 export function isWorkspaceFileRef(path: string): boolean {
   const slash = path.replaceAll("\\", "/");
-  if (!slash || slash.length > 512) return false;
+  if (!slash || Array.from(slash).length > 512) return false;
   if (slash.startsWith("/")) return false;
   if (slash.charAt(1) === ":") return false;
   const parts = slash.split("/");

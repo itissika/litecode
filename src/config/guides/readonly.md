@@ -16,7 +16,6 @@
 | `bash/` | 后台命令输出：`bash/<id>.output`（id 形如 `bg_<8 位 hex>`）。用 `read` 看，不要改正在写的文件 |
 | `index/` | `code_search` 语义索引产物。不要手编 |
 | `session-index/` | 会话语料的语义索引。字面检索走 `sessions.db` |
-| `text-index/` | `grep` 加速索引。语料跟检索规则（`files_exclude` ∪ `search_exclude` + `git_ignore`）对齐，不把 `watcher_exclude` 当第四套搜索排除 |
 | `sessions/` | **虚拟**，磁盘上通常没有。投影为 `sessions/<完整 session_id>.md`。`read` / `grep` / `glob` 必须把 `path` 指到 `sessions` 或某个 `.md`。不要 `mkdir` |
 
 旧的 `snapshots/` 打开工作区会清掉。文件回退在 `~/.litecode/snapshots/<workspace_id>/`。

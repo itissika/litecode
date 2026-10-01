@@ -343,10 +343,15 @@ pub enum AgentIdentity {
 /// arguments here (that is exactly how the child tier/mode gap appeared).
 /// What starts a turn. `Wake` does not append an `item/user`; the first request
 /// seam is the input (reminders, a message already written, or `plan/execute`).
+///
+/// `anchor_user_seq` is set when this wake belongs to an `item/user` written
+/// just before the turn (a queued flush). File revert looks that row up at
+/// `seq + 1`. Bash, subagent, and plan-execution wakes pass `None` so they do
+/// not reuse an older user row's snapshot.
 #[derive(Clone, Debug)]
 pub enum TurnInput {
     User(UserInput),
-    Wake,
+    Wake { anchor_user_seq: Option<u64> },
 }
 
 impl From<UserInput> for TurnInput {
@@ -358,6 +363,20 @@ impl From<UserInput> for TurnInput {
 impl From<String> for TurnInput {
     fn from(text: String) -> Self {
         Self::User(UserInput::text(text))
+    }
+}
+
+/// Snapshot ref for this turn.
+///
+/// A turn that has an `item/user` anchor stores the ref at `seq + 1`, matching
+/// revert and the file-revert button. A wake with no new user row keeps
+/// `next_seq` so it does not overwrite an older anchor.
+pub(crate) fn snapshot_stem_for_turn(user_seq: Option<u64>, next_seq: u64) -> i64 {
+    match user_seq {
+        Some(seq) => i64::try_from(seq)
+            .unwrap_or(i64::MAX)
+            .saturating_add(1),
+        None => i64::try_from(next_seq).unwrap_or(i64::MAX),
     }
 }
 
@@ -832,9 +851,9 @@ impl AgentRuntime {
         turn_id: &str,
         step_max: u32,
     ) -> Result<String> {
-        let (user_input, wake) = match input {
-            TurnInput::Wake => (UserInput::text(""), true),
-            TurnInput::User(input) => (input, false),
+        let (user_input, wake, wake_anchor) = match input {
+            TurnInput::Wake { anchor_user_seq } => (UserInput::text(""), true, anchor_user_seq),
+            TurnInput::User(input) => (input, false, None),
         };
         // Lazy-init: build tool list (async MCP schema fetch) on first turn.
         if self.tool_pipeline.is_none() {
@@ -948,6 +967,7 @@ impl AgentRuntime {
 
         // User Items are complete before any model stream. Persist
         // so the working set and disk agree before InFlight begins.
+        let fresh_user_seq;
         {
             let commit_outcome = self.context_pipeline.commit_step(
                 &self.sessions,
@@ -965,6 +985,17 @@ impl AgentRuntime {
             if commit_outcome.committed {
                 self.emit_internal(crate::runtime::observer::InternalEvent::StepCommitted);
             }
+            // The file snapshot is named for this user row (`seq + 1`) even when
+            // a mentions reminder is appended afterwards and takes the next seq.
+            fresh_user_seq = if !wake && commit_outcome.committed {
+                working
+                    .iter()
+                    .rev()
+                    .find(|row| row.kind == crate::session::model::SessionKind::ItemUser)
+                    .and_then(|row| row.log_seq)
+            } else {
+                None
+            };
             if !wake && commit_outcome.committed {
                 self.sessions.append_mentions_for(
                     &self.session_id,
@@ -989,7 +1020,8 @@ impl AgentRuntime {
         }
 
         let (_last_seq, next_seq) = self.sessions.entry_wire_seq_cursor(&self.session_id);
-        let anchor_seq = next_seq as i64;
+        let user_seq = if wake { wake_anchor } else { fresh_user_seq };
+        let anchor_seq = snapshot_stem_for_turn(user_seq, next_seq);
         self.rctx().set_turn_anchor_seq(anchor_seq);
 
         // Snapshot workspace before tools run (OpenCode-style git-based snapshot).

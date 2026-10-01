@@ -16,8 +16,8 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 
+import { createCanvasMotion, isCanvasGesture, zoomChanged } from "../../lib/knowledge/canvasMotion";
 import { fitKnowledgeFolders } from "../../lib/knowledge/fitFolders";
-import { redrawVisibleCardText, shouldSharpenZoom } from "../../lib/knowledge/redrawCardText";
 import {
   canvasAlertKey,
   easeOutCubic,
@@ -533,7 +533,8 @@ export function KnowledgeGraph() {
   const edgesMayDraw = useRef(false);
   const mountedRef = useRef(true);
   const hostRef = useRef<HTMLDivElement>(null);
-  const zoomAtGestureStart = useRef<number | null>(null);
+  const canvasMotion = useRef(createCanvasMotion());
+  const zoomSeen = useRef<number | null>(null);
   const exitTimers = useRef(new Map<string, number>());
   const movesRef = useRef(
     new Map<
@@ -628,6 +629,7 @@ export function KnowledgeGraph() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      canvasMotion.current.dispose();
       if (moveFrame.current != null) cancelAnimationFrame(moveFrame.current);
       for (const timer of exitTimers.current.values()) window.clearTimeout(timer);
       exitTimers.current.clear();
@@ -1046,15 +1048,12 @@ export function KnowledgeGraph() {
     <div ref={hostRef} className="relative h-full w-full">
       <ReactFlow
         nodes={flowNodes}
-        onMoveStart={(_, viewport) => {
-          zoomAtGestureStart.current = viewport.zoom;
-        }}
-        onMoveEnd={(_, viewport) => {
-          const start = zoomAtGestureStart.current;
-          zoomAtGestureStart.current = viewport.zoom;
-          if (!shouldSharpenZoom(start, viewport.zoom)) return;
+        onMove={(_, viewport) => {
+          const previous = zoomSeen.current;
+          zoomSeen.current = viewport.zoom;
+          if (!zoomChanged(previous, viewport.zoom)) return;
           const host = hostRef.current;
-          if (host) redrawVisibleCardText(host);
+          if (host) canvasMotion.current.note(host);
         }}
         edges={flowEdges}
         nodeTypes={nodeTypes}
@@ -1064,7 +1063,12 @@ export function KnowledgeGraph() {
           selectFromGraph(node.id);
         }}
         onPaneClick={() => clearCanvasFocus()}
-        onNodesChange={onNodesChange}
+        onNodesChange={(changes) => {
+          onNodesChange(changes);
+          if (!changes.some(isCanvasGesture)) return;
+          const host = hostRef.current;
+          if (host) canvasMotion.current.note(host);
+        }}
         onNodeDragStart={(_, node) => {
           if (node.type === "knowledge") setDragging(node.id);
         }}

@@ -1015,8 +1015,10 @@ pub fn warm_snapshot_repo(workspace: &Path, snapshots_dir: &Path) -> Result<()> 
     Ok(())
 }
 
-/// Take a snapshot of the workspace at stem `seq` (`next_seq` at turn start).
+/// Take a snapshot of the workspace at stem `seq`.
 /// Call at turn start before any tools execute.
+/// A turn with an `item/user` anchor passes that row's `seq + 1`; a wake with
+/// no new user row passes the current `next_seq`.
 /// Records a git tree ref `refs/snapshots/{session_id}/{seq}`.
 pub fn snapshot_track(
     workspace: &Path,

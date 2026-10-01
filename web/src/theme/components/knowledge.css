@@ -499,27 +499,6 @@
     border-color 150ms ease;
 }
 
-/* Settled zoom flips the attribute. The transform stays on the nodes that
-   paint glyphs, including Tiptap blocks rather than the contenteditable host. */
-.knowledge-flow-card[data-text-raster="a"] {
-  --_dk-text-raster: 0.2px;
-}
-
-.knowledge-flow-card[data-text-raster="b"] {
-  --_dk-text-raster: 0.6px;
-}
-
-.knowledge-flow-card[data-text-raster] :is(
-  .knowledge-key-button,
-  .knowledge-key-input,
-  .knowledge-flow-summary,
-  .knowledge-source-label,
-  textarea.knowledge-source-input
-),
-.knowledge-flow-card[data-text-raster] .ProseMirror > * {
-  transform: translateZ(var(--_dk-text-raster));
-}
-
 /* Cards: border-only ix feedback (enter/leave/expand anim excluded). */
 .knowledge-flow-card:not(.is-scale-in):not(.is-scale-out):not(.is-arrive):not(.is-leave) {
   transition:

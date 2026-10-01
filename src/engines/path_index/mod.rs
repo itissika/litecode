@@ -48,6 +48,9 @@ pub struct PathIndex {
     cv: Condvar,
     paths: RwLock<HashMap<String, bool>>,
     stop: AtomicBool,
+    /// Set by the serve loop after it drops filesystem events. The worker
+    /// clears the catalog and walks again; the caller does not.
+    rescan: AtomicBool,
     worker: Mutex<Option<JoinHandle<()>>>,
     spawn_count: AtomicU64,
 }
@@ -68,23 +71,26 @@ impl PathIndex {
             cv: Condvar::new(),
             paths: RwLock::new(HashMap::new()),
             stop: AtomicBool::new(false),
+            rescan: AtomicBool::new(false),
             worker: Mutex::new(None),
             spawn_count: AtomicU64::new(0),
         }
     }
 
     /// Start the silent background fill. A second call for the same root
-    /// leaves the running worker in place.
+    /// leaves a live worker in place. A worker that has already exited is
+    /// started again.
     pub fn attach(self: &Arc<Self>, root: &Path) {
         let root = canon_abs_lossy(root);
         {
             let gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
-            let alive = self
+            let running = self
                 .worker
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .is_some();
-            if gate.root.as_ref() == Some(&root) && alive {
+                .as_ref()
+                .is_some_and(|handle| !handle.is_finished());
+            if gate.root.as_ref() == Some(&root) && running {
                 return;
             }
         }
@@ -108,6 +114,24 @@ impl PathIndex {
         if let Some(handle) = handle {
             self.spawn_count.fetch_add(1, Ordering::SeqCst);
             *self.worker.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spawn_count_for_test(&self) -> u64 {
+        self.spawn_count.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn worker_stopped_for_test(&self) -> bool {
+        match self
+            .worker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            None => true,
+            Some(handle) => handle.is_finished(),
         }
     }
 
@@ -137,6 +161,21 @@ impl PathIndex {
         for path in paths {
             gate.queue.push((path.clone(), deleted));
         }
+        self.cv.notify_one();
+    }
+
+    /// Ask the worker to drop its catalog and walk the tree again.
+    ///
+    /// Returns immediately. A caller that lost filesystem events uses this
+    /// instead of walking on its own thread.
+    pub fn request_rescan(&self) {
+        {
+            let gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+            if gate.root.is_none() {
+                return;
+            }
+        }
+        self.rescan.store(true, Ordering::SeqCst);
         self.cv.notify_one();
     }
 
@@ -205,6 +244,19 @@ impl PathIndex {
             if self.stop.load(Ordering::SeqCst) {
                 return;
             }
+            if self.rescan.swap(false, Ordering::SeqCst) {
+                self.paths
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
+                let root = {
+                    let gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+                    gate.root.clone()
+                };
+                if let Some(root) = root {
+                    self.fill(&root);
+                }
+            }
             if updates.is_empty() {
                 continue;
             }
@@ -267,7 +319,10 @@ impl PathIndex {
 
     fn wait_updates(&self) -> Vec<(String, bool)> {
         let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
-        while !self.stop.load(Ordering::SeqCst) && gate.queue.is_empty() {
+        while !self.stop.load(Ordering::SeqCst)
+            && gate.queue.is_empty()
+            && !self.rescan.load(Ordering::SeqCst)
+        {
             let (next, _) = self
                 .cv
                 .wait_timeout(gate, TICK)
@@ -344,10 +399,14 @@ impl PathIndex {
 
 fn remove_legacy_text_index(root: &Path) {
     let dir = root.join(".litecode").join("text-index");
-    if dir.is_dir()
-        && let Err(error) = std::fs::remove_dir_all(&dir)
-    {
-        tracing::warn!(error = %error, "path_index could not remove legacy text-index");
+    if !dir.is_dir() {
+        return;
+    }
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => tracing::info!(path = %dir.display(), "removed legacy text-index"),
+        Err(error) => {
+            tracing::warn!(error = %error, "path_index could not remove legacy text-index");
+        }
     }
 }
 
@@ -591,6 +650,60 @@ mod tests {
             assert_eq!(engine.spawn_count.load(Ordering::SeqCst), 1);
             engine.attach(root);
             assert_eq!(engine.spawn_count.load(Ordering::SeqCst), 1);
+            assert_eq!(engine.mention_paths("app.rs").len(), 1);
+        });
+    }
+
+    #[test]
+    fn a_finished_worker_starts_again_for_the_same_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("app.rs"), "").unwrap();
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let engine = Attached::new(root);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while engine.mention_paths("app.rs").is_empty() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(engine.mention_paths("app.rs").len(), 1);
+            engine.stop.store(true, Ordering::SeqCst);
+            engine.cv.notify_all();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !engine.worker_stopped_for_test() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(engine.worker_stopped_for_test());
+            assert_eq!(engine.spawn_count.load(Ordering::SeqCst), 1);
+            engine.paths.write().unwrap().clear();
+            engine.attach(root);
+            assert_eq!(engine.spawn_count.load(Ordering::SeqCst), 2);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while engine.mention_paths("app.rs").is_empty() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(engine.mention_paths("app.rs").len(), 1);
+        });
+    }
+
+    #[test]
+    fn request_rescan_refills_a_path_the_catalog_missed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("app.rs"), "").unwrap();
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let engine = Attached::new(root);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while engine.mention_paths("app.rs").is_empty() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            std::fs::write(root.join("late.rs"), "").unwrap();
+            engine.paths.write().unwrap().clear();
+            engine.request_rescan();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while engine.mention_paths("late.rs").is_empty() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(engine.mention_paths("late.rs").len(), 1);
             assert_eq!(engine.mention_paths("app.rs").len(), 1);
         });
     }

@@ -102,7 +102,9 @@ fn spawn_prepared_idle_auto_turn(
         runtime,
         session_id.clone(),
         Arc::clone(&sessions),
-        crate::runtime::TurnInput::Wake,
+        crate::runtime::TurnInput::Wake {
+            anchor_user_seq: None,
+        },
         sink,
         turn_id.clone(),
         TurnOptions::default(),

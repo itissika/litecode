@@ -28,6 +28,8 @@ pub enum PendingFlush {
         primary_agent: String,
         project: String,
         input: UserInput,
+        /// `item/user` seq written for this flush, before mentions.
+        anchor_user_seq: u64,
         sink: Arc<dyn PermissionSink>,
     },
     SkippedBusy,
@@ -82,14 +84,16 @@ pub fn try_begin_pending_flush(
     };
 
     let input = crate::session::manager::merge_pending(&claimed);
-    if let Err(error) =
-        sessions.append_user_message_with_mentions(sid, input.clone(), workspace_root)
-    {
-        tracing::warn!(session_id = sid, %error, "failed to persist pending messages");
-        sessions.restore_pending_messages(sid, claimed);
-        sessions.release_turn_reservation(sid, &turn_id);
-        return PendingFlush::SkippedSessionGone;
-    }
+    let anchor_user_seq =
+        match sessions.append_user_message_with_mentions(sid, input.clone(), workspace_root) {
+            Ok(seq) => seq,
+            Err(error) => {
+                tracing::warn!(session_id = sid, %error, "failed to persist pending messages");
+                sessions.restore_pending_messages(sid, claimed);
+                sessions.release_turn_reservation(sid, &turn_id);
+                return PendingFlush::SkippedSessionGone;
+            }
+        };
 
     let sink = sessions
         .last_permission_sink(sid)
@@ -100,6 +104,7 @@ pub fn try_begin_pending_flush(
         primary_agent,
         project,
         input,
+        anchor_user_seq,
         sink,
     }
 }
@@ -115,6 +120,7 @@ fn spawn_prepared_pending_flush(
         primary_agent,
         project,
         input: _,
+        anchor_user_seq,
         sink,
     } = decision
     else {
@@ -125,7 +131,9 @@ fn spawn_prepared_pending_flush(
         runtime,
         session_id.clone(),
         Arc::clone(&sessions),
-        crate::runtime::TurnInput::Wake,
+        crate::runtime::TurnInput::Wake {
+            anchor_user_seq: Some(anchor_user_seq),
+        },
         sink,
         turn_id.clone(),
         TurnOptions::default(),
@@ -442,5 +450,194 @@ mod tests {
             .filter(|event| event.event_type == crate::session::EventType::ItemUser)
             .count();
         assert_eq!(user_rows, 1, "the discarded message must not reach the log");
+    }
+
+    #[test]
+    fn flush_with_a_mention_names_the_snapshot_after_the_user_row() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/a.rs"),
+            "fn save() {\n    let n = 1;\n}\n",
+        )
+        .unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let sid = sessions
+            .open_session_sync(&dir.path().display().to_string(), "default", None)
+            .unwrap();
+        let text = crate::knowledge::mentions::symbol_mention_source(
+            "src/a.rs",
+            Some("fn save"),
+            None,
+            "fn save",
+        );
+        sessions.enqueue_pending_message(&sid, &text).unwrap();
+        let (anchor, turn_id) = match try_begin_pending_flush(&runtime, &sessions, dir.path(), &sid)
+        {
+            PendingFlush::Prepared {
+                anchor_user_seq,
+                turn_id,
+                ..
+            } => (anchor_user_seq, turn_id),
+            _ => panic!("expected prepared"),
+        };
+        let events = sessions.data().events_blocking(&sid).unwrap();
+        let user = events
+            .iter()
+            .find(|event| event.event_type == crate::session::EventType::ItemUser)
+            .expect("user row");
+        assert_eq!(user.seq, anchor);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.event_type, crate::session::EventType::Reminder(_))),
+            "a file mention appends a reminder after the user row"
+        );
+        sessions
+            .apply(
+                &sid,
+                crate::session::store::SessionApply::Append(crate::session::event::EventDraft {
+                    time: 0,
+                    event_type: crate::session::EventType::TurnStart,
+                    data: serde_json::json!({ "turn": "queued" }),
+                    surface_op: None,
+                    source_seqs: None,
+                    ignorable: false,
+                    state: crate::session::LogState::Final,
+                }),
+            )
+            .unwrap();
+        let (_last, next_seq) = sessions.entry_wire_seq_cursor(&sid);
+        let stem = crate::runtime::snapshot_stem_for_turn(Some(anchor), next_seq);
+        assert_eq!(stem, i64::try_from(anchor).unwrap() + 1);
+        assert_ne!(stem as u64, next_seq);
+        let snaps = runtime.workspace.paths.snapshots_dir.clone();
+        crate::session::snapshot::snapshot_track(dir.path(), &snaps, &sid, stem).unwrap();
+        assert!(crate::session::snapshot::snapshot_exists(
+            &snaps, &sid, stem
+        ));
+        let restored =
+            crate::session::snapshot::snapshot_restore(dir.path(), &snaps, &sid, stem).unwrap();
+        assert!(
+            !matches!(
+                restored,
+                crate::session::snapshot::RestoreOutcome::Unavailable {
+                    reason: crate::session::snapshot::RestoreUnavailable::MissingTrackRef,
+                }
+            ),
+            "restore must find the ref named after the user row"
+        );
+        sessions.release_turn_reservation(&sid, &turn_id);
+    }
+
+    #[test]
+    fn flush_without_a_mention_still_names_the_snapshot_after_the_user_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let sid = sessions
+            .open_session_sync(&dir.path().display().to_string(), "default", None)
+            .unwrap();
+        sessions.enqueue_pending_message(&sid, "hello").unwrap();
+        let anchor = match try_begin_pending_flush(&runtime, &sessions, dir.path(), &sid) {
+            PendingFlush::Prepared {
+                anchor_user_seq,
+                turn_id,
+                ..
+            } => {
+                sessions.release_turn_reservation(&sid, &turn_id);
+                anchor_user_seq
+            }
+            _ => panic!("expected prepared"),
+        };
+        let (_last, next_seq) = sessions.entry_wire_seq_cursor(&sid);
+        assert_eq!(next_seq, anchor + 1);
+        assert_eq!(
+            crate::runtime::snapshot_stem_for_turn(Some(anchor), next_seq),
+            i64::try_from(anchor).unwrap() + 1
+        );
+        assert_eq!(
+            crate::runtime::snapshot_stem_for_turn(None, next_seq),
+            i64::try_from(next_seq).unwrap()
+        );
+    }
+
+    #[test]
+    fn user_turn_with_a_mention_names_the_snapshot_after_the_committed_row() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/a.rs"),
+            "fn save() {\n    let n = 1;\n}\n",
+        )
+        .unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let sid = sessions
+            .open_session_sync(&dir.path().display().to_string(), "default", None)
+            .unwrap();
+        let text = crate::knowledge::mentions::symbol_mention_source(
+            "src/a.rs",
+            Some("fn save"),
+            None,
+            "fn save",
+        );
+        let context = crate::context_pipeline::build_context(
+            &runtime.resolved,
+            dir.path(),
+            &runtime.workspace.paths,
+        );
+        let pipeline = crate::context_pipeline::ContextPipeline::new(
+            128_000,
+            context,
+            sessions.data_root_path(),
+        );
+        let mut working = pipeline
+            .begin_turn_with_id(&sessions, &sid, Some("turn".into()))
+            .unwrap();
+        sessions
+            .apply(
+                &sid,
+                crate::session::store::SessionApply::Append(crate::session::event::EventDraft {
+                    time: 0,
+                    event_type: crate::session::EventType::TurnStart,
+                    data: serde_json::json!({ "turn": "turn" }),
+                    surface_op: None,
+                    source_seqs: None,
+                    ignorable: false,
+                    state: crate::session::LogState::Final,
+                }),
+            )
+            .unwrap();
+        working.push(crate::session::working::WorkingRow::pending(
+            crate::types::user_message(&text, &[]),
+        ));
+        pipeline
+            .commit_step(&sessions, &sid, &mut working)
+            .unwrap();
+        let user_seq = working
+            .iter()
+            .rev()
+            .find(|row| row.kind == crate::session::model::SessionKind::ItemUser)
+            .and_then(|row| row.log_seq)
+            .expect("committed user row");
+        sessions.append_mentions_for(&sid, dir.path(), &text);
+        let (_last, next_seq) = sessions.entry_wire_seq_cursor(&sid);
+        let stem = crate::runtime::snapshot_stem_for_turn(Some(user_seq), next_seq);
+        assert_eq!(stem, i64::try_from(user_seq).unwrap() + 1);
+        assert_ne!(
+            stem as u64, next_seq,
+            "the mentions row must not move the snapshot stem"
+        );
+        let snaps = runtime.workspace.paths.snapshots_dir.clone();
+        crate::session::snapshot::snapshot_track(dir.path(), &snaps, &sid, stem).unwrap();
+        let restored =
+            crate::session::snapshot::snapshot_restore(dir.path(), &snaps, &sid, stem).unwrap();
+        assert!(
+            !matches!(
+                restored,
+                crate::session::snapshot::RestoreOutcome::Unavailable {
+                    reason: crate::session::snapshot::RestoreUnavailable::MissingTrackRef,
+                }
+            )
+        );
     }
 }

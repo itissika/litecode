@@ -20,6 +20,17 @@ pub enum SymbolCheck {
     Drifted { commits: Vec<PathCommit> },
 }
 
+/// Whether a symbol's body moved between the note's baseline commit and HEAD.
+///
+/// `Unknown` is not "unchanged": there is no git, the note was never committed,
+/// a blob could not be read, or the symbol is not in the baseline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Drift {
+    Changed { commits: Vec<PathCommit> },
+    Unchanged,
+    Unknown,
+}
+
 pub struct SymbolCache {
     shown: HashMap<(String, String), Option<String>>,
     bases: HashMap<String, CachedBase>,
@@ -59,30 +70,39 @@ impl SymbolCache {
             return SymbolCheck::Present;
         };
         match self.drift(workspace, file, chain, base_path) {
-            Some(commits) => SymbolCheck::Drifted { commits },
-            None => SymbolCheck::Present,
+            Drift::Changed { commits } => SymbolCheck::Drifted { commits },
+            Drift::Unchanged | Drift::Unknown => SymbolCheck::Present,
         }
     }
 
-    /// `Some` when the symbol body at HEAD differs from the note's baseline commit.
-    /// `None` when drift is off, unknown, or unchanged.
+    /// Compare the symbol body at the note's baseline commit with HEAD.
     pub fn drift(
         &mut self,
         workspace: &Path,
         file: &str,
         chain: &str,
         drift_base: &str,
-    ) -> Option<Vec<PathCommit>> {
-        let base = self.baseline(workspace, drift_base)?;
-        let then = self.blob(workspace, &base, file)?;
-        let now = self.blob(workspace, "HEAD", file)?;
-        let then_body = scope_body(file, &then, chain)?;
-        let now_body = scope_body(file, &now, chain)?;
+    ) -> Drift {
+        let Some(base) = self.baseline(workspace, drift_base) else {
+            return Drift::Unknown;
+        };
+        let Some(then) = self.blob(workspace, &base, file) else {
+            return Drift::Unknown;
+        };
+        let Some(now) = self.blob(workspace, "HEAD", file) else {
+            return Drift::Unknown;
+        };
+        let Some(then_body) = scope_body(file, &then, chain) else {
+            return Drift::Unknown;
+        };
+        let Some(now_body) = scope_body(file, &now, chain) else {
+            return Drift::Unknown;
+        };
         if then_body == now_body {
-            return None;
+            return Drift::Unchanged;
         }
         let commits = workspace::log_between(workspace, &base, file, 3).unwrap_or_default();
-        Some(commits)
+        Drift::Changed { commits }
     }
 
     fn baseline(&mut self, workspace: &Path, drift_base: &str) -> Option<String> {

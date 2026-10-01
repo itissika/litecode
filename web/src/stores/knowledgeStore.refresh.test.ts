@@ -11,7 +11,7 @@ vi.mock("../api/workspace", () => ({
 }));
 
 import { fetchTree, readFile, writeFile } from "../api/workspace";
-import { useKnowledgeStore } from "./knowledgeStore";
+import { symbolHitFor, useKnowledgeStore } from "./knowledgeStore";
 import { useWorkspaceChangeStore } from "./workspaceChangeStore";
 
 const tree = vi.mocked(fetchTree);
@@ -163,5 +163,14 @@ describe("knowledgeStore workspace refresh", () => {
     await refresh;
     await sleep(30);
     expect(useKnowledgeStore.getState().byId.get(id!)?.summary).toBe("保住");
+  });
+
+  it("pairs a symbol hit by file and symbol", () => {
+    const hits = [
+      { file: "src/b.rs", symbol: "fn other", file_exists: true, symbol_exists: true, ambiguous: false },
+      { file: "src/a.rs", symbol: "fn save", file_exists: true, symbol_exists: true, ambiguous: false, drift: { drifted: true, commits: [] } },
+    ];
+    expect(symbolHitFor(hits, "src/a.rs", "fn save")?.drift?.drifted).toBe(true);
+    expect(symbolHitFor(hits, "src/a.rs", "fn missing")).toBeUndefined();
   });
 });

@@ -66,7 +66,7 @@ fn request_url_comes_from_endpoint_type() {
     let catalog = seeded();
     let responses = catalog.model("deepseek/deepseek-flash").unwrap();
     assert_eq!(responses.request_url, "https://api.deepseek.com/responses");
-    let chat = catalog.model("opencode-go/deepseek-flash").unwrap();
+    let chat = catalog.model("opencode-go/deepseek-v4.1-flash").unwrap();
     assert_eq!(
         chat.request_url,
         "https://opencode.ai/zen/go/v1/chat/completions"
@@ -85,7 +85,7 @@ fn reasoning_tiers_inherit_from_provider_and_override_per_model() {
         .expect("provider tiers inherit");
     assert_eq!(tiers.medium, "high");
     // opencode declares none, so each Zen model states its own.
-    let zen = catalog.model("opencode/gpt-6-sol").unwrap();
+    let zen = catalog.model("opencode/gpt-6.1-sol").unwrap();
     let zen_tiers = zen.reasoning.as_ref().expect("model-declared tiers");
     assert_eq!(zen_tiers.medium, "medium");
 }
@@ -97,7 +97,7 @@ fn default_catalog_declares_off_where_the_vendor_defaults_to_thinking() {
         "deepseek/deepseek-flash",
         "mimo/mimo-v2.6-flash",
         "mimo/mimo-v2.6-pro",
-        "opencode/gpt-6-sol",
+        "opencode/gpt-6.1-sol",
         "opencode/gpt-6-luna",
     ] {
         assert_eq!(
@@ -115,10 +115,7 @@ fn default_catalog_declares_off_where_the_vendor_defaults_to_thinking() {
         Some("disabled")
     );
     // Vendors whose ladder has no off literal keep sending nothing for Off.
-    for reference in [
-        "opencode-go/deepseek-flash",
-        "opencode-go/deepseek-v4.1-flash",
-    ] {
+    for reference in ["opencode-go/deepseek-v4.1-flash"] {
         assert_eq!(
             catalog.model(reference).unwrap().reasoning_off,
             None,
@@ -144,9 +141,7 @@ fn seed_declares_reasoning_summaries_only_for_the_gpt_family() {
     // literal; every other model stays silent.
     for reference in [
         "openai/gpt-5.6-sol",
-        "openai/gpt-5.6-terra",
-        "openai/gpt-5.6-luna",
-        "opencode/gpt-6-sol",
+        "opencode/gpt-6.1-sol",
         "opencode/gpt-6-luna",
     ] {
         assert_eq!(
@@ -260,15 +255,15 @@ fn explicit_thinking_switch_on_a_chat_model_is_refused() {
 fn seed_gateway_hosts_keep_each_models_dialect() {
     let catalog = seeded();
 
-    let zhipu_52 = catalog.model("zhipu/glm-5.2").unwrap();
+    let zhipu = catalog.model("zhipu/glm-5.3").unwrap();
     assert_eq!(
-        zhipu_52.request_url,
+        zhipu.request_url,
         "https://open.bigmodel.cn/api/paas/v4/chat/completions"
     );
-    assert_eq!(zhipu_52.reasoning_off.as_deref(), Some("none"));
+    assert!(zhipu.reasoning_off.is_none());
     assert!(
         catalog
-            .model("zhipu/glm-5.3")
+            .model("zhipu/glm-5.3-flash")
             .unwrap()
             .reasoning_off
             .is_none()
@@ -290,14 +285,15 @@ fn seed_gateway_hosts_keep_each_models_dialect() {
     assert!(agent_glm.quirks.is_empty());
     assert!(!agent_glm.supports(Modality::Image));
 
-    let tencent_glm = catalog.model("tencent-token/glm-5.2").unwrap();
-    assert_eq!(tencent_glm.reasoning_off.as_deref(), Some("none"));
-    assert!(
+    let tencent_glm = catalog.model("tencent-token/glm-5.3").unwrap();
+    assert!(tencent_glm.reasoning_off.is_none());
+    assert_eq!(
         catalog
-            .model("tencent-token/deepseek-v4-pro-202606")
+            .model("tencent-token/deepseek/deepseek-flash")
             .unwrap()
-            .reasoning
-            .is_none()
+            .reasoning_off
+            .as_deref(),
+        Some("none")
     );
 
     let qwen = catalog.model("aliyun-token/qwen3.8-max").unwrap();
@@ -310,7 +306,7 @@ fn seed_gateway_hosts_keep_each_models_dialect() {
     assert!(qwen.supports(Modality::Image));
     assert!(
         catalog
-            .model("aliyun-token/deepseek-v4-pro")
+            .model("aliyun-token/deepseek-v4.1-flash")
             .unwrap()
             .quirks
             .is_empty()
@@ -505,13 +501,8 @@ fn bailian_models_replay_their_own_summary() {
     for id in [
         "qwen3.8-max",
         "qwen3.8-flash",
-        "qwen3.7-max",
-        "qwen3.7-plus",
-        "qwen3.6-flash",
-        "deepseek-v4-pro",
-        "deepseek-v4-pro-0813",
-        "deepseek-v4-flash-0731",
-        "glm-5.2",
+        "deepseek-v4.1-flash",
+        "glm-5.3",
     ] {
         let model = catalog
             .model(&format!("aliyun-token/{id}"))
@@ -519,13 +510,6 @@ fn bailian_models_replay_their_own_summary() {
         assert_eq!(model.reasoning_replay, ReasoningReplay::Summary, "{id}");
         assert_eq!(model.endpoint_type, EndpointKind::Responses, "{id}");
     }
-    assert_eq!(
-        catalog
-            .model("aliyun-token/qwen3.6-flash")
-            .unwrap()
-            .max_output,
-        65536
-    );
     assert_eq!(
         catalog
             .model("aliyun-token/qwen3.8-flash")
@@ -756,8 +740,8 @@ fn first_run_seeds_the_file_and_registers_initialized() {
     );
     assert!(store::schema_path_for_db(&db).is_file());
 
-    // A file that loads but lacks shipped ids gets those seed tables appended.
-    // The note above the document stays, and a later start does not write again.
+    // A file with no unknown entries is replaced by the seed. A later start
+    // sees that text and does not write again.
     std::fs::write(
         store::catalog_path_for_db(&db),
         "# my own note\nversion = 1\n",
@@ -769,8 +753,8 @@ fn first_run_seeds_the_file_and_registers_initialized() {
     assert!(reloaded.model("openai/gpt-5.6-sol").is_some());
     let filled = std::fs::read_to_string(store::catalog_path_for_db(&db)).unwrap();
     assert!(
-        filled.starts_with("# my own note\n"),
-        "the user's own text stays above the appended seed:\n{filled}"
+        filled.contains("# LiteCode provider catalog"),
+        "a file with no unknown entries is the seed:\n{filled}"
     );
     assert!(filled.contains("id = \"gpt-5.6-sol\""));
     store::forget(&db);
@@ -805,23 +789,26 @@ quirks = [\"omit_temperature_when_thinking\", \"reasoning_replay\"]
     let catalog = store::load_for_db(&db).expect("upgrade");
     assert_eq!(
         catalog.provider("deepseek").unwrap().endpoint,
-        "https://proxy.example/v1",
-        "an entry that loads is not replaced by the seed"
+        "https://api.deepseek.com",
+        "a shipped provider is replaced by the seed"
     );
     assert_eq!(
         catalog
             .model("deepseek/deepseek-flash")
             .unwrap()
             .request_url,
-        "https://proxy.example/v1/responses",
-        "a shipped model appended later uses the provider the user kept"
+        "https://api.deepseek.com/responses"
     );
     assert!(catalog.model("openai/gpt-5.6-sol").is_some());
     let upgraded = std::fs::read_to_string(&path).unwrap();
     assert!(!upgraded.contains("omit_temperature"), "{upgraded}");
     assert!(upgraded.contains("id = \"gpt-5.6-sol\""));
-    let backup = path.with_file_name("provider-catalog.toml.bak");
-    assert_eq!(std::fs::read_to_string(&backup).unwrap(), broken);
+    let backup = std::fs::read_to_string(path.with_file_name("provider-catalog.toml.bak")).unwrap();
+    assert!(backup.contains("https://proxy.example/v1"), "{backup}");
+    assert!(
+        !backup.contains("omit_temperature"),
+        "alignment backs up the repaired text:\n{backup}"
+    );
 
     store::forget(&db);
     store::load_for_db(&db).expect("reload");
@@ -874,7 +861,7 @@ fn shared_catalog_is_loaded_once_per_path() {
 }
 
 #[test]
-fn startup_appends_a_missing_model_and_keeps_an_edited_provider() {
+fn startup_overwrites_a_shipped_provider_and_keeps_an_added_one() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("litecode.db");
     store::forget(&db);
@@ -895,7 +882,7 @@ fn startup_appends_a_missing_model_and_keeps_an_edited_provider() {
         .unwrap_or(text.len());
     text.replace_range(block_start..next, "");
     text.push_str(
-        "\n[[providers]]\nid = \"extra\"\nname = \"Extra\"\nendpoint = \"https://extra.example/v1\"\nendpoint_type = \"responses\"\nauth = \"bearer\"\n\n[[models]]\nid = \"mine\"\nprovider_id = \"extra\"\nlabel = \"Mine\"\ncontext_window = 256000\nmax_output = 128000\nmodalities = [\"text\"]\n",
+        "\n# user note stays\n[[providers]]\nid = \"extra\"\nname = \"Extra\"\nendpoint = \"https://extra.example/v1\"\nendpoint_type = \"responses\"\nauth = \"bearer\"\n\n[[models]]\nid = \"mine\"\nprovider_id = \"extra\"\nlabel = \"Mine\"\ncontext_window = 256000\nmax_output = 128000\nmodalities = [\"text\"]\n",
     );
     std::fs::write(&path, &text).unwrap();
 
@@ -903,7 +890,8 @@ fn startup_appends_a_missing_model_and_keeps_an_edited_provider() {
     let catalog = store::load_for_db(&db).expect("reconcile");
     assert_eq!(
         catalog.provider("openai").unwrap().endpoint,
-        "https://proxy.example/v1"
+        "https://api.openai.com/v1",
+        "a shipped provider is replaced by the seed"
     );
     assert!(catalog.model("opencode-go/hy4-preview").is_some());
     assert_eq!(
@@ -912,13 +900,127 @@ fn startup_appends_a_missing_model_and_keeps_an_edited_provider() {
     );
     assert_eq!(catalog.model("extra/mine").unwrap().label, "Mine");
     let filled = std::fs::read_to_string(&path).unwrap();
-    assert!(filled.contains("https://proxy.example/v1"));
+    assert!(!filled.contains("https://proxy.example/v1"));
     assert!(filled.contains("https://extra.example/v1"));
+    assert!(filled.contains("user note stays"));
     assert!(filled.contains("id = \"hy4-preview\""));
 
     store::forget(&db);
     store::load_for_db(&db).expect("stable");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), filled);
+}
+
+#[test]
+fn startup_overwrites_a_stale_bailian_model_and_keeps_the_added_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("litecode.db");
+    let path = store::catalog_path_for_db(&db);
+    std::fs::write(
+        &path,
+        r#"
+version = 1
+
+[[providers]]
+id = "aliyun-token"
+name = "old"
+endpoint = "https://old.example/v1"
+endpoint_type = "responses"
+auth = "bearer"
+
+[[models]]
+id = "qwen3.8-flash"
+provider_id = "aliyun-token"
+label = "old flash"
+context_window = 256000
+max_output = 65536
+modalities = ["text"]
+
+# user note stays
+[[providers]]
+id = "extra"
+name = "Extra"
+endpoint = "https://extra.example/v1"
+endpoint_type = "responses"
+auth = "bearer"
+
+[[models]]
+id = "mine"
+provider_id = "extra"
+label = "Mine"
+context_window = 256000
+max_output = 128000
+modalities = ["text"]
+"#,
+    )
+    .unwrap();
+
+    store::forget(&db);
+    let catalog = store::load_for_db(&db).expect("reconcile");
+    let flash = catalog.model("aliyun-token/qwen3.8-flash").unwrap();
+    assert_eq!(flash.max_output, 128000);
+    assert_eq!(flash.reasoning_replay, ReasoningReplay::Summary);
+    assert_eq!(flash.label, "Qwen3.8 Flash");
+    assert_eq!(
+        catalog.provider("aliyun-token").unwrap().endpoint,
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    );
+    assert_eq!(
+        catalog.provider("extra").unwrap().endpoint,
+        "https://extra.example/v1"
+    );
+    assert_eq!(catalog.model("extra/mine").unwrap().label, "Mine");
+    let filled = std::fs::read_to_string(&path).unwrap();
+    assert!(!filled.contains("https://old.example/v1"));
+    assert!(!filled.contains("old flash"));
+    assert!(filled.contains("https://extra.example/v1"));
+    assert!(filled.contains("user note stays"));
+    assert!(filled.contains("replay = \"summary\""));
+    store::forget(&db);
+}
+
+#[test]
+fn startup_keeps_the_aligned_catalog_when_the_write_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("litecode.db");
+    let path = store::catalog_path_for_db(&db);
+    let stale = r#"
+version = 1
+
+[[providers]]
+id = "aliyun-token"
+name = "old"
+endpoint = "https://old.example/v1"
+endpoint_type = "responses"
+auth = "bearer"
+
+[[models]]
+id = "qwen3.8-flash"
+provider_id = "aliyun-token"
+label = "old flash"
+context_window = 256000
+max_output = 65536
+modalities = ["text"]
+"#;
+    std::fs::write(&path, stale).unwrap();
+    struct ClearPersist;
+    impl Drop for ClearPersist {
+        fn drop(&mut self) {
+            store::fail_catalog_persist(false);
+        }
+    }
+    let _clear = ClearPersist;
+    store::fail_catalog_persist(true);
+    store::forget(&db);
+    let catalog = store::load_for_db(&db).expect("write failure still loads");
+    let flash = catalog.model("aliyun-token/qwen3.8-flash").unwrap();
+    assert_eq!(flash.max_output, 128000);
+    assert_eq!(flash.reasoning_replay, ReasoningReplay::Summary);
+    let disk = std::fs::read_to_string(&path).unwrap();
+    assert!(disk.contains("max_output = 65536"), "{disk}");
+    assert!(disk.contains("https://old.example/v1"), "{disk}");
+    let backup = std::fs::read_to_string(path.with_file_name("provider-catalog.toml.bak")).unwrap();
+    assert!(backup.contains("max_output = 65536"));
+    store::forget(&db);
 }
 
 #[test]

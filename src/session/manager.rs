@@ -2239,7 +2239,7 @@ impl SessionManager {
         &self,
         session_id: &str,
         input: impl Into<crate::types::UserInput>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<crate::session::event::Seq> {
         let input = input.into();
         let item = crate::types::user_message(input.text, &input.images);
         let mut draft = EventDraft::surface_item(
@@ -2248,8 +2248,13 @@ impl SessionManager {
             crate::session::surface::SurfaceOp::Append,
         )?;
         draft.time = chrono::Utc::now().timestamp_millis();
-        self.apply(session_id, SessionApply::Append(draft))?;
-        Ok(())
+        let receipt = self.apply(session_id, SessionApply::Append(draft))?;
+        match receipt.outcome {
+            crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
+            other => Err(anyhow::anyhow!(
+                "append_user_message: unexpected outcome {other:?}"
+            )),
+        }
     }
 
     /// Persist a user message, then the hidden mentions attachment when it has one.
@@ -2260,11 +2265,11 @@ impl SessionManager {
         session_id: &str,
         input: impl Into<crate::types::UserInput>,
         workspace: &std::path::Path,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<crate::session::event::Seq> {
         let input = input.into();
-        self.append_user_message(session_id, input.clone())?;
+        let seq = self.append_user_message(session_id, input.clone())?;
         self.append_mentions_for(session_id, workspace, &input.text);
-        Ok(())
+        Ok(seq)
     }
 
     /// Snapshot digests of mention citations still on the model-visible surface.

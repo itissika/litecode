@@ -3,15 +3,16 @@
 # LiteCode provider catalog - the single source of truth for LLM providers and
 # models. A provider or model that is not written here does not exist in the app.
 #
-# This file belongs to you. LiteCode seeds it on first run. On later starts,
-# entries that already load stay as you wrote them: endpoint edits, comments,
-# and providers you added are not overwritten. A file this build cannot load is
-# repaired at startup: unknown keys and enum values are dropped, a shipped id
-# that still cannot load is replaced by its seed entry, and an id this build
-# has no seed for is removed. The previous text is saved as
-# provider-catalog.toml.bak. Shipped providers and models that are simply
-# missing are then appended from this build's seed, with that seed's defaults,
-# so a new version's models show up without a hand edit. Edit it, then RESTART
+# This file belongs to you for providers and models LiteCode does not ship.
+# On each start, a provider or model this build ships is replaced by the
+# current seed entry, so a protocol fix lands without a hand edit. Endpoint,
+# output, and reasoning edits on those shipped ids are overwritten. A provider
+# or model you added, whose id is not in the seed, is kept as you wrote it.
+# A file this build cannot load is repaired at startup: unknown keys and enum
+# values are dropped, a shipped id that still cannot load is replaced by its
+# seed entry, and an id this build has no seed for is removed. The previous
+# text is saved as provider-catalog.toml.bak before that repair, and again
+# before shipped entries are aligned to the seed. Edit it, then RESTART
 # LiteCode - the catalog is read exactly once, at process start.
 #
 # Rules worth knowing:
@@ -166,32 +167,6 @@ reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "m
 # Item ids never go back on the wire, so reasoning replays as its ciphertext.
 extra_body = { include = ["reasoning.encrypted_content"] }
 
-[[models]]
-id = "gpt-5.6-terra"
-provider_id = "openai"
-label = "GPT-5.6 Terra"
-context_window = 256000
-context_window_max = 1050000
-max_output = 128000
-modalities = ["text", "image"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
-# Item ids never go back on the wire, so reasoning replays as its ciphertext.
-extra_body = { include = ["reasoning.encrypted_content"] }
-
-[[models]]
-id = "gpt-5.6-luna"
-provider_id = "openai"
-label = "GPT-5.6 Luna"
-context_window = 256000
-context_window_max = 1050000
-max_output = 128000
-modalities = ["text", "image"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
-# Item ids never go back on the wire, so reasoning replays as its ciphertext.
-extra_body = { include = ["reasoning.encrypted_content"] }
-
 # ── DeepSeek (native Responses) ──────────────────────────────────────────────
 
 [[models]]
@@ -283,6 +258,17 @@ modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
 [[models]]
+id = "glm-5.3-flash"
+provider_id = "ark-coding"
+label = "GLM-5.3 Flash"
+endpoint_type = "chat_completions"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
 id = "kimi-k3"
 provider_id = "ark-coding"
 label = "Kimi K3"
@@ -295,15 +281,15 @@ modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
 [[models]]
-id = "kimi-k2.8-preview"
+id = "deepseek-v4.1-flash"
 provider_id = "ark-coding"
-label = "Kimi K2.8 Preview"
+label = "DeepSeek V4.1 Flash"
 endpoint_type = "chat_completions"
 context_window = 256000
 context_window_max = 1048576
-max_output = 32768
+max_output = 128000
 modalities = ["text"]
-reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
 
 # ── OpenCode Zen ─────────────────────────────────────────────────────────────
 
@@ -313,18 +299,6 @@ provider_id = "opencode"
 label = "GPT-6.1 Sol"
 # Zen serves the GPT family over Responses while every other model on this
 # provider stays on Chat Completions, so the path is chosen per model.
-endpoint_type = "responses"
-context_window = 256000
-context_window_max = 1050000
-max_output = 128000
-modalities = ["text", "image"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
-
-[[models]]
-id = "gpt-6-sol"
-provider_id = "opencode"
-label = "GPT-6 Sol"
 endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
@@ -349,30 +323,6 @@ reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "m
 id = "gpt-5.6-sol"
 provider_id = "opencode"
 label = "GPT-5.6 Sol"
-endpoint_type = "responses"
-context_window = 256000
-context_window_max = 1050000
-max_output = 128000
-modalities = ["text", "image"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
-
-[[models]]
-id = "gpt-5.6-terra"
-provider_id = "opencode"
-label = "GPT-5.6 Terra"
-endpoint_type = "responses"
-context_window = 256000
-context_window_max = 1050000
-max_output = 128000
-modalities = ["text", "image"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
-
-[[models]]
-id = "gpt-5.6-luna"
-provider_id = "opencode"
-label = "GPT-5.6 Luna"
 endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
@@ -448,14 +398,6 @@ reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 # why tiers live on the model when the vendor differs per host.
 
 [[models]]
-id = "deepseek-flash"
-provider_id = "opencode-go"
-context_window = 256000
-context_window_max = 1000000
-max_output = 128000
-reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
-
-[[models]]
 id = "deepseek-v4.1-flash"
 provider_id = "opencode-go"
 label = "DeepSeek V4.1 Flash"
@@ -471,18 +413,6 @@ reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 id = "gpt-6-luna"
 provider_id = "opencode-go"
 label = "GPT-6 Luna"
-endpoint_type = "responses"
-context_window = 256000
-context_window_max = 1050000
-max_output = 128000
-modalities = ["text", "image"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
-
-[[models]]
-id = "gpt-5.6-luna"
-provider_id = "opencode-go"
-label = "GPT-5.6 Luna"
 endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
@@ -564,7 +494,7 @@ max_output = 128000
 modalities = ["text"]
 reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "high" } }
 
-# Hy4 has no reasoning_effort on this host, same as Tencent Hy3.
+# Hy4 has no reasoning_effort on this host.
 
 [[models]]
 id = "hy4-preview"
@@ -600,45 +530,9 @@ usage_patch = "map_max_effort_to_xhigh"
 reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 [[models]]
-id = "gpt-6-sol"
-provider_id = "commandcode"
-label = "GPT-6 Sol"
-endpoint_type = "responses"
-context_window = 256000
-context_window_max = 1050000
-max_output = 128000
-modalities = ["text", "image"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
-
-[[models]]
 id = "gpt-6-luna"
 provider_id = "commandcode"
 label = "GPT-6 Luna"
-endpoint_type = "responses"
-context_window = 256000
-context_window_max = 1050000
-max_output = 128000
-modalities = ["text", "image"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
-
-[[models]]
-id = "gpt-5.6-terra"
-provider_id = "commandcode"
-label = "GPT-5.6 Terra"
-endpoint_type = "responses"
-context_window = 256000
-context_window_max = 1050000
-max_output = 128000
-modalities = ["text", "image"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
-
-[[models]]
-id = "gpt-5.6-luna"
-provider_id = "commandcode"
-label = "GPT-5.6 Luna"
 endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
@@ -662,6 +556,16 @@ reasoning = { tiers = { low = "low", medium = "medium", high = "xhigh" } }
 id = "zai-org/GLM-5.3"
 provider_id = "commandcode"
 label = "GLM-5.3"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "zai-org/GLM-5.3-Flash"
+provider_id = "commandcode"
+label = "GLM-5.3 Flash"
 context_window = 256000
 context_window_max = 1000000
 max_output = 128000
@@ -714,24 +618,22 @@ usage_patch = "fill_empty_token_details"
 reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "high" } }
 
 # ── Zhipu ────────────────────────────────────────────────────────────────────
-# GLM-5.2 accepts `none` as thinking off. `low` and `medium` both map to
-# `high` on the official API, so the clamp is written explicitly.
 # GLM-5.3 rejects `disabled` and any effort outside low/high/max.
-
-[[models]]
-id = "glm-5.2"
-provider_id = "zhipu"
-label = "GLM-5.2"
-context_window = 256000
-context_window_max = 1000000
-max_output = 128000
-modalities = ["text"]
-reasoning = { tiers = { off = "none", low = "high", medium = "high", high = "max" } }
 
 [[models]]
 id = "glm-5.3"
 provider_id = "zhipu"
 label = "GLM-5.3"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "glm-5.3-flash"
+provider_id = "zhipu"
+label = "GLM-5.3 Flash"
 context_window = 256000
 context_window_max = 1000000
 max_output = 128000
@@ -798,18 +700,6 @@ modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
 [[models]]
-id = "glm-latest"
-provider_id = "ark-agent"
-label = "GLM Latest"
-endpoint_type = "chat_completions"
-quirks = []
-context_window = 256000
-context_window_max = 1048576
-max_output = 128000
-modalities = ["text"]
-reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
-
-[[models]]
 id = "glm-5.3-flash"
 provider_id = "ark-agent"
 label = "GLM-5.3 Flash"
@@ -820,30 +710,6 @@ context_window_max = 1048576
 max_output = 128000
 modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
-
-[[models]]
-id = "deepseek-v4-pro"
-provider_id = "ark-agent"
-label = "DeepSeek V4 Pro"
-endpoint_type = "chat_completions"
-quirks = []
-context_window = 256000
-context_window_max = 1048576
-max_output = 128000
-modalities = ["text"]
-reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
-
-[[models]]
-id = "deepseek-v4-flash"
-provider_id = "ark-agent"
-label = "DeepSeek V4 Flash"
-endpoint_type = "chat_completions"
-quirks = []
-context_window = 256000
-context_window_max = 1048576
-max_output = 128000
-modalities = ["text"]
-reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
 
 [[models]]
 id = "deepseek-v4.1-flash"
@@ -870,29 +736,6 @@ modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
 [[models]]
-id = "kimi-k2.8-preview"
-provider_id = "ark-agent"
-label = "Kimi K2.8 Preview"
-endpoint_type = "chat_completions"
-quirks = []
-context_window = 256000
-context_window_max = 1048576
-max_output = 32768
-modalities = ["text"]
-reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
-
-[[models]]
-id = "kimi-k2.7-code"
-provider_id = "ark-agent"
-label = "Kimi K2.7 Code"
-endpoint_type = "chat_completions"
-quirks = []
-context_window = 256000
-max_output = 32768
-modalities = ["text"]
-reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
-
-[[models]]
 id = "minimax-m3"
 provider_id = "ark-agent"
 label = "MiniMax M3"
@@ -906,50 +749,35 @@ modalities = ["text"]
 # ── Tencent Token Plan ───────────────────────────────────────────────────────
 
 [[models]]
-id = "glm-5.2"
+id = "glm-5.3"
 provider_id = "tencent-token"
-label = "GLM-5.2"
+label = "GLM-5.3"
 context_window = 256000
 context_window_max = 1000000
 max_output = 128000
 modalities = ["text"]
-reasoning = { tiers = { off = "none", low = "high", medium = "high", high = "max" } }
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
 [[models]]
-id = "glm-5.1"
+id = "glm-5.3-flash"
 provider_id = "tencent-token"
-label = "GLM-5.1"
-context_window = 200000
-context_window_max = 200000
-max_output = 128000
-modalities = ["text"]
-
-[[models]]
-id = "glm-5"
-provider_id = "tencent-token"
-label = "GLM-5"
-context_window = 200000
-context_window_max = 200000
-max_output = 128000
-modalities = ["text"]
-
-[[models]]
-id = "deepseek-v4-pro-202606"
-provider_id = "tencent-token"
-label = "DeepSeek V4 Pro"
+label = "GLM-5.3 Flash"
 context_window = 256000
 context_window_max = 1000000
 max_output = 128000
 modalities = ["text"]
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
+# V4.1 on this host is the upstream id, not `deepseek-v4.1-flash`.
 [[models]]
-id = "deepseek-v4-flash-202605"
+id = "deepseek/deepseek-flash"
 provider_id = "tencent-token"
-label = "DeepSeek V4 Flash"
+label = "DeepSeek V4.1 Flash"
 context_window = 256000
 context_window_max = 1000000
 max_output = 128000
 modalities = ["text"]
+reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
 
 [[models]]
 id = "minimax-m2.7"
@@ -961,10 +789,11 @@ max_output = 128000
 modalities = ["text"]
 
 [[models]]
-id = "hy3"
+id = "hy4-preview"
 provider_id = "tencent-token"
-label = "Hy3"
+label = "Hy4 Preview"
 context_window = 256000
+context_window_max = 1048576
 max_output = 128000
 modalities = ["text"]
 
@@ -1012,43 +841,9 @@ usage_patch = "map_max_effort_to_xhigh"
 reasoning = { replay = "summary", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 [[models]]
-id = "qwen3.7-max"
+id = "deepseek-v4.1-flash"
 provider_id = "aliyun-token"
-label = "Qwen3.7 Max"
-context_window = 256000
-context_window_max = 1000000
-max_output = 128000
-modalities = ["text"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { replay = "summary", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
-
-[[models]]
-id = "qwen3.7-plus"
-provider_id = "aliyun-token"
-label = "Qwen3.7 Plus"
-context_window = 256000
-context_window_max = 1000000
-max_output = 128000
-modalities = ["text", "image"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { replay = "summary", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
-
-[[models]]
-id = "qwen3.6-flash"
-provider_id = "aliyun-token"
-label = "Qwen3.6 Flash"
-context_window = 256000
-context_window_max = 1000000
-# Model card caps output, thinking included, at 65536.
-max_output = 65536
-modalities = ["text", "image"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { replay = "summary", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
-
-[[models]]
-id = "deepseek-v4-pro"
-provider_id = "aliyun-token"
-label = "DeepSeek V4 Pro"
+label = "DeepSeek V4.1 Flash"
 context_window = 256000
 context_window_max = 1000000
 max_output = 128000
@@ -1057,34 +852,12 @@ usage_patch = "map_max_effort_to_xhigh"
 reasoning = { replay = "summary", tiers = { off = "none", low = "low", medium = "high", high = "max" } }
 
 [[models]]
-id = "deepseek-v4-pro-0813"
+id = "glm-5.3"
 provider_id = "aliyun-token"
-label = "DeepSeek V4 Pro 0813"
+label = "GLM-5.3"
 context_window = 256000
 context_window_max = 1000000
 max_output = 128000
 modalities = ["text"]
 usage_patch = "map_max_effort_to_xhigh"
-reasoning = { replay = "summary", tiers = { off = "none", low = "low", medium = "high", high = "max" } }
-
-[[models]]
-id = "deepseek-v4-flash-0731"
-provider_id = "aliyun-token"
-label = "DeepSeek V4 Flash 0731"
-context_window = 256000
-context_window_max = 1000000
-max_output = 128000
-modalities = ["text"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { replay = "summary", tiers = { off = "none", low = "low", medium = "high", high = "max" } }
-
-[[models]]
-id = "glm-5.2"
-provider_id = "aliyun-token"
-label = "GLM-5.2"
-context_window = 256000
-context_window_max = 1000000
-max_output = 128000
-modalities = ["text"]
-usage_patch = "map_max_effort_to_xhigh"
-reasoning = { replay = "summary", tiers = { off = "none", low = "high", medium = "high", high = "max" } }
+reasoning = { replay = "summary", tiers = { low = "low", medium = "high", high = "max" } }

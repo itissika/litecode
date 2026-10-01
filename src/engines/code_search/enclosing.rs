@@ -187,20 +187,64 @@ pub fn list_scopes(path: &str, content: &str) -> Vec<ScopeEntry> {
 }
 
 /// Find `chain` (`impl Store › fn save`). More than one hit is ambiguous.
+///
+/// A trait impl is listed as `impl Trait for Type`. An older note that still
+/// says `impl Type` resolves only when exactly one current trait impl matches.
 pub fn find_scope(path: &str, content: &str, chain: &str) -> ScopeMatch {
     let chain = chain.trim();
     if chain.is_empty() {
         return ScopeMatch::Missing;
     }
-    let hits: Vec<ScopeEntry> = list_scopes(path, content)
-        .into_iter()
+    let scopes = list_scopes(path, content);
+    let hits: Vec<ScopeEntry> = scopes
+        .iter()
         .filter(|entry| entry.chain == chain)
+        .cloned()
         .collect();
+    if !hits.is_empty() {
+        return scope_hits(hits);
+    }
+    let Some((ty, rest)) = legacy_impl_type(chain) else {
+        return ScopeMatch::Missing;
+    };
+    let hits: Vec<ScopeEntry> = scopes
+        .into_iter()
+        .filter(|entry| legacy_trait_impl(&entry.chain, ty, rest))
+        .collect();
+    scope_hits(hits)
+}
+
+fn scope_hits(hits: Vec<ScopeEntry>) -> ScopeMatch {
     match hits.len() {
         0 => ScopeMatch::Missing,
         1 => ScopeMatch::Unique(hits.into_iter().next().expect("one hit")),
         _ => ScopeMatch::Ambiguous(hits),
     }
+}
+
+/// `impl Type › rest` from a note written before trait impls included the trait.
+/// A chain that already says `for` is the current form and is not an alias.
+fn legacy_impl_type(chain: &str) -> Option<(&str, &str)> {
+    let (head, rest) = chain.split_once(" › ").unwrap_or((chain, ""));
+    let ty = head.trim().strip_prefix("impl ")?.trim();
+    if ty.is_empty() || ty.contains(" for ") {
+        return None;
+    }
+    Some((ty, rest))
+}
+
+fn legacy_trait_impl(chain: &str, ty: &str, rest: &str) -> bool {
+    let (head, entry_rest) = chain.split_once(" › ").unwrap_or((chain, ""));
+    if entry_rest != rest {
+        return false;
+    }
+    let Some(body) = head.trim().strip_prefix("impl ") else {
+        return false;
+    };
+    let Some((trait_name, impl_ty)) = body.rsplit_once(" for ") else {
+        return false;
+    };
+    !trait_name.trim().is_empty() && impl_ty.trim() == ty
 }
 
 /// Tightest named scope that fully contains the inclusive 1-based line range.
@@ -815,6 +859,47 @@ fn alpha() {}
         let at = scope_at("store.rs", src, save_line, save_line).expect("fn");
         assert_eq!(at.chain, "impl Store › fn save");
         assert!(scope_at("store.rs", src, 1, 999).is_none());
+    }
+
+    #[test]
+    fn an_old_type_only_impl_chain_resolves_when_one_trait_impl_matches() {
+        let one = r#"
+impl Display for Store {
+    fn fmt(&self) {}
+}
+"#;
+        match find_scope("store.rs", one, "impl Store › fn fmt") {
+            ScopeMatch::Unique(entry) => {
+                assert_eq!(entry.chain, "impl Display for Store › fn fmt");
+            }
+            other => panic!("expected the trait impl, got {other:?}"),
+        }
+
+        let two = r#"
+impl Display for Store {
+    fn fmt(&self) {}
+}
+impl Debug for Store {
+    fn fmt(&self) {}
+}
+"#;
+        assert!(matches!(
+            find_scope("store.rs", two, "impl Store › fn fmt"),
+            ScopeMatch::Ambiguous(_)
+        ));
+
+        let inherent = r#"
+impl Store {
+    fn save(&self) {}
+}
+impl Display for Store {
+    fn fmt(&self) {}
+}
+"#;
+        match find_scope("store.rs", inherent, "impl Store › fn save") {
+            ScopeMatch::Unique(entry) => assert_eq!(entry.chain, "impl Store › fn save"),
+            other => panic!("expected the inherent impl, got {other:?}"),
+        }
     }
 
     #[test]

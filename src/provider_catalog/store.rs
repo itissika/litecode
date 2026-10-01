@@ -1,13 +1,14 @@
 //! Catalog file lifecycle: stable location, first-run seeding, strict loading.
 //!
-//! The catalog lives next to the global database and is a *user* file: it is
-//! seeded once. A file that already loads keeps every entry it could load,
-//! including edits and providers the user added. Shipped providers and models
-//! that are missing are appended from this build's seed, with that seed's
-//! defaults; an id that is already present is not overwritten. A file this
-//! build cannot load is upgraded by [super::migrate] and the previous text is
-//! kept beside it, then the same append runs. The editor schema next to the
-//! catalog is product-managed and may be refreshed on every start.
+//! The catalog lives next to the global database. Providers and models this
+//! build ships are replaced by the embedded seed on every start, so a protocol
+//! fix reaches an install that already has those ids. A provider or model the
+//! seed does not know is kept byte-for-byte and appended after the seed.
+//! A file this build cannot load is upgraded by [super::migrate] and the
+//! previous text is kept beside it, then the same alignment runs. Writing the
+//! aligned file is best-effort: a failure keeps the aligned catalog in memory
+//! and does not block startup. The editor schema next to the catalog is
+//! product-managed and may be refreshed on every start.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -48,11 +49,11 @@ pub fn schema_path_for_db(db_path: &Path) -> PathBuf {
 ///
 /// - not initialized + file missing: seed from the embedded catalog;
 /// - not initialized + file present: load (upgrading if this build cannot),
-///   append shipped ids the file lacks, then register initialized;
+///   align shipped ids to this build's seed, then register initialized;
 /// - initialized + file missing: hard error (never silently re-seed);
 /// - unreadable, or text that is not TOML: hard error naming the file;
 /// - TOML this build cannot load: upgrade, keep the previous text in
-///   `provider-catalog.toml.bak`, append shipped ids still missing, then load.
+///   `provider-catalog.toml.bak`, align shipped ids to the seed, then load.
 pub fn load_for_db(db_path: &Path) -> Result<Arc<ProviderCatalog>> {
     let path = catalog_path_for_db(db_path);
     let conn = global_db::open(db_path)?;
@@ -122,78 +123,119 @@ fn load_catalog_file(path: &Path) -> Result<ProviderCatalog> {
             Ok(upgraded.catalog)
         }
     }
-    .and_then(|catalog| append_missing_seed(path, catalog))
+    .map(|catalog| reconcile_shipped(path, catalog))
 }
 
-/// Append shipped providers and models the loaded catalog does not have.
+#[cfg(test)]
+thread_local! {
+    static FAIL_CATALOG_PERSIST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test seam: catalog alignment on this thread backs up, then fails before
+/// replacing the file. The in-memory catalog is still the aligned one.
+#[cfg(test)]
+pub(crate) fn fail_catalog_persist(fail: bool) {
+    FAIL_CATALOG_PERSIST.with(|flag| flag.set(fail));
+}
+
+/// Replace shipped entries with this build's seed. Unknown entries stay.
 ///
-/// Entries already present stay byte-for-byte, so an edited endpoint or a
-/// provider the user added is left alone. The appended tables are the seed's,
-/// comments included, which is where context, reasoning, and endpoint defaults
-/// live. A second start sees no gap and does not write.
-fn append_missing_seed(path: &Path, catalog: ProviderCatalog) -> Result<ProviderCatalog> {
-    let gap = seed_gap(&catalog);
-    if gap.is_empty() {
-        return Ok(catalog);
+/// The running catalog is the aligned document even when the file cannot be
+/// replaced. A second start sees the same text and does not write again.
+fn reconcile_shipped(path: &Path, fallback: ProviderCatalog) -> ProviderCatalog {
+    let original = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "provider catalog could not be reread for seed alignment"
+            );
+            return fallback;
+        }
+    };
+    let reconciled = reconcile_document(&original);
+    let parsed = match ProviderCatalog::parse(&reconciled, path) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "provider catalog seed alignment did not parse; using the embedded seed"
+            );
+            return ProviderCatalog::parse(DEFAULT_CATALOG, path)
+                .expect("embedded provider catalog is valid");
+        }
+    };
+    if reconciled == original {
+        return parsed;
     }
-    let blocks = seed_blocks(&gap);
-    if blocks.is_empty() {
-        tracing::warn!(
+    match persist_reconciled(path, &original, &reconciled) {
+        Ok(()) => tracing::info!(
             path = %path.display(),
-            "provider catalog is missing seed entries but no seed block was produced"
-        );
-        return Ok(catalog);
+            "aligned shipped provider catalog entries to the seed"
+        ),
+        Err(error) => tracing::warn!(
+            path = %path.display(),
+            %error,
+            "provider catalog seed alignment stayed in memory"
+        ),
     }
-    let mut text = std::fs::read_to_string(path).map_err(|error| {
-        LitecodeError::Config(format!(
-            "provider catalog {} could not be read: {error}",
-            path.display()
-        ))
-    })?;
-    // `toml` writes an empty array of tables as `models = []`. A later
-    // `[[models]]` is then a duplicate key, so drop the empty assignment when
-    // the seed block is about to open that array.
-    text = drop_empty_table_array(&text, "providers", blocks.contains("[[providers]]"));
-    text = drop_empty_table_array(&text, "models", blocks.contains("[[models]]"));
-    if !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push('\n');
-    text.push_str(&blocks);
-    let parsed = ProviderCatalog::parse(&text, path).map_err(|error| {
-        LitecodeError::Config(format!(
-            "provider catalog {} could not take the missing seed entries: {error}",
-            path.display()
-        ))
-    })?;
-    atomic_write(path, &text)?;
-    tracing::info!(
-        path = %path.display(),
-        providers = gap.missing_providers.len(),
-        models = gap.missing_models.len(),
-        "appended missing seed providers and models"
-    );
-    Ok(parsed)
+    parsed
 }
 
-/// Remove `key = []` so a following `[[key]]` array-of-tables can extend it.
-fn drop_empty_table_array(text: &str, key: &str, dropping: bool) -> String {
-    if !dropping {
-        return text.to_string();
-    }
-    let needle = format!("{key} = []");
-    let mut out = String::with_capacity(text.len());
-    for line in text.lines() {
-        if line.trim() == needle {
+/// Seed document, then the original text of entries this build does not ship.
+fn reconcile_document(user_text: &str) -> String {
+    let seed = embedded_seed();
+    let mut unknown = String::new();
+    for table in catalog_tables(user_text) {
+        let known = match &table.provider_id {
+            None => seed.provider(&table.id).is_some(),
+            Some(provider_id) => {
+                let reference = format!("{provider_id}/{}", table.id);
+                seed.model(&reference).is_some()
+            }
+        };
+        if known {
             continue;
         }
-        out.push_str(line);
+        if !unknown.is_empty() {
+            unknown.push('\n');
+        }
+        unknown.push_str(&table.text);
+    }
+    if unknown.is_empty() {
+        return DEFAULT_CATALOG.to_string();
+    }
+    let mut out = DEFAULT_CATALOG.to_string();
+    if !out.ends_with('\n') {
         out.push('\n');
     }
-    if !text.ends_with('\n') && out.ends_with('\n') {
-        out.pop();
+    out.push('\n');
+    out.push_str(&unknown);
+    if !out.ends_with('\n') {
+        out.push('\n');
     }
     out
+}
+
+fn persist_reconciled(path: &Path, original: &str, reconciled: &str) -> Result<()> {
+    let backup = backup_path(path);
+    std::fs::write(&backup, original).map_err(|error| {
+        LitecodeError::Config(format!(
+            "provider catalog {} could not be backed up to {}: {error}",
+            path.display(),
+            backup.display()
+        ))
+    })?;
+    #[cfg(test)]
+    if FAIL_CATALOG_PERSIST.with(|flag| flag.get()) {
+        return Err(LitecodeError::Config(
+            "provider catalog persist was forced to fail".into(),
+        ));
+    }
+    atomic_write(path, reconciled)?;
+    Ok(())
 }
 
 fn backup_path(path: &Path) -> PathBuf {

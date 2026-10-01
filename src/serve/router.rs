@@ -154,8 +154,7 @@ pub async fn listen(
                             "workspace change subscriber lagged; requesting index reconcile"
                         );
                         engines.code_search().request_reconcile();
-                        // Mention path catalog does not full-walk on lag. Keystroke
-                        // stats drop deleted hits; a missed create stays absent.
+                        engines.path_index().request_rescan();
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }

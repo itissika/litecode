@@ -83,6 +83,9 @@ pub fn run(
 
     engine_manager.reconcile(&resolved);
     workspace_engines.reconcile(&resolved);
+    workspace_engines
+        .path_index()
+        .attach(resolved.workspace_root());
 
     let sessions_db = workspace.paths.sessions_db.clone();
     let state = ServeState::new(

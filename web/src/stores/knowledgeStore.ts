@@ -297,6 +297,15 @@ function publishContent(
 
 const SYMBOL_BATCH = 64;
 
+/** Pair a server hit with the citation that asked for it, not with its slot in the batch. */
+export function symbolHitFor(
+  hits: SymbolRefHit[],
+  file: string,
+  symbol: string,
+): SymbolRefHit | undefined {
+  return hits.find((hit) => hit.file === file && (hit.symbol ?? "") === symbol);
+}
+
 /** Stat cited paths and symbol chains, then fold both into the issue list. */
 function scheduleFileCheck(
   set: (partial: Partial<KnowledgeStore>) => void,
@@ -350,8 +359,8 @@ function scheduleFileCheck(
         }
         if (gen !== fileCheckGen) return;
         symbols = symbolIssues(
-          queries.map((query, index) => {
-            const hit = hits[index];
+          queries.map((query) => {
+            const hit = symbolHitFor(hits, query.file, query.symbol);
             return {
               nodeId: query.nodeId,
               file: query.file,

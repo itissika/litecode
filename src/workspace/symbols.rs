@@ -1,7 +1,9 @@
 //! Named scopes in one workspace file.
 //!
 //! Tree-sitter walks the file. Nothing here talks to a language server.
-//! Drift against git history is filled in by the knowledge check, not here.
+//! A query that names a knowledge note also reports whether that symbol's
+//! body changed since the note was last committed. An unknown check stays
+//! `drift: None`.
 
 use serde::{Deserialize, Serialize};
 
@@ -71,7 +73,7 @@ pub struct SymbolRefQuery {
     #[serde(default)]
     pub symbol: Option<String>,
     /// Knowledge node path whose last commit is the drift baseline.
-    /// Accepted now; the drift field stays empty until that check is wired.
+    /// Unknown checks leave `drift` empty; a completed check sets `drifted`.
     #[serde(default)]
     pub drift_base_of: Option<String>,
 }
@@ -200,26 +202,23 @@ fn resolve_one(
             .filter(|path| !path.is_empty())
     {
         let root = workspace.sandbox().root().to_path_buf();
-        match drift.drift(&root, &file, &chain, base) {
-            Some(commits) => {
-                hit.drift = Some(SymbolDrift {
-                    drifted: true,
-                    commits: commits
-                        .into_iter()
-                        .map(|commit| SymbolDriftCommit {
-                            hash: commit.hash,
-                            subject: commit.subject,
-                        })
-                        .collect(),
-                });
-            }
-            None => {
-                hit.drift = Some(SymbolDrift {
-                    drifted: false,
-                    commits: Vec::new(),
-                });
-            }
-        }
+        hit.drift = match drift.drift(&root, &file, &chain, base) {
+            crate::knowledge::symbol_check::Drift::Unknown => None,
+            crate::knowledge::symbol_check::Drift::Unchanged => Some(SymbolDrift {
+                drifted: false,
+                commits: Vec::new(),
+            }),
+            crate::knowledge::symbol_check::Drift::Changed { commits } => Some(SymbolDrift {
+                drifted: true,
+                commits: commits
+                    .into_iter()
+                    .map(|commit| SymbolDriftCommit {
+                        hash: commit.hash,
+                        subject: commit.subject,
+                    })
+                    .collect(),
+            }),
+        };
     }
     hit
 }
@@ -317,5 +316,53 @@ mod tests {
         assert!(hits[2].symbol_exists);
         assert_eq!(hits[2].start_line, Some(3));
         assert!(hits[2].drift.is_none());
+    }
+
+    #[test]
+    fn drift_is_false_when_the_committed_body_matches_and_true_when_it_does_not() {
+        let git = crate::config::git_install::find_git_exe();
+        let Some(git) = git else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new(&git)
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .expect("git");
+            assert!(status.success(), "{args:?}");
+        };
+        run(&["-c", "init.defaultBranch=main", "init"]);
+        for (key, val) in [
+            ("user.email", "test@litecode.local"),
+            ("user.name", "Litecode Test"),
+            ("commit.gpgsign", "false"),
+        ] {
+            run(&["config", key, val]);
+        }
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".litecode/knowledge")).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "fn alpha() {\n    let x = 1;\n}\n").unwrap();
+        std::fs::write(dir.path().join(".litecode/knowledge/a.md"), "note\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "note"]);
+
+        let workspace = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        let query = SymbolRefQuery {
+            file: "src/a.rs".into(),
+            symbol: Some("fn alpha".into()),
+            drift_base_of: Some(".litecode/knowledge/a.md".into()),
+        };
+        let same = resolve_symbol_refs(&workspace, &[query.clone()]);
+        assert_eq!(same[0].drift.as_ref().map(|drift| drift.drifted), Some(false));
+
+        std::fs::write(dir.path().join("src/a.rs"), "fn alpha() {\n    let x = 2;\n}\n").unwrap();
+        run(&["add", "src/a.rs"]);
+        run(&["commit", "-m", "edit alpha"]);
+        let changed = resolve_symbol_refs(&workspace, &[query]);
+        let drift = changed[0].drift.as_ref().expect("changed body is drift");
+        assert!(drift.drifted);
+        assert_eq!(drift.commits[0].subject, "edit alpha");
     }
 }

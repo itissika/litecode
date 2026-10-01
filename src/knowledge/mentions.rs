@@ -109,10 +109,34 @@ pub struct Mention {
     pub label: String,
 }
 
+fn file_label(path: &str) -> &str {
+    path.rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
+}
+
+fn capsule_label(path: &str, symbol: &str) -> String {
+    let file = file_label(path);
+    let name = symbol
+        .rsplit(" › ")
+        .next()
+        .filter(|text| !text.is_empty())
+        .unwrap_or(symbol);
+    if file.is_empty() {
+        return name.to_string();
+    }
+    if name.is_empty() {
+        return file.to_string();
+    }
+    format!("{file} {name}")
+}
+
 /// Workspace-relative path. `..`, `.`, an empty segment, and an absolute path are not.
+/// The length cap counts Unicode scalars, matching the editor.
 pub fn is_workspace_file_ref(path: &str) -> bool {
     let slash = path.replace('\\', "/");
-    if slash.is_empty() || slash.len() > 512 {
+    if slash.is_empty() || slash.chars().count() > 512 {
         return false;
     }
     if slash.starts_with('/') || slash.chars().nth(1) == Some(':') {
@@ -196,12 +220,10 @@ fn file_attr_ref(caps: &regex::Captures<'_>) -> Option<OrderedRef> {
     let lines = caps.get(3).and_then(|m| parse_line_span(m.as_str()));
     let label_raw = caps.get(4).map(|m| m.as_str()).unwrap_or("");
     let label = if label_raw.is_empty() {
-        symbol
-            .as_deref()
-            .and_then(|chain| chain.rsplit(" › ").next())
-            .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(&path))
-            .to_string()
+        match symbol.as_deref().filter(|text| !text.is_empty()) {
+            Some(chain) => capsule_label(&path, chain),
+            None => file_label(&path).to_string(),
+        }
     } else {
         label_raw.to_string()
     };
@@ -419,10 +441,11 @@ fn replace_shortcodes_with_labels(text: &str) -> String {
             let label = caps.get(4).map(|m| m.as_str()).unwrap_or("");
             if label.is_empty() {
                 let symbol = caps.get(2).map(|m| m.as_str().trim()).unwrap_or("");
-                if let Some(leaf) = symbol.rsplit(" › ").next().filter(|text| !text.is_empty()) {
-                    return leaf.to_string();
+                if symbol.is_empty() {
+                    file_label(path).to_string()
+                } else {
+                    capsule_label(path, symbol)
                 }
-                path.rsplit('/').next().unwrap_or(path).to_string()
             } else {
                 label.to_string()
             }
@@ -577,6 +600,25 @@ see [@ file=\"src/a.rs\" label=\"a.rs\"]
         assert!(!is_workspace_file_ref("/etc/passwd"));
         assert!(!is_workspace_file_ref("C:/abs"));
         assert!(!is_workspace_file_ref("src/../a.rs"));
+        let within = "文".repeat(512);
+        let over = "文".repeat(513);
+        assert!(is_workspace_file_ref(&within));
+        assert!(!is_workspace_file_ref(&over));
+    }
+
+    #[test]
+    fn an_empty_symbol_label_uses_the_file_name_and_the_last_hop() {
+        let source = r#"[@ file="src/a.rs" symbol="impl Store › fn save" label=""]"#;
+        let refs = extract_refs_in_order(source);
+        assert_eq!(
+            refs,
+            vec![OrderedRef::Symbol {
+                path: "src/a.rs".into(),
+                symbol: Some("impl Store › fn save".into()),
+                lines: None,
+                label: "a.rs fn save".into(),
+            }]
+        );
     }
 
     #[test]

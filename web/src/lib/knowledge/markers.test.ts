@@ -172,5 +172,20 @@ describe("file citations", () => {
     expect(isWorkspaceFileRef("/etc/passwd")).toBe(false);
     expect(isWorkspaceFileRef("C:/abs")).toBe(false);
     expect(isWorkspaceFileRef("src/../a.rs")).toBe(false);
+    expect(isWorkspaceFileRef("文".repeat(512))).toBe(true);
+    expect(isWorkspaceFileRef("文".repeat(513))).toBe(false);
+  });
+
+  it("fills an empty symbol label with the file name and the last hop", () => {
+    const source = `[@ file="src/a.rs" symbol="impl Store › fn save" label=""]`;
+    expect(splitBodyRefs(source)).toEqual([
+      {
+        type: "symbol",
+        path: "src/a.rs",
+        symbol: "impl Store › fn save",
+        lines: null,
+        label: "a.rs fn save",
+      },
+    ]);
   });
 });

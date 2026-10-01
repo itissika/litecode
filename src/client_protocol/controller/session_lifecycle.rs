@@ -123,7 +123,9 @@ impl SessionController {
                 .sessions
                 .append_plan_execute(session_id, &crate::types::user_text(&input.text))
             {
-                Ok(()) => crate::runtime::TurnInput::Wake,
+                Ok(()) => crate::runtime::TurnInput::Wake {
+                    anchor_user_seq: None,
+                },
                 Err(error) => {
                     tracing::warn!(
                         session_id,
