@@ -25,8 +25,16 @@ const VARIANT_SHELL: Record<DropdownVariant, string> = {
  *  overridden per-instance without fighting the cascade. */
 const VARIANT_PANEL: Record<DropdownVariant, string> = {
   select: "w-max max-w-[360px] max-h-48 overflow-y-auto",
-  menu: "min-w-[160px]",
-  panel: "",
+  menu: "min-w-[160px] overflow-y-auto",
+  panel: "overflow-y-auto",
+};
+
+/** Select menus stay at `max-h-48` unless a caller asks for something else.
+ *  Still clamped to the open side of the screen and the pane. */
+const VARIANT_MAX_H: Record<DropdownVariant, number | undefined> = {
+  select: 192,
+  menu: undefined,
+  panel: undefined,
 };
 
 /** Default panel background. Overridable via the `bgClassName` prop. */
@@ -62,10 +70,6 @@ const PANEL_MAX_W: Record<DropdownVariant, number> = {
   panel: 320,
 };
 
-/** Panel max height (select shell's `max-h-48`). Used to auto-flip the panel
- *  when the requested direction would run off the viewport. */
-const PANEL_MAX_H = 192;
-
 /** Keep the portaled panel at least this far from the viewport edges. */
 const VIEWPORT_MARGIN = 8;
 
@@ -77,16 +81,89 @@ type PanelPos = {
   right?: number;
   width?: number;
   minWidth?: number;
+  maxWidth?: number;
+  maxHeight?: number;
 };
 
+type SideBox = { top: number; right: number; bottom: number; left: number };
+
+/** Box the menu must stay inside. Dockview lifts panel content out of
+ *  `.dv-groupview` into `.dv-render-overlay` and positions that overlay on
+ *  the group's content box, so the trigger has no groupview ancestor.
+ *  Walking up to the group misses the pane and the menu only meets the
+ *  screen. The overlay's rect is the absolute top and bottom of the pane.
+ *  A groupview ancestor is the fallback for content that was not relocated. */
+function dockPane(el: HTMLElement): HTMLElement | null {
+  const overlay = el.closest<HTMLElement>(".dv-render-overlay");
+  if (overlay) {
+    const rect = overlay.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) return overlay;
+  }
+  const group = el.closest<HTMLElement>(".dv-groupview");
+  if (!group) return null;
+  for (const child of group.children) {
+    if (child.classList.contains("dv-content-container")) {
+      return child as HTMLElement;
+    }
+  }
+  return group;
+}
+
+/** Viewport clipped to the pane. Height uses this box; a pane that hangs
+ *  off the screen does not lend the menu that off-screen space. */
+function visibleBox(el: HTMLElement, vw: number, vh: number): SideBox {
+  const pane = dockPane(el)?.getBoundingClientRect();
+  if (!pane) return { top: 0, right: vw, bottom: vh, left: 0 };
+  return {
+    top: Math.max(0, pane.top),
+    left: Math.max(0, pane.left),
+    right: Math.min(vw, pane.right),
+    bottom: Math.min(vh, pane.bottom),
+  };
+}
+
+/** Prefer `direction`. A finite wish keeps that side when the side can hold
+ *  it; otherwise the menu opens toward whichever side of the box is taller
+ *  (down included). */
+function opensUpward(
+  direction: "up" | "down",
+  above: number,
+  below: number,
+  wish: number | undefined,
+): boolean {
+  const holds = (room: number) =>
+    wish != null && room >= wish + VIEWPORT_MARGIN;
+  if (direction === "up") {
+    if (holds(above)) return true;
+    if (holds(below)) return false;
+    return above >= below;
+  }
+  if (holds(below)) return false;
+  if (holds(above)) return true;
+  return above > below;
+}
+
+function samePos(a: PanelPos | null, b: PanelPos): boolean {
+  if (!a) return false;
+  return (
+    a.top === b.top &&
+    a.bottom === b.bottom &&
+    a.left === b.left &&
+    a.right === b.right &&
+    a.width === b.width &&
+    a.minWidth === b.minWidth &&
+    a.maxWidth === b.maxWidth &&
+    a.maxHeight === b.maxHeight
+  );
+}
+
 interface DropdownProps {
-  /** Direction the panel opens relative to the trigger. Auto-flips when the
-   *  requested direction would run off the viewport. */
+  /** Direction the panel prefers. It still opens the other way — down
+   *  included — when that side of the screen (and the current pane) has
+   *  the room. */
   direction?: "up" | "down";
-  /** Opt-in smart flip: when enabled, the panel opens toward the viewport half
-   *  the trigger occupies (lower half → upward, upper half → downward), sized
-   *  against the measured panel height so it never runs off the viewport.
-   *  Default false — existing callers keep the fixed-height heuristic. */
+  /** When set, the flip decision uses the panel's measured height instead of
+   *  only `maxHeight`. The menu still stays inside the screen and the pane. */
   flip?: boolean;
   /**
    * Horizontal alignment of the panel to the wrapper.
@@ -107,10 +184,24 @@ interface DropdownProps {
   bgClassName?: string;
   /** Auto-close when a click occurs inside the panel (default true unless variant="panel"). */
   closeOnSelect?: boolean;
+  /** Preferred max height in px. Kept when the side the menu opens toward
+   *  has at least this much room; otherwise it is dropped and the menu is
+   *  capped to that side of the screen, clipped to the current pane.
+   *  `null` skips the variant ceiling (select's 192px) and uses the free
+   *  space. Omit to keep the variant ceiling, still clamped to that space. */
+  maxHeight?: number | null;
   /** Trigger renderer. Receives the open state and a toggle function. */
   trigger: (api: { open: boolean; toggle: () => void }) => ReactNode;
-  /** Panel content. Receives a close function. */
-  children: ReactNode | ((api: { close: () => void }) => ReactNode);
+  /** Panel content. `maxHeight` is the cap actually applied (the wish, or
+   *  the free space when the wish does not fit). `placement` is the side
+   *  the menu opened toward. */
+  children:
+    | ReactNode
+    | ((api: {
+        close: () => void;
+        maxHeight: number;
+        placement: "up" | "down";
+      }) => ReactNode);
 }
 
 /**
@@ -118,12 +209,15 @@ interface DropdownProps {
  *
  * Owns: open/close state, outside-click (mousedown) dismissal, Escape
  * dismissal, and viewport-anchored positioning (fixed + getBoundingClientRect,
- * repositioned on scroll/resize — same mechanics as Popover). The panel is
- * rendered through a portal to `document.body`, so it escapes any ancestor
- * overflow/stacking context (fold cards, scroll containers, dialogs) instead
- * of being clipped by them. The panel's shell styling comes from `variant`,
- * so the look is edited in exactly one place. Callers supply only the trigger
- * button and the panel content.
+ * repositioned on scroll/resize — same mechanics as Popover). The panel opens
+ * downward when that side has the room, and its width and height are clamped
+ * to the screen; height is also clamped to the dock pane the trigger lives
+ * in. A caller may pass `maxHeight` as a wish — it is kept only when that
+ * side can hold it. The panel is rendered through a portal to `document.body`,
+ * so it escapes any ancestor overflow/stacking context (fold cards, scroll
+ * containers, dialogs) instead of being clipped by them. The panel's shell
+ * styling comes from `variant`, so the look is edited in exactly one place.
+ * Callers supply only the trigger button and the panel content.
  *
  * Distinct from FloatingDialog (a draggable/resizable modal window).
  */
@@ -136,6 +230,7 @@ export function Dropdown({
   panelClassName = "",
   bgClassName,
   closeOnSelect,
+  maxHeight,
   trigger,
   children,
 }: DropdownProps) {
@@ -143,8 +238,8 @@ export function Dropdown({
   const [pos, setPos] = useState<PanelPos | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  /** Measured portaled-panel height, used by the opt-in `flip` to decide
-   *  against the real size instead of the fixed PANEL_MAX_H heuristic. */
+  /** Measured portaled-panel height. `flip` uses it as the wish when the
+   *  caller did not pass `maxHeight`. */
   const panelHRef = useRef<number | null>(null);
 
   const autoClose = closeOnSelect ?? variant !== "panel";
@@ -155,76 +250,82 @@ export function Dropdown({
     const rect = el.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const maxW = PANEL_MAX_W[variant];
+    const box = visibleBox(el, vw, vh);
+    const above = Math.max(0, rect.top - box.top);
+    const below = Math.max(0, box.bottom - rect.bottom);
+    // `null` is an explicit "no ceiling of my own". `undefined` keeps the
+    // variant's ceiling. A finite wish is kept only when the open side holds it.
+    const wish =
+      maxHeight === null
+        ? undefined
+        : (maxHeight ??
+          (flip ? (panelHRef.current ?? undefined) : undefined) ??
+          VARIANT_MAX_H[variant]);
+    const opensUp = opensUpward(direction, above, below, wish);
+    const room = Math.max(0, (opensUp ? above : below) - VIEWPORT_MARGIN);
+    const cap =
+      wish != null && Number.isFinite(wish)
+        ? Math.min(Math.max(0, wish), room)
+        : room;
 
-    const next: PanelPos = {};
+    const next: PanelPos = { maxHeight: cap };
+    if (opensUp) next.bottom = vh - rect.top;
+    else next.top = rect.bottom;
 
-    // Vertical: honor the requested direction, but flip when the panel would
-    // run off the viewport — the portaled panel is no longer clipped by any
-    // container, so the viewport edge is the only boundary left.
-    const spaceBelow = vh - rect.bottom;
-    const spaceAbove = rect.top;
-    if (flip) {
-      // Opt-in smart flip: open toward the viewport half the trigger sits in
-      // (lower half → upward, upper half → downward), sized against the
-      // measured panel height so the panel never runs off the viewport.
-      const panelH = panelHRef.current ?? PANEL_MAX_H;
-      const fitsDown = spaceBelow >= panelH + VIEWPORT_MARGIN;
-      const fitsUp = spaceAbove >= panelH + VIEWPORT_MARGIN;
-      if (rect.bottom > vh / 2) {
-        next.bottom = vh - rect.top; // open upward
-        if (!fitsUp && fitsDown) next.top = rect.bottom; // not enough room above → fall back down
-      } else {
-        next.top = rect.bottom; // open downward
-        if (!fitsDown && fitsUp) next.bottom = vh - rect.top; // not enough room below → fall back up
-      }
-    } else {
-      const fitsDown = spaceBelow >= PANEL_MAX_H + VIEWPORT_MARGIN;
-      const fitsUp = spaceAbove >= PANEL_MAX_H + VIEWPORT_MARGIN;
-      if (direction === "up") {
-        if (fitsUp) next.bottom = vh - rect.top;
-        else next.top = rect.bottom; // flip down
-      } else {
-        if (fitsDown) next.top = rect.bottom;
-        else next.bottom = vh - rect.top; // flip up
-      }
-    }
-
-    // Horizontal anchoring + viewport clamp.
+    // Width is reserved up to the variant's max, then shifted and capped so
+    // the panel stays inside the viewport. A narrower panel simply doesn't
+    // fill that reservation.
+    const span = Math.max(
+      0,
+      Math.min(PANEL_MAX_W[variant], vw - 2 * VIEWPORT_MARGIN),
+    );
     if (align === "stretch") {
-      next.left = rect.left;
-      next.width = rect.width;
+      const width = Math.min(rect.width, Math.max(0, vw - 2 * VIEWPORT_MARGIN));
+      let left = rect.left;
+      if (left + width > vw - VIEWPORT_MARGIN) left = vw - VIEWPORT_MARGIN - width;
+      if (left < VIEWPORT_MARGIN) left = VIEWPORT_MARGIN;
+      next.left = left;
+      next.width = width;
+      next.maxWidth = width;
     } else if (align === "right") {
-      next.right = vw - rect.right;
+      let panelRight = Math.min(rect.right, vw - VIEWPORT_MARGIN);
+      if (panelRight - span < VIEWPORT_MARGIN) {
+        panelRight = Math.min(vw - VIEWPORT_MARGIN, VIEWPORT_MARGIN + span);
+      }
+      next.right = vw - panelRight;
+      next.maxWidth = Math.min(span, Math.max(0, panelRight - VIEWPORT_MARGIN));
     } else {
-      // left (default) and none → left-anchored, clamped into the viewport.
-      next.left = Math.max(
-        VIEWPORT_MARGIN,
-        Math.min(rect.left, vw - maxW - VIEWPORT_MARGIN),
-      );
+      let left = rect.left;
+      if (left + span > vw - VIEWPORT_MARGIN) {
+        left = vw - VIEWPORT_MARGIN - span;
+      }
+      if (left < VIEWPORT_MARGIN) left = VIEWPORT_MARGIN;
+      next.left = left;
+      next.maxWidth = Math.min(span, Math.max(0, vw - VIEWPORT_MARGIN - left));
     }
 
     if (variant === "select") {
       // Replaces the old absolute `min-w-full`: the panel is at least as wide
       // as the trigger. With fixed positioning `min-width: 100%` would resolve
       // against the viewport, so the trigger width is passed in px instead.
-      next.minWidth = rect.width;
+      // Never wider than the clamp, or the min would push the panel back out.
+      next.minWidth = Math.min(rect.width, next.maxWidth ?? rect.width);
     }
 
-    setPos(next);
+    setPos((prev) => (samePos(prev, next) ? prev : next));
   };
 
   useLayoutEffect(() => {
     if (!open) {
       setPos(null);
+      panelHRef.current = null;
       return;
     }
     update();
-  }, [open, direction, align, variant]);
+  }, [open, direction, align, variant, maxHeight, flip]);
 
-  // Measure the portaled panel once it mounts so the opt-in `flip` can decide
-  // against the real height. Repositions when the measured height first lands;
-  // the `h !== panelHRef.current` guard keeps this from looping on setPos.
+  // `flip` re-decides once the real height is known. The equality guard on
+  // `panelHRef` keeps a capped panel from looping.
   useLayoutEffect(() => {
     if (!open || !flip || !pos) return;
     const el = panelRef.current;
@@ -234,7 +335,7 @@ export function Dropdown({
       panelHRef.current = h;
       update();
     }
-  }, [open, flip, pos]);
+  }, [open, flip, pos, maxHeight]);
 
   useEffect(() => {
     if (!open) return;
@@ -253,13 +354,22 @@ export function Dropdown({
     window.addEventListener("resize", onResize);
     window.addEventListener("keydown", onKey);
     document.addEventListener("mousedown", onDown);
+    const pane = rootRef.current ? dockPane(rootRef.current) : null;
+    let observer: ResizeObserver | null = null;
+    if (pane && typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(() => update());
+      observer.observe(pane);
+    }
     return () => {
+      observer?.disconnect();
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", onKey);
       document.removeEventListener("mousedown", onDown);
     };
-  }, [open]);
+  }, [open, direction, align, variant, maxHeight, flip]);
+
+  const placement: "up" | "down" = pos?.bottom != null ? "up" : "down";
 
   return (
     <div
@@ -273,12 +383,16 @@ export function Dropdown({
           <div
             ref={panelRef}
             data-dropdown-panel
-            className={`fixed z-[10000] ${SHADOW[direction]} ${BORDER[direction]} ${bgClassName ?? DEFAULT_BG} ${VARIANT_PANEL[variant]} ${panelClassName}`}
+            className={`fixed z-[10000] overflow-x-hidden ${SHADOW[placement]} ${BORDER[placement]} ${bgClassName ?? DEFAULT_BG} ${VARIANT_PANEL[variant]} ${panelClassName}`}
             style={pos}
             onClick={autoClose ? () => setOpen(false) : undefined}
           >
             {typeof children === "function"
-              ? children({ close: () => setOpen(false) })
+              ? children({
+                  close: () => setOpen(false),
+                  maxHeight: pos.maxHeight ?? 0,
+                  placement,
+                })
               : children}
           </div>,
           document.body,

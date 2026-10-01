@@ -23,12 +23,11 @@ interface MessageListProps {
   loadingHistory: boolean;
   canLoadMore: boolean;
   onLoadMore: () => void;
-  userDetailBefore: number;
   isRunning: boolean;
   scrollRef: RefObject<HTMLDivElement | null>;
   sessionId: string;
-  /** Highest user-detail k with a nonempty file patch; null hides Revert files. */
-  maxFileRevertK?: number | null;
+  /** Highest file-snapshot stem with a nonempty patch; null hides Revert files. */
+  maxFileRevertSeq?: number | null;
   /** Human stick intent: true until the user scrolls up. */
   onStickChange?: (stickToEnd: boolean) => void;
   jumpToEndRef?: RefObject<(() => void) | null>;
@@ -53,11 +52,10 @@ export const MessageList = memo(function MessageList({
   loadingHistory,
   canLoadMore,
   onLoadMore,
-  userDetailBefore,
   isRunning,
   scrollRef,
   sessionId,
-  maxFileRevertK = null,
+  maxFileRevertSeq = null,
   onStickChange,
   jumpToEndRef,
   revealBashRef,
@@ -70,10 +68,7 @@ export const MessageList = memo(function MessageList({
   composerCollapsed = false,
   readOnly = false,
 }: MessageListProps) {
-  const bubbles = useMemo(
-    () => projectBubbles(messages, userDetailBefore),
-    [messages, userDetailBefore],
-  );
+  const bubbles = useMemo(() => projectBubbles(messages), [messages]);
   // Transient "compacting now" line: `compacting` is set on started and cleared
   // on succeeded/failed. Do not key off `turnPhase`, which can stay compacting
   // after the checkpoint lands.
@@ -208,10 +203,14 @@ export const MessageList = memo(function MessageList({
             const bubble = bubbles[virtualItem.index];
             if (!bubble) return null;
 
-            const showRevert = !readOnly && bubble.userAnchorK !== undefined;
+            const userSeq =
+              bubble.isUser && bubble.first != null && bubble.first.seq >= 0
+                ? bubble.first.seq
+                : undefined;
+            const showRevert = !readOnly && userSeq !== undefined;
             const showRevertFiles =
-              bubble.userAnchorK !== undefined &&
-              canRevertFiles(bubble.userAnchorK, maxFileRevertK);
+              userSeq !== undefined &&
+              canRevertFiles(userSeq, maxFileRevertSeq);
             // The queue hands over to its durable row: "sending" — that row,
             // in the slot the bubble already occupied, settles in under the veil
             // instead of snapping to full opacity.
@@ -231,7 +230,7 @@ export const MessageList = memo(function MessageList({
             ) : (
               <ItemBubble
                 rows={bubble.rows}
-                userAnchorK={bubble.userAnchorK}
+                userSeq={userSeq}
                 showRevert={showRevert}
                 showRevertFiles={showRevertFiles}
                 readOnly={readOnly}

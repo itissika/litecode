@@ -14,6 +14,29 @@ type ComposerAppendHandler = (
 ) => void;
 
 const handlers = new Set<ComposerAppendHandler>();
+const mountedComposers = new Set<string>();
+let lastFocusedComposer: string | null = null;
+
+/** The chat box that should receive an editor selection. */
+export function composerTarget(): string | null {
+  if (lastFocusedComposer && mountedComposers.has(lastFocusedComposer)) {
+    return lastFocusedComposer;
+  }
+  const first = mountedComposers.values().next();
+  return first.done ? null : first.value;
+}
+
+export function noteComposerFocus(sessionId: string): void {
+  lastFocusedComposer = sessionId;
+}
+
+export function registerComposer(sessionId: string): () => void {
+  mountedComposers.add(sessionId);
+  return () => {
+    mountedComposers.delete(sessionId);
+    if (lastFocusedComposer === sessionId) lastFocusedComposer = null;
+  };
+}
 
 /** Append text (and any recalled images) to the composer of `sessionId`. */
 export function appendComposerText(

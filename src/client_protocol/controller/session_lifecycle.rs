@@ -406,16 +406,16 @@ impl SessionController {
 
     // ── per-session operations ──
 
-    pub fn revert_to_user_anchor(&mut self, session_id: &str, k: u32) -> anyhow::Result<()> {
+    pub fn revert_to_user_anchor(&mut self, session_id: &str, seq: u64) -> anyhow::Result<()> {
         let project = self.project.clone();
         let binding = self.session_binding(session_id);
         let Some(proj) = self.projection_mut(session_id) else {
             return Err(anyhow::anyhow!("no session bound"));
         };
-        proj.revert_to_user_anchor(k, &project, &binding)
+        proj.revert_to_user_anchor(seq, &project, &binding)
     }
 
-    pub fn revert_files(&mut self, session_id: &str, k: u32) -> anyhow::Result<()> {
+    pub fn revert_files(&mut self, session_id: &str, seq: u64) -> anyhow::Result<()> {
         let project = self.project.clone();
         let binding = self.session_binding(session_id);
         let workspace_root = self.project.clone();
@@ -423,7 +423,7 @@ impl SessionController {
         let Some(proj) = self.projection_mut(session_id) else {
             return Err(anyhow::anyhow!("no session bound"));
         };
-        proj.revert_files(k, &project, &binding, &workspace_root, &snapshots_dir)
+        proj.revert_files(seq, &project, &binding, &workspace_root, &snapshots_dir)
     }
 
     pub fn set_active_primary(&mut self, session_id: &str, agent_id: &str) -> anyhow::Result<()> {

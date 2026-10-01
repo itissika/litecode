@@ -116,11 +116,11 @@ fn classify_event(event: &Event, root: &Path) -> Option<(Vec<String>, bool)> {
     Some((paths, deleted))
 }
 
-/// Keep editable `.litecode/*.json` and plan markdown; drop product-internal
-/// trees (index writes); otherwise `watcher_exclude` is a hard cut — no
-/// Search-line rescue.
+/// Keep editable `.litecode/*.json`, plan markdown, and the private knowledge
+/// corpus; drop other product-internal trees (index writes); otherwise
+/// `watcher_exclude` is a hard cut — no Search-line rescue.
 fn event_rel_is_broadcast(rel: &str) -> bool {
-    if is_editable_litecode_json(rel) || is_plan_file_rel(rel) {
+    if is_editable_litecode_json(rel) || is_plan_file_rel(rel) || is_knowledge_corpus_rel(rel) {
         return true;
     }
     if path_has_product_internal_dir(rel) {
@@ -141,7 +141,7 @@ pub fn filter_change_for_ui(mut change: WorkspaceChange) -> Option<WorkspaceChan
 }
 
 fn ui_rel_is_noteworthy(rel: &str) -> bool {
-    if is_editable_litecode_json(rel) || is_plan_file_rel(rel) {
+    if is_editable_litecode_json(rel) || is_plan_file_rel(rel) || is_knowledge_corpus_rel(rel) {
         return true;
     }
     if path_has_product_internal_dir(rel) {
@@ -204,6 +204,17 @@ fn is_plan_file_rel(rel: &str) -> bool {
         return false;
     };
     !name.contains('/') && name.len() > 3 && name.ends_with(".md")
+}
+
+/// Private knowledge tree. Same path as `knowledge::root::PRIVATE_ROOT` and the
+/// web `KNOWLEDGE_ROOT` (`.litecode/knowledge`). Checked before user excludes,
+/// like plan files and editable `.litecode` json. Atomic-save temps stay out.
+fn is_knowledge_corpus_rel(rel: &str) -> bool {
+    let root = crate::knowledge::root::PRIVATE_ROOT;
+    if rel != root && !rel.starts_with(&format!("{root}/")) {
+        return false;
+    }
+    !rel.split('/').any(|seg| seg.contains(".litecode-tmp-"))
 }
 
 fn changes_include_workspace_excludes(changes: &[WorkspaceChange]) -> bool {
@@ -471,6 +482,58 @@ mod tests {
             &[nested.to_str().unwrap()],
         );
         assert!(classify_event(&ev_nested, &root).is_none());
+
+        crate::workspace::filter::activate_workspace_excludes(prev);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn private_knowledge_is_broadcast_despite_user_excludes() {
+        let _lock = crate::workspace::filter::lock_excludes_cache_for_test();
+        let prev = crate::workspace::filter::active_workspace_excludes();
+        let mut lists = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
+        lists.watcher_exclude.push(".litecode/knowledge/**".into());
+        lists.files_exclude.push(".litecode/knowledge/**".into());
+        crate::workspace::filter::activate_workspace_excludes(lists);
+
+        let root = temp_root();
+        let note = root
+            .join(".litecode")
+            .join("knowledge")
+            .join("内核")
+            .join("seq.md");
+        fs::create_dir_all(note.parent().unwrap()).unwrap();
+        fs::write(&note, b"# seq").unwrap();
+        let ev = make_event(
+            EventKind::Modify(ModifyKind::Any),
+            &[note.to_str().unwrap()],
+        );
+        let (paths, _) = classify_event(&ev, &root).expect("knowledge md must broadcast");
+        assert_eq!(paths, vec![".litecode/knowledge/内核/seq.md".to_string()]);
+        let ui = filter_change_for_ui(changed(&[".litecode/knowledge/内核/seq.md"]))
+            .expect("knowledge md must reach the UI");
+        assert_eq!(
+            ui.paths,
+            vec![".litecode/knowledge/内核/seq.md".to_string()]
+        );
+
+        let tmp = root
+            .join(".litecode")
+            .join("knowledge")
+            .join(".seq.md.litecode-tmp-1-2");
+        fs::write(&tmp, b"partial").unwrap();
+        let ev_tmp = make_event(EventKind::Modify(ModifyKind::Any), &[tmp.to_str().unwrap()]);
+        assert!(classify_event(&ev_tmp, &root).is_none());
+
+        let sibling = root.join(".litecode").join("index").join("chunks.jsonl");
+        fs::create_dir_all(sibling.parent().unwrap()).unwrap();
+        fs::write(&sibling, b"{}").unwrap();
+        let ev_idx = make_event(
+            EventKind::Modify(ModifyKind::Any),
+            &[sibling.to_str().unwrap()],
+        );
+        assert!(classify_event(&ev_idx, &root).is_none());
+        assert!(filter_change_for_ui(changed(&[".litecode/knowledge-extra/x.md"])).is_none());
 
         crate::workspace::filter::activate_workspace_excludes(prev);
         let _ = fs::remove_dir_all(&root);

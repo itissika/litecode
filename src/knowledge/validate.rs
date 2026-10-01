@@ -2,8 +2,10 @@
 
 use super::document::{self, Status};
 use super::mentions::{
-    extract_file_refs, extract_markers, is_knowledge_key, is_workspace_file_ref, normalize_key,
+    OrderedRef, extract_file_refs, extract_markers, extract_refs_in_order, is_knowledge_key,
+    is_workspace_file_ref, normalize_key,
 };
+use super::symbol_check::SymbolCheck;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -38,7 +40,11 @@ pub struct CheckNode<'a> {
     pub path: &'a str,
 }
 
-pub fn validate<'a>(nodes: &[CheckNode<'a>], file_exists: &dyn Fn(&str) -> bool) -> Vec<Issue> {
+pub fn validate<'a>(
+    nodes: &[CheckNode<'a>],
+    file_exists: &dyn Fn(&str) -> bool,
+    symbols: &mut dyn FnMut(&str, &str, &str) -> SymbolCheck,
+) -> Vec<Issue> {
     let mut key_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for node in nodes {
         let key = normalize_key(node.key);
@@ -157,6 +163,59 @@ pub fn validate<'a>(nodes: &[CheckNode<'a>], file_exists: &dyn Fn(&str) -> bool)
                 message: format!("File \"{path}\" does not exist."),
                 reference: Some(path),
             });
+        }
+
+        let mut seen_symbols = std::collections::HashSet::new();
+        for cite in extract_refs_in_order(node.value) {
+            let OrderedRef::Symbol {
+                path,
+                symbol: Some(chain),
+                ..
+            } = cite
+            else {
+                continue;
+            };
+            if !seen_symbols.insert((path.clone(), chain.clone())) {
+                continue;
+            }
+            if !is_workspace_file_ref(&path) || !file_exists(&path) {
+                continue;
+            }
+            match symbols(&path, &chain, node.path) {
+                SymbolCheck::Present => {}
+                SymbolCheck::Missing => issues.push(Issue {
+                    node_id: node.id.to_string(),
+                    severity: Severity::Error,
+                    code: "missing_symbol".into(),
+                    message: format!("Symbol \"{chain}\" in \"{path}\" does not exist."),
+                    reference: Some(chain),
+                }),
+                SymbolCheck::Ambiguous => issues.push(Issue {
+                    node_id: node.id.to_string(),
+                    severity: Severity::Error,
+                    code: "missing_symbol".into(),
+                    message: format!("Symbol \"{chain}\" in \"{path}\" is not unique."),
+                    reference: Some(chain),
+                }),
+                SymbolCheck::Drifted { commits } => {
+                    let mut message = format!(
+                        "Symbol \"{chain}\" in \"{path}\" changed since this note was last committed."
+                    );
+                    for commit in commits.iter().take(3) {
+                        message.push('\n');
+                        message.push_str(&commit.hash);
+                        message.push(' ');
+                        message.push_str(&commit.subject);
+                    }
+                    issues.push(Issue {
+                        node_id: node.id.to_string(),
+                        severity: Severity::Warning,
+                        code: "symbol_drift".into(),
+                        message,
+                        reference: Some(chain),
+                    });
+                }
+            }
         }
     }
     issues

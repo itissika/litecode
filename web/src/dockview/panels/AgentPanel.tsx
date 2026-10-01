@@ -366,9 +366,6 @@ function MessageListRegion({
   const fromSeq = useMessageStore(
     (s) => s.bySession.get(sessionId)?.fromSeq ?? 0,
   );
-  const userDetailBefore = useMessageStore(
-    (s) => s.bySession.get(sessionId)?.userDetailBefore ?? 0,
-  );
   const runState = useTurnStore(
     (s) => s.byId.get(sessionId)?.runState ?? "idle",
   );
@@ -382,8 +379,8 @@ function MessageListRegion({
 
   const canLoadMore = fromSeq > 0;
   const isRunning = runState === "running" || runState === "cancelling";
-  const maxFileRevertK = useSessionStore(
-    (s) => s.byId.get(sessionId)?.maxFileRevertK ?? null,
+  const maxFileRevertSeq = useSessionStore(
+    (s) => s.byId.get(sessionId)?.maxFileRevertSeq ?? null,
   );
 
   const onScroll = () => {
@@ -425,11 +422,10 @@ function MessageListRegion({
                 loadingHistory={loadingHistory}
                 canLoadMore={canLoadMore}
                 onLoadMore={loadMoreHistory}
-                userDetailBefore={userDetailBefore}
                 isRunning={isRunning}
                 scrollRef={listRef}
                 sessionId={sessionId}
-                maxFileRevertK={maxFileRevertK}
+                maxFileRevertSeq={maxFileRevertSeq}
                 onStickChange={onStickChange}
                 jumpToEndRef={jumpToEndRef}
                 revealBashRef={revealBashRef}

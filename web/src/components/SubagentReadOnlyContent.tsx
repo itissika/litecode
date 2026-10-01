@@ -54,9 +54,6 @@ export function SubagentReadOnlyContent({
   const fromSeq = useMessageStore(
     (s) => s.bySession.get(sessionId)?.fromSeq ?? 0,
   );
-  const userDetailBefore = useMessageStore(
-    (s) => s.bySession.get(sessionId)?.userDetailBefore ?? 0,
-  );
   const hydrated = useMessageStore(
     (s) => s.bySession.get(sessionId)?.hydrated ?? false,
   );
@@ -138,7 +135,6 @@ export function SubagentReadOnlyContent({
               loadingHistory={loadingHistory}
               canLoadMore={canLoadMore}
               onLoadMore={loadMoreHistory}
-              userDetailBefore={userDetailBefore}
               isRunning={isRunning}
               scrollRef={listRef}
               sessionId={sessionId}

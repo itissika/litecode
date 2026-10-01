@@ -1,13 +1,18 @@
-//! Replaying session history to a model: three rules, nothing else.
+//! Replaying session history to a model.
 //!
-//! 1. Provider item `id`s never go back on the wire. Codecs omit them; `call_id`
-//!    is a pairing key, not an identity, and always survives.
+//! 1. Provider item `id`s never go back on the wire, except a summary-replay
+//!    host's own reasoning id. Codecs omit every other id. `call_id` is a
+//!    pairing key, not an identity, and always survives.
 //! 2. Reasoning ciphertext (`encrypted_content`) is readable only by the provider
 //!    that produced it, so it goes back only to that provider.
-//! 3. Reasoning text is never dropped here. Each codec writes it in its own
-//!    dialect; a provider declaring `reasoning_replay` receives it on every turn.
+//! 3. Reasoning text is never dropped by the ciphertext strip. Each codec writes
+//!    it in its own dialect; a provider declaring `reasoning_replay` receives it
+//!    on every turn.
+//! 4. Summary replay keeps only reasoning this provider produced. Foreign
+//!    reasoning has no id that host minted, and its input schema requires that
+//!    id, so the item is removed on the request copy.
 //!
-//! The session log is never rewritten: rule 2 runs on the per-request copy.
+//! The session log is never rewritten. Rules 2 and 4 run on the per-request copy.
 
 use crate::authority::responses::Item;
 
@@ -51,6 +56,32 @@ pub fn strip_foreign_ciphertext(
         }
     }
     stripped
+}
+
+/// Rule 4 on the request copy: drop reasoning this provider did not produce.
+/// An unknown producer is foreign. Non-reasoning items stay. Returns how many
+/// reasoning items were removed.
+pub fn retain_own_reasoning(
+    items: &mut Vec<Item>,
+    producers: &[Option<String>],
+    provider_id: &str,
+) -> usize {
+    let mut dropped = 0;
+    let mut kept = Vec::with_capacity(items.len());
+    for (index, item) in items.drain(..).enumerate() {
+        let foreign = matches!(item, Item::Reasoning(_))
+            && !producers
+                .get(index)
+                .and_then(Option::as_deref)
+                .is_some_and(|producer| producer == provider_id);
+        if foreign {
+            dropped += 1;
+            continue;
+        }
+        kept.push(item);
+    }
+    *items = kept;
+    dropped
 }
 
 #[cfg(test)]
@@ -109,5 +140,33 @@ mod tests {
                 .iter()
                 .all(|item| crate::types::item_text_preview(item) == "think")
         );
+    }
+
+    #[test]
+    fn summary_replay_keeps_only_this_providers_reasoning() {
+        let mut items = vec![
+            reasoning(Some("own")),
+            crate::types::user_text("stay"),
+            reasoning(Some("foreign")),
+            reasoning(None),
+        ];
+        let producers = vec![
+            Some("aliyun-token".to_string()),
+            Some("aliyun-token".to_string()),
+            Some("openai".to_string()),
+            None,
+        ];
+        assert_eq!(
+            retain_own_reasoning(&mut items, &producers, "aliyun-token"),
+            2
+        );
+        assert_eq!(items.len(), 2);
+        match &items[0] {
+            Item::Reasoning(reasoning) => {
+                assert_eq!(reasoning.encrypted_content.as_deref(), Some("own"));
+            }
+            other => panic!("expected own reasoning, got {other:?}"),
+        }
+        assert_eq!(crate::types::item_text_preview(&items[1]), "stay");
     }
 }

@@ -5,6 +5,7 @@ import {
   extractMarkers,
   fileMentionSource,
   isWorkspaceFileRef,
+  symbolMentionSource,
   knowledgePreview,
   mentionSource,
   splitBodyRefs,
@@ -125,6 +126,43 @@ describe("file citations", () => {
       { type: "file", path: "src/a.rs", label: "a.rs" },
     ]);
     expect(knowledgePreview(file, 1)).toBe("a.rs");
+  });
+
+  it("reads a symbol citation in order and skips code", () => {
+    const symbol = symbolMentionSource("src/session/manager.rs", {
+      symbol: "impl SessionManager › fn append_reminder",
+      lines: "2148-2165",
+      label: "fn append_reminder",
+    });
+    const range = symbolMentionSource("src/a.rs", { lines: "4-9", label: "a.rs" });
+    const markdown = [
+      `see ${symbol} and ${mentionSource("seq")}`,
+      "```",
+      symbolMentionSource("skip.rs", { symbol: "fn hidden", label: "fn hidden" }),
+      "```",
+      range,
+    ].join("\n");
+    expect(extractFileRefs(markdown)).toEqual(["src/session/manager.rs", "src/a.rs"]);
+    expect(extractMarkers(markdown)).toEqual(["seq"]);
+    expect(splitBodyRefs(`see ${symbol} then ${range}`)).toEqual([
+      { type: "text", value: "see " },
+      {
+        type: "symbol",
+        path: "src/session/manager.rs",
+        symbol: "impl SessionManager › fn append_reminder",
+        lines: "2148-2165",
+        label: "fn append_reminder",
+      },
+      { type: "text", value: " then " },
+      {
+        type: "symbol",
+        path: "src/a.rs",
+        symbol: null,
+        lines: "4-9",
+        label: "a.rs",
+      },
+    ]);
+    expect(knowledgePreview(symbol, 1)).toBe("fn append_reminder");
   });
 
   it("rejects a parent segment and an absolute path", () => {

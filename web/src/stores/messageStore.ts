@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import {
-  hydrateUserDetailBefore,
   isWellFormedBufferRow,
   itemFromRow,
   itemPlainText,
@@ -68,11 +67,6 @@ export interface MessageSlice {
   /** Loaded window `[fromSeq, toSeq)`. */
   fromSeq: number;
   toSeq: number;
-  /**
-   * Server count of user-detail rows with seq `< fromSeq` (`buffer/load`
-   * `user_detail_before`). 0 when the loaded window starts at seq 0.
-   */
-  userDetailBefore: number;
   loadingHistory: boolean;
   /** True after the first buffer/load for this session (including empty). */
   hydrated: boolean;
@@ -98,7 +92,6 @@ export const EMPTY_SLICE: MessageSlice = {
   display: EMPTY_DISPLAY,
   fromSeq: 0,
   toSeq: 0,
-  userDetailBefore: 0,
   loadingHistory: false,
   hydrated: false,
   shapeError: null,
@@ -278,11 +271,6 @@ function upsertEvents(
     landedQueueSeq,
     fromSeq,
     toSeq,
-    userDetailBefore: hydrateUserDetailBefore(
-      fromSeq,
-      undefined,
-      slice.userDetailBefore,
-    ),
     shapeError,
   };
 }
@@ -328,8 +316,8 @@ interface MessageStore extends MessageState {
     seq: number,
     isCurrent?: () => boolean,
   ) => Promise<boolean>;
-  revertToUserAnchor: (sessionId: string, k: number) => void;
-  revertFiles: (sessionId: string, k: number) => void;
+  revertToUserAnchor: (sessionId: string, seq: number) => void;
+  revertFiles: (sessionId: string, seq: number) => void;
   reset: (sessionId: string) => void;
 }
 
@@ -377,20 +365,11 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       const state = get();
       const slice = getSlice(state.bySession, sessionId);
       const next = upsertEvents(slice, loaded.events);
-      // A tail append (the P6 gap catch-up) starts at/after the current window
-      // end. Keep the existing window start and user-detail count: the older
-      // rows are still held, and `userDetailBefore` counts from the window start,
-      // not from the appended tail.
+      // A tail append (the gap catch-up) starts at/after the current window
+      // end. Keep the existing window start: the older rows are still held.
       const tailAppend = slice.toSeq > 0 && loaded.from_seq >= slice.toSeq;
       next.fromSeq = tailAppend ? slice.fromSeq : loaded.from_seq;
       next.toSeq = Math.max(next.toSeq, loaded.to_seq);
-      next.userDetailBefore = tailAppend
-        ? slice.userDetailBefore
-        : hydrateUserDetailBefore(
-            loaded.from_seq,
-            loaded.user_detail_before,
-            slice.userDetailBefore,
-          );
       next.loadingHistory = false;
       next.hydrated = true;
       next.subagentBindings = {
@@ -538,11 +517,6 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         landedQueueSeq: null,
         fromSeq: Math.min(slice.fromSeq, rev.next_seq),
         toSeq: rev.next_seq,
-        userDetailBefore: hydrateUserDetailBefore(
-          Math.min(slice.fromSeq, rev.next_seq),
-          undefined,
-          slice.userDetailBefore,
-        ),
         shapeError: null,
         blockLogGrowth: true,
         turnEndNotice: null,
@@ -599,10 +573,10 @@ export const useMessageStore = create<MessageStore>((set, get) => {
       return false;
     },
 
-    revertToUserAnchor: (sessionId, k) => {
+    revertToUserAnchor: (sessionId, seq) => {
       useConnectionStore
         .getState()
-        .sendRpc("session/revert-to-user-anchor", { k, session_id: sessionId })
+        .sendRpc("session/revert-to-user-anchor", { seq, session_id: sessionId })
         .catch((err) => {
           useToastStore
             .getState()
@@ -613,10 +587,10 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         });
     },
 
-    revertFiles: (sessionId, k) => {
+    revertFiles: (sessionId, seq) => {
       useConnectionStore
         .getState()
-        .sendRpc("session/revert-files", { k, session_id: sessionId })
+        .sendRpc("session/revert-files", { seq, session_id: sessionId })
         .catch((err) => {
           useToastStore
             .getState()

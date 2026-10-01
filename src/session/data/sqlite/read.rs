@@ -81,16 +81,11 @@ pub fn execute(
         SessionRead::SurfaceSeqs { session_id } => {
             Ok(ReadValue::Seqs(surface_seqs(conn, &session_id, data_root)?))
         }
-        SessionRead::UserDetailBefore {
-            session_id,
-            from_seq,
-        } => Ok(ReadValue::Count(user_detail_before(
-            conn,
-            &session_id,
-            from_seq,
-        )?)),
-        SessionRead::SnapshotStem { session_id, k } => {
-            Ok(ReadValue::Count(snapshot_stem(conn, &session_id, k)?))
+        SessionRead::UserDetailCount { session_id } => {
+            Ok(ReadValue::Count(user_detail_count(conn, &session_id)?))
+        }
+        SessionRead::UserAnchorStem { session_id, seq } => {
+            Ok(ReadValue::Count(user_anchor_stem(conn, &session_id, seq)?))
         }
         SessionRead::CheckpointSeq { session_id } => {
             let v: i64 = conn.query_row(
@@ -402,23 +397,19 @@ fn surface_seqs(
     Ok(surface.nodes.into_iter().map(|s| s as i64).collect())
 }
 
-fn user_detail_before(conn: &Connection, session_id: &str, from_seq: i64) -> Result<i64> {
+fn user_detail_count(conn: &Connection, session_id: &str) -> Result<i64> {
     conn.query_row(
-        "SELECT COUNT(*) FROM transcript_items t
-         WHERE t.session_id = ?1 AND t.kind = 'item/user' AND t.seq < ?2",
-        rusqlite::params![session_id, from_seq],
+        session::SQL_USER_DETAIL_COUNT,
+        rusqlite::params![session_id],
         |row| row.get(0),
     )
     .map_err(Into::into)
 }
 
-fn snapshot_stem(conn: &Connection, session_id: &str, k: i64) -> Result<i64> {
-    conn.query_row(
-        session::SQL_ANCHOR_SEQ,
-        rusqlite::params![session_id, k],
-        |row| row.get(0),
-    )
-    .map_err(|_| LitecodeError::InvalidRevertAnchor(format!("k={k}")))
+fn user_anchor_stem(conn: &Connection, session_id: &str, seq: i64) -> Result<i64> {
+    session::require_user_anchor(conn, session_id, seq)?;
+    seq.checked_add(1)
+        .ok_or_else(|| LitecodeError::InvalidRevertAnchor(format!("seq={seq} overflow")))
 }
 
 /// Kinds the derived index can ever hold.

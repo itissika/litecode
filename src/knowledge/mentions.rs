@@ -13,8 +13,12 @@ static SHORTCODE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"\[@ id="([^"]*)" label="([^"]*)"\]"#).expect("shortcode pattern")
 });
 
-static FILE_SHORTCODE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"\[@ file="([^"]*)" label="([^"]*)"\]"#).expect("file shortcode pattern")
+/// File attribute shortcode. `symbol` and `lines` are optional and, when present,
+/// sit between `file` and `label` in that order. A match with neither is a file
+/// citation; a match with either is a symbol or a line-range citation.
+static FILE_ATTR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\[@ file="([^"]*)"(?: symbol="([^"]*)")?(?: lines="([^"]*)")? label="([^"]*)"\]"#)
+        .expect("file attr pattern")
 });
 
 pub fn normalize_key(key: &str) -> String {
@@ -27,6 +31,76 @@ pub fn is_knowledge_key(key: &str) -> bool {
 
 pub fn mention_source(id: &str, label: &str) -> String {
     format!(r#"[@ id="{id}" label="{label}"]"#)
+}
+
+/// Inclusive 1-based line span stored on a symbol citation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineSpan {
+    pub start: u32,
+    pub end: u32,
+}
+
+pub fn format_line_span(span: LineSpan) -> String {
+    if span.start == span.end {
+        format!("{}", span.start)
+    } else {
+        format!("{}-{}", span.start, span.end)
+    }
+}
+
+/// `12` or `2148-2165`. Zero and an inverted range are not spans.
+pub fn parse_line_span(raw: &str) -> Option<LineSpan> {
+    let raw = raw.trim();
+    let (start, end) = if let Some((start, end)) = raw.split_once('-') {
+        (start.parse::<u32>().ok()?, end.parse::<u32>().ok()?)
+    } else {
+        let line = raw.parse::<u32>().ok()?;
+        (line, line)
+    };
+    if start == 0 || end == 0 || end < start {
+        return None;
+    }
+    Some(LineSpan { start, end })
+}
+
+/// One symbol or range citation as TipTap writes it.
+///
+/// Attribute order is `file`, `symbol`, `lines`, `label`. Absent `symbol` is a
+/// range-only citation. Absent `lines` is a knowledge-body citation.
+pub fn symbol_mention_source(
+    file: &str,
+    symbol: Option<&str>,
+    lines: Option<LineSpan>,
+    label: &str,
+) -> String {
+    let mut out = format!(r#"[@ file="{file}""#);
+    if let Some(symbol) = symbol.map(str::trim).filter(|text| !text.is_empty()) {
+        out.push_str(&format!(r#" symbol="{symbol}""#));
+    }
+    if let Some(span) = lines {
+        out.push_str(&format!(r#" lines="{}""#, format_line_span(span)));
+    }
+    out.push_str(&format!(r#" label="{label}"]"#));
+    out
+}
+
+/// A citation in the order it appears in prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderedRef {
+    Node {
+        id: String,
+        label: String,
+    },
+    File {
+        path: String,
+        label: String,
+    },
+    Symbol {
+        path: String,
+        symbol: Option<String>,
+        lines: Option<LineSpan>,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,12 +131,13 @@ pub fn workspace_file_exists(workspace: &std::path::Path, rel: &str) -> bool {
     workspace.join(rel.replace('\\', "/")).exists()
 }
 
-/// File paths cited in prose. Fenced blocks and inline code are not citations.
+/// File paths cited in prose, including the file of a symbol citation.
+/// Fenced blocks and inline code are not citations.
 pub fn extract_file_refs(markdown: &str) -> Vec<String> {
     let mut paths = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for line in scan_prose(markdown) {
-        for caps in FILE_SHORTCODE.captures_iter(&line) {
+        for caps in FILE_ATTR.captures_iter(&line) {
             let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
             if path.is_empty() || !seen.insert(path.to_string()) {
                 continue;
@@ -71,6 +146,79 @@ pub fn extract_file_refs(markdown: &str) -> Vec<String> {
         }
     }
     paths
+}
+
+/// Citations in prose, in appearance order. Repeats are kept.
+/// Fenced blocks and inline code are not citations.
+pub fn extract_refs_in_order(markdown: &str) -> Vec<OrderedRef> {
+    let mut refs = Vec::new();
+    for line in scan_prose(markdown) {
+        let mut hits: Vec<(usize, OrderedRef)> = Vec::new();
+        for caps in SHORTCODE.captures_iter(&line) {
+            let id = normalize_key(caps.get(1).map(|m| m.as_str()).unwrap_or(""));
+            if id.is_empty() || !is_knowledge_key(&id) {
+                continue;
+            }
+            let label_raw = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let label = if label_raw.is_empty() {
+                id.clone()
+            } else {
+                label_raw.to_string()
+            };
+            let start = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            hits.push((start, OrderedRef::Node { id, label }));
+        }
+        for caps in FILE_ATTR.captures_iter(&line) {
+            let Some(cite) = file_attr_ref(&caps) else {
+                continue;
+            };
+            let start = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            hits.push((start, cite));
+        }
+        hits.sort_by_key(|(start, _)| *start);
+        for (_, cite) in hits {
+            refs.push(cite);
+        }
+    }
+    refs
+}
+
+fn file_attr_ref(caps: &regex::Captures<'_>) -> Option<OrderedRef> {
+    let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+    if path.is_empty() {
+        return None;
+    }
+    let path = path.to_string();
+    let symbol = caps
+        .get(2)
+        .map(|m| m.as_str().trim().to_string())
+        .filter(|text| !text.is_empty());
+    let lines = caps.get(3).and_then(|m| parse_line_span(m.as_str()));
+    let label_raw = caps.get(4).map(|m| m.as_str()).unwrap_or("");
+    let label = if label_raw.is_empty() {
+        symbol
+            .as_deref()
+            .and_then(|chain| chain.rsplit(" › ").next())
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(&path))
+            .to_string()
+    } else {
+        label_raw.to_string()
+    };
+    if symbol.is_none() && lines.is_none() && caps.get(3).is_some() {
+        // `lines` was written but does not parse. Keep the file so the path
+        // is still a citation, and drop the broken range.
+        return Some(OrderedRef::File { path, label });
+    }
+    if symbol.is_some() || lines.is_some() {
+        return Some(OrderedRef::Symbol {
+            path,
+            symbol,
+            lines,
+            label,
+        });
+    }
+    Some(OrderedRef::File { path, label })
 }
 
 pub fn extract_markers(markdown: &str) -> Vec<String> {
@@ -149,7 +297,11 @@ pub fn replace_mention_key(text: &str, from: &str, to: &str) -> String {
             if id_key != source && label_key != source {
                 return full.to_string();
             }
-            let next_id = if id_key == source { target.as_str() } else { id };
+            let next_id = if id_key == source {
+                target.as_str()
+            } else {
+                id
+            };
             let next_label = if label_key == source {
                 target.as_str()
             } else {
@@ -250,18 +402,26 @@ fn replace_shortcodes_with_labels(text: &str) -> String {
                 return full.to_string();
             }
             let label = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-            if label.is_empty() { id } else { label.to_string() }
+            if label.is_empty() {
+                id
+            } else {
+                label.to_string()
+            }
         })
         .into_owned();
-    FILE_SHORTCODE
+    FILE_ATTR
         .replace_all(&nodes, |caps: &regex::Captures| {
             let full = caps.get(0).map(|m| m.as_str()).unwrap_or("");
             let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
             if path.is_empty() {
                 return full.to_string();
             }
-            let label = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let label = caps.get(4).map(|m| m.as_str()).unwrap_or("");
             if label.is_empty() {
+                let symbol = caps.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+                if let Some(leaf) = symbol.rsplit(" › ").next().filter(|text| !text.is_empty()) {
+                    return leaf.to_string();
+                }
                 path.rsplit('/').next().unwrap_or(path).to_string()
             } else {
                 label.to_string()
@@ -381,7 +541,10 @@ mod tests {
         let hidden = mention_source("hidden", "hidden");
         let shown = mention_source("seq", "序号");
         let value = format!("see `node : seq` and {shown}\n```\n{hidden}\n```\nbeta");
-        assert_eq!(knowledge_preview(&value, 3), "see `node : seq` and 序号\nbeta");
+        assert_eq!(
+            knowledge_preview(&value, 3),
+            "see `node : seq` and 序号\nbeta"
+        );
         assert_eq!(extract_markers(&value), vec!["seq".to_string()]);
         let inside = format!("`{hidden}`");
         assert!(knowledge_preview(&inside, 1).contains("id=\"hidden\""));
@@ -414,6 +577,71 @@ see [@ file=\"src/a.rs\" label=\"a.rs\"]
         assert!(!is_workspace_file_ref("/etc/passwd"));
         assert!(!is_workspace_file_ref("C:/abs"));
         assert!(!is_workspace_file_ref("src/../a.rs"));
+    }
+
+    #[test]
+    fn symbol_refs_keep_order_and_skip_code() {
+        let symbol = symbol_mention_source(
+            "src/session/manager.rs",
+            Some("impl SessionManager › fn append_reminder"),
+            Some(LineSpan {
+                start: 2148,
+                end: 2165,
+            }),
+            "fn append_reminder",
+        );
+        let range = symbol_mention_source(
+            "src/a.rs",
+            None,
+            Some(LineSpan { start: 4, end: 4 }),
+            "a.rs",
+        );
+        let knowledge = symbol_mention_source("src/a.rs", Some("fn alpha"), None, "fn alpha");
+        let value = format!(
+            "see {symbol} then {} and {knowledge}\n```\n{symbol}\n```\n`{range}`",
+            mention_source("seq", "序号")
+        );
+        assert_eq!(
+            extract_refs_in_order(&value),
+            vec![
+                OrderedRef::Symbol {
+                    path: "src/session/manager.rs".into(),
+                    symbol: Some("impl SessionManager › fn append_reminder".into()),
+                    lines: Some(LineSpan {
+                        start: 2148,
+                        end: 2165,
+                    }),
+                    label: "fn append_reminder".into(),
+                },
+                OrderedRef::Node {
+                    id: "seq".into(),
+                    label: "序号".into(),
+                },
+                OrderedRef::Symbol {
+                    path: "src/a.rs".into(),
+                    symbol: Some("fn alpha".into()),
+                    lines: None,
+                    label: "fn alpha".into(),
+                },
+            ]
+        );
+        assert_eq!(
+            extract_file_refs(&value),
+            vec!["src/session/manager.rs".to_string(), "src/a.rs".to_string(),]
+        );
+        assert_eq!(knowledge_preview(&symbol, 1), "fn append_reminder");
+        assert_eq!(
+            symbol_mention_source(
+                "src/a.rs",
+                None,
+                Some(LineSpan { start: 4, end: 9 }),
+                "a.rs"
+            ),
+            r#"[@ file="src/a.rs" lines="4-9" label="a.rs"]"#
+        );
+        assert!(parse_line_span("0-1").is_none());
+        assert!(parse_line_span("9-4").is_none());
+        assert_eq!(parse_line_span("12"), Some(LineSpan { start: 12, end: 12 }));
     }
 
     #[test]

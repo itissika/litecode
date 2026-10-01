@@ -516,7 +516,7 @@ fn a_reconciled_index_equals_a_clean_rebuild() {
         session_id: f.sid.clone(),
         expected_revision: f.rev(),
         operation_id: MutationId::new(),
-        op: crate::session::data::sqlite::session::SessionApply::Truncate { user_k: 2 },
+        op: crate::session::data::sqlite::session::SessionApply::Truncate { anchor_seq: 5 },
     });
     refresh();
 
@@ -802,7 +802,7 @@ fn a_reverted_tail_leaves_the_index() {
         session_id: f.sid.clone(),
         expected_revision: f.rev(),
         operation_id: MutationId::new(),
-        op: crate::session::data::sqlite::session::SessionApply::Truncate { user_k: 1 },
+        op: crate::session::data::sqlite::session::SessionApply::Truncate { anchor_seq: 1 },
     });
 
     sparse::refresh_from_source(&f.data.reader(), &f.index_root()).expect("refresh");

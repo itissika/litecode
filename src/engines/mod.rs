@@ -6,9 +6,9 @@
 
 pub mod code_search;
 pub mod code_search_ipc;
+pub mod path_index;
 pub mod session_search;
 mod status_view;
-pub mod text_index;
 pub use status_view::EngineUsability;
 
 mod code_search_engine;
@@ -17,7 +17,7 @@ pub use code_search_engine::CodeSearchEngine;
 mod lsp_engine;
 pub use lsp_engine::LspEngine;
 
-pub use text_index::TextIndexEngine;
+pub use path_index::PathIndex;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -216,7 +216,7 @@ pub struct WorkspaceEngines {
     last_errors: Arc<RwLock<HashMap<String, String>>>,
     code_search: Arc<CodeSearchEngine>,
     lsp: Arc<LspEngine>,
-    text_index: Arc<TextIndexEngine>,
+    path_index: Arc<PathIndex>,
     refresh_busy: Arc<AtomicBool>,
     session_refresh_busy: Arc<AtomicBool>,
     session_reader: Arc<RwLock<Option<SessionDataReader>>>,
@@ -228,7 +228,7 @@ impl WorkspaceEngines {
         let last_errors = Arc::new(RwLock::new(HashMap::new()));
         let code_search = Arc::new(CodeSearchEngine::new());
         let lsp = Arc::new(LspEngine::new());
-        let text_index = Arc::new(TextIndexEngine::new());
+        let path_index = Arc::new(PathIndex::new());
 
         let state_ref = Arc::clone(&states);
         let error_ref = Arc::clone(&last_errors);
@@ -246,7 +246,7 @@ impl WorkspaceEngines {
             last_errors,
             code_search,
             lsp,
-            text_index,
+            path_index,
             refresh_busy: Arc::new(AtomicBool::new(false)),
             session_refresh_busy: Arc::new(AtomicBool::new(false)),
             session_reader: Arc::new(RwLock::new(None)),
@@ -269,8 +269,8 @@ impl WorkspaceEngines {
         Arc::clone(&self.code_search)
     }
 
-    pub fn text_index(&self) -> Arc<TextIndexEngine> {
-        Arc::clone(&self.text_index)
+    pub fn path_index(&self) -> Arc<PathIndex> {
+        Arc::clone(&self.path_index)
     }
 
     /// Unified retrieval surface: corpus × modality. Unsupported pairs fail closed.
@@ -728,14 +728,13 @@ impl WorkspaceEngines {
                 self.stop(id);
             }
         }
-        // Text-index accelerator is not attached: grep/LexicalLane scan disk.
-        // Keep detach so a later conservative Ready path can reuse this engine.
+        self.path_index.attach(root);
     }
 
     pub fn stop_all(&self) {
         self.stop("code_search");
         self.stop("lsp");
-        self.text_index.detach();
+        self.path_index.detach();
     }
 
     /// Single index refresh: auto-starts engine if needed; Warm path rebuilds or syncs.

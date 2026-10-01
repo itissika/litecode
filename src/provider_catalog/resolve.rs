@@ -15,8 +15,8 @@ use crate::types::{LitecodeError, Result};
 
 use super::schema::{
     AuthKind, EndpointKind, Modality, ProviderQuirk, RESERVED_BODY_KEYS, RESERVED_HEADER_NAMES,
-    RawCatalog, RawModel, RawProvider, ReasoningKey, ReasoningTiers, SESSION_ID_PLACEHOLDER,
-    SUPPORTED_VERSION, UsagePatch,
+    RawCatalog, RawModel, RawProvider, ReasoningKey, ReasoningReplay, ReasoningTiers,
+    SESSION_ID_PLACEHOLDER, SUPPORTED_VERSION, UsagePatch,
 };
 
 /// A provider after validation.
@@ -63,6 +63,9 @@ pub struct ResolvedModel {
     /// Vendor literal that opts into reasoning summaries, when declared.
     pub reasoning_summary: Option<String>,
     pub reasoning_key: ReasoningKey,
+    /// How this model's reasoning returns on a later Responses request.
+    /// Ciphertext when the model declares no reasoning table.
+    pub reasoning_replay: ReasoningReplay,
     pub extra_body: Map<String, serde_json::Value>,
 }
 
@@ -308,6 +311,24 @@ fn resolve_model(
         validate_tiers(tiers)?;
     }
     let reasoning_off = reasoning.as_ref().and_then(|tiers| tiers.off.clone());
+    let reasoning_replay = model
+        .reasoning
+        .as_ref()
+        .map(|raw| raw.replay)
+        .unwrap_or_default();
+    if reasoning_replay == ReasoningReplay::Summary {
+        if endpoint_type != EndpointKind::Responses {
+            return Err(
+                "reasoning.replay \"summary\" is only implemented by the responses codec".into(),
+            );
+        }
+        if quirks.contains(&ProviderQuirk::ReasoningReplay) {
+            return Err(
+                "reasoning.replay \"summary\" cannot be combined with quirk reasoning_replay"
+                    .into(),
+            );
+        }
+    }
     let reasoning_summary = model.reasoning.as_ref().and_then(|raw| raw.summary.clone());
     if let Some(summary) = &reasoning_summary {
         if summary.trim().is_empty() {
@@ -348,6 +369,7 @@ fn resolve_model(
             .as_ref()
             .map(|raw| raw.key)
             .unwrap_or_default(),
+        reasoning_replay,
         extra_body: model.extra_body.clone(),
     })
 }

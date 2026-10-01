@@ -250,6 +250,12 @@
   isolation: isolate;
   background: var(--_dk-editor);
   color: var(--_dk-text-body);
+  /* Frosted cards: low editor mix so blur reads on the same-tone canvas. */
+  --_dk-knowledge-card-fill: color-mix(in srgb, var(--_dk-editor) 40%, transparent);
+}
+
+:root[data-dv-theme="light"] .knowledge-graph {
+  --_dk-knowledge-card-fill: color-mix(in srgb, var(--_dk-editor) 58%, transparent);
 }
 
 .knowledge-graph .react-flow {
@@ -263,6 +269,10 @@
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+}
+
+.knowledge-graph .react-flow__node-knowledge.knowledge-node-leave {
+  pointer-events: none;
 }
 
 .knowledge-graph .react-flow__handle {
@@ -425,9 +435,10 @@
   box-sizing: border-box;
   width: 100%;
   height: 100%;
-  border: 1px solid var(--_dk-line-visible);
+  border: 1px solid var(--_dk-line);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--_dk-text-muted) 14%, transparent);
+  /* ~10% editor tint — no blur; sits under relation edges (see KNOWLEDGE_*_Z). */
+  background: color-mix(in srgb, var(--_dk-editor) 10%, transparent);
 }
 
 .knowledge-flow-folder-label {
@@ -464,6 +475,7 @@
   color: var(--_dk-text-muted);
 }
 
+/* Glass: lighter fill than composer — canvas is the same editor tone. */
 .knowledge-flow-card {
   position: relative;
   box-sizing: border-box;
@@ -473,19 +485,207 @@
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--_dk-line-visible);
+  border: 1px solid var(--_dk-line);
   border-radius: var(--radius-md);
-  background: var(--_dk-surface-raised);
+  background: var(--_dk-knowledge-card-fill);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  backdrop-filter: blur(14px) saturate(1.2);
+  box-shadow: var(--_dk-composer-card-shadow);
   color: var(--_dk-text-body);
   font-size: var(--_dk-text-xs);
+  transform-origin: top left;
+  transition:
+    box-shadow 150ms ease,
+    border-color 150ms ease;
+}
+
+/* Settled zoom flips the attribute. The transform stays on the nodes that
+   paint glyphs, including Tiptap blocks rather than the contenteditable host. */
+.knowledge-flow-card[data-text-raster="a"] {
+  --_dk-text-raster: 0.2px;
+}
+
+.knowledge-flow-card[data-text-raster="b"] {
+  --_dk-text-raster: 0.6px;
+}
+
+.knowledge-flow-card[data-text-raster] :is(
+  .knowledge-key-button,
+  .knowledge-key-input,
+  .knowledge-flow-summary,
+  .knowledge-source-label,
+  textarea.knowledge-source-input
+),
+.knowledge-flow-card[data-text-raster] .ProseMirror > * {
+  transform: translateZ(var(--_dk-text-raster));
+}
+
+/* Cards: border-only ix feedback (enter/leave/expand anim excluded). */
+.knowledge-flow-card:not(.is-scale-in):not(.is-scale-out):not(.is-arrive):not(.is-leave) {
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.knowledge-flow-card:not(.is-scale-in):not(.is-scale-out):not(.is-arrive):not(.is-leave):hover {
+  border-color: var(--_dk-ix-border-hover);
+  box-shadow:
+    var(--_dk-composer-card-shadow),
+    0 0 0 1px var(--_dk-ix-border-hover);
+}
+
+.knowledge-flow-card:not(.is-scale-in):not(.is-scale-out):not(.is-arrive):not(.is-leave):active {
+  border-color: var(--_dk-line);
+  box-shadow:
+    var(--_dk-composer-card-shadow),
+    inset 0 0 0 1px color-mix(in srgb, var(--_dk-text-primary) 10%, transparent);
+}
+
+.knowledge-flow-card.is-focused:not(.is-scale-in):not(.is-scale-out):not(.is-arrive):not(.is-leave):hover {
+  border-color: var(--_dk-ix-border-hover);
+  box-shadow:
+    var(--_dk-composer-card-shadow),
+    0 0 0 1px var(--_dk-accent-ring),
+    0 0 0 2px var(--_dk-ix-border-hover);
+}
+
+.knowledge-flow-card.is-focused:not(.is-scale-in):not(.is-scale-out):not(.is-arrive):not(.is-leave):active {
+  border-color: var(--_dk-line);
+  box-shadow:
+    var(--_dk-composer-card-shadow),
+    0 0 0 1px var(--_dk-accent-ring),
+    inset 0 0 0 1px color-mix(in srgb, var(--_dk-text-primary) 10%, transparent);
+}
+
+.knowledge-flow-card.is-scale-in {
+  animation: knowledge-flow-card-scale-in 240ms cubic-bezier(0.34, 1.12, 0.64, 1);
+}
+
+.knowledge-flow-card.is-scale-out {
+  animation: knowledge-flow-card-scale-out 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes knowledge-flow-card-scale-in {
+  from {
+    transform: scale(0.93);
+  }
+
+  to {
+    transform: scale(1);
+  }
+}
+
+@keyframes knowledge-flow-card-scale-out {
+  from {
+    transform: scale(1);
+  }
+
+  to {
+    transform: scale(0.94);
+  }
+}
+
+.knowledge-flow-card.is-arrive {
+  transform-origin: center;
+  animation: knowledge-card-arrive 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.knowledge-flow-card.is-leave {
+  transform-origin: center;
+  pointer-events: none;
+  animation: knowledge-card-leave 220ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.knowledge-graph .react-flow__handle.is-arrive {
+  animation: knowledge-handle-arrive 240ms ease;
+}
+
+.knowledge-graph .react-flow__handle.is-leave {
+  animation: knowledge-handle-fade 220ms ease forwards;
+}
+
+.knowledge-content-wave {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  border: 1.5px solid var(--_dk-cat-green);
+  border-radius: var(--radius-md);
+  pointer-events: none;
+  transform-origin: center;
+  animation: knowledge-content-wave 460ms cubic-bezier(0.16, 0.84, 0.32, 1) forwards;
+}
+
+@keyframes knowledge-card-arrive {
+  from {
+    transform: scale(0.82);
+    opacity: 0;
+  }
+
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes knowledge-card-leave {
+  from {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  to {
+    transform: scale(0.72);
+    opacity: 0;
+  }
+}
+
+@keyframes knowledge-handle-arrive {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes knowledge-handle-fade {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes knowledge-content-wave {
+  from {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+
+  to {
+    transform: scale(1.16);
+    opacity: 0;
+  }
 }
 
 .knowledge-flow-card.is-focused {
-  box-shadow: 0 0 0 1px var(--_dk-accent-ring);
+  border-color: var(--_dk-border-visible);
+  box-shadow:
+    var(--_dk-composer-card-shadow),
+    0 0 0 1px var(--_dk-accent-ring);
 }
 
-.knowledge-flow-card.is-dimmed {
-  opacity: 0.32;
+/* Viewport-sized scrim (see KnowledgeFocusScrim); sits above folders/edges/cards, below focused card z-index. */
+.knowledge-focus-scrim {
+  position: absolute;
+  left: -50000px;
+  top: -50000px;
+  width: 100000px;
+  height: 100000px;
+  z-index: 35; /* sync KNOWLEDGE_FOCUS_SCRIM_Z */
+  pointer-events: none;
+  background: color-mix(in srgb, var(--_dk-editor) 33%, transparent);
+  -webkit-backdrop-filter: blur(8px) saturate(0.94);
+  backdrop-filter: blur(8px) saturate(0.94);
 }
 
 .knowledge-flow-disabled-veil {
@@ -493,8 +693,10 @@
   inset: 0;
   z-index: 2;
   border-radius: inherit;
-  background: var(--_dk-surface-raised);
-  opacity: 0.5;
+  background: color-mix(in srgb, var(--_dk-editor) 35%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  opacity: 0.88;
   pointer-events: none;
 }
 
@@ -764,6 +966,12 @@
   padding: 0.25rem 0.35rem;
 }
 
+.knowledge-flow-card .knowledge-source-input,
+.knowledge-flow-card .knowledge-source-body,
+.knowledge-flow-card .knowledge-source-body .ProseMirror {
+  background: transparent;
+}
+
 .knowledge-source-input.is-invalid {
   color: var(--_dk-red-500);
 }
@@ -787,15 +995,73 @@
   margin: 0;
 }
 
+.knowledge-rail-icon {
+  position: relative;
+  display: inline-flex;
+}
+
+.knowledge-rail-badge {
+  position: absolute;
+  top: -0.3rem;
+  right: -0.45rem;
+  z-index: 1;
+  min-width: 0.85rem;
+  height: 0.85rem;
+  padding: 0 0.18rem;
+  border-radius: 999px;
+  font-size: 0.55rem;
+  font-weight: 650;
+  line-height: 0.85rem;
+  text-align: center;
+  writing-mode: horizontal-tb;
+  pointer-events: none;
+  color: #fff;
+}
+
+.knowledge-rail-badge.is-error {
+  background: var(--_dk-red-500);
+}
+
+.knowledge-rail-badge.is-warning {
+  background: var(--_dk-amber-500);
+  color: #1c1408;
+}
+
+.litecode-dv-base .dv-groupview-edge .dv-tab:has(.knowledge-rail-badge) {
+  overflow: visible;
+}
+
 .knowledge-mention-menu {
   z-index: 1100;
-  max-width: 16rem;
-  max-height: 8rem;
+  width: max-content;
+  max-width: min(40rem, 90vw);
+  max-height: 20rem;
   overflow: auto;
   padding: 0.15rem;
   border: 1px solid var(--_dk-line-visible);
   border-radius: var(--radius-sm);
   background: var(--_dk-surface-raised);
+}
+
+.mention-text {
+  line-height: 1.625;
+}
+
+.mention-composer-input .ProseMirror {
+  min-height: 2.3lh;
+  outline: none;
+}
+
+.mention-composer-input .ProseMirror p {
+  margin: 0;
+}
+
+.mention-editor-body p.is-editor-empty:first-child::before {
+  float: left;
+  height: 0;
+  color: var(--_dk-text-muted);
+  content: attr(data-placeholder);
+  pointer-events: none;
 }
 
 .knowledge-mention-list {
@@ -820,8 +1086,7 @@
   min-height: 1.6rem;
 }
 
-.knowledge-token.is-invalid,
-.knowledge-token.is-file.is-missing {
+.knowledge-token.is-invalid {
   background: transparent;
   color: var(--_dk-red-500);
 }
@@ -829,6 +1094,21 @@
 .knowledge-token.is-file {
   background: color-mix(in srgb, var(--_dk-cat-blue) 14%, transparent);
   color: var(--_dk-cat-blue);
+}
+
+.knowledge-token.is-file.is-symbol {
+  background: color-mix(in srgb, var(--_dk-cat-cyan) 14%, transparent);
+  color: var(--_dk-cat-cyan);
+}
+
+.knowledge-token.is-file.is-drift {
+  background: color-mix(in srgb, var(--_dk-amber-500) 16%, transparent);
+  color: var(--_dk-amber-500);
+}
+
+.knowledge-token.is-file.is-missing {
+  background: transparent;
+  color: var(--_dk-red-500);
 }
 
 .knowledge-token {
@@ -856,8 +1136,24 @@
 /* Light theme's emerald (#00d459) is a display green — as 11px label text on
    the pale surface it washes out, so step the label toward the theme ink. The
    14% tinted background reads fine as is; invalid chips stay red. */
-:root[data-dv-theme="light"] .knowledge-token:not(.is-invalid) {
+:root[data-dv-theme="light"] .knowledge-token:not(.is-invalid):not(.is-file):not(.is-missing) {
   color: color-mix(in srgb, var(--_dk-emerald-500) 50%, var(--_dk-text-primary));
+}
+
+:root[data-dv-theme="light"] .knowledge-token.is-file {
+  color: var(--_dk-cat-blue);
+}
+
+:root[data-dv-theme="light"] .knowledge-token.is-file.is-symbol {
+  color: var(--_dk-cat-cyan);
+}
+
+:root[data-dv-theme="light"] .knowledge-token.is-file.is-drift {
+  color: var(--_dk-amber-500);
+}
+
+:root[data-dv-theme="light"] .knowledge-token.is-file.is-missing {
+  color: var(--_dk-red-500);
 }
 
 /* Brighten + grow on hover, darken + shrink on press (filter, because the
@@ -938,7 +1234,8 @@ button.knowledge-token-label {
 
 .knowledge-complete-item {
   display: block;
-  width: 100%;
+  width: max-content;
+  max-width: min(40rem, 90vw);
   padding: 0.15rem 0.3rem;
   border: none;
   border-radius: 0.15rem;
@@ -947,6 +1244,7 @@ button.knowledge-token-label {
   font-family: var(--_dk-font-code);
   font-size: var(--_dk-text-xs);
   text-align: left;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -955,9 +1253,79 @@ button.knowledge-token-label {
   background: var(--_dk-ix-bg-selected);
 }
 
+.knowledge-mention-file {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: min(40rem, 90vw);
+}
+
+.knowledge-mention-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-mention-hash {
+  flex-shrink: 0;
+  padding: 0 0.2rem;
+  border: none;
+  background: transparent;
+  color: var(--_dk-cat-cyan);
+  font: inherit;
+  cursor: pointer;
+}
+
+.knowledge-symbol-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.1rem;
+  width: max-content;
+  max-width: min(40rem, 90vw);
+  white-space: normal;
+}
+
+.knowledge-symbol-chain {
+  max-width: min(40rem, 90vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.knowledge-symbol-chain > span {
+  direction: ltr;
+  unicode-bidi: plaintext;
+}
+
+.knowledge-symbol-summary {
+  display: -webkit-box;
+  max-width: min(40rem, 90vw);
+  overflow: hidden;
+  color: var(--_dk-text-muted);
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .knowledge-token {
     transition: none;
   }
+
+  .knowledge-flow-card.is-scale-in,
+  .knowledge-flow-card.is-scale-out,
+  .knowledge-flow-card.is-arrive,
+  .knowledge-flow-card.is-leave,
+  .knowledge-content-wave,
+  .knowledge-graph .react-flow__handle.is-arrive,
+  .knowledge-graph .react-flow__handle.is-leave {
+    animation: none;
+  }
+
 }
 

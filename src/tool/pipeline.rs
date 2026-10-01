@@ -107,7 +107,7 @@ impl ToolPipeline {
                                 cancel,
                                 &runtime.data_root,
                                 runtime.spill_threshold,
-                                runtime.turn_anchor_k(),
+                                runtime.turn_anchor_seq(),
                                 write_lock,
                                 runtime.session.clone(),
                             )
@@ -180,7 +180,7 @@ impl ToolPipeline {
                         cancel.clone(),
                         &self.runtime.data_root,
                         self.runtime.spill_threshold,
-                        self.runtime.turn_anchor_k(),
+                        self.runtime.turn_anchor_seq(),
                         Arc::clone(&self.runtime.write_lock),
                         self.runtime.session.clone(),
                     )

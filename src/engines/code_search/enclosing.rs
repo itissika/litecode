@@ -156,6 +156,112 @@ pub fn syntax_ancestor_snippet(
     })
 }
 
+/// One named scope in a file, outer chain first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeEntry {
+    /// `format_breadcrumb` of this scope and its named ancestors.
+    pub chain: String,
+    pub kind: String,
+    pub name: String,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+/// Lookup of one ancestor chain inside a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeMatch {
+    Unique(ScopeEntry),
+    Missing,
+    Ambiguous(Vec<ScopeEntry>),
+}
+
+/// Every named scope in the file, document order. Unsupported languages yield `[]`.
+pub fn list_scopes(path: &str, content: &str) -> Vec<ScopeEntry> {
+    let Some(tree) = parse_tree(path, content) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut stack = Vec::new();
+    walk_scopes(tree.root_node(), content, &mut stack, &mut out);
+    out
+}
+
+/// Find `chain` (`impl Store › fn save`). More than one hit is ambiguous.
+pub fn find_scope(path: &str, content: &str, chain: &str) -> ScopeMatch {
+    let chain = chain.trim();
+    if chain.is_empty() {
+        return ScopeMatch::Missing;
+    }
+    let hits: Vec<ScopeEntry> = list_scopes(path, content)
+        .into_iter()
+        .filter(|entry| entry.chain == chain)
+        .collect();
+    match hits.len() {
+        0 => ScopeMatch::Missing,
+        1 => ScopeMatch::Unique(hits.into_iter().next().expect("one hit")),
+        _ => ScopeMatch::Ambiguous(hits),
+    }
+}
+
+/// Tightest named scope that fully contains the inclusive 1-based line range.
+/// A selection that spans two siblings and only fits their parent returns the parent.
+/// A selection with no containing named scope returns `None`.
+pub fn scope_at(path: &str, content: &str, start_line: u32, end_line: u32) -> Option<ScopeEntry> {
+    if start_line == 0 || end_line < start_line {
+        return None;
+    }
+    list_scopes(path, content)
+        .into_iter()
+        .filter(|entry| entry.start_line <= start_line && entry.end_line >= end_line)
+        .min_by_key(|entry| {
+            (
+                entry.end_line.saturating_sub(entry.start_line),
+                usize::MAX - entry.chain.len(),
+            )
+        })
+}
+
+fn walk_scopes(
+    node: Node<'_>,
+    content: &str,
+    stack: &mut Vec<ScopeSegment>,
+    out: &mut Vec<ScopeEntry>,
+) {
+    let pushed = if let Some(segment) = scope_segment(node, content) {
+        stack.push(segment);
+        if let Some(chain) = format_breadcrumb(stack) {
+            let leaf = stack.last().expect("just pushed");
+            let (start_line, end_line) = node_line_span(node);
+            out.push(ScopeEntry {
+                chain,
+                kind: leaf.kind.clone(),
+                name: leaf.name.clone(),
+                start_line,
+                end_line,
+            });
+        }
+        true
+    } else {
+        false
+    };
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_scopes(child, content, stack, out);
+    }
+    if pushed {
+        stack.pop();
+    }
+}
+
+fn node_line_span(node: Node<'_>) -> (u32, u32) {
+    let start = node.start_position().row as u32 + 1;
+    let mut end = node.end_position().row as u32 + 1;
+    if node.end_position().column == 0 && end > start {
+        end -= 1;
+    }
+    (start, end.max(start))
+}
+
 /// Extract inclusive 1-based line text from source (no trailing newline on last line).
 pub fn lines_slice(content: &str, start_line: u32, end_line: u32) -> String {
     content
@@ -267,10 +373,7 @@ fn scope_segment(node: Node<'_>, content: &str) -> Option<ScopeSegment> {
     let (label, name) = match kind {
         // Rust
         "function_item" => ("fn", field_name(node, content, &["name"])),
-        "impl_item" => (
-            "impl",
-            field_name(node, content, &["type"]).or_else(|| first_type_name(node, content)),
-        ),
+        "impl_item" => ("impl", impl_scope_name(node, content)),
         "struct_item" => ("struct", field_name(node, content, &["name"])),
         "enum_item" => ("enum", field_name(node, content, &["name"])),
         "trait_item" => ("trait", field_name(node, content, &["name"])),
@@ -316,6 +419,31 @@ fn scope_segment(node: Node<'_>, content: &str) -> Option<ScopeSegment> {
         kind: label.to_string(),
         name,
     })
+}
+
+/// `impl Store` stays `Store`. `impl Display for Store` keeps the trait.
+fn impl_scope_name(node: Node<'_>, content: &str) -> Option<String> {
+    let ty = raw_field(node, content, "type").or_else(|| first_type_name(node, content))?;
+    if let Some(tr) = raw_field(node, content, "trait") {
+        Some(format!("{tr} for {ty}"))
+    } else {
+        Some(ty)
+    }
+}
+
+fn raw_field(node: Node<'_>, content: &str, field: &str) -> Option<String> {
+    let child = node.child_by_field_name(field)?;
+    let text = child.utf8_text(content.as_bytes()).ok()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = collapsed.trim_end_matches('{').trim();
+    if collapsed.is_empty() {
+        None
+    } else {
+        Some(collapsed.to_string())
+    }
 }
 
 fn field_name(node: Node<'_>, content: &str, fields: &[&str]) -> Option<String> {
@@ -643,5 +771,75 @@ fn method_with_block() {
     #[test]
     fn ancestor_unsupported_lang_is_none() {
         assert!(syntax_ancestor_snippet("a.txt", "hello\nworld\n", 1, 1).is_none());
+    }
+
+    #[test]
+    fn rust_lists_scopes_and_keeps_trait_impls_apart() {
+        let src = r#"
+pub struct Store;
+
+impl Store {
+    pub fn save(&self) {
+        let _ = 1;
+    }
+}
+
+impl std::fmt::Display for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Ok(())
+    }
+}
+
+fn alpha() {}
+"#;
+        let scopes = list_scopes("store.rs", src);
+        let chains: Vec<_> = scopes.iter().map(|entry| entry.chain.as_str()).collect();
+        assert!(chains.contains(&"struct Store"), "{chains:?}");
+        assert!(chains.contains(&"impl Store › fn save"), "{chains:?}");
+        assert!(
+            chains
+                .iter()
+                .any(|chain| chain.contains("Display") && chain.ends_with("fn fmt")),
+            "{chains:?}"
+        );
+        assert!(chains.contains(&"fn alpha"), "{chains:?}");
+        assert!(matches!(
+            find_scope("store.rs", src, "impl Store › fn save"),
+            ScopeMatch::Unique(_)
+        ));
+        assert!(matches!(
+            find_scope("store.rs", src, "fn missing"),
+            ScopeMatch::Missing
+        ));
+        let save_line = line_of(src, "let _ = 1");
+        let at = scope_at("store.rs", src, save_line, save_line).expect("fn");
+        assert_eq!(at.chain, "impl Store › fn save");
+        assert!(scope_at("store.rs", src, 1, 999).is_none());
+    }
+
+    #[test]
+    fn duplicate_chain_is_ambiguous() {
+        let src = "fn new() {}\nfn new() {}\n";
+        assert!(matches!(
+            find_scope("a.rs", src, "fn new"),
+            ScopeMatch::Ambiguous(_)
+        ));
+    }
+
+    #[test]
+    fn typescript_and_python_scopes_resolve() {
+        let ts = "export class Engine {\n  search(q: string) {\n    return q.length;\n  }\n}\n";
+        let ts_line = line_of(ts, "q.length");
+        assert_eq!(
+            scope_at("e.ts", ts, ts_line, ts_line).unwrap().chain,
+            "class Engine › method search"
+        );
+        let py = "class Repo:\n    def index(self):\n        return 42\n";
+        let py_line = line_of(py, "return 42");
+        assert_eq!(
+            scope_at("r.py", py, py_line, py_line).unwrap().chain,
+            "class Repo › fn index"
+        );
+        assert!(list_scopes("notes.md", "# hi\n").is_empty());
     }
 }

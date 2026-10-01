@@ -965,6 +965,13 @@ impl AgentRuntime {
             if commit_outcome.committed {
                 self.emit_internal(crate::runtime::observer::InternalEvent::StepCommitted);
             }
+            if !wake && commit_outcome.committed {
+                self.sessions.append_mentions_for(
+                    &self.session_id,
+                    self.runtime_handle.workspace_root(),
+                    &user_input.text,
+                );
+            }
             if !commit_outcome.sealed_seqs.is_empty() {
                 self.emit_internal(crate::runtime::observer::InternalEvent::BufferRestamp {
                     seqs: commit_outcome.sealed_seqs,
@@ -982,8 +989,8 @@ impl AgentRuntime {
         }
 
         let (_last_seq, next_seq) = self.sessions.entry_wire_seq_cursor(&self.session_id);
-        let anchor_k = next_seq as i64;
-        self.rctx().set_turn_anchor_k(anchor_k);
+        let anchor_seq = next_seq as i64;
+        self.rctx().set_turn_anchor_seq(anchor_seq);
 
         // Snapshot workspace before tools run (OpenCode-style git-based snapshot).
         // Must finish before agent::run so the tracked tree is the pre-tool workspace.
@@ -994,26 +1001,26 @@ impl AgentRuntime {
         let track_snaps = snaps.clone();
         let track_sid = self.session_id.clone();
         let track_result = tokio::task::spawn_blocking(move || {
-            snapshot::snapshot_track(&track_ws, &track_snaps, &track_sid, anchor_k)
+            snapshot::snapshot_track(&track_ws, &track_snaps, &track_sid, anchor_seq)
         })
         .await;
         match track_result {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                tracing::warn!(%e, anchor_k, "snapshot_track failed, revert may be incomplete");
+                tracing::warn!(%e, anchor_seq, "snapshot_track failed, revert may be incomplete");
                 self.emit_internal(InternalEvent::SnapshotNotice {
                     level: "warn".into(),
                     message: format!(
-                        "Workspace snapshot track failed (anchor {anchor_k}): {e}; file revert may be unavailable"
+                        "Workspace snapshot track failed (anchor {anchor_seq}): {e}; file revert may be unavailable"
                     ),
                 });
             }
             Err(e) => {
-                tracing::warn!(%e, anchor_k, "snapshot_track join failed");
+                tracing::warn!(%e, anchor_seq, "snapshot_track join failed");
                 self.emit_internal(InternalEvent::SnapshotNotice {
                     level: "warn".into(),
                     message: format!(
-                        "Workspace snapshot track failed (anchor {anchor_k}): {e}; file revert may be unavailable"
+                        "Workspace snapshot track failed (anchor {anchor_seq}): {e}; file revert may be unavailable"
                     ),
                 });
             }
@@ -1021,7 +1028,7 @@ impl AgentRuntime {
 
         tracing::info!(
             item_count = self.context_pipeline.working_set().len(),
-            anchor_k,
+            anchor_seq,
             "session transcript loaded"
         );
 
@@ -1087,42 +1094,45 @@ impl AgentRuntime {
         let patch_snaps = snaps.clone();
         let patch_sid = self.session_id.clone();
         let patch_result = tokio::task::spawn_blocking(move || {
-            snapshot::snapshot_record_patch(&patch_ws, &patch_snaps, &patch_sid, anchor_k)
+            snapshot::snapshot_record_patch(&patch_ws, &patch_snaps, &patch_sid, anchor_seq)
         })
         .await;
         match patch_result {
             Ok(Ok(patch)) if patch.track_failed => {
-                tracing::warn!(anchor_k, "snapshot_record_patch wrote track_failed marker");
+                tracing::warn!(
+                    anchor_seq,
+                    "snapshot_record_patch wrote track_failed marker"
+                );
                 self.emit_internal(InternalEvent::SnapshotNotice {
                     level: "warn".into(),
                     message: format!(
-                        "Workspace snapshot unavailable for this turn (anchor {anchor_k}); file revert will fail"
+                        "Workspace snapshot unavailable for this turn (anchor {anchor_seq}); file revert will fail"
                     ),
                 });
             }
             Ok(Ok(_)) => {}
             Ok(Err(e)) => {
-                tracing::warn!(%e, anchor_k, "snapshot_record_patch failed");
+                tracing::warn!(%e, anchor_seq, "snapshot_record_patch failed");
                 self.emit_internal(InternalEvent::SnapshotNotice {
                     level: "warn".into(),
                     message: format!(
-                        "Workspace snapshot patch record failed (anchor {anchor_k}): {e}"
+                        "Workspace snapshot patch record failed (anchor {anchor_seq}): {e}"
                     ),
                 });
             }
             Err(e) => {
-                tracing::warn!(%e, anchor_k, "snapshot_record_patch join failed");
+                tracing::warn!(%e, anchor_seq, "snapshot_record_patch join failed");
                 self.emit_internal(InternalEvent::SnapshotNotice {
                     level: "warn".into(),
                     message: format!(
-                        "Workspace snapshot patch record failed (anchor {anchor_k}): {e}"
+                        "Workspace snapshot patch record failed (anchor {anchor_seq}): {e}"
                     ),
                 });
             }
         }
 
-        let max_k = snapshot::max_file_revert_k(&snaps, &self.session_id);
-        self.emit_internal(InternalEvent::FileRevertUpdated { max_k });
+        let max_seq = snapshot::max_file_revert_seq(&snaps, &self.session_id);
+        self.emit_internal(InternalEvent::FileRevertUpdated { max_seq });
 
         tracing::info!(
             session_id = %self.session_id,

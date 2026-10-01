@@ -57,7 +57,7 @@ const MODEL_KEYS: &[&str] = &[
     "extra_body",
 ];
 const TIER_KEYS: &[&str] = &["off", "low", "medium", "high"];
-const REASONING_KEYS: &[&str] = &["tiers", "summary", "key"];
+const REASONING_KEYS: &[&str] = &["tiers", "summary", "key", "replay"];
 
 /// A catalog this build can load, plus the file text to persist.
 pub struct UpgradedCatalog {
@@ -443,6 +443,32 @@ quirks = ["omit_temperature_when_thinking"]
         assert!(!upgraded.text.contains("temperature"));
         assert!(!upgraded.text.contains("telepathy"));
         assert!(!upgraded.text.contains("note"));
+    }
+
+    #[test]
+    fn summary_replay_survives_an_upgrade() {
+        let text = r#"
+version = 1
+
+[[providers]]
+id = "p"
+name = "P"
+endpoint = "https://x.example/v1"
+endpoint_type = "responses"
+
+[[models]]
+id = "m"
+provider_id = "p"
+reasoning = { replay = "summary", tiers = { low = "low", medium = "medium", high = "high" }, dropped = true }
+"#;
+        let upgraded = upgraded(text);
+        let model = upgraded.catalog.model("p/m").unwrap();
+        assert_eq!(
+            model.reasoning_replay,
+            super::super::schema::ReasoningReplay::Summary
+        );
+        assert!(upgraded.text.contains("replay"));
+        assert!(!upgraded.text.contains("dropped"));
     }
 
     #[test]

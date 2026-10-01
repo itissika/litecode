@@ -8,7 +8,10 @@ import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useToastStore } from "../stores/toastStore";
 import { EMPTY_SLICE, useTurnStore } from "../stores/turnStore";
-import { AgentChatInput } from "./AgentChatInput";
+import { AgentChatInput, composerPlaceholder } from "./AgentChatInput";
+import { composerEditor, composerText, pressComposerKey, setComposerText } from "./mention/composerDom";
+
+const COMPOSER = "Message the agent";
 
 vi.mock("../lib/imageNormalize", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/imageNormalize")>();
@@ -49,7 +52,7 @@ function seedSession(sessionId: string) {
           contextMode: "standard",
           pendingThinkingTier: null,
           pendingContextMode: null,
-          maxFileRevertK: null,
+          maxFileRevertSeq: null,
         },
       ],
     ]),
@@ -96,9 +99,8 @@ describe("AgentChatInput silent send", () => {
     });
     render(<AgentChatInput sessionId="session-1" />);
 
-    const textarea = screen.getByPlaceholderText("Message the agent...");
-    fireEvent.change(textarea, { target: { value: "second try" } });
-    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    setComposerText(COMPOSER, "second try");
+    pressComposerKey(COMPOSER, "Enter");
 
     expect(sendRpc).toHaveBeenCalledWith("session/pending-enqueue", {
       text: "second try",
@@ -109,9 +111,7 @@ describe("AgentChatInput silent send", () => {
       useMessageStore.getState().bySession.get("session-1")?.pendingUser,
     ).toBeFalsy();
     expect(useToastStore.getState().toasts).toEqual([]);
-    await waitFor(() =>
-      expect((textarea as HTMLTextAreaElement).value).toBe(""),
-    );
+    await waitFor(() => expect(composerText(COMPOSER)).toBe(""));
     expect(
       useTurnStore.getState().byId.get("session-1")?.pendingMessages,
     ).toEqual([{ id: "p1", text: "second try" }]);
@@ -130,8 +130,7 @@ describe("AgentChatInput silent send", () => {
     expect(screen.queryByTitle("Send")).toBeNull();
 
     // A draft turns the same slot into the queue action, glow kept.
-    const textarea = screen.getByPlaceholderText("Message the agent...");
-    fireEvent.change(textarea, { target: { value: "steer" } });
+    setComposerText(COMPOSER, "steer");
     const queue = screen.getByTitle("Queue for the next step");
     expect(queue.className).toContain("send-spin-glow");
     expect(screen.queryByTitle("Cancel")).toBeNull();
@@ -151,10 +150,9 @@ describe("AgentChatInput silent send", () => {
     });
     render(<AgentChatInput sessionId="session-1" />);
 
-    const textarea = screen.getByPlaceholderText("Message the agent...");
-    fireEvent.change(textarea, { target: { value: "steer" } });
+    setComposerText(COMPOSER, "steer");
     expect(screen.getByTitle("Queue for the next step")).toBeTruthy();
-    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    pressComposerKey(COMPOSER, "Enter");
     expect(sendRpc).toHaveBeenCalledWith("session/pending-enqueue", {
       text: "steer",
       session_id: "session-1",
@@ -169,11 +167,11 @@ describe("AgentChatInput silent send", () => {
         ]),
       });
     });
-    fireEvent.change(textarea, { target: { value: "steer again" } });
+    setComposerText(COMPOSER, "steer again");
     const send = screen.getByTitle("Send") as HTMLButtonElement;
     expect(send.disabled).toBe(true);
     expect(screen.queryByTitle("Queue for the next step")).toBeNull();
-    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    pressComposerKey(COMPOSER, "Enter");
     expect(sendRpc).not.toHaveBeenCalledWith("agent/run", expect.anything());
   });
 
@@ -222,9 +220,7 @@ describe("AgentChatInput silent send", () => {
     });
     expect(innerOf(screen.getByTitle("Cancel"))).toEqual(["true", "false"]);
 
-    fireEvent.change(screen.getByPlaceholderText("Message the agent..."), {
-      target: { value: "steer" },
-    });
+    setComposerText(COMPOSER, "steer");
     const queue = screen.getByTitle("Queue for the next step");
     expect(layersOf(queue)).toEqual(["false", "true", "false"]);
     // One node throughout: the swap only moves the glyphs, so focus and the
@@ -234,33 +230,26 @@ describe("AgentChatInput silent send", () => {
 
   it("appends a recalled queued batch to the draft instead of replacing it", () => {
     render(<AgentChatInput sessionId="session-1" />);
-    const textarea = screen.getByPlaceholderText(
-      "Message the agent...",
-    ) as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: "my draft" } });
+    setComposerText(COMPOSER, "my draft");
 
     act(() => {
       appendComposerText("session-1", "queued one\n\nqueued two");
     });
-    expect(textarea.value).toBe("my draft\n\nqueued one\n\nqueued two");
+    expect(composerText(COMPOSER)).toBe("my draft\n\nqueued one\n\nqueued two");
 
     // Another session's recall never lands in this composer.
     act(() => {
       appendComposerText("session-2", "elsewhere");
     });
-    expect(textarea.value).toBe("my draft\n\nqueued one\n\nqueued two");
+    expect(composerText(COMPOSER)).toBe("my draft\n\nqueued one\n\nqueued two");
   });
 
   it("fills an empty draft with the recalled text verbatim", () => {
     render(<AgentChatInput sessionId="session-1" />);
-    const textarea = screen.getByPlaceholderText(
-      "Message the agent...",
-    ) as HTMLTextAreaElement;
-
     act(() => {
       appendComposerText("session-1", "queued");
     });
-    expect(textarea.value).toBe("queued");
+    expect(composerText(COMPOSER)).toBe("queued");
   });
 
   it("keeps the draft and does not toast when start rejects", () => {
@@ -270,15 +259,27 @@ describe("AgentChatInput silent send", () => {
     } as never);
     render(<AgentChatInput sessionId="session-1" />);
 
-    const textarea = screen.getByPlaceholderText("Message the agent...");
-    fireEvent.change(textarea, { target: { value: "hello" } });
-    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    setComposerText(COMPOSER, "hello");
+    pressComposerKey(COMPOSER, "Enter");
 
     expect(useToastStore.getState().toasts).toEqual([]);
-    expect((textarea as HTMLTextAreaElement).value).toBe("hello");
+    expect(composerText(COMPOSER)).toBe("hello");
     expect(
       useTurnStore.getState().byId.get("session-1")?.runState ?? "idle",
     ).toBe("idle");
+  });
+
+  it("keeps Shift+Enter as a newline and does not send", () => {
+    useConnectionStore.setState({
+      state: "connected",
+      sendRpc: vi.fn(async () => ({ started: true })),
+    } as never);
+    render(<AgentChatInput sessionId="session-1" />);
+    setComposerText(COMPOSER, "hello");
+    composerEditor(COMPOSER).commands.focus("end");
+    pressComposerKey(COMPOSER, "Enter", true);
+    expect(useConnectionStore.getState().sendRpc).not.toHaveBeenCalled();
+    expect(composerText(COMPOSER)).toBe("hello\n");
   });
 });
 
@@ -297,7 +298,7 @@ describe("AgentChatInput — subagent variant", () => {
     render(<AgentChatInput sessionId="session-1" variant="subagent" />);
 
     expect(document.querySelector("textarea")).toBeNull();
-    expect(screen.queryByPlaceholderText("Message the agent...")).toBeNull();
+    expect(document.querySelector(`[aria-label="${COMPOSER}"]`)).toBeNull();
     expect(screen.queryByTitle("Send")).toBeNull();
     expect(screen.queryByTitle("Cancel")).toBeNull();
   });
@@ -345,9 +346,7 @@ describe("AgentChatInput model gate", () => {
   it("sends when the session has no model yet but the catalog has one", async () => {
     dropSessionModel();
     render(<AgentChatInput sessionId="session-1" />);
-    fireEvent.change(document.querySelector("textarea")!, {
-      target: { value: "hello" },
-    });
+    setComposerText(COMPOSER, "hello");
 
     const send = screen.getByTitle("Send") as HTMLButtonElement;
     expect(send.disabled).toBe(false);
@@ -364,14 +363,10 @@ describe("AgentChatInput model gate", () => {
     dropSessionModel();
     useSessionStore.setState({ availableModels: [] } as never);
     render(<AgentChatInput sessionId="session-1" />);
-    const ta = document.querySelector("textarea")!;
-    fireEvent.change(ta, { target: { value: "hello" } });
+    setComposerText(COMPOSER, "hello");
 
     expect((screen.getByTitle("Send") as HTMLButtonElement).disabled).toBe(true);
-    expect(
-      screen.getByPlaceholderText("Add a model in Settings first..."),
-    ).toBeTruthy();
-    fireEvent.keyDown(ta, { key: "Enter" });
+    pressComposerKey(COMPOSER, "Enter");
     expect(useTurnStore.getState().byId.get("session-1")?.runState ?? "idle").toBe(
       "idle",
     );
@@ -391,15 +386,15 @@ describe("AgentChatInput images", () => {
     URL.revokeObjectURL = vi.fn();
   });
 
-  async function pasteShot(): Promise<HTMLTextAreaElement> {
+  async function pasteShot() {
     const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
       type: "image/png",
     });
-    const textarea = screen.getByPlaceholderText(
-      "Message the agent...",
-    ) as HTMLTextAreaElement;
-    fireEvent.paste(textarea, {
+    const field = document.querySelector(`[aria-label="${COMPOSER}"]`);
+    if (!field) throw new Error("composer missing");
+    fireEvent.paste(field, {
       clipboardData: {
+        getData: () => "",
         items: [
           {
             kind: "file",
@@ -412,7 +407,6 @@ describe("AgentChatInput images", () => {
     });
     await waitFor(() => expect(uploadMedia).toHaveBeenCalled());
     await screen.findByTestId("composer-images");
-    return textarea;
   }
 
   function allowImages() {
@@ -432,13 +426,13 @@ describe("AgentChatInput images", () => {
 
   it("blocks send and masks the image when the model has no image modality", async () => {
     render(<AgentChatInput sessionId="session-1" />);
-    const textarea = await pasteShot();
+    await pasteShot();
     expect(screen.getByText("Unsupported")).toBeTruthy();
     const send = screen.getByTitle(
       "Switch to a model that supports images",
     ) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
-    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    pressComposerKey(COMPOSER, "Enter");
     expect(useConnectionStore.getState().sendRpc).not.toHaveBeenCalled();
     expect(useToastStore.getState().toasts.map((toast) => toast.message)).toContain(
       "Switch to a model that supports images",
@@ -448,11 +442,11 @@ describe("AgentChatInput images", () => {
   it("sends an image on its own when the model accepts images", async () => {
     allowImages();
     render(<AgentChatInput sessionId="session-1" />);
-    const textarea = await pasteShot();
+    await pasteShot();
     expect(screen.queryByText("Unsupported")).toBeNull();
     const send = screen.getByTitle("Send") as HTMLButtonElement;
     expect(send.disabled).toBe(false);
-    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    pressComposerKey(COMPOSER, "Enter");
     await waitFor(() => {
       expect(useConnectionStore.getState().sendRpc).toHaveBeenCalledWith(
         "agent/run",
@@ -471,10 +465,100 @@ describe("AgentChatInput images", () => {
       appendComposerText("session-1", "look", [MEDIA_REF]);
     });
     expect(screen.getByTestId("composer-images")).toBeTruthy();
-    expect(
-      (screen.getByPlaceholderText("Message the agent...") as HTMLTextAreaElement)
-        .value,
-    ).toBe("look");
+    expect(composerText(COMPOSER)).toBe("look");
     expect(screen.getByText("Unsupported")).toBeTruthy();
+  });
+});
+
+describe("AgentChatInput composer height", () => {
+  function composerBox(): HTMLElement {
+    const field = document.querySelector(`[aria-label="${COMPOSER}"]`);
+    const box = field?.closest(".max-h-48");
+    if (!box) throw new Error("composer box missing");
+    return box as HTMLElement;
+  }
+
+  it("keeps a dragged height while a draft is present and drops it when the draft is cleared", () => {
+    render(<AgentChatInput sessionId="session-1" />);
+    const box = composerBox();
+    setComposerText(COMPOSER, "a long draft");
+    box.style.height = "280px";
+    box.style.maxHeight = "none";
+
+    setComposerText(COMPOSER, "still drafting");
+    expect(box.style.height).toBe("280px");
+    expect(box.style.maxHeight).toBe("none");
+
+    setComposerText(COMPOSER, "");
+    expect(box.style.height).toBe("");
+    expect(box.style.maxHeight).toBe("");
+  });
+});
+
+describe("composer placeholder", () => {
+  function shownPlaceholder(): string | null {
+    return (
+      document
+        .querySelector(`[aria-label="${COMPOSER}"] p`)
+        ?.getAttribute("data-placeholder") ?? null
+    );
+  }
+
+  it("picks the hint from connection, model, and turn state", () => {
+    expect(
+      composerPlaceholder({
+        connected: true,
+        hasModel: true,
+        manualCompacting: false,
+        queuing: false,
+      }),
+    ).toBe("Message the agent…");
+    expect(
+      composerPlaceholder({
+        connected: true,
+        hasModel: true,
+        manualCompacting: false,
+        queuing: true,
+      }),
+    ).toBe("Queue a follow-up…");
+    expect(
+      composerPlaceholder({
+        connected: false,
+        hasModel: true,
+        manualCompacting: false,
+        queuing: true,
+      }),
+    ).toBe("Reconnecting…");
+    expect(
+      composerPlaceholder({
+        connected: true,
+        hasModel: false,
+        manualCompacting: true,
+        queuing: false,
+      }),
+    ).toBe("Add a model in Settings");
+    expect(
+      composerPlaceholder({
+        connected: true,
+        hasModel: true,
+        manualCompacting: true,
+        queuing: false,
+      }),
+    ).toBe("Compacting context…");
+  });
+
+  it("shows the queue hint during a live turn and the compact hint when idle", () => {
+    useTurnStore.setState({
+      byId: new Map([["session-1", { ...EMPTY_SLICE, runState: "running", compacting: true }]]),
+    });
+    render(<AgentChatInput sessionId="session-1" />);
+    expect(shownPlaceholder()).toBe("Queue a follow-up…");
+
+    act(() => {
+      useTurnStore.setState({
+        byId: new Map([["session-1", { ...EMPTY_SLICE, runState: "idle", compacting: true }]]),
+      });
+    });
+    expect(shownPlaceholder()).toBe("Compacting context…");
   });
 });

@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  deriveUserAnchorK,
-  hydrateUserDetailBefore,
   isAssistantMessage,
   isHiddenHumanRow,
   isHumanUserRow,
@@ -76,7 +74,6 @@ describe("kind-based HumanView rows", () => {
       },
       userRow(3, "u1"),
     ];
-    expect(deriveUserAnchorK(rows, 3, 5)).toBe(6);
     expect(isHiddenHumanRow(rows[2]!)).toBe(false);
     expect(isHumanUserRow(rows[2]!)).toBe(false);
     expect(isTranscriptMarkRow(rows[1]!)).toBe(true);
@@ -157,6 +154,11 @@ describe("kind-based HumanView rows", () => {
     } as unknown as HumanRow;
     expect(isHiddenHumanRow(hidden)).toBe(true);
     expect(isHumanViewKind("reminder/env")).toBe(false);
+    const mentions = { ...hidden, kind: "reminder/mentions" } as unknown as HumanRow;
+    expect(isHiddenHumanRow(mentions)).toBe(true);
+    expect(isHumanViewKind("reminder/mentions")).toBe(false);
+    expect(isTranscriptMarkRow(mentions)).toBe(false);
+    expect(transcriptMarkKind(mentions)).toBeNull();
   });
 
   it("hides a plan-review reminder; plan execution stays its own mark", () => {
@@ -211,11 +213,6 @@ describe("kind-based HumanView rows", () => {
     ).toBeNull();
   });
 
-  it("hydrates userDetailBefore from the server prefix for partial windows", () => {
-    expect(hydrateUserDetailBefore(10, 3, 0)).toBe(3);
-    expect(hydrateUserDetailBefore(0, 3, 9)).toBe(0);
-    expect(hydrateUserDetailBefore(10, undefined, 2)).toBe(2);
-  });
 });
 
 describe("latestAssistantText", () => {

@@ -13,13 +13,19 @@ export const composerShadow = "shadow-(--_dk-composer-card-shadow)";
 export const actionButtonGlass =
   "bg-[color-mix(in_srgb,var(--_dk-editor)_66%,transparent)] backdrop-blur-[12px]";
 
+/** The frosted fill on its own — 82% editor tint + 12px backdrop blur, no
+ *  border, no shadow. The composer card builds on this; portaled overlays (the
+ *  model switcher's list) use it verbatim, so they read as the same glass as
+ *  the composer they open from while keeping the menu's own border/shadow. */
+export const glassFill =
+  "[background:color-mix(in_srgb,var(--_dk-editor)_82%,transparent)] backdrop-blur-[12px]";
+
 export const composerCardClass = [
   "rounded-md",
   "border",
   "border-(--_dk-line)",
-  // glass fill: 88% editor, rest shows the list through
-  "[background:color-mix(in_srgb,var(--_dk-editor)_82%,transparent)]",
-  "backdrop-blur-[12px]",
+  // glass fill: 82% editor, rest shows the list through
+  glassFill,
   // quick shadow transition — the dock container flips the card-shadow var on
   // panel focus change, and this eases the box-shadow instead of snapping it.
   "transition-shadow duration-150",

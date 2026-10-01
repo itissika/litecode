@@ -21,8 +21,8 @@ pub struct RuntimeContext {
     pub cancel: CancellationToken,
     pub data_root: PathBuf,
     pub spill_threshold: usize,
-    /// §5.2 anchor k for the active turn (-1 = unset).
-    pub turn_anchor_k: Arc<AtomicI64>,
+    /// Turn-start snapshot stem (`next_seq` after the user row). -1 = unset.
+    pub turn_anchor_seq: Arc<AtomicI64>,
     /// Process-wide write lock for cross-session resource exclusion (Phase 3).
     pub write_lock: Arc<WorkspaceWriteLock>,
     pub session: Option<crate::session::SessionDataReader>,
@@ -50,19 +50,19 @@ impl RuntimeContext {
             cancel,
             data_root,
             spill_threshold,
-            turn_anchor_k: Arc::new(AtomicI64::new(-1)),
+            turn_anchor_seq: Arc::new(AtomicI64::new(-1)),
             write_lock,
             session,
         }
     }
 
-    pub fn set_turn_anchor_k(&self, k: i64) {
-        self.turn_anchor_k.store(k, Ordering::Relaxed);
+    pub fn set_turn_anchor_seq(&self, seq: i64) {
+        self.turn_anchor_seq.store(seq, Ordering::Relaxed);
     }
 
-    pub fn turn_anchor_k(&self) -> Option<i64> {
-        let k = self.turn_anchor_k.load(Ordering::Relaxed);
-        (k >= 0).then_some(k)
+    pub fn turn_anchor_seq(&self) -> Option<i64> {
+        let seq = self.turn_anchor_seq.load(Ordering::Relaxed);
+        (seq >= 0).then_some(seq)
     }
 
     pub fn without_spill(

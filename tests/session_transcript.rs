@@ -56,13 +56,13 @@ fn session_transcript_roundtrip_and_revert_on_workspace_db() {
     assert_eq!(data.transcript_blocking(&session_id).unwrap().len(), 4);
 
     sessions
-        .entry_revert_to_user_anchor(&session_id, 1)
+        .entry_revert_to_user_anchor(&session_id, 2)
         .expect("revert");
     let after = data.transcript_blocking(&session_id).expect("after revert");
     assert_eq!(
         after.len(),
         2,
-        "truncate user_k=1 must keep first user+assistant turn, got {after:?}"
+        "truncate at the second user seq must keep the first turn, got {after:?}"
     );
     assert_eq!(item_text_preview(&after[0]), "user-hello");
     assert_eq!(item_text_preview(&after[1]), "assistant-hello");

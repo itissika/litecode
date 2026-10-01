@@ -6,10 +6,17 @@ import { useKnowledgeStore } from "../../stores/knowledgeStore";
 
 export function KnowledgePanel({ api }: IDockviewPanelProps) {
   useEffect(() => {
-    const sub = api.onDidActiveChange((event) => {
-      if (event.isActive) void useKnowledgeStore.getState().refreshFromDisk();
+    const note = (visible: boolean) => {
+      useKnowledgeStore.getState().notePanelVisible(api.id, visible);
+    };
+    note(api.isVisible);
+    const sub = api.onDidVisibilityChange((event) => {
+      note(event.isVisible);
     });
-    return () => sub.dispose();
+    return () => {
+      sub.dispose();
+      note(false);
+    };
   }, [api]);
 
   return (

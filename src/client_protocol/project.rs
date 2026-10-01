@@ -1114,7 +1114,7 @@ pub fn buffer_snapshot(
         cumulative_token_stats,
         thinking_tier: binding.thinking_tier.clone(),
         context_mode: binding.context_mode.clone(),
-        max_file_revert_k: None,
+        max_file_revert_seq: None,
         bash: None,
         todos: Vec::new(),
         pending_messages: Vec::new(),

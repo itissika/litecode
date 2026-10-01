@@ -58,7 +58,6 @@ impl StartTurnError {
 /// Loaded log window `[from_seq, to_seq)`.
 pub struct MaterializedRange {
     pub events: Vec<crate::client_protocol::protocol::WireBufferEvent>,
-    pub user_detail_before: i64,
 }
 
 /// Per-session projection state. Each subscribed session on a connection gets
@@ -92,8 +91,8 @@ pub struct Projection {
     pub last_turn_token_stats: Option<crate::client_protocol::protocol::TurnTokenStats>,
     /// Session-total provider usage (Σ per-request); feeds whole-session hit rate.
     pub cumulative_token_stats: Option<crate::client_protocol::protocol::TurnTokenStats>,
-    /// Cached from snapshot patch files; see [`snapshot::max_file_revert_k`].
-    pub max_file_revert_k: Option<i64>,
+    /// Cached from snapshot patch files; see [`snapshot::max_file_revert_seq`].
+    pub max_file_revert_seq: Option<i64>,
     pub deferred: VecDeque<SessionRequest>,
     /// Handle for the forwarding task spawned by `subscribe()`.
     /// Aborted on `unsubscribe()` to prevent resource leaks.
@@ -242,7 +241,7 @@ impl Projection {
             context_token_breakdown,
             last_turn_token_stats,
             cumulative_token_stats,
-            max_file_revert_k: None,
+            max_file_revert_seq: None,
             deferred: VecDeque::new(),
             forward_task: None,
         }
@@ -280,7 +279,7 @@ impl Projection {
             self.sessions.is_compacting_blocking(&self.session_id),
         );
         snap.context_token_breakdown = self.context_token_breakdown.clone();
-        snap.max_file_revert_k = self.max_file_revert_k;
+        snap.max_file_revert_seq = self.max_file_revert_seq;
         let task_state = self
             .sessions
             .with_entry_task_state(&self.session_id, |state| Ok(state.clone()))
@@ -504,10 +503,10 @@ impl Projection {
 
     // ── revert ──
 
-    /// Wire-facing revert: truncates transcript at user anchor `k`.
+    /// Wire-facing revert: truncates the transcript at a user row's `seq`.
     pub fn revert_to_user_anchor(
         &mut self,
-        k: u32,
+        seq: u64,
         project: &str,
         binding: &SessionBindingProjection,
     ) -> anyhow::Result<()> {
@@ -525,12 +524,25 @@ impl Projection {
             }
             Err(e) => return Err(e.into()),
         };
+        let anchor = match i64::try_from(seq) {
+            Ok(anchor) => anchor,
+            Err(_) => {
+                self.push_operation_error(
+                    OperationKind::RevertToUserAnchor,
+                    ErrorCode::InvalidRevertAnchor,
+                    format!("seq={seq}"),
+                    project,
+                    binding,
+                );
+                return Ok(());
+            }
+        };
         match self
             .sessions
-            .entry_revert_to_user_anchor(&self.session_id, i64::from(k))
+            .entry_revert_to_user_anchor(&self.session_id, anchor)
         {
             Ok(()) => {
-                // The log is back at anchor `k`: messages still queued for the
+                // The log is back at this user row: messages still queued for the
                 // next seam belong to the state the user just discarded, so they
                 // must not be delivered afterwards. Done under the same lease —
                 // no turn can start and no end-of-turn flush can claim them in
@@ -583,7 +595,7 @@ impl Projection {
 
     pub fn revert_files(
         &mut self,
-        k: u32,
+        seq: u64,
         project: &str,
         binding: &SessionBindingProjection,
         workspace_root: &str,
@@ -606,9 +618,22 @@ impl Projection {
             }
             Err(e) => return Err(e.into()),
         };
+        let anchor = match i64::try_from(seq) {
+            Ok(anchor) => anchor,
+            Err(_) => {
+                self.push_operation_error(
+                    OperationKind::RevertFiles,
+                    ErrorCode::InvalidRevertAnchor,
+                    format!("seq={seq}"),
+                    project,
+                    binding,
+                );
+                return Ok(());
+            }
+        };
         let stem = match self
             .sessions
-            .entry_snapshot_stem_for_user_k(&self.session_id, i64::from(k))
+            .entry_snapshot_stem_for_user_seq(&self.session_id, anchor)
         {
             Ok(stem) => stem,
             Err(LitecodeError::InvalidRevertAnchor(msg)) => {
@@ -719,13 +744,7 @@ impl Projection {
                 hidden,
             });
         }
-        let user_detail_before = self
-            .sessions
-            .entry_user_detail_before_seq(&self.session_id, from_seq)?;
-        Ok(MaterializedRange {
-            events: out,
-            user_detail_before,
-        })
+        Ok(MaterializedRange { events: out })
     }
 
     // ── turn helpers ──
@@ -883,8 +902,8 @@ impl Projection {
                 };
             }
             crate::runtime::observer::InternalEvent::PermissionResolved { .. } => {}
-            crate::runtime::observer::InternalEvent::FileRevertUpdated { max_k } => {
-                self.max_file_revert_k = *max_k;
+            crate::runtime::observer::InternalEvent::FileRevertUpdated { max_seq } => {
+                self.max_file_revert_seq = *max_seq;
             }
             crate::runtime::observer::InternalEvent::CompactionLifecycle {
                 trigger: crate::runtime::observer::CompactionTrigger::Auto,
@@ -989,8 +1008,8 @@ impl SessionController {
 
         let sessions = self.sessions.clone();
         let mut proj = Projection::new(session_id.to_string(), sessions, context_window);
-        proj.max_file_revert_k =
-            snapshot::max_file_revert_k(&self.runtime.workspace.paths.snapshots_dir, session_id);
+        proj.max_file_revert_seq =
+            snapshot::max_file_revert_seq(&self.runtime.workspace.paths.snapshots_dir, session_id);
 
         // R7: if a turn is already running for this session, restore state.
         if let Some(progress) = cached
@@ -1609,7 +1628,7 @@ mod compact_item_wire_tests {
     }
 
     #[test]
-    fn materialize_range_threads_log_state_and_user_detail_before() {
+    fn materialize_range_threads_log_state() {
         use crate::authority::responses::{
             AssistantRole, MessageItem, OutputMessage, OutputMessageContent, OutputStatus,
             OutputTextContent,
@@ -1636,12 +1655,11 @@ mod compact_item_wire_tests {
             )
             .unwrap();
         let range = proj.materialize_range(0, 10).unwrap();
-        assert_eq!(range.user_detail_before, 0);
         assert_eq!(range.events.len(), 3);
         assert_eq!(range.events[0].state, LogState::Final);
         assert_eq!(range.events[2].state, LogState::InProgress);
         let tail = proj.materialize_range(1, 10).unwrap();
-        assert_eq!(tail.user_detail_before, 1);
+        assert_eq!(tail.events.len(), 2);
     }
 
     #[test]
@@ -1901,7 +1919,7 @@ mod compact_item_wire_tests {
         assert_eq!(proj.next_seq, 9, "high-water after nine appends");
         assert_eq!(proj.snapshot("/p", &binding()).buffer.last_seq, 8);
 
-        // Revert to user anchor k=6 → keeps seqs 0..5 (active MAX 5); the
+        // Revert at user seq 6 → keeps seqs 0..5 (active MAX 5); the
         // allocator high-water stays at 9 because a truncate never rewinds it.
         proj.revert_to_user_anchor(6, "/p", &binding()).unwrap();
         let out = proj.take_outgoing();

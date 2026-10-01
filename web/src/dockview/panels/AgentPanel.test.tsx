@@ -89,7 +89,6 @@ function seedMessages(rows: HumanRow[]): void {
       landedQueueSeq: null,
       fromSeq: 0,
       toSeq: rows.length,
-      userDetailBefore: 0,
       loadingHistory: false,
       hydrated: true,
       shapeError: null,

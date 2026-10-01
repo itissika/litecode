@@ -1,10 +1,13 @@
 //! Catalog file lifecycle: stable location, first-run seeding, strict loading.
 //!
 //! The catalog lives next to the global database and is a *user* file: it is
-//! seeded once. A file that already loads is never rewritten. A file this build
-//! cannot load is upgraded by [super::migrate] and the previous text is kept
-//! beside it. The editor schema next to the catalog is product-managed and may
-//! be refreshed on every start.
+//! seeded once. A file that already loads keeps every entry it could load,
+//! including edits and providers the user added. Shipped providers and models
+//! that are missing are appended from this build's seed, with that seed's
+//! defaults; an id that is already present is not overwritten. A file this
+//! build cannot load is upgraded by [super::migrate] and the previous text is
+//! kept beside it, then the same append runs. The editor schema next to the
+//! catalog is product-managed and may be refreshed on every start.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -44,12 +47,12 @@ pub fn schema_path_for_db(db_path: &Path) -> PathBuf {
 /// Load the catalog that belongs to `db_path`.
 ///
 /// - not initialized + file missing: seed from the embedded catalog;
-/// - not initialized + file present: load (upgrading if this build cannot), then
-///   register initialized;
+/// - not initialized + file present: load (upgrading if this build cannot),
+///   append shipped ids the file lacks, then register initialized;
 /// - initialized + file missing: hard error (never silently re-seed);
 /// - unreadable, or text that is not TOML: hard error naming the file;
 /// - TOML this build cannot load: upgrade, keep the previous text in
-///   `provider-catalog.toml.bak`, then load the upgraded file.
+///   `provider-catalog.toml.bak`, append shipped ids still missing, then load.
 pub fn load_for_db(db_path: &Path) -> Result<Arc<ProviderCatalog>> {
     let path = catalog_path_for_db(db_path);
     let conn = global_db::open(db_path)?;
@@ -119,6 +122,78 @@ fn load_catalog_file(path: &Path) -> Result<ProviderCatalog> {
             Ok(upgraded.catalog)
         }
     }
+    .and_then(|catalog| append_missing_seed(path, catalog))
+}
+
+/// Append shipped providers and models the loaded catalog does not have.
+///
+/// Entries already present stay byte-for-byte, so an edited endpoint or a
+/// provider the user added is left alone. The appended tables are the seed's,
+/// comments included, which is where context, reasoning, and endpoint defaults
+/// live. A second start sees no gap and does not write.
+fn append_missing_seed(path: &Path, catalog: ProviderCatalog) -> Result<ProviderCatalog> {
+    let gap = seed_gap(&catalog);
+    if gap.is_empty() {
+        return Ok(catalog);
+    }
+    let blocks = seed_blocks(&gap);
+    if blocks.is_empty() {
+        tracing::warn!(
+            path = %path.display(),
+            "provider catalog is missing seed entries but no seed block was produced"
+        );
+        return Ok(catalog);
+    }
+    let mut text = std::fs::read_to_string(path).map_err(|error| {
+        LitecodeError::Config(format!(
+            "provider catalog {} could not be read: {error}",
+            path.display()
+        ))
+    })?;
+    // `toml` writes an empty array of tables as `models = []`. A later
+    // `[[models]]` is then a duplicate key, so drop the empty assignment when
+    // the seed block is about to open that array.
+    text = drop_empty_table_array(&text, "providers", blocks.contains("[[providers]]"));
+    text = drop_empty_table_array(&text, "models", blocks.contains("[[models]]"));
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push('\n');
+    text.push_str(&blocks);
+    let parsed = ProviderCatalog::parse(&text, path).map_err(|error| {
+        LitecodeError::Config(format!(
+            "provider catalog {} could not take the missing seed entries: {error}",
+            path.display()
+        ))
+    })?;
+    atomic_write(path, &text)?;
+    tracing::info!(
+        path = %path.display(),
+        providers = gap.missing_providers.len(),
+        models = gap.missing_models.len(),
+        "appended missing seed providers and models"
+    );
+    Ok(parsed)
+}
+
+/// Remove `key = []` so a following `[[key]]` array-of-tables can extend it.
+fn drop_empty_table_array(text: &str, key: &str, dropping: bool) -> String {
+    if !dropping {
+        return text.to_string();
+    }
+    let needle = format!("{key} = []");
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        if line.trim() == needle {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !text.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
 }
 
 fn backup_path(path: &Path) -> PathBuf {

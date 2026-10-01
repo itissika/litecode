@@ -11,6 +11,14 @@ import {
 import type { DockviewPanelApi } from "dockview-react";
 import type { editor } from "monaco-editor";
 
+import { fetchSymbolAt } from "../api/workspace";
+import {
+  fileLabel,
+  formatLineSpan,
+  capsuleLabel,
+  symbolMentionSource,
+} from "../lib/knowledge/markers";
+import { appendComposerText, composerTarget } from "../stores/composerDraft";
 import { useEditorStore } from "../stores/editorStore";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
@@ -75,7 +83,37 @@ export function EditorPane({
 
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const addToChatRef = useRef<{ dispose: () => void } | null>(null);
+  const pathRef = useRef(filePath);
+  pathRef.current = filePath;
   const milkdownHostRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    return () => addToChatRef.current?.dispose();
+  }, []);
+
+  const addSelectionToChat = useCallback(async (ed: editor.ICodeEditor) => {
+    const selection = ed.getSelection();
+    if (!selection || selection.isEmpty()) return;
+    const sessionId = composerTarget();
+    if (!sessionId) return;
+    let end = selection.endLineNumber;
+    if (selection.endColumn === 1 && end > selection.startLineNumber) end -= 1;
+    const start = selection.startLineNumber;
+    const path = pathRef.current;
+    let chain = "";
+    try {
+      const hit = await fetchSymbolAt(path, start, end);
+      chain = hit.chain?.trim() ?? "";
+    } catch {
+      chain = "";
+    }
+    const lines = formatLineSpan(start, end);
+    const text = chain
+      ? symbolMentionSource(path, { symbol: chain, lines, label: capsuleLabel(path, chain) })
+      : symbolMentionSource(path, { lines, label: fileLabel(path) });
+    appendComposerText(sessionId, text);
+  }, []);
   const lspBindRef = useRef<(() => void) | null>(null);
   const [monacoTheme, setMonacoTheme] = useState(() =>
     getTheme() === "light"
@@ -318,6 +356,20 @@ export function EditorPane({
                   }
                   syncLspRegistration(monaco);
                   bindEditorToLsp(monaco, _editor);
+                  addToChatRef.current?.dispose();
+                  addToChatRef.current = _editor.addAction({
+                    id: "litecode.add-selection-to-chat",
+                    label: "添加到对话",
+                    contextMenuGroupId: "9_cutcopypaste",
+                    contextMenuOrder: 2,
+                    keybindings: [
+                      monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyL,
+                    ],
+                    precondition: "editorHasSelection",
+                    run: (ed) => {
+                      void addSelectionToChat(ed);
+                    },
+                  });
                   const pending = useEditorStore.getState().pendingReveal;
                   if (pending && pending.path === filePath) {
                     const reveal = useEditorStore

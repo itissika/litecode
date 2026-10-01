@@ -14,9 +14,12 @@ use std::sync::Arc;
 pub use provider::LlmProvider;
 pub use request::{ModelRequest, ToolDef};
 
-/// Replay rules: ids never go on the wire, ciphertext only to its producer,
-/// reasoning text is never dropped.
-pub(crate) use replay_compat::{producers_for_seqs, strip_foreign_ciphertext};
+/// Replay rules: ids stay off the wire except a summary-replay host's own
+/// reasoning id, ciphertext only to its producer, and summary replay drops
+/// reasoning any other provider produced.
+pub(crate) use replay_compat::{
+    producers_for_seqs, retain_own_reasoning, strip_foreign_ciphertext,
+};
 
 /// Folding a provider's stream into canonical `Item`s.
 ///

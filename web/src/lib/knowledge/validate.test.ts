@@ -6,8 +6,10 @@ import type { KnowledgeIssue, KnowledgeNode } from "./types";
 import {
   groupIssues,
   knowledgeListAlert,
+  knowledgeRailBadge,
   knowledgeTitleTone,
   missingFileIssues,
+  symbolIssues,
   validateKnowledge,
 } from "./validate";
 
@@ -160,6 +162,46 @@ describe("validateKnowledge", () => {
     );
   });
 
+  it("reports a missing chain and a drifted chain", () => {
+    const issues = symbolIssues([
+      {
+        nodeId: "note",
+        file: "src/a.rs",
+        symbol: "fn alpha",
+        exists: false,
+        ambiguous: false,
+        drifted: false,
+        commits: [],
+      },
+      {
+        nodeId: "note",
+        file: "src/a.rs",
+        symbol: "fn beta",
+        exists: true,
+        ambiguous: true,
+        drifted: false,
+        commits: [],
+      },
+      {
+        nodeId: "note",
+        file: "src/a.rs",
+        symbol: "fn gamma",
+        exists: true,
+        ambiguous: false,
+        drifted: true,
+        commits: [{ hash: "abc1234", subject: "edit gamma" }],
+      },
+    ]);
+    expect(issues.map((issue) => issue.code)).toEqual([
+      "missing_symbol",
+      "missing_symbol",
+      "symbol_drift",
+    ]);
+    expect(issues[1]?.message).toContain("not unique");
+    expect(issues[2]?.message).toContain("abc1234 edit gamma");
+    expect(issues[2]?.severity).toBe("warning");
+  });
+
   it("allows a cycle", () => {
     const issues = validateKnowledge([
       node({ id: "session", key: "session", value: mentionSource("seq") }),
@@ -237,6 +279,46 @@ describe("knowledgeTitleTone", () => {
       message: "Citation \"missing\" does not exist.",
     };
     expect(knowledgeTitleTone([fault], "disabled")).toBe("error");
+  });
+});
+
+describe("knowledgeRailBadge", () => {
+  const error = (nodeId: string): KnowledgeIssue => ({
+    nodeId,
+    severity: "error",
+    code: "missing_file",
+    message: "missing",
+  });
+  const drift = (nodeId: string): KnowledgeIssue => ({
+    nodeId,
+    severity: "warning",
+    code: "symbol_drift",
+    message: "drift",
+  });
+  const inactive = (nodeId: string): KnowledgeIssue => ({
+    nodeId,
+    severity: "warning",
+    code: "inactive_target",
+    message: "inactive",
+  });
+
+  it("counts nodes with errors ahead of warnings", () => {
+    expect(knowledgeRailBadge([error("a"), error("a"), drift("b")])).toEqual({
+      tone: "error",
+      count: 1,
+    });
+  });
+
+  it("counts warning nodes when nothing is an error", () => {
+    expect(knowledgeRailBadge([drift("a"), inactive("a"), drift("b")])).toEqual({
+      tone: "warning",
+      count: 2,
+    });
+  });
+
+  it("ignores a citation of a disabled node on its own", () => {
+    expect(knowledgeRailBadge([inactive("a")])).toBeNull();
+    expect(knowledgeRailBadge([])).toBeNull();
   });
 });
 

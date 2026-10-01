@@ -275,8 +275,6 @@ export interface BufferLoaded {
   events: WireBufferEvent[];
   /** `subagent_launch` call_id → durable child session id (rebuild path). */
   subagent_bindings?: Record<string, string>;
-  /** Server count of user-detail rows with seq < from_seq. */
-  user_detail_before?: number;
 }
 
 export type BufferItemNotification = WireBufferEvent & {
@@ -436,11 +434,11 @@ export interface SessionSnapshot {
   thinking_tier?: ThinkingTier;
   context_mode?: ContextMode;
   /**
-   * Highest user-detail anchor whose file patch is nonempty.
-   * Show "Revert files" when `userAnchorK <= max_file_revert_k`.
+   * Highest file-snapshot stem (`next_seq` at turn start) with a revertible
+   * patch. Show "Revert files" when `userSeq + 1 <= max_file_revert_seq`.
    * Absent / null = no file-level revert available.
    */
-  max_file_revert_k?: number | null;
+  max_file_revert_seq?: number | null;
   /** Running agent bash jobs + wait_shell waiters (reconnect hydrate). */
   bash?: BashJobsSnapshot | null;
   /** Session-scoped todos (reconnect hydrate; not derived from the transcript). */

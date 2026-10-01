@@ -5,11 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 
-import {
-  deriveUserAnchorK,
-  isCompactCutRow,
-  itemPlainText,
-} from "../api/adapter";
+import { isCompactCutRow, itemPlainText } from "../api/adapter";
 import type {
   BufferLoaded,
   Item,
@@ -65,7 +61,6 @@ function load(
   events: WireBufferEvent[],
   from = 0,
   to?: number,
-  userDetailBefore?: number,
 ): void {
   const loaded: BufferLoaded = {
     session_id: sid,
@@ -73,9 +68,6 @@ function load(
     to_seq:
       to ?? (events.length ? Math.max(...events.map((e) => e.seq)) + 1 : from),
     events,
-    ...(userDetailBefore !== undefined
-      ? { user_detail_before: userDetailBefore }
-      : {}),
   };
   useMessageStore.getState().onBufferLoaded(sid, loaded);
 }
@@ -343,21 +335,17 @@ describe("messageStore seq map", () => {
     expect(slice.messages[0]!.state).toBe("final");
   });
 
-  it("hydrates userDetailBefore from a partial buffer/load window", () => {
-    const sid = "s-partial-k";
+  it("keeps fromSeq on a partial buffer/load window", () => {
+    const sid = "s-partial";
     load(
       sid,
       [ev(10, userMsg("later")), ev(11, assistantMsg("a", "ok"))],
       10,
       12,
-      3,
     );
     const slice = useMessageStore.getState().bySession.get(sid)!;
     expect(slice.fromSeq).toBe(10);
-    expect(slice.userDetailBefore).toBe(3);
-    expect(deriveUserAnchorK(slice.messages, 0, slice.userDetailBefore)).toBe(
-      3,
-    );
+    expect(slice.messages.map((row) => row.seq)).toEqual([10, 11]);
   });
 
   it("malformed buffer/item missing kind/body does not overwrite a valid seq", () => {
@@ -563,19 +551,16 @@ describe("messageStore buffer window — tail append (P6 catch-up)", () => {
       [ev(0, userMsg("ask")), ev(1, assistantMsg("a", "first"))],
       0,
       2,
-      0,
     );
 
     // Gap catch-up: the retained window [0,2) is topped up with [2,3).
-    load(sid, [ev(2, assistantMsg("b", "second"))], 2, 3, 7);
+    load(sid, [ev(2, assistantMsg("b", "second"))], 2, 3);
 
     const slice = useMessageStore.getState().bySession.get(sid)!;
     expect(slice.messages.map((r) => r.seq)).toEqual([0, 1, 2]);
     expect(slice.toSeq).toBe(3);
     // The older rows are still held: the start must not jump to the appended tail.
     expect(slice.fromSeq).toBe(0);
-    // `userDetailBefore` counts from the window start, not from the tail base.
-    expect(slice.userDetailBefore).toBe(0);
   });
 
   it("still moves the window start for a history page loaded below the window", () => {
@@ -584,15 +569,13 @@ describe("messageStore buffer window — tail append (P6 catch-up)", () => {
       [ev(10, userMsg("ask")), ev(11, assistantMsg("a", "first"))],
       10,
       12,
-      3,
     );
 
-    load(sid, [ev(8, userMsg("older"))], 8, 10, 1);
+    load(sid, [ev(8, userMsg("older"))], 8, 10);
 
     const slice = useMessageStore.getState().bySession.get(sid)!;
     expect(slice.messages.map((r) => r.seq)).toEqual([8, 10, 11]);
     expect(slice.fromSeq).toBe(8);
-    expect(slice.userDetailBefore).toBe(1);
     expect(slice.toSeq).toBe(12);
   });
 });
@@ -637,7 +620,7 @@ describe("sessionStore.applySnapshot — retained window catch-up (P6)", () => {
   it("appends the gap when a retained window lags the snapshot next_seq", () => {
     const sendRpc = seedRpc([ev(5, assistantMsg("e", "appended"))]);
     // Retained window from an earlier expand: [0,5), server is at 8.
-    load(sid, [ev(0, userMsg("ask"))], 0, 5, 0);
+    load(sid, [ev(0, userMsg("ask"))], 0, 5);
 
     useSessionStore.getState().applySnapshot(snapshot(8));
 
@@ -662,7 +645,7 @@ describe("sessionStore.applySnapshot — retained window catch-up (P6)", () => {
 
   it("does not re-fetch when the retained window already covers next_seq", () => {
     const sendRpc = seedRpc();
-    load(sid, [ev(0, userMsg("ask"))], 0, 8, 0);
+    load(sid, [ev(0, userMsg("ask"))], 0, 8);
 
     useSessionStore.getState().applySnapshot(snapshot(8));
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type AnimationEvent } from "react";
 import { ArrowsOutSimple, CaretDown } from "@phosphor-icons/react";
 import {
   Handle,
@@ -14,6 +14,11 @@ import {
   KNOWLEDGE_NODE_MIN_HEIGHT,
   KNOWLEDGE_NODE_MIN_WIDTH,
 } from "../../lib/knowledge/layoutGraph";
+import {
+  knowledgeContentSignature,
+  mentionKeysOf,
+  prefersReducedMotion,
+} from "../../lib/knowledge/flowProjection";
 import { extractMarkers, knowledgePreview, normalizeKey } from "../../lib/knowledge/markers";
 import { knowledgeTitleTone } from "../../lib/knowledge/validate";
 import type { KnowledgeIssue } from "../../lib/knowledge/types";
@@ -26,17 +31,25 @@ import {
 
 const NO_ISSUES: KnowledgeIssue[] = [];
 
-type KnowledgeNodeData = { nodeId: string };
+type KnowledgeNodeData = { nodeId: string; arrive?: boolean };
 
 export function KnowledgeFlowCard({
   data,
 }: NodeProps<Node<KnowledgeNodeData, "knowledge">>) {
-  const node = useKnowledgeStore((s) => s.byId.get(data.nodeId));
-  const nodes = useKnowledgeStore((s) => s.nodes);
-  const focusedId = useKnowledgeStore((s) => s.focusedId);
-  const focusNode = useKnowledgeStore((s) =>
-    focusedId == null ? undefined : s.byId.get(focusedId),
+  const stored = useKnowledgeStore((s) => s.byId.get(data.nodeId));
+  const nodeCache = useRef(stored);
+  if (stored) nodeCache.current = stored;
+  const node = stored ?? nodeCache.current;
+  const leaving = stored == null && node != null && !prefersReducedMotion();
+  const [arriving, setArriving] = useState(
+    () => data.arrive === true && !prefersReducedMotion(),
   );
+  const [contentWave, setContentWave] = useState(0);
+  const contentSeen = useRef<string | null>(null);
+  const contentSummary = useKnowledgeStore((s) => s.byId.get(data.nodeId)?.summary ?? null);
+  const contentValue = useKnowledgeStore((s) => s.byId.get(data.nodeId)?.value ?? null);
+  const mentionKeys = useKnowledgeStore((s) => mentionKeysOf(s.nodes));
+  const focusedId = useKnowledgeStore((s) => s.focusedId);
   const graphOpen = useKnowledgeStore((s) => s.graphExpanded.has(data.nodeId));
   const toggleGraph = useKnowledgeStore((s) => s.toggleGraph);
   const saveNode = useKnowledgeStore((s) => s.saveNode);
@@ -64,6 +77,49 @@ export function KnowledgeFlowCard({
   const mounted = useRef(true);
   const nodeIdRef = useRef(data.nodeId);
   nodeIdRef.current = data.nodeId;
+  const ownKey = node ? normalizeKey(node.key) : "";
+  const refCandidates = useMemo(() => {
+    if (!mentionKeys) return [];
+    return mentionKeys.split("\n").filter((key) => key && key !== ownKey);
+  }, [mentionKeys, ownKey]);
+  const [scaleMotion, setScaleMotion] = useState<"in" | "out" | null>(null);
+  const expandMotionReady = useRef(false);
+
+  useEffect(() => {
+    if (!expandMotionReady.current) {
+      expandMotionReady.current = true;
+      return;
+    }
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      return;
+    }
+    setScaleMotion(graphOpen ? "in" : "out");
+  }, [graphOpen]);
+
+  function onChromeMotionEnd(event: AnimationEvent<HTMLDivElement>) {
+    if (event.animationName.startsWith("knowledge-flow-card-scale")) {
+      setScaleMotion(null);
+      return;
+    }
+    if (event.animationName === "knowledge-card-arrive") setArriving(false);
+  }
+
+  useEffect(() => {
+    if (contentSummary == null || contentValue == null) return;
+    const sig = knowledgeContentSignature(contentSummary, contentValue);
+    if (contentSeen.current == null) {
+      contentSeen.current = sig;
+      return;
+    }
+    if (contentSeen.current === sig) return;
+    contentSeen.current = sig;
+    if (summaryDirtyRef.current || bodyDirtyRef.current) return;
+    if (prefersReducedMotion()) return;
+    setContentWave((n) => n + 1);
+  }, [contentSummary, contentValue]);
 
   useEffect(() => {
     if (!node || summaryDirty) return;
@@ -104,22 +160,11 @@ export function KnowledgeFlowCard({
     };
   }, []);
 
-  if (!node) return null;
+  if (!node || (stored == null && !leaving)) return null;
 
   const titleTone = knowledgeTitleTone(issues, node.status);
   const focused = focusedId === node.id;
-  const ownKey = normalizeKey(node.key);
-  const focusKey = focusNode ? normalizeKey(focusNode.key) : "";
-  let dimmed = false;
-  if (focusedId != null && !focused && focusNode) {
-    const linked =
-      focusNode.relations.includes(ownKey) || node.relations.includes(focusKey);
-    dimmed = !linked;
-  }
   const summary = node.summary || knowledgePreview(node.value, 1);
-  const refCandidates = nodes
-    .map((item) => normalizeKey(item.key))
-    .filter((key) => key && key !== ownKey);
   const enabled = node.status === "enabled";
 
   async function commitKey() {
@@ -254,18 +299,28 @@ export function KnowledgeFlowCard({
     settleMark();
   }
 
+  const motionClass = leaving ? "is-leave" : arriving ? "is-arrive" : "";
+
   return (
     <>
-      <Handle type="target" position={Position.Left} isConnectable={false} />
+      <Handle
+        type="target"
+        position={Position.Left}
+        isConnectable={false}
+        className={motionClass || undefined}
+      />
       <div
         className={[
           "knowledge-flow-card",
           graphOpen ? "is-expanded" : "",
+          !leaving && scaleMotion === "in" ? "is-scale-in" : "",
+          !leaving && scaleMotion === "out" ? "is-scale-out" : "",
+          motionClass,
           focused ? "is-focused" : "",
-          dimmed ? "is-dimmed" : "",
         ]
           .filter(Boolean)
           .join(" ")}
+        onAnimationEnd={onChromeMotionEnd}
       >
         {node.status === "disabled" && !focused ? (
           <div className="knowledge-flow-disabled-veil" aria-hidden />
@@ -402,7 +457,25 @@ export function KnowledgeFlowCard({
           </NodeResizeControl>
         ) : null}
       </div>
-      <Handle type="source" position={Position.Right} isConnectable={false} />
+      {contentWave > 0 && !leaving ? (
+        <div
+          key={contentWave}
+          className="knowledge-content-wave"
+          data-wave={contentWave}
+          aria-hidden
+          onAnimationEnd={(event) => {
+            if (event.animationName !== "knowledge-content-wave") return;
+            if (event.currentTarget.dataset.wave !== String(contentWave)) return;
+            setContentWave(0);
+          }}
+        />
+      ) : null}
+      <Handle
+        type="source"
+        position={Position.Right}
+        isConnectable={false}
+        className={motionClass || undefined}
+      />
     </>
   );
 }

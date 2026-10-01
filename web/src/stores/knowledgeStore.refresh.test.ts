@@ -10,12 +10,13 @@ vi.mock("../api/workspace", () => ({
   renamePath: vi.fn(),
 }));
 
-import { fetchTree, readFile } from "../api/workspace";
+import { fetchTree, readFile, writeFile } from "../api/workspace";
 import { useKnowledgeStore } from "./knowledgeStore";
 import { useWorkspaceChangeStore } from "./workspaceChangeStore";
 
 const tree = vi.mocked(fetchTree);
 const read = vi.mocked(readFile);
+const write = vi.mocked(writeFile);
 
 const seq = [
   "```node",
@@ -60,6 +61,7 @@ describe("knowledgeStore workspace refresh", () => {
     });
 
     await useKnowledgeStore.getState().load();
+    await useKnowledgeStore.getState().notePanelVisible("workspace-knowledge", true);
     expect(useKnowledgeStore.getState().nodes.map((node) => node.key)).toEqual([
       "seq",
     ]);
@@ -84,5 +86,82 @@ describe("knowledgeStore workspace refresh", () => {
     expect(useKnowledgeStore.getState().nodes.map((node) => node.key).sort()).toEqual(
       ["order", "seq"],
     );
+    await useKnowledgeStore.getState().notePanelVisible("workspace-knowledge", false);
+  });
+
+  it("does not scan disk while every knowledge surface is hidden", async () => {
+    tree.mockImplementation(async (dir = "") => {
+      if (dir === "knowledge") throw new Error("missing");
+      if (dir !== ".litecode/knowledge") throw new Error(dir);
+      return [
+        {
+          name: "seq.md",
+          path: ".litecode/knowledge/seq.md",
+          kind: "file" as const,
+        },
+      ];
+    });
+    read.mockResolvedValue(seq);
+    await useKnowledgeStore.getState().load();
+    useKnowledgeStore.getState().notePanelVisible("workspace-knowledge", false);
+    useKnowledgeStore.getState().notePanelVisible("knowledge-graph", false);
+    const before = tree.mock.calls.length;
+    useWorkspaceChangeStore
+      .getState()
+      .record([".litecode/knowledge/seq.md"], "modified");
+    await sleep(200);
+    expect(tree.mock.calls.length).toBe(before);
+  });
+
+  it("keeps a single-card edit when a disk snapshot started earlier", async () => {
+    let disk = seq;
+    let holdNextRead = false;
+    let releaseRead: () => void = () => {};
+    let enteredRead: () => void = () => {};
+    const readEntered = new Promise<void>((resolve) => {
+      enteredRead = resolve;
+    });
+    tree.mockImplementation(async (dir = "") => {
+      if (dir === "knowledge") throw new Error("missing");
+      if (dir !== ".litecode/knowledge") throw new Error(dir);
+      return [
+        {
+          name: "seq.md",
+          path: ".litecode/knowledge/seq.md",
+          kind: "file" as const,
+        },
+      ];
+    });
+    read.mockImplementation(async () => {
+      if (holdNextRead) {
+        holdNextRead = false;
+        const snap = disk;
+        enteredRead();
+        await new Promise<void>((resolve) => {
+          releaseRead = resolve;
+        });
+        return snap;
+      }
+      return disk;
+    });
+    write.mockImplementation(async (_path: string, content: string) => {
+      disk = content;
+    });
+
+    await useKnowledgeStore.getState().load();
+    const id = useKnowledgeStore.getState().nodes[0]?.id;
+    expect(id).toBeTruthy();
+
+    holdNextRead = true;
+    const refresh = useKnowledgeStore.getState().refreshFromDisk();
+    await readEntered;
+    const saved = await useKnowledgeStore.getState().saveNode(id!, { summary: "保住" });
+    expect(saved).toBe(true);
+    expect(useKnowledgeStore.getState().byId.get(id!)?.summary).toBe("保住");
+
+    releaseRead();
+    await refresh;
+    await sleep(30);
+    expect(useKnowledgeStore.getState().byId.get(id!)?.summary).toBe("保住");
   });
 });

@@ -32,7 +32,7 @@ function seedSession(sessionId: string) {
           contextMode: "standard",
           pendingThinkingTier: null,
           pendingContextMode: null,
-          maxFileRevertK: null,
+          maxFileRevertSeq: null,
         },
       ],
     ]),
@@ -108,8 +108,7 @@ describe("refresh hydration repro", () => {
     ).toBe("running");
 
     render(<AgentChatInput sessionId="session-1" />);
-    const ta = screen.getByPlaceholderText("Message the agent...");
-    expect(ta).toBeTruthy();
+    expect(document.querySelector('[aria-label="Message the agent"]')).toBeTruthy();
     // The cancel button should be shown while running.
     const cancel = screen.queryByTitle("Cancel");
     const send = screen.queryByTitle("Send");

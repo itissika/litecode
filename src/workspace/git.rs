@@ -160,6 +160,98 @@ pub fn git_dir_is_snapshot(workspace: &Path, git_dir: &Path) -> bool {
         || crate::config::path::is_under(&git_dir, &snapshots_root())
 }
 
+fn git_ready(workspace: &Path) -> Result<(), GitError> {
+    if find_git_exe().is_none() {
+        return Err(GitError::GitMissing);
+    }
+    if !is_git_repo(workspace) {
+        return Err(GitError::NotARepo);
+    }
+    assert_not_snapshot_repo(workspace)
+}
+
+/// Commit that last touched `rel`, if the path has ever been committed.
+///
+/// `Ok(None)` means the path is untracked in history. `GitMissing` and
+/// `NotARepo` mean the drift check should stay off.
+pub fn last_commit_touching(workspace: &Path, rel: &str) -> Result<Option<String>, GitError> {
+    git_ready(workspace)?;
+    let rel = rel.replace('\\', "/");
+    let stdout = run_git_ok(workspace, &["log", "-1", "--format=%H", "--", rel.as_str()])?;
+    let hash = stdout_text(stdout);
+    if hash.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(hash))
+    }
+}
+
+/// File bytes at `rev:rel`. `Ok(None)` when that path is not in the revision.
+pub fn show_at(workspace: &Path, rev: &str, rel: &str) -> Result<Option<String>, GitError> {
+    git_ready(workspace)?;
+    let rel = rel.replace('\\', "/");
+    let spec = format!("{rev}:{rel}");
+    match run_git(workspace, &["show", spec.as_str()]) {
+        Ok((0, stdout, _)) => Ok(Some(String::from_utf8_lossy(&stdout).into_owned())),
+        Ok((_, _, stderr)) if file_missing_at_rev(&stderr) => Ok(None),
+        Ok((code, _, stderr)) => Err(GitError::Command(if stderr.is_empty() {
+            format!("git show failed (exit {code})")
+        } else {
+            stderr
+        })),
+        Err(error) => Err(error),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathCommit {
+    pub hash: String,
+    pub subject: String,
+}
+
+/// Commits in `base..HEAD` that touch `rel`, newest first, capped at `limit`.
+pub fn log_between(
+    workspace: &Path,
+    base: &str,
+    rel: &str,
+    limit: usize,
+) -> Result<Vec<PathCommit>, GitError> {
+    git_ready(workspace)?;
+    let rel = rel.replace('\\', "/");
+    let range = format!("{base}..HEAD");
+    let n = format!("-n{limit}");
+    let stdout = run_git_ok(
+        workspace,
+        &[
+            "log",
+            "--format=%h%x09%s",
+            n.as_str(),
+            range.as_str(),
+            "--",
+            rel.as_str(),
+        ],
+    )?;
+    let mut commits = Vec::new();
+    for line in String::from_utf8_lossy(&stdout).lines() {
+        let Some((hash, subject)) = line.split_once('\t') else {
+            continue;
+        };
+        if hash.is_empty() {
+            continue;
+        }
+        commits.push(PathCommit {
+            hash: hash.to_string(),
+            subject: subject.to_string(),
+        });
+    }
+    Ok(commits)
+}
+
+fn file_missing_at_rev(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("does not exist") || lower.contains("exists on disk, but not in")
+}
+
 fn is_git_repo(workspace: &Path) -> bool {
     match run_git(workspace, &["rev-parse", "--is-inside-work-tree"]) {
         Ok((0, stdout, _)) => stdout_text(stdout).eq_ignore_ascii_case("true"),
@@ -419,7 +511,10 @@ fn parse_numstat(field: &str) -> u32 {
 
 fn unquote_git_path(raw: &str) -> String {
     let raw = raw.trim();
-    let Some(inner) = raw.strip_prefix('"').and_then(|value| value.strip_suffix('"')) else {
+    let Some(inner) = raw
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    else {
         return raw.to_string();
     };
     inner.replace("\\\\", "\\").replace("\\\"", "\"")
@@ -924,5 +1019,44 @@ mod tests {
         let snap = snapshots_dir_for_workspace(&workspace);
         assert!(git_dir_is_snapshot(&workspace, &snap));
         assert!(!git_dir_is_snapshot(&workspace, &workspace.join(".git")));
+    }
+
+    #[test]
+    fn history_helpers_read_a_path_at_a_commit() {
+        if !git_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        fs::write(dir.path().join("a.rs"), "fn alpha() {\n    let x = 1;\n}\n").unwrap();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new(find_git_exe().unwrap())
+                    .args(args)
+                    .current_dir(dir.path())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["add", "a.rs"]);
+        run(&["commit", "-m", "add alpha"]);
+        let base = last_commit_touching(dir.path(), "a.rs")
+            .unwrap()
+            .expect("commit");
+        let shown = show_at(dir.path(), &base, "a.rs").unwrap().expect("blob");
+        assert!(shown.contains("let x = 1"));
+        fs::write(dir.path().join("a.rs"), "fn alpha() {\n    let x = 2;\n}\n").unwrap();
+        run(&["add", "a.rs"]);
+        run(&["commit", "-m", "edit alpha"]);
+        let commits = log_between(dir.path(), &base, "a.rs", 3).unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].subject, "edit alpha");
+        assert!(show_at(dir.path(), "HEAD", "missing.rs").unwrap().is_none());
+        let bare = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            last_commit_touching(bare.path(), "a.rs"),
+            Err(GitError::NotARepo)
+        ));
     }
 }

@@ -13,6 +13,13 @@ export const KNOWLEDGE_NODE_MAX_HEIGHT = 560;
 export const KNOWLEDGE_FOLDER_HEADER = 28;
 export const KNOWLEDGE_FOLDER_PAD = 16;
 
+/** Canvas dot pitch. Dragging snaps to this, and so does a card that has no saved position. */
+export const KNOWLEDGE_GRID = 18;
+
+export function snapKnowledgeCoord(value: number): number {
+  return Math.round(value / KNOWLEDGE_GRID) * KNOWLEDGE_GRID;
+}
+
 export function knowledgeFolderFlowId(folderId: string): string {
   return `folder:${folderId}`;
 }
@@ -60,6 +67,13 @@ function edgeVariant(
   );
   if (inactive) return "inactive";
   return "solid";
+}
+
+export function knowledgeRelationEdges(
+  nodes: KnowledgeNode[],
+  issues: KnowledgeIssue[],
+): LaidOutEdge[] {
+  return collectEdges(nodes, issues);
 }
 
 function collectEdges(
@@ -453,8 +467,78 @@ export function layoutKnowledgeGraph(
 ): { nodes: LaidOutNode[]; folders: LaidOutFolder[]; edges: LaidOutEdge[] } {
   const edges = collectEdges(nodes, issues);
   if (folders.length === 0) {
-    return { nodes: layoutFlat(nodes, edges), folders: [], edges };
+    const aligned = alignUnsaved(layoutFlat(nodes, edges), [], nodes);
+    return { nodes: aligned.nodes, folders: [], edges };
   }
   const grouped = layoutContainer(null, nodes, folders, edges, new Set<string>());
-  return { nodes: grouped.nodes, folders: grouped.folders, edges };
+  const aligned = alignUnsaved(grouped.nodes, grouped.folders, nodes);
+  return { nodes: aligned.nodes, folders: aligned.folders, edges };
+}
+
+/** Cards with no saved position land on the grid. Saved coordinates stay put. */
+function alignUnsaved(
+  laid: LaidOutNode[],
+  folders: LaidOutFolder[],
+  source: KnowledgeNode[],
+): { nodes: LaidOutNode[]; folders: LaidOutFolder[] } {
+  const saved = new Set(source.filter(hasWorldPosition).map((node) => node.id));
+  const nodes = laid.map((node) =>
+    saved.has(node.nodeId)
+      ? node
+      : {
+          ...node,
+          x: snapKnowledgeCoord(node.x),
+          y: snapKnowledgeCoord(node.y),
+        },
+  );
+  if (folders.length === 0) return { nodes, folders };
+  return { nodes, folders: reframeFolders(folders, nodes, source) };
+}
+
+function reframeFolders(
+  folders: LaidOutFolder[],
+  nodes: LaidOutNode[],
+  source: KnowledgeNode[],
+): LaidOutFolder[] {
+  const sizeById = new Map(source.map((node) => [node.id, cardBox(node)] as const));
+  const byId = new Map(folders.map((folder) => [folder.id, folder]));
+  const depthOf = (id: string | null): number => {
+    let depth = 0;
+    const seen = new Set<string>();
+    let current = id;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      depth += 1;
+      current = byId.get(current)?.parentId ?? null;
+    }
+    return depth;
+  };
+  const next = new Map(byId);
+  const deepestFirst = [...folders].sort((a, b) => depthOf(b.id) - depthOf(a.id));
+  for (const folder of deepestFirst) {
+    const childNodes = nodes.filter((node) => node.parentId === folder.id);
+    const childFolders = folders
+      .filter((item) => item.parentId === folder.id)
+      .map((item) => next.get(item.id))
+      .filter((item): item is LaidOutFolder => item != null);
+    const rects: Rect[] = [
+      ...childNodes.map((node) => {
+        const box = sizeById.get(node.nodeId) ?? {
+          width: KNOWLEDGE_NODE_WIDTH,
+          height: KNOWLEDGE_NODE_HEIGHT,
+        };
+        return { x: node.x, y: node.y, w: box.width, h: box.height };
+      }),
+      ...childFolders.map((item) => ({
+        x: item.x,
+        y: item.y,
+        w: item.width,
+        h: item.height,
+      })),
+    ];
+    if (rects.length === 0) continue;
+    const frame = frameAround(rects);
+    next.set(folder.id, { ...folder, ...frame });
+  }
+  return folders.map((folder) => next.get(folder.id) ?? folder);
 }

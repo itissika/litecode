@@ -15,7 +15,7 @@ import { NodeView, ProcessGroup } from "./NodeView";
 
 export interface EditingUserAnchor {
   bubbleKey: string;
-  userAnchorK: number;
+  userSeq: number;
   draft: string;
   images?: string[];
   settings: MiniChatInputSettings;
@@ -96,7 +96,7 @@ function MiniChatPanel({
 /** Bubble for a contiguous run of rows that share the same speaker side. */
 function ItemBubbleImpl({
   rows,
-  userAnchorK,
+  userSeq,
   showRevert,
   readOnly,
   sessionId,
@@ -109,7 +109,8 @@ function ItemBubbleImpl({
   onMiniAnimationEnd,
 }: {
   rows: HumanRow[];
-  userAnchorK?: number;
+  /** Sealed user row seq. Absent for non-user bubbles and the optimistic seq -1 row. */
+  userSeq?: number;
   showRevert: boolean;
   readOnly: boolean;
   isRunning: boolean;
@@ -146,7 +147,7 @@ function ItemBubbleImpl({
     isUser &&
     bubbleKey !== undefined &&
     editingAnchor?.bubbleKey === bubbleKey &&
-    userAnchorK !== undefined;
+    userSeq !== undefined;
 
   const body = !hasContent ? (
     <span className="inline-block h-4 w-2 bg-(--_dk-text-muted)" />
@@ -195,6 +196,7 @@ function ItemBubbleImpl({
           sessionId={sessionId}
           bubbleKey={bubbleKey}
           citations={!isUser}
+          mentions={isUser}
         />
       ));
     })
@@ -223,7 +225,7 @@ function ItemBubbleImpl({
                 onDismissEdit();
                 void replayFromAnchor(
                   sessionId,
-                  userAnchorK,
+                  editingAnchor.userSeq,
                   input,
                   settings,
                   editingAnchor.images ?? userImages,
@@ -239,14 +241,14 @@ function ItemBubbleImpl({
               if (
                 readOnly ||
                 !showRevert ||
-                userAnchorK === undefined ||
+                userSeq === undefined ||
                 !bubbleKey ||
                 editing
               )
                 return;
               onEditAnchor({
                 bubbleKey,
-                userAnchorK,
+                userSeq,
                 draft: userText,
                 images: userImages,
                 settings: {
@@ -286,7 +288,7 @@ export const ItemBubble = memo(
     prev.showRevert === next.showRevert &&
     prev.readOnly === next.readOnly &&
     prev.showRevertFiles === next.showRevertFiles &&
-    prev.userAnchorK === next.userAnchorK &&
+    prev.userSeq === next.userSeq &&
     prev.bubbleKey === next.bubbleKey &&
     prev.followedByUser === next.followedByUser &&
     prev.editingAnchor === next.editingAnchor &&

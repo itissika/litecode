@@ -7,6 +7,12 @@ import {
   citationUrlTransform,
   isHttpCitation,
 } from "../lib/citationRef";
+import { normalizeKey } from "../lib/knowledge/markers";
+import {
+  parseKnowledgeRef,
+  remarkKnowledgeRef,
+} from "../lib/knowledge/remarkKnowledgeRef";
+import { useKnowledgeStore } from "../stores/knowledgeStore";
 import {
   getMarkdownHighlighter,
   isSupportedHighlightLang,
@@ -98,24 +104,75 @@ function MarkdownCodeBlock({ code, lang }: { code: string; lang: string }) {
   );
 }
 
+function linkLabel(children: ReactNode): string {
+  if (typeof children === "string" || typeof children === "number") return String(children);
+  if (Array.isArray(children)) return children.map((child) => linkLabel(child)).join("");
+  return "";
+}
+
+function NodeCitationChip({ id, label }: { id: string; label: string }) {
+  const key = normalizeKey(id);
+  const target = useKnowledgeStore((state) => (key ? state.byKey.get(key) : undefined));
+  const focusCanvas = useKnowledgeStore((state) => state.focusCanvas);
+  const shown = label || key;
+  return (
+    <span className={target ? "knowledge-token" : "knowledge-token is-invalid"}>
+      {target ? (
+        <button
+          type="button"
+          className="knowledge-token-label"
+          aria-label={shown}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            focusCanvas(target.id);
+          }}
+        >
+          {shown}
+        </button>
+      ) : (
+        <span className="knowledge-token-label">{shown}</span>
+      )}
+    </span>
+  );
+}
+
 interface AgentMarkdownProps {
   text: string;
   streaming?: boolean;
   /** Assistant prose only. Other callers keep ordinary links. */
   citations?: boolean;
+  /** Sit in the surrounding line. Used when a mention capsule shares the sentence. */
+  inline?: boolean;
 }
 
 export const AgentMarkdown = memo(function AgentMarkdown({
   text,
   streaming = false,
   citations = false,
+  inline = false,
 }: AgentMarkdownProps) {
   const displayText = useStreamingBuffer(text, streaming);
+  const remarkPlugins = useMemo(
+    () => (citations ? [remarkGfm, remarkKnowledgeRef] : [remarkGfm]),
+    [citations],
+  );
+  const transformUrl = useMemo(
+    () => (value: string) => {
+      if (citations && parseKnowledgeRef(value)) return value;
+      return citationUrlTransform(value);
+    },
+    [citations],
+  );
   const components = useMemo(
     () => ({
-      p: ({ children }: { children?: ReactNode }) => (
-        <p className="mb-2.5 last:mb-0 leading-relaxed">{children}</p>
-      ),
+      p: ({ children }: { children?: ReactNode }) =>
+        inline ? (
+          <span className="leading-relaxed">{children}</span>
+        ) : (
+          <p className="mb-2.5 last:mb-0 leading-relaxed">{children}</p>
+        ),
       ul: ({ children }: { children?: ReactNode }) => (
         <ul className="mb-2 list-disc pl-5 last:mb-0">{children}</ul>
       ),
@@ -134,6 +191,10 @@ export const AgentMarkdown = memo(function AgentMarkdown({
         <em className="italic">{children}</em>
       ),
       a: ({ href, children }: { href?: string; children?: ReactNode }) => {
+        const nodeKey = citations ? parseKnowledgeRef(href) : null;
+        if (nodeKey) {
+          return <NodeCitationChip id={nodeKey} label={linkLabel(children) || nodeKey} />;
+        }
         if (href && /^file:/i.test(href)) {
           if (!citations) return <>{children}</>;
           return (
@@ -217,18 +278,20 @@ export const AgentMarkdown = memo(function AgentMarkdown({
         <h3 className="mb-1 text-dk-xl font-medium last:mb-0">{children}</h3>
       ),
     }),
-    [citations, streaming],
+    [citations, inline, streaming],
   );
 
+  const Tag = inline ? "span" : "div";
+
   return (
-    <div className="agent-markdown">
+    <Tag className={inline ? "agent-markdown is-inline" : "agent-markdown"}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        urlTransform={citationUrlTransform}
+        remarkPlugins={remarkPlugins}
+        urlTransform={transformUrl}
         components={components}
       >
         {displayText}
       </ReactMarkdown>
-    </div>
+    </Tag>
   );
 });

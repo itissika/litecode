@@ -240,7 +240,6 @@ describe("MessageList G5 historical FoldCard", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={true}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -277,7 +276,6 @@ describe("MessageList process group across seal", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={true}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -299,7 +297,6 @@ describe("MessageList process group across seal", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={true}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -315,7 +312,6 @@ describe("MessageList process group across seal", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={true}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -340,7 +336,6 @@ describe("MessageList process group across seal", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={true}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -368,7 +363,6 @@ describe("MessageList process group across seal", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={true}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -411,7 +405,6 @@ describe("MessageList process group across seal", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={true}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -438,7 +431,6 @@ describe("MessageList queued-batch in-flight bubble", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={true}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -470,7 +462,6 @@ describe("MessageList queued-batch in-flight bubble", () => {
       loadingHistory: false,
       canLoadMore: false,
       onLoadMore: () => {},
-      userDetailBefore: 0,
       isRunning: true,
       scrollRef: makeScrollRef(),
       sessionId: "session-1",
@@ -548,7 +539,6 @@ describe("MessageList queued-batch in-flight bubble", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={true}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -568,7 +558,6 @@ describe("MessageList queued-batch in-flight bubble", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={true}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -724,7 +713,6 @@ describe("MessageList reminder rows", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={false}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -759,7 +747,6 @@ describe("MessageList reminder rows", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={false}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -768,7 +755,7 @@ describe("MessageList reminder rows", () => {
     expect(screen.queryByText("do not render")).toBeNull();
   });
 
-  it("opens a user-message editor with the server-derived anchor", () => {
+  it("opens a user-message editor on that row's seq", () => {
     const onEditAnchor = vi.fn();
     const user: HumanRow = {
       seq: 12,
@@ -786,7 +773,6 @@ describe("MessageList reminder rows", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={4}
         isRunning={false}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -795,7 +781,7 @@ describe("MessageList reminder rows", () => {
     );
     fireEvent.click(screen.getByText("later ask"));
     expect(onEditAnchor).toHaveBeenCalledWith(
-      expect.objectContaining({ userAnchorK: 4, draft: "later ask" }),
+      expect.objectContaining({ userSeq: 12, draft: "later ask" }),
     );
   });
 
@@ -830,7 +816,6 @@ describe("MessageList reminder rows", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={4}
         isRunning={true}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -840,7 +825,7 @@ describe("MessageList reminder rows", () => {
 
     fireEvent.click(screen.getByText("earlier ask"));
     expect(onEditAnchor).toHaveBeenCalledWith(
-      expect.objectContaining({ draft: "earlier ask", userAnchorK: 4 }),
+      expect.objectContaining({ draft: "earlier ask", userSeq: 12 }),
     );
     onEditAnchor.mockClear();
 
@@ -860,7 +845,6 @@ describe("MessageList stick intent", () => {
           loadingHistory={false}
           canLoadMore={false}
           onLoadMore={() => {}}
-          userDetailBefore={0}
           isRunning={true}
           scrollRef={scrollRef}
           sessionId="session-1"
@@ -884,7 +868,6 @@ describe("MessageList compacting now marker", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={false}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -903,7 +886,6 @@ describe("MessageList compacting now marker", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={false}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -921,7 +903,6 @@ describe("MessageList compacting now marker", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={true}
         scrollRef={makeScrollRef()}
         sessionId="session-1"
@@ -1172,7 +1153,6 @@ describe("MessageList composer pad", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={false}
         scrollRef={scrollRef}
         sessionId="session-1"
@@ -1204,7 +1184,6 @@ describe("MessageList composer pad", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={false}
         scrollRef={scrollRef}
         sessionId="session-1"
@@ -1238,7 +1217,6 @@ describe("MessageList composer pad", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={false}
         scrollRef={scrollRef}
         sessionId="session-1"
@@ -1269,7 +1247,6 @@ describe("MessageList composer pad", () => {
         loadingHistory={false}
         canLoadMore={false}
         onLoadMore={() => {}}
-        userDetailBefore={0}
         isRunning={false}
         scrollRef={scrollRef}
         sessionId="session-1"

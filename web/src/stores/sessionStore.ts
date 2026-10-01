@@ -71,8 +71,8 @@ export interface SessionSlice {
   contextMode: ContextMode;
   pendingThinkingTier: ThinkingTier | null;
   pendingContextMode: ContextMode | null;
-  /** Highest user-detail k with a nonempty file patch; null = hide Revert files. */
-  maxFileRevertK: number | null;
+  /** Highest file-snapshot stem with a nonempty patch; null = hide Revert files. */
+  maxFileRevertSeq: number | null;
 }
 
 function emptySlice(): SessionSlice {
@@ -86,7 +86,7 @@ function emptySlice(): SessionSlice {
     contextMode: "standard",
     pendingThinkingTier: null,
     pendingContextMode: null,
-    maxFileRevertK: null,
+    maxFileRevertSeq: null,
   };
 }
 
@@ -167,10 +167,10 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       contextMode: snap.context_mode ?? "standard",
       pendingThinkingTier: null,
       pendingContextMode: null,
-      maxFileRevertK:
-        snap.max_file_revert_k === undefined || snap.max_file_revert_k === null
+      maxFileRevertSeq:
+        snap.max_file_revert_seq === undefined || snap.max_file_revert_seq === null
           ? null
-          : snap.max_file_revert_k,
+          : snap.max_file_revert_seq,
     });
 
     // Snapshot turn is hydrate-only. `turn: null` (compact / idle session) must

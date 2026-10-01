@@ -228,7 +228,10 @@ mod fixture_tests {
         actual.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
         let mut wanted = expected["files"].as_array().unwrap().clone();
         wanted.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
-        assert_eq!(serde_json::Value::Array(actual), serde_json::Value::Array(wanted));
+        assert_eq!(
+            serde_json::Value::Array(actual),
+            serde_json::Value::Array(wanted)
+        );
 
         let checks: Vec<CheckNode<'_>> = corpus
             .nodes
@@ -242,12 +245,14 @@ mod fixture_tests {
                 path: &node.path,
             })
             .collect();
-        let mut issues: Vec<_> = validate::validate(&checks, &|path| {
-            crate::knowledge::mentions::workspace_file_exists(&workspace, path)
-        })
-            .into_iter()
-            .map(|issue| format!("{}:{}", issue.node_id, issue.code))
-            .collect();
+        let mut issues: Vec<_> = validate::validate(
+            &checks,
+            &|path| crate::knowledge::mentions::workspace_file_exists(&workspace, path),
+            &mut |_, _, _| crate::knowledge::symbol_check::SymbolCheck::Present,
+        )
+        .into_iter()
+        .map(|issue| format!("{}:{}", issue.node_id, issue.code))
+        .collect();
         issues.sort();
         let mut wanted_issues: Vec<String> = expected["issues"]
             .as_array()

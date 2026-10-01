@@ -110,7 +110,7 @@ describe("turnStore convergence", () => {
     ]);
     expect(sendRpc).toHaveBeenCalledWith("session/revert-to-user-anchor", {
       session_id: sessionId,
-      k: 2,
+      seq: 2,
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.replaying).toBe(false);
   });

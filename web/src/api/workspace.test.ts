@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   fetchGlob,
+  fetchMentionPaths,
   fetchTreeReveal,
   getEnginesDetail,
   gitStatus,
@@ -117,6 +118,23 @@ describe("workspace engine API", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "/api/workspace/glob?pattern=FileTree",
     );
+  });
+
+  it("fetches mention paths from the path index", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        data: {
+          entries: [{ path: "src/a.rs", file: true }],
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const hits = await fetchMentionPaths("a.rs");
+    expect(hits).toEqual([{ path: "src/a.rs", file: true }]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/workspace/mention-paths?q=a.rs");
   });
 
   it("fetches tree reveal ancestor listings", async () => {

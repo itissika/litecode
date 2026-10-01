@@ -21,7 +21,7 @@ const BUTTONS: &str = "\
 - `knowledge`: open this board
 - `knowledge guide`: syntax, checks, and notes
 - `knowledge list [folder]`: list nodes; a folder only narrows the scope
-- `knowledge refs <key>`: one node and its citations
+- `knowledge refs <key>`: that node's full file, plus cards for the nodes that cite it and the nodes it cites
 - `knowledge check [key or folder]`: list validation issues
 - `knowledge create <key> [folder]`: create a pending node
 - `knowledge rename <old key> <new key>`: rename a node and its citations
@@ -51,6 +51,8 @@ The only node citation is `[@ id="seq" label="seq"]`. Lookup uses `id`. `label` 
 
 A file citation is `[@ file="src/a.rs" label="a.rs"]`. It names a workspace path, not a node. A file and a directory both count. `..` and an absolute path are not a path.
 
+A symbol citation is `[@ file="src/a.rs" symbol="impl Store › fn save" label="fn save"]`. `symbol` is the ancestor chain and is the identity. `lines` is optional and is not checked. A chain that is missing or not unique is an error. When this note has been committed and git can answer, a chain whose body changed in later commits of that file is a warning: read the code, update the note, and the warning goes away on the next commit of this note. Uncommitted edits are not that warning. Without git, only existence is checked.
+
 A citation inside a fence (` ``` ` or `~~~`), inside inline code, or written as `@seq` or `/src/a.rs` is ordinary text.
 
 The file is named `<key>.md`. If the name differs, the key is still the identity.
@@ -67,11 +69,13 @@ Errors:
 - A citation `id` is the node's own key.
 - A citation `id` matches no node.
 - A file citation path is not in the workspace.
+- A symbol citation's chain is missing from that file, or the same chain occurs more than once.
 
 Warnings:
 
 - The file name does not match the key.
 - An enabled node cites a disabled or pending node.
+- A symbol citation's body changed in commits since this note was last committed.
 
 ## Notes
 
@@ -124,7 +128,9 @@ pub fn counts(nodes: &[&Node], issues: &[Issue], incoming: impl Fn(&str) -> usiz
             .iter()
             .filter(|issue| issue.node_id == node.id)
             .collect();
-        let has_error = node_issues.iter().any(|issue| issue.severity == Severity::Error);
+        let has_error = node_issues
+            .iter()
+            .any(|issue| issue.severity == Severity::Error);
         if node.status == Status::Enabled && !has_error {
             out.verified += 1;
         }
@@ -203,6 +209,21 @@ fn display_path(prefix: &str, path: &str) -> String {
     }
 }
 
+/// One node's file as stored. The path and any faults sit above the text.
+pub fn node_file(path_prefix: &str, path: &str, issues: &[Issue], markdown: &str) -> String {
+    let shown = display_path(path_prefix, path);
+    let mut head = vec![format!("`{shown}`")];
+    for issue in issues {
+        head.push(format!("- {}: {}", issue.severity.as_str(), issue.message));
+    }
+    let body = markdown.trim_start_matches('\u{feff}').trim_end();
+    if body.is_empty() {
+        head.join("\n")
+    } else {
+        format!("{}\n\n{body}", head.join("\n"))
+    }
+}
+
 /// One node, numbered. A fault replaces the citation counts.
 pub fn node_card(
     index: usize,
@@ -230,7 +251,11 @@ pub fn node_card(
     let path = display_path(path_prefix, &node.path);
     let mut lines = vec![format!("{index}. {title} · `{path}` · {when} · {tail}")];
     for issue in issues {
-        lines.push(format!("   - {}: {}", issue.severity.as_str(), issue.message));
+        lines.push(format!(
+            "   - {}: {}",
+            issue.severity.as_str(),
+            issue.message
+        ));
     }
     let summary = clip(node.summary.trim(), SUMMARY_CHARS);
     if !summary.is_empty() {
@@ -255,7 +280,14 @@ pub fn cards<'a>(
         .enumerate()
         .map(|(index, node)| {
             let issues = issues_for(node);
-            node_card(index + 1, node, &issues, incoming(&node.key), now, path_prefix)
+            node_card(
+                index + 1,
+                node,
+                &issues,
+                incoming(&node.key),
+                now,
+                path_prefix,
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -265,9 +297,7 @@ pub fn missing_board() -> String {
     join_sections(&[
         section(
             "# Welcome",
-            &format!(
-                "{WELCOME}\n\n`knowledge create \"<key>\"` creates `.litecode/knowledge`."
-            ),
+            &format!("{WELCOME}\n\n`knowledge create \"<key>\"` creates `.litecode/knowledge`."),
         ),
         section("# Buttons", BUTTONS),
     ])
@@ -440,7 +470,12 @@ mod tests {
     #[test]
     fn empty_section_disappears_and_recent_skips_faults() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let healthy = node("seq", Status::Enabled, &["session"], Duration::from_secs(3 * 3600));
+        let healthy = node(
+            "seq",
+            Status::Enabled,
+            &["session"],
+            Duration::from_secs(3 * 3600),
+        );
         let pending = node("draft", Status::Pending, &[], Duration::from_secs(60));
         let nodes = vec![healthy, pending];
         let issues = vec![];
@@ -477,7 +512,12 @@ mod tests {
     #[test]
     fn fault_card_hides_citation_counts() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
-        let node = node("seq", Status::Enabled, &["missing"], Duration::from_secs(30));
+        let node = node(
+            "seq",
+            Status::Enabled,
+            &["missing"],
+            Duration::from_secs(30),
+        );
         let issues = vec![Issue {
             node_id: "seq".into(),
             severity: Severity::Error,

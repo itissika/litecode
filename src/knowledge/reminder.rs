@@ -108,7 +108,11 @@ mod tests {
         let below = tempfile::tempdir().unwrap();
         init_repo(below.path());
         touch_knowledge(below.path());
-        fs::write(below.path().join("a.txt"), format!("base\n{}", "x\n".repeat(10))).unwrap();
+        fs::write(
+            below.path().join("a.txt"),
+            format!("base\n{}", "x\n".repeat(10)),
+        )
+        .unwrap();
         let corpus = Corpus::load(below.path());
         let drift = workspace::drift_since(
             below.path(),

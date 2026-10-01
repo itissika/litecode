@@ -955,9 +955,8 @@ fn revert_contract_three_states() {
 
     assert_eq!(sessions.entry_user_detail_count(&sid).unwrap(), 4);
 
-    // 1) Anchor inside the checkpoint: revert to u3's full-history anchor (k=3)
-    // keeps u2 + summary, drops u3.
-    sessions.entry_revert_to_user_anchor(&sid, 3).unwrap();
+    // 1) u0, u1, compact, u2, u3 → u3 is seq 4. Keeps u2 + summary, drops u3.
+    sessions.entry_revert_to_user_anchor(&sid, 4).unwrap();
     let loaded = sessions.data().transcript_blocking(&sid).unwrap();
     let previews: Vec<String> = loaded
         .iter()
@@ -978,7 +977,7 @@ fn revert_contract_three_states() {
         "a swallowed revert must not mutate the transcript"
     );
 
-    // 3) Cross-checkpoint: reverting to archived u1 (k=1)
+    // 3) Cross-checkpoint: reverting to archived u1 (seq 1)
     // physically removes that detail and the later checkpoint.
     sessions.entry_revert_to_user_anchor(&sid, 1).unwrap();
     let after_cross = sessions.data().transcript_blocking(&sid).unwrap();
@@ -1582,7 +1581,7 @@ struct PipelinePersistDeps {
     call_index: Cell<usize>,
     cancelled: Cell<bool>,
     cancel_after_model: bool,
-    revert_k: Cell<Option<i64>>,
+    revert_seq: Cell<Option<i64>>,
     execute_calls: Cell<u32>,
 }
 
@@ -1640,9 +1639,9 @@ impl AgentDeps for PipelinePersistDeps {
     }
 
     fn persist_new(&self, items: &[Item]) -> litecode::types::Result<bool> {
-        if let Some(k) = self.revert_k.take() {
+        if let Some(seq) = self.revert_seq.take() {
             self.sessions
-                .entry_revert_to_user_anchor(&self.session_id, k)?;
+                .entry_revert_to_user_anchor(&self.session_id, seq)?;
         }
         Ok(self
             .pipeline
@@ -1680,7 +1679,7 @@ async fn agent_persist_after_revert_does_not_replay_or_pad() {
         call_index: Cell::new(0),
         cancelled: Cell::new(false),
         cancel_after_model: true,
-        revert_k: Cell::new(Some(1)),
+        revert_seq: Cell::new(Some(1)),
         execute_calls: Cell::new(0),
     };
     let outcome = agent::run(&mut deps).await;
@@ -1998,7 +1997,7 @@ async fn compact_then_agent_run_persists_assistant() {
         call_index: Cell::new(0),
         cancelled: Cell::new(false),
         cancel_after_model: false,
-        revert_k: Cell::new(None),
+        revert_seq: Cell::new(None),
         execute_calls: Cell::new(0),
     };
     let outcome = agent::run(&mut deps).await;

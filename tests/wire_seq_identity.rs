@@ -311,8 +311,8 @@ fn compact_then_revert_after_checkpoint_keeps_compacted_seq() {
     let _ = proj.take_outgoing();
     assert_eq!(sessions.entry_wire_seq_cursor(&sid), (4, 5));
 
-    // Users a,b,c plus post-compact d → k=3 is the new user (seq 4).
-    proj.revert_to_user_anchor(3, "/p", &binding()).unwrap();
+    // Users a,b,c plus post-compact d. d is seq 4.
+    proj.revert_to_user_anchor(4, "/p", &binding()).unwrap();
     let out = proj.take_outgoing();
     let reverted = out
         .iter()

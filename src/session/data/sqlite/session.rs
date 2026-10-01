@@ -106,27 +106,29 @@ FROM transcript_items t
 WHERE t.session_id = ?1
 ORDER BY t.seq ASC";
 
-/// UI revert anchors: append-origin user messages only (replace summaries are not k).
+/// Append-origin user messages. Replace summaries are not user rows.
 pub const SQL_USER_DETAIL_COUNT: &str = "\
 SELECT COUNT(*) FROM transcript_items t
 WHERE t.session_id = ?
   AND t.kind = 'item/user'";
 
-/// User-detail rows with `seq < from_seq` (buffer/load `user_detail_before`).
-pub const SQL_USER_DETAIL_BEFORE_SEQ: &str = "\
-SELECT COUNT(*) FROM transcript_items t
-WHERE t.session_id = ?
-  AND t.kind = 'item/user'
-  AND t.seq < ?";
-
-/// UI revert k → anchor_seq mapping across append-origin user messages.
-pub const SQL_ANCHOR_SEQ: &str = "\
-SELECT seq FROM (
-    SELECT t.seq, ROW_NUMBER() OVER (ORDER BY t.seq) - 1 AS k
-    FROM transcript_items t
-    WHERE t.session_id = ?
-      AND t.kind = 'item/user'
-) WHERE k = ?";
+/// The revert anchor is the user row's own `seq`. Anything else is not a cut point.
+pub(crate) fn require_user_anchor(conn: &Connection, session_id: &str, seq: i64) -> Result<()> {
+    if seq < 0 {
+        return Err(LitecodeError::InvalidRevertAnchor(format!("seq={seq}")));
+    }
+    let kind: Option<String> = conn
+        .query_row(
+            "SELECT kind FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
+            rusqlite::params![session_id, seq],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if kind.as_deref() != Some("item/user") {
+        return Err(LitecodeError::InvalidRevertAnchor(format!("seq={seq}")));
+    }
+    Ok(())
+}
 
 /// Empty string seeds become SQL NULL (unset model), matching the contract.
 fn normalize_model_id(model_id: Option<&str>) -> Option<String> {
@@ -158,8 +160,14 @@ pub enum CommitDeltaOutcome {
 #[derive(Debug)]
 pub enum SessionApply {
     Append(EventDraft),
-    Seal { seq: Seq, item: Item },
-    Truncate { user_k: i64 },
+    Seal {
+        seq: Seq,
+        item: Item,
+    },
+    /// Delete every row at or after this user row's `seq`.
+    Truncate {
+        anchor_seq: i64,
+    },
 }
 
 pub enum ApplyOutcome {
@@ -168,8 +176,8 @@ pub enum ApplyOutcome {
     Sealed {
         seq: Seq,
     },
-    /// Truncated from the k-th user anchor; carries the real anchor seq, which
-    /// is the first invalidated seq (everything at or after it is gone).
+    /// Truncated from a user row's `seq`. `anchor` is that seq: everything at
+    /// or after it is gone.
     Truncated {
         anchor: i64,
     },
@@ -331,12 +339,6 @@ fn is_user_message_item(item: &Item) -> bool {
             ..
         }))
     )
-}
-
-/// Same predicate as [`SQL_USER_DETAIL_COUNT`] / [`SQL_ANCHOR_SEQ`], on a turn row.
-#[cfg(test)]
-fn transcript_row_is_user_detail(row: &TranscriptRow) -> bool {
-    row.kind == "item/user"
 }
 
 /// Responses Item `type` string (`message`, `reasoning`, `function_call`, …).
@@ -1900,23 +1902,6 @@ impl Session {
         Ok(rows[start..end].to_vec())
     }
 
-    /// Count user detail rows with buffer index `< start` in the UI history.
-    ///
-    /// FE uses this as the absolute 0-based anchor baseline for a loaded window
-    /// starting at `start` (`k = before + local user ordinal`).
-    #[cfg(test)]
-    pub fn user_detail_before_buffer_index(&self, start: usize) -> Result<usize> {
-        let rows = self.load_history_transcript()?;
-        let end = start.min(rows.len());
-        let mut n = 0usize;
-        for row in &rows[..end] {
-            if transcript_row_is_user_detail(row) {
-                n += 1;
-            }
-        }
-        Ok(n)
-    }
-
     fn lock_write(&self) -> std::sync::MutexGuard<'_, ()> {
         self.write_gate.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -1934,8 +1919,8 @@ impl Session {
                 self.seal_unlocked(seq, &item)?;
                 Ok(ApplyOutcome::Sealed { seq })
             }
-            SessionApply::Truncate { user_k } => {
-                let anchor = self.truncate_unlocked(user_k)?;
+            SessionApply::Truncate { anchor_seq } => {
+                let anchor = self.truncate_unlocked(anchor_seq)?;
                 Ok(ApplyOutcome::Truncated { anchor })
             }
         }
@@ -1977,14 +1962,9 @@ impl Session {
         Ok(())
     }
 
-    fn truncate_unlocked(&self, k: i64) -> Result<i64> {
+    fn truncate_unlocked(&self, anchor_seq: i64) -> Result<i64> {
         let tx = self.conn();
-
-        let anchor_seq: i64 = tx
-            .query_row(SQL_ANCHOR_SEQ, rusqlite::params![self.id, k], |row| {
-                row.get(0)
-            })
-            .map_err(|_| LitecodeError::InvalidRevertAnchor(format!("k={k}")))?;
+        require_user_anchor(tx, &self.id, anchor_seq)?;
 
         tx.execute(
             "DELETE FROM transcript_items WHERE session_id = ?1 AND seq >= ?2",
@@ -2386,7 +2366,7 @@ impl Session {
         })
     }
 
-    /// §5.1 k formula — persisted user detail count (C2 anchor input).
+    /// Persisted `item/user` row count.
     pub fn user_detail_count(&self) -> Result<i64> {
         self.conn()
             .query_row(SQL_USER_DETAIL_COUNT, rusqlite::params![self.id], |row| {
@@ -2395,34 +2375,19 @@ impl Session {
             .map_err(Into::into)
     }
 
-    /// Count `item/user` rows with `seq < from_seq`.
-    pub fn user_detail_before_seq(&self, from_seq: Seq) -> Result<i64> {
-        self.conn()
-            .query_row(
-                SQL_USER_DETAIL_BEFORE_SEQ,
-                rusqlite::params![self.id, from_seq as i64],
-                |row| row.get(0),
-            )
-            .map_err(Into::into)
+    /// Snapshot file stem for a user row: `next_seq` at turn start.
+    ///
+    /// Track runs once that user row is the last allocated seq, so the stem is
+    /// `seq + 1`.
+    pub fn snapshot_stem_for_user_seq(&self, seq: i64) -> Result<i64> {
+        require_user_anchor(self.conn(), &self.id, seq)?;
+        seq.checked_add(1)
+            .ok_or_else(|| LitecodeError::InvalidRevertAnchor(format!("seq={seq} overflow")))
     }
 
-    /// Snapshot file stem written at turn start (`next_seq` after the k-th user append).
-    /// Track runs after that user row is last, so stem = `anchor_seq + 1`.
-    pub fn snapshot_stem_for_user_k(&self, k: i64) -> Result<i64> {
-        let anchor_seq: i64 = self
-            .conn()
-            .query_row(SQL_ANCHOR_SEQ, rusqlite::params![self.id, k], |row| {
-                row.get(0)
-            })
-            .map_err(|_| LitecodeError::InvalidRevertAnchor(format!("k={k}")))?;
-        anchor_seq
-            .checked_add(1)
-            .ok_or_else(|| LitecodeError::InvalidRevertAnchor(format!("k={k} seq overflow")))
-    }
-
-    /// Truncate DB from the k-th user detail anchor; zero file side effects.
-    pub fn revert_to_user_anchor(&self, k: i64) -> Result<()> {
-        self.apply(SessionApply::Truncate { user_k: k })?;
+    /// Truncate the log from this user row's `seq`. No file side effects.
+    pub fn revert_to_user_anchor(&self, seq: i64) -> Result<()> {
+        self.apply(SessionApply::Truncate { anchor_seq: seq })?;
         Ok(())
     }
 
@@ -3194,78 +3159,19 @@ mod tests {
             ])
             .unwrap();
         assert_eq!(session.user_detail_count().unwrap(), 2);
-        assert_eq!(session.snapshot_stem_for_user_k(0).unwrap(), 1);
-        assert_eq!(session.snapshot_stem_for_user_k(1).unwrap(), 3);
+        // u0 is seq 0; the function_call sits at seq 1, so u1 is seq 2.
+        assert_eq!(session.snapshot_stem_for_user_seq(0).unwrap(), 1);
+        assert_eq!(session.snapshot_stem_for_user_seq(2).unwrap(), 3);
 
         let rows = session.load_turn_transcript().unwrap();
         assert_eq!(rows[0].item_type, "message");
         assert_eq!(rows[1].item_type, "function_call");
         assert_eq!(rows[2].item_type, "message");
 
-        session.revert_to_user_anchor(1).unwrap();
+        session.revert_to_user_anchor(2).unwrap();
         let loaded = session.load_transcript().unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(item_text_preview(&loaded[0]), "u0");
-    }
-
-    #[test]
-    fn user_detail_before_buffer_index_counts_users_only() {
-        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
-        session
-            .insert_detail_rows(&[
-                user_text("u0"),
-                Item::FunctionCall(FunctionToolCall {
-                    arguments: "{}".into(),
-                    call_id: "c1".into(),
-                    namespace: None,
-                    name: "bash".into(),
-                    id: None,
-                    status: None,
-                }),
-                user_text("u1"),
-                user_text("u2"),
-            ])
-            .unwrap();
-        assert_eq!(session.user_detail_before_buffer_index(0).unwrap(), 0);
-        assert_eq!(session.user_detail_before_buffer_index(1).unwrap(), 1);
-        // index 2 is the function_call — still only one user before it
-        assert_eq!(session.user_detail_before_buffer_index(2).unwrap(), 1);
-        assert_eq!(session.user_detail_before_buffer_index(3).unwrap(), 2);
-        assert_eq!(session.user_detail_before_buffer_index(4).unwrap(), 3);
-        // past end clamps to full scan
-        assert_eq!(session.user_detail_before_buffer_index(99).unwrap(), 3);
-    }
-
-    #[test]
-    fn user_detail_before_includes_pre_checkpoint_history() {
-        // UI history keeps archived detail visible even though model context does not.
-        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
-        session
-            .insert_detail_rows(&[user_text("before-compact"), user_text("also-before")])
-            .unwrap();
-        let summary = user_text("compact summary text");
-        session.apply_compact_checkpoint(&summary, 10).unwrap();
-        session.insert_detail_rows(&[user_text("after")]).unwrap();
-        // Compaction is not a user row, even though AgentView synthesizes an
-        // Item for it.
-        assert_eq!(session.user_detail_before_buffer_index(0).unwrap(), 0);
-        assert_eq!(session.user_detail_before_buffer_index(1).unwrap(), 1);
-        assert_eq!(session.user_detail_before_buffer_index(2).unwrap(), 2);
-        assert_eq!(session.user_detail_before_buffer_index(3).unwrap(), 2);
-        assert_eq!(session.user_detail_before_buffer_index(4).unwrap(), 3);
-    }
-
-    #[test]
-    fn user_detail_before_seq_counts_users_with_lower_seq() {
-        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
-        session
-            .insert_detail_rows(&[user_text("u0"), user_text("u1"), user_text("u2")])
-            .unwrap();
-        assert_eq!(session.user_detail_before_seq(0).unwrap(), 0);
-        assert_eq!(session.user_detail_before_seq(1).unwrap(), 1);
-        assert_eq!(session.user_detail_before_seq(2).unwrap(), 2);
-        assert_eq!(session.user_detail_before_seq(3).unwrap(), 3);
-        assert_eq!(session.user_detail_count().unwrap(), 3);
     }
 
     #[test]
@@ -3617,7 +3523,7 @@ mod tests {
         session
             .apply_compact_checkpoint_from(&user_text("summary"), Some(keep_from), 10)
             .unwrap();
-        // Replace summaries are not revert k; three append-origin user rows remain.
+        // Replace summaries are not user rows; three append-origin user rows remain.
         assert_eq!(session.user_detail_count().unwrap(), 3);
 
         session.revert_to_user_anchor(1).unwrap();
@@ -3704,8 +3610,8 @@ mod tests {
         session
             .apply_compact_checkpoint_from(&user_text("cut-2"), Some(keep_second), 10)
             .unwrap();
-        // Users: a,b,c,d,e → k=3 is `d`. Truncate from d removes the second compact.
-        session.revert_to_user_anchor(3).unwrap();
+        // Users a,b,c then a compact, then d. Truncate from d's seq.
+        session.revert_to_user_anchor(keep_second).unwrap();
         let (checkpoint_seq, compacted_seq, kept_from_seq, spine_from) =
             session_compact_pointers(&session);
         assert_eq!(checkpoint_seq, first);

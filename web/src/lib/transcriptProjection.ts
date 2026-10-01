@@ -342,12 +342,15 @@ function bubbleKey(group: HumanRow[], index: number): string {
   return min === undefined ? String(index) : String(min);
 }
 
-/** True when this user-detail anchor can file-revert (`k <= max` from snapshot). */
+/**
+ * True when this user row's turn-start stem (`seq + 1`) is at or before the
+ * latest stem that recorded a revertible file patch.
+ */
 export function canRevertFiles(
-  k: number,
-  maxFileRevertK: number | null | undefined,
+  userSeq: number,
+  maxFileRevertSeq: number | null | undefined,
 ): boolean {
-  return maxFileRevertK != null && k <= maxFileRevertK;
+  return maxFileRevertSeq != null && userSeq + 1 <= maxFileRevertSeq;
 }
 
 /** User message or transcript mark: a row that starts a new bubble by itself. */
@@ -382,37 +385,23 @@ export interface Bubble {
   first?: HumanRow;
   isUser: boolean;
   markOnly: boolean;
-  /** Set for a sealed user bubble. Counts user-detail rows before it. */
-  userAnchorK?: number;
   followedByUser: boolean;
 }
 
-/**
- * One pass over the visible rows: bubble identity, revert anchor and whether
- * the next bubble is a user message. `userDetailBefore` is the server count of
- * user-detail rows with seq below the loaded window.
- */
-export function projectBubbles(
-  rows: HumanRow[],
-  userDetailBefore: number,
-): Bubble[] {
+/** One pass over the visible rows: bubble identity and whether the next bubble is a user message. */
+export function projectBubbles(rows: HumanRow[]): Bubble[] {
   const groups = groupRowsForBubbles(rows);
-  let usersBefore = 0;
   const bubbles: Bubble[] = groups.map((group, index) => {
     const first = group.find((row) => !isTranscriptMarkRow(row));
     const isUser = first != null && isHumanUserRow(first);
-    const sealed = first != null && first.seq >= 0;
     const bubble: Bubble = {
       key: bubbleKey(group, index),
       rows: group,
       first,
       isUser,
       markOnly: group.every(isTranscriptMarkRow),
-      userAnchorK:
-        isUser && sealed ? userDetailBefore + usersBefore : undefined,
       followedByUser: false,
     };
-    if (isUser) usersBefore += 1;
     return bubble;
   });
   for (let i = 0; i < bubbles.length - 1; i++) {

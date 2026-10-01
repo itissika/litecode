@@ -134,23 +134,6 @@ export function isWellFormedBufferRow(ev: unknown): ev is HumanRow {
   return "body" in rec;
 }
 
-/** Server prefix of user rows before this window; 0 when the window starts at seq 0. */
-export function hydrateUserDetailBefore(
-  fromSeq: number,
-  serverValue: number | undefined,
-  previous: number,
-): number {
-  if (fromSeq === 0) return 0;
-  if (
-    typeof serverValue === "number" &&
-    Number.isFinite(serverValue) &&
-    serverValue >= 0
-  ) {
-    return serverValue;
-  }
-  return previous;
-}
-
 let nextPendingId = 0;
 export function newPendingUserId(): string {
   nextPendingId += 1;
@@ -191,23 +174,6 @@ export function isMessageItem(item: Item): item is MessageItem {
 
 export function isUserMessage(item: Item): item is InputMessageItem {
   return isMessageItem(item) && item.role === "user";
-}
-
-/**
- * Absolute 0-based revert anchor for the explicit `item/user` row at `rowIndex`.
- * `userDetailBefore` is the server count of user rows before the loaded window.
- */
-export function deriveUserAnchorK(
-  messages: HumanRow[],
-  rowIndex: number,
-  userDetailBefore: number,
-): number {
-  let local = 0;
-  const end = Math.max(0, Math.min(rowIndex, messages.length));
-  for (let i = 0; i < end; i++) {
-    if (isHumanUserRow(messages[i]!)) local += 1;
-  }
-  return userDetailBefore + local;
 }
 
 export function isAssistantMessage(item: Item): item is OutputMessageItem {

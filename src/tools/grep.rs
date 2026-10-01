@@ -2169,12 +2169,16 @@ mod tests {
     }
 
     #[test]
-    fn grep_does_not_consult_the_text_index() {
-        // The production path is the ripgrep walk; an index-accelerated search
-        // would change which files count toward files_searched.
+    fn grep_does_not_consult_the_path_index() {
+        let src = include_str!("grep.rs");
+        let prod = src.split("mod tests").next().expect("production source");
         assert!(
-            include_str!("grep.rs").contains("lexical_search_with_preset"),
+            prod.contains("lexical_search_with_preset"),
             "grep must search through the lexical walk"
+        );
+        assert!(
+            !prod.contains("path_index") && !prod.contains("text_index"),
+            "grep must not read the mention path catalog"
         );
     }
 

@@ -82,7 +82,9 @@ pub fn try_begin_pending_flush(
     };
 
     let input = crate::session::manager::merge_pending(&claimed);
-    if let Err(error) = sessions.append_user_message(sid, input.clone()) {
+    if let Err(error) =
+        sessions.append_user_message_with_mentions(sid, input.clone(), workspace_root)
+    {
         tracing::warn!(session_id = sid, %error, "failed to persist pending messages");
         sessions.restore_pending_messages(sid, claimed);
         sessions.release_turn_reservation(sid, &turn_id);
@@ -354,6 +356,41 @@ mod tests {
                 let body = row.data.to_string();
                 assert!(body.contains(&first));
                 assert!(body.contains(&second));
+                sessions.release_turn_reservation(&sid, &turn_id);
+            }
+            _ => panic!("expected prepared"),
+        }
+    }
+
+    #[test]
+    fn idle_flush_writes_the_mentions_reminder_after_the_user_row() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/a.rs"),
+            "fn save() {\n    let n = 1;\n}\n",
+        )
+        .unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let sid = sessions
+            .open_session_sync(&dir.path().display().to_string(), "default", None)
+            .unwrap();
+        let text = crate::knowledge::mentions::symbol_mention_source(
+            "src/a.rs",
+            Some("fn save"),
+            None,
+            "fn save",
+        );
+        sessions.enqueue_pending_message(&sid, &text).unwrap();
+        match try_begin_pending_flush(&runtime, &sessions, dir.path(), &sid) {
+            PendingFlush::Prepared { turn_id, .. } => {
+                let events = sessions.data().events_blocking(&sid).unwrap();
+                let kinds: Vec<_> = events
+                    .iter()
+                    .map(|event| event.event_type.as_str().to_string())
+                    .collect();
+                let user = kinds.iter().position(|kind| kind == "item/user").unwrap();
+                assert_eq!(kinds[user + 1], "reminder/mentions");
                 sessions.release_turn_reservation(&sid, &turn_id);
             }
             _ => panic!("expected prepared"),

@@ -250,7 +250,7 @@ interface TurnStore {
   recallPendingMessages: (sessionId: string) => Promise<boolean>;
   replayFromAnchor: (
     sessionId: string,
-    userAnchorK: number,
+    userSeq: number,
     input: string,
     settings: ReplaySettings,
     images?: string[],
@@ -476,7 +476,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       return removed.every(Boolean);
     },
 
-    replayFromAnchor: (sessionId, userAnchorK, input, settings, images = []) => {
+    replayFromAnchor: (sessionId, userSeq, input, settings, images = []) => {
       const trimmed = input.trim();
       if ((!trimmed && images.length === 0) || !settings.modelId) {
         return Promise.resolve(false);
@@ -523,7 +523,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           // and waiting for idle first only opened a window for the end-of-turn
           // flush to deliver the very message the revert is discarding.
           await ws.sendRpc("session/revert-to-user-anchor", {
-            k: userAnchorK,
+            seq: userSeq,
             session_id: sessionId,
           });
 

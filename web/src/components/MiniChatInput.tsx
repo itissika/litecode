@@ -1,17 +1,14 @@
-import {
-  type FormEvent,
-  type KeyboardEvent,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-} from "react";
+import { type FormEvent, useEffect, useMemo, useRef } from "react";
 
 import type { ContextMode, ThinkingTier } from "../api/types";
+import { mentionKeysOf } from "../lib/knowledge/flowProjection";
+import { useKnowledgeStore } from "../stores/knowledgeStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { actionButtonGlass, composerCardClass } from "./composerCard";
 import { AgentPicker, ContextModeToggle, ThinkSlider } from "./AgentChatInput";
 import { ImageThumb } from "./ImageThumb";
 import { ModelSwitcher } from "./ModelSwitcher";
+import { MentionEditor, type MentionEditorHandle } from "./mention/MentionEditor";
 
 export interface MiniChatInputSettings {
   primaryId: string;
@@ -41,39 +38,22 @@ export function MiniChatInput({
   onSubmit: (input: string, settings: MiniChatInputSettings) => void;
 }) {
   const primaryAgents = useSessionStore((s) => s.primaryAgents);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  const resizeTextarea = () => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 256)}px`;
-  };
+  const editorRef = useRef<MentionEditorHandle>(null);
+  const mentionKeys = useKnowledgeStore((s) => mentionKeysOf(s.nodes));
+  const candidates = useMemo(
+    () => mentionKeys.split("\n").filter((key) => key.length > 0),
+    [mentionKeys],
+  );
 
   useEffect(() => {
-    textareaRef.current?.focus();
+    editorRef.current?.focus();
   }, []);
-  useLayoutEffect(() => {
-    resizeTextarea();
-  }, [draft]);
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
     if (disabled || !settings.modelId) return;
     if (!draft.trim() && images.length === 0) return;
     onSubmit(draft, settings);
-  };
-
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onDismiss();
-      return;
-    }
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      submit();
-    }
   };
 
   return (
@@ -130,19 +110,26 @@ export function MiniChatInput({
           ))}
         </div>
       ) : null}
-      <div className="relative">
-        <textarea
-          ref={textareaRef}
-          value={draft}
-          onChange={(event) => {
-            onChange(event.target.value, settings);
-            resizeTextarea();
-          }}
-          onKeyDown={onKeyDown}
-          rows={2}
-          placeholder="Edit and resend..."
-          className="w-full max-h-64 resize-none overflow-y-auto border-0 bg-transparent px-3 py-2 pr-12 text-sm text-(--_dk-text-primary) outline-none placeholder:text-(--_dk-text-disabled) focus-visible:shadow-none"
-        />
+      {/* Same split as AgentChatInput: the draft scrolls one level in, so the
+          outer box (which holds the absolutely positioned send button) never
+          scrolls and the button cannot drift with the text. */}
+      <div className="relative flex max-h-64 flex-col overflow-hidden">
+        <div className="min-h-0 flex-auto overflow-y-auto">
+          <MentionEditor
+            handle={editorRef}
+            label="Edit and resend"
+            sourceId={sessionId}
+            value={draft}
+            candidates={candidates}
+            placeholder="Revert and resend…"
+            className="mention-composer-input w-full px-3 py-2 pr-12 text-sm text-(--_dk-text-primary)"
+            symbolLines
+            submitOnEnter={!disabled}
+            onChange={(next) => onChange(next, settings)}
+            onSubmit={() => submit()}
+            onEscape={onDismiss}
+          />
+        </div>
         <button
           type="submit"
           disabled={

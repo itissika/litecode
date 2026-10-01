@@ -207,10 +207,12 @@ describe("canRevertFiles", () => {
     expect(canRevertFiles(0, undefined)).toBe(false);
   });
 
-  it("shows on this and earlier user anchors, not later ones", () => {
+  it("shows when this user row's stem is at or before the latest file patch", () => {
+    // stem is user seq + 1 (next_seq at turn start)
     expect(canRevertFiles(0, 1)).toBe(true);
-    expect(canRevertFiles(1, 1)).toBe(true);
-    expect(canRevertFiles(2, 1)).toBe(false);
+    expect(canRevertFiles(4, 5)).toBe(true);
+    expect(canRevertFiles(0, 5)).toBe(true);
+    expect(canRevertFiles(5, 5)).toBe(false);
   });
 });
 
@@ -229,7 +231,7 @@ describe("locateBashTool", () => {
         status: "in_progress",
       },
     };
-    const bubbles = projectBubbles([userRow, liveReasoning, bashRow], 0);
+    const bubbles = projectBubbles([userRow, liveReasoning, bashRow]);
     const found = locateBashTool(bubbles, "c1", "session-1");
     expect(found?.bubbleIndex).toBe(1);
     expect(found?.foldIds[0]).toMatch(/:process:0$/);
@@ -239,12 +241,12 @@ describe("locateBashTool", () => {
 
 describe("locateSeq", () => {
   it("finds a user seq in its own bubble", () => {
-    const bubbles = projectBubbles([userRow, liveReasoning, liveTool], 0);
+    const bubbles = projectBubbles([userRow, liveReasoning, liveTool]);
     expect(locateSeq(bubbles, 0)).toBe(0);
   });
 
   it("finds merged assistant rows in the same bubble", () => {
-    const bubbles = projectBubbles([userRow, liveReasoning, liveTool], 0);
+    const bubbles = projectBubbles([userRow, liveReasoning, liveTool]);
     expect(locateSeq(bubbles, 1)).toBe(1);
     expect(locateSeq(bubbles, 2)).toBe(1);
     expect(locateSeq(bubbles, 99)).toBeNull();
@@ -303,7 +305,6 @@ describe("projectBubbles across a split assistant run", () => {
         [assistantRow(40), assistantRow(41), userAt(42), assistantRow(43)],
         40,
       ),
-      1,
     ).map((bubble) => bubble.key);
     expect(before).toEqual(["42", "43"]);
 
@@ -319,22 +320,13 @@ describe("projectBubbles across a split assistant run", () => {
         ],
         30,
       ),
-      0,
     ).map((bubble) => bubble.key);
     expect(after).toEqual(["30", "39", "42", "43"]);
     for (const key of before) expect(after).toContain(key);
   });
 
-  it("numbers sealed user anchors from userDetailBefore", () => {
-    const bubbles = projectBubbles(
-      [userAt(1), assistantRow(2), userAt(3)],
-      4,
-    );
-    expect(bubbles.map((bubble) => bubble.userAnchorK)).toEqual([
-      4,
-      undefined,
-      5,
-    ]);
+  it("marks whether the next bubble is a user message", () => {
+    const bubbles = projectBubbles([userAt(1), assistantRow(2), userAt(3)]);
     expect(bubbles[1]?.followedByUser).toBe(true);
     expect(bubbles[0]?.followedByUser).toBe(false);
   });

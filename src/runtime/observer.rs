@@ -249,11 +249,11 @@ pub enum InternalEvent {
         level: String,
         message: String,
     },
-    /// Highest user-anchor with a nonempty file patch (file-revert button gate).
+    /// Highest file-snapshot stem with a nonempty patch (file-revert button gate).
     /// Emitted after `snapshot_record_patch` so the wire snapshot is not stale
     /// relative to TurnCompleted (patch I/O runs after the turn goes idle).
     FileRevertUpdated {
-        max_k: Option<i64>,
+        max_seq: Option<i64>,
     },
     /// Session-scoped agent bash jobs (running + current waits). Projected to `bash/jobs`.
     BashJobs {

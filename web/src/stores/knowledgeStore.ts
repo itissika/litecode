@@ -1,9 +1,11 @@
 import { create } from "zustand";
 
 import { replaceKnowledgeKey } from "../lib/knowledge/document";
+import { resolveSymbolRefs, type SymbolRefHit } from "../api/workspace";
 import { workspacePathsExist } from "../lib/knowledge/files";
 import {
   extractFileRefs,
+  extractSymbolRefs,
   isKnowledgeKey,
   isWorkspaceFileRef,
   normalizeKey,
@@ -32,9 +34,11 @@ import type {
   KnowledgeNode,
   KnowledgeUnknownFile,
 } from "../lib/knowledge/types";
+import { replaceOneRecord, reuseIssueGroups } from "../lib/knowledge/flowProjection";
 import {
   groupIssues,
   missingFileIssues,
+  symbolIssues,
   validateKnowledge,
   type KnowledgeFilePresence,
 } from "../lib/knowledge/validate";
@@ -137,7 +141,13 @@ interface KnowledgeStore {
   /** Read the public or private tree. A missing tree stays empty. */
   load: () => Promise<void>;
   /**
-   * Re-read the corpus from disk. Used when a knowledge panel becomes active.
+   * Dockview visibility for one knowledge surface (side list or canvas).
+   * Disk refresh runs only while at least one surface is visible, and once
+   * when the first surface becomes visible.
+   */
+  notePanelVisible: (panelId: string, visible: boolean) => Promise<void>;
+  /**
+   * Re-read the corpus from disk.
    * Keeps expansion, focus, and canvas positions unless files or folders moved.
    */
   refreshFromDisk: () => Promise<void>;
@@ -146,6 +156,14 @@ interface KnowledgeStore {
    * Resolves `false` when the write fails, so the caller can keep the unsaved mark.
    */
   saveNode: (id: string, patch: KnowledgeNodePatch) => Promise<boolean>;
+  /**
+   * Write `x,y,w,h` for one node. Does not revalidate the corpus or bump
+   * `structureNonce`. Other node objects keep their references.
+   */
+  saveGeometry: (
+    id: string,
+    patch: Partial<Pick<KnowledgeNode, "x" | "y" | "w" | "h">>,
+  ) => Promise<boolean>;
   /**
    * Rename a declaration. Rewrites mention `id`s, and `label`s that equal the
    * old declaration, in the other files. Rejects a key that is illegal or
@@ -239,7 +257,47 @@ function citedFilePaths(nodes: KnowledgeNode[]): string[] {
 
 let fileCheckGen = 0;
 
-/** Stat cited paths and fold the result into the issue list. */
+/** Reindex one corpus edit. Unchanged node objects and unchanged issue lists stay. */
+export function projectListedNodes(
+  previous: {
+    nodes: KnowledgeNode[];
+    issuesByNode: Map<string, KnowledgeIssue[]>;
+    filePresence: KnowledgeFilePresence;
+    folders: KnowledgeFolder[];
+  },
+  listed: KnowledgeNode[],
+) {
+  const snap = knowledgeSnapshot(listed, previous.folders, previous.filePresence);
+  return {
+    ...snap,
+    issuesByNode: reuseIssueGroups(previous.issuesByNode, snap.issuesByNode),
+  };
+}
+
+function publishContent(
+  set: (partial: Partial<KnowledgeStore>) => void,
+  state: KnowledgeStore,
+  listed: KnowledgeNode[],
+  message: string | null,
+) {
+  const projected = projectListedNodes(state, listed);
+  set({
+    ...projected,
+    expanded: state.expanded,
+    expandedFolders: state.expandedFolders,
+    graphExpanded: state.graphExpanded,
+    focusedId: state.focusedId,
+    focusNonce: state.focusNonce,
+    flashId: state.flashId,
+    flashNonce: state.flashNonce,
+    loading: state.loading,
+    error: message,
+  });
+}
+
+const SYMBOL_BATCH = 64;
+
+/** Stat cited paths and symbol chains, then fold both into the issue list. */
 function scheduleFileCheck(
   set: (partial: Partial<KnowledgeStore>) => void,
   get: () => KnowledgeStore,
@@ -253,10 +311,12 @@ function scheduleFileCheck(
       ...validateKnowledge(nodes),
       ...missingFileIssues(nodes, {}),
     ];
+    const state = get();
+    const grouped = groupIssues(issues);
     set({
       filePresence: {},
       issues,
-      issuesByNode: groupIssues(issues),
+      issuesByNode: reuseIssueGroups(state.issuesByNode, grouped),
     });
     return;
   }
@@ -264,22 +324,88 @@ function scheduleFileCheck(
     const found = await workspacePathsExist(paths);
     if (gen !== fileCheckGen) return;
     const current = get().nodes;
+    const root = get().root;
     const presence: Record<string, boolean> = {};
     for (const path of citedFilePaths(current)) {
       if (Object.prototype.hasOwnProperty.call(found, path)) {
         presence[path] = found[path] ?? false;
       }
     }
+    const queries = symbolQueries(current, root, presence);
+    let symbols: ReturnType<typeof symbolIssues> = [];
+    if (queries.length > 0) {
+      try {
+        const hits: SymbolRefHit[] = [];
+        for (let i = 0; i < queries.length; i += SYMBOL_BATCH) {
+          const slice = queries.slice(i, i + SYMBOL_BATCH);
+          hits.push(
+            ...(await resolveSymbolRefs(
+              slice.map((query) => ({
+                file: query.file,
+                symbol: query.symbol,
+                drift_base_of: query.driftBase,
+              })),
+            )),
+          );
+        }
+        if (gen !== fileCheckGen) return;
+        symbols = symbolIssues(
+          queries.map((query, index) => {
+            const hit = hits[index];
+            return {
+              nodeId: query.nodeId,
+              file: query.file,
+              symbol: query.symbol,
+              exists: hit?.symbol_exists ?? false,
+              ambiguous: hit?.ambiguous ?? false,
+              drifted: hit?.drift?.drifted ?? false,
+              commits: hit?.drift?.commits ?? [],
+            };
+          }),
+        );
+      } catch {
+        symbols = [];
+      }
+    }
+    if (gen !== fileCheckGen) return;
     const issues = [
-      ...validateKnowledge(current),
-      ...missingFileIssues(current, presence),
+      ...validateKnowledge(get().nodes),
+      ...missingFileIssues(get().nodes, presence),
+      ...symbols,
     ];
+    const state = get();
+    const grouped = groupIssues(issues);
     set({
       filePresence: presence,
       issues,
-      issuesByNode: groupIssues(issues),
+      issuesByNode: reuseIssueGroups(state.issuesByNode, grouped),
     });
   })();
+}
+
+function symbolQueries(
+  nodes: KnowledgeNode[],
+  root: string,
+  presence: Record<string, boolean>,
+) {
+  const queries: {
+    nodeId: string;
+    file: string;
+    symbol: string;
+    driftBase: string;
+  }[] = [];
+  for (const node of nodes) {
+    for (const cite of extractSymbolRefs(node.value)) {
+      if (!isWorkspaceFileRef(cite.path) || presence[cite.path] === false) continue;
+      queries.push({
+        nodeId: node.id,
+        file: cite.path,
+        symbol: cite.symbol,
+        driftBase: `${root}/${node.path}`.replaceAll("//", "/"),
+      });
+    }
+  }
+  return queries;
 }
 
 async function applyDisk(
@@ -354,6 +480,30 @@ async function closeEditor(rel: string): Promise<void> {
 let loadInflight: Promise<void> | null = null;
 let refreshInflight: Promise<void> | null = null;
 let hydrated = false;
+/** Bumps for each single-card write so an older disk snapshot cannot replace it. */
+let cardWriteEpoch = 0;
+let cardWritesInFlight = 0;
+let rereadAfterCardWrite = false;
+
+function beginCardWrite(): void {
+  cardWriteEpoch += 1;
+  cardWritesInFlight += 1;
+}
+
+function endCardWrite(): void {
+  cardWritesInFlight = Math.max(0, cardWritesInFlight - 1);
+  if (cardWritesInFlight === 0) maybeRereadAfterCardWrite();
+}
+
+function cardSnapshotIsStale(seenEpoch: number): boolean {
+  return cardWriteEpoch !== seenEpoch || cardWritesInFlight > 0;
+}
+
+function maybeRereadAfterCardWrite(): void {
+  if (!rereadAfterCardWrite || cardWritesInFlight > 0 || refreshInflight) return;
+  rereadAfterCardWrite = false;
+  void useKnowledgeStore.getState().refreshFromDisk();
+}
 
 function sameUnknown(
   current: KnowledgeUnknownFile[],
@@ -468,9 +618,14 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
   refreshFromDisk: () => {
     if (!hydrated || loadInflight) return get().load();
     if (refreshInflight) return refreshInflight;
+    const seenEpoch = cardWriteEpoch;
     refreshInflight = (async () => {
       try {
         const loaded = await loadKnowledgeFromWorkspace();
+        if (cardSnapshotIsStale(seenEpoch)) {
+          rereadAfterCardWrite = true;
+          return;
+        }
         const latest = get();
         if (
           sameCorpus(
@@ -516,6 +671,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
         set({ error: diskError(err) });
       } finally {
         refreshInflight = null;
+        maybeRereadAfterCardWrite();
       }
     })();
     return refreshInflight;
@@ -529,33 +685,52 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       ...(patch.status !== undefined ? { invalidStatus: null } : {}),
     };
     if (sameNode(current, next)) return true;
-    const nodes = get().nodes.map((node) => (node.id === id ? next : node));
-    const hold = (state: KnowledgeStore, listed: KnowledgeNode[], message: string | null) => {
-      set({
-        ...knowledgeSnapshot(listed, state.folders, state.filePresence),
-        expanded: state.expanded,
-        expandedFolders: state.expandedFolders,
-        graphExpanded: state.graphExpanded,
-        focusedId: state.focusedId,
-        focusNonce: state.focusNonce,
-        flashId: state.flashId,
-        flashNonce: state.flashNonce,
-        loading: state.loading,
-        error: message,
-      });
-    };
-    hold(get(), nodes, null);
+    beginCardWrite();
     try {
-      await writeKnowledgeNode(next, get().root);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "无法写入知识库";
-      const state = get();
-      const restored = state.nodes.map((node) => (node.id === id ? current : node));
-      hold(state, restored, message);
-      return false;
+      const nodes = get().nodes.map((node) => (node.id === id ? next : node));
+      publishContent(set, get(), nodes, null);
+      try {
+        await writeKnowledgeNode(next, get().root);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "无法写入知识库";
+        const state = get();
+        const restored = state.nodes.map((node) => (node.id === id ? current : node));
+        publishContent(set, get(), restored, message);
+        return false;
+      }
+      if (patch.value !== undefined) scheduleFileCheck(set, get);
+      return true;
+    } finally {
+      endCardWrite();
     }
-    if (patch.value !== undefined) scheduleFileCheck(set, get);
-    return true;
+  },
+  saveGeometry: async (id, patch) => {
+    const current = get().byId.get(id);
+    if (!current) return false;
+    const next = { ...current, ...patch };
+    if (sameNode(current, next)) return true;
+    beginCardWrite();
+    try {
+      const state = get();
+      const replaced = replaceOneRecord(state.nodes, state.byId, next);
+      set({ nodes: replaced.records, byId: replaced.index, error: null });
+      try {
+        await writeKnowledgeNode(next, get().root);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "无法写入知识库";
+        const latest = get();
+        if (latest.byId.get(id) === next) {
+          const restored = replaceOneRecord(latest.nodes, latest.byId, current);
+          set({ nodes: restored.records, byId: restored.index, error: message });
+        } else {
+          set({ error: message });
+        }
+        return false;
+      }
+      return true;
+    } finally {
+      endCardWrite();
+    }
   },
   renameNode: async (id, rawKey) => {
     const state = get();
@@ -871,6 +1046,18 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       expanded: new Set(state.nodes.map((node) => node.id)),
     })),
   collapseAll: () => set({ expanded: new Set() }),
+  notePanelVisible: (panelId, visible) => {
+    const wasOpen = knowledgeSurfacesVisible();
+    if (visible) knowledgeVisiblePanels.add(panelId);
+    else knowledgeVisiblePanels.delete(panelId);
+    const open = knowledgeSurfacesVisible();
+    if (!open && knowledgeRefreshTimer) {
+      clearTimeout(knowledgeRefreshTimer);
+      knowledgeRefreshTimer = null;
+    }
+    if (open && !wasOpen) return get().refreshFromDisk();
+    return Promise.resolve();
+  },
 }));
 
 function pathUnderKnowledgeRoot(path: string, root: string): boolean {
@@ -879,14 +1066,21 @@ function pathUnderKnowledgeRoot(path: string, root: string): boolean {
 }
 
 let knowledgeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+const knowledgeVisiblePanels = new Set<string>();
+
+function knowledgeSurfacesVisible(): boolean {
+  return knowledgeVisiblePanels.size > 0;
+}
 
 useWorkspaceChangeStore.subscribe((state, prev) => {
   if (!state.last || state.last === prev.last) return;
+  if (!knowledgeSurfacesVisible()) return;
   const root = useKnowledgeStore.getState().root;
   if (!state.last.paths.some((path) => pathUnderKnowledgeRoot(path, root))) return;
   if (knowledgeRefreshTimer) clearTimeout(knowledgeRefreshTimer);
   knowledgeRefreshTimer = setTimeout(() => {
     knowledgeRefreshTimer = null;
+    if (!knowledgeSurfacesVisible()) return;
     void useKnowledgeStore.getState().refreshFromDisk();
   }, 150);
 });

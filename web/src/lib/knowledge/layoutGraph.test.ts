@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { knowledgeFixture, knowledgeFolderFixture } from "./fixture";
-import { layoutKnowledgeGraph } from "./layoutGraph";
+import { layoutKnowledgeGraph, snapKnowledgeCoord, KNOWLEDGE_GRID } from "./layoutGraph";
 import type { KnowledgeNode } from "./types";
 import { validateKnowledge } from "./validate";
 
@@ -37,6 +37,10 @@ describe("layoutKnowledgeGraph", () => {
     ).toBe(true);
     expect(laid.edges.some((edge) => edge.source === edge.target)).toBe(false);
     expect(laid.edges.some((edge) => edge.source === "loopback")).toBe(false);
+    for (const item of laid.nodes) {
+      expect(item.x % KNOWLEDGE_GRID).toBe(0);
+      expect(item.y % KNOWLEDGE_GRID).toBe(0);
+    }
   });
 
   it("classifies a citation of a disabled node as inactive", () => {
@@ -106,7 +110,12 @@ describe("layoutKnowledgeGraph", () => {
     const pinned = laidWithFree.nodes.find((entry) => entry.id === "pinned");
     const free = laidWithFree.nodes.find((entry) => entry.id === "free");
     expect(pinned).toMatchObject({ x: 100, y: 80 });
-    expect(free).toMatchObject({ x: 100 + 200 + 28, y: 80 });
+    expect(free).toMatchObject({
+      x: snapKnowledgeCoord(100 + 200 + 28),
+      y: snapKnowledgeCoord(80),
+    });
+    expect(free!.x % KNOWLEDGE_GRID).toBe(0);
+    expect(free!.y % KNOWLEDGE_GRID).toBe(0);
   });
 
   it("draws a solid edge for a resolved body citation", () => {

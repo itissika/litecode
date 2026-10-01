@@ -761,7 +761,7 @@ pub async fn handle_jsonrpc(
         methods::SESSION_REVERT_TO_USER_ANCHOR => {
             #[derive(serde::Deserialize)]
             struct Params {
-                k: u32,
+                seq: u64,
                 #[serde(default)]
                 session_id: String,
             }
@@ -781,7 +781,7 @@ pub async fn handle_jsonrpc(
                 }
             };
             let sid = resolve_sid(session, &params.session_id);
-            match session.revert_to_user_anchor(&sid, params.k) {
+            match session.revert_to_user_anchor(&sid, params.seq) {
                 Ok(()) => {
                     for msg in session.take_outgoing_for(&sid) {
                         emit(sink, msg);
@@ -815,7 +815,7 @@ pub async fn handle_jsonrpc(
         methods::SESSION_REVERT_FILES => {
             #[derive(serde::Deserialize)]
             struct Params {
-                k: u32,
+                seq: u64,
                 #[serde(default)]
                 session_id: String,
             }
@@ -835,7 +835,7 @@ pub async fn handle_jsonrpc(
                 }
             };
             let sid = resolve_sid(session, &params.session_id);
-            match session.revert_files(&sid, params.k) {
+            match session.revert_files(&sid, params.seq) {
                 Ok(()) => {
                     for msg in session.take_outgoing_for(&sid) {
                         emit(sink, msg);
@@ -1118,7 +1118,6 @@ pub async fn handle_jsonrpc(
                         to_seq: params.to_seq,
                         events: range.events,
                         subagent_bindings,
-                        user_detail_before: range.user_detail_before,
                     };
                     emit(
                         sink,

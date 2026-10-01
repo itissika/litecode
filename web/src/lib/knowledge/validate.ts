@@ -150,6 +150,50 @@ export function missingFileIssues(
   return issues;
 }
 
+export interface SymbolPresence {
+  nodeId: string;
+  file: string;
+  symbol: string;
+  exists: boolean;
+  ambiguous: boolean;
+  drifted: boolean;
+  commits: { hash: string; subject: string }[];
+}
+
+/** Symbol citations whose chain is missing, repeated, or drifted since the note's commit. */
+export function symbolIssues(rows: SymbolPresence[]): KnowledgeIssue[] {
+  const issues: KnowledgeIssue[] = [];
+  for (const row of rows) {
+    if (row.ambiguous || !row.exists) {
+      issues.push({
+        nodeId: row.nodeId,
+        severity: "error",
+        code: "missing_symbol",
+        message: row.ambiguous
+          ? `Symbol "${row.symbol}" in "${row.file}" is not unique.`
+          : `Symbol "${row.symbol}" in "${row.file}" does not exist.`,
+        ref: row.symbol,
+      });
+      continue;
+    }
+    if (!row.drifted) continue;
+    const commits = row.commits
+      .slice(0, 3)
+      .map((commit) => `${commit.hash} ${commit.subject}`)
+      .join("\n");
+    issues.push({
+      nodeId: row.nodeId,
+      severity: "warning",
+      code: "symbol_drift",
+      message: commits
+        ? `Symbol "${row.symbol}" in "${row.file}" changed since this note was last committed.\n${commits}`
+        : `Symbol "${row.symbol}" in "${row.file}" changed since this note was last committed.`,
+      ref: row.symbol,
+    });
+  }
+  return issues;
+}
+
 export function groupIssues(
   issues: KnowledgeIssue[],
 ): Map<string, KnowledgeIssue[]> {
@@ -169,6 +213,26 @@ export function nodeHasError(
   return issues.some(
     (issue) => issue.nodeId === nodeId && issue.severity === "error",
   );
+}
+
+/**
+ * Rail badge for the knowledge icon. One number, the worse class only.
+ * `inactive_target` stays in the list and off the badge.
+ * `null` when nothing in either class is present.
+ */
+export function knowledgeRailBadge(
+  issues: KnowledgeIssue[],
+): { tone: "error" | "warning"; count: number } | null {
+  const errors = new Set<string>();
+  const warnings = new Set<string>();
+  for (const issue of issues) {
+    if (issue.code === "inactive_target") continue;
+    if (issue.severity === "error") errors.add(issue.nodeId);
+    else if (issue.severity === "warning") warnings.add(issue.nodeId);
+  }
+  if (errors.size > 0) return { tone: "error", count: errors.size };
+  if (warnings.size > 0) return { tone: "warning", count: warnings.size };
+  return null;
 }
 
 /** Side-list row: red = an error; amber = pending review. */

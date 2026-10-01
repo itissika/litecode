@@ -306,7 +306,6 @@ pub struct BufferLoadResult {
     pub events: Vec<WireBufferEvent>,
     #[serde(default)]
     pub subagent_bindings: HashMap<String, String>,
-    pub user_detail_before: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -363,11 +362,11 @@ pub struct SessionSnapshot {
     pub thinking_tier: String,
     #[serde(default = "default_context_mode")]
     pub context_mode: String,
-    /// Highest user-detail anchor `k` whose file patch is nonempty.
-    /// FE shows "Revert files" on user messages with `userAnchorK <= this`.
-    /// `None` = no file-level revert available.
+    /// Highest file-snapshot stem (`next_seq` at turn start) whose patch lists
+    /// a revertible file. The client shows "Revert files" on a user row when
+    /// `row.seq + 1 <= this`. `None` = no file-level revert available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_file_revert_k: Option<i64>,
+    pub max_file_revert_seq: Option<i64>,
     /// Running agent bash jobs and wait_shell waiters for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bash: Option<crate::terminal::BashJobsSnapshot>,
@@ -584,17 +583,16 @@ mod tests {
     }
 
     #[test]
-    fn buffer_load_result_includes_user_detail_before() {
+    fn buffer_load_result_is_a_seq_window() {
         let json = serde_json::to_value(BufferLoadResult {
             session_id: "s1".into(),
             from_seq: 2,
             to_seq: 5,
             events: Vec::new(),
             subagent_bindings: HashMap::new(),
-            user_detail_before: 3,
         })
         .unwrap();
-        assert_eq!(json["user_detail_before"], 3);
+        assert!(json.get("user_detail_before").is_none());
         assert_eq!(json["from_seq"], 2);
         assert_eq!(json["to_seq"], 5);
     }

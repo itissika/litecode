@@ -9,9 +9,8 @@ use regex::Regex;
 
 use super::mentions;
 
-static OPEN_FENCE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:[ \t]*\r?\n)*```node[ \t]*\r?\n").expect("open fence")
-});
+static OPEN_FENCE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:[ \t]*\r?\n)*```node[ \t]*\r?\n").expect("open fence"));
 static CLOSE_FENCE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\r?\n```[ \t]*(?:\r?\n|$)").expect("close fence"));
 static FIELD_LINE: LazyLock<Regex> = LazyLock::new(|| {

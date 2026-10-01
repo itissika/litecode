@@ -603,48 +603,34 @@ impl SessionManager {
             .events_range_blocking(session_id, from_seq as i64, to_seq as i64)
     }
 
-    pub fn entry_revert_to_user_anchor(&self, session_id: &str, k: i64) -> Result<()> {
+    pub fn entry_revert_to_user_anchor(&self, session_id: &str, seq: i64) -> Result<()> {
         let expected = self.expected_revision(session_id);
         self.mutate_blocking(SessionMutation::Apply {
             session_id: session_id.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),
-            op: SessionApply::Truncate { user_k: k },
+            op: SessionApply::Truncate { anchor_seq: seq },
         })?;
         Ok(())
     }
 
     pub fn entry_user_detail_count(&self, session_id: &str) -> Result<i64> {
-        match self.data.read_blocking(SessionRead::UserDetailBefore {
+        match self.data.read_blocking(SessionRead::UserDetailCount {
             session_id: session_id.to_string(),
-            from_seq: i64::MAX,
         })? {
             ReadValue::Count(n) => Ok(n),
             _ => Err(LitecodeError::SessionStorage("unexpected count".into())),
         }
     }
 
-    pub fn entry_user_detail_before_seq(
-        &self,
-        session_id: &str,
-        from_seq: crate::session::event::Seq,
-    ) -> Result<i64> {
-        match self.data.read_blocking(SessionRead::UserDetailBefore {
+    /// File-snapshot stem for a user row: `seq + 1` (`next_seq` at turn start).
+    pub fn entry_snapshot_stem_for_user_seq(&self, session_id: &str, seq: i64) -> Result<i64> {
+        match self.data.read_blocking(SessionRead::UserAnchorStem {
             session_id: session_id.to_string(),
-            from_seq: from_seq as i64,
+            seq,
         })? {
             ReadValue::Count(n) => Ok(n),
-            _ => Err(LitecodeError::SessionStorage("unexpected count".into())),
-        }
-    }
-
-    pub fn entry_snapshot_stem_for_user_k(&self, session_id: &str, k: i64) -> Result<i64> {
-        match self.data.read_blocking(SessionRead::SnapshotStem {
-            session_id: session_id.to_string(),
-            k,
-        })? {
-            ReadValue::Count(n) => Ok(n.saturating_add(1)),
-            _ => Err(LitecodeError::InvalidRevertAnchor(format!("k={k}"))),
+            _ => Err(LitecodeError::InvalidRevertAnchor(format!("seq={seq}"))),
         }
     }
 
@@ -2264,6 +2250,77 @@ impl SessionManager {
         draft.time = chrono::Utc::now().timestamp_millis();
         self.apply(session_id, SessionApply::Append(draft))?;
         Ok(())
+    }
+
+    /// Persist a user message, then the hidden mentions attachment when it has one.
+    ///
+    /// A failed attachment is logged and does not undo the user row.
+    pub fn append_user_message_with_mentions(
+        &self,
+        session_id: &str,
+        input: impl Into<crate::types::UserInput>,
+        workspace: &std::path::Path,
+    ) -> anyhow::Result<()> {
+        let input = input.into();
+        self.append_user_message(session_id, input.clone())?;
+        self.append_mentions_for(session_id, workspace, &input.text);
+        Ok(())
+    }
+
+    /// Snapshot digests of mention citations still on the model-visible surface.
+    ///
+    /// A compacted reminder is no longer on that surface, so its digest is not
+    /// returned and a later citation attaches the snapshot again.
+    fn live_mention_digests(&self, session_id: &str) -> HashMap<String, String> {
+        let Ok(events) = self.data.events_blocking(session_id) else {
+            return HashMap::new();
+        };
+        let Ok(surface) = crate::session::fold_surface(&events) else {
+            return HashMap::new();
+        };
+        let by_seq: HashMap<_, _> = events.iter().map(|event| (event.seq, event)).collect();
+        let mut delivered = HashMap::new();
+        for seq in &surface.nodes {
+            let Some(event) = by_seq.get(seq) else {
+                continue;
+            };
+            let EventType::Reminder(crate::reminder::ReminderKind::Mentions) = &event.event_type
+            else {
+                continue;
+            };
+            let Ok(crate::reminder::Reminder::Mentions(body)) =
+                serde_json::from_value(event.data.clone())
+            else {
+                continue;
+            };
+            for citation in body.refs {
+                if let Some(digest) = citation.digest {
+                    delivered.insert(citation.key, digest);
+                }
+            }
+        }
+        delivered
+    }
+
+    /// Write `reminder/mentions` for text that was just stored as a user row.
+    ///
+    /// Citations whose snapshot still matches one on the live surface are omitted.
+    pub fn append_mentions_for(
+        &self,
+        session_id: &str,
+        workspace: &std::path::Path,
+        user_text: &str,
+    ) {
+        let Some(reminder) = crate::reminder::mentions::build(
+            workspace,
+            user_text,
+            &self.live_mention_digests(session_id),
+        ) else {
+            return;
+        };
+        if let Err(error) = self.append_reminder(session_id, &reminder) {
+            tracing::warn!(%error, "mentions reminder was not saved");
+        }
     }
 
     /// Persist the plan-execution trigger as a dedicated `plan/execute` spine Item.

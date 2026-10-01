@@ -79,9 +79,8 @@ pub fn lexical_search(query: &LexicalQuery) -> Result<Vec<LexicalMatch>> {
 /// Human workspace search and agent `grep` share [`FilterPreset::Search`].
 /// [`FilterPreset::NoIgnore`] is the agent `-u` hatch.
 ///
-/// This is always a disk walk (libripgrep). A trigram accelerator exists as a
-/// separate engine but is not on this path: a Ready-but-stale index misses
-/// files, which grep cannot tolerate.
+/// This is always a disk walk (libripgrep). The mention path catalog is a
+/// separate engine and is not on this path.
 pub fn lexical_search_with_preset(
     query: &LexicalQuery,
     preset: FilterPreset,
@@ -780,8 +779,10 @@ mod tests {
             .next()
             .expect("production source before tests");
         assert!(
-            !prod.contains("try_accelerated_search") && !prod.contains("text_index"),
-            "LexicalLane must stay a disk walk; do not wire the trigram accelerator here"
+            !prod.contains("try_accelerated_search")
+                && !prod.contains("text_index")
+                && !prod.contains("path_index"),
+            "LexicalLane must stay a disk walk; do not wire the mention path catalog here"
         );
         assert!(
             prod.contains("lexical_search_ripgrep(query, preset)"),

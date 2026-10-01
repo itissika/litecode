@@ -12,8 +12,12 @@ export const KNOWLEDGE_KEY = /^[\p{L}\p{N}_][\p{L}\p{N}_-]*(?: [\p{L}\p{N}_-]+)*
 /** TipTap Mention markdown: `[@ id="seq" label="seq"]`. `id` then `label`, double quotes. */
 const SHORTCODE_SOURCE = String.raw`\[@ id="([^"]*)" label="([^"]*)"\]`;
 
-/** Workspace path mention: `[@ file="src/a.rs" label="a.rs"]`. Not a node citation. */
-const FILE_SHORTCODE_SOURCE = String.raw`\[@ file="([^"]*)" label="([^"]*)"\]`;
+/**
+ * File, symbol, or line-range mention.
+ * Attribute order is `file`, optional `symbol`, optional `lines`, then `label`.
+ * Neither optional attribute means a plain file citation.
+ */
+const FILE_ATTR_SOURCE = String.raw`\[@ file="([^"]*)"(?: symbol="([^"]*)")?(?: lines="([^"]*)")? label="([^"]*)"\]`;
 
 /** Compare and look up keys after trimming. The stored key is left unchanged. */
 export function normalizeKey(key: string): string {
@@ -41,6 +45,56 @@ export function fileMentionSource(path: string, label = fileLabel(path)): string
   return `[@ file="${path}" label="${label}"]`;
 }
 
+/** Last hop of an ancestor chain, for the capsule label. */
+export function symbolLabel(chain: string): string {
+  const parts = chain.split(" › ");
+  return parts[parts.length - 1] || chain;
+}
+
+/** Cyan capsule text: the file name, then the symbol's last hop. */
+export function capsuleLabel(path: string, symbol: string): string {
+  const file = fileLabel(path);
+  const name = symbolLabel(symbol);
+  if (!file) return name;
+  if (!name) return file;
+  return `${file} ${name}`;
+}
+
+/** `12` or `2148-2165`. Zero and an inverted range are not spans. */
+export function parseLineSpan(raw: string): { start: number; end: number } | null {
+  const text = raw.trim();
+  const match = /^(\d+)(?:-(\d+))?$/.exec(text);
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = match[2] ? Number(match[2]) : start;
+  if (!start || !end || end < start) return null;
+  return { start, end };
+}
+
+export function formatLineSpan(start: number, end: number): string {
+  return start === end ? String(start) : `${start}-${end}`;
+}
+
+/**
+ * One symbol or range mention as TipTap writes it.
+ * Omit `symbol` for a line range. Omit `lines` for a knowledge-body citation.
+ */
+export function symbolMentionSource(
+  path: string,
+  options: { symbol?: string; lines?: string; label?: string } = {},
+): string {
+  const symbol = options.symbol?.trim() ?? "";
+  const lines = options.lines?.trim() ?? "";
+  const label =
+    options.label ??
+    (symbol ? capsuleLabel(path, symbol) : fileLabel(path));
+  let out = `[@ file="${path}"`;
+  if (symbol) out += ` symbol="${symbol}"`;
+  if (lines) out += ` lines="${lines}"`;
+  out += ` label="${label}"]`;
+  return out;
+}
+
 /**
  * A workspace-relative path. `..`, `.`, an empty segment, and an absolute path
  * (leading slash or a drive letter) are not paths this library can check.
@@ -58,8 +112,8 @@ function shortcodePattern(): RegExp {
   return new RegExp(SHORTCODE_SOURCE, "g");
 }
 
-function filePattern(): RegExp {
-  return new RegExp(FILE_SHORTCODE_SOURCE, "g");
+function fileAttrPattern(): RegExp {
+  return new RegExp(FILE_ATTR_SOURCE, "g");
 }
 
 /**
@@ -139,16 +193,25 @@ function scanProse(markdown: string): FenceScan {
 export type BodySegment =
   | { type: "text"; value: string }
   | { type: "ref"; id: string; label: string }
-  | { type: "file"; path: string; label: string };
+  | { type: "file"; path: string; label: string }
+  | {
+      type: "symbol";
+      path: string;
+      symbol: string | null;
+      lines: string | null;
+      label: string;
+    };
 
 /** Split one text run into prose, node mentions, and file mentions, in order. */
 export function splitBodyRefs(text: string): BodySegment[] {
   const hits: Array<{
     start: number;
     end: number;
-    kind: "ref" | "file";
+    kind: "ref" | "file" | "symbol";
     a: string;
     b: string;
+    symbol?: string | null;
+    lines?: string | null;
   }> = [];
   for (const match of text.matchAll(shortcodePattern())) {
     const id = normalizeKey(match[1] ?? "");
@@ -163,17 +226,26 @@ export function splitBodyRefs(text: string): BodySegment[] {
       b: label || id,
     });
   }
-  for (const match of text.matchAll(filePattern())) {
+  for (const match of text.matchAll(fileAttrPattern())) {
     const path = (match[1] ?? "").trim();
     if (!path) continue;
+    const symbol = (match[2] ?? "").trim();
+    const lines = (match[3] ?? "").trim();
+    const parsedLines = lines ? parseLineSpan(lines) : null;
     const start = match.index ?? 0;
-    const label = match[2] ?? "";
+    const labelRaw = match[4] ?? "";
+    const isSymbol = Boolean(symbol) || parsedLines !== null;
+    const label =
+      labelRaw ||
+      (symbol ? capsuleLabel(path, symbol) : fileLabel(path));
     hits.push({
       start,
       end: start + match[0].length,
-      kind: "file",
+      kind: isSymbol ? "symbol" : "file",
       a: path,
-      b: label || fileLabel(path),
+      b: label,
+      symbol: symbol || null,
+      lines: parsedLines ? lines : null,
     });
   }
   hits.sort((left, right) => left.start - right.start || left.end - right.end);
@@ -183,11 +255,40 @@ export function splitBodyRefs(text: string): BodySegment[] {
     if (hit.start < last) continue;
     if (hit.start > last) out.push({ type: "text", value: text.slice(last, hit.start) });
     if (hit.kind === "ref") out.push({ type: "ref", id: hit.a, label: hit.b });
-    else out.push({ type: "file", path: hit.a, label: hit.b });
+    else if (hit.kind === "symbol") {
+      out.push({
+        type: "symbol",
+        path: hit.a,
+        symbol: hit.symbol ?? null,
+        lines: hit.lines ?? null,
+        label: hit.b,
+      });
+    } else out.push({ type: "file", path: hit.a, label: hit.b });
     last = hit.end;
   }
   if (last < text.length) out.push({ type: "text", value: text.slice(last) });
   if (out.length === 0) out.push({ type: "text", value: text });
+  return out;
+}
+
+export interface CitedSymbol {
+  path: string;
+  symbol: string;
+}
+
+/** Symbol citations in prose, first chain per file wins. Range-only citations are not included. */
+export function extractSymbolRefs(markdown: string): CitedSymbol[] {
+  const out: CitedSymbol[] = [];
+  const seen = new Set<string>();
+  for (const line of scanProse(markdown).prose) {
+    for (const segment of splitBodyRefs(line)) {
+      if (segment.type !== "symbol" || !segment.symbol) continue;
+      const key = `${segment.path}\0${segment.symbol}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ path: segment.path, symbol: segment.symbol });
+    }
+  }
   return out;
 }
 
@@ -196,7 +297,7 @@ export function extractFileRefs(markdown: string): string[] {
   const paths: string[] = [];
   const seen = new Set<string>();
   for (const line of scanProse(markdown).prose) {
-    for (const match of line.matchAll(filePattern())) {
+    for (const match of line.matchAll(fileAttrPattern())) {
       const path = (match[1] ?? "").trim();
       if (!path || seen.has(path)) continue;
       seen.add(path);
@@ -269,11 +370,15 @@ function replaceShortcodesWithLabels(text: string): string {
     if (!isKnowledgeKey(key)) return full;
     return label || key;
   });
-  return nodes.replace(filePattern(), (full, path: string, label: string) => {
-    const cleaned = path.trim();
-    if (!cleaned) return full;
-    return label || fileLabel(cleaned);
-  });
+  return nodes.replace(
+    fileAttrPattern(),
+    (full, path: string, symbol: string, _lines: string, label: string) => {
+      const cleaned = path.trim();
+      if (!cleaned) return full;
+      const chain = symbol?.trim() ?? "";
+      return label || (chain ? capsuleLabel(cleaned, chain) : fileLabel(cleaned));
+    },
+  );
 }
 
 /** Show inline code, clipped. Shortcodes are replaced only outside code spans. */

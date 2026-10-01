@@ -53,7 +53,9 @@ export type KnowledgeIssueCode =
   | "dangling_relation"
   | "inactive_target"
   | "invalid_status"
-  | "missing_file";
+  | "missing_file"
+  | "missing_symbol"
+  | "symbol_drift";
 
 export type KnowledgeIssueSeverity = "error" | "warning";
 

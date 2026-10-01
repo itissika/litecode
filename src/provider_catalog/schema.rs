@@ -192,6 +192,27 @@ impl ProviderQuirk {
     }
 }
 
+/// How a Responses host takes reasoning back on a later request.
+///
+/// `ciphertext` is the OpenAI shape: encrypted blobs return only to their
+/// producer. `summary` is Bailian: the item that provider minted, with its id
+/// and `summary_text`. Chat Completions ignores this and uses [`ReasoningKey`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningReplay {
+    #[default]
+    Ciphertext,
+    Summary,
+}
+
+impl ReasoningReplay {
+    pub const ALL: &'static [ReasoningReplay] = &[Self::Ciphertext, Self::Summary];
+
+    fn is_ciphertext(&self) -> bool {
+        matches!(self, Self::Ciphertext)
+    }
+}
+
 /// Which field a Chat Completions replay writes reasoning back into.
 ///
 /// Only keys the codec implements are accepted; a typo is a load error.
@@ -245,6 +266,10 @@ pub struct RawReasoning {
     /// Replay write-back key (Chat Completions codec).
     #[serde(default)]
     pub key: ReasoningKey,
+    /// How this Responses model takes its own reasoning back. Absent means
+    /// ciphertext. Chat models must not set `summary`.
+    #[serde(default, skip_serializing_if = "ReasoningReplay::is_ciphertext")]
+    pub replay: ReasoningReplay,
 }
 
 /// One catalog provider.

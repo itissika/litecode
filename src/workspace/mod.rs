@@ -11,16 +11,19 @@ mod routes;
 mod sandbox;
 mod service;
 mod sqlite_preview;
+mod symbols;
 pub mod text_codec;
 mod tool_path;
 mod tree;
 mod watcher;
 
 pub use change::WorkspaceChange;
-pub use git::{WorktreeDrift, drift_since};
 pub use filter::{
     ExcludeMatcher, FilterLayers, FilterPreset, RelPathCtx, path_excluded, rel_path_under,
     walk_builder,
+};
+pub use git::{
+    GitError, PathCommit, WorktreeDrift, drift_since, last_commit_touching, log_between, show_at,
 };
 pub use path_sort::{glob_hit_key, sort_glob_hits};
 pub use routes::{WorkspaceState, router as workspace_router};

@@ -1,11 +1,4 @@
-import {
-  type ClipboardEvent,
-  type FormEvent,
-  type KeyboardEvent,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 
 import type { ContextMode, ThinkingTier } from "../api/types";
@@ -16,11 +9,18 @@ import {
   normalizeImage,
 } from "../lib/imageNormalize";
 
+import { mentionKeysOf } from "../lib/knowledge/flowProjection";
 import { useConnectionStore } from "../stores/connectionStore";
+import { useKnowledgeStore } from "../stores/knowledgeStore";
 import { useSessionStore } from "../stores/sessionStore";
-import { subscribeComposerAppend } from "../stores/composerDraft";
+import {
+  noteComposerFocus,
+  registerComposer,
+  subscribeComposerAppend,
+} from "../stores/composerDraft";
 import { useToastStore } from "../stores/toastStore";
 import { useTurnStore } from "../stores/turnStore";
+import { MentionEditor, type MentionEditorHandle } from "./mention/MentionEditor";
 import { ContextUsageRing } from "./ContextUsageRing";
 import {
   Dropdown,
@@ -53,6 +53,21 @@ function revokeImages(images: ComposerImage[]) {
   for (const image of images) {
     if (image.previewUrl) URL.revokeObjectURL(image.previewUrl);
   }
+}
+
+/** Empty-composer hint. Blocked states win; a live turn (including auto
+ *  compaction) stays on the queue hint. Manual compaction is idle + compacting. */
+export function composerPlaceholder(input: {
+  connected: boolean;
+  hasModel: boolean;
+  manualCompacting: boolean;
+  queuing: boolean;
+}): string {
+  if (!input.connected) return "Reconnecting…";
+  if (!input.hasModel) return "Add a model in Settings";
+  if (input.manualCompacting) return "Compacting context…";
+  if (input.queuing) return "Queue a follow-up…";
+  return "Message the agent…";
 }
 
 export function AgentPicker({
@@ -141,7 +156,7 @@ export function ThinkSlider({
               type="button"
               disabled={disabled}
               onClick={() => onChange(tier)}
-              className={`group ${CTRL_BASE} relative ${
+              className={`group ${CTRL_BASE} relative min-w-[1ch] max-w-16 ${
                 selected
                   ? "text-(--_dk-accent-hover) hover:text-(--_dk-accent-hover)"
                   : ""
@@ -160,7 +175,7 @@ export function ThinkSlider({
               ) : (
                 <span className="pointer-events-none absolute inset-0 rounded-md border border-transparent group-hover:border-(--_dk-line)" />
               )}
-              <span className="relative z-10">{label}</span>
+              <span className="relative z-10 min-w-0 truncate">{label}</span>
             </button>
           );
         })}
@@ -184,7 +199,7 @@ export function ContextModeToggle({
       type="button"
       disabled={disabled}
       onClick={() => onChange(isMax ? "standard" : "max")}
-      className={`${CTRL_BASE} relative w-[64px] shrink-0 justify-center ${
+      className={`${CTRL_BASE} relative min-w-[1ch] max-w-24 shrink-0 justify-center ${
         isMax
           ? "text-(--_dk-accent-hover) hover:text-(--_dk-accent-hover)"
           : "hover:bg-(--_dk-ix-bg-hover)"
@@ -194,7 +209,7 @@ export function ContextModeToggle({
       {isMax ? (
         <span className="absolute inset-0 rounded-md bg-(--_dk-accent-halo)" />
       ) : null}
-      <span className="relative z-10 whitespace-nowrap">
+      <span className="relative z-10 min-w-0 truncate">
         {isMax ? "Max" : "Default"}
       </span>
     </button>
@@ -242,7 +257,8 @@ export function AgentChatInput({
   // Recall hand-off: a queued bubble pulled back from the transcript appends to
   // whatever is already being written — never replaces it — and takes the caret.
   useEffect(() => {
-    return subscribeComposerAppend((target, text, recalled = []) => {
+    const unregister = registerComposer(sessionId);
+    const unsubscribe = subscribeComposerAppend((target, text, recalled = []) => {
       if (target !== sessionId) return;
       setDraft((current) =>
         current.trim() ? `${current.trimEnd()}\n\n${text}` : text,
@@ -259,14 +275,13 @@ export function AgentChatInput({
         ]);
       }
       requestAnimationFrame(() => {
-        const ta = textareaRef.current;
-        if (!ta) return;
-        ta.focus();
-        ta.setSelectionRange(ta.value.length, ta.value.length);
-        ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, 256)}px`;
+        editorRef.current?.focus();
       });
     });
+    return () => {
+      unsubscribe();
+      unregister();
+    };
   }, [sessionId]);
 
   const startAgent = (input: string, refs: string[]) =>
@@ -310,7 +325,15 @@ export function AgentChatInput({
   const imagesBlockSend = imagesBusy || imagesMasked;
   const hasBody = draft.trim().length > 0 || readyRefs.length > 0;
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<MentionEditorHandle>(null);
+  const mentionKeys = useKnowledgeStore((s) => mentionKeysOf(s.nodes));
+  const candidates = useMemo(
+    () => mentionKeys.split("\n").filter((key) => key.length > 0),
+    [mentionKeys],
+  );
+  const loadKnowledge = useKnowledgeStore((s) => s.load);
+  const knowledgeAsked = useRef(false);
   const sendBtnRef = useRef<HTMLButtonElement>(null);
   const draggingRef = useRef(false);
   const dragStartRef = useRef({ y: 0, h: 0 });
@@ -326,12 +349,30 @@ export function AgentChatInput({
 
   const applyResize = (clientY: number) => {
     rafRef.current = null;
-    const ta = textareaRef.current;
-    if (!ta) return;
+    const box = boxRef.current;
+    if (!box) return;
     const deltaY = dragStartRef.current.y - clientY;
     const newH = Math.max(36, dragStartRef.current.h + deltaY);
-    ta.style.height = `${newH}px`;
+    box.style.height = `${newH}px`;
+    box.style.maxHeight = "none";
   };
+
+  // A drag writes a fixed height onto the box and lifts the max-height cap.
+  // The dragged height belongs to the gesture, not to the draft: releasing the
+  // handle keeps it even on an empty composer (pre-sizing the input is the
+  // common case). Only clearing the draft drops it back to content height
+  // (one line) — see the effect below.
+  const releaseCustomHeight = () => {
+    const box = boxRef.current;
+    if (!box) return;
+    box.style.height = "";
+    box.style.maxHeight = "";
+  };
+
+  useEffect(() => {
+    if (draft.trim().length > 0) return;
+    releaseCustomHeight();
+  }, [draft]);
 
   // Pointer Events + setPointerCapture: once captured, every subsequent
   // pointermove/pointerup for this pointer is delivered to the handle — even
@@ -339,10 +380,10 @@ export function AgentChatInput({
   // This is what makes the drag robust (no more "drag a few px then snap back").
   const onResizeStart = (e: React.PointerEvent) => {
     e.preventDefault();
-    const ta = textareaRef.current;
-    if (!ta) return;
+    const box = boxRef.current;
+    if (!box) return;
     draggingRef.current = true;
-    dragStartRef.current = { y: e.clientY, h: ta.offsetHeight };
+    dragStartRef.current = { y: e.clientY, h: box.offsetHeight };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     document.body.style.userSelect = "none";
     document.body.style.cursor = "ns-resize";
@@ -391,6 +432,12 @@ export function AgentChatInput({
   const canQueue =
     isRunning && connection === "connected" && !replaying && hasModel;
   const showQueueAction = canQueue && hasBody;
+  const placeholder = composerPlaceholder({
+    connected: connection === "connected",
+    hasModel,
+    manualCompacting: compacting && !isRunning,
+    queuing: canQueue,
+  });
   // One button, three skins: send while idle, queue while a turn runs and a
   // draft exists, cancel while it runs without one.
   const sendAction: "send" | "queue" | "cancel" = !isRunning
@@ -447,16 +494,16 @@ export function AgentChatInput({
     }
   };
 
-  const onPasteImage = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+  const onPasteImage = (event: ClipboardEvent) => {
     const files = clipboardImageFiles(event.clipboardData);
-    if (files.length === 0) return;
+    if (files.length === 0) return false;
     event.preventDefault();
     const room = MAX_COMPOSER_IMAGES - images.length;
     if (room <= 0) {
       useToastStore
         .getState()
         .showToast(`Up to ${MAX_COMPOSER_IMAGES} images`, "error");
-      return;
+      return true;
     }
     const accepted = files.slice(0, room);
     if (accepted.length < files.length) {
@@ -502,6 +549,7 @@ export function AgentChatInput({
         }
       })();
     }
+    return true;
   };
 
   const removeImage = (id: string) => {
@@ -512,20 +560,15 @@ export function AgentChatInput({
     });
   };
 
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (!isBlocked || canQueue) {
-        // Keyboard submit has no :active, so fire press feedback manually.
-        const btn = sendBtnRef.current;
-        if (btn) {
-          btn.classList.remove("send-press");
-          void btn.offsetWidth; // force reflow to restart animation
-          btn.classList.add("send-press");
-        }
-        submit();
-      }
+  const submitFromKeys = () => {
+    if (isBlocked && !canQueue) return;
+    const btn = sendBtnRef.current;
+    if (btn) {
+      btn.classList.remove("send-press");
+      void btn.offsetWidth;
+      btn.classList.add("send-press");
     }
+    submit();
   };
 
   if (subagentView) {
@@ -651,47 +694,39 @@ export function AgentChatInput({
           )}
         </div>
       ) : null}
-      <div className="relative overflow-hidden rounded-b-[calc(var(--radius-sm)-1px)]">
-        <textarea
-          ref={textareaRef}
-          value={draft}
-          onChange={(e) => {
-            setDraft(e.target.value);
-            const ta = textareaRef.current;
-            if (ta) {
-              ta.style.height = "auto";
-              ta.style.height = `${Math.min(ta.scrollHeight, 256)}px`;
-            }
-          }}
-          onKeyDown={onKeyDown}
-          onPaste={onPasteImage}
-          onDragOver={(e) => {
-            if (e.dataTransfer.types.includes("text/plain")) e.preventDefault();
-          }}
-          onDrop={(e) => {
-            e.preventDefault();
-            const text = e.dataTransfer.getData("text/plain");
-            if (!text) return;
-            const ta = textareaRef.current;
-            if (!ta) {
-              setDraft((d) => (d ? `${d}\n${text}` : text));
-              return;
-            }
-            const start = ta.selectionStart;
-            const end = ta.selectionEnd;
-            setDraft((d) => d.slice(0, start) + text + d.slice(end));
-          }}
-          placeholder={
-            connection !== "connected"
-              ? "Waiting for connection..."
-              : !hasModel
-                ? "Add a model in Settings first..."
-                : "Message the agent..."
-          }
-          // disabled={isBlocked} — never disable, just block Enter key
-          rows={3}
-          className="w-full resize-none border-0 bg-transparent px-3 pt-2 pb-11 text-sm max-h-48 text-(--_dk-text-primary) outline-none placeholder:text-(--_dk-text-disabled) focus-visible:shadow-none disabled:cursor-not-allowed disabled:opacity-50"
-        />
+      <div
+        ref={boxRef}
+        className="relative flex max-h-48 flex-col overflow-hidden rounded-b-[calc(var(--radius-sm)-1px)]"
+      >
+        {/* The draft scrolls in this wrapper, never in `boxRef` itself: an
+            `overflow-hidden` box is still a scroll container, so the caret
+            reveal would scroll it and drag the absolutely positioned overlays
+            (drag handle, action row) up along with the text. The wrapper spans
+            the whole box, so the draft runs under the row — `boxRef` stays the
+            clipping frame, the overlays just float above the text. */}
+        <div className="min-h-0 flex-auto overflow-y-auto">
+          <MentionEditor
+            handle={editorRef}
+            label="Message the agent"
+            sourceId={sessionId}
+            value={draft}
+            placeholder={placeholder}
+            candidates={candidates}
+            className="mention-composer-input w-full px-3 pt-2 pb-11 text-sm text-(--_dk-text-primary)"
+            symbolLines
+            submitOnEnter
+            onChange={setDraft}
+            onSubmit={submitFromKeys}
+            onPaste={onPasteImage}
+            onFocus={() => {
+              noteComposerFocus(sessionId);
+              if (knowledgeAsked.current) return;
+              knowledgeAsked.current = true;
+              if (useKnowledgeStore.getState().nodes.length === 0)
+                void loadKnowledge();
+            }}
+          />
+        </div>
         {/* Top-right drag handle */}
         <div
           className="absolute right-0.5 top-0 flex h-4 w-6 cursor-ns-resize items-center justify-center text-(--_dk-text-disabled) select-none"

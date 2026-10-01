@@ -12,6 +12,7 @@ import { isInlineCall, processToolBucket } from "../../lib/toolCategory";
 import { useEditorStore } from "../../stores/editorStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useTurnStore } from "../../stores/turnStore";
+import { MentionText } from "../mention/MentionText";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { ImageThumb } from "../ImageThumb";
 import { CategoryCount } from "../CategoryCount";
@@ -28,6 +29,7 @@ export function NodeView({
   sessionId,
   bubbleKey,
   citations = false,
+  mentions = false,
 }: {
   node: RenderNode;
   streaming?: boolean;
@@ -39,6 +41,8 @@ export function NodeView({
   bubbleKey?: string;
   /** Turn file and web links in assistant prose into citation chips. */
   citations?: boolean;
+  /** Draw `@` / `/` / symbol shortcodes as capsules. User messages only. */
+  mentions?: boolean;
 }) {
   // The plan-execution mark names the plan the button launched; the row itself
   // only carries the prompt text, so the path comes from the session pointer.
@@ -85,11 +89,15 @@ export function NodeView({
     case "text":
       return (
         <div className="text-dk-base text-(--_dk-text-primary) pl-(--_dk-indent-card-head)">
-          <AgentMarkdown
-            text={node.text}
-            streaming={streaming}
-            citations={citations}
-          />
+          {mentions ? (
+            <MentionText text={node.text} />
+          ) : (
+            <AgentMarkdown
+              text={node.text}
+              streaming={streaming}
+              citations={citations}
+            />
+          )}
           {node.incomplete && !streaming ? (
             <div className="mt-1 text-dk-2xs italic text-(--_dk-text-disabled)">
               Output incomplete

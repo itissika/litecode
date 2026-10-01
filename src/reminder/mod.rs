@@ -6,6 +6,7 @@
 mod engine;
 mod file_tracker;
 mod kinds;
+pub mod mentions;
 pub mod migrate;
 mod sources;
 
@@ -15,8 +16,8 @@ pub use engine::{
 pub use file_tracker::FileTracker;
 pub use kinds::{
     BackgroundBody, BashExitBody, BashExitEntry, ChildCountsBody, EnvBody, FilesChangedBody,
-    PlanChangedBody, PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild,
-    StepBudgetBody, SubagentSettledBody, TasksBody, TodoSnap, Visibility,
+    MentionRef, MentionsBody, PlanChangedBody, PlanPointer, Reminder, ReminderKind, RunningBash,
+    SettledChild, StepBudgetBody, SubagentSettledBody, TasksBody, TodoSnap, Visibility,
 };
 
 use crate::types::{Item, user_text};

@@ -14,7 +14,8 @@ pub mod store;
 
 pub use resolve::{ProviderCatalog, ResolvedModel, ResolvedProvider, is_valid_provider_id};
 pub use schema::{
-    AuthKind, EndpointKind, Modality, ProviderQuirk, ReasoningKey, ReasoningTiers, UsagePatch,
+    AuthKind, EndpointKind, Modality, ProviderQuirk, ReasoningKey, ReasoningReplay, ReasoningTiers,
+    UsagePatch,
 };
 pub use store::{
     CATALOG_FILE_NAME, CATALOG_SCHEMA, DEFAULT_CATALOG, INITIALIZED_MARKER, SCHEMA_FILE_NAME,

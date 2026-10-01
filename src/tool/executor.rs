@@ -289,7 +289,7 @@ pub async fn run_tool(
     cancel: CancellationToken,
     data_root: &std::path::Path,
     spill_threshold: usize,
-    _turn_anchor_k: Option<i64>,
+    _turn_anchor_seq: Option<i64>,
     write_lock: Arc<WorkspaceWriteLock>,
     session: Option<crate::session::SessionDataReader>,
 ) -> ToolCallResult {

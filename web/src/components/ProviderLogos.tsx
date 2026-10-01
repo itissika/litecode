@@ -49,12 +49,18 @@ function NeutralLogo(): JSX.Element {
  * surrounding text color (theme tokens) — follows dark/light and hover states.
  * Unknown ids fall back to a neutral mark rather than rendering nothing.
  */
-export function ProviderLogo({ providerId }: { providerId?: string }) {
+export function ProviderLogo({
+  providerId,
+  title,
+}: {
+  providerId?: string;
+  title?: string;
+}) {
   const Logo = providerId ? PROVIDER_LOGOS[providerId] : undefined;
   return (
     <span
       className="inline-block h-3.5 w-3.5 shrink-0"
-      title={providerId || undefined}
+      title={title ?? providerId ?? undefined}
       data-provider-logo={Logo ? "brand" : "neutral"}
     >
       {Logo ? <Logo /> : <NeutralLogo />}

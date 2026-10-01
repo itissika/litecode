@@ -24,7 +24,7 @@ use crate::authority::responses::{
 use crate::llm::provider::LlmProvider;
 use crate::llm::request::ModelRequest;
 use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
-use crate::provider_catalog::{ProviderQuirk, ResolvedModel};
+use crate::provider_catalog::{ProviderQuirk, ReasoningReplay, ResolvedModel};
 use crate::session::media_tokens::classify_input_file;
 use crate::types::{LitecodeError, Result, StreamEvents};
 
@@ -77,12 +77,17 @@ impl ResponsesCodec {
         let thinking_active = self.thinking_active(params.thinking);
 
         let mut input_items = params.input.clone();
+        let summary_replay = model.reasoning_replay == ReasoningReplay::Summary;
         if model.has_quirk(ProviderQuirk::ReasoningReplay) {
             // Declared: reasoning text must go back. Replay whenever this request
             // thinks: a vendor whose default is thinking-on must never see a
             // reasoning-less assistant turn.
             input_items =
                 ensure_reasoning_replay(&input_items, !params.tools.is_empty(), thinking_active);
+        } else if summary_replay {
+            // Bailian Responses: own reasoning returns as its id plus summary_text.
+            // The request builder has already dropped every other provider's items.
+            input_items = project_summary_replay(input_items);
         } else {
             // Undeclared (OpenAI family): only the endpoint's own ciphertext
             // replays. Input `content` is rejected outright
@@ -96,7 +101,7 @@ impl ResponsesCodec {
             .map(serialize_input_item)
             .collect::<std::result::Result<Vec<Value>, _>>()
             .map_err(|error| LitecodeError::Llm(format!("serialize input items: {error}")))?;
-        let input = normalize_input_items(input);
+        let input = normalize_input_items(input, summary_replay);
 
         let tools: Vec<Value> = params
             .tools
@@ -154,14 +159,20 @@ impl ResponsesCodec {
         Ok(body)
     }
 
-    fn parse_stream_event(&self, data: &str) -> Result<ResponseStreamEvent> {
+    fn parse_stream_event(&self, data: &str) -> Result<Option<ResponseStreamEvent>> {
         let mut value: Value = serde_json::from_str(data).map_err(|error| {
             LitecodeError::Llm(format!(
                 "deserialize ResponseStreamEvent JSON: {error}; payload={data}"
             ))
         })?;
+        // Transport heartbeat during long reasoning. Official SDKs drop it;
+        // the authority enum does not model it, and treating it as a response
+        // event aborts the turn.
+        if value.get("type").and_then(Value::as_str) == Some("keepalive") {
+            return Ok(None);
+        }
         responses_harden::harden(&mut value, self.model.usage_patch);
-        serde_json::from_value(value).map_err(|error| {
+        serde_json::from_value(value).map(Some).map_err(|error| {
             LitecodeError::Llm(format!(
                 "deserialize ResponseStreamEvent: {error}; payload={data}"
             ))
@@ -204,6 +215,64 @@ fn keep_replayable_reasoning(items: Vec<Item>) -> Vec<Item> {
             Some(Item::Reasoning(reasoning))
         })
         .collect()
+}
+
+/// Bailian Responses input: `{type, id, summary:[{type:summary_text, text}]}`.
+/// Text is the item's own chain of thought when present, otherwise its summary.
+/// Items with no id, or with no text, are dropped rather than invented.
+/// The caller must already have removed other providers' reasoning.
+fn project_summary_replay(items: Vec<Item>) -> Vec<Item> {
+    use crate::authority::responses::{SummaryPart, SummaryTextContent};
+
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let Item::Reasoning(mut reasoning) = item else {
+                return Some(item);
+            };
+            if reasoning.id.as_deref().unwrap_or("").trim().is_empty() {
+                return None;
+            }
+            let text = reasoning_replay_text(&reasoning);
+            if text.trim().is_empty() {
+                return None;
+            }
+            reasoning.content = None;
+            reasoning.encrypted_content = None;
+            reasoning.summary = vec![SummaryPart::SummaryText(SummaryTextContent { text })];
+            Some(Item::Reasoning(reasoning))
+        })
+        .collect()
+}
+
+fn reasoning_replay_text(reasoning: &crate::authority::responses::ReasoningItem) -> String {
+    use crate::authority::responses::{ReasoningItemContent, SummaryPart};
+
+    let from_content = reasoning
+        .content
+        .as_ref()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| match part {
+                    ReasoningItemContent::ReasoningText(text) => Some(text.text.as_str()),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    if !from_content.trim().is_empty() {
+        return from_content;
+    }
+    reasoning
+        .summary
+        .iter()
+        .filter_map(|part| match part {
+            SummaryPart::SummaryText(text) => Some(text.text.as_str()),
+        })
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The `reasoning` request object: the effort literal always, plus the summary
@@ -263,15 +332,19 @@ fn map_input_content(content: &InputContent) -> serde_json::Result<Value> {
 
 /// Final wire-shape cleanup.
 ///
-/// Item `id`s never go back (replay rule 1): content, ciphertext, and `call_id`
-/// carry everything the model needs. `status` comes from API output and is not
-/// accepted on input.
-fn normalize_input_items(items: Vec<Value>) -> Vec<Value> {
+/// Item `id`s never go back (replay rule 1), except a summary-replay reasoning
+/// item: that host requires the id it minted. `status` comes from API output
+/// and is not accepted on input.
+fn normalize_input_items(items: Vec<Value>, keep_reasoning_ids: bool) -> Vec<Value> {
     let mut input = Vec::with_capacity(items.len());
     for mut item in items {
         if let Value::Object(map) = &mut item {
+            let keep_id =
+                keep_reasoning_ids && map.get("type").and_then(Value::as_str) == Some("reasoning");
             map.remove("status");
-            map.remove("id");
+            if !keep_id {
+                map.remove("id");
+            }
         }
         input.push(item);
     }
@@ -367,7 +440,9 @@ impl LlmProvider for ResponsesCodec {
                             let Some(data) = sse_data_payload(&line) else {
                                 continue;
                             };
-                            let event = self.parse_stream_event(data)?;
+                            let Some(event) = self.parse_stream_event(data)? else {
+                                continue;
+                            };
                             if let Some(items) =
                                 forward_stream_event(&mut gate, &mut acc, event, &mut on_event)?
                             {
@@ -387,8 +462,9 @@ impl LlmProvider for ResponsesCodec {
                     if let Some(dump) = &dump {
                         dump.line(&line);
                     }
-                    if let Some(data) = sse_data_payload(&line) {
-                        let event = self.parse_stream_event(data)?;
+                    if let Some(data) = sse_data_payload(&line)
+                        && let Some(event) = self.parse_stream_event(data)?
+                    {
                         if let Some(items) =
                             forward_stream_event(&mut gate, &mut acc, event, &mut on_event)?
                         {
@@ -852,6 +928,101 @@ endpoint_type = "responses"
     }
 
     #[test]
+    fn summary_replay_sends_own_id_and_summary_text() {
+        use crate::authority::responses::{
+            FunctionCallOutputItemParam, FunctionToolCall, ReasoningItem, ReasoningItemContent,
+            ReasoningTextContent, SummaryPart, SummaryTextContent,
+        };
+
+        let codec = ResponsesCodec::new(plain(
+            "reasoning = { replay = \"summary\", tiers = { off = \"none\", low = \"low\", medium = \"medium\", high = \"max\" } }",
+        ))
+        .unwrap();
+        let mut request = sample_request();
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_bailian".into()),
+                summary: vec![SummaryPart::SummaryText(SummaryTextContent {
+                    text: "short".into(),
+                })],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "full thought".into(),
+                    },
+                )]),
+                encrypted_content: Some("cipher".into()),
+                status: None,
+            }),
+            Item::Reasoning(ReasoningItem {
+                id: Some("  ".into()),
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "blank id".into(),
+                    },
+                )]),
+                encrypted_content: None,
+                status: None,
+            }),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_empty".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: None,
+                status: None,
+            }),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_summary_only".into()),
+                summary: vec![SummaryPart::SummaryText(SummaryTextContent {
+                    text: "only summary".into(),
+                })],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent { text: "   ".into() },
+                )]),
+                encrypted_content: None,
+                status: None,
+            }),
+            Item::FunctionCall(FunctionToolCall {
+                id: Some("fc_foreign".into()),
+                call_id: "call_1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                status: None,
+                namespace: None,
+            }),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                id: Some("out_foreign".into()),
+                call_id: "call_1".into(),
+                output: FunctionCallOutput::Text("ok".into()),
+                status: None,
+            }),
+            assistant_text("answer"),
+        ];
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 6, "{input:?}");
+        assert!(input[0].get("id").is_none(), "{}", input[0]);
+        assert_eq!(input[1]["id"], "rs_bailian");
+        assert_eq!(input[1]["type"], "reasoning");
+        assert_eq!(input[1]["summary"][0]["type"], "summary_text");
+        assert_eq!(input[1]["summary"][0]["text"], "full thought");
+        assert!(input[1].get("content").is_none(), "{}", input[1]);
+        assert!(input[1].get("encrypted_content").is_none(), "{}", input[1]);
+        assert!(input[1].get("status").is_none(), "{}", input[1]);
+        assert_eq!(input[2]["id"], "rs_summary_only");
+        assert_eq!(input[2]["summary"][0]["text"], "only summary");
+        assert!(input[2].get("content").is_none(), "{}", input[2]);
+        assert!(input[3].get("id").is_none(), "{}", input[3]);
+        assert_eq!(input[3]["call_id"], "call_1");
+        assert!(input[4].get("id").is_none(), "{}", input[4]);
+        assert_eq!(input[4]["call_id"], "call_1");
+        assert_eq!(input[5]["role"], "assistant");
+        assert!(input[5].get("id").is_none(), "{}", input[5]);
+        assert_eq!(request.input.len(), 8, "session-owned copy unchanged");
+    }
+
+    #[test]
     fn foreign_item_ids_do_not_break_tool_pairing() {
         use crate::authority::responses::{FunctionCallOutputItemParam, FunctionToolCall};
         let codec = ResponsesCodec::new(openai("")).unwrap();
@@ -1220,9 +1391,26 @@ provider_id = "p"
             }
         })
         .to_string();
-        let parsed = codec.parse_stream_event(&event).expect("hardened event");
+        let parsed = codec
+            .parse_stream_event(&event)
+            .expect("hardened event")
+            .expect("response event");
         let serialized = serde_json::to_value(&parsed).unwrap();
         assert_eq!(serialized["response"]["reasoning"]["effort"], "xhigh");
+    }
+
+    #[test]
+    fn keepalive_is_skipped_and_other_unknown_types_still_fail() {
+        let codec = ResponsesCodec::new(plain("")).unwrap();
+        let skipped = codec
+            .parse_stream_event(r#"{"type":"keepalive","sequence_number":138}"#)
+            .expect("keepalive parses");
+        assert!(skipped.is_none());
+
+        let err = codec
+            .parse_stream_event(r#"{"type":"not-a-real-event","sequence_number":1}"#)
+            .expect_err("unknown response events still fail");
+        assert!(err.to_string().contains("unknown variant"));
     }
 
     // ── streaming ────────────────────────────────────────────────────────────
@@ -1315,6 +1503,51 @@ provider_id = "p"
                 .iter()
                 .any(|event| matches!(event, ResponseStreamEvent::ResponseCompleted(_)))
         );
+        assert!(items.iter().any(|item| matches!(
+            item,
+            Item::Message(MessageItem::Output(OutputMessage { id, .. })) if id == "msg_1"
+        )));
+    }
+
+    #[tokio::test]
+    async fn keepalive_between_events_does_not_abort_the_stream() {
+        let delta = serde_json::json!({
+            "type": "response.output_text.delta",
+            "sequence_number": 1,
+            "item_id": "msg_1",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "hi"
+        });
+        let keepalive = serde_json::json!({
+            "type": "keepalive",
+            "sequence_number": 138
+        });
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 139,
+            "response": completed_response()
+        });
+        let body = format!("data: {delta}\n\ndata: {keepalive}\n\ndata: {completed}\n\n");
+        let endpoint = serve_once(body, "text/event-stream", None).await;
+        let codec = codec_at(OPENAI_PROVIDER, &endpoint);
+        let seen: Arc<Mutex<Vec<crate::types::StreamEvents>>> = Arc::new(Mutex::new(Vec::new()));
+        let collector = Arc::clone(&seen);
+        let on_event: Option<Box<dyn FnMut(StreamEvents) + Send + '_>> =
+            Some(Box::new(move |event| collector.lock().unwrap().push(event)));
+
+        let items = codec
+            .complete_with_stream_events(
+                &sample_request(),
+                "sk-test",
+                on_event,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("keepalive is ignored");
+
+        let events = seen.lock().unwrap();
+        assert_eq!(events.len(), 2);
         assert!(items.iter().any(|item| matches!(
             item,
             Item::Message(MessageItem::Output(OutputMessage { id, .. })) if id == "msg_1"

@@ -7,7 +7,7 @@ use super::resolve::{
 };
 use super::schema::{
     EndpointKind, Modality, ProviderQuirk, RESERVED_BODY_KEYS, RESERVED_HEADER_NAMES, ReasoningKey,
-    UsagePatch,
+    ReasoningReplay, UsagePatch,
 };
 use super::store;
 
@@ -479,6 +479,77 @@ fn reasoning_summary_must_be_non_empty_and_ride_on_tiers() {
 }
 
 #[test]
+fn summary_replay_requires_responses_and_rejects_the_text_quirk() {
+    let chat = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"chat_completions\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { replay = \"summary\", tiers = { low = \"low\", medium = \"medium\", high = \"high\" } }\n",
+    );
+    assert!(chat.contains("responses codec"), "{chat}");
+
+    let quirk = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\nquirks = [\"reasoning_replay\"]\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { replay = \"summary\", tiers = { low = \"low\", medium = \"medium\", high = \"high\" } }\n",
+    );
+    assert!(quirk.contains("reasoning_replay"), "{quirk}");
+
+    let unknown = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { replay = \"text\", tiers = { low = \"low\", medium = \"medium\", high = \"high\" } }\n",
+    );
+    assert!(
+        unknown.contains("text") || unknown.contains("replay"),
+        "{unknown}"
+    );
+}
+
+#[test]
+fn bailian_models_replay_their_own_summary() {
+    let catalog = seeded();
+    for id in [
+        "qwen3.8-max",
+        "qwen3.8-flash",
+        "qwen3.7-max",
+        "qwen3.7-plus",
+        "qwen3.6-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-pro-0813",
+        "deepseek-v4-flash-0731",
+        "glm-5.2",
+    ] {
+        let model = catalog
+            .model(&format!("aliyun-token/{id}"))
+            .unwrap_or_else(|| panic!("missing {id}"));
+        assert_eq!(model.reasoning_replay, ReasoningReplay::Summary, "{id}");
+        assert_eq!(model.endpoint_type, EndpointKind::Responses, "{id}");
+    }
+    assert_eq!(
+        catalog
+            .model("aliyun-token/qwen3.6-flash")
+            .unwrap()
+            .max_output,
+        65536
+    );
+    assert_eq!(
+        catalog
+            .model("aliyun-token/qwen3.8-flash")
+            .unwrap()
+            .max_output,
+        128000
+    );
+    assert_eq!(
+        catalog
+            .model("openai/gpt-5.6-sol")
+            .unwrap()
+            .reasoning_replay,
+        ReasoningReplay::Ciphertext
+    );
+    assert_eq!(
+        catalog
+            .model("deepseek/deepseek-flash")
+            .unwrap()
+            .reasoning_replay,
+        ReasoningReplay::Ciphertext
+    );
+}
+
+#[test]
 fn endpoint_must_be_a_bare_absolute_url() {
     assert!(validate_endpoint("https://api.example.com/v1").is_ok());
     for bad in [
@@ -631,6 +702,19 @@ fn enum_domains_and_schema_file_stay_aligned() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
+        listed("reasoning_replay"),
+        ReasoningReplay::ALL
+            .iter()
+            .map(|replay| {
+                serde_json::to_value(replay)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
         listed("modality"),
         Modality::ALL
             .iter()
@@ -672,7 +756,8 @@ fn first_run_seeds_the_file_and_registers_initialized() {
     );
     assert!(store::schema_path_for_db(&db).is_file());
 
-    // A second load reads the user file and never rewrites it.
+    // A file that loads but lacks shipped ids gets those seed tables appended.
+    // The note above the document stays, and a later start does not write again.
     std::fs::write(
         store::catalog_path_for_db(&db),
         "# my own note\nversion = 1\n",
@@ -680,10 +765,20 @@ fn first_run_seeds_the_file_and_registers_initialized() {
     .unwrap();
     store::forget(&db);
     let reloaded = store::load_for_db(&db).expect("reload");
-    assert!(reloaded.providers().is_empty());
+    assert!(reloaded.provider("openai").is_some());
+    assert!(reloaded.model("openai/gpt-5.6-sol").is_some());
+    let filled = std::fs::read_to_string(store::catalog_path_for_db(&db)).unwrap();
+    assert!(
+        filled.starts_with("# my own note\n"),
+        "the user's own text stays above the appended seed:\n{filled}"
+    );
+    assert!(filled.contains("id = \"gpt-5.6-sol\""));
+    store::forget(&db);
+    store::load_for_db(&db).expect("second reload");
     assert_eq!(
         std::fs::read_to_string(store::catalog_path_for_db(&db)).unwrap(),
-        "# my own note\nversion = 1\n"
+        filled,
+        "a catalog that already has every shipped id is not rewritten"
     );
 }
 
@@ -710,10 +805,21 @@ quirks = [\"omit_temperature_when_thinking\", \"reasoning_replay\"]
     let catalog = store::load_for_db(&db).expect("upgrade");
     assert_eq!(
         catalog.provider("deepseek").unwrap().endpoint,
-        "https://proxy.example/v1"
+        "https://proxy.example/v1",
+        "an entry that loads is not replaced by the seed"
     );
+    assert_eq!(
+        catalog
+            .model("deepseek/deepseek-flash")
+            .unwrap()
+            .request_url,
+        "https://proxy.example/v1/responses",
+        "a shipped model appended later uses the provider the user kept"
+    );
+    assert!(catalog.model("openai/gpt-5.6-sol").is_some());
     let upgraded = std::fs::read_to_string(&path).unwrap();
     assert!(!upgraded.contains("omit_temperature"), "{upgraded}");
+    assert!(upgraded.contains("id = \"gpt-5.6-sol\""));
     let backup = path.with_file_name("provider-catalog.toml.bak");
     assert_eq!(std::fs::read_to_string(&backup).unwrap(), broken);
 
@@ -765,6 +871,54 @@ fn shared_catalog_is_loaded_once_per_path() {
     store::forget(&db);
     let third = store::shared_for_db(&db).unwrap();
     assert!(!std::sync::Arc::ptr_eq(&first, &third));
+}
+
+#[test]
+fn startup_appends_a_missing_model_and_keeps_an_edited_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("litecode.db");
+    store::forget(&db);
+    store::load_for_db(&db).expect("seed");
+
+    let path = store::catalog_path_for_db(&db);
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text = text.replace(
+        "endpoint = \"https://api.openai.com/v1\"",
+        "endpoint = \"https://proxy.example/v1\"",
+    );
+    let marker = "id = \"hy4-preview\"";
+    let start = text.find(marker).expect("hy4");
+    let block_start = text[..start].rfind("[[models]]").expect("block");
+    let next = text[start..]
+        .find("[[models]]")
+        .map(|index| start + index)
+        .unwrap_or(text.len());
+    text.replace_range(block_start..next, "");
+    text.push_str(
+        "\n[[providers]]\nid = \"extra\"\nname = \"Extra\"\nendpoint = \"https://extra.example/v1\"\nendpoint_type = \"responses\"\nauth = \"bearer\"\n\n[[models]]\nid = \"mine\"\nprovider_id = \"extra\"\nlabel = \"Mine\"\ncontext_window = 256000\nmax_output = 128000\nmodalities = [\"text\"]\n",
+    );
+    std::fs::write(&path, &text).unwrap();
+
+    store::forget(&db);
+    let catalog = store::load_for_db(&db).expect("reconcile");
+    assert_eq!(
+        catalog.provider("openai").unwrap().endpoint,
+        "https://proxy.example/v1"
+    );
+    assert!(catalog.model("opencode-go/hy4-preview").is_some());
+    assert_eq!(
+        catalog.provider("extra").unwrap().endpoint,
+        "https://extra.example/v1"
+    );
+    assert_eq!(catalog.model("extra/mine").unwrap().label, "Mine");
+    let filled = std::fs::read_to_string(&path).unwrap();
+    assert!(filled.contains("https://proxy.example/v1"));
+    assert!(filled.contains("https://extra.example/v1"));
+    assert!(filled.contains("id = \"hy4-preview\""));
+
+    store::forget(&db);
+    store::load_for_db(&db).expect("stable");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), filled);
 }
 
 #[test]

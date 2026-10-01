@@ -21,6 +21,8 @@ pub enum ReminderKind {
     BashExit,
     SubagentSettled,
     StepBudget,
+    /// One-shot attachment after a user message. Not restored after compaction.
+    Mentions,
 }
 
 impl ReminderKind {
@@ -34,6 +36,7 @@ impl ReminderKind {
             Self::BashExit => "bash_exit",
             Self::SubagentSettled => "subagent_settled",
             Self::StepBudget => "step_budget",
+            Self::Mentions => "mentions",
         }
     }
 
@@ -47,6 +50,7 @@ impl ReminderKind {
             Self::BashExit => "reminder/bash_exit",
             Self::SubagentSettled => "reminder/subagent_settled",
             Self::StepBudget => "reminder/step_budget",
+            Self::Mentions => "reminder/mentions",
         }
     }
 
@@ -60,6 +64,7 @@ impl ReminderKind {
             "reminder/bash_exit" => Self::BashExit,
             "reminder/subagent_settled" => Self::SubagentSettled,
             "reminder/step_budget" => Self::StepBudget,
+            "reminder/mentions" => Self::Mentions,
             _ => return None,
         })
     }
@@ -76,7 +81,8 @@ impl ReminderKind {
             | Self::Background
             | Self::PlanChanged
             | Self::FilesChanged
-            | Self::StepBudget => Visibility::Hidden,
+            | Self::StepBudget
+            | Self::Mentions => Visibility::Hidden,
         }
     }
 
@@ -189,6 +195,22 @@ pub struct StepBudgetBody {
     pub text: String,
 }
 
+/// One citation expanded into the frozen mentions attachment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MentionRef {
+    pub kind: String,
+    pub key: String,
+    /// Hash of the stable snapshot. Absent on rows written before dedupe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MentionsBody {
+    pub refs: Vec<MentionRef>,
+    pub text: String,
+}
+
 /// One durable reminder. The `kind` tag matches [`ReminderKind::name`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -201,6 +223,7 @@ pub enum Reminder {
     BashExit(BashExitBody),
     SubagentSettled(SubagentSettledBody),
     StepBudget(StepBudgetBody),
+    Mentions(MentionsBody),
 }
 
 impl Reminder {
@@ -214,6 +237,7 @@ impl Reminder {
             Self::BashExit(_) => ReminderKind::BashExit,
             Self::SubagentSettled(_) => ReminderKind::SubagentSettled,
             Self::StepBudget(_) => ReminderKind::StepBudget,
+            Self::Mentions(_) => ReminderKind::Mentions,
         }
     }
 
@@ -227,6 +251,7 @@ impl Reminder {
             Self::BashExit(body) => &body.text,
             Self::SubagentSettled(body) => &body.text,
             Self::StepBudget(body) => &body.text,
+            Self::Mentions(body) => &body.text,
         }
     }
 

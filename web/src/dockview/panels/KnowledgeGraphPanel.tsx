@@ -9,16 +9,17 @@ export function KnowledgeGraphPanel({ api }: IDockviewPanelProps) {
   const [visible, setVisible] = useState(() => api.isVisible);
 
   useEffect(() => {
-    setVisible(api.isVisible);
+    const note = (visible: boolean) => {
+      setVisible(visible);
+      useKnowledgeStore.getState().notePanelVisible(api.id, visible);
+    };
+    note(api.isVisible);
     const sub = api.onDidVisibilityChange((event) => {
-      setVisible(event.isVisible);
-    });
-    const active = api.onDidActiveChange((event) => {
-      if (event.isActive) void useKnowledgeStore.getState().refreshFromDisk();
+      note(event.isVisible);
     });
     return () => {
       sub.dispose();
-      active.dispose();
+      note(false);
     };
   }, [api]);
 

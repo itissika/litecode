@@ -125,7 +125,11 @@ impl AgentDeps for AgentRuntime {
             && !claimed.is_empty()
         {
             let merged = crate::session::manager::merge_pending(&claimed);
-            if let Err(error) = self.sessions.append_user_message(&self.session_id, merged) {
+            if let Err(error) = self.sessions.append_user_message_with_mentions(
+                &self.session_id,
+                merged,
+                self.runtime_handle.workspace_root(),
+            ) {
                 self.sessions
                     .restore_pending_messages(&self.session_id, claimed);
                 return Err(crate::types::LitecodeError::Anyhow(error));
@@ -512,13 +516,26 @@ impl AgentRuntime {
 
         let tool_names: Vec<&str> = tool_schemas.iter().map(|t| t.name.as_str()).collect();
         let model = self.turn_llm.api_model_id.clone();
-        // Replay rule 2: reasoning ciphertext goes back only to its producer.
         // Producers are read before this request's own header is appended.
+        // Ciphertext replay strips foreign blobs and keeps the text. Summary
+        // replay (Bailian) drops every reasoning item this provider did not mint,
+        // because that input schema requires the id on the item.
         let provider_id = self.turn_llm.provider_id.clone();
         let producers = self.llm_input_producers(&item_seqs);
         let mut input = input;
-        let ciphertexts_stripped =
-            crate::llm::strip_foreign_ciphertext(&mut input, &producers, &provider_id);
+        let (ciphertexts_stripped, reasoning_dropped) = if self.turn_llm.model.reasoning_replay
+            == crate::provider_catalog::ReasoningReplay::Summary
+        {
+            (
+                0,
+                crate::llm::retain_own_reasoning(&mut input, &producers, &provider_id),
+            )
+        } else {
+            (
+                crate::llm::strip_foreign_ciphertext(&mut input, &producers, &provider_id),
+                0,
+            )
+        };
         // Origin is an append-only control-plane row written before the request:
         // items this request produces inherit its provider.
         let origin_seq = self.record_request_origin()?;
@@ -531,6 +548,7 @@ impl AgentRuntime {
             provider_id = %provider_id,
             origin_seq,
             ciphertexts_stripped,
+            reasoning_dropped,
             tools_count = tool_names.len(),
             tools = ?tool_names,
             item_count = input.len(),
@@ -556,8 +574,9 @@ impl AgentRuntime {
     }
 
     /// The provider that produced each input item, through its durable seq and the
-    /// session's `request/header` rows. Unreadable history degrades to "unknown",
-    /// which only costs foreign ciphertext, never text.
+    /// session's `request/header` rows. Unreadable history degrades to "unknown".
+    /// Ciphertext replay then drops only the ciphertext. Summary replay drops the
+    /// reasoning item: that host requires an id this provider minted.
     fn llm_input_producers(
         &self,
         item_seqs: &[Option<crate::session::event::Seq>],

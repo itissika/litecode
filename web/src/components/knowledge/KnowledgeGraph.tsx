@@ -1,11 +1,12 @@
 import { Folder } from "@phosphor-icons/react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   Background,
   Controls,
   MarkerType,
   MiniMap,
   ReactFlow,
+  ViewportPortal,
   applyNodeChanges,
   useReactFlow,
   useNodesState,
@@ -16,30 +17,61 @@ import {
 } from "@xyflow/react";
 
 import { fitKnowledgeFolders } from "../../lib/knowledge/fitFolders";
+import { redrawVisibleCardText, shouldSharpenZoom } from "../../lib/knowledge/redrawCardText";
 import {
+  canvasAlertKey,
+  easeOutCubic,
+  edgeOpacity,
+  focusSpotlightIds,
+  knowledgeStructureKey,
+  patchById,
+  patchEdgesForFocus,
+  positionSignature,
+  positionStamp,
+  prefersReducedMotion,
+  reconcileEdges,
+  relationSignature,
+  retainLeaving,
+} from "../../lib/knowledge/flowProjection";
+import {
+  KNOWLEDGE_GRID,
   KNOWLEDGE_NODE_HEIGHT,
   KNOWLEDGE_NODE_WIDTH,
+  knowledgeRelationEdges,
   layoutKnowledgeGraph,
   type LaidOutEdge,
 } from "../../lib/knowledge/layoutGraph";
 import { nodeHasError } from "../../lib/knowledge/validate";
 import {
+  worldFromFlowNode,
   worldToFlow,
   worldWritesForPositionChanges,
+  type FlowPointNode,
   type WorldPoint,
 } from "../../lib/knowledge/world";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
 import { KnowledgeFlowCard } from "./KnowledgeFlowCard";
-import { KnowledgeRelationEdge } from "./KnowledgeRelationEdge";
+import { KnowledgeRelationEdge, type KnowledgeRelationEdgeData } from "./KnowledgeRelationEdge";
 
-type KnowledgeNodeData = { nodeId: string };
+type KnowledgeNodeData = { nodeId: string; arrive?: boolean };
 type KnowledgeFolderData = { folderId: string };
 type KnowledgeFlowNodeType =
   | Node<KnowledgeNodeData, "knowledge">
   | Node<KnowledgeFolderData, "knowledgeFolder">;
 
 /** Canvas grid: the Background dot pitch, and the step dragged nodes snap to. */
-const GRID_SIZE = 18;
+const GRID_SIZE = KNOWLEDGE_GRID;
+
+/** How long a removed card stays mounted so the shrink-fade can finish. */
+const CARD_EXIT_MS = 260;
+/** Edge opacity fade; slightly shorter than the card so the line is gone first. */
+const EDGE_EXIT_MS = 220;
+/** Ease-out move. Edges follow because the position state itself is interpolated. */
+const POSITION_EASE_MS = 280;
+
+/** Expand/collapse only — manual resize must not inherit this transition. */
+const CARD_CHROME_MS = 240;
+const CARD_SIZE_TRANSITION = `width ${CARD_CHROME_MS}ms cubic-bezier(0.4, 0, 0.2, 1), height ${CARD_CHROME_MS}ms cubic-bezier(0.4, 0, 0.2, 1)`;
 
 interface GraphColors {
   muted: string;
@@ -115,6 +147,22 @@ function cardStyle(
   };
 }
 
+/** React Flow reads `width` / `height` / `measured`, not only `style`. */
+export function knowledgeCardFlowLayout(
+  open: boolean,
+  saved: { w: number | null; h: number | null } | undefined,
+): { style: CSSProperties; width: number; height: number | undefined } {
+  const style = cardStyle(open, saved?.w, saved?.h);
+  if (!open) {
+    return { style, width: KNOWLEDGE_NODE_WIDTH, height: KNOWLEDGE_NODE_HEIGHT };
+  }
+  return {
+    style,
+    width: saved?.w ?? KNOWLEDGE_NODE_WIDTH,
+    height: saved?.h ?? undefined,
+  };
+}
+
 function flowNodeSize(node: Node | undefined): { w: number; h: number } {
   const w =
     node?.measured?.width ??
@@ -148,14 +196,31 @@ const nodeTypes = {
 };
 const edgeTypes = { knowledgeRelation: KnowledgeRelationEdge };
 
-// The canvas runs with zIndexMode="manual", so this ladder is the whole
-// stacking order: folders 0, edges 0 (React Flow's own), cards 1, focused
-// card 10, expanded card 20, focused+expanded card 30, dragged card 40.
-const CARD_Z = 1;
-const CARD_Z_FOCUSED = 10;
-const CARD_Z_EXPANDED = 20;
-const CARD_Z_FOCUSED_EXPANDED = 30;
-const CARD_Z_DRAGGING = 40;
+// Manual z-index ladder (bottom → top): canvas bg, folder frames, edges, cards.
+export const KNOWLEDGE_FOLDER_Z = 0;
+export const KNOWLEDGE_EDGE_Z = 5;
+/** Citation edges inside the focus spotlight sit above the scrim. */
+export const KNOWLEDGE_EDGE_ABOVE_SCRIM_Z = 36;
+/** Full-canvas focus scrim in ViewportPortal; focused cards must sit above this. */
+export const KNOWLEDGE_FOCUS_SCRIM_Z = 35;
+const CARD_Z = 10;
+const CARD_Z_EXPANDED = 30;
+const CARD_Z_LINKED = 38;
+const CARD_Z_LINKED_EXPANDED = 40;
+const CARD_Z_FOCUSED = 42;
+const CARD_Z_FOCUSED_EXPANDED = 45;
+const CARD_Z_DRAGGING = 50;
+
+export function knowledgeEdgeZIndex(
+  edge: { source: string; target: string },
+  spotlight: ReadonlySet<string> | null,
+): number {
+  if (spotlight == null) return KNOWLEDGE_EDGE_Z;
+  if (spotlight.has(edge.source) && spotlight.has(edge.target)) {
+    return KNOWLEDGE_EDGE_ABOVE_SCRIM_Z;
+  }
+  return KNOWLEDGE_EDGE_Z;
+}
 
 /** Stacking rank of one canvas card. An expanded card grows over its
  *  neighbours, so it rises above every collapsed card; the focused expanded
@@ -164,11 +229,22 @@ const CARD_Z_DRAGGING = 40;
 export function knowledgeCardZIndex(
   open: boolean,
   focused: boolean,
+  linked: boolean,
   dragging: boolean,
 ): number {
   if (dragging) return CARD_Z_DRAGGING;
-  if (open) return focused ? CARD_Z_FOCUSED_EXPANDED : CARD_Z_EXPANDED;
-  return focused ? CARD_Z_FOCUSED : CARD_Z;
+  if (focused) return open ? CARD_Z_FOCUSED_EXPANDED : CARD_Z_FOCUSED;
+  if (linked) return open ? CARD_Z_LINKED_EXPANDED : CARD_Z_LINKED;
+  if (open) return CARD_Z_EXPANDED;
+  return CARD_Z;
+}
+
+function canvasLinked(
+  nodeId: string,
+  focusedId: string | null,
+  spotlight: ReadonlySet<string> | null,
+): boolean {
+  return spotlight != null && nodeId !== focusedId && spotlight.has(nodeId);
 }
 
 function flowPosition(
@@ -182,27 +258,35 @@ function flowPosition(
 function buildFlowNode(
   node: ReturnType<typeof layoutKnowledgeGraph>["nodes"][number],
   focusedId: string | null,
+  spotlight: ReadonlySet<string> | null,
   draggingId: string | null,
   prev: KnowledgeFlowNodeType | undefined,
   open: boolean,
   saved: { w: number | null; h: number | null } | undefined,
   position: WorldPoint,
+  arrive: boolean,
 ): KnowledgeFlowNodeType {
+  const focused = node.nodeId === focusedId;
+  const linked = spotlight != null && !focused && spotlight.has(node.nodeId);
   const zIndex = knowledgeCardZIndex(
     open,
-    node.nodeId === focusedId,
+    focused,
+    linked,
     node.nodeId === draggingId,
   );
+  const layout = knowledgeCardFlowLayout(open, saved);
   return {
     id: node.id,
     type: "knowledge",
     position: prev?.position ?? position,
     parentId: node.parentId ?? undefined,
-    data: { nodeId: node.nodeId },
+    data: arrive ? { nodeId: node.nodeId, arrive: true } : { nodeId: node.nodeId },
     draggable: true,
     connectable: false,
     zIndex,
-    style: cardStyle(open, saved?.w, saved?.h),
+    style: layout.style,
+    width: layout.width,
+    height: layout.height,
   };
 }
 
@@ -223,7 +307,7 @@ function buildFolderNode(
     draggable: true,
     connectable: false,
     selectable: false,
-    zIndex: 0,
+    zIndex: KNOWLEDGE_FOLDER_Z,
     width,
     height,
     style: { width, height },
@@ -245,35 +329,145 @@ function folderDepth(
   return depth;
 }
 
+function changedIds(prev: ReadonlySet<string>, next: ReadonlySet<string>): Set<string> {
+  const ids = new Set<string>();
+  for (const id of next) if (!prev.has(id)) ids.add(id);
+  for (const id of prev) if (!next.has(id)) ids.add(id);
+  return ids;
+}
+
+function stripCardSizeTransition(node: KnowledgeFlowNodeType): KnowledgeFlowNodeType {
+  if (node.type !== "knowledge" || !node.style?.transition) return node;
+  const { transition: _drop, ...rest } = node.style;
+  const style = Object.keys(rest).length > 0 ? rest : undefined;
+  return { ...node, style };
+}
+
+function withCardChrome(
+  node: KnowledgeFlowNodeType,
+  chrome: {
+    open: boolean;
+    focused: boolean;
+    linked: boolean;
+    dragging: boolean;
+    saved: { w: number | null; h: number | null } | undefined;
+    updateStyle: boolean;
+    animateSize?: boolean;
+  },
+): KnowledgeFlowNodeType {
+  if (node.type !== "knowledge") return node;
+  const zIndex = knowledgeCardZIndex(
+    chrome.open,
+    chrome.focused,
+    chrome.linked,
+    chrome.dragging,
+  );
+  if (!chrome.updateStyle) {
+    if (node.zIndex === zIndex) return node;
+    return { ...node, zIndex };
+  }
+  const layout = knowledgeCardFlowLayout(chrome.open, chrome.saved);
+  const flowStyle = chrome.animateSize
+    ? { ...layout.style, transition: CARD_SIZE_TRANSITION }
+    : layout.style;
+  const unchanged =
+    node.zIndex === zIndex &&
+    node.style?.width === flowStyle.width &&
+    node.style?.height === flowStyle.height &&
+    node.style?.transition === flowStyle.transition &&
+    node.width === layout.width &&
+    node.height === layout.height &&
+    node.measured == null;
+  if (unchanged) return node;
+  return {
+    ...node,
+    zIndex,
+    style: flowStyle,
+    width: layout.width,
+    height: layout.height,
+    measured: undefined,
+  };
+}
+
+function toFlowEdge(
+  edge: LaidOutEdge,
+  opacity: number,
+  stroke: string,
+  zIndex: number,
+  draw: boolean,
+): Edge {
+  return {
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    type: "knowledgeRelation",
+    zIndex,
+    data: {
+      variant: edge.variant,
+      stroke,
+      opacity,
+      draw,
+    },
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      width: 11,
+      height: 11,
+      color: stroke,
+    },
+  };
+}
+
 function toFlowEdges(
   edges: LaidOutEdge[],
-  colors: GraphColors,
-  focusedId: string | null,
+  stroke: string,
+  spotlight: ReadonlySet<string> | null,
+  draw: boolean,
 ): Edge[] {
-  return edges.map((edge) => {
-    const hot =
-      focusedId == null ||
-      edge.source === String(focusedId) ||
-      edge.target === String(focusedId);
-    const stroke = colors.muted;
-    return {
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      type: "knowledgeRelation",
-      data: {
-        variant: edge.variant,
-        stroke,
-        opacity: hot ? 1 : 0.16,
-      },
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        width: 16,
-        height: 16,
-        color: stroke,
-      },
-    };
-  });
+  return edges.map((edge) =>
+    toFlowEdge(
+      edge,
+      edgeOpacity(edge, spotlight),
+      stroke,
+      knowledgeEdgeZIndex(edge, spotlight),
+      draw,
+    ),
+  );
+}
+
+function isCardLeaving(node: { className?: string }): boolean {
+  return node.className?.split(/\s+/).includes("knowledge-node-leave") ?? false;
+}
+
+function markCardLeaving(node: KnowledgeFlowNodeType): KnowledgeFlowNodeType {
+  return {
+    ...node,
+    className: "knowledge-node-leave",
+    draggable: false,
+    selectable: false,
+  };
+}
+
+function isEdgeLeaving(edge: { data?: unknown }): boolean {
+  return (edge.data as { leaving?: boolean } | undefined)?.leaving === true;
+}
+
+function markEdgeLeaving(edge: Edge): Edge {
+  const data = (edge.data ?? {}) as KnowledgeRelationEdgeData;
+  return {
+    ...edge,
+    selectable: false,
+    data: { ...data, opacity: 0, leaving: true },
+  };
+}
+
+function KnowledgeFocusScrim() {
+  const focusedId = useKnowledgeStore((s) => s.focusedId);
+  if (focusedId == null) return null;
+  return (
+    <ViewportPortal>
+      <div className="knowledge-focus-scrim" aria-hidden />
+    </ViewportPortal>
+  );
 }
 
 function FocusViewport() {
@@ -313,33 +507,150 @@ function FocusViewport() {
 }
 
 export function KnowledgeGraph() {
-  const nodes = useKnowledgeStore((s) => s.nodes);
-  const folders = useKnowledgeStore((s) => s.folders);
-  const issues = useKnowledgeStore((s) => s.issues);
-  const byId = useKnowledgeStore((s) => s.byId);
-  const focusedId = useKnowledgeStore((s) => s.focusedId);
-  const graphExpanded = useKnowledgeStore((s) => s.graphExpanded);
+  const structureKey = useKnowledgeStore((s) => knowledgeStructureKey(s.nodes, s.folders));
   const structureNonce = useKnowledgeStore((s) => s.structureNonce);
+  const relationKey = useKnowledgeStore((s) => relationSignature(s.nodes));
+  const positionKey = useKnowledgeStore((s) => positionSignature(s.nodes));
+  const graphExpanded = useKnowledgeStore((s) => s.graphExpanded);
+  const focusedId = useKnowledgeStore((s) => s.focusedId);
+  const alertKey = useKnowledgeStore((s) => canvasAlertKey(s.nodes, s.issues));
   const selectFromGraph = useKnowledgeStore((s) => s.selectFromGraph);
   const clearCanvasFocus = useKnowledgeStore((s) => s.clearCanvasFocus);
   const colors = useGraphColors();
-  const laid = useMemo(
-    () => layoutKnowledgeGraph(nodes, issues, folders),
-    [nodes, issues, folders],
-  );
+  const colorsRef = useRef(colors);
+  colorsRef.current = colors;
   const [flowNodes, setFlowNodes] = useNodesState<KnowledgeFlowNodeType>([]);
+  const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
   const flowRef = useRef(flowNodes);
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const onNodesChange = useCallback(
-    (changes: NodeChange<KnowledgeFlowNodeType>[]) => {
-      const next = fitKnowledgeFolders(
-        applyNodeChanges(changes, flowRef.current),
-      );
+  const draggingIdRef = useRef<string | null>(null);
+  const geometryEcho = useRef(new Map<string, string>());
+  const positionHandled = useRef<string | null>(null);
+  const repaired = useRef(new Set<string>());
+  const seenStructure = useRef(structureNonce);
+  const expandedSeen = useRef<Set<string> | null>(null);
+  const focusSeen = useRef<string | null>(null);
+  const relationSeen = useRef<string | null>(null);
+  const edgesMayDraw = useRef(false);
+  const mountedRef = useRef(true);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const zoomAtGestureStart = useRef<number | null>(null);
+  const exitTimers = useRef(new Map<string, number>());
+  const movesRef = useRef(
+    new Map<
+      string,
+      { fromX: number; fromY: number; toX: number; toY: number; started: number }
+    >(),
+  );
+  const moveFrame = useRef<number | null>(null);
+
+  function cancelExit(key: string) {
+    const timer = exitTimers.current.get(key);
+    if (timer == null) return;
+    window.clearTimeout(timer);
+    exitTimers.current.delete(key);
+  }
+
+  function armExit(key: string, delay: number, run: () => void) {
+    if (exitTimers.current.has(key)) return;
+    const timer = window.setTimeout(() => {
+      exitTimers.current.delete(key);
+      if (!mountedRef.current) return;
+      run();
+    }, delay);
+    exitTimers.current.set(key, timer);
+  }
+
+  function dropLeavingCard(id: string) {
+    setFlowNodes((current) => {
+      const next = current.filter((node) => node.id !== id || !isCardLeaving(node));
+      if (next.length === current.length) return current;
+      const fitted = fitKnowledgeFolders(next);
+      flowRef.current = fitted;
+      return fitted;
+    });
+  }
+
+  function dropLeavingEdge(id: string) {
+    setFlowEdges((current) => {
+      const next = current.filter((edge) => edge.id !== id || !isEdgeLeaving(edge));
+      return next.length === current.length ? current : next;
+    });
+  }
+
+  function tickMoves() {
+    const moves = movesRef.current;
+    const dragging = draggingIdRef.current;
+    if (dragging) moves.delete(dragging);
+    const now = performance.now();
+    const frame = new Map<string, { x: number; y: number }>();
+    const done: string[] = [];
+    let pending = false;
+    for (const [id, move] of moves) {
+      const eased = easeOutCubic((now - move.started) / POSITION_EASE_MS);
+      frame.set(id, {
+        x: move.fromX + (move.toX - move.fromX) * eased,
+        y: move.fromY + (move.toY - move.fromY) * eased,
+      });
+      if (eased < 1) pending = true;
+      else done.push(id);
+    }
+    for (const id of done) moves.delete(id);
+    if (frame.size > 0) {
+      setFlowNodes((current) => {
+        let changed = false;
+        const next = current.map((node) => {
+          const point = frame.get(node.id);
+          if (!point) return node;
+          if (node.position.x === point.x && node.position.y === point.y) return node;
+          changed = true;
+          return { ...node, position: point };
+        });
+        if (!changed) return current;
+        flowRef.current = next;
+        return next;
+      });
+    }
+    if (!mountedRef.current) return;
+    if (pending) {
+      moveFrame.current = requestAnimationFrame(tickMoves);
+      return;
+    }
+    moveFrame.current = null;
+    setFlowNodes((current) => {
+      const fitted = fitKnowledgeFolders(current);
+      if (fitted === current) return current;
+      flowRef.current = fitted;
+      return fitted;
+    });
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (moveFrame.current != null) cancelAnimationFrame(moveFrame.current);
+      for (const timer of exitTimers.current.values()) window.clearTimeout(timer);
+      exitTimers.current.clear();
+    };
+  }, []);
+
+  const commitNodes = useCallback(
+    (next: KnowledgeFlowNodeType[]) => {
+      if (next === flowRef.current) return;
       flowRef.current = next;
       setFlowNodes(next);
+    },
+    [setFlowNodes],
+  );
+
+  const onNodesChange = useCallback(
+    (changes: NodeChange<KnowledgeFlowNodeType>[]) => {
+      const next = fitKnowledgeFolders(applyNodeChanges(changes, flowRef.current));
+      commitNodes(next);
       const state = useKnowledgeStore.getState();
       for (const write of worldWritesForPositionChanges(changes, next)) {
-        void state.saveNode(write.id, { x: write.x, y: write.y });
+        geometryEcho.current.set(write.id, positionStamp(write.x, write.y));
+        void state.saveGeometry(write.id, { x: write.x, y: write.y });
       }
       for (const change of changes) {
         if (
@@ -348,35 +659,50 @@ export function KnowledgeGraph() {
           change.dimensions &&
           state.graphExpanded.has(change.id)
         ) {
-          void state.saveNode(change.id, {
+          void state.saveGeometry(change.id, {
             w: change.dimensions.width,
             h: change.dimensions.height,
           });
         }
       }
     },
-    [setFlowNodes],
+    [commitNodes],
   );
 
-  const seenStructure = useRef(structureNonce);
   useEffect(() => {
+    const state = useKnowledgeStore.getState();
     const fresh = structureNonce !== seenStructure.current;
     seenStructure.current = structureNonce;
+    relationSeen.current = relationSignature(state.nodes);
+    const laid = layoutKnowledgeGraph(state.nodes, state.issues, state.folders);
+    for (const node of laid.nodes) {
+      const source = state.byId.get(node.nodeId);
+      if (!source || (source.x != null && source.y != null)) continue;
+      const stamp = positionStamp(node.x, node.y);
+      const token = `${node.nodeId}:${stamp}`;
+      if (repaired.current.has(token)) continue;
+      repaired.current.add(token);
+      geometryEcho.current.set(node.nodeId, stamp);
+      void state.saveGeometry(node.nodeId, { x: node.x, y: node.y }).then((ok) => {
+        if (!ok) repaired.current.delete(token);
+      });
+    }
+    const draggingId = draggingIdRef.current;
+    const drawEdges = edgesMayDraw.current;
+    edgesMayDraw.current = true;
     setFlowNodes((current) => {
+      const previousById = new Map(current.map((node) => [node.id, node]));
       const prevById = fresh
         ? new Map<string, KnowledgeFlowNodeType>()
-        : new Map(current.map((node) => [node.id, node]));
-      const folderByFlowId = new Map(
-        laid.folders.map((folder) => [folder.id, folder]),
-      );
+        : previousById;
+      const folderByFlowId = new Map(laid.folders.map((folder) => [folder.id, folder]));
       const folderWorld = new Map(
         laid.folders.map((folder) => [folder.id, { x: folder.x, y: folder.y }]),
       );
       const folderNodes = [...laid.folders]
         .sort(
           (a, b) =>
-            folderDepth(a.parentId, folderByFlowId) -
-            folderDepth(b.parentId, folderByFlowId),
+            folderDepth(a.parentId, folderByFlowId) - folderDepth(b.parentId, folderByFlowId),
         )
         .map((folder) => {
           const prev = prevById.get(folder.id);
@@ -387,56 +713,362 @@ export function KnowledgeGraph() {
             flowPosition({ x: folder.x, y: folder.y }, folder.parentId, folderWorld),
           );
         });
+      const spotlight = focusSpotlightIds(state.focusedId, state.nodes);
+      const liveIds = new Set<string>();
+      for (const node of current) {
+        if (node.type === "knowledge" && !isCardLeaving(node)) liveIds.add(node.id);
+      }
       const cardNodes = laid.nodes.map((node) => {
-        const prev = prevById.get(node.id);
-        const source = byId.get(node.nodeId);
+        const prev = previousById.get(node.id);
+        const source = state.byId.get(node.nodeId);
         return buildFlowNode(
           node,
-          focusedId,
+          state.focusedId,
+          spotlight,
           draggingId,
-          prev,
-          graphExpanded.has(node.nodeId),
+          prev?.type === "knowledge" ? prev : undefined,
+          state.graphExpanded.has(node.nodeId),
           source,
           flowPosition({ x: node.x, y: node.y }, node.parentId, folderWorld),
+          liveIds.size > 0 && !liveIds.has(node.id),
         );
       });
-      const next = fitKnowledgeFolders([...folderNodes, ...cardNodes]);
+      const folderIds = new Set(folderNodes.map((folder) => folder.id));
+      const presence = prefersReducedMotion()
+        ? { items: cardNodes, started: [] as string[], cancelled: [] as string[] }
+        : retainLeaving(
+            current.filter((node) => node.type === "knowledge"),
+            cardNodes,
+            isCardLeaving,
+            markCardLeaving,
+          );
+      const cards = presence.items.filter(
+        (node) => !isCardLeaving(node) || !node.parentId || folderIds.has(node.parentId),
+      );
+      if (presence.started.length > 0 || presence.cancelled.length > 0) {
+        const started = presence.started.filter((id) => cards.some((node) => node.id === id));
+        const cancelled = presence.cancelled;
+        queueMicrotask(() => {
+          if (!mountedRef.current) return;
+          for (const id of cancelled) cancelExit(`card:${id}`);
+          for (const id of started) {
+            armExit(`card:${id}`, CARD_EXIT_MS, () => dropLeavingCard(id));
+          }
+        });
+      }
+      const next = fitKnowledgeFolders([...folderNodes, ...cards]);
       flowRef.current = next;
       return next;
     });
-  }, [
-    laid.folders,
-    laid.nodes,
-    focusedId,
-    draggingId,
-    graphExpanded,
-    byId,
-    setFlowNodes,
-    structureNonce,
-  ]);
+    setFlowEdges((existing) => {
+      const laidEdges = toFlowEdges(
+        laid.edges,
+        colorsRef.current.muted,
+        focusSpotlightIds(state.focusedId, state.nodes),
+        drawEdges,
+      );
+      if (prefersReducedMotion()) return laidEdges;
+      const retained = retainLeaving(existing, laidEdges, isEdgeLeaving, markEdgeLeaving);
+      if (retained.started.length > 0 || retained.cancelled.length > 0) {
+        const started = retained.started;
+        const cancelled = retained.cancelled;
+        queueMicrotask(() => {
+          if (!mountedRef.current) return;
+          for (const id of cancelled) cancelExit(`edge:${id}`);
+          for (const id of started) {
+            armExit(`edge:${id}`, EDGE_EXIT_MS, () => dropLeavingEdge(id));
+          }
+        });
+      }
+      return retained.items;
+    });
+  }, [structureKey, structureNonce, setFlowNodes]);
 
-  const flowEdges = useMemo(
-    () => toFlowEdges(laid.edges, colors, focusedId),
-    [laid.edges, colors, focusedId],
-  );
+  useEffect(() => {
+    if (positionHandled.current === positionKey) return;
+    positionHandled.current = positionKey;
+    const state = useKnowledgeStore.getState();
+    const echoed = geometryEcho.current;
+    geometryEcho.current = new Map();
+    const reduce = prefersReducedMotion();
+    setFlowNodes((current) => {
+      if (current.length === 0) return current;
+      const lookup = new Map<string, FlowPointNode>();
+      for (const node of current) {
+        lookup.set(node.id, {
+          id: node.id,
+          type: node.type,
+          parentId: node.parentId,
+          position: node.position,
+        });
+      }
+      let changed = false;
+      const next = current.map((node) => {
+        if (node.type !== "knowledge" || isCardLeaving(node)) return node;
+        const source = state.byId.get(node.id);
+        if (!source || source.x == null || source.y == null) return node;
+        const stamp = positionStamp(source.x, source.y);
+        if (echoed.get(node.id) === stamp) return node;
+        const parent = node.parentId ? lookup.get(node.parentId) : undefined;
+        const parentWorld = parent ? worldFromFlowNode(parent, lookup) : null;
+        const position = worldToFlow({ x: source.x, y: source.y }, parentWorld);
+        const dx = position.x - node.position.x;
+        const dy = position.y - node.position.y;
+        if (dx * dx + dy * dy < 0.25) return node;
+        changed = true;
+        return { ...node, position };
+      });
+      if (!changed) return current;
+      if (reduce) {
+        movesRef.current.clear();
+        const fitted = fitKnowledgeFolders(next);
+        flowRef.current = fitted;
+        return fitted;
+      }
+      const now = performance.now();
+      const moves = movesRef.current;
+      const nextById = new Map(next.map((node) => [node.id, node]));
+      for (const node of current) {
+        const target = nextById.get(node.id);
+        if (
+          !target ||
+          (target.position.x === node.position.x && target.position.y === node.position.y)
+        ) {
+          continue;
+        }
+        moves.set(node.id, {
+          fromX: node.position.x,
+          fromY: node.position.y,
+          toX: target.position.x,
+          toY: target.position.y,
+          started: now,
+        });
+      }
+      queueMicrotask(() => {
+        if (!mountedRef.current || movesRef.current.size === 0) return;
+        if (moveFrame.current != null) return;
+        moveFrame.current = requestAnimationFrame(tickMoves);
+      });
+      return current;
+    });
+  }, [positionKey, setFlowNodes]);
+
+  useEffect(() => {
+    const prev = expandedSeen.current;
+    expandedSeen.current = graphExpanded;
+    if (prev == null) return;
+    const ids = changedIds(prev, graphExpanded);
+    if (ids.size === 0) return;
+    const state = useKnowledgeStore.getState();
+    const draggingId = draggingIdRef.current;
+    const spotlight = focusSpotlightIds(state.focusedId, state.nodes);
+    const animateSize =
+      typeof window !== "undefined" &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setFlowNodes((current) => {
+      if (current.length === 0) return current;
+      const next = patchById(current, ids, (node) => {
+        if (isCardLeaving(node)) return node;
+        return withCardChrome(node, {
+          open: graphExpanded.has(node.id),
+          focused: node.id === state.focusedId,
+          linked: canvasLinked(node.id, state.focusedId, spotlight),
+          dragging: node.id === draggingId,
+          saved: state.byId.get(node.id),
+          updateStyle: true,
+          animateSize,
+        });
+      }) as KnowledgeFlowNodeType[];
+      if (next === current) return current;
+      flowRef.current = next;
+      return next;
+    });
+    const timer = window.setTimeout(() => {
+      setFlowNodes((current) => {
+        if (current.length === 0) return current;
+        const cleared = patchById(current, ids, stripCardSizeTransition) as KnowledgeFlowNodeType[];
+        if (cleared === current) return current;
+        flowRef.current = cleared;
+        return cleared;
+      });
+    }, CARD_CHROME_MS + 40);
+    return () => window.clearTimeout(timer);
+  }, [graphExpanded, setFlowNodes]);
+
+  useEffect(() => {
+    const prev = focusSeen.current;
+    if (prev === focusedId) return;
+    focusSeen.current = focusedId;
+    const state = useKnowledgeStore.getState();
+    const draggingId = draggingIdRef.current;
+    const spotlight = focusSpotlightIds(focusedId, state.nodes);
+    setFlowNodes((current) => {
+      if (current.length === 0) return current;
+      let changed = false;
+      const next = current.map((node) => {
+        if (node.type !== "knowledge") return node;
+        const patched = withCardChrome(node, {
+          open: state.graphExpanded.has(node.id),
+          focused: node.id === focusedId,
+          linked: canvasLinked(node.id, focusedId, spotlight),
+          dragging: node.id === draggingId,
+          saved: undefined,
+          updateStyle: false,
+        });
+        if (patched !== node) changed = true;
+        return patched;
+      });
+      if (!changed) return current;
+      flowRef.current = next as KnowledgeFlowNodeType[];
+      return next;
+    });
+    setFlowEdges((current) => {
+      const patched = patchEdgesForFocus(
+        current,
+        prev,
+        focusedId,
+        state.nodes,
+        knowledgeEdgeZIndex,
+      );
+      return patched === current ? current : (patched as Edge[]);
+    });
+  }, [focusedId, setFlowNodes]);
+
+  useEffect(() => {
+    if (relationSeen.current === relationKey) return;
+    const previous = relationSeen.current;
+    relationSeen.current = relationKey;
+    if (previous == null) return;
+    const state = useKnowledgeStore.getState();
+    const laid = knowledgeRelationEdges(state.nodes, state.issues);
+    const stroke = colorsRef.current.muted;
+    const spotlight = focusSpotlightIds(state.focusedId, state.nodes);
+    if (state.focusedId != null) {
+      const draggingId = draggingIdRef.current;
+      setFlowNodes((current) => {
+        if (current.length === 0) return current;
+        let changed = false;
+        const next = current.map((node) => {
+          if (node.type !== "knowledge") return node;
+          const patched = withCardChrome(node, {
+            open: state.graphExpanded.has(node.id),
+            focused: node.id === state.focusedId,
+            linked: canvasLinked(node.id, state.focusedId, spotlight),
+            dragging: node.id === draggingId,
+            saved: undefined,
+            updateStyle: false,
+          });
+          if (patched !== node) changed = true;
+          return patched;
+        });
+        if (!changed) return current;
+        flowRef.current = next as KnowledgeFlowNodeType[];
+        return next;
+      });
+    }
+    setFlowEdges((current) => {
+      const reconciled = reconcileEdges(
+        current,
+        laid,
+        spotlight,
+        stroke,
+        (edge, opacity, edgeStroke, zIndex) =>
+          toFlowEdge(edge, opacity, edgeStroke, zIndex, edgesMayDraw.current),
+        knowledgeEdgeZIndex,
+      );
+      if (prefersReducedMotion()) {
+        return reconciled === current ? current : (reconciled as Edge[]);
+      }
+      const retained = retainLeaving(
+        current,
+        reconciled as Edge[],
+        isEdgeLeaving,
+        markEdgeLeaving,
+      );
+      if (retained.started.length > 0 || retained.cancelled.length > 0) {
+        const started = retained.started;
+        const cancelled = retained.cancelled;
+        queueMicrotask(() => {
+          if (!mountedRef.current) return;
+          for (const id of cancelled) cancelExit(`edge:${id}`);
+          for (const id of started) {
+            armExit(`edge:${id}`, EDGE_EXIT_MS, () => dropLeavingEdge(id));
+          }
+        });
+      }
+      return retained.items === current ? current : retained.items;
+    });
+  }, [relationKey]);
+
+  useEffect(() => {
+    const stroke = colors.muted;
+    setFlowEdges((current) => {
+      let changed = false;
+      const next = current.map((edge) => {
+        const data = edge.data as { stroke?: string; variant?: string; opacity?: number } | undefined;
+        if (!data || data.stroke === stroke) return edge;
+        changed = true;
+        const markerEnd = edge.markerEnd;
+        const marker =
+          markerEnd && typeof markerEnd === "object"
+            ? { ...markerEnd, color: stroke }
+            : markerEnd;
+        return { ...edge, data: { ...data, stroke }, markerEnd: marker };
+      });
+      return changed ? next : current;
+    });
+  }, [colors.muted]);
+
+  function setDragging(id: string | null) {
+    const prev = draggingIdRef.current;
+    if (prev === id) return;
+    draggingIdRef.current = id;
+    if (id) movesRef.current.delete(id);
+    const state = useKnowledgeStore.getState();
+    const spotlight = focusSpotlightIds(state.focusedId, state.nodes);
+    const ids = new Set<string>();
+    if (prev) ids.add(prev);
+    if (id) ids.add(id);
+    const next = patchById(flowRef.current, ids, (node) =>
+      withCardChrome(node, {
+        open: state.graphExpanded.has(node.id),
+        focused: node.id === state.focusedId,
+        linked: canvasLinked(node.id, state.focusedId, spotlight),
+        dragging: node.id === id,
+        saved: undefined,
+        updateStyle: false,
+      }),
+    );
+    commitNodes(next as KnowledgeFlowNodeType[]);
+  }
 
   return (
-    <div className="relative h-full w-full">
+    <div ref={hostRef} className="relative h-full w-full">
       <ReactFlow
         nodes={flowNodes}
+        onMoveStart={(_, viewport) => {
+          zoomAtGestureStart.current = viewport.zoom;
+        }}
+        onMoveEnd={(_, viewport) => {
+          const start = zoomAtGestureStart.current;
+          zoomAtGestureStart.current = viewport.zoom;
+          if (!shouldSharpenZoom(start, viewport.zoom)) return;
+          const host = hostRef.current;
+          if (host) redrawVisibleCardText(host);
+        }}
         edges={flowEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodeClick={(_, node) => {
-          if (node.type !== "knowledge") return;
+          if (node.type !== "knowledge" || isCardLeaving(node)) return;
           selectFromGraph(node.id);
         }}
         onPaneClick={() => clearCanvasFocus()}
         onNodesChange={onNodesChange}
         onNodeDragStart={(_, node) => {
-          if (node.type === "knowledge") setDraggingId(node.id);
+          if (node.type === "knowledge") setDragging(node.id);
         }}
-        onNodeDragStop={() => setDraggingId(null)}
+        onNodeDragStop={() => setDragging(null)}
         nodesDraggable
         nodeDragThreshold={4}
         snapToGrid
@@ -461,15 +1093,18 @@ export function KnowledgeGraph() {
           bgColor={colors.panel}
           maskColor={colors.mask}
           nodeColor={(node) => {
-            const knowledge = byId.get(node.id);
+            void alertKey;
+            const state = useKnowledgeStore.getState();
+            const knowledge = state.byId.get(node.id);
             if (!knowledge) return colors.muted;
-            if (nodeHasError(issues, knowledge.id)) return colors.red;
+            if (nodeHasError(state.issues, knowledge.id)) return colors.red;
             if (knowledge.status === "pending") return colors.amber;
             if (knowledge.status === "disabled") return colors.muted;
             return colors.accent;
           }}
         />
         <FocusViewport />
+        <KnowledgeFocusScrim />
       </ReactFlow>
     </div>
   );

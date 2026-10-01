@@ -149,7 +149,7 @@ fn a_reverted_dense_index_equals_a_clean_rebuild() {
             session_id: f.sid.clone(),
             expected_revision: revision,
             operation_id: MutationId::new(),
-            op: SessionApply::Truncate { user_k: 1 },
+            op: SessionApply::Truncate { anchor_seq: 1 },
         })
         .unwrap();
     let reverted = f.reconcile();

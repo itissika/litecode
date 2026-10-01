@@ -91,6 +91,22 @@ export async function fetchGlob(pattern: string): Promise<GlobListing> {
   return parseJson<GlobListing>(res);
 }
 
+export interface MentionPathHit {
+  path: string;
+  file: boolean;
+}
+
+export async function fetchMentionPaths(
+  query: string,
+  signal?: AbortSignal,
+): Promise<MentionPathHit[]> {
+  const params = new URLSearchParams();
+  params.set("q", query);
+  const res = await apiFetch(`/api/workspace/mention-paths?${params}`, { signal });
+  const data = await parseJson<{ entries: MentionPathHit[] }>(res);
+  return data.entries;
+}
+
 export async function readFile(path: string): Promise<string> {
   const params = new URLSearchParams({ path });
   const res = await apiFetch(`/api/workspace/file?${params}`);
@@ -417,6 +433,87 @@ export interface LspEngineDetail {
 export interface EnginesDetail {
   retrieval: RetrievalEngineDetail;
   lsp: LspEngineDetail;
+}
+
+export interface WorkspaceSymbol {
+  chain: string;
+  kind: string;
+  name: string;
+  start_line: number;
+  end_line: number;
+  summary: string;
+}
+
+export async function fetchSymbols(path: string): Promise<WorkspaceSymbol[]> {
+  const params = new URLSearchParams({ path });
+  const res = await apiFetch(`/api/workspace/symbols?${params}`);
+  if (!res.ok) throw await errorFromResponse(res);
+  const data = await parseJson<{ symbols: WorkspaceSymbol[] }>(res);
+  return data.symbols;
+}
+
+export interface SymbolAtHit {
+  chain?: string | null;
+  kind?: string | null;
+  name?: string | null;
+  start_line?: number | null;
+  end_line?: number | null;
+  label?: string | null;
+}
+
+export async function fetchSymbolAt(
+  path: string,
+  start: number,
+  end: number,
+): Promise<SymbolAtHit> {
+  const params = new URLSearchParams({
+    path,
+    start: String(start),
+    end: String(end),
+  });
+  const res = await apiFetch(`/api/workspace/symbols/at?${params}`);
+  if (!res.ok) throw await errorFromResponse(res);
+  return parseJson<SymbolAtHit>(res);
+}
+
+export interface SymbolRefQuery {
+  file: string;
+  symbol?: string;
+  drift_base_of?: string;
+}
+
+export interface SymbolDriftCommit {
+  hash: string;
+  subject: string;
+}
+
+export interface SymbolDrift {
+  drifted: boolean;
+  commits: SymbolDriftCommit[];
+}
+
+export interface SymbolRefHit {
+  file: string;
+  symbol?: string | null;
+  file_exists: boolean;
+  symbol_exists: boolean;
+  ambiguous: boolean;
+  start_line?: number | null;
+  end_line?: number | null;
+  drift?: SymbolDrift | null;
+}
+
+export async function resolveSymbolRefs(
+  refs: SymbolRefQuery[],
+): Promise<SymbolRefHit[]> {
+  const res = await apiFetch("/api/workspace/symbol-refs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refs }),
+  });
+  if (!res.ok) throw await errorFromResponse(res);
+  const data = await parseJson<{ refs: SymbolRefHit[] }>(res);
+  return data.refs;
 }
 
 export interface CitationRefRequest {

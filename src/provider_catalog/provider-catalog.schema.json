@@ -54,6 +54,12 @@
       "description": "Field a Chat Completions replay writes reasoning back into.",
       "enum": ["reasoning_content"]
     },
+    "reasoning_replay": {
+      "type": "string",
+      "description": "How a Responses host takes reasoning back. ciphertext (default) returns encrypted blobs to their producer. summary is Bailian: the item this provider minted, with its id and summary_text.",
+      "enum": ["ciphertext", "summary"],
+      "default": "ciphertext"
+    },
     "tiers": {
       "type": "object",
       "additionalProperties": false,
@@ -79,7 +85,8 @@
           "minLength": 1,
           "description": "Vendor literal opting into reasoning summaries (OpenAI-family Responses hosts: auto / concise / detailed; they never expose raw reasoning and emit nothing unless asked). Absent = no summary is requested."
         },
-        "key": { "$ref": "#/definitions/reasoning_key" }
+        "key": { "$ref": "#/definitions/reasoning_key" },
+        "replay": { "$ref": "#/definitions/reasoning_replay" }
       }
     },
 

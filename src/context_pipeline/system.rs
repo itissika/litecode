@@ -81,6 +81,7 @@ mod tests {
         assert!(!prompt.contains("You are litecode"));
         assert_eq!(prompt, with_citations(DEFAULT_PROMPT));
         assert!(prompt.contains("file:src/auth/validate.ts#L42"));
+        assert!(!prompt.contains("[@ id="));
         assert!(!prompt.contains("file_path:line_number"));
         assert!(!prompt.contains("owner/repo#123"));
     }

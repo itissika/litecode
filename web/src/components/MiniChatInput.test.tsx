@@ -1,8 +1,12 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { symbolMentionSource } from "../lib/knowledge/markers";
 import { useSessionStore } from "../stores/sessionStore";
 import { MiniChatInput } from "./MiniChatInput";
+import { composerText, pressComposerKey, setComposerText } from "./mention/composerDom";
+
+const REPLAY = "Edit and resend";
 
 afterEach(() => {
   cleanup();
@@ -14,6 +18,27 @@ afterEach(() => {
 });
 
 describe("MiniChatInput", () => {
+  it("shows a revert-and-resend hint when the draft is empty", () => {
+    render(
+      <MiniChatInput
+        sessionId="session-1"
+        draft=""
+        settings={{
+          primaryId: "default",
+          modelId: "openai/model-1",
+          thinkingTier: "medium",
+          contextMode: "standard",
+        }}
+        onDismiss={vi.fn()}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(
+      document.querySelector(`[aria-label="${REPLAY}"] p`)?.getAttribute("data-placeholder"),
+    ).toBe("Revert and resend…");
+  });
+
   it("keeps replay controls while omitting composer-only status controls", () => {
     useSessionStore.setState({
       primaryAgents: [{ id: "default" }],
@@ -39,7 +64,7 @@ describe("MiniChatInput", () => {
             contextMode: "standard",
             pendingThinkingTier: null,
             pendingContextMode: null,
-            maxFileRevertK: null,
+            maxFileRevertSeq: null,
           },
         ],
       ]),
@@ -68,13 +93,11 @@ describe("MiniChatInput", () => {
         .getByTestId("mini-chat-input")
         .hasAttribute("data-mini-chat-input"),
     ).toBe(true);
-    expect(screen.getByDisplayValue("original message")).toBeTruthy();
+    expect(composerText(REPLAY)).toBe("original message");
     expect(screen.queryByLabelText(/notification/i)).toBeNull();
     expect(screen.queryByLabelText(/context usage/i)).toBeNull();
 
-    fireEvent.change(screen.getByDisplayValue("original message"), {
-      target: { value: "edited message" },
-    });
+    setComposerText(REPLAY, "edited message");
     expect(onChange).toHaveBeenCalledWith("edited message", expect.any(Object));
 
     rerender(
@@ -92,19 +115,23 @@ describe("MiniChatInput", () => {
         onSubmit={vi.fn()}
       />,
     );
-    expect(screen.getByDisplayValue("edited message")).toBeTruthy();
+    expect(composerText(REPLAY)).toBe("edited message");
 
-    fireEvent.keyDown(screen.getByDisplayValue("edited message"), {
-      key: "Escape",
-    });
+    pressComposerKey(REPLAY, "Escape");
     expect(onDismiss).toHaveBeenCalledOnce();
   });
 
-  it("grows to its content height and caps long drafts", () => {
-    const { rerender } = render(
+  it("restores a symbol capsule and submits on Enter", async () => {
+    const onSubmit = vi.fn();
+    const source = symbolMentionSource("src/a.rs", {
+      symbol: "fn save",
+      lines: "4-9",
+      label: "fn save",
+    });
+    render(
       <MiniChatInput
         sessionId="session-1"
-        draft="a long draft"
+        draft={source}
         settings={{
           primaryId: "default",
           modelId: "openai/model-1",
@@ -113,39 +140,14 @@ describe("MiniChatInput", () => {
         }}
         onDismiss={vi.fn()}
         onChange={vi.fn()}
-        onSubmit={vi.fn()}
+        onSubmit={onSubmit}
       />,
     );
-    const textarea = screen.getByDisplayValue(
-      "a long draft",
-    ) as HTMLTextAreaElement;
-    Object.defineProperty(textarea, "scrollHeight", {
-      configurable: true,
-      value: 180,
-    });
-
-    rerender(
-      <MiniChatInput
-        sessionId="session-1"
-        draft="a longer draft"
-        settings={{
-          primaryId: "default",
-          modelId: "openai/model-1",
-          thinkingTier: "medium",
-          contextMode: "standard",
-        }}
-        onDismiss={vi.fn()}
-        onChange={vi.fn()}
-        onSubmit={vi.fn()}
-      />,
-    );
-    expect(textarea.style.height).toBe("180px");
-
-    Object.defineProperty(textarea, "scrollHeight", {
-      configurable: true,
-      value: 400,
-    });
-    fireEvent.change(textarea, { target: { value: "very long draft" } });
-    expect(textarea.style.height).toBe("256px");
+    const chip = await screen.findByRole("button", { name: "a.rs fn save" });
+    expect(chip.closest(".knowledge-token")?.classList.contains("is-symbol")).toBe(true);
+    pressComposerKey(REPLAY, "Enter", true);
+    expect(onSubmit).not.toHaveBeenCalled();
+    pressComposerKey(REPLAY, "Enter");
+    expect(onSubmit).toHaveBeenCalledWith(source, expect.any(Object));
   });
 });

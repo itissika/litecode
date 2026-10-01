@@ -1,4 +1,4 @@
-import { AgentMarkdown } from "../AgentMarkdown";
+import { MentionText } from "../mention/MentionText";
 import { ImageThumb } from "../ImageThumb";
 
 /**
@@ -59,7 +59,7 @@ export function PendingQueueBubble({
               ))}
             </div>
           ) : null}
-          {text ? <AgentMarkdown text={text} streaming={false} /> : null}
+          {text ? <MentionText text={text} /> : null}
         </div>
       </div>
     </div>

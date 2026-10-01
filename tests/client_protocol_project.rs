@@ -475,8 +475,11 @@ fn snapshot_notice_projects_to_turn_event() {
 #[test]
 fn file_revert_updated_projects_session_snapshot() {
     let snap = sample_snapshot();
-    let msg =
-        project::project(&InternalEvent::FileRevertUpdated { max_k: Some(2) }, &snap).unwrap();
+    let msg = project::project(
+        &InternalEvent::FileRevertUpdated { max_seq: Some(2) },
+        &snap,
+    )
+    .unwrap();
     assert!(method_is(&msg, "session/snapshot"));
 }
 

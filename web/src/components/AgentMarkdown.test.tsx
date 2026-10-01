@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveCitations } from "../api/workspace";
 import { resetCitationCacheForTests } from "../lib/citationResolve";
+import { fileMentionSource, mentionSource } from "../lib/knowledge/markers";
 import { useEditorStore } from "../stores/editorStore";
+import { useKnowledgeStore } from "../stores/knowledgeStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { AgentMarkdown } from "./AgentMarkdown";
 
@@ -23,6 +25,11 @@ afterEach(() => {
   resetCitationCacheForTests();
   useSessionStore.setState({ project: "" });
   useEditorStore.setState({ openFileAt: originalOpenFileAt } as never);
+  useKnowledgeStore.setState({
+    byId: new Map(),
+    byKey: new Map(),
+    focusedId: null,
+  });
   vi.mocked(resolveCitations).mockReset();
 });
 
@@ -170,6 +177,49 @@ describe("AgentMarkdown citations", () => {
     await waitFor(() => expect(resolveCitations).toHaveBeenCalled());
     expect(screen.queryByRole("button")).toBeNull();
     expect(container.textContent).toContain("missing.ts");
+  });
+
+  it("renders a knowledge node shortcode as a capsule beside a file link", () => {
+    useKnowledgeStore.setState({
+      byKey: new Map([["seq", { id: "seq", key: "seq" }]]),
+      byId: new Map([["seq", { id: "seq", key: "seq" }]]),
+    } as never);
+    const fileShortcode = fileMentionSource("src/a.rs");
+    const { container } = render(
+      <AgentMarkdown
+        citations
+        text={`See ${mentionSource("seq", "序号")} and [a.ts](file:src/a.ts) plus ${fileShortcode}`}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "序号" }));
+    expect(useKnowledgeStore.getState().focusedId).toBe("seq");
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+    expect(container.textContent).toContain("a.ts");
+    expect(container.textContent).toContain(fileShortcode);
+  });
+
+  it("leaves a node shortcode as text when citations are off, and marks an unknown key", () => {
+    const { rerender, container } = render(
+      <AgentMarkdown text={`see ${mentionSource("seq")}`} />,
+    );
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(container.textContent).toContain('[@ id="seq" label="seq"]');
+
+    rerender(<AgentMarkdown citations text={`see ${mentionSource("missing")}`} />);
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(container.textContent).toContain("missing");
+    expect(container.querySelector(".knowledge-token.is-invalid")).not.toBeNull();
+  });
+
+  it("does not turn a node shortcode inside a code block into a capsule", () => {
+    useKnowledgeStore.setState({
+      byKey: new Map([["seq", { id: "seq", key: "seq" }]]),
+      byId: new Map([["seq", { id: "seq", key: "seq" }]]),
+    } as never);
+    render(
+      <AgentMarkdown citations text={`\`\`\`\n${mentionSource("seq")}\n\`\`\``} />,
+    );
+    expect(screen.queryByRole("button", { name: "seq" })).toBeNull();
   });
 
   it("renders a web citation without checking that the page exists", () => {

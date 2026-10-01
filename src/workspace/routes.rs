@@ -14,6 +14,7 @@ use super::WorkspaceError;
 use super::citations::{self, CitationQuery, MAX_CITATION_BATCH};
 use super::git::{self, GitError};
 use super::service::WorkspaceService;
+use super::symbols::{self, MAX_SYMBOL_BATCH, SymbolRefQuery};
 use super::tree::TreeEntry;
 use crate::lsp::deps::probe_workspace_servers;
 use crate::serve::state::ServeState;
@@ -94,6 +95,28 @@ struct CitationsBody {
 #[derive(Serialize)]
 struct CitationsData {
     refs: Vec<citations::CitationHit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SymbolAtQuery {
+    path: String,
+    start: u32,
+    end: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct SymbolRefsBody {
+    refs: Vec<SymbolRefQuery>,
+}
+
+#[derive(Serialize)]
+struct SymbolsData {
+    symbols: Vec<symbols::ListedSymbol>,
+}
+
+#[derive(Serialize)]
+struct SymbolRefsData {
+    refs: Vec<symbols::SymbolRefHit>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,6 +201,7 @@ pub fn router() -> Router<ServeState> {
     Router::new()
         .route("/tree", get(get_tree))
         .route("/glob", get(get_glob))
+        .route("/mention-paths", get(get_mention_paths))
         .route("/lsp/probe", get(get_lsp_probe))
         .route("/retrieval/refresh", post(post_retrieval_refresh))
         .route("/retrieval/search", post(post_retrieval_search))
@@ -200,6 +224,9 @@ pub fn router() -> Router<ServeState> {
         .route("/sqlite", get(get_sqlite))
         .route("/open", post(post_open))
         .route("/citations", post(post_citations))
+        .route("/symbols", get(get_symbols))
+        .route("/symbols/at", get(get_symbol_at))
+        .route("/symbol-refs", post(post_symbol_refs))
         .route("/git/status", get(get_git_status))
         .route("/git/log", get(get_git_log))
         .route("/git/stage", post(post_git_stage))
@@ -541,6 +568,36 @@ async fn get_tree(State(state): State<ServeState>, Query(query): Query<TreeQuery
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct MentionPathsQuery {
+    #[serde(default)]
+    q: String,
+}
+
+#[derive(Serialize)]
+struct MentionPathsData {
+    entries: Vec<crate::engines::path_index::MentionPath>,
+}
+
+async fn get_mention_paths(
+    State(state): State<ServeState>,
+    Query(query): Query<MentionPathsQuery>,
+) -> Response {
+    let index = state.workspace_engines.path_index();
+    let q = query.q;
+    match tokio::task::spawn_blocking(move || index.mention_paths(&q)).await {
+        Ok(entries) => Json(ApiOk {
+            ok: true,
+            data: MentionPathsData { entries },
+        })
+        .into_response(),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("mention paths task join: {e}"),
+        ),
+    }
+}
+
 async fn get_glob(State(state): State<ServeState>, Query(query): Query<GlobQuery>) -> Response {
     let workspace = state.workspace.clone();
     let pattern = query.pattern;
@@ -618,6 +675,84 @@ async fn get_sqlite(State(state): State<ServeState>, Query(query): Query<SqliteQ
         Err(e) => open_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("sqlite task join: {e}"),
+        ),
+    }
+}
+
+async fn get_symbols(State(state): State<ServeState>, Query(query): Query<PathQuery>) -> Response {
+    let workspace = state.workspace.clone();
+    let path = query.path;
+    match tokio::task::spawn_blocking(move || {
+        let (rel, content) = workspace.read_file(&path)?;
+        let listed = symbols::list_file_symbols(&rel, &content);
+        Ok::<_, WorkspaceError>((rel, listed))
+    })
+    .await
+    {
+        Ok(Ok((_, listed))) => Json(ApiOk {
+            ok: true,
+            data: SymbolsData { symbols: listed },
+        })
+        .into_response(),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("symbols task join: {e}"),
+        ),
+    }
+}
+
+async fn get_symbol_at(
+    State(state): State<ServeState>,
+    Query(query): Query<SymbolAtQuery>,
+) -> Response {
+    let workspace = state.workspace.clone();
+    match tokio::task::spawn_blocking(move || {
+        let (rel, content) = workspace.read_file(&query.path)?;
+        Ok::<_, WorkspaceError>(symbols::locate_symbol(
+            &rel,
+            &content,
+            query.start,
+            query.end,
+        ))
+    })
+    .await
+    {
+        Ok(Ok(hit)) => Json(ApiOk {
+            ok: true,
+            data: hit,
+        })
+        .into_response(),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("symbol-at task join: {e}"),
+        ),
+    }
+}
+
+async fn post_symbol_refs(
+    State(state): State<ServeState>,
+    Json(body): Json<SymbolRefsBody>,
+) -> Response {
+    if body.refs.len() > MAX_SYMBOL_BATCH {
+        return open_error(
+            StatusCode::BAD_REQUEST,
+            format!("at most {MAX_SYMBOL_BATCH} symbol refs"),
+        );
+    }
+    let workspace = state.workspace.clone();
+    let refs = body.refs;
+    match tokio::task::spawn_blocking(move || symbols::resolve_symbol_refs(&workspace, &refs)).await
+    {
+        Ok(hits) => Json(ApiOk {
+            ok: true,
+            data: SymbolRefsData { refs: hits },
+        })
+        .into_response(),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("symbol-refs task join: {e}"),
         ),
     }
 }

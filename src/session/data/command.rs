@@ -393,13 +393,13 @@ pub enum SessionRead {
     SurfaceSeqs {
         session_id: String,
     },
-    UserDetailBefore {
+    UserDetailCount {
         session_id: String,
-        from_seq: i64,
     },
-    SnapshotStem {
+    /// Snapshot stem (`seq + 1`) when `seq` is an `item/user` row.
+    UserAnchorStem {
         session_id: String,
-        k: i64,
+        seq: i64,
     },
     CheckpointSeq {
         session_id: String,

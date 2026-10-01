@@ -299,7 +299,7 @@ fn a_finalised_row_is_never_rewritten() {
         "sealing again touches nothing"
     );
 
-    // Append a second user turn so `k=1` is a real revert anchor.
+    // Append a second user turn so its seq is a real revert anchor.
     f.mutate(f.with_rev(SessionMutation::InsertDetails {
         session_id: f.sid.clone(),
         expected_revision: 0,
@@ -314,7 +314,7 @@ fn a_finalised_row_is_never_rewritten() {
         session_id: f.sid.clone(),
         expected_revision: 0,
         operation_id: MutationId::new(),
-        op: SessionApply::Truncate { user_k: 1 },
+        op: SessionApply::Truncate { anchor_seq: 3 },
     }));
     check(&f, &mut ledger, "revert");
     assert!(
@@ -531,7 +531,7 @@ fn reopen_after_revert_does_not_reuse_a_deleted_seq() {
             session_id: sid.clone(),
             expected_revision: 2,
             operation_id: MutationId::new(),
-            op: SessionApply::Truncate { user_k: 1 },
+            op: SessionApply::Truncate { anchor_seq: 1 },
         })
         .expect("revert");
         sid

@@ -25,7 +25,8 @@ Workspace knowledge base: human-owned notes of durable ideas — architecture, p
 Call with an empty command first; the board shows state and what to do next. \
 Navigate by key, edit bodies with read/edit, and run check after changes. \
 Rename and create through this tool so references stay whole. \
-Record invariants, not details.";
+Record invariants, not details. \
+In a reply, cite a key node as `[@ id=\"seq\" label=\"seq\"]` so the user can click it and confirm. `knowledge guide` has the syntax.";
 
 pub struct KnowledgeTool {
     ide: Arc<crate::ide_base::IdeBaseHandle>,
@@ -42,11 +43,7 @@ impl KnowledgeTool {
             Some(value) => match value.as_str() {
                 Some(text) => text.to_string(),
                 None => {
-                    return usage(
-                        "command must be a string",
-                        "list [folder]",
-                        "list notes",
-                    );
+                    return usage("command must be a string", "list [folder]", "list notes");
                 }
             },
         };
@@ -179,14 +176,8 @@ impl KnowledgeTool {
         let issues = issues_of(workspace, &corpus);
         let now = SystemTime::now();
         let card_issues = node_issues(&issues, &node.id);
-        let card = view::node_card(
-            1,
-            node,
-            &card_issues,
-            corpus.incoming(&node.key).len(),
-            now,
-            &root,
-        );
+        let markdown = read_node_file(workspace, &root, node);
+        let document = view::node_file(&root, &node.path, &card_issues, &markdown);
         let incoming = corpus.incoming(&node.key);
         let incoming_body = view::cards(
             incoming.iter().copied(),
@@ -214,7 +205,8 @@ impl KnowledgeTool {
             .iter()
             .filter(|rel| {
                 !card_issues.iter().any(|issue| {
-                    issue.code == "dangling_relation" && issue.reference.as_deref() == Some(rel.as_str())
+                    issue.code == "dangling_relation"
+                        && issue.reference.as_deref() == Some(rel.as_str())
                 })
             })
             .map(|rel| format!("- `{rel}` does not exist"))
@@ -231,7 +223,7 @@ impl KnowledgeTool {
             "Edit the body with `edit`. Rename with `knowledge rename`.".into()
         };
         ToolCallResult::ok(join_blocks(&[
-            format!("# {key}\n\n{card}"),
+            format!("# {key}\n\n{document}"),
             view::section("## Cites this", &incoming_body),
             view::section("## This cites", &outgoing_body),
             follow,
@@ -322,7 +314,10 @@ impl KnowledgeTool {
                 "create seq notes",
             );
         }
-        let folder = args.get(1).map(String::as_str).filter(|folder| !folder.is_empty());
+        let folder = args
+            .get(1)
+            .map(String::as_str)
+            .filter(|folder| !folder.is_empty());
         if let Some(folder) = folder {
             if !folder_ok(folder) {
                 return usage(
@@ -401,7 +396,10 @@ impl KnowledgeTool {
             );
         }
         if args.len() > 2 {
-            return too_many("rename <old key> <new key>", "rename \"old key\" \"new key\"");
+            return too_many(
+                "rename <old key> <new key>",
+                "rename \"old key\" \"new key\"",
+            );
         }
         let from = normalize_key(&args[0]);
         let to = normalize_key(&args[1]);
@@ -623,8 +621,40 @@ fn issues_of(workspace: &Path, corpus: &Corpus) -> Vec<Issue> {
             path: &node.path,
         })
         .collect();
-    validate::validate(&checks, &|path| {
-        crate::knowledge::mentions::workspace_file_exists(workspace, path)
+    let root = corpus.root.clone();
+    let mut symbols = crate::knowledge::symbol_check::SymbolCache::new();
+    validate::validate(
+        &checks,
+        &|path| crate::knowledge::mentions::workspace_file_exists(workspace, path),
+        &mut |file, chain, node_path| {
+            let base = root.as_ref().and_then(|root| {
+                if node_path.is_empty() {
+                    None
+                } else {
+                    Some(format!("{root}/{node_path}"))
+                }
+            });
+            symbols.check(workspace, file, chain, base.as_deref())
+        },
+    )
+}
+
+fn read_node_file(workspace: &Path, root: &str, node: &crate::knowledge::Node) -> String {
+    let path = workspace.join(root).join(&node.path);
+    if let Ok(text) = std::fs::read_to_string(&path) {
+        return text;
+    }
+    document::render_knowledge_markdown(document::RenderDoc {
+        key: &node.key,
+        status: node.status,
+        invalid_status: node.invalid_status.as_deref(),
+        body: &node.value,
+        summary: &node.summary,
+        x: node.x,
+        y: node.y,
+        w: node.w,
+        h: node.h,
+        extras: &node.extras,
     })
 }
 
@@ -886,6 +916,8 @@ mod tests {
             .await;
         assert!(quoted.content.contains("## Cites this"));
         assert!(quoted.content.contains("**session**"));
+        assert!(quoted.content.contains("node : seq"));
+        assert!(quoted.content.contains("```node"));
 
         let renamed = tool
             .execute(
@@ -893,9 +925,15 @@ mod tests {
                 ctx(dir.path()),
             )
             .await;
-        assert_eq!(renamed.level, crate::types::ToolSignalLevel::Ok, "{}", renamed.content);
+        assert_eq!(
+            renamed.level,
+            crate::types::ToolSignalLevel::Ok,
+            "{}",
+            renamed.content
+        );
         assert!(!dir.path().join(".litecode/knowledge/内核/seq.md").exists());
-        let session = fs::read_to_string(dir.path().join(".litecode/knowledge/内核/session.md")).unwrap();
+        let session =
+            fs::read_to_string(dir.path().join(".litecode/knowledge/内核/session.md")).unwrap();
         assert!(session.contains("id=\"order\""));
         assert!(!session.contains("id=\"seq\""));
         let corpus = Corpus::load(dir.path());
@@ -946,7 +984,12 @@ mod tests {
         assert!(listed.content.contains(".litecode/bash/knowledge_"));
         let bash = dir.path().join(".litecode").join("bash");
         assert!(bash.is_dir());
-        assert!(!dir.path().join(".litecode/knowledge").join("knowledge_spill.txt").exists());
+        assert!(
+            !dir.path()
+                .join(".litecode/knowledge")
+                .join("knowledge_spill.txt")
+                .exists()
+        );
     }
 
     #[test]
@@ -973,14 +1016,27 @@ mod tests {
                 ctx(dir.path()),
             )
             .await;
-        assert_eq!(created.level, crate::types::ToolSignalLevel::Ok, "{}", created.content);
+        assert_eq!(
+            created.level,
+            crate::types::ToolSignalLevel::Ok,
+            "{}",
+            created.content
+        );
         assert!(created.content.contains("knowledge check \"blind test\""));
-        assert!(dir.path().join(".litecode/knowledge/blind test.md").is_file());
+        assert!(
+            dir.path()
+                .join(".litecode/knowledge/blind test.md")
+                .is_file()
+        );
         let checked = tool
             .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
             .await;
         assert!(checked.content.contains("Check · whole library"));
-        assert!(checked.content.contains("Checked 1 node. No validation issues."));
+        assert!(
+            checked
+                .content
+                .contains("Checked 1 node. No validation issues.")
+        );
 
         let split = tool
             .execute(
@@ -996,15 +1052,16 @@ mod tests {
         assert!(!missing.content.contains("split into several words"));
 
         let unknown = tool
-            .execute(
-                serde_json::json!({ "command": "explode" }),
-                ctx(dir.path()),
-            )
+            .execute(serde_json::json!({ "command": "explode" }), ctx(dir.path()))
             .await;
         assert!(unknown.content.contains("is not a knowledge command"));
         assert!(unknown.content.contains("knowledge guide"));
         assert!(unknown.content.contains("knowledge list [folder]"));
-        assert!(unknown.content.contains("knowledge rename <old key> <new key>"));
+        assert!(
+            unknown
+                .content
+                .contains("knowledge rename <old key> <new key>")
+        );
 
         fs::create_dir_all(dir.path().join(".litecode/knowledge/empty")).unwrap();
         let listed = tool
@@ -1039,14 +1096,26 @@ mod tests {
             }),
         )
         .unwrap();
-        plant(dir.path(), "hidden.md", "hidden", Status::Enabled, "private");
+        plant(
+            dir.path(),
+            "hidden.md",
+            "hidden",
+            Status::Enabled,
+            "private",
+        );
         let board = tool
             .execute(serde_json::json!({ "command": "" }), ctx(dir.path()))
             .await;
-        assert!(board.content.contains("Current knowledge root: `knowledge`."));
-        assert!(board.content.contains(
-            "`.litecode/knowledge` is not read. Nodes there are not citation targets."
-        ));
+        assert!(
+            board
+                .content
+                .contains("Current knowledge root: `knowledge`.")
+        );
+        assert!(
+            board.content.contains(
+                "`.litecode/knowledge` is not read. Nodes there are not citation targets."
+            )
+        );
         assert!(board.content.contains("**seq**"));
         assert!(!board.content.contains("**hidden**"));
     }
@@ -1055,33 +1124,57 @@ mod tests {
     async fn rename_retargets_the_filename_to_the_new_key() {
         let dir = tempfile::tempdir().unwrap();
         let tool = KnowledgeTool::new(ide_at(dir.path()));
-        plant(dir.path(), "alias.md", "other-name", Status::Enabled, "body");
+        plant(
+            dir.path(),
+            "alias.md",
+            "other-name",
+            Status::Enabled,
+            "body",
+        );
         let renamed = tool
             .execute(
                 serde_json::json!({ "command": "rename other-name canonical" }),
                 ctx(dir.path()),
             )
             .await;
-        assert_eq!(renamed.level, crate::types::ToolSignalLevel::Ok, "{}", renamed.content);
+        assert_eq!(
+            renamed.level,
+            crate::types::ToolSignalLevel::Ok,
+            "{}",
+            renamed.content
+        );
         let next = dir.path().join(".litecode/knowledge/canonical.md");
         assert!(next.is_file());
         assert!(!dir.path().join(".litecode/knowledge/alias.md").exists());
         let text = fs::read_to_string(next).unwrap();
         assert!(text.contains("node : canonical"));
 
+        let tail = format!("FULLTEXT-{}", "y".repeat(500));
         plant(
             dir.path(),
             "note.md",
             "note",
             Status::Enabled,
-            &mention_source("missing", "missing"),
+            &format!("{}\n{tail}", mention_source("missing", "missing")),
         );
         let refs = tool
-            .execute(serde_json::json!({ "command": "refs note" }), ctx(dir.path()))
+            .execute(
+                serde_json::json!({ "command": "refs note" }),
+                ctx(dir.path()),
+            )
             .await;
-        assert!(refs.content.contains("Citation \"missing\" does not exist."));
+        assert!(
+            refs.content
+                .contains("Citation \"missing\" does not exist.")
+        );
         assert!(!refs.content.contains("- `missing` does not exist"));
-        assert!(refs.content.contains("Edit the body with `edit`. Rename with `knowledge rename`."));
+        assert!(
+            refs.content
+                .contains("Edit the body with `edit`. Rename with `knowledge rename`.")
+        );
+        assert!(refs.content.contains("node : note"));
+        assert!(refs.content.contains(&tail));
+        assert!(!refs.content.contains("**note**"));
     }
 
     #[tokio::test]
@@ -1107,10 +1200,22 @@ mod tests {
             .execute(serde_json::json!({ "command": "guide" }), ctx(dir.path()))
             .await;
         assert_eq!(guide.level, crate::types::ToolSignalLevel::Ok);
-        assert!(guide.content.contains("A missing status is treated as `enabled`."));
+        assert!(
+            guide
+                .content
+                .contains("A missing status is treated as `enabled`.")
+        );
         assert!(guide.content.contains("## Check"));
-        assert!(guide.content.contains("[@ file=\"src/a.rs\" label=\"a.rs\"]"));
-        assert!(guide.content.contains("A file citation path is not in the workspace."));
+        assert!(
+            guide
+                .content
+                .contains("[@ file=\"src/a.rs\" label=\"a.rs\"]")
+        );
+        assert!(
+            guide
+                .content
+                .contains("A file citation path is not in the workspace.")
+        );
         assert!(!guide.content.contains("mtime"));
         assert!(!guide.content.contains("[[node"));
         assert!(!dir.path().join(".litecode").exists());
@@ -1137,8 +1242,16 @@ mod tests {
         let missing = tool
             .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
             .await;
-        assert!(missing.content.contains("File \"src/a.rs\" does not exist."));
-        assert!(missing.content.contains("Citation \"nope\" does not exist."));
+        assert!(
+            missing
+                .content
+                .contains("File \"src/a.rs\" does not exist.")
+        );
+        assert!(
+            missing
+                .content
+                .contains("Citation \"nope\" does not exist.")
+        );
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/a.rs"), "fn main() {}\n").unwrap();
         let found = tool
@@ -1177,7 +1290,11 @@ mod tests {
         let escaped = tool
             .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
             .await;
-        assert!(escaped.content.contains("File \"../secret\" does not exist."));
+        assert!(
+            escaped
+                .content
+                .contains("File \"../secret\" does not exist.")
+        );
     }
 
     #[tokio::test]
@@ -1186,12 +1303,20 @@ mod tests {
         let root = dir.path().join(".litecode").join("knowledge");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("notes.md"), "just a note\n").unwrap();
-        fs::write(root.join("broken.md"), "```node\nnode : a/b\nstatus : enabled\nsummary : \n```\n").unwrap();
+        fs::write(
+            root.join("broken.md"),
+            "```node\nnode : a/b\nstatus : enabled\nsummary : \n```\n",
+        )
+        .unwrap();
         let tool = KnowledgeTool::new(ide_at(dir.path()));
         let board = tool
             .execute(serde_json::json!({ "command": "" }), ctx(dir.path()))
             .await;
-        assert!(board.content.contains("These files are not nodes and were left in place:"));
+        assert!(
+            board
+                .content
+                .contains("These files are not nodes and were left in place:")
+        );
         assert!(board.content.contains("`notes.md`"));
         assert!(!board.content.contains("`broken.md`"));
         assert!(board.content.contains("**a/b**") || board.content.contains("a/b"));

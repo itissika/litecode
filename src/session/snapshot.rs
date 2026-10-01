@@ -700,9 +700,9 @@ fn cli_sync_and_write_tree(workspace: &Path, git_dir: &Path) -> Result<git2::Oid
         .map_err(|e| LitecodeError::Config(format!("invalid write-tree oid '{hash}': {e}")))
 }
 
-/// Build a ref name for a session + anchor k.
-fn snapshot_ref(session_id: &str, k: i64) -> String {
-    format!("{SNAPSHOT_REF_PREFIX}{session_id}/{k}")
+/// Build a ref name for a session + snapshot stem (`seq`).
+fn snapshot_ref(session_id: &str, seq: i64) -> String {
+    format!("{SNAPSHOT_REF_PREFIX}{session_id}/{seq}")
 }
 
 /// Return all snapshot anchor refs for a session.
@@ -769,8 +769,8 @@ fn patches_dir(snapshots_dir: &Path, session_id: &str) -> PathBuf {
     snapshots_dir.join("patches").join(session_id)
 }
 
-fn patch_path(snapshots_dir: &Path, session_id: &str, k: i64) -> PathBuf {
-    patches_dir(snapshots_dir, session_id).join(format!("{k}.json"))
+fn patch_path(snapshots_dir: &Path, session_id: &str, seq: i64) -> PathBuf {
+    patches_dir(snapshots_dir, session_id).join(format!("{seq}.json"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -813,11 +813,11 @@ pub struct RecordPatchResult {
 fn write_patch(
     snapshots_dir: &Path,
     session_id: &str,
-    k: i64,
+    seq: i64,
     files: &[String],
     status: PatchStatus,
 ) -> Result<()> {
-    let path = patch_path(snapshots_dir, session_id, k);
+    let path = patch_path(snapshots_dir, session_id, seq);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -829,20 +829,20 @@ fn write_patch(
     Ok(())
 }
 
-fn read_patch_file(snapshots_dir: &Path, session_id: &str, k: i64) -> Option<PatchFile> {
-    let path = patch_path(snapshots_dir, session_id, k);
+fn read_patch_file(snapshots_dir: &Path, session_id: &str, seq: i64) -> Option<PatchFile> {
+    let path = patch_path(snapshots_dir, session_id, seq);
     let bytes = fs::read(&path).ok()?;
     serde_json::from_slice::<PatchFile>(&bytes).ok()
 }
 
-fn read_patch(snapshots_dir: &Path, session_id: &str, k: i64) -> Vec<String> {
-    read_patch_file(snapshots_dir, session_id, k)
+fn read_patch(snapshots_dir: &Path, session_id: &str, seq: i64) -> Vec<String> {
+    read_patch_file(snapshots_dir, session_id, seq)
         .map(|p| p.files)
         .unwrap_or_default()
 }
 
-/// True if any patch at anchors `>= k` was recorded as track failure.
-fn any_track_failed_from(snapshots_dir: &Path, session_id: &str, k: i64) -> bool {
+/// True if any patch at stems `>= seq` was recorded as track failure.
+fn any_track_failed_from(snapshots_dir: &Path, session_id: &str, seq: i64) -> bool {
     let dir = patches_dir(snapshots_dir, session_id);
     let Ok(entries) = fs::read_dir(&dir) else {
         return false;
@@ -855,7 +855,7 @@ fn any_track_failed_from(snapshots_dir: &Path, session_id: &str, k: i64) -> bool
         let Ok(ak) = stem.parse::<i64>() else {
             continue;
         };
-        if ak < k {
+        if ak < seq {
             continue;
         }
         if read_patch_file(snapshots_dir, session_id, ak)
@@ -867,8 +867,8 @@ fn any_track_failed_from(snapshots_dir: &Path, session_id: &str, k: i64) -> bool
     false
 }
 
-fn delete_patch(snapshots_dir: &Path, session_id: &str, k: i64) {
-    let path = patch_path(snapshots_dir, session_id, k);
+fn delete_patch(snapshots_dir: &Path, session_id: &str, seq: i64) {
+    let path = patch_path(snapshots_dir, session_id, seq);
     let _ = fs::remove_file(path);
 }
 
@@ -887,14 +887,14 @@ fn patch_has_revertible_files(patch: &PatchFile) -> bool {
     })
 }
 
-/// Highest user-anchor `k` whose recorded patch lists at least one revertible file.
-/// `None` means no user message has a file-level revert available.
-pub fn max_file_revert_k(snapshots_dir: &Path, session_id: &str) -> Option<i64> {
+/// Highest snapshot stem (`next_seq` at turn start) whose patch lists a revertible file.
+/// `None` means no turn has a file-level revert available.
+pub fn max_file_revert_seq(snapshots_dir: &Path, session_id: &str) -> Option<i64> {
     let dir = patches_dir(snapshots_dir, session_id);
     let Ok(entries) = fs::read_dir(&dir) else {
         return None;
     };
-    let mut max_k: Option<i64> = None;
+    let mut max_seq: Option<i64> = None;
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(stem) = name.to_str().and_then(|s| s.strip_suffix(".json")) else {
@@ -907,14 +907,14 @@ pub fn max_file_revert_k(snapshots_dir: &Path, session_id: &str) -> Option<i64> 
             continue;
         };
         if patch_has_revertible_files(&patch) {
-            max_k = Some(max_k.map_or(ak, |m| m.max(ak)));
+            max_seq = Some(max_seq.map_or(ak, |m| m.max(ak)));
         }
     }
-    max_k
+    max_seq
 }
 
-/// Union of patch file lists for all anchors `>= k` (OpenCode multi-step undo).
-fn union_patches_from(snapshots_dir: &Path, session_id: &str, k: i64) -> Vec<String> {
+/// Union of patch file lists for all stems `>= seq` (OpenCode multi-step undo).
+fn union_patches_from(snapshots_dir: &Path, session_id: &str, seq: i64) -> Vec<String> {
     let dir = patches_dir(snapshots_dir, session_id);
     let mut set = HashSet::new();
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -928,7 +928,7 @@ fn union_patches_from(snapshots_dir: &Path, session_id: &str, k: i64) -> Vec<Str
         let Ok(ak) = stem.parse::<i64>() else {
             continue;
         };
-        if ak < k {
+        if ak < seq {
             continue;
         }
         for f in read_patch(snapshots_dir, session_id, ak) {
@@ -1015,14 +1015,14 @@ pub fn warm_snapshot_repo(workspace: &Path, snapshots_dir: &Path) -> Result<()> 
     Ok(())
 }
 
-/// Take a snapshot of the workspace at anchor `k`.
+/// Take a snapshot of the workspace at stem `seq` (`next_seq` at turn start).
 /// Call at turn start before any tools execute.
-/// Records a git tree ref `refs/snapshots/{session_id}/{k}`.
+/// Records a git tree ref `refs/snapshots/{session_id}/{seq}`.
 pub fn snapshot_track(
     workspace: &Path,
     snapshots_dir: &Path,
     session_id: &str,
-    k: i64,
+    seq: i64,
 ) -> Result<()> {
     let snapshot_lock = workspace_snapshot_lock(workspace);
     let _lock = snapshot_lock.lock().expect("snapshot lock poisoned");
@@ -1031,15 +1031,15 @@ pub fn snapshot_track(
 
     // FIFO eviction: keep at most MAX_ANCHORS per session.
     let mut existing = session_refs(&repo, session_id)?;
-    existing.sort_by_key(|(k, _)| *k);
-    if !existing.iter().any(|(ek, _)| *ek == k)
+    existing.sort_by_key(|(seq, _)| *seq);
+    if !existing.iter().any(|(ek, _)| *ek == seq)
         && existing.len() >= MAX_ANCHORS
-        && let Some((oldest_k, _)) = existing.first()
+        && let Some((oldest_seq, _)) = existing.first()
     {
-        if let Ok(mut r) = repo.find_reference(&snapshot_ref(session_id, *oldest_k)) {
+        if let Ok(mut r) = repo.find_reference(&snapshot_ref(session_id, *oldest_seq)) {
             let _ = r.delete();
         }
-        delete_patch(snapshots_dir, session_id, *oldest_k);
+        delete_patch(snapshots_dir, session_id, *oldest_seq);
     }
 
     let tree_oid = snapshot_write_tree(workspace, repo.path())?;
@@ -1048,19 +1048,19 @@ pub fn snapshot_track(
     let repo = Repository::open_bare(snapshots_dir).or_else(|_| Repository::open(snapshots_dir))?;
     repo.set_workdir(workspace, false)?;
     repo.reference(
-        &snapshot_ref(session_id, k),
+        &snapshot_ref(session_id, seq),
         tree_oid,
         true,
         "litecode snapshot track",
     )?;
 
-    tracing::debug!(session_id, k, tree = %tree_oid, "snapshot tracked");
+    tracing::debug!(session_id, seq, tree = %tree_oid, "snapshot tracked");
     Ok(())
 }
 
-/// OpenCode-style: after tools run, record which paths changed since `tree_k`.
+/// OpenCode-style: after tools run, record which paths changed since `seq`.
 ///
-/// Writes `patches/{session_id}/{k}.json`. Call at turn end.
+/// Writes `patches/{session_id}/{seq}.json`. Call at turn end.
 ///
 /// If the turn-start track ref is missing, writes `status: track_failed` so restore
 /// can distinguish "no edits" from "snapshot unavailable".
@@ -1068,17 +1068,23 @@ pub fn snapshot_record_patch(
     workspace: &Path,
     snapshots_dir: &Path,
     session_id: &str,
-    k: i64,
+    seq: i64,
 ) -> Result<RecordPatchResult> {
     let snapshot_lock = workspace_snapshot_lock(workspace);
     let _lock = snapshot_lock.lock().expect("snapshot lock poisoned");
 
     let repo = open_or_init_repo(workspace, snapshots_dir)?;
-    let before = match repo.refname_to_id(&snapshot_ref(session_id, k)) {
+    let before = match repo.refname_to_id(&snapshot_ref(session_id, seq)) {
         Ok(oid) => oid,
         Err(_) => {
-            tracing::warn!(session_id, k, "snapshot_record_patch: missing track ref");
-            write_patch(snapshots_dir, session_id, k, &[], PatchStatus::TrackFailed)?;
+            tracing::warn!(session_id, seq, "snapshot_record_patch: missing track ref");
+            write_patch(
+                snapshots_dir,
+                session_id,
+                seq,
+                &[],
+                PatchStatus::TrackFailed,
+            )?;
             return Ok(RecordPatchResult {
                 files: Vec::new(),
                 track_failed: true,
@@ -1092,10 +1098,10 @@ pub fn snapshot_record_patch(
     repo.set_workdir(workspace, false)?;
 
     let files = diff_tree_paths(&repo, before, after)?;
-    write_patch(snapshots_dir, session_id, k, &files, PatchStatus::Ok)?;
+    write_patch(snapshots_dir, session_id, seq, &files, PatchStatus::Ok)?;
     tracing::debug!(
         session_id,
-        k,
+        seq,
         count = files.len(),
         "snapshot patch recorded"
     );
@@ -1105,8 +1111,8 @@ pub fn snapshot_record_patch(
     })
 }
 
-/// Restore **only** files touched by turns at snapshot stems `>= k`.
-/// `k` is the track stem (`next_seq` at turn start), not a 0-based user index.
+/// Restore **only** files touched by turns at snapshot stems `>= seq`.
+/// `seq` is the track stem (`next_seq` at turn start).
 ///
 /// Never does a whole-tree checkout. Paths outside the patch union are left alone.
 ///
@@ -1115,11 +1121,11 @@ pub fn snapshot_restore(
     workspace: &Path,
     snapshots_dir: &Path,
     session_id: &str,
-    k: i64,
+    seq: i64,
 ) -> Result<RestoreOutcome> {
-    if k < 0 {
+    if seq < 0 {
         return Err(LitecodeError::InvalidRevertAnchor(format!(
-            "invalid snapshot stem k={k}"
+            "invalid snapshot stem seq={seq}"
         )));
     }
 
@@ -1127,20 +1133,20 @@ pub fn snapshot_restore(
     let _lock = snapshot_lock.lock().expect("snapshot lock poisoned");
 
     let repo = open_or_init_repo(workspace, snapshots_dir)?;
-    let tree_oid = match repo.refname_to_id(&snapshot_ref(session_id, k)) {
+    let tree_oid = match repo.refname_to_id(&snapshot_ref(session_id, seq)) {
         Ok(oid) => oid,
         Err(_) => {
-            tracing::warn!(session_id, k, "snapshot_restore: missing track ref");
+            tracing::warn!(session_id, seq, "snapshot_restore: missing track ref");
             return Ok(RestoreOutcome::Unavailable {
                 reason: RestoreUnavailable::MissingTrackRef,
             });
         }
     };
 
-    if any_track_failed_from(snapshots_dir, session_id, k) {
+    if any_track_failed_from(snapshots_dir, session_id, seq) {
         tracing::warn!(
             session_id,
-            k,
+            seq,
             "snapshot_restore: track_failed patch present"
         );
         return Ok(RestoreOutcome::Unavailable {
@@ -1149,11 +1155,11 @@ pub fn snapshot_restore(
     }
 
     let tree = repo.find_tree(tree_oid)?;
-    let files = union_patches_from(snapshots_dir, session_id, k);
+    let files = union_patches_from(snapshots_dir, session_id, seq);
     if files.is_empty() {
         tracing::info!(
             session_id,
-            k,
+            seq,
             "snapshot_restore: empty patch union (nothing to revert)"
         );
         return Ok(RestoreOutcome::NothingToRevert);
@@ -1212,7 +1218,7 @@ pub fn snapshot_restore(
 
     tracing::info!(
         session_id,
-        k,
+        seq,
         files = restored.len(),
         "snapshot restored (file-level)"
     );
@@ -1221,14 +1227,14 @@ pub fn snapshot_restore(
 
 // ── exists check ──
 
-/// Check if a snapshot ref exists for the given session + anchor.
-pub fn snapshot_exists(snapshots_dir: &Path, session_id: &str, k: i64) -> bool {
+/// Check if a snapshot ref exists for the given session + stem.
+pub fn snapshot_exists(snapshots_dir: &Path, session_id: &str, seq: i64) -> bool {
     let Ok(repo) =
         Repository::open_bare(snapshots_dir).or_else(|_| Repository::open(snapshots_dir))
     else {
         return false;
     };
-    repo.find_reference(&snapshot_ref(session_id, k)).is_ok()
+    repo.find_reference(&snapshot_ref(session_id, seq)).is_ok()
 }
 
 // ── maintenance ──
@@ -1789,26 +1795,26 @@ mod tests {
     }
 
     #[test]
-    fn max_file_revert_k_is_highest_nonempty_ok_patch() {
+    fn max_file_revert_seq_is_highest_nonempty_ok_patch() {
         let dir = tempfile::tempdir().unwrap();
         let snap_root = tempfile::tempdir().unwrap();
         with_snapshots_root(snap_root.path(), || {
             let ws = dir.path().to_path_buf();
             std::fs::write(ws.join("a.txt"), "v0").unwrap();
             let snaps = snapshots_dir_for_workspace(&ws);
-            assert_eq!(max_file_revert_k(&snaps, "sess"), None);
+            assert_eq!(max_file_revert_seq(&snaps, "sess"), None);
 
             snapshot_track(&ws, &snaps, "sess", 0).unwrap();
             snapshot_record_patch(&ws, &snaps, "sess", 0).unwrap();
-            assert_eq!(max_file_revert_k(&snaps, "sess"), None);
+            assert_eq!(max_file_revert_seq(&snaps, "sess"), None);
 
             snapshot_track(&ws, &snaps, "sess", 1).unwrap();
             std::fs::write(ws.join("a.txt"), "v1").unwrap();
             snapshot_record_patch(&ws, &snaps, "sess", 1).unwrap();
-            assert_eq!(max_file_revert_k(&snaps, "sess"), Some(1));
+            assert_eq!(max_file_revert_seq(&snaps, "sess"), Some(1));
 
             write_patch(&snaps, "sess", 2, &[], PatchStatus::TrackFailed).unwrap();
-            assert_eq!(max_file_revert_k(&snaps, "sess"), Some(1));
+            assert_eq!(max_file_revert_seq(&snaps, "sess"), Some(1));
         });
     }
 

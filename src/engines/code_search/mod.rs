@@ -38,8 +38,8 @@ pub use embed::{
     production_embedder_id,
 };
 pub use enclosing::{
-    AncestorSnippet, MAX_ANCESTOR_LINES, ScopeSegment, enclosing_scopes, format_breadcrumb,
-    lines_slice, syntax_ancestor_snippet,
+    AncestorSnippet, MAX_ANCESTOR_LINES, ScopeEntry, ScopeMatch, ScopeSegment, enclosing_scopes,
+    find_scope, format_breadcrumb, lines_slice, list_scopes, scope_at, syntax_ancestor_snippet,
 };
 pub use facade::{HumanSearchRequest, HumanSearchResponse, human_search};
 pub use fs_notify::queue_fs_changes;
@@ -54,7 +54,6 @@ pub use lexical::{
     LexicalMatch, LexicalQuery, LexicalSearchOutcome, lexical_search, lexical_search_with_preset,
     type_to_include_globs,
 };
-pub(crate) use lexical::{compile_exclude_globs, path_glob_match_exclude};
 pub use lexical_primitive::LexicalPrimitive;
 pub use meta::{
     IndexMeta, index_dir, init_workspace_index, meta_path, needs_rebuild, read_meta, write_meta,
