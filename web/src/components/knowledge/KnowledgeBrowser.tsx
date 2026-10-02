@@ -6,13 +6,17 @@ import { FoldCard } from "../FoldCard";
 import { knowledgePreview, normalizeKey } from "../../lib/knowledge/markers";
 import { openKnowledgeGraphPanel } from "../../lib/knowledge/panel";
 import { isVisibleInScrollParent } from "../../lib/knowledge/scrollVisible";
-import { knowledgeTitleTone } from "../../lib/knowledge/validate";
+import {
+  knowledgeAttentionWarnings,
+  knowledgeTitleTone,
+} from "../../lib/knowledge/validate";
 import type {
   KnowledgeIssue,
   KnowledgeNode,
   KnowledgeUnknownFile,
 } from "../../lib/knowledge/types";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
+import { KnowledgeAttentionIcon } from "./KnowledgeAttentionIcon";
 
 const NO_ISSUES: KnowledgeIssue[] = [];
 
@@ -78,6 +82,7 @@ function KnowledgeCard({
     (s) => s.issuesByNode.get(node.id) ?? NO_ISSUES,
   );
   const titleTone = knowledgeTitleTone(issues, node.status);
+  const warnings = knowledgeAttentionWarnings(issues);
   const key = normalizeKey(node.key);
   const summary = node.summary || knowledgePreview(node.value, 1);
 
@@ -137,6 +142,7 @@ function KnowledgeCard({
             >
               {key}
             </span>
+            <KnowledgeAttentionIcon warnings={warnings} />
           </span>
         }
       >

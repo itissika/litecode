@@ -20,9 +20,13 @@ import {
   prefersReducedMotion,
 } from "../../lib/knowledge/flowProjection";
 import { extractMarkers, knowledgePreview, normalizeKey } from "../../lib/knowledge/markers";
-import { knowledgeTitleTone } from "../../lib/knowledge/validate";
+import {
+  knowledgeAttentionWarnings,
+  knowledgeTitleTone,
+} from "../../lib/knowledge/validate";
 import type { KnowledgeIssue } from "../../lib/knowledge/types";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
+import { KnowledgeAttentionIcon } from "./KnowledgeAttentionIcon";
 import {
   KnowledgeSourceField,
   SaveGlyph,
@@ -163,6 +167,7 @@ export function KnowledgeFlowCard({
   if (!node || (stored == null && !leaving)) return null;
 
   const titleTone = knowledgeTitleTone(issues, node.status);
+  const warnings = knowledgeAttentionWarnings(issues);
   const focused = focusedId === node.id;
   const summary = node.summary || knowledgePreview(node.value, 1);
   const enabled = node.status === "enabled";
@@ -387,6 +392,7 @@ export function KnowledgeFlowCard({
               {ownKey}
             </button>
           )}
+          <KnowledgeAttentionIcon warnings={warnings} />
           <SaveGlyph mark={saveMark} />
           <span className="knowledge-flow-title-fill" />
           <button

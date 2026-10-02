@@ -14,5 +14,5 @@ h : 373
 - 单写者：一工作区一 writer actor + 只读池；消费者走类型化命令，不自行开库。
 - subagent session 与 primary session 底层完全等价。
 
-契约展开：[@ id="session-model" label="会话数据模型"]、[@ id="session-write" label="会话写门"]、[@ id="turn-lifecycle" label="turn 生命周期"]。
+契约展开：[@ id="session-model" label="会话模型"]、[@ id="turn-lifecycle" label="turn 生命周期"]。
 上层：[@ id="agent-design" label="agent 设计"]。

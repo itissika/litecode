@@ -14,5 +14,5 @@ h : 337
 - 提醒是日志事实（独立 seq），不做 ephemeral 注入。
 - 窗口稀缺：注入必须值得它的 token。
 
-契约展开：[@ id="context-request" label="请求视图"]、[@ id="context-compact" label="compact 边界"]。
+契约展开：[@ id="context-view" label="上下文视图"]。
 上层：[@ id="agent-design" label="agent 设计"]。

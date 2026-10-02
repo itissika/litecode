@@ -253,3 +253,17 @@ export function knowledgeTitleTone(
   if (status === "pending") return "pending";
   return null;
 }
+
+/**
+ * Warning-class issues that earn the amber exclamation beside a list-item or
+ * canvas title. Same class the rail badge counts when no error is present:
+ * `inactive_target` is left out because the relation edge already shows it.
+ * Error-class issues stay on the title text tone and are not repeated here.
+ */
+export function knowledgeAttentionWarnings(
+  issues: KnowledgeIssue[],
+): KnowledgeIssue[] {
+  return issues.filter(
+    (issue) => issue.severity === "warning" && issue.code !== "inactive_target",
+  );
+}

@@ -6,8 +6,9 @@
   border-radius: var(--radius-md);
 }
 
-/* Title tones carry node state — no badge icon. Red reads as unusable (the
-   same strike-through as disabled), amber marks pending review. */
+/* Title tones carry node state. Red reads as unusable (the same strike-through
+   as disabled), amber marks pending review. Warning-class issues do not tint the
+   text — they get the amber exclamation below instead. */
 .knowledge-node-title.is-disabled {
   color: var(--_dk-text-disabled);
   text-decoration: line-through;
@@ -19,6 +20,15 @@
 }
 
 .knowledge-node-title.is-pending {
+  color: var(--_dk-amber-500);
+}
+
+/* Amber exclamation after a list-item / canvas title: warning-class issues
+   need attention, the same set the rail badge counts. */
+.knowledge-attention-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
   color: var(--_dk-amber-500);
 }
 
@@ -315,7 +325,7 @@
 
 .knowledge-card-label .knowledge-card-title {
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
 }
 
 .knowledge-row-action {

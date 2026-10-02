@@ -5,6 +5,7 @@ import { fileMentionSource, mentionSource } from "./markers";
 import type { KnowledgeIssue, KnowledgeNode } from "./types";
 import {
   groupIssues,
+  knowledgeAttentionWarnings,
   knowledgeListAlert,
   knowledgeRailBadge,
   knowledgeTitleTone,
@@ -334,5 +335,43 @@ describe("knowledgeListAlert", () => {
     expect(alertFor("session")).toBeNull();
     expect(alertFor("sampling")).toBeNull();
     expect(alertFor("temperature")).toBeNull();
+  });
+});
+
+describe("knowledgeAttentionWarnings", () => {
+  const drift: KnowledgeIssue = {
+    nodeId: "a",
+    severity: "warning",
+    code: "symbol_drift",
+    message: "drift",
+  };
+  const mismatch: KnowledgeIssue = {
+    nodeId: "a",
+    severity: "warning",
+    code: "filename_mismatch",
+    message: "mismatch",
+  };
+  const inactive: KnowledgeIssue = {
+    nodeId: "a",
+    severity: "warning",
+    code: "inactive_target",
+    message: "inactive",
+  };
+  const error: KnowledgeIssue = {
+    nodeId: "a",
+    severity: "error",
+    code: "missing_file",
+    message: "missing",
+  };
+
+  it("keeps attention warnings and drops errors and inactive citations", () => {
+    expect(
+      knowledgeAttentionWarnings([mismatch, inactive, error, drift]),
+    ).toEqual([mismatch, drift]);
+  });
+
+  it("stays empty for a node with no attention warnings", () => {
+    expect(knowledgeAttentionWarnings([inactive, error])).toEqual([]);
+    expect(knowledgeAttentionWarnings([])).toEqual([]);
   });
 });
