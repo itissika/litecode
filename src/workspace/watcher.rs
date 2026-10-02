@@ -223,6 +223,20 @@ fn changes_include_workspace_excludes(changes: &[WorkspaceChange]) -> bool {
         .any(|c| c.paths.iter().any(|p| is_workspace_excludes_rel(p)))
 }
 
+/// `HEAD` moved: commit, checkout, reset, or rebase.
+///
+/// Explorer excludes `.git`, so these paths never arrive on `workspace/changed`.
+/// A symbol warning compares the worktree body with HEAD and needs this signal
+/// to clear when the file itself did not change.
+pub fn change_moves_head(change: &WorkspaceChange) -> bool {
+    change.paths.iter().any(|path| moves_git_head(path))
+}
+
+fn moves_git_head(path: &str) -> bool {
+    let path = path.replace('\\', "/");
+    path == ".git/HEAD" || path == ".git/logs/HEAD" || path.starts_with(".git/refs/heads/")
+}
+
 pub fn spawn_watcher(workspace: Arc<WorkspaceService>) -> anyhow::Result<Arc<WorkspaceWatcher>> {
     WorkspaceWatcher::start(workspace)
 }
@@ -551,6 +565,7 @@ mod tests {
         assert_eq!(watcher_only.paths, vec![".data/eval.rs".to_string()]);
         let dropped = filter_change_for_ui(changed(&[".git/config"]));
         assert!(dropped.is_none(), "UI Explorer uses files.exclude");
+        assert!(filter_change_for_ui(changed(&[".git/logs/HEAD"])).is_none());
         let mixed = filter_change_for_ui(changed(&[
             ".git/config",
             "src/a.rs",
@@ -571,6 +586,22 @@ mod tests {
             ]
         );
         crate::workspace::filter::activate_workspace_excludes(prev);
+    }
+
+    #[test]
+    fn head_move_is_head_log_or_branch_ref_only() {
+        assert!(change_moves_head(&changed(&[".git/logs/HEAD"])));
+        assert!(change_moves_head(&changed(&[".git/HEAD"])));
+        assert!(change_moves_head(&changed(&[".git/refs/heads/main"])));
+        assert!(change_moves_head(&changed(&[
+            "src/a.rs",
+            ".git/refs/heads/main"
+        ])));
+        assert!(!change_moves_head(&changed(&[".git/index"])));
+        assert!(!change_moves_head(&changed(&[".git/config"])));
+        assert!(!change_moves_head(&changed(&[".git/objects/ab/cd"])));
+        assert!(!change_moves_head(&changed(&["pkg/.git/logs/HEAD"])));
+        assert!(!change_moves_head(&changed(&["src/a.rs"])));
     }
 
     #[test]

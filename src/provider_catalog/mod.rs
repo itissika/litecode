@@ -5,9 +5,9 @@
 //! windows, modalities and reasoning mappings. Rust owns exactly two things:
 //! the catalog contract (this module) and one codec per
 //! [EndpointKind](schema::EndpointKind). Adding a provider that speaks an
-//! existing protocol is a TOML edit plus a restart.
+//! existing protocol is an edit to this build's seed. The running app uses
+//! that seed and does not load a file.
 
-pub(crate) mod migrate;
 pub mod resolve;
 pub mod schema;
 pub mod store;
@@ -18,9 +18,7 @@ pub use schema::{
     UsagePatch,
 };
 pub use store::{
-    CATALOG_FILE_NAME, CATALOG_SCHEMA, DEFAULT_CATALOG, INITIALIZED_MARKER, SCHEMA_FILE_NAME,
-    SeedGap, SeedProviderGap, catalog_path_for_db, forget, load_for_db, read_and_parse,
-    schema_path_for_db, seed_blocks, seed_gap, shared_for_db,
+    CATALOG_FILE_NAME, CATALOG_SCHEMA, DEFAULT_CATALOG, embedded, forget, pin, shared_for_db,
 };
 
 #[cfg(test)]

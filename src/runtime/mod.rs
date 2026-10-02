@@ -373,9 +373,7 @@ impl From<String> for TurnInput {
 /// `next_seq` so it does not overwrite an older anchor.
 pub(crate) fn snapshot_stem_for_turn(user_seq: Option<u64>, next_seq: u64) -> i64 {
     match user_seq {
-        Some(seq) => i64::try_from(seq)
-            .unwrap_or(i64::MAX)
-            .saturating_add(1),
+        Some(seq) => i64::try_from(seq).unwrap_or(i64::MAX).saturating_add(1),
         None => i64::try_from(next_seq).unwrap_or(i64::MAX),
     }
 }

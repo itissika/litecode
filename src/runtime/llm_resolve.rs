@@ -40,7 +40,7 @@ impl TurnLlmBinding {
 }
 
 const MISSING_MODEL_HINT: &str = "open Settings → Providers and configure a provider API key, then pick a model for the agent \
-     in Settings → Agents (a model that is not declared in provider-catalog.toml cannot be used)";
+     in Settings → Agents";
 
 /// The model a session should start on: the agent's declared model when it is
 /// usable, else the first model a user can run right now.
@@ -171,9 +171,7 @@ fn binding_from_ref(
     let catalog = resolved.catalog();
     let model = catalog.model(model_ref).cloned().ok_or_else(|| {
         LitecodeError::Config(format!(
-            "model '{model_ref}' is not declared in the provider catalog ({}). {}",
-            catalog.path().display(),
-            MISSING_MODEL_HINT
+            "model '{model_ref}' is not in this build's provider catalog. {MISSING_MODEL_HINT}"
         ))
     })?;
     let api_key = provider_api_key(resolved, &model.provider_id)?;
@@ -619,7 +617,9 @@ modalities = ["text", "image", "video", "audio"]
         .expect("unknown reference");
         assert!(error.to_string().contains("ghost/model"), "{error}");
         assert!(
-            error.to_string().contains("provider-catalog.toml"),
+            error
+                .to_string()
+                .contains("not in this build's provider catalog"),
             "{error}"
         );
     }

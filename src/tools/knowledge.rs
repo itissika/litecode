@@ -621,21 +621,11 @@ fn issues_of(workspace: &Path, corpus: &Corpus) -> Vec<Issue> {
             path: &node.path,
         })
         .collect();
-    let root = corpus.root.clone();
     let mut symbols = crate::knowledge::symbol_check::SymbolCache::new();
     validate::validate(
         &checks,
         &|path| crate::knowledge::mentions::workspace_file_exists(workspace, path),
-        &mut |file, chain, node_path| {
-            let base = root.as_ref().and_then(|root| {
-                if node_path.is_empty() {
-                    None
-                } else {
-                    Some(format!("{root}/{node_path}"))
-                }
-            });
-            symbols.check(workspace, file, chain, base.as_deref())
-        },
+        &mut |file, chain, _node_path| symbols.check(workspace, file, chain),
     )
 }
 

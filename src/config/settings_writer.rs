@@ -514,8 +514,7 @@ impl SettingsWriter {
         let catalog = self.catalog()?;
         if catalog.provider(provider_id).is_none() {
             return Err(LitecodeError::Config(format!(
-                "provider '{provider_id}' is not declared in the provider catalog ({})",
-                catalog.path().display()
+                "provider '{provider_id}' is not declared in the provider catalog"
             )));
         }
         let key = api_key.trim();
@@ -539,8 +538,7 @@ impl SettingsWriter {
         let catalog = self.catalog()?;
         if catalog.provider(provider_id).is_none() {
             return Err(LitecodeError::Config(format!(
-                "provider '{provider_id}' is not declared in the provider catalog ({})",
-                catalog.path().display()
+                "provider '{provider_id}' is not declared in the provider catalog"
             )));
         }
         let provider_id = provider_id.to_string();
@@ -559,8 +557,7 @@ impl SettingsWriter {
         let catalog = self.catalog()?;
         if catalog.model(model_ref).is_none() {
             return Err(LitecodeError::Config(format!(
-                "model '{model_ref}' is not declared in the provider catalog ({})",
-                catalog.path().display()
+                "model '{model_ref}' is not declared in the provider catalog"
             )));
         }
         let model_ref = model_ref.to_string();
@@ -953,7 +950,7 @@ impl SettingsWriter {
         match key {
             "provider.endpoint" | "provider.api_key" | "providers" | "models" => {
                 Err(LitecodeError::Config(
-                    "provider and model facts live in provider-catalog.toml; set a key in the Web                      Settings → Providers page or PUT /api/settings/providers/{provider_id}/key"
+                    "provider and model facts are part of this build; set a key in Settings → Providers or PUT /api/settings/providers/{provider_id}/key"
                         .into(),
                 ))
             }
@@ -1158,11 +1155,14 @@ max_output = 1024
         let dir = TempDir::new().unwrap();
         let db = dir.path().join("litecode.db");
         crate::provider_catalog::store::forget(&db);
-        std::fs::write(
-            crate::provider_catalog::catalog_path_for_db(&db),
-            TEST_CATALOG,
-        )
-        .unwrap();
+        let catalog = std::sync::Arc::new(
+            crate::provider_catalog::ProviderCatalog::parse(
+                TEST_CATALOG,
+                std::path::Path::new("provider-catalog.toml"),
+            )
+            .expect("test catalog"),
+        );
+        crate::provider_catalog::pin(&db, catalog);
         crate::config::global_db::open(&db).unwrap();
         let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
         (dir, db, writer)

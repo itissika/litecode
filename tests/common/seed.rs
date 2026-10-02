@@ -31,10 +31,11 @@ pub struct TestGlobalDb {
     pub path: PathBuf,
 }
 
-/// The catalog text a test DB seeds with.
+/// The catalog text a test DB pins in memory.
 ///
-/// The catalog lives next to the global DB, so every fixture that wants a
-/// working LLM binding writes this file beside its temp database.
+/// The running app uses the embedded seed and does not read a catalog file.
+/// A fixture that needs its own providers calls [seed_test_catalog], which
+/// pins this text for that database path.
 pub fn test_catalog_toml(endpoint: &str, context_window: usize, max_output: u32) -> String {
     format!(
         r#"version = 1
@@ -151,16 +152,12 @@ pub fn seed_test_catalog_with(
     context_window: usize,
     max_output: u32,
 ) -> PathBuf {
-    let path = litecode::provider_catalog::catalog_path_for_db(db_path);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).expect("catalog dir");
-    }
-    std::fs::write(
-        &path,
-        test_catalog_toml(endpoint, context_window, max_output),
-    )
-    .expect("write test catalog");
-    path
+    let text = test_catalog_toml(endpoint, context_window, max_output);
+    let catalog = Arc::new(
+        ProviderCatalog::parse(&text, Path::new("provider-catalog.toml")).expect("test catalog"),
+    );
+    litecode::provider_catalog::pin(db_path, catalog);
+    db_path.to_path_buf()
 }
 
 /// Credential for the fixture provider plus agent model references into the

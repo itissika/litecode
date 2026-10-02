@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://litecode.dev/schemas/provider-catalog.json",
   "title": "LiteCode Provider Catalog",
-  "description": "Providers and models known to LiteCode. This file is read once at startup; the Rust contract in src/provider_catalog is authoritative.",
+  "description": "Providers and models known to LiteCode. The running app uses the seed compiled into the binary; this schema describes that text. The Rust contract in src/provider_catalog is authoritative.",
   "type": "object",
   "additionalProperties": false,
   "required": ["version"],

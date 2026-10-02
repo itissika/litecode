@@ -610,9 +610,7 @@ mod tests {
         working.push(crate::session::working::WorkingRow::pending(
             crate::types::user_message(&text, &[]),
         ));
-        pipeline
-            .commit_step(&sessions, &sid, &mut working)
-            .unwrap();
+        pipeline.commit_step(&sessions, &sid, &mut working).unwrap();
         let user_seq = working
             .iter()
             .rev()
@@ -631,13 +629,11 @@ mod tests {
         crate::session::snapshot::snapshot_track(dir.path(), &snaps, &sid, stem).unwrap();
         let restored =
             crate::session::snapshot::snapshot_restore(dir.path(), &snaps, &sid, stem).unwrap();
-        assert!(
-            !matches!(
-                restored,
-                crate::session::snapshot::RestoreOutcome::Unavailable {
-                    reason: crate::session::snapshot::RestoreUnavailable::MissingTrackRef,
-                }
-            )
-        );
+        assert!(!matches!(
+            restored,
+            crate::session::snapshot::RestoreOutcome::Unavailable {
+                reason: crate::session::snapshot::RestoreUnavailable::MissingTrackRef,
+            }
+        ));
     }
 }

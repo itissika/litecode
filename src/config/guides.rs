@@ -21,9 +21,6 @@ pub enum GuideTopic {
     Excludes,
     Mcp,
     CustomTools,
-    /// Global provider catalog. Printed by the tool only; not part of the
-    /// workspace README, because the file does not live under `.litecode/`.
-    Provider,
 }
 
 impl GuideTopic {
@@ -32,7 +29,6 @@ impl GuideTopic {
             Self::Excludes => "excludes",
             Self::Mcp => "mcp",
             Self::CustomTools => "custom_tools",
-            Self::Provider => "provider",
         }
     }
 
@@ -42,7 +38,6 @@ impl GuideTopic {
             "excludes" => Some(Self::Excludes),
             "mcp" => Some(Self::Mcp),
             "custom_tools" => Some(Self::CustomTools),
-            "provider" => Some(Self::Provider),
             _ => None,
         }
     }
@@ -53,7 +48,6 @@ const EDITABLE: &str = include_str!("guides/editable.md");
 const EXCLUDES: &str = include_str!("guides/excludes.md");
 const MCP: &str = include_str!("guides/mcp.md");
 const CUSTOM_TOOLS: &str = include_str!("guides/custom_tools.md");
-const PROVIDER: &str = include_str!("guides/provider.md");
 const READONLY: &str = include_str!("guides/readonly.md");
 const QUICKREF: &str = include_str!("guides/quickref.md");
 
@@ -81,12 +75,11 @@ pub const GUIDE_INDEX: &str = concat!(
     "- `guide excludes` — path / file excludes (`.litecode/excludes.json`)\n",
     "- `guide mcp` — MCP servers (`.litecode/mcp.json`)\n",
     "- `guide custom_tools` — custom tools (`.litecode/custom_tools.json`)\n",
-    "- `guide provider` — provider catalog (`provider-catalog.toml`, beside the global database)\n",
-    "\n`excludes`, `mcp`, and `custom_tools` are also in `.litecode/README.md` \
-     (product-owned, rewritten on every open). `provider` is not: that file is not in the workspace.\n",
-    "\nBoundaries: this tool does not write files, flip switches, or merge the catalog. \
-     Engines stay in Settings → Engines. Enabling an MCP server or a custom tool stays in \
-     Settings → Agents.\n",
+    "\nThese topics are also in `.litecode/README.md` \
+     (product-owned, rewritten on every open).\n",
+    "\nBoundaries: this tool does not write files or flip switches. \
+     Engines stay in Settings → Engines. Enabling an MCP server \
+     or a custom tool stays in Settings → Agents.\n",
 );
 
 /// One topic's fragment, printed as-is.
@@ -95,7 +88,6 @@ pub fn topic(topic: GuideTopic) -> &'static str {
         GuideTopic::Excludes => EXCLUDES,
         GuideTopic::Mcp => MCP,
         GuideTopic::CustomTools => CUSTOM_TOOLS,
-        GuideTopic::Provider => PROVIDER,
     }
 }
 
@@ -207,7 +199,6 @@ mod tests {
             GuideTopic::Excludes,
             GuideTopic::Mcp,
             GuideTopic::CustomTools,
-            GuideTopic::Provider,
         ] {
             assert_eq!(GuideTopic::parse(topic.as_str()), Some(topic));
         }
@@ -219,19 +210,9 @@ mod tests {
     }
 
     #[test]
-    fn provider_guide_is_tool_only() {
-        assert!(PROVIDER.starts_with('#'), "must start with a heading");
-        assert!(PROVIDER.ends_with('\n'), "must end with a newline");
-        assert!(!PROVIDER.ends_with("\n\n"), "exactly one trailing newline");
-        assert!(
-            !PROVIDER.lines().any(|line| line.trim() == "---"),
-            "fragments must not carry section separators"
-        );
-        assert!(
-            !WORKSPACE_README.contains(PROVIDER),
-            "the provider catalog is not a workspace file"
-        );
-        assert!(GUIDE_INDEX.contains("`guide provider`"));
+    fn guide_index_does_not_mention_the_provider_catalog() {
+        assert!(!GUIDE_INDEX.contains("provider"));
+        assert!(!WORKSPACE_README.contains("provider-catalog"));
         assert!(!GUIDE_INDEX.contains("writes definitions"));
     }
 }

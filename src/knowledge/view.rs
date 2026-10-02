@@ -51,7 +51,7 @@ The only node citation is `[@ id="seq" label="seq"]`. Lookup uses `id`. `label` 
 
 A file citation is `[@ file="src/a.rs" label="a.rs"]`. It names a workspace path, not a node. A file and a directory both count. `..` and an absolute path are not a path.
 
-A symbol citation is `[@ file="src/a.rs" symbol="impl Store › fn save" label="fn save"]`. `symbol` is the ancestor chain and is the identity. `lines` is optional and is not checked. A chain that is missing or not unique is an error. When this note has been committed and git can answer, a chain whose body changed in later commits of that file is a warning: read the code, update the note, and the warning goes away on the next commit of this note. Uncommitted edits are not that warning. Without git, only existence is checked.
+A symbol citation is `[@ file="src/a.rs" symbol="impl Store › fn save" label="fn save"]`. `symbol` is the ancestor chain and is the identity. `lines` is optional and is not checked. A chain that is missing or not unique is an error. When git can answer, a chain whose body on disk differs from that file at HEAD is a warning. Commit that file and the warning goes away. Without git, only existence is checked.
 
 A citation inside a fence (` ``` ` or `~~~`), inside inline code, or written as `@seq` or `/src/a.rs` is ordinary text.
 
@@ -75,7 +75,7 @@ Warnings:
 
 - The file name does not match the key.
 - An enabled node cites a disabled or pending node.
-- A symbol citation's body changed in commits since this note was last committed.
+- A symbol citation's body on disk differs from that file at HEAD.
 
 ## Notes
 

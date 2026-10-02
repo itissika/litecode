@@ -157,10 +157,9 @@ export interface SymbolPresence {
   exists: boolean;
   ambiguous: boolean;
   drifted: boolean;
-  commits: { hash: string; subject: string }[];
 }
 
-/** Symbol citations whose chain is missing, repeated, or drifted since the note's commit. */
+/** Symbol citations whose chain is missing, repeated, or whose disk body differs from HEAD. */
 export function symbolIssues(rows: SymbolPresence[]): KnowledgeIssue[] {
   const issues: KnowledgeIssue[] = [];
   for (const row of rows) {
@@ -177,17 +176,11 @@ export function symbolIssues(rows: SymbolPresence[]): KnowledgeIssue[] {
       continue;
     }
     if (!row.drifted) continue;
-    const commits = row.commits
-      .slice(0, 3)
-      .map((commit) => `${commit.hash} ${commit.subject}`)
-      .join("\n");
     issues.push({
       nodeId: row.nodeId,
       severity: "warning",
       code: "symbol_drift",
-      message: commits
-        ? `Symbol "${row.symbol}" in "${row.file}" changed since this note was last committed.\n${commits}`
-        : `Symbol "${row.symbol}" in "${row.file}" changed since this note was last committed.`,
+      message: `Symbol "${row.symbol}" in "${row.file}" differs from HEAD.`,
       ref: row.symbol,
     });
   }

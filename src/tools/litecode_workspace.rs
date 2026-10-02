@@ -2,10 +2,9 @@
 //!
 //! One `action` string in command-line form. No argument opens the panel:
 //! current state, plus the buttons that open the next popup. Every command
-//! reads. This tool never writes a config file, never enables a tool, and
-//! never merges the provider catalog. A valid excludes file is already in
-//! effect. MCP and custom tools take effect when the workspace has no running
-//! session. The provider catalog loads when the current LiteCode restarts.
+//! reads. This tool never writes a config file and never enables a tool.
+//! A valid excludes file is already in effect. MCP and custom tools take
+//! effect when the workspace has no running session.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -21,7 +20,6 @@ use crate::config::workspace::{read_workspace_custom_tools, read_workspace_mcp};
 use crate::context_pipeline::Context;
 use crate::engines::session_search::short_session_ref;
 use crate::mcp::{McpRunState, McpServerSnapshot};
-use crate::provider_catalog::{SeedGap, read_and_parse, seed_blocks, seed_gap};
 use crate::runtime::RuntimeHandle;
 use crate::session::SessionDataReader;
 use crate::session::manager::{SessionActivityRow, SessionManager, SessionStatus};
@@ -52,17 +50,6 @@ const APPLIES_WHEN_IDLE: &str = "When this workspace has no running session, thi
      effect on its own. Tell the human.";
 const ASK_HUMAN: &str = "If you actually need it, ask a human to enable it in Settings → \
      Agents. Otherwise stay silent.";
-const NEED_RESTART_NEXT: &str = "Tell the human to restart the current LiteCode. The file \
-     takes effect only after that restart.";
-const PROVIDER_OUTDATED_NEXT: &str = "`seed` prints the missing blocks. Ask the human. If they \
-     agree, paste those blocks into the existing file and keep their other edits. This tool \
-     will not write the file.";
-const SEED_PASTE: &str = "Ask the human. If they agree, paste the blocks below into the existing \
-     file and keep their other edits. Then run `refresh provider`. This tool will not write the \
-     file.";
-const PROVIDER_FIX_NEXT: &str =
-    "Fix the file, then run `refresh provider` again. This tool will not write the file.";
-
 struct CommandSpec {
     name: &'static str,
     usage: &'static str,
@@ -95,30 +82,18 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "guide",
-        usage: "guide [excludes|mcp|custom_tools|provider]",
+        usage: "guide [excludes|mcp|custom_tools]",
         summary: "how to edit that file, and who has to act",
         help: "`guide` lists topics. `guide <topic>` prints that topic.",
     },
     CommandSpec {
-        name: "seed",
-        usage: "seed",
-        summary: "missing provider and model blocks from this build",
-        help: "`seed` prints the `[[providers]]` and `[[models]]` blocks this build ships that \
-               `provider-catalog.toml` does not have yet, including the comments above each \
-               block. Ask the human, then paste the blocks into the existing file. Entries \
-               already in the file are left out. A file that already has them, or that fails \
-               validation, prints no blocks. This tool will not write the file.",
-    },
-    CommandSpec {
         name: "refresh",
-        usage: "refresh [excludes|mcp|custom_tools|provider|all]",
+        usage: "refresh [excludes|mcp|custom_tools|all]",
         summary: "whether those files will be accepted",
-        help: "`refresh` checks `.litecode/excludes.json`, `mcp.json`, `custom_tools.json`, \
-               and `provider-catalog.toml`. A valid excludes file is already in effect. MCP and \
-               custom tools take effect when this workspace has no running session. A provider \
-               catalog that already has this build's entries takes effect when the current \
-               LiteCode restarts. A file that fails validation names the error; fix it and run \
-               `refresh` again.",
+        help: "`refresh` checks `.litecode/excludes.json`, `mcp.json`, and \
+               `custom_tools.json`. A valid excludes file is already in effect. MCP and \
+               custom tools take effect when this workspace has no running session. \
+               A file that fails validation names the error; fix it and run `refresh` again.",
     },
 ];
 
@@ -133,7 +108,6 @@ enum Action {
         limit: Option<usize>,
     },
     Guide(Option<GuideTopic>),
-    Seed,
     Refresh(Option<RefreshTarget>),
 }
 
@@ -142,7 +116,6 @@ enum RefreshTarget {
     Excludes,
     Mcp,
     CustomTools,
-    Provider,
 }
 
 const TOPICS: &str = "\
@@ -150,8 +123,7 @@ topics:\n\
 \n\
 - `excludes`\n\
 - `mcp`\n\
-- `custom_tools`\n\
-- `provider`";
+- `custom_tools`";
 
 fn parse_action(raw: &str) -> Result<Action, String> {
     let mut tokens = raw.split_whitespace();
@@ -180,20 +152,12 @@ fn parse_action(raw: &str) -> Result<Action, String> {
                 .ok_or_else(|| format!("# error\n\nunknown guide topic '{topic}'\n\n{TOPICS}\n")),
             _ => Err(usage_error("guide")),
         },
-        "seed" => {
-            if rest.is_empty() {
-                Ok(Action::Seed)
-            } else {
-                Err(usage_error("seed"))
-            }
-        }
         "refresh" => match rest.as_slice() {
             [] | ["all"] => Ok(Action::Refresh(None)),
             [topic] => match *topic {
                 "excludes" => Ok(Action::Refresh(Some(RefreshTarget::Excludes))),
                 "mcp" => Ok(Action::Refresh(Some(RefreshTarget::Mcp))),
                 "custom_tools" => Ok(Action::Refresh(Some(RefreshTarget::CustomTools))),
-                "provider" => Ok(Action::Refresh(Some(RefreshTarget::Provider))),
                 other => Err(format!(
                     "# error\n\nunknown refresh topic '{other}'\n\n{TOPICS}\n\nor `all`.\n"
                 )),
@@ -326,7 +290,6 @@ impl LitecodeWorkspaceTool {
                 Some(topic) => ToolCallResult::ok(guides::topic(topic)),
                 None => ToolCallResult::ok(guides::GUIDE_INDEX),
             },
-            Ok(Action::Seed) => self.seed(),
             Ok(Action::Refresh(target)) => self.refresh(target),
         }
     }
@@ -338,13 +301,11 @@ impl LitecodeWorkspaceTool {
                 Ok((body, warning)) => (body, warning),
                 Err(error) => (unavailable(&error), None),
             };
-        let (provider, provider_warning) = self.provider_picture();
         let mut sections = vec![
             section("excludes", self.excludes_section()),
             section("mcp", self.mcp_section()),
             section("custom tools", self.custom_tools_section()),
             section("sessions", Ok(sessions)),
-            section("provider config", Ok(provider)),
         ];
         if with_buttons {
             sections.push(buttons());
@@ -352,9 +313,6 @@ impl LitecodeWorkspaceTool {
         let out = format!("# Workspace\n\n{}\n", sections.join("\n---\n\n"));
         let mut warnings = Vec::new();
         if let Some(warning) = sessions_warning {
-            warnings.push(warning);
-        }
-        if let Some(warning) = provider_warning {
             warnings.push(warning);
         }
         let result = ToolCallResult::ok(out);
@@ -467,96 +425,6 @@ impl LitecodeWorkspaceTool {
             out.push_str(&format!("- next: {ASK_HUMAN}\n"));
         }
         Ok(out)
-    }
-
-    /// Disk catalog versus the catalog this process already loaded.
-    ///
-    /// A missing file reports the loaded catalog. A file that fails validation
-    /// names that error and does not pretend the seed list is the problem.
-    /// A valid file that already contains the seed, while this process does
-    /// not, is `need restart` with no missing list.
-    fn provider_picture(&self) -> (String, Option<String>) {
-        let catalog = self.runtime.resolved.catalog();
-        let path = catalog.path();
-        let loaded_gap = seed_gap(catalog);
-        let mut out = format!("- file: `{}`\n", path.display());
-        if !path.is_file() {
-            if loaded_gap.is_empty() {
-                out.push_str("- seed: configured\n");
-            } else {
-                out.push_str("- seed: outdated\n");
-                out.push_str(&seed_gap_lines(&loaded_gap));
-                out.push_str(&format!("- next: {PROVIDER_OUTDATED_NEXT}\n"));
-            }
-            return (out, None);
-        }
-        match read_and_parse(path) {
-            Err(error) => {
-                let message = one_line(&reason(&error));
-                out.push_str(&format!("- rejected: {message}\n"));
-                out.push_str(&format!("- next: {PROVIDER_FIX_NEXT}\n"));
-                (
-                    out,
-                    Some(format!(
-                        "provider-catalog.toml failed validation: {message}"
-                    )),
-                )
-            }
-            Ok(disk) => {
-                let disk_gap = seed_gap(&disk);
-                if disk_gap.is_empty() && !loaded_gap.is_empty() {
-                    out.push_str("- seed: need restart\n");
-                    out.push_str(&format!("- next: {NEED_RESTART_NEXT}\n"));
-                    return (out, None);
-                }
-                if disk_gap.is_empty() {
-                    out.push_str("- seed: configured\n");
-                    return (out, None);
-                }
-                out.push_str("- seed: outdated\n");
-                out.push_str(&seed_gap_lines(&disk_gap));
-                out.push_str(&format!("- next: {PROVIDER_OUTDATED_NEXT}\n"));
-                (out, None)
-            }
-        }
-    }
-
-    /// Original seed tables for whatever `provider_picture` calls outdated.
-    /// Configured, need-restart, and rejected files print no blocks.
-    fn seed(&self) -> ToolCallResult {
-        let catalog = self.runtime.resolved.catalog();
-        let path = catalog.path();
-        let loaded_gap = seed_gap(catalog);
-        if !path.is_file() {
-            return seed_outdated(&loaded_gap);
-        }
-        match read_and_parse(path) {
-            Err(error) => {
-                let message = one_line(&reason(&error));
-                ToolCallResult::ok(format!(
-                    "# seed\n\n- rejected: {message}\n- next: {PROVIDER_FIX_NEXT}\n"
-                ))
-                .with_warning(format!(
-                    "provider-catalog.toml failed validation: {message}"
-                ))
-            }
-            Ok(disk) => {
-                let disk_gap = seed_gap(&disk);
-                if disk_gap.is_empty() && !loaded_gap.is_empty() {
-                    ToolCallResult::ok(format!(
-                        "# seed\n\n- seed: need restart\n- next: {NEED_RESTART_NEXT}\n"
-                    ))
-                } else if disk_gap.is_empty() {
-                    ToolCallResult::ok(
-                        "# seed\n\n- seed: configured\n\nThis build's entries are already loaded. \
-                         There is no seed text to paste.\n"
-                            .to_string(),
-                    )
-                } else {
-                    seed_outdated(&disk_gap)
-                }
-            }
-        }
     }
 
     /// Running turns + recently active sessions + total count.
@@ -681,7 +549,6 @@ impl LitecodeWorkspaceTool {
                 RefreshTarget::Excludes,
                 RefreshTarget::Mcp,
                 RefreshTarget::CustomTools,
-                RefreshTarget::Provider,
             ],
         };
         let mut blocks = Vec::new();
@@ -690,7 +557,6 @@ impl LitecodeWorkspaceTool {
                 RefreshTarget::Excludes => self.refresh_excludes(),
                 RefreshTarget::Mcp => self.refresh_mcp(),
                 RefreshTarget::CustomTools => self.refresh_custom_tools(),
-                RefreshTarget::Provider => self.refresh_provider(),
             };
             blocks.push(body.trim_end().to_string());
             warnings.append(&mut found);
@@ -849,14 +715,6 @@ impl LitecodeWorkspaceTool {
         }
         (out, warnings)
     }
-
-    fn refresh_provider(&self) -> (String, Vec<String>) {
-        let (body, warning) = self.provider_picture();
-        (
-            format!("# refresh provider\n\n{body}"),
-            warning.into_iter().collect(),
-        )
-    }
 }
 
 impl Tool for LitecodeWorkspaceTool {
@@ -907,23 +765,12 @@ impl Tool for LitecodeWorkspaceTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Facade for this workspace: excludes, MCP servers, custom tools, sessions, and whether \
-         provider-catalog.toml is behind this build's seed. `seed: outdated` lists entries still \
-         missing from the file. `seed` prints those entries as `[[providers]]` and `[[models]]` \
-         blocks from this build, comments included; ask the human, then paste the blocks into \
-         the existing file. `seed: need restart` means the file already has them; tell the \
-         human to restart the current LiteCode, and do not edit again. `refresh` (and \
-         `refresh all`) validates excludes, MCP, custom tools, and the provider catalog; a \
-         rejected provider file names the error. An MCP server or custom tool that is off for \
-         you stays quiet unless you actually need it. It does not write files, enable tools, \
-         start engines, or merge the catalog. Omit `action` to open the panel."
+        "Facade for this workspace: excludes, MCP servers, custom tools, and sessions. \
+         `refresh` (and `refresh all`) validates excludes, MCP, and custom tools. \
+         An MCP server or custom tool that is off for you stays quiet unless you actually \
+         need it. It does not write files, enable tools, or start engines. Omit `action` \
+         to open the panel."
             .into()
-    }
-
-    fn max_result_size(&self) -> usize {
-        // `seed` prints the missing catalog tables. A first-run file can be
-        // missing every shipped block, which is larger than the panel.
-        256_000
     }
 }
 
@@ -999,34 +846,6 @@ fn run_state_label(snapshot: Option<&McpServerSnapshot>) -> String {
     }
 }
 
-fn seed_outdated(gap: &SeedGap) -> ToolCallResult {
-    let blocks = seed_blocks(gap);
-    let mut out = String::from("# seed\n\n- seed: outdated\n\n");
-    out.push_str(SEED_PASTE);
-    out.push_str("\n\n```toml\n");
-    if blocks.is_empty() {
-        out.push_str(&seed_gap_lines(gap));
-    } else {
-        out.push_str(&blocks);
-    }
-    out.push_str("```\n");
-    ToolCallResult::ok(out)
-}
-
-fn seed_gap_lines(gap: &SeedGap) -> String {
-    let mut out = String::new();
-    for provider in &gap.missing_providers {
-        out.push_str(&format!(
-            "- missing provider: `{}` · endpoint `{}` · {} · {}\n",
-            provider.id, provider.endpoint, provider.endpoint_type, provider.auth
-        ));
-    }
-    for model in &gap.missing_models {
-        out.push_str(&format!("- missing model: `{model}`\n"));
-    }
-    out
-}
-
 /// Passed files take effect when the workspace is idle. Rejections stay a
 /// separate next. Switches that are off are named on their own line.
 fn finish_refresh(topic: &str, rejected: usize, off: &[String]) -> String {
@@ -1061,10 +880,6 @@ fn off_for_you_line(names: &[String]) -> String {
         "{listed} off for you. If you actually need {pronoun}, ask a human to enable {pronoun} \
          in Settings → Agents. Otherwise stay silent."
     )
-}
-
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn excludes_counts(file: &WorkspaceExcludesFile) -> String {
@@ -1236,7 +1051,7 @@ fn one_line_preview(raw: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::TurnGuard;
-    use crate::config::resolved::{WorkspaceState, resolve, resolve_without_catalog};
+    use crate::config::resolved::{WorkspaceState, resolve};
     use crate::config::schema::{
         AgentProfile, AgentToolBinding, CustomToolDefinition, GlobalSettings, McpTransport,
         ToolSchema,
@@ -1379,19 +1194,13 @@ mod tests {
             Ok(Action::Guide(Some(GuideTopic::Mcp)))
         );
         assert_eq!(
-            parse_action("guide provider"),
-            Ok(Action::Guide(Some(GuideTopic::Provider)))
-        );
-        assert_eq!(
             parse_action("refresh custom_tools"),
             Ok(Action::Refresh(Some(RefreshTarget::CustomTools)))
         );
-        assert_eq!(
-            parse_action("refresh provider"),
-            Ok(Action::Refresh(Some(RefreshTarget::Provider)))
-        );
+        assert!(parse_action("guide provider").is_err());
+        assert!(parse_action("refresh provider").is_err());
         assert_eq!(parse_action("refresh all"), Ok(Action::Refresh(None)));
-        assert_eq!(parse_action("seed"), Ok(Action::Seed));
+        assert!(parse_action("seed").is_err());
     }
 
     #[test]
@@ -1448,12 +1257,10 @@ mod tests {
             "## mcp",
             "## custom tools",
             "## sessions",
-            "## provider config",
             "`docs` · stopped · off for you · global",
             "- next: If you actually need it, ask a human to enable it in Settings → Agents. Otherwise stay silent.",
             "- running (0):",
             "total: 0 sessions in this workspace",
-            "- seed: configured",
         ] {
             assert!(
                 result.content.contains(expected),
@@ -1478,9 +1285,9 @@ mod tests {
             result.content
         );
         assert!(
-            !result.content.contains("missing provider")
-                && !result.content.contains("guide provider"),
-            "a current seed has no gap and no next:\n{}",
+            !result.content.contains("provider config")
+                && !result.content.contains("provider-catalog"),
+            "the panel does not talk about the provider catalog:\n{}",
             result.content
         );
         let status = run(&tool, &execution(root, &sessions, ""), "status");
@@ -1734,7 +1541,7 @@ mod tests {
         let index = run(&tool, &execution(dir.path(), &sessions, ""), "guide");
         assert!(index.content.contains("# guide"));
         assert!(index.content.contains("`guide mcp`"));
-        assert!(index.content.contains("`guide provider`"));
+        assert!(!index.content.contains("`guide provider`"));
         assert!(index.content.contains("Settings → Agents"));
         assert!(!index.content.contains("writes definitions"));
 
@@ -1952,200 +1759,12 @@ mod tests {
     }
 
     #[test]
-    fn provider_section_is_configured_for_the_seed_and_outdated_when_an_id_is_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let (tool, sessions) = tool_for(root, GlobalSettings::default());
-        let configured = run(&tool, &execution(root, &sessions, ""), "status");
-        assert!(
-            configured.content.contains("- seed: configured"),
-            "{}",
-            configured.content
-        );
-        assert!(!configured.content.contains("missing provider"));
-        assert!(!configured.content.contains("- next: `guide provider`"));
-
-        let empty_dir = tempfile::tempdir().unwrap();
-        let empty_root = empty_dir.path();
-        let sessions = Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            empty_root
-                .join(".litecode")
-                .join("sessions.db")
-                .to_str()
-                .unwrap()
-                .to_string(),
-        ));
-        let resolved =
-            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new(empty_root));
-        let engines = crate::engines::WorkspaceEngines::new();
-        let ide = IdeBaseHandle::open(empty_root, Arc::new(engines.clone())).expect("ide");
-        let runtime = RuntimeHandle::new(
-            resolved,
-            "default".into(),
-            WorkspaceState::new(empty_root),
-            Arc::new(EngineManager::new()),
-            Arc::new(engines),
-            ide,
-            Arc::new(AtomicU64::new(0)),
-            empty_root.join("global.db"),
-        );
-        let tool = LitecodeWorkspaceTool::new(runtime, Arc::clone(&sessions), "default".into());
-        let outdated = run(&tool, &execution(empty_root, &sessions, ""), "status");
-        assert!(
-            outdated.content.contains("- seed: outdated"),
-            "{}",
-            outdated.content
-        );
-        assert!(
-            outdated.content.contains("missing provider: `openai`"),
-            "{}",
-            outdated.content
-        );
-        assert!(
-            outdated.content.contains("https://api.openai.com/v1"),
-            "{}",
-            outdated.content
-        );
-        assert!(
-            outdated
-                .content
-                .contains("`seed` prints the missing blocks"),
-            "{}",
-            outdated.content
-        );
-        assert!(
-            !outdated.content.contains("need restart"),
-            "a file that is not on disk is still an edit, not a restart:\n{}",
-            outdated.content
-        );
-    }
-
-    #[test]
-    fn provider_section_asks_for_a_restart_once_the_file_closes_the_gap() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let path = root.join("provider-catalog.toml");
-        std::fs::write(&path, "version = 1\n").unwrap();
-        let sessions = Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            root.join(".litecode")
-                .join("sessions.db")
-                .to_str()
-                .unwrap()
-                .to_string(),
-        ));
-        let loaded =
-            Arc::new(ProviderCatalog::parse("version = 1\n", &path).expect("empty catalog"));
-        let engines = crate::engines::WorkspaceEngines::new();
-        let ide = IdeBaseHandle::open(root, Arc::new(engines.clone())).expect("ide");
-        let runtime = RuntimeHandle::new(
-            resolve(GlobalSettings::default(), WorkspaceState::new(root), loaded),
-            "default".into(),
-            WorkspaceState::new(root),
-            Arc::new(EngineManager::new()),
-            Arc::new(engines),
-            ide,
-            Arc::new(AtomicU64::new(0)),
-            root.join("global.db"),
-        );
-        let tool = LitecodeWorkspaceTool::new(runtime, Arc::clone(&sessions), "default".into());
-        let outdated = run(&tool, &execution(root, &sessions, ""), "status");
-        assert!(
-            outdated.content.contains("- seed: outdated"),
-            "{}",
-            outdated.content
-        );
-        assert!(
-            outdated.content.contains("missing provider: `openai`"),
-            "{}",
-            outdated.content
-        );
-        let pasted = run(&tool, &execution(root, &sessions, ""), "seed");
-        assert!(
-            pasted.content.contains("```toml")
-                && pasted.content.contains("[[providers]]")
-                && pasted.content.contains("id = \"openai\"")
-                && pasted.content.contains(SEED_PASTE),
-            "{}",
-            pasted.content
-        );
-        assert!(
-            !pasted.content.contains("- seed: need restart"),
-            "an open gap prints the blocks, not a restart:\n{}",
-            pasted.content
-        );
-
-        std::fs::write(&path, DEFAULT_CATALOG).unwrap();
-        let ready = run(&tool, &execution(root, &sessions, ""), "status");
-        assert!(
-            ready.content.contains("- seed: need restart"),
-            "{}",
-            ready.content
-        );
-        assert!(
-            !ready.content.contains("- seed: outdated")
-                && !ready.content.contains("missing provider"),
-            "a file that already has the seed is not another edit list:\n{}",
-            ready.content
-        );
-        assert!(
-            ready.content.contains(NEED_RESTART_NEXT),
-            "{}",
-            ready.content
-        );
-        assert!(
-            !ready.content.contains("`seed` prints the missing blocks"),
-            "a closed gap does not print seed blocks:\n{}",
-            ready.content
-        );
-        let quiet = run(&tool, &execution(root, &sessions, ""), "seed");
-        assert!(
-            quiet.content.contains("- seed: need restart")
-                && !quiet.content.contains("```toml")
-                && !quiet.content.contains("id = \"openai\""),
-            "a closed gap does not print the seed text again:\n{}",
-            quiet.content
-        );
-
-        let refreshed = run(&tool, &execution(root, &sessions, ""), "refresh");
-        assert!(
-            refreshed.content.contains("# refresh provider")
-                && refreshed.content.contains("- seed: need restart")
-                && refreshed.content.contains(NEED_RESTART_NEXT)
-                && refreshed.content.contains("\n---\n"),
-            "{}",
-            refreshed.content
-        );
-        assert!(
-            !refreshed.content.contains("missing provider"),
-            "{}",
-            refreshed.content
-        );
-
-        std::fs::write(&path, "version = \n").unwrap();
-        let broken = run(&tool, &execution(root, &sessions, ""), "refresh provider");
-        assert_eq!(broken.level, ToolSignalLevel::Warning, "{}", broken.content);
-        assert!(
-            broken.content.contains("- rejected:") && broken.content.contains(PROVIDER_FIX_NEXT),
-            "{}",
-            broken.content
-        );
-        assert!(
-            !broken.content.contains("missing provider")
-                && !broken.content.contains("need restart"),
-            "a file that fails validation is not a seed list:\n{}",
-            broken.content
-        );
-    }
-
-    #[test]
     fn read_commands_are_concurrency_safe() {
         let dir = tempfile::tempdir().unwrap();
         let (tool, _sessions) = tool_for(dir.path(), GlobalSettings::default());
         assert!(tool.is_concurrency_safe(&serde_json::json!({})));
         assert!(tool.is_concurrency_safe(&serde_json::json!({ "action": "status" })));
         assert!(tool.is_concurrency_safe(&serde_json::json!({ "action": "refresh" })));
-        assert!(tool.is_concurrency_safe(&serde_json::json!({ "action": "guide provider" })));
+        assert!(tool.is_concurrency_safe(&serde_json::json!({ "action": "guide mcp" })));
     }
 }

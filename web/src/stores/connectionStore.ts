@@ -409,6 +409,11 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
             return;
           }
 
+          case "git/head": {
+            useWorkspaceChangeStore.getState().recordHead();
+            return;
+          }
+
           case "settings/changed": {
             settings?.onRemoteSettingsChanged(
               params as unknown as SettingsChanged,

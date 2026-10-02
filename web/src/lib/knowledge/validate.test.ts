@@ -171,7 +171,6 @@ describe("validateKnowledge", () => {
         exists: false,
         ambiguous: false,
         drifted: false,
-        commits: [],
       },
       {
         nodeId: "note",
@@ -180,7 +179,6 @@ describe("validateKnowledge", () => {
         exists: true,
         ambiguous: true,
         drifted: false,
-        commits: [],
       },
       {
         nodeId: "note",
@@ -189,7 +187,6 @@ describe("validateKnowledge", () => {
         exists: true,
         ambiguous: false,
         drifted: true,
-        commits: [{ hash: "abc1234", subject: "edit gamma" }],
       },
     ]);
     expect(issues.map((issue) => issue.code)).toEqual([
@@ -198,7 +195,7 @@ describe("validateKnowledge", () => {
       "symbol_drift",
     ]);
     expect(issues[1]?.message).toContain("not unique");
-    expect(issues[2]?.message).toContain("abc1234 edit gamma");
+    expect(issues[2]?.message).toContain("differs from HEAD");
     expect(issues[2]?.severity).toBe("warning");
   });
 

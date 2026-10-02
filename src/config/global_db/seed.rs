@@ -523,7 +523,7 @@ mod tests {
         seed(&conn).unwrap();
 
         // A fresh install has no legacy LLM tables at all: provider/model facts
-        // live in provider-catalog.toml, credentials in provider_credentials.
+        // live in the embedded catalog, credentials in provider_credentials.
         for legacy in ["providers", "models"] {
             let count: i64 = conn
                 .query_row(

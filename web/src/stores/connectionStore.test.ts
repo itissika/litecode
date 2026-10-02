@@ -89,7 +89,7 @@ describe("agent/subagent_bound → session/list refresh", () => {
 
 describe("workspace/changed → workspace change store", () => {
   afterEach(() => {
-    useWorkspaceChangeStore.setState({ last: null });
+    useWorkspaceChangeStore.setState({ last: null, headSeq: 0 });
   });
 
   it("records every change for panels that re-read files", () => {
@@ -105,6 +105,15 @@ describe("workspace/changed → workspace change store", () => {
       paths: [".litecode/plan/calm-river.md"],
       kind: "modified",
     });
+  });
+
+  it("records a HEAD move separately from file changes", () => {
+    useConnectionStore.getState().dispatchEnvelope({
+      method: "git/head",
+      params: {},
+    });
+    expect(useWorkspaceChangeStore.getState().headSeq).toBe(1);
+    expect(useWorkspaceChangeStore.getState().last).toBeNull();
   });
 });
 

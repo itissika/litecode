@@ -1,14 +1,13 @@
-//! Symbol existence is the worktree. Drift is commit history.
+//! Symbol existence is the worktree. Drift is that file's HEAD against the worktree.
 //!
-//! The baseline is the last commit that touched the knowledge note, not the
-//! moment the citation was written. Uncommitted edits do not count as drift.
-//! No git, or a note that was never committed, leaves drift unreported.
+//! The note only displays the result. It is not the baseline, and it does not
+//! need to be committed or tracked. No git leaves drift unreported.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use crate::engines::code_search::{ScopeMatch, find_scope, lines_slice};
-use crate::workspace::{self, GitError, PathCommit};
+use crate::workspace;
 
 use super::mentions::is_workspace_file_ref;
 
@@ -17,47 +16,40 @@ pub enum SymbolCheck {
     Present,
     Missing,
     Ambiguous,
-    Drifted { commits: Vec<PathCommit> },
+    Drifted,
 }
 
-/// Whether a symbol's body moved between the note's baseline commit and HEAD.
+/// Whether a symbol's body differs between HEAD and the file on disk.
 ///
-/// `Unknown` is not "unchanged": there is no git, the note was never committed,
-/// a blob could not be read, or the symbol is not in the baseline.
+/// `Unknown` is not "unchanged": there is no git, or the worktree body could
+/// not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Drift {
-    Changed { commits: Vec<PathCommit> },
+    Changed,
     Unchanged,
     Unknown,
 }
 
-pub struct SymbolCache {
-    shown: HashMap<(String, String), Option<String>>,
-    bases: HashMap<String, CachedBase>,
+#[derive(Clone)]
+enum HeadFile {
+    Off,
+    Absent,
+    Text(String),
 }
 
-enum CachedBase {
-    Off,
-    Uncommitted,
-    Commit(String),
+pub struct SymbolCache {
+    head: HashMap<String, HeadFile>,
 }
 
 impl SymbolCache {
     pub fn new() -> Self {
         Self {
-            shown: HashMap::new(),
-            bases: HashMap::new(),
+            head: HashMap::new(),
         }
     }
 
-    /// Worktree lookup, then drift against `drift_base` when that path is set.
-    pub fn check(
-        &mut self,
-        workspace: &Path,
-        file: &str,
-        chain: &str,
-        drift_base: Option<&str>,
-    ) -> SymbolCheck {
+    /// Worktree lookup, then HEAD against that worktree body.
+    pub fn check(&mut self, workspace: &Path, file: &str, chain: &str) -> SymbolCheck {
         let Some(content) = read_worktree(workspace, file) else {
             return SymbolCheck::Missing;
         };
@@ -66,76 +58,41 @@ impl SymbolCache {
             ScopeMatch::Ambiguous(_) => return SymbolCheck::Ambiguous,
             ScopeMatch::Unique(_) => {}
         }
-        let Some(base_path) = drift_base.filter(|path| !path.is_empty()) else {
-            return SymbolCheck::Present;
-        };
-        match self.drift(workspace, file, chain, base_path) {
-            Drift::Changed { commits } => SymbolCheck::Drifted { commits },
+        match self.drift(workspace, file, chain) {
+            Drift::Changed => SymbolCheck::Drifted,
             Drift::Unchanged | Drift::Unknown => SymbolCheck::Present,
         }
     }
 
-    /// Compare the symbol body at the note's baseline commit with HEAD.
-    pub fn drift(
-        &mut self,
-        workspace: &Path,
-        file: &str,
-        chain: &str,
-        drift_base: &str,
-    ) -> Drift {
-        let Some(base) = self.baseline(workspace, drift_base) else {
-            return Drift::Unknown;
-        };
-        let Some(then) = self.blob(workspace, &base, file) else {
-            return Drift::Unknown;
-        };
-        let Some(now) = self.blob(workspace, "HEAD", file) else {
-            return Drift::Unknown;
-        };
-        let Some(then_body) = scope_body(file, &then, chain) else {
+    /// Compare the symbol body at HEAD with the file on disk.
+    pub fn drift(&mut self, workspace: &Path, file: &str, chain: &str) -> Drift {
+        let Some(now) = read_worktree(workspace, file) else {
             return Drift::Unknown;
         };
         let Some(now_body) = scope_body(file, &now, chain) else {
             return Drift::Unknown;
         };
-        if then_body == now_body {
-            return Drift::Unchanged;
+        match self.head_file(workspace, file) {
+            HeadFile::Off => Drift::Unknown,
+            HeadFile::Absent => Drift::Changed,
+            HeadFile::Text(then) => match scope_body(file, &then, chain) {
+                Some(then_body) if then_body == now_body => Drift::Unchanged,
+                _ => Drift::Changed,
+            },
         }
-        let commits = workspace::log_between(workspace, &base, file, 3).unwrap_or_default();
-        Drift::Changed { commits }
     }
 
-    fn baseline(&mut self, workspace: &Path, drift_base: &str) -> Option<String> {
-        if let Some(cached) = self.bases.get(drift_base) {
-            return match cached {
-                CachedBase::Commit(hash) => Some(hash.clone()),
-                CachedBase::Off | CachedBase::Uncommitted => None,
-            };
-        }
-        let cached = match workspace::last_commit_touching(workspace, drift_base) {
-            Ok(Some(hash)) => CachedBase::Commit(hash),
-            Ok(None) => CachedBase::Uncommitted,
-            Err(GitError::GitMissing | GitError::NotARepo) => CachedBase::Off,
-            Err(_) => CachedBase::Off,
-        };
-        let hash = match &cached {
-            CachedBase::Commit(hash) => Some(hash.clone()),
-            CachedBase::Off | CachedBase::Uncommitted => None,
-        };
-        self.bases.insert(drift_base.to_string(), cached);
-        hash
-    }
-
-    fn blob(&mut self, workspace: &Path, rev: &str, file: &str) -> Option<String> {
-        let key = (rev.to_string(), file.replace('\\', "/"));
-        if let Some(cached) = self.shown.get(&key) {
+    fn head_file(&mut self, workspace: &Path, file: &str) -> HeadFile {
+        let key = file.replace('\\', "/");
+        if let Some(cached) = self.head.get(&key) {
             return cached.clone();
         }
-        let loaded = match workspace::show_at(workspace, rev, file) {
-            Ok(text) => text,
-            Err(_) => None,
+        let loaded = match workspace::show_at(workspace, "HEAD", &key) {
+            Ok(Some(text)) => HeadFile::Text(text),
+            Ok(None) => HeadFile::Absent,
+            Err(_) => HeadFile::Off,
         };
-        self.shown.insert(key, loaded.clone());
+        self.head.insert(key, loaded.clone());
         loaded
     }
 }
@@ -201,30 +158,30 @@ mod tests {
         }
     }
 
-    fn write_note_and_fn(dir: &Path, body: &str) {
-        fs::create_dir_all(dir.join("src")).unwrap();
-        fs::create_dir_all(dir.join(".litecode/knowledge")).unwrap();
-        fs::write(dir.join("src/a.rs"), body).unwrap();
-        fs::write(dir.join(".litecode/knowledge/note.md"), "note\n").unwrap();
-    }
-
     #[test]
-    fn drift_follows_commits_and_ignores_the_worktree() {
+    fn drift_compares_head_with_the_worktree() {
         if find_git_exe().is_none() {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
         init(dir.path());
-        write_note_and_fn(dir.path(), "fn alpha() {\n    let x = 1;\n}\n");
-        git(dir.path(), &["add", "."]);
-        git(dir.path(), &["commit", "-m", "note"]);
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::create_dir_all(dir.path().join(".litecode/knowledge")).unwrap();
+        fs::write(
+            dir.path().join("src/a.rs"),
+            "fn alpha() {\n    let x = 1;\n}\n",
+        )
+        .unwrap();
+        git(dir.path(), &["add", "src/a.rs"]);
+        git(dir.path(), &["commit", "-m", "alpha"]);
+        fs::write(dir.path().join(".litecode/knowledge/note.md"), "note\n").unwrap();
 
         let mut cache = SymbolCache::new();
         let chain = "fn alpha";
-        let base = ".litecode/knowledge/note.md";
         assert_eq!(
-            cache.check(dir.path(), "src/a.rs", chain, Some(base)),
-            SymbolCheck::Present
+            cache.check(dir.path(), "src/a.rs", chain),
+            SymbolCheck::Present,
+            "an untracked note still compares the file"
         );
 
         fs::write(
@@ -232,28 +189,46 @@ mod tests {
             "fn alpha() {\n    let x = 2;\n}\n",
         )
         .unwrap();
+        let mut cache = SymbolCache::new();
         assert_eq!(
-            cache.check(dir.path(), "src/a.rs", chain, Some(base)),
-            SymbolCheck::Present,
-            "uncommitted edit is not drift"
+            cache.check(dir.path(), "src/a.rs", chain),
+            SymbolCheck::Drifted
+        );
+
+        git(dir.path(), &["add", ".litecode/knowledge/note.md"]);
+        git(dir.path(), &["commit", "-m", "note only"]);
+        let mut cache = SymbolCache::new();
+        assert_eq!(
+            cache.check(dir.path(), "src/a.rs", chain),
+            SymbolCheck::Drifted,
+            "committing the note leaves the file diff in place"
         );
 
         git(dir.path(), &["add", "src/a.rs"]);
         git(dir.path(), &["commit", "-m", "edit alpha"]);
         let mut cache = SymbolCache::new();
-        match cache.check(dir.path(), "src/a.rs", chain, Some(base)) {
-            SymbolCheck::Drifted { commits } => {
-                assert_eq!(commits[0].subject, "edit alpha");
-            }
-            other => panic!("expected drift, got {other:?}"),
-        }
+        assert_eq!(
+            cache.check(dir.path(), "src/a.rs", chain),
+            SymbolCheck::Present,
+            "committing the file clears drift"
+        );
 
-        fs::write(dir.path().join("src/a.rs"), "fn beta() {}\n").unwrap();
-        git(dir.path(), &["add", "src/a.rs"]);
-        git(dir.path(), &["commit", "-m", "drop alpha"]);
+        fs::write(
+            dir.path().join("src/b.rs"),
+            "fn beta() {\n    let y = 1;\n}\n",
+        )
+        .unwrap();
         let mut cache = SymbolCache::new();
         assert_eq!(
-            cache.check(dir.path(), "src/a.rs", chain, Some(base)),
+            cache.check(dir.path(), "src/b.rs", "fn beta"),
+            SymbolCheck::Drifted,
+            "a file absent from HEAD differs from the worktree"
+        );
+
+        fs::write(dir.path().join("src/a.rs"), "fn beta() {}\n").unwrap();
+        let mut cache = SymbolCache::new();
+        assert_eq!(
+            cache.check(dir.path(), "src/a.rs", chain),
             SymbolCheck::Missing
         );
 
@@ -262,7 +237,7 @@ mod tests {
         fs::write(bare.path().join("src/a.rs"), "fn alpha() {}\n").unwrap();
         let mut cache = SymbolCache::new();
         assert_eq!(
-            cache.check(bare.path(), "src/a.rs", chain, Some(base)),
+            cache.check(bare.path(), "src/a.rs", chain),
             SymbolCheck::Present,
             "no repository means no drift"
         );

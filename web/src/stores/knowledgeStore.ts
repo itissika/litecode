@@ -41,8 +41,57 @@ import {
   symbolIssues,
   validateKnowledge,
   type KnowledgeFilePresence,
+  type SymbolPresence,
 } from "../lib/knowledge/validate";
 import { useWorkspaceChangeStore } from "./workspaceChangeStore";
+
+type SymbolCheckHit = {
+  exists: boolean;
+  ambiguous: boolean;
+  drifted: boolean;
+};
+
+/** Last symbol-ref result, keyed by file + chain. Node ids are rebound on index. */
+type SymbolCheckCache = Record<string, SymbolCheckHit>;
+
+let symbolChecks: SymbolCheckCache = {};
+
+function symbolCheckKey(file: string, symbol: string): string {
+  return `${file}\0${symbol}`;
+}
+
+/**
+ * Fold the last symbol check into the issue list and drop results for
+ * citations that are gone or whose file is already absent.
+ * Keeping the cache across a corpus reindex stops the rail count from
+ * blinking off while the next check is still in flight.
+ */
+function symbolIssuesFromCache(
+  nodes: KnowledgeNode[],
+  presence: KnowledgeFilePresence,
+): KnowledgeIssue[] {
+  const next: SymbolCheckCache = {};
+  const rows: SymbolPresence[] = [];
+  for (const node of nodes) {
+    for (const cite of extractSymbolRefs(node.value)) {
+      if (!isWorkspaceFileRef(cite.path) || presence[cite.path] === false) continue;
+      const key = symbolCheckKey(cite.path, cite.symbol);
+      const hit = symbolChecks[key];
+      if (!hit) continue;
+      next[key] = hit;
+      rows.push({
+        nodeId: node.id,
+        file: cite.path,
+        symbol: cite.symbol,
+        exists: hit.exists,
+        ambiguous: hit.ambiguous,
+        drifted: hit.drifted,
+      });
+    }
+  }
+  symbolChecks = next;
+  return symbolIssues(rows);
+}
 
 function indexNodes(nodes: KnowledgeNode[], presence: KnowledgeFilePresence) {
   const byId = new Map<string, KnowledgeNode>();
@@ -55,6 +104,7 @@ function indexNodes(nodes: KnowledgeNode[], presence: KnowledgeFilePresence) {
   const issues = [
     ...validateKnowledge(nodes),
     ...missingFileIssues(nodes, presence),
+    ...symbolIssuesFromCache(nodes, presence),
   ];
   return { nodes, byId, byKey, issues, issuesByNode: groupIssues(issues) };
 }
@@ -306,6 +356,20 @@ export function symbolHitFor(
   return hits.find((hit) => hit.file === file && (hit.symbol ?? "") === symbol);
 }
 
+function publishChecks(
+  set: (partial: Partial<KnowledgeStore>) => void,
+  get: () => KnowledgeStore,
+  presence: KnowledgeFilePresence,
+) {
+  const state = get();
+  const indexed = indexNodes(state.nodes, presence);
+  set({
+    filePresence: presence,
+    issues: indexed.issues,
+    issuesByNode: reuseIssueGroups(state.issuesByNode, indexed.issuesByNode),
+  });
+}
+
 /** Stat cited paths and symbol chains, then fold both into the issue list. */
 function scheduleFileCheck(
   set: (partial: Partial<KnowledgeStore>) => void,
@@ -315,33 +379,27 @@ function scheduleFileCheck(
   const paths = citedFilePaths(nodes);
   const gen = ++fileCheckGen;
   if (paths.length === 0) {
-    if (Object.keys(get().filePresence).length === 0) return;
-    const issues = [
-      ...validateKnowledge(nodes),
-      ...missingFileIssues(nodes, {}),
-    ];
-    const state = get();
-    const grouped = groupIssues(issues);
-    set({
-      filePresence: {},
-      issues,
-      issuesByNode: reuseIssueGroups(state.issuesByNode, grouped),
-    });
+    if (
+      Object.keys(get().filePresence).length === 0 &&
+      Object.keys(symbolChecks).length === 0
+    ) {
+      return;
+    }
+    symbolChecks = {};
+    publishChecks(set, get, {});
     return;
   }
   void (async () => {
     const found = await workspacePathsExist(paths);
     if (gen !== fileCheckGen) return;
     const current = get().nodes;
-    const root = get().root;
     const presence: Record<string, boolean> = {};
     for (const path of citedFilePaths(current)) {
       if (Object.prototype.hasOwnProperty.call(found, path)) {
         presence[path] = found[path] ?? false;
       }
     }
-    const queries = symbolQueries(current, root, presence);
-    let symbols: ReturnType<typeof symbolIssues> = [];
+    const queries = symbolQueries(current, presence);
     if (queries.length > 0) {
       try {
         const hits: SymbolRefHit[] = [];
@@ -352,56 +410,35 @@ function scheduleFileCheck(
               slice.map((query) => ({
                 file: query.file,
                 symbol: query.symbol,
-                drift_base_of: query.driftBase,
               })),
             )),
           );
         }
         if (gen !== fileCheckGen) return;
-        symbols = symbolIssues(
-          queries.map((query) => {
-            const hit = symbolHitFor(hits, query.file, query.symbol);
-            return {
-              nodeId: query.nodeId,
-              file: query.file,
-              symbol: query.symbol,
-              exists: hit?.symbol_exists ?? false,
-              ambiguous: hit?.ambiguous ?? false,
-              drifted: hit?.drift?.drifted ?? false,
-              commits: hit?.drift?.commits ?? [],
-            };
-          }),
-        );
+        const fresh: SymbolCheckCache = {};
+        for (const query of queries) {
+          const hit = symbolHitFor(hits, query.file, query.symbol);
+          fresh[symbolCheckKey(query.file, query.symbol)] = {
+            exists: hit?.symbol_exists ?? false,
+            ambiguous: hit?.ambiguous ?? false,
+            drifted: hit?.drift?.drifted ?? false,
+          };
+        }
+        symbolChecks = fresh;
       } catch {
-        symbols = [];
+        if (gen !== fileCheckGen) return;
       }
     }
     if (gen !== fileCheckGen) return;
-    const issues = [
-      ...validateKnowledge(get().nodes),
-      ...missingFileIssues(get().nodes, presence),
-      ...symbols,
-    ];
-    const state = get();
-    const grouped = groupIssues(issues);
-    set({
-      filePresence: presence,
-      issues,
-      issuesByNode: reuseIssueGroups(state.issuesByNode, grouped),
-    });
+    publishChecks(set, get, presence);
   })();
 }
 
-function symbolQueries(
-  nodes: KnowledgeNode[],
-  root: string,
-  presence: Record<string, boolean>,
-) {
+function symbolQueries(nodes: KnowledgeNode[], presence: Record<string, boolean>) {
   const queries: {
     nodeId: string;
     file: string;
     symbol: string;
-    driftBase: string;
   }[] = [];
   for (const node of nodes) {
     for (const cite of extractSymbolRefs(node.value)) {
@@ -410,7 +447,6 @@ function symbolQueries(
         nodeId: node.id,
         file: cite.path,
         symbol: cite.symbol,
-        driftBase: `${root}/${node.path}`.replaceAll("//", "/"),
       });
     }
   }
@@ -1074,22 +1110,70 @@ function pathUnderKnowledgeRoot(path: string, root: string): boolean {
   return norm === root || norm.startsWith(`${root}/`);
 }
 
+function normPath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
+function changeTouchesCitation(paths: string[], nodes: KnowledgeNode[]): boolean {
+  const cited = citedFilePaths(nodes).map(normPath);
+  if (cited.length === 0) return false;
+  for (const raw of paths) {
+    const path = normPath(raw);
+    for (const cite of cited) {
+      if (cite === path || cite.startsWith(`${path}/`)) return true;
+    }
+  }
+  return false;
+}
+
+function hasSymbolCitation(nodes: KnowledgeNode[]): boolean {
+  return nodes.some((node) => extractSymbolRefs(node.value).length > 0);
+}
+
+/** Corpus reread and citation recheck share one quiet period. */
+const KNOWLEDGE_WATCH_MS = 150;
+
 let knowledgeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let citationCheckTimer: ReturnType<typeof setTimeout> | null = null;
 const knowledgeVisiblePanels = new Set<string>();
 
 function knowledgeSurfacesVisible(): boolean {
   return knowledgeVisiblePanels.size > 0;
 }
 
+function scheduleCitationRecheck() {
+  if (!hydrated) return;
+  if (citationCheckTimer) clearTimeout(citationCheckTimer);
+  citationCheckTimer = setTimeout(() => {
+    citationCheckTimer = null;
+    if (!hydrated) return;
+    scheduleFileCheck(useKnowledgeStore.setState, useKnowledgeStore.getState);
+  }, KNOWLEDGE_WATCH_MS);
+}
+
 useWorkspaceChangeStore.subscribe((state, prev) => {
-  if (!state.last || state.last === prev.last) return;
-  if (!knowledgeSurfacesVisible()) return;
-  const root = useKnowledgeStore.getState().root;
-  if (!state.last.paths.some((path) => pathUnderKnowledgeRoot(path, root))) return;
-  if (knowledgeRefreshTimer) clearTimeout(knowledgeRefreshTimer);
-  knowledgeRefreshTimer = setTimeout(() => {
-    knowledgeRefreshTimer = null;
-    if (!knowledgeSurfacesVisible()) return;
-    void useKnowledgeStore.getState().refreshFromDisk();
-  }, 150);
+  const headMoved = state.headSeq !== prev.headSeq;
+  const pathsChanged = state.last != null && state.last !== prev.last;
+  if (!pathsChanged && !headMoved) return;
+
+  let corpusRefresh = false;
+  if (pathsChanged && knowledgeSurfacesVisible()) {
+    const root = useKnowledgeStore.getState().root;
+    if (state.last!.paths.some((path) => pathUnderKnowledgeRoot(path, root))) {
+      corpusRefresh = true;
+      if (knowledgeRefreshTimer) clearTimeout(knowledgeRefreshTimer);
+      knowledgeRefreshTimer = setTimeout(() => {
+        knowledgeRefreshTimer = null;
+        if (!knowledgeSurfacesVisible()) return;
+        void useKnowledgeStore.getState().refreshFromDisk();
+      }, KNOWLEDGE_WATCH_MS);
+    }
+  }
+
+  const nodes = useKnowledgeStore.getState().nodes;
+  const citedChange =
+    pathsChanged && changeTouchesCitation(state.last!.paths, nodes);
+  const headChange = headMoved && hasSymbolCitation(nodes);
+  if (corpusRefresh && citedChange && !headChange) return;
+  if (citedChange || headChange) scheduleCitationRecheck();
 });

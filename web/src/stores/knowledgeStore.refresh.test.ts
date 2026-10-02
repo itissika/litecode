@@ -8,15 +8,17 @@ vi.mock("../api/workspace", () => ({
   writeFile: vi.fn(),
   deletePath: vi.fn(),
   renamePath: vi.fn(),
+  resolveSymbolRefs: vi.fn(async () => []),
 }));
 
-import { fetchTree, readFile, writeFile } from "../api/workspace";
+import { fetchTree, readFile, resolveSymbolRefs, writeFile } from "../api/workspace";
 import { symbolHitFor, useKnowledgeStore } from "./knowledgeStore";
 import { useWorkspaceChangeStore } from "./workspaceChangeStore";
 
 const tree = vi.mocked(fetchTree);
 const read = vi.mocked(readFile);
 const write = vi.mocked(writeFile);
+const resolve = vi.mocked(resolveSymbolRefs);
 
 const seq = [
   "```node",
@@ -70,6 +72,7 @@ describe("knowledgeStore workspace refresh", () => {
     useWorkspaceChangeStore.getState().record(["src/main.rs"], "modified");
     await sleep(200);
     expect(tree.mock.calls.length).toBe(before);
+    expect(resolve.mock.calls.length).toBe(0);
 
     files.push("order.md");
     useWorkspaceChangeStore.getState().record(
@@ -168,9 +171,135 @@ describe("knowledgeStore workspace refresh", () => {
   it("pairs a symbol hit by file and symbol", () => {
     const hits = [
       { file: "src/b.rs", symbol: "fn other", file_exists: true, symbol_exists: true, ambiguous: false },
-      { file: "src/a.rs", symbol: "fn save", file_exists: true, symbol_exists: true, ambiguous: false, drift: { drifted: true, commits: [] } },
+      { file: "src/a.rs", symbol: "fn save", file_exists: true, symbol_exists: true, ambiguous: false, drift: { drifted: true } },
     ];
     expect(symbolHitFor(hits, "src/a.rs", "fn save")?.drift?.drifted).toBe(true);
     expect(symbolHitFor(hits, "src/a.rs", "fn missing")).toBeUndefined();
+  });
+
+  it("updates error and warning counts when a cited file or HEAD changes", async () => {
+    const cited = [
+      "```node",
+      "node : seq",
+      "status : enabled",
+      "summary : ",
+      "```",
+      "",
+      'See [@ file="src/a.rs" symbol="fn save" label="fn save"]',
+      "",
+    ].join("\n");
+    let srcNames = ["a.rs"];
+    tree.mockImplementation(async (dir = "") => {
+      if (dir === "src") {
+        return srcNames.map((name) => ({
+          name,
+          path: `src/${name}`,
+          kind: "file" as const,
+        }));
+      }
+      if (dir === "knowledge") throw new Error("missing");
+      if (dir !== ".litecode/knowledge") throw new Error(dir);
+      return [
+        {
+          name: "seq.md",
+          path: ".litecode/knowledge/seq.md",
+          kind: "file" as const,
+        },
+      ];
+    });
+    read.mockResolvedValue(cited);
+    resolve.mockResolvedValue([
+      {
+        file: "src/a.rs",
+        symbol: "fn save",
+        file_exists: true,
+        symbol_exists: true,
+        ambiguous: false,
+        drift: { drifted: false },
+      },
+    ]);
+
+    await useKnowledgeStore.getState().load();
+    useKnowledgeStore.getState().notePanelVisible("workspace-knowledge", false);
+    useKnowledgeStore.getState().notePanelVisible("knowledge-graph", false);
+    await vi.waitFor(() => {
+      expect(resolve.mock.calls.length).toBeGreaterThan(0);
+    });
+    expect(useKnowledgeStore.getState().issues.map((issue) => issue.code)).toEqual([]);
+
+    const knowledgeReads = () =>
+      tree.mock.calls.filter((call) => String(call[0]).includes("knowledge")).length;
+    const before = knowledgeReads();
+    const beforeResolve = resolve.mock.calls.length;
+
+    srcNames = [];
+    useWorkspaceChangeStore.getState().record(["src/a.rs"], "deleted");
+    await sleep(80);
+    expect(useKnowledgeStore.getState().issues.map((issue) => issue.code)).toEqual([]);
+    await vi.waitFor(() => {
+      expect(useKnowledgeStore.getState().issues.map((issue) => issue.code)).toEqual([
+        "missing_file",
+      ]);
+    });
+    expect(knowledgeReads()).toBe(before);
+
+    srcNames = ["a.rs"];
+    resolve.mockResolvedValue([
+      {
+        file: "src/a.rs",
+        symbol: "fn save",
+        file_exists: true,
+        symbol_exists: true,
+        ambiguous: false,
+        drift: { drifted: true },
+      },
+    ]);
+    useWorkspaceChangeStore.getState().record(["src/a.rs"], "modified");
+    await vi.waitFor(() => {
+      expect(useKnowledgeStore.getState().issues.map((issue) => issue.code)).toEqual([
+        "symbol_drift",
+      ]);
+    });
+
+    resolve.mockResolvedValue([
+      {
+        file: "src/a.rs",
+        symbol: "fn save",
+        file_exists: true,
+        symbol_exists: true,
+        ambiguous: false,
+        drift: { drifted: false },
+      },
+    ]);
+    useWorkspaceChangeStore.getState().recordHead();
+    await vi.waitFor(() => {
+      expect(useKnowledgeStore.getState().issues.map((issue) => issue.code)).toEqual([]);
+    });
+    expect(resolve.mock.calls.length).toBeGreaterThan(beforeResolve);
+    expect(knowledgeReads()).toBe(before);
+
+    resolve.mockResolvedValue([
+      {
+        file: "src/a.rs",
+        symbol: "fn save",
+        file_exists: true,
+        symbol_exists: true,
+        ambiguous: false,
+        drift: { drifted: true },
+      },
+    ]);
+    useWorkspaceChangeStore.getState().record(["src/a.rs"], "modified");
+    await vi.waitFor(() => {
+      expect(useKnowledgeStore.getState().issues.map((issue) => issue.code)).toEqual([
+        "symbol_drift",
+      ]);
+    });
+
+    const id = useKnowledgeStore.getState().nodes[0]?.id;
+    const calls = resolve.mock.calls.length;
+    const saved = await useKnowledgeStore.getState().saveNode(id!, { value: "正文\n" });
+    expect(saved).toBe(true);
+    expect(useKnowledgeStore.getState().issues.map((issue) => issue.code)).toEqual([]);
+    expect(resolve.mock.calls.length).toBe(calls);
   });
 });

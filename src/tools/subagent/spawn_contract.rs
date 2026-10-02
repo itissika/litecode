@@ -113,7 +113,14 @@ async fn spawn_env(explore_model: &str) -> SpawnEnv {
     let db_path = dir.path().join("litecode.db");
 
     let global = settings_with_explore_model(explore_model);
-    std::fs::write(provider_catalog::catalog_path_for_db(&db_path), CATALOG).unwrap();
+    let catalog = Arc::new(
+        provider_catalog::ProviderCatalog::parse(
+            CATALOG,
+            std::path::Path::new("provider-catalog.toml"),
+        )
+        .expect("test catalog"),
+    );
+    provider_catalog::pin(&db_path, catalog);
     {
         let conn = global_db::open(&db_path).unwrap();
         global_db::store::replace_all(&conn, &global).unwrap();

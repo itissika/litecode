@@ -125,9 +125,9 @@ impl ConfigManager {
 
     /// Load global + workspace + catalog and assemble the read-only resolved view.
     ///
-    /// Order matters: the database is opened (and migrated) by the catalog load,
-    /// the catalog is validated, and only then is the one-time legacy credential /
-    /// model-reference migration allowed to read the old tables.
+    /// The catalog is this build's embedded seed. The database is opened (and
+    /// migrated) before the one-time legacy credential / model-reference
+    /// migration reads the old tables.
     pub fn load_runtime_bundle(override_path: Option<&Path>) -> Result<ResolvedConfig> {
         Self::load_runtime_bundle_from(&global_db::default_db_path(), override_path)
     }
@@ -167,10 +167,10 @@ impl ConfigManager {
 
 /// Boot-time sibling of the per-commit repair in `SettingsWriter`.
 ///
-/// A provider-catalog edit (needs a restart) or a provider key removed while the
-/// app was closed leaves agents pointing at a model that cannot run, and no
-/// settings write happens at startup to heal it. Writes only the repaired agent
-/// rows: the catalog is the source of truth, a stored ref is derived state.
+/// A provider key removed while the app was closed, or a model this build no
+/// longer ships, leaves agents pointing at a model that cannot run. No settings
+/// write happens at startup to heal that. Writes only the repaired agent rows:
+/// the embedded catalog is the source of truth, a stored ref is derived state.
 fn repair_agent_models_on_boot(
     conn: &rusqlite::Connection,
     catalog: &ProviderCatalog,
@@ -333,21 +333,17 @@ mod tests {
         let db = dir.path().join("litecode.db");
         let ws = tempfile::tempdir().unwrap();
         crate::provider_catalog::store::forget(&db);
-        std::fs::write(
-            crate::provider_catalog::catalog_path_for_db(&db),
-            "version = 1\n[[providers]]\nid = \"main\"\nname = \"Main\"\nendpoint = \"https://api.example.com/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"default\"\nprovider_id = \"main\"\n",
-        )
-        .unwrap();
         // Seed through the normal load path first (agents + bindings), then strand
-        // the default agent on a ref the catalog does not declare.
+        // the default agent on a ref this build's catalog does not declare.
         ConfigManager::load_global_from(&db).unwrap();
         let conn = crate::config::global_db::open(&db).unwrap();
-        crate::config::global_db::store::set_provider_credential(&conn, "main", "sk-test").unwrap();
+        crate::config::global_db::store::set_provider_credential(&conn, "openai", "sk-test")
+            .unwrap();
         crate::config::global_db::store::upsert_agent(
             &conn,
             "default",
             AgentRole::Primary,
-            "main/gone",
+            "missing/gone",
             "",
             0.7,
             50,
@@ -358,11 +354,13 @@ mod tests {
         drop(conn);
 
         let resolved = ConfigManager::load_runtime_bundle_from(&db, Some(ws.path())).unwrap();
-        assert_eq!(resolved.agents()["default"].model_ref, "main/default");
+        let model_ref = &resolved.agents()["default"].model_ref;
+        assert_ne!(model_ref, "missing/gone");
+        assert!(resolved.catalog().model(model_ref).is_some(), "{model_ref}");
 
         // Persisted, not just resolved: the next boot already reads a runnable ref.
         let reloaded = ConfigManager::load_global_from(&db).unwrap();
-        assert_eq!(reloaded.agents["default"].model_ref, "main/default");
+        assert_eq!(&reloaded.agents["default"].model_ref, model_ref);
     }
 
     #[test]

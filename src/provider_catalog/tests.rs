@@ -1,4 +1,4 @@
-//! Catalog contract tests: strict parsing, seeding lifecycle, index integrity.
+//! Catalog contract tests: strict parsing, embedded seed, index integrity.
 
 use std::path::Path;
 
@@ -721,370 +721,37 @@ fn enum_domains_and_schema_file_stay_aligned() {
 }
 
 #[test]
-fn first_run_seeds_the_file_and_registers_initialized() {
+fn shared_catalog_is_the_embedded_seed_and_does_not_read_a_file() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("litecode.db");
     store::forget(&db);
+    std::fs::write(dir.path().join("provider-catalog.toml"), "version = 1\n").unwrap();
 
-    let catalog = store::load_for_db(&db).expect("seed");
+    let catalog = store::shared_for_db(&db).expect("embedded");
+    assert!(catalog.provider("openai").is_some());
+    assert!(std::sync::Arc::ptr_eq(&catalog, &store::embedded()));
     assert_eq!(
-        catalog.path(),
-        store::catalog_path_for_db(&db).as_path(),
-        "the catalog lives next to the global DB"
+        std::fs::read_to_string(dir.path().join("provider-catalog.toml")).unwrap(),
+        "version = 1\n",
+        "a file beside the database is not the catalog"
     );
-    let text = std::fs::read_to_string(store::catalog_path_for_db(&db)).unwrap();
-    assert!(text.contains("#:schema ./provider-catalog.schema.json"));
-    assert!(
-        text.contains("# LiteCode provider catalog"),
-        "comments must survive seeding"
-    );
-    assert!(store::schema_path_for_db(&db).is_file());
 
-    // A file with no unknown entries is replaced by the seed. A later start
-    // sees that text and does not write again.
-    std::fs::write(
-        store::catalog_path_for_db(&db),
-        "# my own note\nversion = 1\n",
+    let fixture = parse(
+        "version = 1\n\n[[providers]]\nid = \"extra\"\nname = \"Extra\"\nendpoint = \"https://extra.example/v1\"\nendpoint_type = \"responses\"\nauth = \"bearer\"\n\n[[models]]\nid = \"mine\"\nprovider_id = \"extra\"\nlabel = \"Mine\"\ncontext_window = 256000\nmax_output = 128000\nmodalities = [\"text\"]\n",
     )
     .unwrap();
+    store::pin(&db, std::sync::Arc::new(fixture));
+    let pinned = store::shared_for_db(&db).unwrap();
+    assert_eq!(
+        pinned.provider("extra").unwrap().endpoint,
+        "https://extra.example/v1"
+    );
+    assert!(pinned.provider("openai").is_none());
     store::forget(&db);
-    let reloaded = store::load_for_db(&db).expect("reload");
-    assert!(reloaded.provider("openai").is_some());
-    assert!(reloaded.model("openai/gpt-5.6-sol").is_some());
-    let filled = std::fs::read_to_string(store::catalog_path_for_db(&db)).unwrap();
     assert!(
-        filled.contains("# LiteCode provider catalog"),
-        "a file with no unknown entries is the seed:\n{filled}"
-    );
-    assert!(filled.contains("id = \"gpt-5.6-sol\""));
-    store::forget(&db);
-    store::load_for_db(&db).expect("second reload");
-    assert_eq!(
-        std::fs::read_to_string(store::catalog_path_for_db(&db)).unwrap(),
-        filled,
-        "a catalog that already has every shipped id is not rewritten"
-    );
-}
-
-#[test]
-fn a_catalog_this_build_cannot_load_is_upgraded_and_the_previous_text_is_kept() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("litecode.db");
-    store::forget(&db);
-    store::load_for_db(&db).expect("seed");
-
-    let path = store::catalog_path_for_db(&db);
-    let broken = "\
-version = 1
-
-[[providers]]
-id = \"deepseek\"
-name = \"DeepSeek\"
-endpoint = \"https://proxy.example/v1\"
-endpoint_type = \"responses\"
-quirks = [\"omit_temperature_when_thinking\", \"reasoning_replay\"]
-";
-    std::fs::write(&path, broken).unwrap();
-    store::forget(&db);
-    let catalog = store::load_for_db(&db).expect("upgrade");
-    assert_eq!(
-        catalog.provider("deepseek").unwrap().endpoint,
-        "https://api.deepseek.com",
-        "a shipped provider is replaced by the seed"
-    );
-    assert_eq!(
-        catalog
-            .model("deepseek/deepseek-flash")
+        store::shared_for_db(&db)
             .unwrap()
-            .request_url,
-        "https://api.deepseek.com/responses"
+            .provider("openai")
+            .is_some()
     );
-    assert!(catalog.model("openai/gpt-5.6-sol").is_some());
-    let upgraded = std::fs::read_to_string(&path).unwrap();
-    assert!(!upgraded.contains("omit_temperature"), "{upgraded}");
-    assert!(upgraded.contains("id = \"gpt-5.6-sol\""));
-    let backup = std::fs::read_to_string(path.with_file_name("provider-catalog.toml.bak")).unwrap();
-    assert!(backup.contains("https://proxy.example/v1"), "{backup}");
-    assert!(
-        !backup.contains("omit_temperature"),
-        "alignment backs up the repaired text:\n{backup}"
-    );
-
-    store::forget(&db);
-    store::load_for_db(&db).expect("reload");
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        upgraded,
-        "a catalog that already loads is not rewritten"
-    );
-
-    std::fs::write(&path, "version = [\n").unwrap();
-    store::forget(&db);
-    let message = store::load_for_db(&db)
-        .expect_err("syntax errors are not upgraded")
-        .to_string();
-    assert!(message.contains("not valid TOML"), "{message}");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "version = [\n");
-}
-
-#[test]
-fn initialized_catalog_that_disappears_is_an_error_not_a_reseed() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("litecode.db");
-    store::forget(&db);
-    store::load_for_db(&db).expect("seed");
-
-    std::fs::remove_file(store::catalog_path_for_db(&db)).unwrap();
-    store::forget(&db);
-    let message = store::load_for_db(&db)
-        .expect_err("must not silently rebuild")
-        .to_string();
-    assert!(message.contains("missing"), "{message}");
-    assert!(!store::catalog_path_for_db(&db).exists());
-}
-
-#[test]
-fn shared_catalog_is_loaded_once_per_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("litecode.db");
-    store::forget(&db);
-    let first = store::shared_for_db(&db).unwrap();
-    std::fs::write(store::catalog_path_for_db(&db), "version = 1\n").unwrap();
-    let second = store::shared_for_db(&db).unwrap();
-    assert!(
-        std::sync::Arc::ptr_eq(&first, &second),
-        "edits require a restart: the process keeps one catalog"
-    );
-    store::forget(&db);
-    let third = store::shared_for_db(&db).unwrap();
-    assert!(!std::sync::Arc::ptr_eq(&first, &third));
-}
-
-#[test]
-fn startup_overwrites_a_shipped_provider_and_keeps_an_added_one() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("litecode.db");
-    store::forget(&db);
-    store::load_for_db(&db).expect("seed");
-
-    let path = store::catalog_path_for_db(&db);
-    let mut text = std::fs::read_to_string(&path).unwrap();
-    text = text.replace(
-        "endpoint = \"https://api.openai.com/v1\"",
-        "endpoint = \"https://proxy.example/v1\"",
-    );
-    let marker = "id = \"hy4-preview\"";
-    let start = text.find(marker).expect("hy4");
-    let block_start = text[..start].rfind("[[models]]").expect("block");
-    let next = text[start..]
-        .find("[[models]]")
-        .map(|index| start + index)
-        .unwrap_or(text.len());
-    text.replace_range(block_start..next, "");
-    text.push_str(
-        "\n# user note stays\n[[providers]]\nid = \"extra\"\nname = \"Extra\"\nendpoint = \"https://extra.example/v1\"\nendpoint_type = \"responses\"\nauth = \"bearer\"\n\n[[models]]\nid = \"mine\"\nprovider_id = \"extra\"\nlabel = \"Mine\"\ncontext_window = 256000\nmax_output = 128000\nmodalities = [\"text\"]\n",
-    );
-    std::fs::write(&path, &text).unwrap();
-
-    store::forget(&db);
-    let catalog = store::load_for_db(&db).expect("reconcile");
-    assert_eq!(
-        catalog.provider("openai").unwrap().endpoint,
-        "https://api.openai.com/v1",
-        "a shipped provider is replaced by the seed"
-    );
-    assert!(catalog.model("opencode-go/hy4-preview").is_some());
-    assert_eq!(
-        catalog.provider("extra").unwrap().endpoint,
-        "https://extra.example/v1"
-    );
-    assert_eq!(catalog.model("extra/mine").unwrap().label, "Mine");
-    let filled = std::fs::read_to_string(&path).unwrap();
-    assert!(!filled.contains("https://proxy.example/v1"));
-    assert!(filled.contains("https://extra.example/v1"));
-    assert!(filled.contains("user note stays"));
-    assert!(filled.contains("id = \"hy4-preview\""));
-
-    store::forget(&db);
-    store::load_for_db(&db).expect("stable");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), filled);
-}
-
-#[test]
-fn startup_overwrites_a_stale_bailian_model_and_keeps_the_added_provider() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("litecode.db");
-    let path = store::catalog_path_for_db(&db);
-    std::fs::write(
-        &path,
-        r#"
-version = 1
-
-[[providers]]
-id = "aliyun-token"
-name = "old"
-endpoint = "https://old.example/v1"
-endpoint_type = "responses"
-auth = "bearer"
-
-[[models]]
-id = "qwen3.8-flash"
-provider_id = "aliyun-token"
-label = "old flash"
-context_window = 256000
-max_output = 65536
-modalities = ["text"]
-
-# user note stays
-[[providers]]
-id = "extra"
-name = "Extra"
-endpoint = "https://extra.example/v1"
-endpoint_type = "responses"
-auth = "bearer"
-
-[[models]]
-id = "mine"
-provider_id = "extra"
-label = "Mine"
-context_window = 256000
-max_output = 128000
-modalities = ["text"]
-"#,
-    )
-    .unwrap();
-
-    store::forget(&db);
-    let catalog = store::load_for_db(&db).expect("reconcile");
-    let flash = catalog.model("aliyun-token/qwen3.8-flash").unwrap();
-    assert_eq!(flash.max_output, 128000);
-    assert_eq!(flash.reasoning_replay, ReasoningReplay::Summary);
-    assert_eq!(flash.label, "Qwen3.8 Flash");
-    assert_eq!(
-        catalog.provider("aliyun-token").unwrap().endpoint,
-        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-    );
-    assert_eq!(
-        catalog.provider("extra").unwrap().endpoint,
-        "https://extra.example/v1"
-    );
-    assert_eq!(catalog.model("extra/mine").unwrap().label, "Mine");
-    let filled = std::fs::read_to_string(&path).unwrap();
-    assert!(!filled.contains("https://old.example/v1"));
-    assert!(!filled.contains("old flash"));
-    assert!(filled.contains("https://extra.example/v1"));
-    assert!(filled.contains("user note stays"));
-    assert!(filled.contains("replay = \"summary\""));
-    store::forget(&db);
-}
-
-#[test]
-fn startup_keeps_the_aligned_catalog_when_the_write_fails() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("litecode.db");
-    let path = store::catalog_path_for_db(&db);
-    let stale = r#"
-version = 1
-
-[[providers]]
-id = "aliyun-token"
-name = "old"
-endpoint = "https://old.example/v1"
-endpoint_type = "responses"
-auth = "bearer"
-
-[[models]]
-id = "qwen3.8-flash"
-provider_id = "aliyun-token"
-label = "old flash"
-context_window = 256000
-max_output = 65536
-modalities = ["text"]
-"#;
-    std::fs::write(&path, stale).unwrap();
-    struct ClearPersist;
-    impl Drop for ClearPersist {
-        fn drop(&mut self) {
-            store::fail_catalog_persist(false);
-        }
-    }
-    let _clear = ClearPersist;
-    store::fail_catalog_persist(true);
-    store::forget(&db);
-    let catalog = store::load_for_db(&db).expect("write failure still loads");
-    let flash = catalog.model("aliyun-token/qwen3.8-flash").unwrap();
-    assert_eq!(flash.max_output, 128000);
-    assert_eq!(flash.reasoning_replay, ReasoningReplay::Summary);
-    let disk = std::fs::read_to_string(&path).unwrap();
-    assert!(disk.contains("max_output = 65536"), "{disk}");
-    assert!(disk.contains("https://old.example/v1"), "{disk}");
-    let backup = std::fs::read_to_string(path.with_file_name("provider-catalog.toml.bak")).unwrap();
-    assert!(backup.contains("max_output = 65536"));
-    store::forget(&db);
-}
-
-#[test]
-fn seed_gap_is_empty_when_the_loaded_catalog_has_every_shipped_id() {
-    let gap = store::seed_gap(&seeded());
-    assert!(gap.is_empty(), "{gap:?}");
-}
-
-#[test]
-fn seed_gap_names_a_missing_provider_and_ignores_an_extra_one() {
-    let empty = parse("version = 1\n").unwrap();
-    let gap = store::seed_gap(&empty);
-    assert!(
-        gap.missing_providers
-            .iter()
-            .any(|provider| provider.id == "openai"),
-        "{gap:?}"
-    );
-    assert!(
-        gap.missing_models
-            .iter()
-            .any(|model| model == "openai/gpt-5.6-sol"),
-        "{gap:?}"
-    );
-
-    let extra = parse(&format!(
-        "{}\n[[providers]]\nid = \"extra\"\nname = \"Extra\"\nendpoint = \"https://example.invalid/v1\"\nendpoint_type = \"responses\"\nauth = \"bearer\"\n\n[[models]]\nid = \"extra-model\"\nprovider_id = \"extra\"\ncontext_window = 256000\nmax_output = 128000\nmodalities = [\"text\"]\n",
-        store::DEFAULT_CATALOG
-    ))
-    .unwrap();
-    assert!(store::seed_gap(&extra).is_empty());
-}
-
-#[test]
-fn seed_gap_names_one_removed_model() {
-    let marker = "id = \"gpt-5.6-sol\"";
-    let start = store::DEFAULT_CATALOG.find(marker).expect("model");
-    let block_start = store::DEFAULT_CATALOG[..start]
-        .rfind("[[models]]")
-        .expect("block");
-    let after = &store::DEFAULT_CATALOG[start + marker.len()..];
-    let next = after
-        .find("[[models]]")
-        .map(|index| start + marker.len() + index)
-        .unwrap_or(store::DEFAULT_CATALOG.len());
-    let mut text = String::new();
-    text.push_str(&store::DEFAULT_CATALOG[..block_start]);
-    text.push_str(&store::DEFAULT_CATALOG[next..]);
-    let loaded = parse(&text).unwrap();
-    let gap = store::seed_gap(&loaded);
-    assert!(gap.missing_providers.is_empty(), "{gap:?}");
-    assert_eq!(gap.missing_models, vec!["openai/gpt-5.6-sol".to_string()]);
-    let blocks = store::seed_blocks(&gap);
-    assert!(
-        blocks.contains("[[models]]") && blocks.contains("id = \"gpt-5.6-sol\""),
-        "{blocks}"
-    );
-    assert!(
-        blocks.contains("OpenAI"),
-        "the comment above the table travels with the block:\n{blocks}"
-    );
-    assert!(
-        !blocks.contains("id = \"gpt-5.6-terra\""),
-        "entries already in the file are left out:\n{blocks}"
-    );
-    assert!(store::seed_blocks(&store::seed_gap(&seeded())).is_empty());
 }

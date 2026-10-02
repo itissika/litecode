@@ -479,17 +479,10 @@ export async function fetchSymbolAt(
 export interface SymbolRefQuery {
   file: string;
   symbol?: string;
-  drift_base_of?: string;
-}
-
-export interface SymbolDriftCommit {
-  hash: string;
-  subject: string;
 }
 
 export interface SymbolDrift {
   drifted: boolean;
-  commits: SymbolDriftCommit[];
 }
 
 export interface SymbolRefHit {

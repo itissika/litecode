@@ -35,4 +35,6 @@ pub use tool_path::{
     resolve_tool_path, resolve_tool_path_from,
 };
 pub use tree::{GlobListing, TreeEntry, TreeError, list_glob, list_tree, list_tree_reveal};
-pub use watcher::{WorkspaceWatcher, filter_change_for_ui, restart_watcher, spawn_watcher};
+pub use watcher::{
+    WorkspaceWatcher, change_moves_head, filter_change_for_ui, restart_watcher, spawn_watcher,
+};

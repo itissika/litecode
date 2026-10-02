@@ -197,24 +197,13 @@ pub fn validate<'a>(
                     message: format!("Symbol \"{chain}\" in \"{path}\" is not unique."),
                     reference: Some(chain),
                 }),
-                SymbolCheck::Drifted { commits } => {
-                    let mut message = format!(
-                        "Symbol \"{chain}\" in \"{path}\" changed since this note was last committed."
-                    );
-                    for commit in commits.iter().take(3) {
-                        message.push('\n');
-                        message.push_str(&commit.hash);
-                        message.push(' ');
-                        message.push_str(&commit.subject);
-                    }
-                    issues.push(Issue {
-                        node_id: node.id.to_string(),
-                        severity: Severity::Warning,
-                        code: "symbol_drift".into(),
-                        message,
-                        reference: Some(chain),
-                    });
-                }
+                SymbolCheck::Drifted => issues.push(Issue {
+                    node_id: node.id.to_string(),
+                    severity: Severity::Warning,
+                    code: "symbol_drift".into(),
+                    message: format!("Symbol \"{chain}\" in \"{path}\" differs from HEAD."),
+                    reference: Some(chain),
+                }),
             }
         }
     }

@@ -4,10 +4,8 @@
 //! in [super::resolve], built once per process from a validated raw catalog.
 //!
 //! Unknown fields, unknown enum values, duplicate ids and dangling references
-//! are hard errors on the strict parse. A file that fails it is upgraded by
-//! [super::migrate] before it is kept: unknown keys and enum values are dropped,
-//! and an entry that still cannot load is replaced by the embedded seed entry
-//! with the same id. The product does not invent a mapping between old and new fields.
+//! are hard errors on the strict parse. The running app uses the embedded seed
+//! and does not load a catalog file.
 
 use std::collections::BTreeMap;
 
