@@ -1,11 +1,11 @@
 ```node
 node : engine-lifecycle
-status : pending
+status : enabled
 summary : 引擎契约：desired、运行 state、索引状态与工具可见性各有含义；code/session 执行门解耦。
 x : 756
 y : 710
-w : 398
-h : 720
+w : 416
+h : 414
 ```
 
 **主张：** 是否启用、是否运行、数据是否就绪不能压成一个布尔值。

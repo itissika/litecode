@@ -1,6 +1,6 @@
 ```node
 node : agent-harness-philosophy
-status : pending
+status : enabled
 summary : agent harness 顶层：内核极薄、L0 冻结、二支柱扩展、日志为真源、治理收敛。
 x : 34
 y : 890

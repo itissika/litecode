@@ -1,9 +1,11 @@
 ```node
 node : workspace-shared-substrate
-status : pending
+status : enabled
 summary : 工作区基座：文件 / 终端 / 搜索 / Git 等共享基础设施，人类与 agent 入口分立、实例共享。
 x : 252
 y : 890
+w : 398
+h : 408
 ```
 
 **主张：** 项目级基础设施属于工作区，不归任何工具所有；人类与 agent 入口分立、实例共享。

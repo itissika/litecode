@@ -1,9 +1,9 @@
 ```node
 node : client-projection
-status : pending
+status : enabled
 summary : 客户端投影：按 session/seq 镜像权威行，快照与增量补缺口；乐观气泡没有日志身份。
 x : 270
-y : 566
+y : 558
 w : 416
 h : 414
 ```

@@ -1,11 +1,11 @@
 ```node
 node : subagent-lifecycle
-status : pending
+status : enabled
 summary : 子会话契约：持久 parent/call 关系，独立 turn；Hub 只路由完成，父取消不隐式取消 child。
 x : 990
 y : 692
 w : 398
-h : 720
+h : 396
 ```
 
 **主张：** subagent 是完整 session；调度工具是同一 turn 基座的另一种入口。

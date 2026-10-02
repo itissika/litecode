@@ -1,11 +1,11 @@
 ```node
 node : context-view
-status : pending
+status : enabled
 summary : 请求视图：从权威工作集派生一次性 PreparedView；适配、补齐与媒体裁剪不回写历史。
 x : 748
 y : 556
-w : 480
-h : 560
+w : 336
+h : 434
 ```
 
 **主张：** 持久历史回答发生了什么，模型视图回答这一次模型能看到什么。

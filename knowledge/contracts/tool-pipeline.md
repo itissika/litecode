@@ -1,6 +1,6 @@
 ```node
 node : tool-pipeline
-status : pending
+status : enabled
 summary : 工具执行：模型参数与执行事实分离；按资源冲突调度；结果按 call_id 配对、按调用顺序落地。
 x : 990
 y : 548

@@ -1,11 +1,11 @@
 ```node
 node : retrieval-contract
-status : pending
+status : enabled
 summary : 检索契约：文件/会话为真源，索引可重建；命中按证据排序、水合验证，复制品不冒充原件。
 x : 1224
 y : 700
-w : 398
-h : 720
+w : 434
+h : 378
 ```
 
 **主张：** 检索召回已有事实的证据；索引与回声副本不冒充事实源。

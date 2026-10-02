@@ -1,11 +1,11 @@
 ```node
 node : config-commit
-status : pending
+status : enabled
 summary : 配置提交：持久意图与运行投影分面；generation 是提交世代，不是 CAS；保存与应用分阶段。
 x : 510
 y : 700
-w : 398
-h : 720
+w : 416
+h : 432
 ```
 
 **主张：** 配置保存表达人的意图；保存成功不等于所有消费者已经应用。

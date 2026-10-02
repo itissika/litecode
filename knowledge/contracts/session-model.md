@@ -1,6 +1,6 @@
 ```node
 node : session-model
-status : pending
+status : enabled
 summary : 会话数据：业务日志为真源；seq 是身份，Item 是载荷，Surface 是派生序。
 x : 34
 y : 556
