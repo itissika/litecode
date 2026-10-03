@@ -3,59 +3,85 @@
 </h1>
 
 <p align="center">
-  <b>追求运行时极致轻量的 Coding Agent 框架</b>
+  <b>轻量的桌面 Coding Agent 工作台</b>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Rust-2024-orange.svg" alt="Rust 2024">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/idle-~50MB-informational.svg" alt="~50MB idle">
   <a href="https://github.com/itissika/litecode/actions"><img src="https://github.com/itissika/litecode/actions/workflows/windows-sidecar.yml/badge.svg" alt="CI"></a>
 </p>
 
----
+<p align="center">
+  <a href="./README.md">English</a> · <a href="./README.zh-CN.md">简体中文</a>
+</p>
 
-一坨 Vibe Coding 出来的、专门针对 Coding 场景的 Agent 框架。专注于：**Tool 和 Context 这些经常对人类不可见但是 agent 主战场的实现**，当然，还有我最喜欢的前端主题和动画，花了我超多时间。
+***
 
 ![LiteCode 完整工作台](./assets/screenshots/Full.webp)
 
-## ✨ 功能亮点
+## 🚀 上手
 
-**开销随需** — 核心常驻 ~50MB，默认极致轻量；按需叠加语义搜索 / LSP / 远程等能力，亦可极重。
+1. [下载](https://github.com/itissika/litecode/releases/latest)
+2. 填一个 key
 
-### 🤖 Agent
-- **并行执行** — 多 Session 并行 + 并发子代理（不可嵌套），互不阻塞。
-- **自由编排** — 主 / 子 Agent 按需增加，各自注册任意数量的工具集与 system prompt。
-- **工具自由扩展** — 内置工具集之外，支持自定义工具与 MCP 服务器，注册即用。
-- **工具热插拔** — 保存设置下一轮即生效，无需重启 serve。
-- **LSP 完整体验** — 开启后 write / edit 自动获得诊断反馈，Agent 拥有人类编辑代码般的完整体验。
-- **安全策略** — 内置工具自带授权预设一键切换；敏感路径防护，Session 快照支持运行中 Revert。
-- **上下文压缩** — 自动或一键手动；keep-recent 自动保留关键内容，内置 `session_search` tool 无损召回历史。
+**你已经就绪啦！**
 
-### 🖥️ IDE
-- **轻量编辑** — 内嵌 Monaco 编辑器即开即用；IDE 能力即 Agent 能力，优先供给 Agent 侧。
-- **语义搜索** — 按语义而非文本匹配代码（200+ 语言，ANN + tree-sitter）。
-- **双形态 + 远程** — Electron 桌面端与浏览器端；SSH 部署 Linux 无头服务端，隧道回连。
+macOS 暂不支持；桌面端只有 Windows，Linux 只有无头包。
 
-### 🔌 Provider
-- **多适配器** — OpenAI Responses 为唯一权威格式，openai / deepseek / mimo 即插即用。
-- **运行中切换** — 中途换模型 / Agent 不丢上下文，下一轮生效。
-- **成本可见** — prompt / completion / cache hit / miss 按 step 实时统计，精准控制成本。
+## 为什么是 LiteCode
 
-## 🚀 快速开始
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="./assets/why/switch.webp" width="300" alt="模型切换器"><br><br>
+      <b>不封闭</b> — 谁家的 key 都能用；聊到一半也能换，不怕平台锁生态。
+    </td>
+    <td align="center" width="33%">
+      <img src="./assets/why/layout.webp" width="300" alt="自由布局"><br><br>
+      <b>随便摆</b> — 主 / 子代理、编辑器、知识库，想怎么干活就怎么摆。
+    </td>
+    <td align="center" width="33%">
+      <img src="./assets/why/knowledge.webp" width="300" alt="知识实时"><br><br>
+      <b>知识实时</b> — 状态一眼可见，对话里点一下就跳过去审。
+    </td>
+  </tr>
+</table>
 
-### Windows
+### 其他特性
 
-前往 [Releases](https://github.com/itissika/litecode/releases/latest) 下载安装包：
+**开销随需** — 核心常驻 \~50MB；语义搜索 / LSP / 远程按需装载。
 
-- `Litecode-Setup-x64.exe` — 安装版（推荐）
-- `Litecode-Portable-x64.exe` — 免安装便携版
+**🔌 Provider**
 
-首次启动后在 Web 设置界面配置 Provider → Model → 默认 Agent，凭据只存本机。
+* **一个供应商一个 key** — key 填了就能用。
+* *tip：Claude 系列没加——不让用；有人需要我可以加上。*
 
-### 其他平台
+**🤖 Agent**
 
-Linux 提供无头服务端包（`litecode-server-linux-x64.tar.gz`，供 SSH 远程部署），无桌面安装包；macOS 暂无任何安装包。两者均需从源码构建（见下方「开发」）。
+* **Agent 自定义** — 提示词、工具集、步数，需要谁自己造；最懂你的是你自己。内置 agent 也很好用。
+* **Custom tool / MCP 热更新** — 要什么 tool 自己造，造好立刻能用；烂大街的那些配不上你。
+* **LSP 自动回填** — 写错的代码，当前轮次立刻反馈给 agent；不劳你和 agent 费心。
+* **思考强度 / 上下文一键切换** — 3 档思考强度、2 档上下文；超窗自动压缩，工作不中断。
+* **工作区全仓会话检索** — 给 agent 加个记忆外挂；说了什么都能捞回来。
+
+**🧠 知识库**
+
+* **节点式知识，稳定引用** — 牵一发而动全身，窥一点而知全貌；借知识库，像战略家一样指导全局吧。
+* **知识是活的** — 永远跟着事实走，不漏掉你和 agent 对文件 / 代码的每一次编辑；别让你的知识过时。
+
+**🖥️ IDE**
+
+* **文件树 + 编辑器** — 轻量代码编辑；LSP 启动时，获得完整的编辑体验。
+* **多格式预览** — 文本、代码、图片、PDF、SQLite，点了直接看。
+
+## 🧭 设计
+
+LiteCode 只为一个人、一个工作区而造。**我们只提供工具**——agent 不是全能的，它也不会是你自己；只有你知道你想做什么。所以它刻意不做：一个窗口多工作区、自动化唤醒的任务、skill、方便功能的堆砌。
+
+LiteCode 的设计理念就沉淀在它自己的知识库里——`knowledge/`，正是产品内置的那个功能。建议从 [为什么](./knowledge/why.md) → [产品概要](./knowledge/product-brief.md) → [harness 顶层设计](./knowledge/harness/agent-harness-philosophy.md) 读起，再看理念落成的[特色工具集](./knowledge/framework/featured-tools.md)。
 
 ## 🧑‍💻 开发
 
@@ -69,12 +95,15 @@ Linux 提供无头服务端包（`litecode-server-linux-x64.tar.gz`，供 SSH �
 ./scripts/serve.sh
 ```
 
-```bash
-# CLI（开发便利）
-cargo run -- "帮我修复这个 bug"
+> 前置要求：Rust（MSVC，edition 2024）+ Node.js 22+。
+
+本地 nightly（Windows 安装包 + 精简 Linux tar，`LITECODE_CHANNEL=nightly`）：
+
+```powershell
+./scripts/package_local.ps1
 ```
 
-> 前置要求：Rust（MSVC，edition 2024）+ Node.js 22+。
+产物：`desktop/out/` 与 `dist/linux/`。官方签名版本来自 GitHub Releases。
 
 ## 📚 进阶
 
@@ -83,21 +112,28 @@ cargo run -- "帮我修复这个 bug"
 
 ```
 src/
-  agent/            Agent 定义与调度
-  client_protocol/  JSON-RPC 2.0 客户端协议
-  context_pipeline/ 上下文压缩与截断
-  engines/          语义搜索 / ANN / LSP
-  llm/              LLM 适配器（OpenAI Responses）
+  agent/            Agent 循环与调度（控制流冻结）
+  tool/             工具管线：唯一执行 / 授权 / 输出合约
+  tools/            内置工具集（read / grep / edit / bash / subagent / knowledge …）
+  context_pipeline/ 上下文视图、压缩与截断
+  session/          Session 日志（seq 权威）、快照与回退
+  knowledge/        知识库：语料、引用、校验
+  engines/          语义搜索 / ANN / LSP 生命周期
+  llm/              LLM 适配器（OpenAI Responses 权威格式）
+  provider_catalog/ 提供商与模型目录（随构建内嵌）
+  runtime/          运行时句柄与 provider 解析
   permission/       权限与敏感路径防护
-  runtime/          运行时与 provider 解析
+  reminder/         系统提醒（作为会话事实写入）
+  terminal/         PTY 基座
+  workspace/        工作区基座（文件 / git / 共享基础设施）
+  mcp/              MCP 服务器
   serve/            HTTP/WS 后端
-  session/          Session 存储与快照
-  tools/            工具集（grep / write / webfetch / subagent …）
-  workspace/        工作区抽象（LAP）
+  client_protocol/  JSON-RPC 2.0 客户端协议
 web/                React UI（Monaco + dockview）
 desktop/            Electron 宿主（sidecar + SSH 远程）
 examples/tools/     自定义工具示例
 models/             嵌入模型权重（随仓分发）
+knowledge/          LiteCode 自己的设计知识（吃自己的狗粮）
 scripts/            开发与打包脚本
 ```
 
@@ -117,16 +153,18 @@ cd web && npm install && npm run build
 cd desktop && npm install && npm run build
 ```
 
-配置入口：`serve` 启动后通过 Web 设置界面管理 Provider（openai / deepseek / mimo）、Model、Agent。
+配置入口：`serve` 启动后通过 Web 设置界面管理 Provider、Model 与 Agent。
 
 </details>
 
 ## 参与贡献
 
-- 项目契约与提交铁律：[Agent.md](Agent.md)
-- 贡献流程：[CONTRIBUTING.md](CONTRIBUTING.md)
-- 版本变更：[CHANGELOG.md](CHANGELOG.md)
-- 桌面端细节：[desktop/README.md](desktop/README.md)
+Vibe Coding 出来的，有 bug 是常事——我尽力了。欢迎 issue 与 PR。
+
+* 项目契约与提交铁律：[AGENTS.md](AGENTS.md)
+* 贡献流程：[CONTRIBUTING.md](CONTRIBUTING.md)
+* 版本变更：[CHANGELOG.md](CHANGELOG.md)
+* 桌面端细节：[desktop/README.md](desktop/README.md)
 
 ## License
 

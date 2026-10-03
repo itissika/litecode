@@ -3,59 +3,85 @@
 </h1>
 
 <p align="center">
-  <b>A coding agent framework obsessively optimized for runtime lightness</b>
+  <b>A lightweight desktop workbench for coding agents.</b>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Rust-2024-orange.svg" alt="Rust 2024">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/idle-~50MB-informational.svg" alt="~50MB idle">
   <a href="https://github.com/itissika/litecode/actions"><img src="https://github.com/itissika/litecode/actions/workflows/windows-sidecar.yml/badge.svg" alt="CI"></a>
 </p>
 
----
+<p align="center">
+  <a href="./README.md">English</a> · <a href="./README.zh-CN.md">简体中文</a>
+</p>
 
-A vibe-coded agent framework built specifically for coding. It focuses on **Tools and Context — the parts usually invisible to humans, yet where agents do the real work** — plus, of course, my favorite frontend theme and animations, which took an absurd amount of time.
+***
 
 ![LiteCode full workbench](./assets/screenshots/Full.webp)
 
-## ✨ Feature Highlights
+## 🚀 Try it
 
-**On-demand footprint** — ~50MB baseline core, ultra-light by default; stack semantic search / LSP / remote on demand — as heavy as you need.
+1. [Download](https://github.com/itissika/litecode/releases/latest)
+2. Paste one key
 
-### 🤖 Agent
-- **Parallel execution** — Multiple sessions run in parallel with concurrent subagents (non-nested), non-blocking.
-- **Free orchestration** — Add primary / sub agents as needed, each with its own toolset and system prompt.
-- **Extensible tools** — Custom tools and MCP servers on top of the built-in toolset; register and use.
-- **Hot-plug tools** — Settings take effect on the next turn without restarting serve.
-- **Full LSP experience** — With LSP on, write / edit get automatic diagnostics feedback — the agent edits like a human.
-- **Safety policies** — One-click preset switch for tool authorization; sensitive-path protection; session snapshots with mid-run revert.
-- **Context compression** — auto or one-click manual; keep-recent automatically keeps key content; built-in `session_search` finds past transcripts as path:line hits, then `read` / `grep` to deepen.
+**You're all set!**
 
-### 🖥️ IDE
-- **Lightweight editing** — Embedded Monaco editor, ready out of the box; IDE capabilities are Agent capabilities, prioritized for the agent side.
-- **Semantic search** — Code search by meaning, not text (200+ languages, ANN + tree-sitter).
-- **Two form factors + remote** — Electron desktop and browser; SSH to a headless Linux server, tunneled back.
+macOS isn't supported yet — desktop is Windows-only (Linux ships a headless bundle).
 
-### 🔌 Provider
-- **Multi-adapter** — OpenAI Responses for openai / deepseek / mimo; OpenCode Chat Completions with Zen by default and an optional Go endpoint.
-- **Mid-turn switching** — Swap model / agent anytime without losing context; effective next turn.
-- **Cost visibility** — prompt / completion / cache hit / miss tracked per step in real time for precise cost control.
+## Why LiteCode
 
-## 🚀 Quick Start
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="./assets/why/switch.webp" width="300" alt="Model switcher"><br><br>
+      <b>No lock-in</b> — any provider's key works; switch mid-conversation.
+    </td>
+    <td align="center" width="33%">
+      <img src="./assets/why/layout.webp" width="300" alt="Free layout"><br><br>
+      <b>Any layout</b> — primary, subagents, editor, knowledge: dock them however you work.
+    </td>
+    <td align="center" width="33%">
+      <img src="./assets/why/knowledge.webp" width="300" alt="Live knowledge"><br><br>
+      <b>Live knowledge</b> — status at a glance; click a reference and jump straight in.
+    </td>
+  </tr>
+</table>
 
-### Windows
+### Other features
 
-Download from [Releases](https://github.com/itissika/litecode/releases/latest):
+**On-demand footprint** — \~50MB idle core; semantic search / LSP / remote load only when you ask.
 
-- `Litecode-Setup-x64.exe` — installer (recommended)
-- `Litecode-Portable-x64.exe` — portable
+**🔌 Provider**
 
-After first launch, configure Provider → Model → default Agent in the web settings. Credentials stay local.
+* **One key per provider** — paste a key and go.
+* *Tip: Claude isn't included — not permitted; I can add it if someone needs it.*
 
-### Other platforms
+**🤖 Agent**
 
-Linux ships a headless server bundle (`litecode-server-linux-x64.tar.gz`, for SSH remote deployment) with no desktop installer; macOS has no packages yet. Both must be built from source (see Development below).
+* **Define your own agents** — prompt, toolset, step budget: build the one you need; nobody knows you better than you do. The built-in agents are good too.
+* **Custom tools & MCP, hot-reloaded** — build the tool you want and use it right away; the generic ones don't deserve you.
+* **LSP feedback, automatic** — a bad edit is reported to the agent in the same turn; neither of you has to hunt for it.
+* **Thinking & context, one click** — 3 thinking levels, 2 context tiers; auto-compaction when the window overflows, so work never stops.
+* **Whole-workspace session search** — a memory add-on for your agent; anything said can be pulled back up.
+
+**🧠 Knowledge**
+
+* **Nodes with stable references** — pull one thread and the whole picture moves; see everything from one node and steer like a strategist.
+* **Knowledge that stays alive** — it follows the facts and never misses an edit you or the agent make to files or code; your notes don't rot.
+
+**🖥️ IDE**
+
+* **File tree + editor** — light code editing; with LSP on, the full editing experience.
+* **Preview anything** — text, code, images, PDF, SQLite: click and look.
+
+## 🧭 Design
+
+LiteCode is built for one developer, one workspace. **We only provide tools** — the agent is not omnipotent, and it is not you; only you know what you want to do. So it deliberately skips multi-workspace windows, scheduled wake-up tasks, skills and convenience pile-ups.
+
+The design rationale lives in the repo's own knowledge base — `knowledge/`, the same feature the product ships. Start at [Why](./knowledge/why.md) → [Product brief](./knowledge/product-brief.md) → [Harness philosophy](./knowledge/harness/agent-harness-philosophy.md), then the [featured tools](./knowledge/framework/featured-tools.md) it lands on. (Notes are written in Chinese.)
 
 ## 🧑‍💻 Development
 
@@ -67,11 +93,6 @@ Linux ships a headless server bundle (`litecode-server-linux-x64.tar.gz`, for SS
 ```bash
 # Linux / browser (Vite HMR)
 ./scripts/serve.sh
-```
-
-```bash
-# CLI (dev convenience)
-cargo run -- "fix this bug for me"
 ```
 
 > Prerequisites: Rust (MSVC, edition 2024) + Node.js 22+.
@@ -91,21 +112,28 @@ Artifacts: `desktop/out/` and `dist/linux/`. Official signed builds come from Gi
 
 ```
 src/
-  agent/            Agent definition & dispatch
-  client_protocol/  JSON-RPC 2.0 client protocol
-  context_pipeline/ Context compression & truncation
-  engines/          Semantic search / ANN / LSP
-  llm/              LLM adapters (OpenAI Responses)
+  agent/            Agent loop & dispatch (frozen control flow)
+  tool/             Tool pipeline: one execution / authorization / output contract
+  tools/            Built-in toolset (read / grep / edit / bash / subagent / knowledge …)
+  context_pipeline/ Context views, compaction & truncation
+  session/          Session log (seq-authoritative), snapshots & revert
+  knowledge/        Knowledge base: corpus, refs, validation
+  engines/          Semantic search / ANN / LSP lifecycle
+  llm/              LLM adapters (OpenAI Responses canonical)
+  provider_catalog/ Provider & model catalog, compiled into the build
+  runtime/          Runtime handle & provider resolution
   permission/       Permissions & sensitive-path guards
-  runtime/          Runtime & provider resolution
+  reminder/         System reminders, written into the session as facts
+  terminal/         PTY base
+  workspace/        Workspace substrate (files / git / shared infrastructure)
+  mcp/              MCP servers
   serve/            HTTP/WS backend
-  session/          Session storage & snapshots
-  tools/            Toolset (grep / write / webfetch / subagent …)
-  workspace/        Workspace abstraction (LAP)
+  client_protocol/  JSON-RPC 2.0 client protocol
 web/                React UI (Monaco + dockview)
 desktop/            Electron host (sidecar + SSH remote)
 examples/tools/     Custom tool examples
-models/             Embedded model weights (shipped with the repo)
+models/             Embedded embedding weights (shipped with the repo)
+knowledge/          LiteCode's own design knowledge (dogfooded)
 scripts/            Dev & packaging scripts
 ```
 
@@ -125,16 +153,18 @@ cd web && npm install && npm run build
 cd desktop && npm install && npm run build
 ```
 
-Configuration: after `serve` starts, manage Provider (openai / deepseek / mimo / opencode), Model, and Agent via the web settings UI.
+Configuration: after `serve` starts, manage providers, models and agents via the web settings UI.
 
 </details>
 
 ## Contributing
 
-- Project contract & commit rules: [Agent.md](Agent.md)
-- Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
-- Desktop details: [desktop/README.md](desktop/README.md)
+Vibe-coded, bugs happen — I did my best. Issues and PRs are welcome.
+
+* Project contract & commit rules: [AGENTS.md](AGENTS.md)
+* Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
+* Changelog: [CHANGELOG.md](CHANGELOG.md)
+* Desktop details: [desktop/README.md](desktop/README.md)
 
 ## License
 
