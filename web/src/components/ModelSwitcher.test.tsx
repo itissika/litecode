@@ -141,6 +141,38 @@ describe("ModelSwitcher filters", () => {
     expect(dimmed("Gamma")).toBe(false);
   });
 
+  it("shows what each model takes beyond text, on the trigger and every row", () => {
+    useSessionStore.setState({
+      availableModels: [
+        { ...MODELS[0], modalities: ["text", "image", "pdf"] },
+        { ...MODELS[1], modalities: ["text"] },
+      ],
+    } as never);
+
+    render(<ModelSwitcher sessionId="session-1" />);
+    const glyphs = (root: HTMLElement | Document) =>
+      Array.from(root.querySelectorAll('[role="img"]')).map((glyph) =>
+        glyph.getAttribute("aria-label"),
+      );
+
+    // The trigger carries the session's own model — no need to open the list to
+    // see whether the composer's images can be read.
+    const trigger = screen.getByTitle("Model: Alpha");
+    expect(glyphs(trigger)).toEqual(["image", "pdf"]);
+
+    fireEvent.click(trigger);
+    const panel = document.querySelector<HTMLElement>("[data-dropdown-panel]");
+    if (!panel) throw new Error("model dropdown did not open");
+    // Every row is marked in the catalog's own order, and a text-only model
+    // stays bare instead of getting a guessed glyph.
+    expect(glyphs(panel)).toEqual(["image", "pdf"]);
+    expect(
+      within(panel)
+        .getByTitle("Accepts image input")
+        .getAttribute("aria-label"),
+    ).toBe("image");
+  });
+
   it("clamps the list to the pane that hosts the composer, not the window", () => {
     render(
       <div className="dv-groupview">
@@ -261,5 +293,43 @@ describe("ModelSwitcher filters", () => {
 
     // The drag is done; the panel keeps the height it was left at.
     expect(body.style.height).toBe("96px");
+  });
+});
+
+describe("ModelSwitcher field variant", () => {
+  const models = [
+    {
+      id: "prov/m1",
+      api_model_id: "gpt-4o",
+      provider_id: "prov",
+      label: "GPT",
+      context_window: 1000,
+    },
+  ];
+
+  it("uses the settings underline and the overlay menu, not the composer chip", () => {
+    useSettingsStore.setState({
+      llm: { providers: [{ id: "prov", name: "Prov" }] },
+    } as never);
+    render(
+      <ModelSwitcher
+        variant="field"
+        models={models}
+        modelId="prov/m1"
+        onChange={() => {}}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "GPT" });
+    expect(trigger.className).toContain("border-b");
+    expect(trigger.className).not.toContain("h-7");
+
+    fireEvent.click(trigger);
+    const panel = document.querySelector<HTMLElement>("[data-dropdown-panel]");
+    if (!panel) throw new Error("model dropdown did not open");
+    expect(panel.className).toContain("bg-(--_dk-overlay)");
+    expect(panel.className).not.toContain("backdrop-blur");
+    expect(panel.style.top).not.toBe("");
+    expect(within(panel).getByText("Prov")).toBeTruthy();
   });
 });

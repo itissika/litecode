@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import type { ModelInfo } from "../api/types";
+import { splitModelRef } from "../api/settings";
 import { useSessionStore } from "../stores/sessionStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import {
@@ -19,6 +20,7 @@ import {
 } from "./ui/Dropdown";
 import { motion, useReducedMotion } from "motion/react";
 import { glassFill } from "./composerCard";
+import { ModalityIcons } from "./ModalityIcons";
 import { ProviderLogo } from "./ProviderLogos";
 
 const CTRL_H = "h-7";
@@ -32,6 +34,29 @@ function triggerBase(open: boolean, compact = false): string {
   return `${CTRL_H} ${CTRL_TEXT} ${PRESS} box-border inline-flex w-auto cursor-pointer items-center rounded-md ${spacing} leading-none text-left text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-ix-fg-hover) ${
     open ? "bg-(--_dk-ix-bg-hover)" : "bg-transparent"
   }`;
+}
+
+/** Settings form control: same underline as `Select`, not the composer chip. */
+const FIELD_TRIGGER =
+  "flex w-full min-w-0 items-center justify-between gap-1 border-0 border-b border-(--_dk-line) bg-transparent px-1 py-[0.375rem] text-left text-[0.875rem] text-(--_dk-text-muted) hover:brightness-110 focus-visible:border-(--_dk-line-visible) disabled:cursor-not-allowed disabled:opacity-40";
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 10 10"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="shrink-0 text-(--_dk-text-disabled) transition-transform duration-150"
+      style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+    >
+      <path d="M3 1.5l4 3.5-4 3.5" />
+    </svg>
+  );
 }
 
 interface ProviderModelGroup {
@@ -112,24 +137,39 @@ function matchesQuery(model: ModelInfo, query: string): boolean {
 }
 
 /**
- * Session model picker. Values are stable composite refs
- * (`{provider_id}/{model_id}`) — the exact string sessions store, never a
- * display id. A ref that is not in the active catalog is surfaced as
- * "Missing: …" instead of being silently swapped for another model.
+ * Model picker shared by the composer toolbar and Settings → Agents.
+ *
+ * Values are stable composite refs (`{provider_id}/{model_id}`) — the exact
+ * string sessions and agent profiles store, never a display id. A ref that is
+ * not in the active catalog is surfaced as "Missing: …" instead of being
+ * silently swapped for another model.
+ *
+ * `composer` is the compact glass chip that opens upward from the chat input.
+ * `field` is the settings underline control: overlay menu, opens downward,
+ * same list (search, provider filter, modalities) underneath.
  */
 export function ModelSwitcher({
   sessionId,
   disabled = false,
   modelId: controlledModelId,
   onChange,
+  models,
+  variant = "composer",
 }: {
-  sessionId: string;
+  sessionId?: string;
   disabled?: boolean;
   modelId?: string | null;
   onChange?: (modelId: string) => void;
+  /** Active catalog. Omit to use the session handshake list. */
+  models?: ModelInfo[];
+  variant?: "composer" | "field";
 }) {
-  const availableModels = useSessionStore((s) => s.availableModels);
-  const sessionSlice = useSessionStore((s) => s.byId.get(sessionId));
+  const field = variant === "field";
+  const sessionModels = useSessionStore((s) => s.availableModels);
+  const availableModels = models ?? sessionModels;
+  const sessionSlice = useSessionStore((s) =>
+    sessionId ? s.byId.get(sessionId) : undefined,
+  );
   const modelId =
     controlledModelId === undefined
       ? (sessionSlice?.modelId ?? null)
@@ -290,14 +330,28 @@ export function ModelSwitcher({
   const currentModelInfo = modelId
     ? availableModels.find((m) => m.id === modelId)
     : undefined;
-  /** Set only when the session points at a ref the active catalog doesn't know. */
+  /** Set only when the value points at a ref the active catalog doesn't know. */
   const missingRef = modelId && !currentModelInfo ? modelId : null;
+  const missingProviderId = missingRef
+    ? splitModelRef(missingRef).providerId || undefined
+    : undefined;
   const displayLabel = currentModelInfo
     ? modelLabel(currentModelInfo) || label.trim() || modelId || ""
     : "";
   const triggerText = missingRef ? `Missing: ${missingRef}` : displayLabel;
+  const logoProviderId = currentModelInfo?.provider_id ?? missingProviderId;
 
   if (availableModels.length === 0 && !missingRef) {
+    if (field) {
+      return (
+        <button type="button" disabled className={FIELD_TRIGGER}>
+          <span className="truncate text-(--_dk-text-disabled)">
+            Select model
+          </span>
+          <Chevron open={false} />
+        </button>
+      );
+    }
     return (
       <button
         type="button"
@@ -312,38 +366,68 @@ export function ModelSwitcher({
 
   return (
     <Dropdown
-      direction="up"
+      direction={field ? "down" : "up"}
       variant="select"
       // No fixed ceiling. Dropdown keeps the list inside the screen and the
-      // pane, and may still open it downward when that side is the taller one.
+      // pane, and may still open the other way when that side is the taller one.
       maxHeight={null}
-      className="min-w-3.5 max-w-[220px] shrink"
-      // Same frosted fill as the composer this picker opens from. The panel is
-      // portaled to `body`, so it inherits nothing from the card — the fill is
-      // passed in. Border and shadow stay the menu's own: over a busy message
-      // list the stronger edge is what keeps the panel readable.
-      bgClassName={glassFill}
-      panelClassName="w-60 rounded-md"
-      trigger={({ open, toggle }) => (
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={toggle}
-          className={`${triggerBase(open, true)} w-full min-w-3.5 disabled:cursor-not-allowed ${
-            triggerText
-              ? missingRef
-                ? "text-(--_dk-amber-500)"
-                : "text-(--_dk-text-muted)"
-              : "text-(--_dk-accent-hover)"
-          }`}
-          title={triggerText ? `Model: ${triggerText}` : "Select model"}
-        >
-          <span className="flex min-w-0 items-center gap-1.5">
-            <ProviderLogo providerId={currentModelInfo?.provider_id} />
-            <span className="truncate">{triggerText || "Select model"}</span>
-          </span>
-        </button>
-      )}
+      className={
+        field ? "w-full min-w-0" : "min-w-3.5 max-w-[220px] shrink"
+      }
+      // Composer: frosted fill, because the panel is portaled to `body` and
+      // would otherwise lose the card it opens from. Settings: the overlay
+      // menu every other form select uses. Border and shadow stay the menu's.
+      bgClassName={field ? undefined : glassFill}
+      panelClassName={field ? "rounded-md" : "w-60 rounded-md"}
+      trigger={({ open, toggle }) =>
+        field ? (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={toggle}
+            className={FIELD_TRIGGER}
+            title={triggerText ? `Model: ${triggerText}` : "Select model"}
+          >
+            <span
+              className={`flex min-w-0 items-center gap-1.5 ${
+                missingRef
+                  ? "text-(--_dk-amber-500)"
+                  : triggerText
+                    ? "text-(--_dk-text-primary)"
+                    : "text-(--_dk-text-disabled)"
+              }`}
+            >
+              <ProviderLogo providerId={logoProviderId} />
+              <span className="truncate">{triggerText || "Select model"}</span>
+              <ModalityIcons modalities={currentModelInfo?.modalities} />
+            </span>
+            <Chevron open={open} />
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={toggle}
+            className={`${triggerBase(open, true)} w-full min-w-3.5 disabled:cursor-not-allowed ${
+              triggerText
+                ? missingRef
+                  ? "text-(--_dk-amber-500)"
+                  : "text-(--_dk-text-muted)"
+                : "text-(--_dk-accent-hover)"
+            }`}
+            title={triggerText ? `Model: ${triggerText}` : "Select model"}
+          >
+            <span className="flex min-w-0 items-center gap-1.5">
+              <ProviderLogo providerId={logoProviderId} />
+              <span className="truncate">{triggerText || "Select model"}</span>
+              {/* What the current model takes beyond text — the same glyphs as
+                  Settings → Models, so the composer answers "can this model see
+                  my image?" without opening the list. */}
+              <ModalityIcons modalities={currentModelInfo?.modalities} />
+            </span>
+          </button>
+        )
+      }
     >
       {({ maxHeight }) => {
         capRef.current = maxHeight;
@@ -450,7 +534,7 @@ export function ModelSwitcher({
                   row.dim ? "opacity-40" : ""
                 }`}
               >
-                {row.providerId}
+                {providerNames.get(row.providerId) ?? row.providerId}
               </p>
               {row.models.map(({ model: m, dim }) => {
                 const isActive = modelId != null && m.id === modelId;
@@ -460,7 +544,7 @@ export function ModelSwitcher({
                     type="button"
                     onClick={() => {
                       if (onChange) onChange(m.id);
-                      else setModel(sessionId, m.id);
+                      else if (sessionId) setModel(sessionId, m.id);
                     }}
                     className={`${dropdownItemClass} group ${
                       isActive ? dropdownItemActiveClass : ""
@@ -481,6 +565,7 @@ export function ModelSwitcher({
                         <ProviderLogo providerId={m.provider_id} />
                       </span>
                       <span className="min-w-0 truncate">{modelLabel(m)}</span>
+                      <ModalityIcons modalities={m.modalities} />
                     </span>
                   </button>
                 );
@@ -494,7 +579,10 @@ export function ModelSwitcher({
               className={`${dropdownItemClass} cursor-default text-(--_dk-amber-500)`}
               title="This model is not in the active catalog — pick a model to replace it"
             >
-              Missing: {missingRef}
+              <span className="flex min-w-0 items-center gap-1.5">
+                <ProviderLogo providerId={missingProviderId} />
+                <span className="truncate">Missing: {missingRef}</span>
+              </span>
             </button>
           ) : null}
           {availableModels.length === 0 ? (
