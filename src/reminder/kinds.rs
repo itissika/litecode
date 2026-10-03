@@ -23,6 +23,8 @@ pub enum ReminderKind {
     StepBudget,
     /// One-shot attachment after a user message. Not restored after compaction.
     Mentions,
+    /// Knowledge-base class, attached after a human message. Hidden.
+    KnowledgeStatus,
 }
 
 impl ReminderKind {
@@ -37,6 +39,7 @@ impl ReminderKind {
             Self::SubagentSettled => "subagent_settled",
             Self::StepBudget => "step_budget",
             Self::Mentions => "mentions",
+            Self::KnowledgeStatus => "knowledge_status",
         }
     }
 
@@ -51,6 +54,7 @@ impl ReminderKind {
             Self::SubagentSettled => "reminder/subagent_settled",
             Self::StepBudget => "reminder/step_budget",
             Self::Mentions => "reminder/mentions",
+            Self::KnowledgeStatus => "reminder/knowledge_status",
         }
     }
 
@@ -65,6 +69,7 @@ impl ReminderKind {
             "reminder/subagent_settled" => Self::SubagentSettled,
             "reminder/step_budget" => Self::StepBudget,
             "reminder/mentions" => Self::Mentions,
+            "reminder/knowledge_status" => Self::KnowledgeStatus,
             _ => return None,
         })
     }
@@ -82,7 +87,8 @@ impl ReminderKind {
             | Self::PlanChanged
             | Self::FilesChanged
             | Self::StepBudget
-            | Self::Mentions => Visibility::Hidden,
+            | Self::Mentions
+            | Self::KnowledgeStatus => Visibility::Hidden,
         }
     }
 
@@ -211,6 +217,13 @@ pub struct MentionsBody {
     pub text: String,
 }
 
+/// Knowledge-base class frozen at the human message. `class` is the dedupe key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnowledgeStatusBody {
+    pub class: String,
+    pub text: String,
+}
+
 /// One durable reminder. The `kind` tag matches [`ReminderKind::name`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -224,6 +237,7 @@ pub enum Reminder {
     SubagentSettled(SubagentSettledBody),
     StepBudget(StepBudgetBody),
     Mentions(MentionsBody),
+    KnowledgeStatus(KnowledgeStatusBody),
 }
 
 impl Reminder {
@@ -238,6 +252,7 @@ impl Reminder {
             Self::SubagentSettled(_) => ReminderKind::SubagentSettled,
             Self::StepBudget(_) => ReminderKind::StepBudget,
             Self::Mentions(_) => ReminderKind::Mentions,
+            Self::KnowledgeStatus(_) => ReminderKind::KnowledgeStatus,
         }
     }
 
@@ -252,6 +267,7 @@ impl Reminder {
             Self::SubagentSettled(body) => &body.text,
             Self::StepBudget(body) => &body.text,
             Self::Mentions(body) => &body.text,
+            Self::KnowledgeStatus(body) => &body.text,
         }
     }
 
@@ -264,6 +280,7 @@ impl Reminder {
             (Self::PlanChanged(a), Self::PlanChanged(b)) => {
                 a.relative_path == b.relative_path && a.revision == b.revision
             }
+            (Self::KnowledgeStatus(a), Self::KnowledgeStatus(b)) => a.class == b.class,
             _ => false,
         }
     }

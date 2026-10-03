@@ -3,13 +3,11 @@ import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import {
-  citationUrlTransform,
-  isHttpCitation,
-} from "../lib/citationRef";
+import { citationUrlTransform } from "../lib/citationRef";
 import { normalizeKey } from "../lib/knowledge/markers";
 import {
   parseKnowledgeRef,
+  parseLocationRef,
   remarkKnowledgeRef,
 } from "../lib/knowledge/remarkKnowledgeRef";
 import { useKnowledgeStore } from "../stores/knowledgeStore";
@@ -22,7 +20,7 @@ import {
 } from "../lib/shiki";
 import { isMermaidLang } from "../lib/mermaid";
 import { useStreamingBuffer } from "../lib/streamingBuffer";
-import { FileCitationChip, WebCitationChip } from "./CitationChip";
+import { WorkspaceCitationChip } from "./CitationChip";
 import { MermaidBlock } from "./MermaidBlock";
 
 const GENERIC_LANGS = new Set(["", "text", "txt", "plain", "plaintext"]);
@@ -160,7 +158,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   );
   const transformUrl = useMemo(
     () => (value: string) => {
-      if (citations && parseKnowledgeRef(value)) return value;
+      if (citations && (parseKnowledgeRef(value) || parseLocationRef(value))) return value;
       return citationUrlTransform(value);
     },
     [citations],
@@ -195,16 +193,18 @@ export const AgentMarkdown = memo(function AgentMarkdown({
         if (nodeKey) {
           return <NodeCitationChip id={nodeKey} label={linkLabel(children) || nodeKey} />;
         }
-        if (href && /^file:/i.test(href)) {
-          if (!citations) return <>{children}</>;
+        const located = citations ? parseLocationRef(href) : null;
+        if (located) {
           return (
-            <FileCitationChip href={href} streaming={streaming}>
-              {children}
-            </FileCitationChip>
+            <WorkspaceCitationChip
+              path={located.path}
+              symbol={located.symbol}
+              line={located.line}
+            />
           );
         }
-        if (citations && href && isHttpCitation(href)) {
-          return <WebCitationChip href={href}>{children}</WebCitationChip>;
+        if (href && /^file:/i.test(href)) {
+          return <>{children}</>;
         }
         return (
           <a

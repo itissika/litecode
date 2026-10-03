@@ -80,7 +80,12 @@ mod tests {
         assert!(prompt.starts_with("You are a General Purpose Agent in LiteCode."));
         assert!(!prompt.contains("You are litecode"));
         assert_eq!(prompt, with_citations(DEFAULT_PROMPT));
-        assert!(prompt.contains("file:src/auth/validate.ts#L42"));
+        assert!(prompt.contains("[@ key=\"seq\"]"));
+        assert!(prompt.contains("knowledge guide"));
+        assert!(prompt.contains("[@ file=\"src/a.rs\"]"));
+        assert!(!prompt.contains("## Knowledge nodes"));
+        assert!(!prompt.contains("[Docs](https://example.com/docs)"));
+        assert!(!prompt.contains("file:src/auth/validate.ts"));
         assert!(!prompt.contains("[@ id="));
         assert!(!prompt.contains("file_path:line_number"));
         assert!(!prompt.contains("owner/repo#123"));

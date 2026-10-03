@@ -12,12 +12,7 @@ import type { DockviewPanelApi } from "dockview-react";
 import type { editor } from "monaco-editor";
 
 import { fetchSymbolAt } from "../api/workspace";
-import {
-  fileLabel,
-  formatLineSpan,
-  capsuleLabel,
-  symbolMentionSource,
-} from "../lib/knowledge/markers";
+import { formatLineSpan, symbolMentionSource } from "../lib/knowledge/markers";
 import { appendComposerText, composerTarget } from "../stores/composerDraft";
 import { useEditorStore } from "../stores/editorStore";
 import { useConnectionStore } from "../stores/connectionStore";
@@ -110,8 +105,8 @@ export function EditorPane({
     }
     const lines = formatLineSpan(start, end);
     const text = chain
-      ? symbolMentionSource(path, { symbol: chain, lines, label: capsuleLabel(path, chain) })
-      : symbolMentionSource(path, { lines, label: fileLabel(path) });
+      ? symbolMentionSource(path, { symbol: chain, lines })
+      : symbolMentionSource(path, { lines });
     appendComposerText(sessionId, text);
   }, []);
   const lspBindRef = useRef<(() => void) | null>(null);

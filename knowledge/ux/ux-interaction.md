@@ -16,6 +16,6 @@ h : 449
 - 投影纪律：客户端只做投影，不发明第二套对话语义（死亡清单测试封禁旧方言）；流式平滑只是显示缓冲。
 - 人类握有控制权：可打断、可回退、可授权；交互不止「看」。
 
-上层：[@ id="ux-design" label="ux 设计"]。
-相关：[@ id="ux" label="ux"]、[@ id="client-projection" label="客户端投影"]、[@ id="tool-pipeline" label="工具管线"]。
-依据：[@ file="web/src/components/PermissionModal.tsx" label="协作卡"]、[@ file="web/src/components/SessionStatusLine.tsx" label="任务胶囊"]、[@ file="web/src/stores/connectionStore.ts" label="子会话事件隔离"]。
+上层：[@ key="ux-design"]。
+相关：[@ key="ux"]、[@ key="client-projection"]、[@ key="tool-pipeline"]。
+依据：[@ file="web/src/components/PermissionModal.tsx"]、[@ file="web/src/components/SessionStatusLine.tsx"]、[@ file="web/src/stores/connectionStore.ts"]。

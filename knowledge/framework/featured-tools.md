@@ -40,5 +40,5 @@ h : 517
 - tool：custom tool
   - custom tool 是重中之重：只有你才知道你需要什么，你需要的东西，你的agent需要的东西，请自己造，造出最合适的工具。
 
-契约展开：[@ id="subagent-lifecycle" label="子会话生命周期"]、[@ id="retrieval-contract" label="检索真源与召回"]。
-上层：[@ id="agent-design" label="agent 设计"]、[@ id="why" label="为什么"]。
+契约展开：[@ key="subagent-lifecycle"]、[@ key="retrieval-contract"]。
+上层：[@ key="agent-design"]、[@ key="why"]。

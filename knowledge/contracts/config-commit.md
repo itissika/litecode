@@ -17,5 +17,5 @@ h : 432
 - 分阶段语义：保存成功与应用成功是两件事；跨介质（文件 + 数据库）写入不是事务，不承诺「错误必无变更」。
 - 目录是构建事实：provider / model 目录随构建内嵌，不是可写设置文档。
 
-上层：[@ id="config" label="config"]。
-依据：[@ file="src/config/settings_writer.rs" label="写门与混合写顺序"]、[@ file="src/config/gate/mod.rs" label="文档与应用范围"]。
+上层：[@ key="config"]。
+依据：[@ file="src/config/settings_writer.rs"]、[@ file="src/config/gate/mod.rs"]。

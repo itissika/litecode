@@ -130,7 +130,7 @@ fn node_section(
     }
     let incoming = corpus.incoming(&node.key).len();
     let root = corpus.root.as_deref().unwrap_or("");
-    let card = view::node_card(1, node, &[], incoming, SystemTime::now(), root);
+    let card = view::node_row(node, &[], incoming, SystemTime::now(), root);
     let body = read_node_body(workspace, root, &node.path).unwrap_or_else(|| node.value.clone());
     let body = body.trim();
     let section = if body.is_empty() {
@@ -274,9 +274,9 @@ mod tests {
         .unwrap();
         let text = format!(
             "see {} and {} then {}",
-            mention_source("missing-node", "missing-node"),
-            symbol_mention_source("src/a.rs", Some("fn save"), None, "fn save"),
-            "[@ file=\"src/a.rs\" label=\"a.rs\"]",
+            mention_source("missing-node"),
+            symbol_mention_source("src/a.rs", Some("fn save"), None),
+            "[@ file=\"src/a.rs\"]",
         );
         let reminder = build(dir.path(), &text, &HashMap::new()).unwrap();
         let rendered = reminder.text();
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(rendered.matches("## src/a.rs").count(), 1);
         let again = format!(
             "{text} {}",
-            symbol_mention_source("src/a.rs", Some("fn save"), None, "fn save")
+            symbol_mention_source("src/a.rs", Some("fn save"), None)
         );
         assert_eq!(
             build(dir.path(), &again, &HashMap::new())
@@ -305,14 +305,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/a.rs"), rust_file(100)).unwrap();
-        let long = symbol_mention_source("src/a.rs", Some("fn save"), None, "fn save");
+        let long = symbol_mention_source("src/a.rs", Some("fn save"), None);
         let text = build(dir.path(), &long, &HashMap::new())
             .unwrap()
             .text()
             .to_string();
         assert!(text.contains("还有"));
         assert!(text.contains("读文件查看"));
-        let missing = symbol_mention_source("src/a.rs", Some("fn gone"), None, "fn gone");
+        let missing = symbol_mention_source("src/a.rs", Some("fn gone"), None);
         let note = build(dir.path(), &missing, &HashMap::new())
             .unwrap()
             .text()
@@ -325,7 +325,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/a.rs"), "fn new() {}\nfn new() {}\n").unwrap();
-        let text = symbol_mention_source("src/a.rs", Some("fn new"), None, "fn new");
+        let text = symbol_mention_source("src/a.rs", Some("fn new"), None);
         let note = build(dir.path(), &text, &HashMap::new())
             .unwrap()
             .text()
@@ -342,7 +342,6 @@ mod tests {
             "src/a.rs",
             None,
             Some(crate::knowledge::mentions::LineSpan { start: 2, end: 3 }),
-            "a.rs",
         );
         let rendered = build(dir.path(), &text, &HashMap::new())
             .unwrap()
@@ -356,7 +355,7 @@ mod tests {
     #[test]
     fn file_only_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let text = "[@ file=\"src/a.rs\" label=\"a.rs\"]";
+        let text = "[@ file=\"src/a.rs\"]";
         assert!(build(dir.path(), &text, &HashMap::new()).is_none());
     }
 
@@ -378,7 +377,7 @@ mod tests {
         let sid = mgr
             .open_session_sync(workspace.to_str().unwrap(), "default", None)
             .unwrap();
-        let text = symbol_mention_source("src/a.rs", Some("fn save"), None, "fn save");
+        let text = symbol_mention_source("src/a.rs", Some("fn save"), None);
         mgr.append_user_message_with_mentions(&sid, text.as_str(), &workspace)
             .unwrap();
         let events = mgr.data().events_blocking(&sid).unwrap();
@@ -419,7 +418,7 @@ mod tests {
         let sid = mgr
             .open_session_sync(workspace.to_str().unwrap(), "default", None)
             .unwrap();
-        let text = symbol_mention_source("src/a.rs", Some("fn save"), None, "fn save");
+        let text = symbol_mention_source("src/a.rs", Some("fn save"), None);
         mgr.append_user_message_with_mentions(&sid, text.as_str(), &workspace)
             .unwrap();
         mgr.append_user_message_with_mentions(&sid, text.as_str(), &workspace)

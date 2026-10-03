@@ -19,5 +19,5 @@ h : 357
   - custom tool 要认真造
 - LiteCode 会尽量给你搭好架子，甚至越俎代庖给你起个头；但最终要不要做、有没有做好的后果，还是你自己承担。
 
-框架展开：[@ id="session" label="session"]、[@ id="context" label="context"]、[@ id="tools" label="tools"]、[@ id="featured-tools" label="特色工具"]。
-上层：[@ id="product-brief" label="产品概要"]。
+框架展开：[@ key="session"]、[@ key="context"]、[@ key="tools"]、[@ key="featured-tools"]。
+上层：[@ key="product-brief"]。

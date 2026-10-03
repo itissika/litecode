@@ -4,8 +4,8 @@ status : enabled
 summary : tools：统一合约 / 门闸 / 出口；权限 Allow·Ask·Deny 单向收紧。
 x : 522
 y : 350
-w : 362
-h : 445
+w : 380
+h : 481
 ```
 
 - 内置 / Custom / MCP 同合约；并发安全且资源不冲突才并行，其余按批串行。
@@ -19,5 +19,5 @@ h : 445
   - 美观：保持格式稳定，结构清晰，统计聚合信息放开头，中间内容合理排序和聚合，需要的提醒按情况出现在尾部，提供下一步指引
   - 信息密度：md 语法优先，前端易于渲染；人类也能通过渲染的美观度判断信息密度——美观就是信息
 
-契约展开：[@ id="tool-pipeline" label="工具管线"]。
-上层：[@ id="agent-design" label="agent 设计"]。
+契约展开：[@ key="tool-pipeline"]。
+上层：[@ key="agent-design"]。

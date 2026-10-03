@@ -1000,6 +1000,10 @@ impl AgentRuntime {
                     self.runtime_handle.workspace_root(),
                     &user_input.text,
                 );
+                self.sessions.append_knowledge_status_for(
+                    &self.session_id,
+                    self.runtime_handle.workspace_root(),
+                );
             }
             if !commit_outcome.sealed_seqs.is_empty() {
                 self.emit_internal(crate::runtime::observer::InternalEvent::BufferRestamp {

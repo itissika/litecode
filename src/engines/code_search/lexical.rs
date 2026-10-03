@@ -4,6 +4,7 @@
 //! `grep-searcher` / `grep-regex` (BurntSushi libripgrep). No PATH `rg`, no
 //! subprocess. Human text column and agent `grep` share this module.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use glob::Pattern;
@@ -15,8 +16,8 @@ use ignore::WalkBuilder;
 
 use crate::types::{LitecodeError, Result};
 use crate::workspace::filter::{
-    FilterPreset, PathGlobMatcher, RelPathCtx, WalkOptions, compile_include_patterns,
-    configure_walk_with, path_matches_include,
+    FilterPreset, PathGlobMatcher, RelPathCtx, WalkOptions, cheap_rel_under,
+    compile_include_patterns, configure_walk_with, path_matches_include, private_knowledge_walker,
 };
 
 use super::retrieve::SearchHit;
@@ -92,12 +93,30 @@ pub fn lexical_search_with_preset(
         });
     }
 
-    lexical_search_ripgrep(query, preset)
+    lexical_search_ripgrep(query, preset, false, None)
+}
+
+/// Agent `grep`. Reaches `knowledge/` and `.litecode/knowledge`.
+/// The code index stays on [`lexical_search_with_preset`].
+pub fn lexical_search_for_agent(
+    query: &LexicalQuery,
+    preset: FilterPreset,
+    workspace: &Path,
+) -> Result<LexicalSearchOutcome> {
+    if query.pattern.is_empty() || query.max_matches == 0 {
+        return Ok(LexicalSearchOutcome {
+            matches: Vec::new(),
+            files_searched: 0,
+        });
+    }
+    lexical_search_ripgrep(query, preset, true, Some(workspace))
 }
 
 fn lexical_search_ripgrep(
     query: &LexicalQuery,
     preset: FilterPreset,
+    allow_knowledge_root: bool,
+    workspace: Option<&Path>,
 ) -> Result<LexicalSearchOutcome> {
     let search_root = query
         .path
@@ -160,30 +179,39 @@ fn lexical_search_ripgrep(
         });
     }
 
-    let walk_opts = if include.is_empty() {
+    let mut walk_opts = if include.is_empty() {
         WalkOptions::default()
     } else {
         WalkOptions::with_file_include(include.clone())
     };
+    walk_opts.allow_knowledge_root = allow_knowledge_root;
     let search_ctx =
         RelPathCtx::new(&search_root).unwrap_or_else(|_| RelPathCtx::new_lossy(&search_root));
     let mut walker = WalkBuilder::new(search_ctx.root_lap());
     // Exclude/include matching uses workspace-relative paths (query.root).
-    configure_walk_with(&mut walker, rel_ctx.root_lap(), preset, walk_opts);
+    configure_walk_with(&mut walker, rel_ctx.root_lap(), preset, walk_opts.clone());
+    let knowledge = workspace.map(|root| root.join(".litecode").join("knowledge"));
+    let inside_private = knowledge
+        .as_ref()
+        .is_some_and(|dir| cheap_rel_under(dir, &search_root).is_some());
+    if allow_knowledge_root && inside_private {
+        walker
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false);
+    }
     walker.parents(true);
 
     let include_via_walk = !include.is_empty();
-    for entry in walker.build() {
+    let mut seen = HashSet::new();
+    let mut search_entry = |path: &Path| -> bool {
         if matches.len() >= query.max_matches {
-            break;
+            return false;
         }
-        let Ok(entry) = entry else {
-            continue;
-        };
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
+        let key = cheap_rel_under(&query.root, path).unwrap_or_else(|| path.display().to_string());
+        if !seen.insert(key) {
+            return true;
         }
-        let path = entry.path();
         if search_one_file(
             &mut searcher,
             &matcher,
@@ -196,6 +224,36 @@ fn lexical_search_ripgrep(
             &mut matches,
         ) {
             files_searched += 1;
+        }
+        matches.len() < query.max_matches
+    };
+    for entry in walker.build() {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        if !search_entry(entry.path()) {
+            break;
+        }
+    }
+
+    if allow_knowledge_root
+        && !inside_private
+        && let Some(workspace) = workspace
+        && let Some(dir) = knowledge.as_ref()
+        && dir.is_dir()
+        && cheap_rel_under(&search_root, dir).is_some()
+        && let Some(extra) = private_knowledge_walker(workspace, preset, walk_opts.skip_binary)
+    {
+        for entry in extra.build().flatten() {
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            if !search_entry(entry.path()) {
+                break;
+            }
         }
     }
 

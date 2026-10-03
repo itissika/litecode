@@ -1,114 +1,45 @@
-import {
-  ArrowSquareOut,
-  FileText,
-  Function as FunctionIcon,
-  Hash,
-} from "@phosphor-icons/react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import type { MouseEvent } from "react";
 
-import { parseFileCitation, type CitationTarget } from "../lib/citationRef";
-import {
-  peekCitation,
-  requestCitation,
-  type CitationHit,
-} from "../lib/citationResolve";
+import { humanFileLabel, humanSymbolLabel } from "../lib/knowledge/markers";
 import { useEditorStore } from "../stores/editorStore";
-import { useSessionStore } from "../stores/sessionStore";
 
-const CHIP_CLASS = "agent-citation btn-ghost btn-xs";
-
-export function WebCitationChip({
-  href,
-  children,
-}: {
-  href: string;
-  children?: ReactNode;
-}) {
-  return (
-    <a
-      href={href}
-      className={CHIP_CLASS}
-      target="_blank"
-      rel="noreferrer"
-    >
-      <ArrowSquareOut size={12} aria-hidden />
-      <span className="agent-citation-label">{children}</span>
-    </a>
-  );
+function stopChipEvent(event: MouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
 }
 
-export function FileCitationChip({
-  href,
-  streaming = false,
-  children,
+/** Read-only file or symbol capsule. Same shape as a mention the user typed. */
+export function WorkspaceCitationChip({
+  path,
+  symbol = null,
+  line = null,
 }: {
-  href: string;
-  streaming?: boolean;
-  children?: ReactNode;
+  path: string;
+  symbol?: string | null;
+  line?: number | null;
 }) {
-  const project = useSessionStore((s) => s.project);
-  const target = useMemo(() => parseFileCitation(href), [href]);
-  const [hit, setHit] = useState<CitationHit | null>(() =>
-    target && project ? (peekCitation(project, target) ?? null) : null,
-  );
-
-  useEffect(() => {
-    if (!target || !project) {
-      setHit(null);
-      return;
-    }
-    const cached = peekCitation(project, target);
-    if (cached) {
-      setHit(cached);
-      return;
-    }
-    let cancelled = false;
-    void requestCitation(project, target, { fresh: !streaming }).then(
-      (lookup) => {
-        if (cancelled) return;
-        setHit(lookup?.exists ? lookup : null);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [project, target, streaming]);
-
-  if (!target || !hit) return <>{children}</>;
-
-  const where = hit.line != null ? `${hit.path}:${hit.line}` : hit.path;
+  const chain = symbol?.trim() ?? "";
+  const text = chain ? humanSymbolLabel(path, chain) : humanFileLabel(path);
+  const className = chain ? "knowledge-token is-file is-symbol" : "knowledge-token is-file";
   const open = () => {
     const editor = useEditorStore.getState();
-    if (hit.line != null) void editor.openFileAt(hit.path, hit.line);
-    else void editor.openFile(hit.path);
+    if (line != null) void editor.openFileAt(path, line);
+    else void editor.openFile(path);
   };
-
   return (
-    <button
-      type="button"
-      className={CHIP_CLASS}
-      title={where}
-      aria-label={`Open ${where}`}
-      onClick={open}
-    >
-      <CitationIcon target={target} revealed={hit.line != null} />
-      <span className="agent-citation-label">{children}</span>
-    </button>
+    <span className={className} title={path}>
+      <button
+        type="button"
+        className="knowledge-token-label"
+        aria-label={text}
+        onMouseDown={stopChipEvent}
+        onClick={(event) => {
+          stopChipEvent(event);
+          open();
+        }}
+      >
+        {text}
+      </button>
+    </span>
   );
-}
-
-function CitationIcon({
-  target,
-  revealed,
-}: {
-  target: CitationTarget;
-  revealed: boolean;
-}) {
-  if (!revealed || target.kind === "file") {
-    return <FileText size={12} aria-hidden />;
-  }
-  if (target.kind === "symbol") {
-    return <FunctionIcon size={12} aria-hidden />;
-  }
-  return <Hash size={12} aria-hidden />;
 }

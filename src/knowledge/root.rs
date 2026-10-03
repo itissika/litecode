@@ -15,17 +15,6 @@ pub enum KnowledgeRoot {
     Missing,
 }
 
-/// The private root, when a public directory is the one actually read.
-pub fn ignored(workspace: &Path) -> Option<&'static str> {
-    let public = workspace.join(PUBLIC_ROOT).is_dir();
-    let private = workspace.join(PRIVATE_ROOT).is_dir();
-    if public && private {
-        Some(PRIVATE_ROOT)
-    } else {
-        None
-    }
-}
-
 pub fn locate(workspace: &Path) -> KnowledgeRoot {
     if workspace.join(PUBLIC_ROOT).is_dir() {
         KnowledgeRoot::Present(PUBLIC_ROOT.to_string())

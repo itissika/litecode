@@ -76,7 +76,7 @@ describe("KnowledgeBodyEditor mention chip", () => {
         onChange={() => undefined}
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "a.rs" }));
+    fireEvent.click(await screen.findByRole("button", { name: ".../src/a.rs" }));
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     unmount();
 
@@ -106,9 +106,9 @@ describe("KnowledgeBodyEditor mention chip", () => {
         onChange={() => undefined}
       />,
     );
-    const label = await screen.findByText("a.rs");
+    const label = await screen.findByText(".../src/a.rs");
     expect(label.closest(".knowledge-token")?.classList.contains("is-missing")).toBe(true);
-    expect(screen.queryByRole("button", { name: "a.rs" })).toBeNull();
+    expect(screen.queryByRole("button", { name: ".../src/a.rs" })).toBeNull();
     useEditorStore.setState({ openFile: original });
   });
 });

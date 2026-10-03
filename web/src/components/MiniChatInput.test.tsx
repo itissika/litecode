@@ -143,7 +143,7 @@ describe("MiniChatInput", () => {
         onSubmit={onSubmit}
       />,
     );
-    const chip = await screen.findByRole("button", { name: "a.rs fn save" });
+    const chip = await screen.findByRole("button", { name: "a.rs : fn save" });
     expect(chip.closest(".knowledge-token")?.classList.contains("is-symbol")).toBe(true);
     pressComposerKey(REPLAY, "Enter", true);
     expect(onSubmit).not.toHaveBeenCalled();

@@ -1,5 +1,6 @@
 //! Markdown views. Empty sections disappear. Cards are the same shape everywhere.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
 use super::corpus::Node;
@@ -9,7 +10,6 @@ use super::validate::{Issue, Severity};
 
 pub const CARD_LIMIT: usize = 5;
 pub const SUMMARY_CHARS: usize = 120;
-pub const BODY_CHARS: usize = 400;
 pub const PAGE_CHARS: usize = 6_000;
 
 const WELCOME: &str = "\
@@ -17,15 +17,14 @@ The knowledge base is human-owned. The agent helps record durable invariants: de
 Do not record trivia or details that will change.";
 
 const BUTTONS: &str = "\
-> Use knowledge to look things up. Edit bodies with read and edit. Run check after changes. Quote a key or folder that contains spaces.
-- `knowledge`: open this board
+> This tool wraps the common commands. If they are not enough, combine them with other tools to read and edit. Run check after changes. Quote a key or folder that contains spaces.
 - `knowledge guide`: syntax, checks, and notes
 - `knowledge list [folder]`: list nodes; a folder only narrows the scope
-- `knowledge refs <key>`: that node's full file, plus cards for the nodes that cite it and the nodes it cites
-- `knowledge check [key or folder]`: list validation issues
-- `knowledge create <key> [folder]`: create a pending node
+- `knowledge refs <key>`: that node's full file, plus summaries for the nodes that cite it and the nodes it cites
+- `knowledge check [key or folder]`: list issues
+- `knowledge create <key> [folder]`: create a pending node; the folder is optional
 - `knowledge rename <old key> <new key>`: rename a node and its citations
-This tool cannot delete a node or change its status. People do that in the knowledge panel. Do not delete the files yourself.";
+This tool cannot delete a node or change its status. The user does that in the knowledge panel. Do not delete the files yourself.";
 
 const GUIDE: &str = r#"# Guide
 
@@ -41,23 +40,25 @@ status : enabled
 summary : one line
 ```
 
-`node` is the identity, unique in the library. A key may contain letters, digits, `_`, and `-`. A single space may separate words, as in `old key`. It must start with a letter, a digit, or `_`. Consecutive spaces, a slash, quotes, and brackets are not a key.
+`node` is the identity, unique in the knowledge base. A key may contain letters, digits, `_`, and `-`. A single space may separate words, as in `old key`. It must start with a letter, a digit, or `_`. Consecutive spaces, a slash, quotes, and brackets are not a key.
 
 `status` is `enabled`, `disabled`, or `pending`. A missing status is treated as `enabled`.
 
 `summary` is one line. The body is the markdown after the fence.
 
-The only node citation is `[@ id="seq" label="seq"]`. Lookup uses `id`. `label` is the visible text. `id` comes first, and both values use double quotes.
+The only citation that names a node is `[@ key="seq"]`. Lookup uses the key.
 
-A file citation is `[@ file="src/a.rs" label="a.rs"]`. It names a workspace path, not a node. A file and a directory both count. `..` and an absolute path are not a path.
+A file citation is `[@ file="src/a.rs"]`. It names a workspace path, not a node. A file and a directory both count. `..` and an absolute path are not a path.
 
-A symbol citation is `[@ file="src/a.rs" symbol="impl Store › fn save" label="fn save"]`. `symbol` is the ancestor chain and is the identity. `lines` is optional and is not checked. A chain that is missing or not unique is an error. When git can answer, a chain whose body on disk differs from that file at HEAD is a warning. Commit that file and the warning goes away. Without git, only existence is checked.
+A symbol citation is `[@ file="src/a.rs" symbol="impl Store › fn save"]`. `symbol` is the ancestor chain and is the identity. `lines` is optional and is not checked. A chain that is missing or not unique is an error. When git can answer, a chain whose body on disk differs from that file at HEAD is a warning. Commit that file and the warning goes away. Without git, only existence is checked.
+
+A line range with no symbol is `[@ file="src/a.rs" lines="4-9"]`.
 
 A citation inside a fence (` ``` ` or `~~~`), inside inline code, or written as `@seq` or `/src/a.rs` is ordinary text.
 
 The file is named `<key>.md`. If the name differs, the key is still the identity.
 
-`x`, `y`, `w`, and `h` in the fence are canvas layout. Unrecognized field lines are kept. A `ref` line is ignored.
+`x`, `y`, `w`, and `h` in the fence are the human panel's layout; ignore them when reading. Unrecognized field lines are kept.
 
 ## Check
 
@@ -66,8 +67,8 @@ Errors:
 - The status is not `enabled`, `disabled`, or `pending`.
 - The declaration is missing, or the key is not valid.
 - The same key is declared more than once.
-- A citation `id` is the node's own key.
-- A citation `id` matches no node.
+- A node cites its own key.
+- A citation `key` matches no node.
 - A file citation path is not in the workspace.
 - A symbol citation's chain is missing from that file, or the same chain occurs more than once.
 
@@ -80,7 +81,9 @@ Warnings:
 ## Notes
 
 - `knowledge create` writes a pending node. This command does not delete a node or change its status.
-- `knowledge rename` changes the key, the file name, and citation `id`s. A `label` equal to the old key changes too. Editing `node :` or the file name by hand does not.
+- `knowledge rename` changes the key, the file name, and citation keys. A node citation is rewritten as `[@ key="new"]`. Editing `node :` or the file name by hand does not.
+- A card's `cites` and `cited by` count node citations only. File and symbol citations are not counted.
+- `knowledge refs` shows the file as stored, so a citation there stays in the bracket form.
 - Edit the body in place and leave the fence as it is, so layout fields and unrecognized lines stay.
 - Quote a key that contains a space.
 - A markdown file with no `node` declaration is not a node. It is left in place.
@@ -156,7 +159,7 @@ pub fn stats_line(counts: &Counts) -> String {
 }
 
 const STATS_LEGEND: &str = "\
-Verified = enabled and no error. Isolated = no in and no out. Warning and Error count issues; the other numbers count nodes.";
+Verified = enabled and no error. Isolated = nothing cites it and it cites nothing. Warning and Error count issues; the other numbers count nodes.";
 
 pub fn section(title: &str, body: &str) -> String {
     let body = body.trim();
@@ -209,7 +212,7 @@ fn display_path(prefix: &str, path: &str) -> String {
     }
 }
 
-/// One node's file as stored. The path and any faults sit above the text.
+/// One node's file as stored. The path and any issues sit above the text.
 pub fn node_file(path_prefix: &str, path: &str, issues: &[Issue], markdown: &str) -> String {
     let shown = display_path(path_prefix, path);
     let mut head = vec![format!("`{shown}`")];
@@ -224,51 +227,19 @@ pub fn node_file(path_prefix: &str, path: &str, issues: &[Issue], markdown: &str
     }
 }
 
-/// One node, numbered. A fault replaces the citation counts.
-pub fn node_card(
-    index: usize,
+/// One node row. An issue replaces the citation counts.
+pub fn node_row(
     node: &Node,
     issues: &[Issue],
     incoming: usize,
     now: SystemTime,
     path_prefix: &str,
 ) -> String {
-    let when = relative_time(node.modified, now);
-    let tail = if node.status == Status::Pending {
-        "pending".to_string()
-    } else if node.status == Status::Disabled {
-        "disabled".to_string()
-    } else if !issues.is_empty() {
-        "problem".to_string()
-    } else {
-        format!("in {incoming} out {}", node.relations.len())
-    };
-    let title = if node.key.trim().is_empty() {
-        "(no declaration)".to_string()
-    } else {
-        format!("**{}**", node.key)
-    };
-    let path = display_path(path_prefix, &node.path);
-    let mut lines = vec![format!("{index}. {title} · `{path}` · {when} · {tail}")];
-    for issue in issues {
-        lines.push(format!(
-            "   - {}: {}",
-            issue.severity.as_str(),
-            issue.message
-        ));
-    }
-    let summary = clip(node.summary.trim(), SUMMARY_CHARS);
-    if !summary.is_empty() {
-        lines.push(format!("   - {summary}"));
-    }
-    let body = clip(&knowledge_preview(&node.value, 8), BODY_CHARS);
-    if !body.is_empty() && body != summary {
-        lines.push(format!("   - {body}"));
-    }
-    lines.join("\n")
+    row_at(node, issues, incoming, now, path_prefix, 0)
 }
 
-pub fn cards<'a>(
+/// Relation lists and write receipts: the same row, in the given order.
+pub fn flat_rows<'a>(
     nodes: impl IntoIterator<Item = &'a Node>,
     issues_for: impl Fn(&Node) -> Vec<Issue>,
     incoming: impl Fn(&str) -> usize,
@@ -277,29 +248,214 @@ pub fn cards<'a>(
 ) -> String {
     nodes
         .into_iter()
-        .enumerate()
-        .map(|(index, node)| {
+        .map(|node| {
             let issues = issues_for(node);
-            node_card(
-                index + 1,
-                node,
-                &issues,
-                incoming(&node.key),
-                now,
-                path_prefix,
-            )
+            node_row(node, &issues, incoming(&node.key), now, path_prefix)
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
+/// The library tree. `scope` starts inside that folder. Loose nodes at the
+/// library root go under `(top level)`, after the named folders.
+pub fn folder_tree<'a>(
+    nodes: impl IntoIterator<Item = &'a Node>,
+    scope: Option<&str>,
+    issues_for: impl Fn(&Node) -> Vec<Issue>,
+    incoming: impl Fn(&str) -> usize,
+    now: SystemTime,
+    path_prefix: &str,
+) -> String {
+    let mut root = Dir::default();
+    let mut top_level = Vec::new();
+    for node in nodes {
+        match place(node, scope) {
+            Place::Skip => {}
+            Place::Top => top_level.push(node),
+            Place::Direct => root.nodes.push(node),
+            Place::Nested(parts) => insert(&mut root, &parts, node),
+        }
+    }
+    let mut lines = Vec::new();
+    render_dir(
+        &root,
+        0,
+        &issues_for,
+        &incoming,
+        now,
+        path_prefix,
+        &mut lines,
+    );
+    if !top_level.is_empty() {
+        top_level.sort_by(|a, b| a.path.cmp(&b.path));
+        lines.push("- (top level)".to_string());
+        for node in top_level {
+            let issues = issues_for(node);
+            lines.push(row_at(
+                node,
+                &issues,
+                incoming(&node.key),
+                now,
+                path_prefix,
+                2,
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+#[derive(Default)]
+struct Dir<'a> {
+    folders: BTreeMap<String, Dir<'a>>,
+    nodes: Vec<&'a Node>,
+}
+
+enum Place {
+    Skip,
+    Top,
+    Direct,
+    Nested(Vec<String>),
+}
+
+fn place(node: &Node, scope: Option<&str>) -> Place {
+    let folder = node.folder_id.as_deref().unwrap_or("");
+    let rest = match scope.map(|item| item.trim_matches('/')) {
+        Some("") | None => folder,
+        Some(scope) if folder == scope => "",
+        Some(scope) => match folder.strip_prefix(&format!("{scope}/")) {
+            Some(rest) => rest,
+            None => return Place::Skip,
+        },
+    };
+    if scope.is_none() && rest.is_empty() {
+        Place::Top
+    } else if rest.is_empty() {
+        Place::Direct
+    } else {
+        Place::Nested(rest.split('/').map(str::to_string).collect())
+    }
+}
+
+fn insert<'a>(dir: &mut Dir<'a>, parts: &[String], node: &'a Node) {
+    if parts.is_empty() {
+        dir.nodes.push(node);
+        return;
+    }
+    insert(
+        dir.folders.entry(parts[0].clone()).or_default(),
+        &parts[1..],
+        node,
+    );
+}
+
+fn render_dir<'a>(
+    dir: &Dir<'a>,
+    indent: usize,
+    issues_for: &impl Fn(&Node) -> Vec<Issue>,
+    incoming: &impl Fn(&str) -> usize,
+    now: SystemTime,
+    path_prefix: &str,
+    lines: &mut Vec<String>,
+) {
+    let pad = " ".repeat(indent);
+    for (name, child) in &dir.folders {
+        lines.push(format!("{pad}- {name}/"));
+        render_dir(
+            child,
+            indent + 2,
+            issues_for,
+            incoming,
+            now,
+            path_prefix,
+            lines,
+        );
+    }
+    let mut nodes = dir.nodes.clone();
+    nodes.sort_by(|a, b| a.path.cmp(&b.path));
+    for node in nodes {
+        let issues = issues_for(node);
+        lines.push(row_at(
+            node,
+            &issues,
+            incoming(&node.key),
+            now,
+            path_prefix,
+            indent,
+        ));
+    }
+}
+
+fn row_at(
+    node: &Node,
+    issues: &[Issue],
+    incoming: usize,
+    now: SystemTime,
+    path_prefix: &str,
+    indent: usize,
+) -> String {
+    let when = relative_time(node.modified, now);
+    let tail = if node.status == Status::Pending {
+        "pending".to_string()
+    } else if node.status == Status::Disabled {
+        "disabled".to_string()
+    } else if !issues.is_empty() {
+        "issue".to_string()
+    } else {
+        format!("cites {} · cited by {incoming}", node.relations.len())
+    };
+    let title = if node.key.trim().is_empty() {
+        "(no declaration)".to_string()
+    } else {
+        format!("**{}**", node.key)
+    };
+    let path = display_path(path_prefix, &node.path);
+    let pad = " ".repeat(indent);
+    let mut lines = vec![format!(
+        "{pad}- {title} · `{path}` · {when} · {tail}"
+    )];
+    let cont = " ".repeat(indent + 2);
+    for issue in issues {
+        lines.push(format!(
+            "{cont}- {}: {}",
+            issue.severity.as_str(),
+            issue.message
+        ));
+    }
+    let summary = summary_line(node);
+    if !summary.is_empty() {
+        lines.push(format!("{cont}- {summary}"));
+    }
+    lines.join("\n")
+}
+
+fn summary_line(node: &Node) -> String {
+    let raw = node.summary.trim();
+    let text = if raw.is_empty() {
+        knowledge_preview(&node.value, 1)
+    } else {
+        super::mentions::show_facts(raw)
+    };
+    clip(&text, SUMMARY_CHARS)
+}
+
+const STARTER: &str = "\
+# Start
+
+The knowledge base has no nodes yet. Draft 2 to 5 nodes and stop there.
+
+- Do not interview the user. Infer the nodes from the workspace and the current conversation.
+- Make 2 to 5 nodes, in 1 or 2 folders. Keep it small enough to read.
+- Record principles, boundaries, and workflows. Do not record trivia, details that will change, or a catalog of the code.
+- Use `knowledge create`. If there is no knowledge base yet, the first create creates `.litecode/knowledge`. Leave each node pending. Do not enable a node, and do not delete one.
+- Then stop. Ask the user to look and correct. Do not add more until they have looked.
+";
+
+/// Empty library: how to start, plus the syntax and the commands.
 pub fn missing_board() -> String {
     join_sections(&[
-        section(
-            "# Welcome",
-            &format!("{WELCOME}\n\n`knowledge create \"<key>\"` creates `.litecode/knowledge`."),
-        ),
-        section("# Buttons", BUTTONS),
+        STARTER.trim_end().to_string(),
+        GUIDE.trim_end().to_string(),
+        section("# Commands", BUTTONS),
     ])
 }
 
@@ -314,17 +470,11 @@ fn unrecognized_note(paths: &[String]) -> String {
     lines.join("\n")
 }
 
-fn root_note(root: Option<&str>, ignored_root: Option<&str>) -> String {
-    let mut lines = Vec::new();
-    if let Some(root) = root {
-        lines.push(format!("Current knowledge root: `{root}`."));
+fn root_note(root: Option<&str>) -> String {
+    match root {
+        Some(root) => format!("Current knowledge root: `{root}`."),
+        None => String::new(),
     }
-    if let Some(ignored) = ignored_root {
-        lines.push(format!(
-            "`{ignored}` is not read. Nodes there are not citation targets."
-        ));
-    }
-    lines.join("\n")
 }
 
 fn listed<'a>(
@@ -333,17 +483,20 @@ fn listed<'a>(
     incoming: &impl Fn(&str) -> usize,
     now: SystemTime,
     path_prefix: &str,
+    mention_check: bool,
 ) -> String {
     nodes.sort_by(|a, b| b.modified.cmp(&a.modified));
     let hidden = nodes.len().saturating_sub(CARD_LIMIT);
     nodes.truncate(CARD_LIMIT);
-    let body = cards(nodes, issues_for, incoming, now, path_prefix);
+    let body = folder_tree(nodes, None, issues_for, incoming, now, path_prefix);
     if hidden == 0 || body.is_empty() {
         body
-    } else {
+    } else if mention_check {
         format!(
             "{body}\n\n{hidden} more omitted. Use `knowledge check` or `knowledge list` to see the rest."
         )
+    } else {
+        format!("{body}\n\n{hidden} more omitted. Use `knowledge list` to see the rest.")
     }
 }
 
@@ -354,7 +507,6 @@ pub fn dashboard(
     reminder: Option<&str>,
     now: SystemTime,
     root: Option<&str>,
-    ignored_root: Option<&str>,
     unknown: &[String],
 ) -> String {
     let refs: Vec<&Node> = nodes.iter().collect();
@@ -380,8 +532,9 @@ pub fn dashboard(
             .cloned()
             .collect()
     };
+    let mention_check = stats.warning > 0 || stats.error > 0;
     let mut status = format!("{}\n\n{STATS_LEGEND}", stats_line(&stats));
-    let note = root_note(root, ignored_root);
+    let note = root_note(root);
     if !note.is_empty() {
         status.push_str("\n\n");
         status.push_str(&note);
@@ -395,15 +548,15 @@ pub fn dashboard(
         section("# Welcome", WELCOME),
         section("# Status", &status),
         section(
-            "## Recent sound nodes",
-            &listed(recent, &issues_for, &incoming, now, prefix),
+            "## Recent nodes",
+            &listed(recent, &issues_for, &incoming, now, prefix, mention_check),
         ),
         section(
             "## Worth noting",
-            &listed(noting, &issues_for, &incoming, now, prefix),
+            &listed(noting, &issues_for, &incoming, now, prefix, mention_check),
         ),
-        section("# Reminder", reminder.unwrap_or("")),
-        section("# Buttons", BUTTONS),
+        section("# Notice", reminder.unwrap_or("")),
+        section("# Commands", BUTTONS),
     ])
 }
 
@@ -487,7 +640,6 @@ mod tests {
             None,
             now,
             Some(".litecode/knowledge"),
-            None,
             &[],
         );
         assert!(board.contains("# Welcome"));
@@ -495,16 +647,17 @@ mod tests {
         assert!(board.contains("Total 2 · Verified 1 · Isolated 1"));
         assert!(board.contains("Warning and Error count issues"));
         assert!(board.contains("Current knowledge root: `.litecode/knowledge`."));
-        assert!(board.contains("## Recent sound nodes"));
+        assert!(board.contains("## Recent nodes"));
         assert!(board.contains("**seq**"));
-        assert!(board.contains("in 0 out 1"));
+        assert!(board.contains("cites 1 · cited by 0"));
         assert!(board.contains(".litecode/knowledge/seq.md"));
         assert!(board.contains("3h"));
         assert!(board.contains("## Worth noting"));
         assert!(board.contains("**draft**"));
         assert!(board.contains("· pending"));
-        assert!(!board.contains("# Reminder"));
-        assert!(board.contains("# Buttons"));
+        assert!(board.contains("- (top level)"));
+        assert!(board.contains("# Commands"));
+        assert!(!board.contains("# Notice"));
         assert!(board.contains("Quote a key"));
         assert!(board.contains("cannot delete"));
     }
@@ -525,11 +678,11 @@ mod tests {
             message: "Citation \"missing\" does not exist.".into(),
             reference: Some("missing".into()),
         }];
-        let card = node_card(1, &node, &issues, 2, now, "");
+        let card = node_row(&node, &issues, 2, now, "");
         assert!(card.contains("error: Citation \"missing\" does not exist."));
-        assert!(card.contains("problem"));
+        assert!(card.contains("· issue"));
         assert!(!card.contains("enabled"));
-        assert!(!card.contains("in 2"));
+        assert!(!card.contains("cited by 2"));
         assert!(card.contains("now"));
     }
 
@@ -539,7 +692,7 @@ mod tests {
         let mut blank = node("seq", Status::Enabled, &[], Duration::from_secs(10));
         blank.key.clear();
         blank.id = "blank.md".into();
-        let card = node_card(1, &blank, &[], 0, now, "knowledge");
+        let card = node_row(&blank, &[], 0, now, "knowledge");
         assert!(card.contains("(no declaration)"));
         assert!(card.contains("`knowledge/seq.md`"));
         assert!(!card.contains("****"));
@@ -563,14 +716,13 @@ mod tests {
             None,
             now,
             Some("knowledge"),
-            None,
             &[],
         );
         let recent = board.split("## Worth noting").next().unwrap();
         assert!(recent.contains("**seq**"));
         assert!(!recent.contains("**warn**"));
         assert!(board.contains("**warn**"));
-        assert!(board.contains("· problem"));
+        assert!(board.contains("· issue"));
     }
 
     #[test]
@@ -585,10 +737,20 @@ mod tests {
                 Duration::from_secs(index * 60),
             ));
         }
-        let board = dashboard(&nodes, &[], |_| 1, None, now, None, None, &[]);
-        assert!(board.contains("2 more omitted"));
-        assert!(board.contains("knowledge check"));
-        assert!(board.contains("knowledge list"));
+        let board = dashboard(&nodes, &[], |_| 1, None, now, None, &[]);
+        assert!(board.contains("2 more omitted. Use `knowledge list` to see the rest."));
+        assert!(!board.contains("2 more omitted. Use `knowledge check`"));
+        let warned = Issue {
+            node_id: "n0".into(),
+            severity: Severity::Warning,
+            code: "filename_mismatch".into(),
+            message: "Filename \"n0\" does not match declaration \"n0\".".into(),
+            reference: Some("n0".into()),
+        };
+        let with_warning = dashboard(&nodes, &[warned], |_| 1, None, now, None, &[]);
+        assert!(with_warning.contains(
+            "1 more omitted. Use `knowledge check` or `knowledge list` to see the rest."
+        ));
     }
 
     #[test]
@@ -601,7 +763,6 @@ mod tests {
             None,
             now,
             Some(".litecode/knowledge"),
-            None,
             &["notes.md".into(), "内核/scratch.md".into()],
         );
         assert!(board.contains("These files are not nodes and were left in place:"));
@@ -609,6 +770,7 @@ mod tests {
         assert!(board.contains("`内核/scratch.md`"));
         assert!(board.contains("Total 0"));
         assert!(!board.contains("(no declaration)"));
+        assert!(guide().contains("## Syntax"));
         assert!(guide().contains("treated as `enabled`"));
         assert!(!guide().contains("[[node"));
     }

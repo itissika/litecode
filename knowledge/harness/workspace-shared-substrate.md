@@ -16,5 +16,5 @@ h : 408
 - 入口分立、实例共享：同一能力为人类与 agent 各自塑形入口，底层同一实现；Git 由人类面板与 agent 终端共同消费。
 - 进程与位置：内核独立进程（桌面 sidecar / 远程 SSH）、单端口收敛服务；一个进程一个工作区，跨进程独占锁保证同一工作区唯一持有者。
 
-上层：[@ id="product-brief" label="产品概要"]、[@ id="ux-design" label="ux 设计"]。
-依据：[@ file="src/workspace/sandbox.rs" label="唯一路径原语"]、[@ file="src/workspace/watcher.rs" label="唯一文件监听"]、[@ file="src/session/workspace_lock.rs" label="跨进程独占"]。
+上层：[@ key="product-brief"]、[@ key="ux-design"]。
+依据：[@ file="src/workspace/sandbox.rs"]、[@ file="src/workspace/watcher.rs"]、[@ file="src/session/workspace_lock.rs"]。

@@ -13,5 +13,5 @@ h : 337
 - 分层覆盖：Builtin < Global < Workspace，就近生效。
 - engines.json 表达引擎启停意图；工具 readiness 从配置意图派生，运行状态与执行可用性另由 owner 发布。
 
-契约展开：[@ id="config-commit" label="配置提交"]、[@ id="engine-lifecycle" label="引擎生命周期"]。
-上层：[@ id="engine-design" label="engine 设计"]。
+契约展开：[@ key="config-commit"]、[@ key="engine-lifecycle"]。
+上层：[@ key="engine-design"]。

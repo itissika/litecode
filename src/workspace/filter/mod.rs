@@ -27,7 +27,7 @@ pub use defaults::{
     FILES_EXCLUDE, PRODUCT_INTERNAL_DIRS, SEARCH_EXCLUDE, SNAPSHOT_ONLY_DIRS, WATCHER_EXCLUDE,
 };
 pub use dirs::{
-    discovery_exclude_dir_basenames, is_discovery_or_product_dir_name,
+    discovery_exclude_dir_basenames, is_agent_knowledge_rel, is_discovery_or_product_dir_name,
     is_product_internal_dir_name, path_has_product_internal_dir, snapshot_exclude_dir_basenames,
 };
 pub use exclude::{ExcludeMatcher, path_excluded};
@@ -99,7 +99,9 @@ fn format_corpus_globs(globs: &[String]) -> String {
 
 /// Why agent glob/grep should not enter `rel` (workspace-relative, `/` separators).
 pub fn ignored_discovery_reason(workspace_root: &Path, rel: &str) -> Option<&'static str> {
-    if path_has_product_internal_dir(rel) {
+    let rel = rel.trim_matches('/');
+    let knowledge = is_agent_knowledge_rel(rel);
+    if path_has_product_internal_dir(rel) && !knowledge {
         return Some("LiteCode runtime directory.");
     }
     let cfg = active_workspace_excludes();
@@ -109,7 +111,7 @@ pub fn ignored_discovery_reason(workspace_root: &Path, rel: &str) -> Option<&'st
     if ExcludeMatcher::from_globs(&cfg.search_exclude).matches(rel) {
         return Some("excluded by search.exclude.");
     }
-    if path_gitignored(workspace_root, rel, FilterPreset::Search) {
+    if !knowledge && path_gitignored(workspace_root, rel, FilterPreset::Search) {
         return Some("ignored by .gitignore.");
     }
     None
@@ -126,8 +128,8 @@ pub fn ignored_discovery_message(workspace_root: &Path, resolved: &Path) -> Opti
     Some(format!("path '{rel}' is not searched: {reason}"))
 }
 pub use walk::{
-    WalkOptions, configure_walk, configure_walk_under, configure_walk_with, walk_builder,
-    walk_builder_with,
+    WalkOptions, configure_walk, configure_walk_under, configure_walk_with,
+    private_knowledge_walker, walk_builder, walk_builder_with,
 };
 pub use workspace_excludes::{
     WORKSPACE_EXCLUDES_REL, WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView,

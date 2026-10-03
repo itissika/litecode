@@ -1,8 +1,9 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { knowledgeFixture, knowledgeFolderFixture } from "../../lib/knowledge/fixture";
-import { mentionSource } from "../../lib/knowledge/markers";
+import { fileMentionSource, mentionSource, symbolMentionSource } from "../../lib/knowledge/markers";
+import { useEditorStore } from "../../stores/editorStore";
 import { knowledgeSnapshot, useKnowledgeStore } from "../../stores/knowledgeStore";
 import { KnowledgeMarkdown } from "./KnowledgeMarkdown";
 
@@ -48,6 +49,28 @@ describe("KnowledgeMarkdown", () => {
       <KnowledgeMarkdown sourceId="session" text={`\`\`\`\n${mentionSource("seq")}\n\`\`\``} />,
     );
     expect(screen.queryByRole("button", { name: "seq" })).toBeNull();
+  });
+
+  it("draws a file citation as the same capsule a person types", () => {
+    const openFile = vi.fn(async () => {});
+    const openFileAt = vi.fn(async () => {});
+    useEditorStore.setState({ openFile, openFileAt } as never);
+    render(
+      <KnowledgeMarkdown
+        sourceId="session"
+        text={`see ${fileMentionSource("src/a.rs")} and ${symbolMentionSource("src/a.rs", { symbol: "fn save" })}`}
+      />,
+    );
+    const file = screen.getByRole("button", { name: ".../src/a.rs" });
+    expect(file.parentElement?.className).toContain("knowledge-token");
+    expect(file.parentElement?.className).toContain("is-file");
+    expect(file.parentElement?.className).not.toContain("is-symbol");
+    fireEvent.click(file);
+    expect(openFile).toHaveBeenCalledWith("src/a.rs");
+    const symbol = screen.getByRole("button", { name: "a.rs : fn save" });
+    expect(symbol.parentElement?.className).toContain("is-symbol");
+    fireEvent.click(symbol);
+    expect(openFile).toHaveBeenCalledTimes(2);
   });
 
   it("does not treat a bare double-bracket as a citation", () => {

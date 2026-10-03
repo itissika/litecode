@@ -9,15 +9,14 @@ export type KnowledgeSegment =
  */
 export const KNOWLEDGE_KEY = /^[\p{L}\p{N}_][\p{L}\p{N}_-]*(?: [\p{L}\p{N}_-]+)*$/u;
 
-/** TipTap Mention markdown: `[@ id="seq" label="seq"]`. `id` then `label`, double quotes. */
-const SHORTCODE_SOURCE = String.raw`\[@ id="([^"]*)" label="([^"]*)"\]`;
+/** Node citation. Only `key` is recognized. */
+const SHORTCODE_SOURCE = String.raw`\[@ key="([^"]*)"\]`;
 
 /**
- * File, symbol, or line-range mention.
- * Attribute order is `file`, optional `symbol`, optional `lines`, then `label`.
- * Neither optional attribute means a plain file citation.
+ * File, symbol, or line-range citation.
+ * Attribute order is `file`, optional `symbol`, optional `lines`.
  */
-const FILE_ATTR_SOURCE = String.raw`\[@ file="([^"]*)"(?: symbol="([^"]*)")?(?: lines="([^"]*)")? label="([^"]*)"\]`;
+const FILE_ATTR_SOURCE = String.raw`\[@ file="([^"]*)"(?: symbol="([^"]*)")?(?: lines="([^"]*)")?\]`;
 
 /** Compare and look up keys after trimming. The stored key is left unchanged. */
 export function normalizeKey(key: string): string {
@@ -28,36 +27,53 @@ export function isKnowledgeKey(key: string): boolean {
   return KNOWLEDGE_KEY.test(key);
 }
 
-/** One mention as TipTap writes it. `label` defaults to `id`. */
-export function mentionSource(id: string, label = id): string {
-  return `[@ id="${id}" label="${label}"]`;
+/** One node citation. A second argument is ignored; display text is not stored. */
+export function mentionSource(id: string, _label = id): string {
+  return `[@ key="${id}"]`;
+}
+
+/** Words shown for a file or symbol citation. A node shows its key. */
+export function citationFact(
+  path: string,
+  symbol?: string | null,
+  lines?: string | null,
+): string {
+  let out = path;
+  const chain = symbol?.trim() ?? "";
+  if (chain) out += ` : ${chain}`;
+  const raw = lines?.trim() ?? "";
+  const span = raw ? parseLineSpan(raw) : null;
+  if (span) out += ` : ${formatLineSpan(span.start, span.end)}`;
+  return out;
 }
 
 /** Visible text for a workspace path: the last segment. */
 export function fileLabel(path: string): string {
-  const slash = path.replaceAll("\\", "/");
-  const name = slash.slice(slash.lastIndexOf("/") + 1);
-  return name || path;
+  const parts = pathParts(path);
+  return parts[parts.length - 1] || path;
 }
 
-/** One file mention as TipTap writes it. `label` defaults to the file name. */
-export function fileMentionSource(path: string, label = fileLabel(path)): string {
-  return `[@ file="${path}" label="${label}"]`;
+/** Blue chip: `.../parent/file`, or just the file when it has no parent. */
+export function humanFileLabel(path: string): string {
+  const parts = pathParts(path);
+  const file = parts[parts.length - 1] || path;
+  const parent = parts.length >= 2 ? parts[parts.length - 2] : "";
+  if (!parent) return file;
+  return `.../${parent}/${file}`;
 }
 
-/** Last hop of an ancestor chain, for the capsule label. */
-export function symbolLabel(chain: string): string {
-  const parts = chain.split(" › ");
-  return parts[parts.length - 1] || chain;
+/** Cyan chip: `file : symbol`. Lines stay off the capsule. */
+export function humanSymbolLabel(path: string, symbol: string): string {
+  return `${fileLabel(path)} : ${symbol.trim()}`;
 }
 
-/** Cyan capsule text: the file name, then the symbol's last hop. */
-export function capsuleLabel(path: string, symbol: string): string {
-  const file = fileLabel(path);
-  const name = symbolLabel(symbol);
-  if (!file) return name;
-  if (!name) return file;
-  return `${file} ${name}`;
+function pathParts(path: string): string[] {
+  return path.replaceAll("\\", "/").split("/").filter((part) => part.length > 0);
+}
+
+/** One file citation. A label argument is ignored. */
+export function fileMentionSource(path: string, _label = fileLabel(path)): string {
+  return `[@ file="${path}"]`;
 }
 
 /** `12` or `2148-2165`. Zero and an inverted range are not spans. */
@@ -85,13 +101,10 @@ export function symbolMentionSource(
 ): string {
   const symbol = options.symbol?.trim() ?? "";
   const lines = options.lines?.trim() ?? "";
-  const label =
-    options.label ??
-    (symbol ? capsuleLabel(path, symbol) : fileLabel(path));
   let out = `[@ file="${path}"`;
   if (symbol) out += ` symbol="${symbol}"`;
   if (lines) out += ` lines="${lines}"`;
-  out += ` label="${label}"]`;
+  out += "]";
   return out;
 }
 
@@ -128,8 +141,7 @@ export function splitKnowledgeRefs(text: string): KnowledgeSegment[] {
     const start = match.index ?? 0;
     if (!id || !isKnowledgeKey(id)) continue;
     if (start > last) out.push({ type: "text", value: text.slice(last, start) });
-    const label = match[2] ?? "";
-    out.push({ type: "ref", id, label: label || id });
+    out.push({ type: "ref", id, label: id });
     last = start + match[0].length;
   }
   if (last < text.length) out.push({ type: "text", value: text.slice(last) });
@@ -217,13 +229,12 @@ export function splitBodyRefs(text: string): BodySegment[] {
     const id = normalizeKey(match[1] ?? "");
     if (!id || !isKnowledgeKey(id)) continue;
     const start = match.index ?? 0;
-    const label = match[2] ?? "";
     hits.push({
       start,
       end: start + match[0].length,
       kind: "ref",
       a: id,
-      b: label || id,
+      b: id,
     });
   }
   for (const match of text.matchAll(fileAttrPattern())) {
@@ -233,11 +244,8 @@ export function splitBodyRefs(text: string): BodySegment[] {
     const lines = (match[3] ?? "").trim();
     const parsedLines = lines ? parseLineSpan(lines) : null;
     const start = match.index ?? 0;
-    const labelRaw = match[4] ?? "";
     const isSymbol = Boolean(symbol) || parsedLines !== null;
-    const label =
-      labelRaw ||
-      (symbol ? capsuleLabel(path, symbol) : fileLabel(path));
+    const label = citationFact(path, symbol, parsedLines ? lines : null);
     hits.push({
       start,
       end: start + match[0].length,
@@ -339,11 +347,10 @@ export function replaceMentionKey(text: string, from: string, to: string): strin
   const source = normalizeKey(from);
   const target = normalizeKey(to);
   if (!source || source === target) return text;
-  return text.replace(shortcodePattern(), (full, id: string, label: string) => {
+  return text.replace(shortcodePattern(), (full, id: string) => {
     const idKey = normalizeKey(id);
-    const labelKey = normalizeKey(label);
-    if (idKey !== source && labelKey !== source) return full;
-    return mentionSource(idKey === source ? target : id, labelKey === source ? target : label);
+    if (!isKnowledgeKey(idKey) || idKey !== source) return full;
+    return mentionSource(target);
   });
 }
 
@@ -365,18 +372,19 @@ function clipChars(value: string, max: number): string {
 }
 
 function replaceShortcodesWithLabels(text: string): string {
-  const nodes = text.replace(shortcodePattern(), (full, id: string, label: string) => {
+  const nodes = text.replace(shortcodePattern(), (full, id: string) => {
     const key = normalizeKey(id);
     if (!isKnowledgeKey(key)) return full;
-    return label || key;
+    return key;
   });
   return nodes.replace(
     fileAttrPattern(),
-    (full, path: string, symbol: string, _lines: string, label: string) => {
+    (full, path: string, symbol: string, lines: string) => {
       const cleaned = path.trim();
       if (!cleaned) return full;
       const chain = symbol?.trim() ?? "";
-      return label || (chain ? capsuleLabel(cleaned, chain) : fileLabel(cleaned));
+      const raw = lines?.trim() ?? "";
+      return citationFact(cleaned, chain, raw ? raw : null);
     },
   );
 }

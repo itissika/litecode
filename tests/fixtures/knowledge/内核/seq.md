@@ -5,4 +5,4 @@ summary : 序号
 tags : a
 
 ```
-正文 [@ id="session" label="会话"]
+正文 [@ key="session"]

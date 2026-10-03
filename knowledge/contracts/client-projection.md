@@ -17,5 +17,5 @@ h : 414
 - 纪律有测试：死亡清单测试封禁第二套对话语义；流式平滑只是显示缓冲。
 - 边界：子会话事件按自身 session 分发；关闭 tab 或断开连接不拥有取消执行的权力。
 
-上层：[@ id="ux" label="ux"]。
-依据：[@ file="src/client_protocol/protocol.rs" label="双游标定义"]、[@ file="web/src/stores/messageStore.ts" label="镜像与回退"]。
+上层：[@ key="ux"]。
+依据：[@ file="src/client_protocol/protocol.rs"]、[@ file="web/src/stores/messageStore.ts"]。

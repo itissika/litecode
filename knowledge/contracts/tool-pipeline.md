@@ -17,5 +17,5 @@ h : 414
 - 结果契约：按 call_id 配对、按调用顺序输出，每个调用都有结果——取消补中断结果，模型永不见悬空调用；已完成的结果不被晚到的取消覆盖。
 - 出口统一整形：截断、超大结果落盘、信号合成在管线完成，工具不自造方言。
 
-上层：[@ id="tools" label="tools"]。相关：[@ id="ux-interaction" label="交互模型"]。
-依据：[@ file="src/tool/executor.rs" label="生产入口与调度"]、[@ file="src/permission/engine.rs" label="授权求值"]。
+上层：[@ key="tools"]。相关：[@ key="ux-interaction"]。
+依据：[@ file="src/tool/executor.rs"]、[@ file="src/permission/engine.rs"]。

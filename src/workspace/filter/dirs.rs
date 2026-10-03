@@ -60,6 +60,16 @@ pub fn path_has_product_internal_dir(rel: &str) -> bool {
     rel.split('/').any(is_product_internal_dir_name)
 }
 
+/// Agent `grep` / `glob` may read this workspace-relative path.
+/// It is `.litecode`, `.litecode/knowledge`, or a file under that folder.
+/// `foo/.litecode` is not this path.
+pub fn is_agent_knowledge_rel(rel: &str) -> bool {
+    let rel = rel.trim_matches('/');
+    rel == ".litecode"
+        || rel == ".litecode/knowledge"
+        || rel.starts_with(".litecode/knowledge/")
+}
+
 /// True when `name` is a discovery segment or product-internal dir (LSP / shallow walks).
 pub fn is_discovery_or_product_dir_name(name: &str) -> bool {
     is_product_internal_dir_name(name) || discovery_exclude_dir_basenames().contains(name)

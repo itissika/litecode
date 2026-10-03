@@ -16,5 +16,5 @@ h : 414
 - 取消是收尾：不擦除已产出内容与已完成副作用；未执行或中断的调用补中断结果，避免留下悬空调用。
 - 所有权交接：收尾按 turn 身份核对所有权，回退可接管租约；收尾失败仍发布完成，因此完成通知不等于终态已持久化。
 
-上层：[@ id="session" label="session"]。
-依据：[@ file="src/session/manager.rs" label="预占、活动状态与收尾"]、[@ file="src/agent/core.rs" label="执行与取消顺序"]。
+上层：[@ key="session"]。
+依据：[@ file="src/session/manager.rs"]、[@ file="src/agent/core.rs"]。

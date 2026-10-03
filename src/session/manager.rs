@@ -2269,6 +2269,7 @@ impl SessionManager {
         let input = input.into();
         let seq = self.append_user_message(session_id, input.clone())?;
         self.append_mentions_for(session_id, workspace, &input.text);
+        self.append_knowledge_status_for(session_id, workspace);
         Ok(seq)
     }
 
@@ -2325,6 +2326,25 @@ impl SessionManager {
         };
         if let Err(error) = self.append_reminder(session_id, &reminder) {
             tracing::warn!(%error, "mentions reminder was not saved");
+        }
+    }
+
+    /// Write `reminder/knowledge_status` after a human message.
+    ///
+    /// An empty library writes nothing. The same class still on the live surface
+    /// is left as it is. A failed write does not undo the user row.
+    pub fn append_knowledge_status_for(&self, session_id: &str, workspace: &std::path::Path) {
+        let Some(reminder) = crate::reminder::knowledge_status::build(workspace) else {
+            return;
+        };
+        if let Ok(view) = self.spine_reminder_view(session_id)
+            && let Some(previous) = view.latest(crate::reminder::ReminderKind::KnowledgeStatus)
+            && previous.same_snapshot(&reminder)
+        {
+            return;
+        }
+        if let Err(error) = self.append_reminder(session_id, &reminder) {
+            tracing::warn!(%error, "knowledge status reminder was not saved");
         }
     }
 

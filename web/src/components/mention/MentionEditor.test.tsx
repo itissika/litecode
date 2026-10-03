@@ -127,7 +127,7 @@ describe("MentionEditor symbol mode", () => {
         onChange={() => undefined}
       />,
     );
-    const chip = await screen.findByRole("button", { name: "a.rs fn save" });
+    const chip = await screen.findByRole("button", { name: "a.rs : fn save" });
     expect(chip.closest(".knowledge-token")?.classList.contains("is-symbol")).toBe(true);
   });
 });

@@ -9,15 +9,17 @@ import { chipForMarker } from "../../lib/knowledge/refDisplay";
 import { knowledgeFirstLineSegments } from "../../lib/knowledge/markers";
 import {
   parseKnowledgeRef,
+  parseLocationRef,
   remarkKnowledgeRef,
 } from "../../lib/knowledge/remarkKnowledgeRef";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
+import { WorkspaceCitationChip } from "../CitationChip";
 import { KnowledgeRefChip } from "./KnowledgeRefChip";
 
 const KnowledgeSourceContext = createContext<string | null>(null);
 
 function knowledgeUrlTransform(url: string): string {
-  if (parseKnowledgeRef(url)) return url;
+  if (parseKnowledgeRef(url) || parseLocationRef(url)) return url;
   return defaultUrlTransform(url);
 }
 
@@ -60,6 +62,16 @@ const components: Components = {
   a: ({ href, children }) => {
     const key = parseKnowledgeRef(href);
     if (key) return <BodyRefChip marker={key} label={inlineText(children) || key} />;
+    const located = parseLocationRef(href);
+    if (located) {
+      return (
+        <WorkspaceCitationChip
+          path={located.path}
+          symbol={located.symbol}
+          line={located.line}
+        />
+      );
+    }
     return (
       <a href={href} target="_blank" rel="noreferrer">
         {children}

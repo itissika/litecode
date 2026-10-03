@@ -4,4 +4,4 @@ status : enabled
 summary : 会话
 
 ```
-见 [@ id="seq" label="序号"]
+见 [@ key="seq"]

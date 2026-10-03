@@ -6,7 +6,7 @@ use crate::tool::trait_::ToolExecutionContext;
 use crate::types::{Result, ToolCallResult};
 use crate::workspace::filter::{
     FilterPreset, RelPathCtx, WalkOptions, cheap_rel_under, compile_include_pattern,
-    normalize_pattern, walk_builder_with,
+    normalize_pattern, path_matches_include, private_knowledge_walker, walk_builder_with,
 };
 
 const MAX_RESULTS: usize = 1000;
@@ -141,7 +141,12 @@ impl GlobTool {
             return ToolCallResult::ok(message);
         }
 
-        let results = match glob_match(&search_path, &effective_pattern, no_ignore) {
+        let results = match glob_match(
+            &execution.workspace_root,
+            &search_path,
+            &effective_pattern,
+            no_ignore,
+        ) {
             Ok(r) => r,
             Err(e) => return ToolCallResult::error(e.to_string()),
         };
@@ -279,17 +284,30 @@ fn glob_virtual_sessions(
     Ok(GlobListing::capped(hits))
 }
 
-fn glob_match(base: &std::path::Path, pattern: &str, no_ignore: bool) -> Result<GlobListing> {
+fn glob_match(
+    workspace: &std::path::Path,
+    base: &std::path::Path,
+    pattern: &str,
+    no_ignore: bool,
+) -> Result<GlobListing> {
     let glob_matcher = compile_include_pattern(pattern)?;
     let preset = discovery_preset(no_ignore);
     let rel_ctx = RelPathCtx::new(base).unwrap_or_else(|_| RelPathCtx::new_lossy(base));
 
     let mut hits: Vec<String> = Vec::new();
 
-    let mut walk_opts = WalkOptions::with_file_include(vec![glob_matcher]);
+    let mut walk_opts = WalkOptions::with_file_include(vec![glob_matcher.clone()]);
     // Glob matches paths, not contents — do not apply the Search binary gate.
     walk_opts.skip_binary = Some(false);
-    let builder = walk_builder_with(base, preset, walk_opts);
+    walk_opts.allow_knowledge_root = true;
+    let mut builder = walk_builder_with(base, preset, walk_opts);
+    let knowledge = workspace.join(".litecode").join("knowledge");
+    if knowledge.is_dir() && cheap_rel_under(&knowledge, base).is_some() {
+        builder
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false);
+    }
     let walker = builder.build();
 
     for entry in walker.flatten() {
@@ -303,6 +321,28 @@ fn glob_match(base: &std::path::Path, pattern: &str, no_ignore: bool) -> Result<
             continue;
         };
         hits.push(rel_str);
+    }
+
+    if knowledge.is_dir()
+        && cheap_rel_under(base, &knowledge).is_some()
+        && cheap_rel_under(&knowledge, base).is_none()
+        && let Some(extra) = private_knowledge_walker(workspace, preset, Some(false))
+    {
+        for entry in extra.build().flatten() {
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let Some(rel) = cheap_rel_under(base, entry.path()) else {
+                continue;
+            };
+            if !path_matches_include(&rel, std::slice::from_ref(&glob_matcher)) {
+                continue;
+            }
+            if hits.iter().any(|hit| hit == &rel) {
+                continue;
+            }
+            hits.push(rel);
+        }
     }
 
     crate::workspace::sort_glob_hits(&mut hits);
@@ -343,7 +383,7 @@ mod tests {
         std::fs::write(root.join("node_modules/pkg/index.js"), "module.exports=1\n").unwrap();
         std::fs::write(root.join(".env"), "AGENT_GLOB=1\n").unwrap();
 
-        let found = glob_match(root, "**/*.{rs,js,env}", false).unwrap().hits;
+        let found = glob_match(root, root, "**/*.{rs,js,env}", false).unwrap().hits;
         assert!(
             found
                 .iter()
@@ -371,12 +411,12 @@ mod tests {
         std::fs::write(root.join("ignored.txt"), "x\n").unwrap();
         std::fs::write(root.join("keep.txt"), "x\n").unwrap();
 
-        let filtered = glob_match(root, "**/*", false).unwrap().hits;
+        let filtered = glob_match(root, root, "**/*", false).unwrap().hits;
         assert!(filtered.iter().any(|p| p == "keep.txt"));
         assert!(!filtered.iter().any(|p| p == "ignored.txt"));
         assert!(!filtered.iter().any(|p| p.contains("node_modules")));
 
-        let raw = glob_match(root, "**/*", true).unwrap().hits;
+        let raw = glob_match(root, root, "**/*", true).unwrap().hits;
         assert!(raw.iter().any(|p| p == "ignored.txt"), "got {raw:?}");
         assert!(
             raw.iter().any(|p| p == "node_modules/pkg/index.js"),
@@ -466,45 +506,56 @@ mod tests {
     }
 
     #[test]
-    fn glob_skips_nested_litecode_lists_when_path_set() {
+    fn glob_reaches_the_knowledge_root_and_refuses_the_rest() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".gitignore"), ".litecode/\n").unwrap();
+        std::fs::create_dir_all(root.join("knowledge")).unwrap();
+        std::fs::write(root.join("knowledge/node.md"), "public\n").unwrap();
+        std::fs::create_dir_all(root.join(".litecode/knowledge")).unwrap();
+        std::fs::write(root.join(".litecode/knowledge/private.md"), "private\n").unwrap();
         std::fs::create_dir_all(root.join(".litecode/index")).unwrap();
         std::fs::write(root.join(".litecode/index/x.rs"), "fn x() {}\n").unwrap();
         std::fs::write(root.join("keep.rs"), "fn k() {}\n").unwrap();
 
-        let filtered = glob_match(root, "**/*.rs", false).unwrap();
-        assert!(filtered.iter().any(|p| p == "keep.rs"), "{filtered:?}");
+        let filtered = glob_match(root, root, "**/*", false).unwrap();
+        assert!(filtered.iter().any(|path| path == "keep.rs"), "{filtered:?}");
         assert!(
-            !filtered.iter().any(|p| p.contains(".litecode")),
-            "Search must skip nested .litecode; got {filtered:?}"
+            filtered.iter().any(|path| path == "knowledge/node.md"),
+            "{filtered:?}"
+        );
+        assert!(
+            filtered
+                .iter()
+                .any(|path| path == ".litecode/knowledge/private.md"),
+            "{filtered:?}"
+        );
+        assert!(
+            !filtered.iter().any(|path| path.contains("index")),
+            "{filtered:?}"
+        );
+
+        let index = glob_in(
+            root,
+            serde_json::json!({ "pattern": "**/*", "path": ".litecode/index" }),
+        );
+        assert_eq!(
+            index,
+            "path '.litecode/index' is not searched: LiteCode runtime directory."
         );
 
         let inside = glob_in(
             root,
             serde_json::json!({ "pattern": "**/*", "path": ".litecode" }),
         );
-        assert_eq!(
-            inside,
-            "path '.litecode' is not searched: LiteCode runtime directory."
-        );
-
-        let raw = glob_in(
-            root,
-            serde_json::json!({ "pattern": "**/*.rs", "-u": true }),
+        assert!(
+            inside.contains("knowledge/private.md"),
+            "path=.litecode lists the knowledge root; got {inside}"
         );
         assert!(
-            !raw.contains(".litecode"),
-            "unscoped -u must not include nested .litecode; got {raw}"
-        );
-
-        let scoped = glob_in(
-            root,
-            serde_json::json!({ "pattern": "**/*", "path": ".litecode", "-u": true }),
-        );
-        assert!(
-            scoped.contains("index/x.rs") || scoped.contains("x.rs"),
-            "path=.litecode with -u must list; got {scoped}"
+            !inside.contains("index"),
+            "path=.litecode does not list the rest; got {inside}"
         );
     }
 
@@ -551,7 +602,7 @@ mod tests {
 
         // After strip: path=src + pattern=src/**/*.rs → **/*.rs under src
         let (effective, _) = strip_redundant_path_prefix(Some("src"), "src/**/*.rs");
-        let found = glob_match(&root.join("src"), &effective, false)
+        let found = glob_match(root, &root.join("src"), &effective, false)
             .unwrap()
             .hits;
         assert!(
@@ -597,7 +648,7 @@ mod tests {
         std::fs::write(root.join("root.rs"), "fn r() {}\n").unwrap();
         std::fs::write(root.join("src/mid.rs"), "fn m() {}\n").unwrap();
 
-        let found = glob_match(root, "**/*.rs", false).unwrap();
+        let found = glob_match(root, root, "**/*.rs", false).unwrap();
         assert_eq!(found.hits, ["root.rs", "src/mid.rs", "src/nested/deep.rs"]);
         assert_eq!(found.total, 3);
     }
@@ -609,7 +660,7 @@ mod tests {
         for i in 0..(MAX_RESULTS + 7) {
             std::fs::write(root.join(format!("f{i:04}.txt")), "x\n").unwrap();
         }
-        let listing = glob_match(root, "*.txt", true).unwrap();
+        let listing = glob_match(root, root, "*.txt", true).unwrap();
         assert_eq!(listing.hits.len(), MAX_RESULTS);
         assert_eq!(listing.total, MAX_RESULTS + 7);
         let body = format_glob_body(&listing, "*.txt", None, None, None);
@@ -633,12 +684,12 @@ mod tests {
         std::fs::write(root.join("src/mid.rs"), "fn m() {}\n").unwrap();
         std::fs::write(root.join("src/nested/README.md"), "# nested\n").unwrap();
 
-        let rs = glob_match(root, "*.rs", false).unwrap();
+        let rs = glob_match(root, root, "*.rs", false).unwrap();
         assert!(rs.iter().any(|p| p == "src/nested/deep.rs"), "{rs:?}");
         assert!(rs.iter().any(|p| p == "src/mid.rs"), "{rs:?}");
         assert!(rs.iter().any(|p| p == "root.rs"), "{rs:?}");
 
-        let md = glob_match(root, "README.md", false).unwrap();
+        let md = glob_match(root, root, "README.md", false).unwrap();
         assert!(
             md.iter().any(|p| p == "src/nested/README.md"),
             "exact basename must recurse; got {md:?}"

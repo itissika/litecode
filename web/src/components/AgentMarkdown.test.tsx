@@ -1,14 +1,15 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveCitations } from "../api/workspace";
 import { resetCitationCacheForTests } from "../lib/citationResolve";
-import { fileMentionSource, mentionSource } from "../lib/knowledge/markers";
+import { fileMentionSource, mentionSource, symbolMentionSource } from "../lib/knowledge/markers";
 import { useEditorStore } from "../stores/editorStore";
 import { useKnowledgeStore } from "../stores/knowledgeStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { AgentMarkdown } from "./AgentMarkdown";
 
+const originalOpenFile = useEditorStore.getState().openFile;
 const originalOpenFileAt = useEditorStore.getState().openFileAt;
 
 vi.mock("../api/workspace", async (importOriginal) => {
@@ -24,7 +25,10 @@ afterEach(() => {
   vi.useRealTimers();
   resetCitationCacheForTests();
   useSessionStore.setState({ project: "" });
-  useEditorStore.setState({ openFileAt: originalOpenFileAt } as never);
+  useEditorStore.setState({
+    openFile: originalOpenFile,
+    openFileAt: originalOpenFileAt,
+  } as never);
   useKnowledgeStore.setState({
     byId: new Map(),
     byKey: new Map(),
@@ -146,40 +150,64 @@ describe("AgentMarkdown citations", () => {
     expect(resolveCitations).not.toHaveBeenCalled();
   });
 
-  it("renders a button only after the file is confirmed", async () => {
-    useSessionStore.setState({ project: "E:/ws" });
+  it("opens a file shortcode at the start line and leaves a file link as text", () => {
+    const openFile = vi.fn(async () => {});
     const openFileAt = vi.fn(async () => {});
-    useEditorStore.setState({ openFileAt } as never);
-    vi.mocked(resolveCitations).mockResolvedValue([
-      { exists: true, path: "src/auth/validate.ts", line: 42 },
-    ]);
-
-    render(
+    useEditorStore.setState({ openFile, openFileAt } as never);
+    const range = symbolMentionSource("src/a.rs", { lines: "4-9" });
+    const { container } = render(
       <AgentMarkdown
         citations
-        text="See [validate.ts:42](file:src/auth/validate.ts#L42)"
+        text={`See ${fileMentionSource("src/a.rs")} and ${range} and [validate.ts](file:src/auth/validate.ts)`}
       />,
     );
 
-    const button = await screen.findByRole("button", {
-      name: "Open src/auth/validate.ts:42",
+    expect(container.textContent).toContain(".../src/a.rs");
+    expect(container.textContent).not.toContain("src/a.rs : 4-9");
+    expect(container.textContent).toContain("validate.ts");
+    expect(container.textContent).not.toContain('[@ file="src/a.rs"]');
+    expect(resolveCitations).not.toHaveBeenCalled();
+
+    const files = screen.getAllByRole("button", { name: ".../src/a.rs" });
+    expect(files).toHaveLength(2);
+    expect(files[0]?.parentElement?.className).toContain("knowledge-token");
+    expect(files[0]?.parentElement?.className).toContain("is-file");
+    expect(files[0]?.parentElement?.className).not.toContain("is-symbol");
+    expect(files[1]?.parentElement?.className).not.toContain("is-symbol");
+    fireEvent.click(files[0]!);
+    expect(openFile).toHaveBeenCalledWith("src/a.rs");
+    fireEvent.click(files[1]!);
+    expect(openFileAt).toHaveBeenCalledWith("src/a.rs", 4);
+  });
+
+  it("opens a symbol citation at the file, and at the start line when a range is written", () => {
+    const openFile = vi.fn(async () => {});
+    const openFileAt = vi.fn(async () => {});
+    useEditorStore.setState({ openFile, openFileAt } as never);
+    const symbol = symbolMentionSource("src/a.rs", {
+      symbol: "impl Store › fn save",
     });
-    fireEvent.click(button);
-    expect(openFileAt).toHaveBeenCalledWith("src/auth/validate.ts", 42);
-  });
-
-  it("keeps the label as text when the file is missing", async () => {
-    useSessionStore.setState({ project: "E:/ws" });
-    vi.mocked(resolveCitations).mockResolvedValue([{ exists: false }]);
+    const ranged = symbolMentionSource("src/a.rs", {
+      symbol: "impl Store › fn save",
+      lines: "2148-2165",
+    });
     const { container } = render(
-      <AgentMarkdown citations text="See [missing.ts](file:src/missing.ts)" />,
+      <AgentMarkdown citations text={`${symbol} ${ranged}`} />,
     );
-    await waitFor(() => expect(resolveCitations).toHaveBeenCalled());
-    expect(screen.queryByRole("button")).toBeNull();
-    expect(container.textContent).toContain("missing.ts");
+    expect(container.textContent).toContain("a.rs : impl Store › fn save");
+    expect(container.textContent).not.toContain("2148-2165");
+    const symbolChips = screen.getAllByRole("button", {
+      name: "a.rs : impl Store › fn save",
+    });
+    expect(symbolChips).toHaveLength(2);
+    expect(symbolChips[0]?.parentElement?.className).toContain("is-symbol");
+    fireEvent.click(symbolChips[0]!);
+    expect(openFile).toHaveBeenCalledWith("src/a.rs");
+    fireEvent.click(symbolChips[1]!);
+    expect(openFileAt).toHaveBeenCalledWith("src/a.rs", 2148);
   });
 
-  it("renders a knowledge node shortcode as a capsule beside a file link", () => {
+  it("renders a knowledge node shortcode as a capsule beside a file citation", () => {
     useKnowledgeStore.setState({
       byKey: new Map([["seq", { id: "seq", key: "seq" }]]),
       byId: new Map([["seq", { id: "seq", key: "seq" }]]),
@@ -191,11 +219,14 @@ describe("AgentMarkdown citations", () => {
         text={`See ${mentionSource("seq", "序号")} and [a.ts](file:src/a.ts) plus ${fileShortcode}`}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "序号" }));
+    fireEvent.click(screen.getByRole("button", { name: "seq" }));
     expect(useKnowledgeStore.getState().focusedId).toBe("seq");
-    expect(screen.getAllByRole("button")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: ".../src/a.rs" }).parentElement?.className).toContain(
+      "is-file",
+    );
+    expect(screen.getAllByRole("button")).toHaveLength(2);
     expect(container.textContent).toContain("a.ts");
-    expect(container.textContent).toContain(fileShortcode);
+    expect(container.textContent).not.toContain(fileShortcode);
   });
 
   it("leaves a node shortcode as text when citations are off, and marks an unknown key", () => {
@@ -203,7 +234,7 @@ describe("AgentMarkdown citations", () => {
       <AgentMarkdown text={`see ${mentionSource("seq")}`} />,
     );
     expect(screen.queryByRole("button")).toBeNull();
-    expect(container.textContent).toContain('[@ id="seq" label="seq"]');
+    expect(container.textContent).toContain('[@ key="seq"]');
 
     rerender(<AgentMarkdown citations text={`see ${mentionSource("missing")}`} />);
     expect(screen.queryByRole("button")).toBeNull();
@@ -222,43 +253,22 @@ describe("AgentMarkdown citations", () => {
     expect(screen.queryByRole("button", { name: "seq" })).toBeNull();
   });
 
-  it("renders a web citation without checking that the page exists", () => {
+  it("renders a web link as an ordinary link", () => {
     render(<AgentMarkdown citations text="[Docs](https://example.com/docs)" />);
     const link = screen.getByRole("link", { name: "Docs" });
     expect(link.getAttribute("href")).toBe("https://example.com/docs");
     expect(link.getAttribute("target")).toBe("_blank");
-    expect(link.className).toContain("agent-citation");
+    expect(link.className).not.toContain("agent-citation");
     expect(resolveCitations).not.toHaveBeenCalled();
   });
 
-  it("keeps a cached hit when streaming ends", async () => {
-    useSessionStore.setState({ project: "E:/ws" });
-    vi.mocked(resolveCitations).mockResolvedValue([
-      { exists: true, path: "src/a.ts" },
-    ]);
-    const { rerender } = render(
-      <AgentMarkdown citations streaming text="[a](file:src/a.ts)" />,
+  it("does not open a file citation written inside a code block", () => {
+    render(
+      <AgentMarkdown
+        citations
+        text={`\`\`\`\n${fileMentionSource("src/a.rs")}\n\`\`\``}
+      />,
     );
-    await screen.findByRole("button", { name: "Open src/a.ts" });
-    rerender(
-      <AgentMarkdown citations streaming={false} text="[a](file:src/a.ts)" />,
-    );
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-    expect(resolveCitations).toHaveBeenCalledTimes(1);
-  });
-
-  it("asks again when a miss finishes streaming", async () => {
-    useSessionStore.setState({ project: "E:/ws" });
-    vi.mocked(resolveCitations).mockResolvedValue([{ exists: false }]);
-    const { rerender } = render(
-      <AgentMarkdown citations streaming text="[a](file:src/a.ts)" />,
-    );
-    await waitFor(() => expect(resolveCitations).toHaveBeenCalledTimes(1));
-    rerender(
-      <AgentMarkdown citations streaming={false} text="[a](file:src/a.ts)" />,
-    );
-    await waitFor(() => expect(resolveCitations).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("button", { name: ".../src/a.rs" })).toBeNull();
   });
 });

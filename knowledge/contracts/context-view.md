@@ -16,5 +16,5 @@ h : 434
 - 失败以提交边界为准：提交前任何失败不产生检查点、日志不变；COMMIT 之后的重载失败不回滚已落库的检查点。
 - 回退使旧未提交尾部作废：后续提交不得把已丢弃的内容重新接回。
 
-上层：[@ id="context" label="context"]。相关：[@ id="session-model" label="会话模型"]。
-依据：[@ file="src/context_pipeline/mod.rs" label="视图组装边界"]、[@ file="src/context_pipeline/compact.rs" label="压缩与提交边界"]。
+上层：[@ key="context"]。相关：[@ key="session-model"]。
+依据：[@ file="src/context_pipeline/mod.rs"]、[@ file="src/context_pipeline/compact.rs"]。

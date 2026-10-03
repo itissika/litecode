@@ -6,6 +6,7 @@ pub mod document;
 pub mod mentions;
 pub mod reminder;
 pub mod root;
+pub mod status;
 pub mod symbol_check;
 pub mod validate;
 pub mod view;

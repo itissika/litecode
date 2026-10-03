@@ -17,5 +17,5 @@ h : 391
 - 视觉单一来源：主题由 token 承载，不散落硬编码。
 - 知识一等公民：Knowledge 与 Explorer / Search / Git 并列。
 
-契约展开：[@ id="client-projection" label="客户端投影与恢复"]。
-上层：[@ id="ux-design" label="ux 设计"]。
+契约展开：[@ key="client-projection"]。
+上层：[@ key="ux-design"]。

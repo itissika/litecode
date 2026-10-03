@@ -387,7 +387,6 @@ mod tests {
             "src/a.rs",
             Some("fn save"),
             None,
-            "fn save",
         );
         sessions.enqueue_pending_message(&sid, &text).unwrap();
         match try_begin_pending_flush(&runtime, &sessions, dir.path(), &sid) {
@@ -469,7 +468,6 @@ mod tests {
             "src/a.rs",
             Some("fn save"),
             None,
-            "fn save",
         );
         sessions.enqueue_pending_message(&sid, &text).unwrap();
         let (anchor, turn_id) = match try_begin_pending_flush(&runtime, &sessions, dir.path(), &sid)
@@ -578,7 +576,6 @@ mod tests {
             "src/a.rs",
             Some("fn save"),
             None,
-            "fn save",
         );
         let context = crate::context_pipeline::build_context(
             &runtime.resolved,

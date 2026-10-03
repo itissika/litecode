@@ -22,9 +22,11 @@ describe("MentionText", () => {
     render(<MentionText text={text} />);
     fireEvent.click(await screen.findByRole("button", { name: "seq" }));
     expect(useKnowledgeStore.getState().focusedId).toBe("seq");
-    fireEvent.click(screen.getByRole("button", { name: "a.rs fn save" }));
+    fireEvent.click(screen.getByRole("button", { name: "a.rs : fn save" }));
     expect(openFileAt).toHaveBeenCalledWith("src/a.rs", 4);
-    expect(screen.getByRole("button", { name: "a.rs" }).className).toContain("knowledge-token-label");
+    expect(screen.getByRole("button", { name: ".../src/a.rs" }).className).toContain(
+      "knowledge-token-label",
+    );
     expect(screen.getByText(/see/)).toBeTruthy();
     const after = screen.getByText(/then/);
     expect(after.closest(".agent-markdown")?.classList.contains("is-inline")).toBe(true);

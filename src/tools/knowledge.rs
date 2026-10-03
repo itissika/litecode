@@ -24,9 +24,8 @@ const DESCRIPTION: &str = "\
 Workspace knowledge base: human-owned notes of durable ideas — architecture, principles, workflows, goals. \
 Call with an empty command first; the board shows state and what to do next. \
 Navigate by key, edit bodies with read/edit, and run check after changes. \
-Rename and create through this tool so references stay whole. \
-Record invariants, not details. \
-In a reply, cite a key node as `[@ id=\"seq\" label=\"seq\"]` so the user can click it and confirm. `knowledge guide` has the syntax.";
+Rename and create through this tool so citations keep resolving. \
+Record invariants, not details.";
 
 pub struct KnowledgeTool {
     ide: Arc<crate::ide_base::IdeBaseHandle>,
@@ -74,7 +73,7 @@ impl KnowledgeTool {
 
     fn board(&self, workspace: &Path) -> ToolCallResult {
         let corpus = Corpus::load(workspace);
-        if corpus.root.is_none() {
+        if corpus.root.is_none() || corpus.nodes.is_empty() {
             return ToolCallResult::ok(view::missing_board());
         }
         let issues = issues_of(workspace, &corpus);
@@ -87,7 +86,6 @@ impl KnowledgeTool {
             reminder.as_deref(),
             now,
             corpus.root.as_deref(),
-            root::ignored(workspace),
             &corpus.unknown,
         ))
     }
@@ -140,8 +138,9 @@ impl KnowledgeTool {
         }
         let issues = issues_of(workspace, &corpus);
         let now = SystemTime::now();
-        let body = view::cards(
+        let body = view::folder_tree(
             nodes,
+            folder,
             |node| node_issues(&issues, &node.id),
             |key| corpus.incoming(key).len(),
             now,
@@ -179,7 +178,7 @@ impl KnowledgeTool {
         let markdown = read_node_file(workspace, &root, node);
         let document = view::node_file(&root, &node.path, &card_issues, &markdown);
         let incoming = corpus.incoming(&node.key);
-        let incoming_body = view::cards(
+        let incoming_body = view::flat_rows(
             incoming.iter().copied(),
             |item| node_issues(&issues, &item.id),
             |item| corpus.incoming(item).len(),
@@ -194,7 +193,7 @@ impl KnowledgeTool {
                 None => missing.push(rel.clone()),
             }
         }
-        let outgoing_body = view::cards(
+        let outgoing_body = view::flat_rows(
             outgoing,
             |item| node_issues(&issues, &item.id),
             |item| corpus.incoming(item).len(),
@@ -224,8 +223,8 @@ impl KnowledgeTool {
         };
         ToolCallResult::ok(join_blocks(&[
             format!("# {key}\n\n{document}"),
-            view::section("## Cites this", &incoming_body),
-            view::section("## This cites", &outgoing_body),
+            view::section("## Cited by", &incoming_body),
+            view::section("## Cites", &outgoing_body),
             follow,
         ]))
     }
@@ -240,10 +239,7 @@ impl KnowledgeTool {
         };
         let issues = issues_of(workspace, &corpus);
         let now = SystemTime::now();
-        let scope = args
-            .first()
-            .map(|item| item.as_str())
-            .unwrap_or("whole library");
+        let mut tree_scope: Option<&str> = None;
         let selected: Vec<&crate::knowledge::Node> = if let Some(scope) = args.first() {
             if !folder_ok(scope) {
                 return usage(
@@ -255,6 +251,7 @@ impl KnowledgeTool {
             if let Some(node) = corpus.by_key(scope) {
                 vec![node]
             } else if workspace.join(&root).join(scope).is_dir() {
+                tree_scope = Some(scope.as_str());
                 corpus.in_folder(scope)
             } else {
                 return usage(
@@ -271,21 +268,22 @@ impl KnowledgeTool {
             .into_iter()
             .filter(|node| !node_issues(&issues, &node.id).is_empty())
             .collect();
-        let title = format!("# Check · {scope}");
+        let summary = check_summary(checked, args.first().map(String::as_str), bad.len());
         if bad.is_empty() {
-            let noun = if checked == 1 { "node" } else { "nodes" };
-            return ToolCallResult::ok(format!(
-                "{title}\n\nChecked {checked} {noun}. No validation issues."
-            ));
+            return ToolCallResult::ok(format!("# Check\n\n{summary}"));
         }
-        let body = view::cards(
+        let body = view::folder_tree(
             bad,
+            tree_scope,
             |node| node_issues(&issues, &node.id),
             |key| corpus.incoming(key).len(),
             now,
             &root,
         );
-        ToolCallResult::ok(paginate(workspace, &format!("{title}\n\n{body}")))
+        ToolCallResult::ok(paginate(
+            workspace,
+            &format!("# Check\n\n{summary}\n\n{body}"),
+        ))
     }
 
     fn create(&self, workspace: &Path, args: &[String]) -> ToolCallResult {
@@ -367,7 +365,7 @@ impl KnowledgeTool {
             return ToolCallResult::error(format!("# Could not write\n\n{error}"));
         }
         let next = format!(
-            "Status is pending. A person enables it in the knowledge panel. Next, use `edit` on `{full}` to add a summary and a body, then run `knowledge check {}`.",
+            "Status is pending. The user enables it in the knowledge panel. Next, use `edit` on `{full}` to add a summary and a body, then run `knowledge check {}`.",
             quote_key(&key)
         );
         let corpus = Corpus::load(workspace);
@@ -376,8 +374,7 @@ impl KnowledgeTool {
         let Some(node) = corpus.by_key(&key) else {
             return ToolCallResult::ok(format!("# Created\n\nWrote `{full}`.\n\n{next}"));
         };
-        let card = view::node_card(
-            1,
+        let card = view::node_row(
             node,
             &node_issues(&issues, &node.id),
             corpus.incoming(&node.key).len(),
@@ -425,8 +422,7 @@ impl KnowledgeTool {
         let current_path = current.path.clone();
         if from == to {
             let issues = issues_of(workspace, &corpus);
-            let card = view::node_card(
-                1,
+            let card = view::node_row(
                 current,
                 &node_issues(&issues, &current.id),
                 corpus.incoming(&current.key).len(),
@@ -514,8 +510,7 @@ impl KnowledgeTool {
         let now = SystemTime::now();
         let incoming = corpus.incoming(&to).len();
         let card = corpus.by_key(&to).map(|node| {
-            view::node_card(
-                1,
+            view::node_row(
                 node,
                 &node_issues(&issues, &node.id),
                 incoming,
@@ -761,6 +756,21 @@ fn tokenize(input: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+fn check_summary(checked: usize, scope: Option<&str>, bad: usize) -> String {
+    let noun = if checked == 1 { "node" } else { "nodes" };
+    let where_scope = match scope {
+        Some(scope) => format!(" in `{scope}`"),
+        None => String::new(),
+    };
+    if bad == 0 {
+        format!("Checked {checked} {noun}{where_scope}. No issues.")
+    } else if bad == 1 {
+        format!("Checked {checked} {noun}{where_scope}. 1 node has an issue.")
+    } else {
+        format!("Checked {checked} {noun}{where_scope}. {bad} nodes have issues.")
+    }
+}
+
 fn usage(problem: &str, syntax: &str, example: &str) -> ToolCallResult {
     ToolCallResult::error(format!(
         "# {problem}\n\n`knowledge {syntax}`\n\nExample: `knowledge {example}`"
@@ -783,7 +793,7 @@ fn paginate(workspace: &Path, markdown: &str) -> String {
     };
     match spill(workspace, &rest) {
         Some(location) => format!(
-            "{head}\n\nThe file `{location}` is only the tail. The head is already in this reply. Narrow to a folder, or read / grep that file."
+            "{head}\n\n`{location}` holds only the part that did not fit here. Narrow to a folder, or read / grep that file."
         ),
         None => format!(
             "{head}\n\nThe rest of this reply was not kept. Narrow to a folder and ask again."
@@ -857,10 +867,21 @@ mod tests {
         let missing = tool
             .execute(serde_json::json!({ "command": "" }), ctx(dir.path()))
             .await;
-        assert!(missing.content.contains("# Welcome"));
+        assert!(missing.content.contains("# Start"));
+        assert!(missing.content.contains("2 to 5 nodes"));
         assert!(missing.content.contains("creates `.litecode/knowledge`"));
-        assert!(!missing.content.contains("starter nodes"));
+        assert!(missing.content.contains("# Guide"));
+        assert!(missing.content.contains("syntax, checks, and notes"));
+        assert!(missing.content.contains("## Syntax"));
+        assert!(missing.content.contains("# Commands"));
+        assert!(missing.content.contains("knowledge check"));
         assert!(!missing.content.contains("# Status"));
+        fs::create_dir_all(dir.path().join(".litecode").join("knowledge")).unwrap();
+        let empty_dir = tool
+            .execute(serde_json::json!({ "command": "" }), ctx(dir.path()))
+            .await;
+        assert!(empty_dir.content.contains("# Start"));
+        assert!(!empty_dir.content.contains("# Status"));
 
         let created = tool
             .execute(
@@ -873,6 +894,11 @@ mod tests {
         assert!(created.content.contains("pending"));
         let raw = fs::read_to_string(dir.path().join(".litecode/knowledge/内核/seq.md")).unwrap();
         assert!(raw.contains("status : pending"));
+        let boarded = tool
+            .execute(serde_json::json!({ "command": "" }), ctx(dir.path()))
+            .await;
+        assert!(boarded.content.contains("# Status"));
+        assert!(!boarded.content.contains("# Start"));
 
         let again = tool
             .execute(
@@ -896,7 +922,7 @@ mod tests {
             "内核/session.md",
             "session",
             Status::Enabled,
-            &format!("见 {}", mention_source("seq", "序号")),
+            &format!("见 {}", mention_source("seq")),
         );
         let quoted = tool
             .execute(
@@ -904,7 +930,7 @@ mod tests {
                 ctx(dir.path()),
             )
             .await;
-        assert!(quoted.content.contains("## Cites this"));
+        assert!(quoted.content.contains("## Cited by"));
         assert!(quoted.content.contains("**session**"));
         assert!(quoted.content.contains("node : seq"));
         assert!(quoted.content.contains("```node"));
@@ -924,7 +950,8 @@ mod tests {
         assert!(!dir.path().join(".litecode/knowledge/内核/seq.md").exists());
         let session =
             fs::read_to_string(dir.path().join(".litecode/knowledge/内核/session.md")).unwrap();
-        assert!(session.contains("id=\"order\""));
+        assert!(session.contains("key=\"order\""));
+        assert!(!session.contains("key=\"seq\""));
         assert!(!session.contains("id=\"seq\""));
         let corpus = Corpus::load(dir.path());
         assert!(corpus.by_key("order").is_some());
@@ -936,7 +963,8 @@ mod tests {
         let checked = tool
             .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
             .await;
-        assert!(checked.content.contains("Check · whole library"));
+        assert!(checked.content.contains("# Check"));
+        assert!(!checked.content.contains("Check ·"));
         assert!(checked.content.contains("Cites pending \"order\"."));
 
         let listed = tool
@@ -1021,11 +1049,12 @@ mod tests {
         let checked = tool
             .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
             .await;
-        assert!(checked.content.contains("Check · whole library"));
+        assert!(checked.content.contains("# Check"));
+        assert!(!checked.content.contains("Check ·"));
         assert!(
             checked
                 .content
-                .contains("Checked 1 node. No validation issues.")
+                .contains("Checked 1 node. No issues.")
         );
 
         let split = tool
@@ -1102,9 +1131,9 @@ mod tests {
                 .contains("Current knowledge root: `knowledge`.")
         );
         assert!(
-            board.content.contains(
-                "`.litecode/knowledge` is not read. Nodes there are not citation targets."
-            )
+            !board
+                .content
+                .contains("is not read. Nodes there are not citation targets.")
         );
         assert!(board.content.contains("**seq**"));
         assert!(!board.content.contains("**hidden**"));
@@ -1145,7 +1174,7 @@ mod tests {
             "note.md",
             "note",
             Status::Enabled,
-            &format!("{}\n{tail}", mention_source("missing", "missing")),
+            &format!("{}\n{tail}", mention_source("missing")),
         );
         let refs = tool
             .execute(
@@ -1190,17 +1219,10 @@ mod tests {
             .execute(serde_json::json!({ "command": "guide" }), ctx(dir.path()))
             .await;
         assert_eq!(guide.level, crate::types::ToolSignalLevel::Ok);
-        assert!(
-            guide
-                .content
-                .contains("A missing status is treated as `enabled`.")
-        );
+        assert!(guide.content.contains("## Syntax"));
         assert!(guide.content.contains("## Check"));
-        assert!(
-            guide
-                .content
-                .contains("[@ file=\"src/a.rs\" label=\"a.rs\"]")
-        );
+        assert!(guide.content.contains("[@ file=\"src/a.rs\"]"));
+        assert!(!guide.content.contains("uses the old form"));
         assert!(
             guide
                 .content
@@ -1227,7 +1249,7 @@ mod tests {
             "seq.md",
             "seq",
             Status::Enabled,
-            "see [@ file=\"src/a.rs\" label=\"a.rs\"] and [@ id=\"nope\" label=\"nope\"]",
+            "see [@ file=\"src/a.rs\"] and [@ key=\"nope\"]",
         );
         let missing = tool
             .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
@@ -1253,7 +1275,7 @@ mod tests {
             "seq.md",
             "seq",
             Status::Enabled,
-            "dir [@ file=\"src\" label=\"src\"]",
+            "dir [@ file=\"src\"]",
         );
         let folder = tool
             .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
@@ -1264,7 +1286,7 @@ mod tests {
             "seq.md",
             "seq",
             Status::Enabled,
-            "```\n[@ file=\"missing.rs\" label=\"missing.rs\"]\n```\n",
+            "```\n[@ file=\"missing.rs\"]\n```\n",
         );
         let fenced = tool
             .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))
@@ -1275,7 +1297,7 @@ mod tests {
             "seq.md",
             "seq",
             Status::Enabled,
-            "[@ file=\"../secret\" label=\"secret\"]",
+            "[@ file=\"../secret\"]",
         );
         let escaped = tool
             .execute(serde_json::json!({ "command": "check" }), ctx(dir.path()))

@@ -6,6 +6,6 @@ summary : 坏引用
 ```
 正文
 ```text
-[@ id="hidden" label="hidden"]
+[@ key="hidden"]
 ```
-[@ id="missing" label="缺失"]
+[@ key="missing"]

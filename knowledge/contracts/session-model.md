@@ -17,5 +17,5 @@ h : 430
 - 幂等先于版本：操作重试（operation_id）取回原回执、不重复执行；版本预期（expected_revision）冲突显式失败，不静默合并。
 - 提交边界：错误回复不等于未提交——COMMIT 后收信失败仍可能已落库，只能凭操作身份查回；已封口的正文不可覆写，回退是删行不是覆写。
 
-上层：[@ id="session" label="session"]。相关：[@ id="turn-lifecycle" label="turn 生命周期"]。
-依据：[@ file="src/session/data/sqlite/session.rs" label="取号高水位与三原语"]、[@ file="src/session/data/writer.rs" label="写门顺序"]。
+上层：[@ key="session"]。相关：[@ key="turn-lifecycle"]。
+依据：[@ file="src/session/data/sqlite/session.rs"]、[@ file="src/session/data/writer.rs"]。

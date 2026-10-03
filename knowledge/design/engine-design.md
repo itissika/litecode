@@ -13,6 +13,6 @@ h : 321
 - 配置驱动（`.litecode/engines.json`，人类在设置页开关）；configured ≠ Warm。
 - 横向可拓：新引擎遵循同一模型。
 
-框架展开：[@ id="config" label="config"]。
-关键契约：[@ id="engine-lifecycle" label="引擎生命周期"]、[@ id="retrieval-contract" label="检索真源与召回"]。
-上层：[@ id="product-brief" label="产品概要"]。
+框架展开：[@ key="config"]。
+关键契约：[@ key="engine-lifecycle"]、[@ key="retrieval-contract"]。
+上层：[@ key="product-brief"]。

@@ -16,5 +16,5 @@ h : 414
 - 两类语料各自独立：code 与 session 的执行门解耦——code 门同时要运行与索引可用；session 语义门只要求共享 worker Warm，滞后只损召回，命中仍回真源水合。
 - 多消费者共享：人类界面与 agent 消费同一 owner 的状态与数据；界面只能读投影，不能回写意图或伪造生命周期。
 
-上层：[@ id="config" label="config"]、[@ id="engine-design" label="engine 设计"]。
-依据：[@ file="src/engines/mod.rs" label="生命周期与执行门"]、[@ file="src/engines/status_view.rs" label="可用性投影"]。
+上层：[@ key="config"]、[@ key="engine-design"]。
+依据：[@ file="src/engines/mod.rs"]、[@ file="src/engines/status_view.rs"]。

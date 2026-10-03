@@ -33,17 +33,17 @@ describe("upgradeKnowledgeMarkdown", () => {
 });
 
 describe("replaceKnowledgeKey", () => {
-  it("rewrites the id and a matching label, and leaves the declaration", () => {
+  it("rewrites a matching key and leaves a different key", () => {
     const markdown = renderKnowledgeMarkdown({
       key: "session",
       status: "enabled",
       summary: "",
-      body: `见 ${mentionSource("seq")} 与 ${mentionSource("other", "seq")}。`,
+      body: `见 ${mentionSource("seq")} 与 ${mentionSource("other")}。`,
     });
     const next = replaceKnowledgeKey(markdown, "seq", "sequence");
     expect(next).toContain("node : session");
     expect(next).toContain(mentionSource("sequence"));
-    expect(next).toContain(mentionSource("other", "sequence"));
-    expect(next).not.toContain('id="seq"');
+    expect(next).toContain(mentionSource("other"));
+    expect(next).not.toContain('key="seq"');
   });
 });

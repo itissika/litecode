@@ -185,7 +185,7 @@ describe("knowledgeStore workspace refresh", () => {
       "summary : ",
       "```",
       "",
-      'See [@ file="src/a.rs" symbol="fn save" label="fn save"]',
+      'See [@ file="src/a.rs" symbol="fn save"]',
       "",
     ].join("\n");
     let srcNames = ["a.rs"];

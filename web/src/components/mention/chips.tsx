@@ -2,7 +2,7 @@ import { X } from "@phosphor-icons/react";
 import { NodeViewWrapper, type ReactNodeViewProps } from "@tiptap/react";
 import { useMemo, type MouseEvent } from "react";
 
-import { capsuleLabel, fileLabel, normalizeKey } from "../../lib/knowledge/markers";
+import { humanFileLabel, humanSymbolLabel, normalizeKey } from "../../lib/knowledge/markers";
 import { chipForMarker } from "../../lib/knowledge/refDisplay";
 import { useEditorStore } from "../../stores/editorStore";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
@@ -19,7 +19,7 @@ export function KnowledgeMentionChip({
   sourceIdRef,
 }: ReactNodeViewProps & { sourceIdRef: { current: string } }) {
   const id = String(node.attrs.id ?? "");
-  const label = String(node.attrs.label ?? id);
+  const label = normalizeKey(id) || id;
   const key = normalizeKey(id);
   const source = useKnowledgeStore((s) => s.byId.get(sourceIdRef.current));
   const target = useKnowledgeStore((s) => (key ? s.byKey.get(key) : undefined));
@@ -78,9 +78,7 @@ export function FileMentionChip({
 }: ReactNodeViewProps & { sourceIdRef: { current: string } }) {
   const path = String(node.attrs.id ?? "");
   const symbol = String(node.attrs.symbol ?? "").trim();
-  const lines = String(node.attrs.lines ?? "").trim();
-  const stored = String(node.attrs.label ?? fileLabel(path));
-  const label = symbol ? capsuleLabel(path, symbol) : stored;
+  const label = symbol ? humanSymbolLabel(path, symbol) : humanFileLabel(path);
   const tone = useKnowledgeStore((state) => {
     const issues = state.issuesByNode.get(sourceIdRef.current) ?? [];
     if (issues.some((issue) => issue.code === "missing_file" && issue.ref === path)) {
@@ -95,7 +93,7 @@ export function FileMentionChip({
     if (symbol && issues.some((issue) => issue.code === "symbol_drift" && issue.ref === symbol)) {
       return "drift" as const;
     }
-    return symbol || lines ? ("symbol" as const) : ("file" as const);
+    return symbol ? ("symbol" as const) : ("file" as const);
   });
   const driftMessage = useKnowledgeStore((state) => {
     if (tone !== "drift") return "";

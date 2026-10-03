@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use crate::context_pipeline::Context;
 use crate::engines::code_search::{
-    LexicalMatch, LexicalQuery, enclosing_scopes, format_breadcrumb, lexical_search_with_preset,
+    LexicalMatch, LexicalQuery, enclosing_scopes, format_breadcrumb, lexical_search_for_agent,
     lines_slice, syntax_ancestor_snippet,
 };
 use crate::tool::Tool;
@@ -431,7 +431,7 @@ fn search_page(
         return Ok(GrepPage::ok(with_path_excluded_ledger(message)));
     }
 
-    let outcome = lexical_search_with_preset(&query, FilterPreset::Search)?;
+    let outcome = lexical_search_for_agent(&query, FilterPreset::Search, workspace_root)?;
     if !outcome.matches.is_empty() {
         let searched = outcome.files_searched;
         let matches = sort_grep_matches_vec(outcome.matches);
@@ -442,7 +442,7 @@ fn search_page(
     // Search preset hides (.gitignore / files_exclude / search_exclude). Lift the
     // filters and disclose it instead of asking the model to re-ask.
     if !file_scoped && !matches!(query.path, Some(_)) {
-        let lifted = lexical_search_with_preset(&query, FilterPreset::NoIgnore)?;
+        let lifted = lexical_search_for_agent(&query, FilterPreset::NoIgnore, workspace_root)?;
         if !lifted.matches.is_empty() {
             let searched = lifted.files_searched;
             let matches = sort_grep_matches_vec(lifted.matches);
@@ -1571,6 +1571,36 @@ mod tests {
     }
 
     #[test]
+    fn grep_reaches_the_knowledge_root_and_refuses_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        write(root, ".gitignore", ".litecode/\n");
+        write(root, "knowledge/node.md", "public needle\n");
+        write(root, ".litecode/knowledge/private.md", "private needle\n");
+        write(root, ".litecode/index/x.rs", "index needle\n");
+        write(root, "nested/.litecode/knowledge/nope.md", "nested needle\n");
+
+        let wide = call_in(root, serde_json::json!({"pattern": "needle"}));
+        assert!(wide.contains("knowledge/node.md"), "got: {wide}");
+        assert!(
+            wide.contains(".litecode/knowledge/private.md"),
+            "got: {wide}"
+        );
+        assert!(!wide.contains("index"), "got: {wide}");
+        assert!(!wide.contains("nested"), "got: {wide}");
+
+        let refused = call_in(
+            root,
+            serde_json::json!({"pattern": "needle", "path": ".litecode/index"}),
+        );
+        assert!(
+            refused.contains("path '.litecode/index' is not searched"),
+            "got: {refused}"
+        );
+    }
+
+    #[test]
     fn a_no_hit_names_the_corpus_bounds_instead_of_a_knob() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "a.rs", "nothing here\n");
@@ -2173,7 +2203,7 @@ mod tests {
         let src = include_str!("grep.rs");
         let prod = src.split("mod tests").next().expect("production source");
         assert!(
-            prod.contains("lexical_search_with_preset"),
+            prod.contains("lexical_search_for_agent"),
             "grep must search through the lexical walk"
         );
         assert!(

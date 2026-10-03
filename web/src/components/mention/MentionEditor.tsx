@@ -26,7 +26,7 @@ import {
   type Ref,
 } from "react";
 
-import { capsuleLabel, formatLineSpan } from "../../lib/knowledge/markers";
+import { citationFact, formatLineSpan } from "../../lib/knowledge/markers";
 import { FileMentionChip, KnowledgeMentionChip } from "./chips";
 import { bodyToContent, fileMentionOptions, knowledgeMentionOptions } from "./serialize";
 import {
@@ -124,7 +124,7 @@ function MentionList({
       return;
     }
     if (item.kind === "file") {
-      command({ id: item.path, label: fileDisplayName(item.path) });
+      command({ id: item.path, label: item.path });
       return;
     }
     const lines =
@@ -133,7 +133,7 @@ function MentionList({
         : null;
     command({
       id: item.path,
-      label: capsuleLabel(item.path, item.chain),
+      label: citationFact(item.path, item.chain, lines),
       symbol: item.chain,
       lines,
     });

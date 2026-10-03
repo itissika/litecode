@@ -14,5 +14,5 @@ h : 352
 - 边界：不做多用户、协作与扩展平台。
 - 聚焦：Tool 与 Context——清晰、好用、美观。
 
-向下展开：[@ id="agent-design" label="agent 设计"]、[@ id="engine-design" label="engine 设计"]、[@ id="ux-design" label="ux 设计"]。
-上层：[@ id="why" label="为什么"]。
+向下展开：[@ key="agent-design"]、[@ key="engine-design"]、[@ key="ux-design"]。
+上层：[@ key="why"]。

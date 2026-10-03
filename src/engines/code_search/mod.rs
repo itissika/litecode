@@ -51,8 +51,8 @@ pub use index_status::{
     write_pending_hint_from,
 };
 pub use lexical::{
-    LexicalMatch, LexicalQuery, LexicalSearchOutcome, lexical_search, lexical_search_with_preset,
-    type_to_include_globs,
+    LexicalMatch, LexicalQuery, LexicalSearchOutcome, lexical_search, lexical_search_for_agent,
+    lexical_search_with_preset, type_to_include_globs,
 };
 pub use lexical_primitive::LexicalPrimitive;
 pub use meta::{

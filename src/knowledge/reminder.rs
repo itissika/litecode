@@ -27,7 +27,7 @@ pub fn body(drift: WorktreeDrift) -> Option<String> {
     }
     let files_label = if drift.files == 1 { "file" } else { "files" };
     Some(format!(
-        "> The workspace has changed a lot since the knowledge base was last maintained. Do not overstep: tell the user and ask before organizing it.\n**{} {files_label} changed · +{} lines · −{} lines** (excludes the knowledge root and `.litecode/`)",
+        "> The workspace has changed a lot since the newest node file was written. Tell the user and ask before reorganizing the knowledge base.\n**{} {files_label} changed · +{} lines · −{} lines** (excludes the knowledge root and `.litecode/`)",
         drift.files, drift.added, drift.deleted
     ))
 }

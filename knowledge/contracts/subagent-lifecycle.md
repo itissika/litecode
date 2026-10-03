@@ -16,5 +16,5 @@ h : 396
 - 取消不传播：父 turn 取消不连带取消 child；停止必须显式指向对应会话。
 - 完成靠事实与唤醒：结果来自 child 的持久记录；运行中的父在请求缝隙收到完成提醒，空闲父满足条件时被唤醒消费，不靠隐形注入。
 
-上层：[@ id="featured-tools" label="特色工具"]。
-依据：[@ file="src/tools/subagent/turn.rs" label="共用 turn 原语"]、[@ file="src/tools/subagent/hub.rs" label="完成路由"]。
+上层：[@ key="featured-tools"]。
+依据：[@ file="src/tools/subagent/turn.rs"]、[@ file="src/tools/subagent/hub.rs"]。

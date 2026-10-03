@@ -7,7 +7,6 @@ export type CitationTarget =
   | { kind: "symbol"; path: string; symbol: string };
 
 const FILE_SCHEME = /^file:/i;
-const HTTP_SCHEME = /^https?:\/\//i;
 const SYMBOL = /^[A-Za-z0-9_.$]+$/;
 const LINE = /^L(\d+)$/;
 
@@ -18,10 +17,6 @@ const LINE = /^L(\d+)$/;
 export function citationUrlTransform(value: string): string {
   if (FILE_SCHEME.test(value)) return value;
   return defaultUrlTransform(value);
-}
-
-export function isHttpCitation(href: string): boolean {
-  return HTTP_SCHEME.test(href);
 }
 
 /**

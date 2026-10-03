@@ -1,16 +1,14 @@
 import type { MouseEvent } from "react";
 
 import {
-  capsuleLabel,
-  fileLabel,
   normalizeKey,
   parseLineSpan,
   splitBodyRefs,
   type BodySegment,
 } from "../../lib/knowledge/markers";
-import { useEditorStore } from "../../stores/editorStore";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
 import { AgentMarkdown } from "../AgentMarkdown";
+import { WorkspaceCitationChip } from "../CitationChip";
 
 function stopBubble(event: MouseEvent) {
   event.stopPropagation();
@@ -70,7 +68,6 @@ function NodeChip({ id, label }: { id: string; label: string }) {
 
 function FileChip({
   path,
-  label,
   lines,
   symbol,
 }: {
@@ -80,18 +77,8 @@ function FileChip({
   symbol: string | null;
 }) {
   const span = lines ? parseLineSpan(lines) : null;
-  const title = span ? `${path}:${span.start}` : path;
-  const shown = symbol ? capsuleLabel(path, symbol) : label || fileLabel(path);
   return (
-    <ReadChip
-      className={symbol ? "knowledge-token is-file is-symbol" : "knowledge-token is-file"}
-      label={shown}
-      title={title}
-      onOpen={() => {
-        if (span) void useEditorStore.getState().openFileAt(path, span.start);
-        else void useEditorStore.getState().openFile(path);
-      }}
-    />
+    <WorkspaceCitationChip path={path} symbol={symbol} line={span?.start ?? null} />
   );
 }
 

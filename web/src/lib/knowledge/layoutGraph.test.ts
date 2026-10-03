@@ -123,7 +123,7 @@ describe("layoutKnowledgeGraph", () => {
       node({
         id: "host",
         key: "host",
-        value: '[@ id="peer" label="peer"]',
+        value: '[@ key="peer"]',
         relations: ["peer"],
       }),
       node({ id: "peer", key: "peer" }),
