@@ -218,7 +218,7 @@ pub async fn build_tool_list(
         if depth >= SUBAGENT_MAX_DEPTH && tool_id.starts_with("subagent_") {
             continue;
         }
-        // Tool-set gate: primary-only tools (plan / todo / the workspace panel).
+        // Tool-set gate: primary-only tools (plan / todo).
         if depth >= SUBAGENT_MAX_DEPTH
             && crate::config::schema::PRIMARY_ONLY_TOOL_IDS.contains(&tool_id.as_str())
         {
@@ -485,8 +485,12 @@ mod tests {
         assert!(!names.contains(&"plan"));
         assert!(!names.contains(&"todo"));
         assert!(
-            !names.contains(&"litecode_workspace"),
-            "the workspace panel is primary-only"
+            names.contains(&"knowledge"),
+            "knowledge stays on the subagent tool set"
+        );
+        assert!(
+            names.contains(&"litecode_workspace"),
+            "the workspace tool stays on the subagent tool set"
         );
     }
 

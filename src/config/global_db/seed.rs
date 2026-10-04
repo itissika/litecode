@@ -113,8 +113,13 @@ fn seed_primary_agent_bindings(conn: &Connection, agent_id: &str) -> Result<()> 
 }
 
 /// Same configurable set as primary, minus the primary-only tools.
+/// Fixed-behavior tools a subagent may use (`knowledge`) are bound too.
 fn seed_general_agent_bindings(conn: &Connection) -> Result<()> {
-    bind_subagent_configurable(conn, "general", ToolPreset::All)
+    bind_subagent_configurable(conn, "general", ToolPreset::All)?;
+    for tool in subagent_none_tools() {
+        bind_none(conn, "general", tool)?;
+    }
+    Ok(())
 }
 
 /// Configurable tools a subagent role may bind (no [`PRIMARY_ONLY_TOOL_IDS`]).
@@ -123,6 +128,14 @@ fn subagent_configurable_tools() -> impl Iterator<Item = &'static str> {
         .iter()
         .copied()
         .filter(|tool| !PRIMARY_ONLY_TOOL_IDS.contains(tool))
+}
+
+/// Fixed-behavior tools a subagent may bind (`knowledge`).
+/// Plan, todo, and the subagent series stay off this set.
+fn subagent_none_tools() -> impl Iterator<Item = &'static str> {
+    core_none_tools().iter().copied().filter(|tool| {
+        !PRIMARY_ONLY_TOOL_IDS.contains(tool) && !SUBAGENT_SERIES_TOOL_IDS.contains(tool)
+    })
 }
 
 fn bind_configurable(conn: &Connection, agent_id: &str, preset: ToolPreset) -> Result<()> {
@@ -237,6 +250,23 @@ fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
             },
         )?;
     }
+    let (workspace_policy, workspace_path) =
+        binding_for_tool("litecode_workspace", ToolPreset::All);
+    store::upsert_agent_tool(
+        conn,
+        "explore",
+        "litecode_workspace",
+        &AgentToolBinding {
+            enabled: true,
+            policy: workspace_policy,
+            path_mode: workspace_path,
+            last_applied_preset: Some(ToolPreset::All),
+            allowed_tools: None,
+        },
+    )?;
+    for tool in subagent_none_tools() {
+        bind_none(conn, "explore", tool)?;
+    }
     Ok(())
 }
 
@@ -248,7 +278,8 @@ fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
 /// rejects the whole settings document, so a legacy row would block serve boot.
 /// Repair such rows in place instead of failing:
 /// - `hidden` agents (and the reserved `compaction` id) keep no bindings;
-/// - `subagent` agents keep no `plan` / `todo` / `subagent_*` bindings;
+/// - `subagent` agents keep no `plan` / `todo` / `subagent_*` bindings
+///   (`knowledge` and `litecode_workspace` stay);
 /// - non-primary agents keep no `allowed_subagents`.
 pub fn reconcile_role_rules(conn: &Connection) -> Result<()> {
     let rows: Vec<(String, String, String)> = {
@@ -326,6 +357,7 @@ pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
     ensure_default_core_bindings(conn)?;
     ensure_orchestrator_agent(conn)?;
     ensure_general_agent(conn)?;
+    ensure_explore_shared_tools(conn)?;
     restore_default_if_mistakenly_replaced(conn)?;
     reconcile_role_rules(conn)?;
     Ok(())
@@ -393,6 +425,41 @@ fn ensure_general_agent(conn: &Connection) -> Result<()> {
                 allowed_tools: None,
             };
             store::upsert_agent_tool(conn, "general", tool, &binding)?;
+        }
+    }
+    for tool in subagent_none_tools() {
+        if !agent_has_tool(conn, "general", tool)? {
+            bind_none(conn, "general", tool)?;
+        }
+    }
+    Ok(())
+}
+
+/// Plant knowledge and the workspace tool on an existing explore agent.
+/// A disabled row is left alone; only a missing binding is filled in.
+fn ensure_explore_shared_tools(conn: &Connection) -> Result<()> {
+    let exists = conn
+        .query_row("SELECT 1 FROM agents WHERE id = 'explore'", [], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if !exists {
+        return Ok(());
+    }
+    if !agent_has_tool(conn, "explore", "litecode_workspace")? {
+        let (policy, path_mode) =
+            crate::permission::presets::binding_for_tool("litecode_workspace", ToolPreset::All);
+        let binding = crate::config::schema::AgentToolBinding {
+            enabled: true,
+            policy,
+            path_mode,
+            last_applied_preset: Some(ToolPreset::All),
+            allowed_tools: None,
+        };
+        store::upsert_agent_tool(conn, "explore", "litecode_workspace", &binding)?;
+    }
+    for tool in subagent_none_tools() {
+        if !agent_has_tool(conn, "explore", tool)? {
+            bind_none(conn, "explore", tool)?;
         }
     }
     Ok(())
@@ -673,7 +740,15 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(knowledge, 0, "{agent} should not bind knowledge");
+            assert_eq!(knowledge, 1, "{agent} should bind knowledge");
+            let workspace: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'litecode_workspace'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(workspace, 1, "{agent} should bind litecode_workspace");
         }
 
         let general_launch: i64 = conn
@@ -863,32 +938,40 @@ mod tests {
     }
 
     #[test]
-    fn ensure_rebinds_knowledge_on_primary_and_strips_it_from_subagents() {
+    fn ensure_rebinds_knowledge_on_primary_and_subagents() {
         let conn = Connection::open_in_memory().unwrap();
         migrate::migrate(&conn).unwrap();
         seed(&conn).unwrap();
         conn.execute(
-            "DELETE FROM agent_tools WHERE agent_id = 'default' AND tool_id = 'knowledge'",
+            "DELETE FROM agent_tools WHERE tool_id = 'knowledge' AND agent_id IN ('default', 'explore', 'general')",
             [],
         )
         .unwrap();
-        bind_none(&conn, "explore", "knowledge").unwrap();
+        conn.execute(
+            "DELETE FROM agent_tools WHERE tool_id = 'litecode_workspace' AND agent_id IN ('explore', 'general')",
+            [],
+        )
+        .unwrap();
         ensure_core_bindings(&conn).unwrap();
-        let default_knowledge: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'default' AND tool_id = 'knowledge'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(default_knowledge, 1);
-        let explore_knowledge: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'knowledge'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(explore_knowledge, 0);
+        for agent in ["default", "explore", "general"] {
+            let knowledge: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'knowledge'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(knowledge, 1, "{agent} should bind knowledge");
+        }
+        for agent in ["explore", "general"] {
+            let workspace: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'litecode_workspace'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(workspace, 1, "{agent} should bind litecode_workspace");
+        }
     }
 }

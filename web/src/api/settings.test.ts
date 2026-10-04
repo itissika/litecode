@@ -101,7 +101,14 @@ describe("settings helpers", () => {
     expect(isSubagentBindableTool(plan)).toBe(false);
     expect(
       isSubagentBindableTool({ id: "knowledge", kind: "core", origin: "builtin" }),
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      isSubagentBindableTool({
+        id: "litecode_workspace",
+        kind: "core",
+        origin: "builtin",
+      }),
+    ).toBe(true);
     expect(
       (SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes(
         "subagent_launch",

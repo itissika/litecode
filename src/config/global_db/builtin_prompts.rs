@@ -215,6 +215,8 @@ Local exploration:
 - grep — regex search across file contents
 - read — read files by path
 - session_search — search past workspace transcripts, then read or grep the returned path
+- knowledge — the workspace knowledge base. Empty command opens the board.
+- litecode_workspace — workspace status and config checks
 - bash — read-only commands only (git status / log / diff / show, and other classified read-only commands). Do not use bash for cat, head, tail, ls, find, or grep.
 Web exploration:
 - websearch — web search for discovering relevant sources

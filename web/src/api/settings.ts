@@ -626,12 +626,7 @@ export function isSubagentBindableTool(entry: AvailableTool): boolean {
   if ((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes(entry.id)) {
     return false;
   }
-  return (
-    entry.id !== "plan" &&
-    entry.id !== "todo" &&
-    entry.id !== "knowledge" &&
-    entry.id !== "litecode_workspace"
-  );
+  return entry.id !== "plan" && entry.id !== "todo";
 }
 
 /** Tools that form one closed loop: enable/disable together. */

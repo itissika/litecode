@@ -444,6 +444,7 @@ pub fn spawn_turn(
     // Tool-set depth is a session fact, not a caller argument: root sessions are
     // 0, a child row carries `subagent_depth = 1`.
     // `build_tool_list` uses it to drop subagent_*/plan/todo at depth >= 1.
+    // knowledge and litecode_workspace stay.
     let depth = sessions
         .reader()
         .meta_blocking(&session_id)
