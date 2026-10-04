@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 
 import { citationUrlTransform } from "../lib/citationRef";
 import { normalizeKey } from "../lib/knowledge/markers";
+import { revealKnowledgeNode } from "../lib/knowledge/panel";
 import {
   parseKnowledgeRef,
   parseLocationRef,
@@ -111,7 +112,6 @@ function linkLabel(children: ReactNode): string {
 function NodeCitationChip({ id, label }: { id: string; label: string }) {
   const key = normalizeKey(id);
   const target = useKnowledgeStore((state) => (key ? state.byKey.get(key) : undefined));
-  const focusCanvas = useKnowledgeStore((state) => state.focusCanvas);
   const shown = label || key;
   return (
     <span className={target ? "knowledge-token" : "knowledge-token is-invalid"}>
@@ -124,7 +124,7 @@ function NodeCitationChip({ id, label }: { id: string; label: string }) {
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            focusCanvas(target.id);
+            revealKnowledgeNode(target.id);
           }}
         >
           {shown}

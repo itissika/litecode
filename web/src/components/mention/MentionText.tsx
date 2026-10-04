@@ -6,6 +6,7 @@ import {
   splitBodyRefs,
   type BodySegment,
 } from "../../lib/knowledge/markers";
+import { revealKnowledgeNode } from "../../lib/knowledge/panel";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { WorkspaceCitationChip } from "../CitationChip";
@@ -50,18 +51,11 @@ function ReadChip({
 function NodeChip({ id, label }: { id: string; label: string }) {
   const key = normalizeKey(id);
   const target = useKnowledgeStore((state) => (key ? state.byKey.get(key) : undefined));
-  const focusCanvas = useKnowledgeStore((state) => state.focusCanvas);
   return (
     <ReadChip
       className={target ? "knowledge-token" : "knowledge-token is-invalid"}
       label={label}
-      onOpen={
-        target
-          ? () => {
-              focusCanvas(target.id);
-            }
-          : undefined
-      }
+      onOpen={target ? () => revealKnowledgeNode(target.id) : undefined}
     />
   );
 }

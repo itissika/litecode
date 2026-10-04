@@ -4,7 +4,7 @@ import { CaretRight, FilePlus, Folder } from "@phosphor-icons/react";
 import { FileTreeContextMenu, type FileTreeMenuItem } from "../FileTreeContextMenu";
 import { FoldCard } from "../FoldCard";
 import { knowledgePreview, normalizeKey } from "../../lib/knowledge/markers";
-import { openKnowledgeGraphPanel } from "../../lib/knowledge/panel";
+import { openKnowledgeGraphPanel, revealKnowledgeNode } from "../../lib/knowledge/panel";
 import { isVisibleInScrollParent } from "../../lib/knowledge/scrollVisible";
 import {
   knowledgeAttentionWarnings,
@@ -76,7 +76,6 @@ function KnowledgeCard({
   const toggle = useKnowledgeStore((s) => s.toggle);
   const focused = useKnowledgeStore((s) => s.focusedId === node.id);
   const flashId = useKnowledgeStore((s) => s.flashId);
-  const focusCanvas = useKnowledgeStore((s) => s.focusCanvas);
   const flashing = flashId === node.id && sideFlashPulse > 0;
   const issues = useKnowledgeStore(
     (s) => s.issuesByNode.get(node.id) ?? NO_ISSUES,
@@ -124,7 +123,10 @@ function KnowledgeCard({
         className="knowledge-foldcard"
         headerClassName="text-dk-xs"
         label={
-          <span className="knowledge-card-label">
+          <span
+            className="knowledge-card-label"
+            onClick={() => revealKnowledgeNode(node.id)}
+          >
             <span
               className={[
                 "knowledge-card-title knowledge-node-title truncate font-mono",
@@ -150,11 +152,11 @@ function KnowledgeCard({
           className="knowledge-side-summary"
           role="button"
           tabIndex={0}
-          onClick={() => focusCanvas(node.id)}
+          onClick={() => revealKnowledgeNode(node.id)}
           onKeyDown={(event) => {
             if (event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
-            focusCanvas(node.id);
+            revealKnowledgeNode(node.id);
           }}
         >
           {summary}
