@@ -28,7 +28,7 @@ export const USER_RAIL_PAD_RIGHT = 8;
  * off from the ticks by USER_RAIL_SPINE_GAP.
  */
 export const USER_RAIL_SPINE_LENGTH = 12;
-export const USER_RAIL_SPINE_GAP = 8;
+export const USER_RAIL_SPINE_GAP = 12;
 export const USER_RAIL_WIDTH_MIN = 4;
 export const USER_RAIL_WIDTH_MAX = 12;
 

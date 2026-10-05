@@ -43,7 +43,8 @@ const TICK_CLASS =
  * (`clamp(4px, 3cqw, 12px)` of the scroll viewport, content-box) with a 12px
  * outer padding and an 8px padding toward the messages. Short 1px hairlines
  * sit above and below the tick band in the theme's lowest line tier. The
- * band stays centered on the scroll viewport and does not clip the hit box.
+ * band stays centered on the scroll viewport and clips ticks that outgrow the
+ * strip.
  */
 export function UserMessageRail({
   sessionId,
@@ -128,12 +129,11 @@ export function UserMessageRail({
         if (node.className !== TICK_CLASS) node.className = TICK_CLASS;
         const look = tickAppearance(tick.railY - height / 2, height / 2);
         node.style.display = "";
-        const hit = Math.max(look.width, TICK_HIT_MIN);
         node.style.top = `${tick.railY}px`;
-        node.style.width = `${hit}px`;
-        node.style.backgroundSize = `${look.width}px 100%`;
-        node.style.backgroundRepeat = "no-repeat";
-        node.style.backgroundPosition = "right center";
+        // The bar is the content box; a left-only padding widens the hit box
+        // to TICK_HIT_MIN without moving the bar's right edge.
+        node.style.width = `${look.width}px`;
+        node.style.paddingLeft = `${Math.max(0, TICK_HIT_MIN - look.width)}px`;
         node.style.opacity = String(look.opacity);
       }
       for (const node of root.querySelectorAll<HTMLElement>("[data-user-rail-seq]")) {
@@ -188,7 +188,7 @@ export function UserMessageRail({
         <div
           ref={rootRef}
           data-testid="transcript-user-rail"
-          className="relative w-full"
+          className="relative w-full overflow-hidden"
           style={{ height: USER_RAIL_BAND }}
         />
         <div

@@ -487,20 +487,25 @@ function MessageListRegion({
                   userRailLayoutRef={userRailLayoutRef}
                   userRailNotifyRef={userRailNotifyRef}
                 />
-                {/* Unfocused dimming covers the message column only, so the
-                    rail ticks stay at full strength. pointer-events-none so it
-                    never blocks scroll, click, or hover. */}
-                <div
-                  aria-hidden
-                  className={`pointer-events-none absolute inset-0 transition-opacity duration-200 ease-out ${
-                    isActive ? "opacity-0" : "opacity-[0.33]"
-                  }`}
-                  style={{ background: "var(--_dk-editor)" }}
-                />
               </div>
             </div>
           </div>
         </div>
+        {/* Unfocused dimming covers the whole panel viewport -- transcript,
+            rail ticks and the top blur band included. No z-index: as the last
+            child of the frame it already paints above the transcript (the
+            scroller's containment paints as in-flow content, the veil is a
+            positioned descendant), so the only layer that stays undimmed is
+            the composer dock (absolute inset-0 z-10, mounted after this
+            region). pointer-events-none so it never blocks scroll, click or
+            hover. */}
+        <div
+          aria-hidden
+          className={`pointer-events-none absolute inset-0 transition-opacity duration-200 ease-out ${
+            isActive ? "opacity-0" : "opacity-[0.33]"
+          }`}
+          style={{ background: "var(--_dk-editor)" }}
+        />
       </div>
       <ProgressiveBlur
         side="top"
