@@ -36,7 +36,19 @@ import { composerCardClass } from "../../components/composerCard";
 import { UserMessageRail } from "../../components/transcript/UserMessageRail";
 import { useScrollUserAnchors } from "../../components/transcript/useScrollUserAnchors";
 import type { RevealSeq } from "../../components/transcript/transcriptScrollGlide";
-import type { UserRailLayoutMark } from "../../components/transcript/transcriptUserRailMarks";
+import {
+  USER_RAIL_PAD_LEFT,
+  USER_RAIL_PAD_RIGHT,
+  USER_RAIL_WIDTH_MAX,
+  type UserRailLayoutMark,
+} from "../../components/transcript/transcriptUserRailMarks";
+
+/** Rail strip at its widest: 12px outer padding + 12px ticks + 8px gap. */
+const RAIL_BOX_MAX =
+  USER_RAIL_WIDTH_MAX + USER_RAIL_PAD_LEFT + USER_RAIL_PAD_RIGHT;
+/** Message column insets, tuned alongside the rail strip. */
+const LIST_PAD_LEFT = 4;
+const LIST_PAD_RIGHT = 4;
 
 class AgentErrorBoundary extends Component<
   { onClose: () => void; children: ReactNode },
@@ -379,7 +391,6 @@ function MessageListRegion({
   }, [loadMoreHistoryAction, sessionId]);
 
   const listRef = useRef<HTMLDivElement>(null);
-  const columnRef = useRef<HTMLDivElement>(null);
   const userRailLayoutRef = useRef<UserRailLayoutMark[]>([]);
   const userRailNotifyRef = useRef<(() => void) | null>(null);
   const userRail = useScrollUserAnchors(sessionId);
@@ -400,18 +411,20 @@ function MessageListRegion({
   return (
     <>
       {/* Three layers, each with one job:
-          1. Non-scrolling frame (this div): carries the PERSISTENT top/side
-             inset (pt-4/px-4). Because it never scrolls, the scroll container
-             inside is permanently pushed 16px from the panel edges — content
-             can never touch the top/side while scrolling. NOT `relative` so the
-             blur band below stays anchored to AgentChatShell.
-          2. Scroll container (middle): full-width within the frame, so its
-             scrollbar rides the panel's right edge (not centered with content).
-             This is the element the virtualizer measures (ref/listRef).
-          3. Content column (inner): centered reading measure only (mx-auto
-             max-w) — no padding here, the frame already provides the inset. */}
+          1. Non-scrolling frame: keeps the transcript 16px from the panel's
+             top only. No side padding: the scroll viewport spans the panel and
+             the content margins come from the columns themselves.
+             NOT `relative` so the blur band below stays anchored to AgentChatShell.
+          2. Scroll container (middle): full-width; its 8px scrollbar rides the
+             panel's right edge and is not counted in the content margins. This
+             is the element the virtualizer measures.
+          3. Content row (inner): the rail strip beside the message list. The
+             strip owns a 12px outer inset and an 8px gap to the messages, the
+             list pads 4px on both sides, so the tick-to-prose gap is 12px and
+             the right margin (4px + the 8px scrollbar) mirrors it. At max
+             width the strip box is 32px and the list keeps its 72ch measure. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <div className="flex min-h-0 flex-1 flex-col bg-(--_dk-editor) px-4 pt-4">
+        <div className="flex min-h-0 flex-1 flex-col bg-(--_dk-editor) pt-4">
           <div
             ref={listRef}
             onScroll={onScroll}
@@ -424,64 +437,69 @@ function MessageListRegion({
               of the "list drifts while streaming" sources.
             */}
             <div
-              ref={columnRef}
-              className="mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col bg-(--_dk-editor)"
+              className="mx-auto flex w-full bg-(--_dk-editor)"
+              style={{
+                maxWidth: `calc(var(--_dk-prose-measure) + ${RAIL_BOX_MAX + LIST_PAD_LEFT + LIST_PAD_RIGHT}px)`,
+              }}
             >
-              <MessageList
-                key={sessionId}
-                messages={messages}
-                loadingHistory={loadingHistory}
-                canLoadMore={canLoadMore}
-                onLoadMore={loadMoreHistory}
-                isRunning={isRunning}
-                scrollRef={listRef}
+              <UserMessageRail
                 sessionId={sessionId}
-                maxFileRevertSeq={maxFileRevertSeq}
-                onStickChange={onStickChange}
-                jumpToEndRef={jumpToEndRef}
-                revealBashRef={revealBashRef}
-                revealSeqRef={revealSeqRef}
-                editingAnchor={editingAnchor}
-                onEditAnchor={onEditAnchor}
-                onDismissEdit={onDismissEdit}
-                miniPhase={miniPhase}
-                onMiniAnimationEnd={onMiniAnimationEnd}
-                composerCollapsed={composerCollapsed}
-                userRailLayoutRef={userRailLayoutRef}
-                userRailNotifyRef={userRailNotifyRef}
+                scrollRef={listRef}
+                layoutRef={userRailLayoutRef}
+                notifyRef={userRailNotifyRef}
+                canLoadMore={canLoadMore}
+                onCenterSeq={userRail.noteCenter}
+                onJump={(seq) => {
+                  onStickChange(false);
+                  void useMessageStore
+                    .getState()
+                    .ensureSeqLoaded(sessionId, seq)
+                    .then((ok) => {
+                      if (ok) revealSeqRef.current?.(seq, { glide: true });
+                    });
+                }}
               />
+              <div
+                className="relative min-w-0 flex-1"
+                style={{ paddingLeft: LIST_PAD_LEFT, paddingRight: LIST_PAD_RIGHT }}
+              >
+                <MessageList
+                  key={sessionId}
+                  messages={messages}
+                  loadingHistory={loadingHistory}
+                  canLoadMore={canLoadMore}
+                  onLoadMore={loadMoreHistory}
+                  isRunning={isRunning}
+                  scrollRef={listRef}
+                  sessionId={sessionId}
+                  maxFileRevertSeq={maxFileRevertSeq}
+                  onStickChange={onStickChange}
+                  jumpToEndRef={jumpToEndRef}
+                  revealBashRef={revealBashRef}
+                  revealSeqRef={revealSeqRef}
+                  editingAnchor={editingAnchor}
+                  onEditAnchor={onEditAnchor}
+                  onDismissEdit={onDismissEdit}
+                  miniPhase={miniPhase}
+                  onMiniAnimationEnd={onMiniAnimationEnd}
+                  composerCollapsed={composerCollapsed}
+                  userRailLayoutRef={userRailLayoutRef}
+                  userRailNotifyRef={userRailNotifyRef}
+                />
+                {/* Unfocused dimming covers the message column only, so the
+                    rail ticks stay at full strength. pointer-events-none so it
+                    never blocks scroll, click, or hover. */}
+                <div
+                  aria-hidden
+                  className={`pointer-events-none absolute inset-0 transition-opacity duration-200 ease-out ${
+                    isActive ? "opacity-0" : "opacity-[0.33]"
+                  }`}
+                  style={{ background: "var(--_dk-editor)" }}
+                />
+              </div>
             </div>
           </div>
         </div>
-        <UserMessageRail
-          scrollRef={listRef}
-          columnRef={columnRef}
-          layoutRef={userRailLayoutRef}
-          notifyRef={userRailNotifyRef}
-          onCenterSeq={userRail.noteCenter}
-          onJump={(seq) => {
-            onStickChange(false);
-            void useMessageStore
-              .getState()
-              .ensureSeqLoaded(sessionId, seq)
-              .then((ok) => {
-                if (ok) revealSeqRef.current?.(seq, { glide: true });
-              });
-          }}
-          className="absolute top-4 right-4 bottom-0 left-4 z-20"
-        />
-        {/* Unfocused dimming — pure visual mask, never touches content alpha.
-            Instead of fading the list's own opacity (which re-composites every
-            message and can break nested backdrop-filter), a translucent
-            panel-color veil is painted on top. pointer-events-none so it never
-            blocks or intercepts any interaction (scroll, click, drag, hover). */}
-        <div
-          aria-hidden
-          className={`pointer-events-none absolute inset-0 transition-opacity duration-200 ease-out ${
-            isActive ? "opacity-0" : "opacity-[0.33]"
-          }`}
-          style={{ background: "var(--_dk-editor)" }}
-        />
       </div>
       <ProgressiveBlur
         side="top"

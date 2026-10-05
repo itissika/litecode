@@ -12,6 +12,26 @@ export const USER_RAIL_RADIUS = 2;
 /** Pixel height of the centered tick band. It does not grow with the panel. */
 export const USER_RAIL_BAND = 72;
 
+/**
+ * Left content inset = the rail strip: a 12px outer padding, the elastic tick
+ * area, and an 8px padding that doubles as the gap to the messages. The strip
+ * is content-box, so its outer box is `PAD_LEFT + width + PAD_RIGHT`:
+ *
+ *   min  12 + 4 + 8 = 24px
+ *   max  12 + 12 + 8 = 32px → row budget reserved by AgentPanel
+ */
+export const USER_RAIL_PAD_LEFT = 12;
+export const USER_RAIL_PAD_RIGHT = 8;
+
+/**
+ * Decorative 1px hairline above and below the tick band: a short segment, set
+ * off from the ticks by USER_RAIL_SPINE_GAP.
+ */
+export const USER_RAIL_SPINE_LENGTH = 12;
+export const USER_RAIL_SPINE_GAP = 8;
+export const USER_RAIL_WIDTH_MIN = 4;
+export const USER_RAIL_WIDTH_MAX = 12;
+
 export interface UserRailLayoutMark {
   seq: number;
   /** Dot center in the transcript scroll content. */
