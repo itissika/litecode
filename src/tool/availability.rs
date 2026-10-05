@@ -4,7 +4,9 @@ use crate::config::global_db::tools::{
     core_tool_ids, is_mcp_catalog_id, is_workspace_optional, mcp_catalog_id, optional_builtin_ids,
 };
 use crate::config::resolved::ResolvedConfig;
-use crate::config::schema::{AvailableKind, AvailableTool, ToolOrigin, ToolReadiness};
+use crate::config::schema::{
+    AvailableKind, AvailableTool, PermissionSurface, ToolOrigin, ToolReadiness,
+};
 use crate::engines::WorkspaceEngines;
 use crate::optional::EngineManager;
 use crate::permission::permission_surface;
@@ -31,8 +33,9 @@ fn tool_card(
     kind: AvailableKind,
     origin: ToolOrigin,
     overridden: bool,
+    surface: Option<PermissionSurface>,
 ) -> AvailableTool {
-    let permission_surface = permission_surface(&id);
+    let permission_surface = surface.unwrap_or_else(|| permission_surface(&id));
     AvailableTool {
         id,
         kind,
@@ -50,6 +53,7 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
             AvailableKind::Core,
             ToolOrigin::Builtin,
             false,
+            None,
         ));
     }
     for id in optional_builtin_ids() {
@@ -59,6 +63,7 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
                 AvailableKind::Engine,
                 ToolOrigin::Workspace,
                 false,
+                None,
             ));
         }
     }
@@ -72,11 +77,17 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
                 .global_custom_tools()
                 .iter()
                 .any(|t| t.name == tool.name);
+        let surface = if tool.rules.is_empty() {
+            PermissionSurface::Fixed
+        } else {
+            PermissionSurface::Preset
+        };
         out.push(tool_card(
             tool.name,
             AvailableKind::Custom,
             origin,
             overridden,
+            Some(surface),
         ));
     }
     let mut mcp_ids: Vec<String> = resolved.mcp_servers().keys().cloned().collect();
@@ -92,6 +103,7 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
             AvailableKind::Mcp,
             origin,
             overridden,
+            None,
         ));
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -218,5 +230,52 @@ mod tests {
         assert_eq!(surface("session_search"), PermissionSurface::Fixed);
         assert_eq!(surface("kill_shell"), PermissionSurface::Fixed);
         assert_eq!(surface("plan"), PermissionSurface::Fixed);
+    }
+
+    #[test]
+    fn custom_rules_open_the_all_safe_switch() {
+        use crate::config::schema::{CustomToolDefinition, PermissionSurface, ToolSchema};
+        use crate::permission::{ArgMatcher, PermissionAction, PolicyRule};
+
+        let rules = vec![PolicyRule {
+            id: "outside_workspace".into(),
+            when: ArgMatcher::PathOutsideWorkspace {
+                name: "path".into(),
+            },
+            action: PermissionAction::Deny,
+        }];
+        let tool = |name: &str, rules: Vec<PolicyRule>| CustomToolDefinition {
+            name: name.into(),
+            description: String::new(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "demo".into(),
+            args: Vec::new(),
+            timeout: 120,
+            rules,
+        };
+        let mut global = GlobalSettings::default();
+        global.custom_tools.push(tool("plain", Vec::new()));
+        global.custom_tools.push(tool("kept", rules.clone()));
+        global.custom_tools.push(tool("gated", rules));
+        let mut workspace = WorkspaceState::new("/tmp/custom-surface");
+        workspace
+            .workspace_custom_tools
+            .insert("gated".into(), tool("gated", Vec::new()));
+        let resolved = ConfigManager::resolve_without_catalog(global, workspace);
+        let tools = available_tools(&resolved);
+        let surface = |id: &str| {
+            tools
+                .iter()
+                .find(|t| t.id == id)
+                .unwrap_or_else(|| panic!("missing {id}"))
+                .permission_surface
+        };
+        assert_eq!(surface("plain"), PermissionSurface::Fixed);
+        assert_eq!(surface("kept"), PermissionSurface::Preset);
+        assert_eq!(surface("gated"), PermissionSurface::Fixed);
     }
 }

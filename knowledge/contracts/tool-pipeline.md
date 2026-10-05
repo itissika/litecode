@@ -13,9 +13,11 @@ h : 414
 - 统一合约：内置 / Custom / MCP 经同一执行入口；模型参数与执行事实分离，会话、路径模式、取消等由内核注入，不由模型 JSON 决定。
 - 调度按声明：并发安全且资源不冲突才并行，其余按批串行、串行批构成屏障；跨会话互斥只覆盖文件写（write / edit），冲突显式失败不排队。
 - 授权单管线：Allow / Ask / Deny 三动作；安全 floor 不可放宽，有序策略首条命中；进程内许可只能把 Ask 软化为 Allow，Deny 不可软化。
+- 拨盘显式：ALL / SAFE 由后端目录声明——内置 opt-in 白名单、新工具默认固定；Custom 声明了规则才有拨盘，其余工具只有开 / 关。
+- 活规则：Custom 策略在求值时取当前声明——工作区同名条目整份覆盖，空规则撤销全局规则与拨盘；SAFE 逐条求值、未命中放行，ALL 放行；绑定只记录档位，不存权威策略。
 - 子 agent 收紧：child 的 Ask 一律视为 Deny，不向人类问询，也不继承父侧许可。
 - 结果契约：按 call_id 配对、按调用顺序输出，每个调用都有结果——取消补中断结果，模型永不见悬空调用；已完成的结果不被晚到的取消覆盖。
 - 出口统一整形：截断、超大结果落盘、信号合成在管线完成，工具不自造方言。
 
 上层：[@ key="tools"]。相关：[@ key="ux-interaction"]。
-依据：[@ file="src/tool/executor.rs"]、[@ file="src/permission/engine.rs"]。
+依据：[@ file="src/tool/executor.rs"]、[@ file="src/permission/engine.rs"]、[@ file="src/permission/presets.rs"]。

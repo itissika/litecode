@@ -236,8 +236,49 @@ pub fn load_workspace_defs(
 )> {
     Ok((
         read_workspace_mcp(workspace_root)?.servers,
-        read_workspace_custom_tools(workspace_root)?.tools,
+        accepted_workspace_custom_tools(read_workspace_custom_tools(workspace_root)?.tools),
     ))
+}
+
+/// Drop entries the settings page would reject, without rewriting the file.
+///
+/// `timeout: 0` is kept: that value fails the command immediately, and only the
+/// settings write path normalizes it to 120.
+fn accepted_workspace_custom_tools(
+    tools: std::collections::HashMap<String, CustomToolDefinition>,
+) -> std::collections::HashMap<String, CustomToolDefinition> {
+    let mut out = std::collections::HashMap::new();
+    for (key, def) in tools {
+        if let Some(reason) = reject_loaded_custom_tool(&key, &def) {
+            tracing::warn!(
+                tool = %key,
+                %reason,
+                "skipping workspace custom tool"
+            );
+            continue;
+        }
+        out.insert(key, def);
+    }
+    out
+}
+
+fn reject_loaded_custom_tool(key: &str, def: &CustomToolDefinition) -> Option<String> {
+    use super::global_db::tools::{is_custom_tool_identity, is_reserved_builtin};
+    if is_reserved_builtin(key) || is_reserved_builtin(&def.name) {
+        return Some(format!(
+            "custom tool id '{key}' conflicts with a builtin tool"
+        ));
+    }
+    if !is_custom_tool_identity(key, &def.name) {
+        return Some(format!(
+            "custom tool body name '{}' must match path id '{key}'",
+            def.name
+        ));
+    }
+    if def.command.trim().is_empty() {
+        return Some("custom tool command must not be empty".into());
+    }
+    crate::permission::policy::custom_rule_ids_error(&def.rules)
 }
 
 pub fn workspace_engine_desired(workspace_root: &Path, id: &str) -> bool {
@@ -545,6 +586,52 @@ mod engine_state_tests {
 
         assert!(!workspace_engine_desired(root, "lsp"));
         assert!(lsp_servers_from_engines(root).is_empty());
+    }
+
+    #[test]
+    fn load_drops_builtin_collisions_and_keeps_timeout_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let path = workspace_custom_tools_path(root);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body = r#"{
+  "version": 1,
+  "tools": {
+    "bash": {
+      "name": "bash",
+      "schema": { "type": "object" },
+      "command": "echo"
+    },
+    "write": {
+      "name": "write",
+      "schema": { "type": "object" },
+      "command": "echo",
+      "rules": [{ "id": "open", "when": { "kind": "any" }, "action": "allow" }]
+    },
+    "mismatch": {
+      "name": "other",
+      "schema": { "type": "object" },
+      "command": "echo"
+    },
+    "blank": {
+      "name": "blank",
+      "schema": { "type": "object" },
+      "command": "   "
+    },
+    "demo": {
+      "name": "demo",
+      "schema": { "type": "object" },
+      "command": "echo",
+      "timeout": 0
+    }
+  }
+}"#;
+        std::fs::write(&path, body).unwrap();
+
+        let (_, tools) = load_workspace_defs(root).unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools["demo"].timeout, 0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
     }
 }
 

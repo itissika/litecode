@@ -43,12 +43,13 @@ CREATE TABLE IF NOT EXISTS agent_tools (
 );
 
 CREATE TABLE IF NOT EXISTS custom_tools (
-    id          TEXT PRIMARY KEY,
-    schema_json TEXT NOT NULL,
-    command     TEXT NOT NULL,
-    args_json   TEXT NOT NULL DEFAULT '[]',
-    timeout     INTEGER NOT NULL DEFAULT 120,
-    description TEXT NOT NULL DEFAULT ''
+    id              TEXT PRIMARY KEY,
+    schema_json     TEXT NOT NULL,
+    command         TEXT NOT NULL,
+    args_json       TEXT NOT NULL DEFAULT '[]',
+    timeout         INTEGER NOT NULL DEFAULT 120,
+    description     TEXT NOT NULL DEFAULT '',
+    rules_json      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS mcp_servers (

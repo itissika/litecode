@@ -39,22 +39,20 @@ const EMPTY_CUSTOM_JSON = `{
 }`;
 
 function prettyTool(def: CustomToolDefinition): string {
-  return JSON.stringify(
-    {
-      name: def.name,
-      description: def.description ?? "",
-      command: def.command,
-      args: def.args ?? [],
-      timeout: def.timeout ?? 120,
-      schema: {
-        type: def.schema?.type ?? "object",
-        properties: def.schema?.properties ?? {},
-        required: def.schema?.required ?? [],
-      },
+  const body: Record<string, unknown> = {
+    name: def.name,
+    description: def.description ?? "",
+    command: def.command,
+    args: def.args ?? [],
+    timeout: def.timeout ?? 120,
+    schema: {
+      type: def.schema?.type ?? "object",
+      properties: def.schema?.properties ?? {},
+      required: def.schema?.required ?? [],
     },
-    null,
-    2,
-  );
+  };
+  if (def.rules && def.rules.length > 0) body.rules = def.rules;
+  return JSON.stringify(body, null, 2);
 }
 
 export function CustomToolsSection() {

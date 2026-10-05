@@ -162,6 +162,14 @@ export interface ToolSchema {
   required?: string[];
 }
 
+export type PermissionActionName = "allow" | "ask" | "deny";
+
+export interface ToolPermissionRule {
+  id: string;
+  when: { kind: string } & Record<string, unknown>;
+  action: PermissionActionName;
+}
+
 export interface CustomToolDefinition {
   name: string;
   description?: string;
@@ -169,6 +177,8 @@ export interface CustomToolDefinition {
   command: string;
   args?: string[];
   timeout?: number;
+  /** Non-empty: Agents can switch ALL/SAFE. SAFE walks these rules in order. */
+  rules?: ToolPermissionRule[];
 }
 
 export type McpTransport =

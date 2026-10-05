@@ -495,11 +495,22 @@ pub mod store {
 
     fn load_custom_tools(conn: &Connection) -> Result<Vec<CustomToolDefinition>> {
         let mut stmt = conn.prepare(
-            "SELECT id, schema_json, command, args_json, timeout, description FROM custom_tools",
+            "SELECT id, schema_json, command, args_json, timeout, description, rules_json FROM custom_tools",
         )?;
         let rows = stmt.query_map([], |row| {
             let schema_json: String = row.get(1)?;
             let args_json: String = row.get(3)?;
+            let rules_json: Option<String> = row.get(6)?;
+            let rules = match rules_json {
+                Some(json) => serde_json::from_str(&json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        6,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?,
+                None => Vec::new(),
+            };
             Ok(CustomToolDefinition {
                 name: row.get(0)?,
                 schema: serde_json::from_str(&schema_json).map_err(|e| {
@@ -519,6 +530,7 @@ pub mod store {
                 })?,
                 timeout: row.get::<_, u64>(4)?,
                 description: row.get(5)?,
+                rules,
             })
         })?;
         let mut tools = Vec::new();
@@ -531,22 +543,29 @@ pub mod store {
     pub fn upsert_custom_tool(conn: &Connection, custom: &CustomToolDefinition) -> Result<()> {
         let schema_json = serde_json::to_string(&custom.schema)?;
         let args_json = serde_json::to_string(&custom.args)?;
+        let rules_json = if custom.rules.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&custom.rules)?)
+        };
         conn.execute(
-            "INSERT INTO custom_tools (id, schema_json, command, args_json, timeout, description)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO custom_tools (id, schema_json, command, args_json, timeout, description, rules_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(id) DO UPDATE SET
                schema_json = excluded.schema_json,
                command = excluded.command,
                args_json = excluded.args_json,
                timeout = excluded.timeout,
-               description = excluded.description",
+               description = excluded.description,
+               rules_json = excluded.rules_json",
             params![
                 custom.name,
                 schema_json,
                 custom.command,
                 args_json,
                 custom.timeout,
-                custom.description
+                custom.description,
+                rules_json
             ],
         )?;
         Ok(())
@@ -853,6 +872,45 @@ mod open_tests {
             )
             .unwrap();
         assert_eq!(timeout, 1);
+    }
+
+    #[test]
+    fn custom_tool_rules_roundtrip() {
+        use crate::config::schema::{CustomToolDefinition, ToolSchema};
+        use crate::permission::{ArgMatcher, PermissionAction, PolicyRule};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("litecode.db");
+        let conn = open(&db).unwrap();
+        let rules = vec![PolicyRule {
+            id: "outside_workspace".into(),
+            when: ArgMatcher::PathOutsideWorkspace {
+                name: "path".into(),
+            },
+            action: PermissionAction::Deny,
+        }];
+        let tool = CustomToolDefinition {
+            name: "demo".into(),
+            description: String::new(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "demo".into(),
+            args: Vec::new(),
+            timeout: 120,
+            rules: rules.clone(),
+        };
+        store::upsert_custom_tool(&conn, &tool).unwrap();
+        let loaded = store::load(&conn).unwrap();
+        assert_eq!(loaded.custom_tools[0].rules, rules);
+
+        let mut cleared = tool;
+        cleared.rules.clear();
+        store::upsert_custom_tool(&conn, &cleared).unwrap();
+        let loaded = store::load(&conn).unwrap();
+        assert!(loaded.custom_tools[0].rules.is_empty());
     }
 
     #[test]

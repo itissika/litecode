@@ -605,10 +605,14 @@ impl SettingsWriter {
         &self,
         id: &str,
         mut profile: AgentProfile,
-        _workspace: &super::resolved::WorkspaceState,
+        workspace: &super::resolved::WorkspaceState,
     ) -> Result<CommitAck> {
         validate_agent_id(id)?;
-        expand_binding_presets(&mut profile.tools);
+        let safe = merged_custom_rules(
+            &self.load()?.custom_tools,
+            &workspace.workspace_custom_tools,
+        );
+        expand_binding_presets(&mut profile.tools, &safe);
         normalize_agent_profile(id, &mut profile);
         let id = id.to_string();
         self.commit_partial(&[DocId::Agents], |settings| {
@@ -638,14 +642,16 @@ impl SettingsWriter {
         &self,
         agent_id: &str,
         preset: ToolPreset,
-        _workspace: &super::resolved::WorkspaceState,
+        workspace: &super::resolved::WorkspaceState,
     ) -> Result<CommitAck> {
         validate_agent_id(agent_id)?;
-        if !self.load()?.agents.contains_key(agent_id) {
+        let loaded = self.load()?;
+        if !loaded.agents.contains_key(agent_id) {
             return Err(LitecodeError::Config(format!(
                 "agent not found: {agent_id}"
             )));
         }
+        let safe = merged_custom_rules(&loaded.custom_tools, &workspace.workspace_custom_tools);
         let id = agent_id.to_string();
         self.commit_partial(&[DocId::Agents], move |settings| {
             let profile = settings
@@ -653,11 +659,7 @@ impl SettingsWriter {
                 .get_mut(&id)
                 .expect("agent exists after load check");
             for (tool_id, binding) in profile.tools.iter_mut() {
-                if !crate::permission::has_permission_preset(tool_id) {
-                    clear_fixed_preset(binding, tools::is_mcp_catalog_id(tool_id));
-                    continue;
-                }
-                apply_preset_to_binding(tool_id, binding, preset);
+                apply_forced_preset(tool_id, binding, preset, &safe);
             }
             Ok(false)
         })
@@ -993,22 +995,80 @@ fn validate_agent_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Non-empty rule lists from merged custom tools. Workspace replaces the global
+/// entry; a workspace tool with no rules removes the ALL/SAFE switch.
+fn merged_custom_rules(
+    global: &[CustomToolDefinition],
+    workspace: &HashMap<String, CustomToolDefinition>,
+) -> HashMap<String, Vec<crate::permission::PolicyRule>> {
+    let mut rules = HashMap::new();
+    for tool in global {
+        if !tool.rules.is_empty() {
+            rules.insert(tool.name.clone(), tool.rules.clone());
+        }
+    }
+    for (name, tool) in workspace {
+        if tool.rules.is_empty() {
+            rules.remove(name);
+        } else {
+            rules.insert(name.clone(), tool.rules.clone());
+        }
+    }
+    rules
+}
+
 /// Expand `last_applied_preset` into policy/path_mode for tools that have a dial.
-/// Fixed tools (bind only, including MCP allowlists) are stored as allow-all.
-fn expand_binding_presets(tools: &mut HashMap<String, AgentToolBinding>) {
+/// Fixed tools (bind only, including MCP allowlists and undeclared custom tools)
+/// are stored as allow-all.
+fn expand_binding_presets(
+    tools: &mut HashMap<String, AgentToolBinding>,
+    custom_rules: &HashMap<String, Vec<crate::permission::PolicyRule>>,
+) {
     for (tool_id, binding) in tools.iter_mut() {
         let mcp = tools::is_mcp_catalog_id(tool_id);
         if !mcp {
             binding.allowed_tools = None;
         }
-        if !crate::permission::has_permission_preset(tool_id) {
-            clear_fixed_preset(binding, mcp);
+        if crate::permission::has_permission_preset(tool_id) {
+            if let Some(preset) = binding.last_applied_preset {
+                apply_preset_to_binding(tool_id, binding, preset);
+            }
             continue;
         }
-        if let Some(preset) = binding.last_applied_preset {
-            apply_preset_to_binding(tool_id, binding, preset);
+        if let Some(declared) = custom_rules.get(tool_id) {
+            if let Some(preset) = binding.last_applied_preset {
+                apply_custom_declared_preset(binding, preset, declared);
+            } else {
+                // No dial was declared for this row. Evaluation allows the call;
+                // store that, instead of whatever policy was last written.
+                clear_fixed_preset(binding, mcp);
+            }
+            continue;
         }
+        clear_fixed_preset(binding, mcp);
     }
+}
+
+/// Bulk dial: force `preset` onto builtin preset tools and custom tools that have rules.
+fn apply_forced_preset(
+    tool_id: &str,
+    binding: &mut AgentToolBinding,
+    preset: ToolPreset,
+    custom_rules: &HashMap<String, Vec<crate::permission::PolicyRule>>,
+) {
+    let mcp = tools::is_mcp_catalog_id(tool_id);
+    if !mcp {
+        binding.allowed_tools = None;
+    }
+    if crate::permission::has_permission_preset(tool_id) {
+        apply_preset_to_binding(tool_id, binding, preset);
+        return;
+    }
+    if let Some(declared) = custom_rules.get(tool_id) {
+        apply_custom_declared_preset(binding, preset, declared);
+        return;
+    }
+    clear_fixed_preset(binding, mcp);
 }
 
 fn clear_fixed_preset(binding: &mut AgentToolBinding, keep_allowed_tools: bool) {
@@ -1021,14 +1081,27 @@ fn clear_fixed_preset(binding: &mut AgentToolBinding, keep_allowed_tools: bool) 
 }
 
 fn apply_preset_to_binding(tool_id: &str, binding: &mut AgentToolBinding, preset: ToolPreset) {
-    let (policy, path_mode) = if tools::is_core_tool(tool_id) || tools::is_optional_builtin(tool_id)
-    {
-        crate::permission::presets::binding_for_tool(tool_id, preset)
-    } else {
-        crate::permission::presets::binding_for_tool("custom", preset)
-    };
+    let (policy, path_mode) = crate::permission::presets::binding_for_tool(tool_id, preset);
     binding.policy = policy;
     binding.path_mode = path_mode;
+    binding.last_applied_preset = Some(preset);
+}
+
+fn apply_custom_declared_preset(
+    binding: &mut AgentToolBinding,
+    preset: ToolPreset,
+    rules: &[crate::permission::PolicyRule],
+) {
+    match preset {
+        ToolPreset::All => {
+            binding.policy = crate::permission::ToolPolicy::allow_all();
+            binding.path_mode = crate::permission::BindingPathMode::Unrestricted;
+        }
+        ToolPreset::Safe => {
+            binding.policy = crate::permission::ToolPolicy::from_rules(rules.to_vec());
+            binding.path_mode = crate::permission::BindingPathMode::Unrestricted;
+        }
+    }
     binding.last_applied_preset = Some(preset);
 }
 
@@ -1096,6 +1169,12 @@ pub(crate) fn validate_custom_definition(id: &str, def: &mut CustomToolDefinitio
     }
     if def.timeout == 0 {
         def.timeout = 120;
+    }
+    for rule in &mut def.rules {
+        rule.id = rule.id.trim().to_string();
+    }
+    if let Some(error) = crate::permission::policy::custom_rule_ids_error(&def.rules) {
+        return Err(LitecodeError::Config(error));
     }
     Ok(())
 }
@@ -1456,5 +1535,155 @@ max_output = 1024
 
         let summary = writer.summary().unwrap();
         assert_eq!(summary.setup_guidance, None);
+    }
+
+    fn declared_rules() -> Vec<crate::permission::PolicyRule> {
+        use crate::permission::{ArgMatcher, PermissionAction, PolicyRule};
+        vec![PolicyRule {
+            id: "outside_workspace".into(),
+            when: ArgMatcher::PathOutsideWorkspace {
+                name: "path".into(),
+            },
+            action: PermissionAction::Deny,
+        }]
+    }
+
+    fn custom_def(name: &str, rules: Vec<crate::permission::PolicyRule>) -> CustomToolDefinition {
+        use crate::config::schema::ToolSchema;
+        CustomToolDefinition {
+            name: name.into(),
+            description: String::new(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "demo".into(),
+            args: Vec::new(),
+            timeout: 120,
+            rules,
+        }
+    }
+
+    fn dial_binding(preset: Option<super::ToolPreset>) -> AgentToolBinding {
+        AgentToolBinding {
+            enabled: true,
+            policy: crate::permission::ToolPolicy::allow_all(),
+            path_mode: crate::permission::BindingPathMode::Unrestricted,
+            last_applied_preset: preset,
+            allowed_tools: None,
+        }
+    }
+
+    #[test]
+    fn declared_custom_preset_expands_and_undeclared_stays_fixed() {
+        let declared = declared_rules();
+        let mut tools = std::collections::HashMap::new();
+        tools.insert("gated".into(), dial_binding(Some(super::ToolPreset::Safe)));
+        tools.insert("open".into(), dial_binding(Some(super::ToolPreset::All)));
+        tools.insert("plain".into(), dial_binding(Some(super::ToolPreset::Safe)));
+        let mut safe = std::collections::HashMap::new();
+        safe.insert("gated".into(), declared.clone());
+        safe.insert("open".into(), declared.clone());
+        super::expand_binding_presets(&mut tools, &safe);
+
+        assert_eq!(
+            tools["gated"].policy,
+            crate::permission::ToolPolicy::from_rules(declared)
+        );
+        assert_eq!(
+            tools["gated"].path_mode,
+            crate::permission::BindingPathMode::Unrestricted
+        );
+        assert_eq!(
+            tools["gated"].last_applied_preset,
+            Some(super::ToolPreset::Safe)
+        );
+        assert_eq!(
+            tools["open"].policy,
+            crate::permission::ToolPolicy::allow_all()
+        );
+        assert_eq!(
+            tools["open"].path_mode,
+            crate::permission::BindingPathMode::Unrestricted
+        );
+        assert_eq!(
+            tools["open"].last_applied_preset,
+            Some(super::ToolPreset::All)
+        );
+        assert!(tools["plain"].last_applied_preset.is_none());
+        assert_eq!(
+            tools["plain"].policy,
+            crate::permission::ToolPolicy::allow_all()
+        );
+    }
+
+    #[test]
+    fn custom_rules_without_a_preset_store_allow_all() {
+        let mut tools = std::collections::HashMap::new();
+        let mut dirty = dial_binding(None);
+        dirty.policy = crate::permission::ToolPolicy::with_default(
+            crate::permission::PermissionAction::Ask,
+        );
+        tools.insert("gated".into(), dirty);
+        let mut safe = std::collections::HashMap::new();
+        safe.insert("gated".into(), declared_rules());
+        super::expand_binding_presets(&mut tools, &safe);
+        assert!(tools["gated"].last_applied_preset.is_none());
+        assert_eq!(
+            tools["gated"].policy,
+            crate::permission::ToolPolicy::allow_all()
+        );
+    }
+
+    #[test]
+    fn custom_rule_ids_are_trimmed_unique_and_not_reserved() {
+        let mut def = custom_def(
+            "demo",
+            vec![crate::permission::PolicyRule {
+                id: "  outside  ".into(),
+                when: crate::permission::ArgMatcher::Any,
+                action: crate::permission::PermissionAction::Deny,
+            }],
+        );
+        super::validate_custom_definition("demo", &mut def).unwrap();
+        assert_eq!(def.rules[0].id, "outside");
+
+        let mut reserved = custom_def(
+            "demo",
+            vec![crate::permission::PolicyRule {
+                id: "__default".into(),
+                when: crate::permission::ArgMatcher::Any,
+                action: crate::permission::PermissionAction::Deny,
+            }],
+        );
+        assert!(super::validate_custom_definition("demo", &mut reserved).is_err());
+
+        let mut duplicated = custom_def(
+            "demo",
+            vec![
+                crate::permission::PolicyRule {
+                    id: "same".into(),
+                    when: crate::permission::ArgMatcher::Any,
+                    action: crate::permission::PermissionAction::Deny,
+                },
+                crate::permission::PolicyRule {
+                    id: " same ".into(),
+                    when: crate::permission::ArgMatcher::Any,
+                    action: crate::permission::PermissionAction::Allow,
+                },
+            ],
+        );
+        assert!(super::validate_custom_definition("demo", &mut duplicated).is_err());
+    }
+
+    #[test]
+    fn workspace_custom_without_rules_hides_global_rules() {
+        let declared = declared_rules();
+        let global = vec![custom_def("demo", declared)];
+        let mut workspace = std::collections::HashMap::new();
+        workspace.insert("demo".into(), custom_def("demo", Vec::new()));
+        let safe = super::merged_custom_rules(&global, &workspace);
+        assert!(safe.is_empty());
     }
 }

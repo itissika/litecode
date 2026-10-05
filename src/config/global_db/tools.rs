@@ -55,6 +55,16 @@ pub fn is_optional_builtin(id: &str) -> bool {
     optional_builtin_ids().contains(&id)
 }
 
+pub fn is_reserved_builtin(id: &str) -> bool {
+    is_core_tool(id) || is_optional_builtin(id)
+}
+
+/// A custom tool may own permission only when the catalog key is the body name
+/// and that name is not a builtin. Reserved names always keep the binding.
+pub fn is_custom_tool_identity(key: &str, body_name: &str) -> bool {
+    !key.is_empty() && key == body_name && !is_reserved_builtin(key)
+}
+
 pub fn is_workspace_optional(id: &str) -> bool {
     matches!(id, "code_search" | "lsp")
 }

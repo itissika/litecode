@@ -169,6 +169,7 @@ mod tests {
             command: "demo".into(),
             args: Vec::new(),
             timeout: 120,
+            rules: Vec::new(),
         };
         for key in object_keys(&custom) {
             assert!(
@@ -176,6 +177,11 @@ mod tests {
                 "custom tools fragment does not document `{key}`"
             );
         }
+        assert!(
+            CUSTOM_TOOLS.contains("rules"),
+            "optional rules are not documented"
+        );
+        assert!(CUSTOM_TOOLS.contains("path_outside_workspace"));
     }
 
     #[test]

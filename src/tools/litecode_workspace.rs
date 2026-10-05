@@ -1344,6 +1344,7 @@ mod tests {
             command: "demo".into(),
             args: vec!["--json".into()],
             timeout: 120,
+            rules: Vec::new(),
         });
         let mut agent = AgentProfile::default();
         agent.tools.insert(

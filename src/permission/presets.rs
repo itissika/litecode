@@ -141,14 +141,6 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
     }
 }
 
-pub fn default_policy_for_custom() -> (ToolPolicy, BindingPathMode) {
-    binding_for_tool("custom", ToolPreset::All)
-}
-
-pub fn safe_policy_for_custom() -> (ToolPolicy, BindingPathMode) {
-    binding_for_tool("custom", ToolPreset::Safe)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

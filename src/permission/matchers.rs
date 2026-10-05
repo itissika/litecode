@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::tools::bash_safety::is_readonly_command;
 use crate::workspace::raw_path_outside_workspace;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ArgMatcher {
     Any,

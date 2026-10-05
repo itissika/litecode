@@ -237,6 +237,7 @@ pub fn build_global_with_custom_tool(
         command: command.into(),
         args,
         timeout: 120,
+        rules: Vec::new(),
     };
     settings.custom_tools.push(def);
     if let Some(agent) = settings.agents.get_mut("default") {

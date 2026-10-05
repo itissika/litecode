@@ -19,6 +19,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 
     if version == 0 {
         conn.execute_batch(SCHEMA)?;
+        // An existing file can still be user_version 0. CREATE IF NOT EXISTS
+        // does not add columns the old tables lack.
+        ensure_current_columns(conn)?;
         conn.execute_batch(&format!("PRAGMA user_version = {CURRENT_USER_VERSION};"))?;
         return Ok(());
     }
@@ -56,6 +59,7 @@ fn migrate_to_current(conn: &Connection, version: i32) -> Result<()> {
 fn ensure_current_columns(conn: &Connection) -> Result<()> {
     ensure_agent_tools_allowed_tools_column(conn)?;
     ensure_mcp_timeout_column(conn)?;
+    ensure_custom_tools_rules_column(conn)?;
     ensure_provider_credentials_table(conn)?;
     ensure_disabled_models_table(conn)?;
     Ok(())
@@ -77,6 +81,32 @@ fn ensure_provider_credentials_table(conn: &Connection) -> Result<()> {
              api_key     TEXT NOT NULL
          );",
     )?;
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    Ok(conn
+        .prepare(&format!(
+            "SELECT 1 FROM pragma_table_info('{table}') WHERE name = '{column}'"
+        ))?
+        .exists([])?)
+}
+
+fn ensure_custom_tools_rules_column(conn: &Connection) -> Result<()> {
+    let table_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'custom_tools'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? == 1;
+    if !table_exists {
+        return Ok(());
+    }
+    if !column_exists(conn, "custom_tools", "rules_json")? {
+        conn.execute("ALTER TABLE custom_tools ADD COLUMN rules_json TEXT", [])?;
+    }
+    if column_exists(conn, "custom_tools", "permission_json")? {
+        conn.execute("ALTER TABLE custom_tools DROP COLUMN permission_json", [])?;
+    }
     Ok(())
 }
 
@@ -148,6 +178,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(col, 1);
+    }
+
+    #[test]
+    fn v0_existing_custom_tools_gains_rules_json() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE custom_tools (
+                id TEXT PRIMARY KEY,
+                schema_json TEXT NOT NULL,
+                command TEXT NOT NULL,
+                args_json TEXT NOT NULL DEFAULT '[]',
+                timeout INTEGER NOT NULL DEFAULT 120,
+                description TEXT NOT NULL DEFAULT ''
+            );
+            PRAGMA user_version = 0;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert!(column_exists(&conn, "custom_tools", "rules_json").unwrap());
+        assert_eq!(user_version(&conn), CURRENT_USER_VERSION);
     }
 
     #[test]
@@ -280,6 +330,59 @@ mod tests {
         migrate(&conn).unwrap();
         migrate(&conn).unwrap();
         assert_eq!(user_version(&conn), CURRENT_USER_VERSION);
+    }
+
+    #[test]
+    fn current_db_gains_custom_tool_rules_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "
+            CREATE TABLE agent_tools (
+                agent_id TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                policy_json TEXT NOT NULL DEFAULT '{{}}',
+                path_mode TEXT NOT NULL DEFAULT 'unrestricted',
+                last_applied_preset TEXT,
+                PRIMARY KEY (agent_id, tool_id)
+            );
+            CREATE TABLE mcp_servers (
+                id TEXT PRIMARY KEY,
+                command TEXT NOT NULL,
+                args_json TEXT NOT NULL DEFAULT '[]',
+                env_json TEXT NOT NULL DEFAULT '{{}}',
+                transport_json TEXT NOT NULL DEFAULT '{{\"type\":\"stdio\"}}'
+            );
+            CREATE TABLE custom_tools (
+                id TEXT PRIMARY KEY,
+                schema_json TEXT NOT NULL,
+                command TEXT NOT NULL,
+                args_json TEXT NOT NULL DEFAULT '[]',
+                timeout INTEGER NOT NULL DEFAULT 120,
+                description TEXT NOT NULL DEFAULT '',
+                permission_json TEXT
+            );
+            PRAGMA user_version = {CURRENT_USER_VERSION};
+            "
+        ))
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let rules = conn
+            .prepare("SELECT 1 FROM pragma_table_info('custom_tools') WHERE name = 'rules_json'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        let permission = conn
+            .prepare(
+                "SELECT 1 FROM pragma_table_info('custom_tools') WHERE name = 'permission_json'",
+            )
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(rules);
+        assert!(!permission);
     }
 
     #[test]

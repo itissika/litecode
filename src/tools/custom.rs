@@ -278,6 +278,7 @@ mod tests {
             command: "true".into(),
             args: vec![],
             timeout: 10,
+            rules: Vec::new(),
         })
     }
 
