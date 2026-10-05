@@ -10,6 +10,7 @@ import { Plus, ArrowClockwise, ListChecks } from "@phosphor-icons/react";
 
 import {
   isConfigurableTool,
+  presetToolIds,
   isHiddenSettingsAgent,
   isProtectedAgent,
   isSubagentBindableTool,
@@ -378,7 +379,7 @@ export function AgentToolsGrid({
       >
         {bindableTools.map((entry) => {
           const binding = bindingFor(draft.tools, entry.id);
-          const configurable = isConfigurableTool(entry.id);
+          const configurable = isConfigurableTool(entry);
           const enabled = binding.enabled;
           const preset = binding.last_applied_preset ?? "ALL";
           const serverId = entry.id.slice("mcp_".length);
@@ -500,6 +501,7 @@ const BUILTIN_TEMPERATURE = 0.7;
 function agentPersistPayload(
   draft: AgentProfile,
   selectedAgentId: string,
+  presetIds: ReadonlySet<string>,
 ): AgentProfile {
   const isHidden = isHiddenSettingsAgent(selectedAgentId, draft.role);
   if (isHidden) {
@@ -512,18 +514,24 @@ function agentPersistPayload(
     };
   }
   if (draft.role === "subagent") {
-    return withSyncedToolSeries({
+    return withSyncedToolSeries(
+      {
+        ...draft,
+        tools: { ...draft.tools },
+        allowed_subagents: [],
+        temperature: BUILTIN_TEMPERATURE,
+      },
+      presetIds,
+    );
+  }
+  return withSyncedToolSeries(
+    {
       ...draft,
       tools: { ...draft.tools },
-      allowed_subagents: [],
       temperature: BUILTIN_TEMPERATURE,
-    });
-  }
-  return withSyncedToolSeries({
-    ...draft,
-    tools: { ...draft.tools },
-    temperature: BUILTIN_TEMPERATURE,
-  });
+    },
+    presetIds,
+  );
 }
 
 export function AgentsSection() {
@@ -591,6 +599,11 @@ export function AgentsSection() {
       .sort((a, b) => a.id.localeCompare(b.id));
   }, [availableTools]);
 
+  const presetIds = useMemo(
+    () => presetToolIds(availableTools ?? []),
+    [availableTools],
+  );
+
   useEffect(() => {
     if (!profile || creating) return;
     if (!shouldHydrateDraftFromStore(persistStatus)) return;
@@ -608,7 +621,7 @@ export function AgentsSection() {
     serialize: (d) => {
       if (!d) return { skip: "unchanged" };
       return {
-        ok: agentPersistPayload(d, selectedAgentId),
+        ok: agentPersistPayload(d, selectedAgentId, presetIds),
       };
     },
     commit: (p) => saveAgent(selectedAgentId, p),
@@ -658,7 +671,7 @@ export function AgentsSection() {
     if (patch.enabled !== undefined) {
       setDraft({
         ...draft,
-        tools: applyToolEnabled(draft.tools, toolId, patch.enabled),
+        tools: applyToolEnabled(draft.tools, toolId, patch.enabled, presetIds),
       });
       return;
     }
@@ -701,7 +714,7 @@ export function AgentsSection() {
 
   const onCreate = () => {
     if (!draft || !newAgentId.trim()) return;
-    const payload = agentPersistPayload(draft, newAgentId.trim());
+    const payload = agentPersistPayload(draft, newAgentId.trim(), presetIds);
     void createAgent(newAgentId.trim(), payload)
       .then(() => {
         setCreating(false);

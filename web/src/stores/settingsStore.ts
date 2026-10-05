@@ -31,6 +31,7 @@ import {
   restartMcpServer as requestMcpRestart,
   stopMcpServer as requestMcpStop,
   SettingsApiError,
+  presetToolIds,
   withSyncedToolSeries,
   type AgentProfile,
   type AvailableTool,
@@ -619,8 +620,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
 
     saveAgent: (id, profile) =>
       withTurnGuard(async () => {
-        const synced = withSyncedToolSeries(profile);
-        const { revision } = await putAgent(id, synced);
+        const presetIds = presetToolIds(get().availableTools ?? []);
+        const synced = withSyncedToolSeries(profile, presetIds);
+        const { revision } = await putAgent(id, synced, presetIds);
         set((s) => ({
           revision,
           agents: { ...s.agents, [id]: synced },

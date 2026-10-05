@@ -1579,7 +1579,11 @@ mod tests {
         write(root, "knowledge/node.md", "public needle\n");
         write(root, ".litecode/knowledge/private.md", "private needle\n");
         write(root, ".litecode/index/x.rs", "index needle\n");
-        write(root, "nested/.litecode/knowledge/nope.md", "nested needle\n");
+        write(
+            root,
+            "nested/.litecode/knowledge/nope.md",
+            "nested needle\n",
+        );
 
         let wide = call_in(root, serde_json::json!({"pattern": "needle"}));
         assert!(wide.contains("knowledge/node.md"), "got: {wide}");

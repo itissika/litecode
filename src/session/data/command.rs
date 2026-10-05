@@ -401,6 +401,13 @@ pub enum SessionRead {
         session_id: String,
         seq: i64,
     },
+    /// `item/user` seqs around an anchor. `anchor_seq: None` means the latest user row.
+    UserAnchors {
+        session_id: String,
+        anchor_seq: Option<i64>,
+        before: i64,
+        after: i64,
+    },
     CheckpointSeq {
         session_id: String,
     },
@@ -446,6 +453,17 @@ pub struct SessionChange {
     pub to_seq: Option<i64>,
 }
 
+/// One page of persisted user-message anchors (`item/user` seqs only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserAnchorWindow {
+    /// Ascending seqs: up to `before` strictly older, the anchor when it is a user row, then up to `after` newer.
+    pub seqs: Vec<i64>,
+    /// Set when the split point itself is an `item/user` row.
+    pub anchor: Option<i64>,
+    pub has_more_before: bool,
+    pub has_more_after: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum ReadValue {
     Meta(crate::session::model::SessionMeta),
@@ -466,6 +484,7 @@ pub enum ReadValue {
     ChildBindings(Vec<(String, String)>),
     Depth(u32),
     Seqs(Vec<i64>),
+    UserAnchors(UserAnchorWindow),
     Count(i64),
     Revision(u64),
     Searchable(Vec<crate::session::transcript_file::SearchableRow>),

@@ -103,6 +103,7 @@ function ItemBubbleImpl({
   bubbleKey,
   editingAnchor,
   followedByUser,
+  followedByMark,
   onEditAnchor,
   onDismissEdit,
   miniPhase,
@@ -121,6 +122,8 @@ function ItemBubbleImpl({
   showRevertFiles?: boolean;
   /** The next bubble is a user message, so the last process group is complete. */
   followedByUser: boolean;
+  /** The next bubble is a system mark, which also ends the process segment. */
+  followedByMark: boolean;
   editingAnchor: EditingUserAnchor | null;
   onEditAnchor: (anchor: EditingUserAnchor) => void;
   onDismissEdit: () => void;
@@ -168,7 +171,7 @@ function ItemBubbleImpl({
           (n) => n.kind !== "compact_cut" && n.live,
         );
         const followedByMessage =
-          groups[gi + 1]?.type === "output" || followedByUser;
+          groups[gi + 1]?.type === "output" || followedByUser || followedByMark;
         const hasTerminalStop = processGroupHasTerminalStop(group.nodes);
         const groupAutoOpen = processGroupAutoOpen({
           followedByMessage,
@@ -291,6 +294,7 @@ export const ItemBubble = memo(
     prev.userSeq === next.userSeq &&
     prev.bubbleKey === next.bubbleKey &&
     prev.followedByUser === next.followedByUser &&
+    prev.followedByMark === next.followedByMark &&
     prev.editingAnchor === next.editingAnchor &&
     prev.rows.length === next.rows.length &&
     prev.rows.every((r, i) => r === next.rows[i]),

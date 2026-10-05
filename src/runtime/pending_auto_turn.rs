@@ -383,11 +383,8 @@ mod tests {
         let sid = sessions
             .open_session_sync(&dir.path().display().to_string(), "default", None)
             .unwrap();
-        let text = crate::knowledge::mentions::symbol_mention_source(
-            "src/a.rs",
-            Some("fn save"),
-            None,
-        );
+        let text =
+            crate::knowledge::mentions::symbol_mention_source("src/a.rs", Some("fn save"), None);
         sessions.enqueue_pending_message(&sid, &text).unwrap();
         match try_begin_pending_flush(&runtime, &sessions, dir.path(), &sid) {
             PendingFlush::Prepared { turn_id, .. } => {
@@ -464,11 +461,8 @@ mod tests {
         let sid = sessions
             .open_session_sync(&dir.path().display().to_string(), "default", None)
             .unwrap();
-        let text = crate::knowledge::mentions::symbol_mention_source(
-            "src/a.rs",
-            Some("fn save"),
-            None,
-        );
+        let text =
+            crate::knowledge::mentions::symbol_mention_source("src/a.rs", Some("fn save"), None);
         sessions.enqueue_pending_message(&sid, &text).unwrap();
         let (anchor, turn_id) = match try_begin_pending_flush(&runtime, &sessions, dir.path(), &sid)
         {
@@ -572,11 +566,8 @@ mod tests {
         let sid = sessions
             .open_session_sync(&dir.path().display().to_string(), "default", None)
             .unwrap();
-        let text = crate::knowledge::mentions::symbol_mention_source(
-            "src/a.rs",
-            Some("fn save"),
-            None,
-        );
+        let text =
+            crate::knowledge::mentions::symbol_mention_source("src/a.rs", Some("fn save"), None);
         let context = crate::context_pipeline::build_context(
             &runtime.resolved,
             dir.path(),

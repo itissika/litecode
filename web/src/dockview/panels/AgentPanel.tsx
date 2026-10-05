@@ -33,6 +33,10 @@ import { SessionStatusLine } from "../../components/SessionStatusLine";
 import { releaseSessionTab } from "../../components/sessionTeardown";
 import { SubagentReadOnlyContent } from "../../components/SubagentReadOnlyContent";
 import { composerCardClass } from "../../components/composerCard";
+import { UserMessageRail } from "../../components/transcript/UserMessageRail";
+import { useScrollUserAnchors } from "../../components/transcript/useScrollUserAnchors";
+import type { RevealSeq } from "../../components/transcript/transcriptScrollGlide";
+import type { UserRailLayoutMark } from "../../components/transcript/transcriptUserRailMarks";
 
 class AgentErrorBoundary extends Component<
   { onClose: () => void; children: ReactNode },
@@ -196,7 +200,7 @@ export function AgentChatShell({
   const dismissTimerRef = useRef<number | null>(null);
   const jumpToEndRef = useRef<(() => void) | null>(null);
   const revealBashRef = useRef<((callId: string) => void) | null>(null);
-  const revealSeqRef = useRef<((seq: number) => void) | null>(null);
+  const revealSeqRef = useRef<RevealSeq | null>(null);
   const pendingReveal = useSyncExternalStore(
     subscribePendingReveal,
     getPendingReveal,
@@ -354,7 +358,7 @@ function MessageListRegion({
   onStickChange: (stickToEnd: boolean) => void;
   jumpToEndRef: RefObject<(() => void) | null>;
   revealBashRef: RefObject<((callId: string) => void) | null>;
-  revealSeqRef: RefObject<((seq: number) => void) | null>;
+  revealSeqRef: RefObject<RevealSeq | null>;
   composerCollapsed: boolean;
 }) {
   const messages = useMessageStore((s) =>
@@ -375,6 +379,10 @@ function MessageListRegion({
   }, [loadMoreHistoryAction, sessionId]);
 
   const listRef = useRef<HTMLDivElement>(null);
+  const columnRef = useRef<HTMLDivElement>(null);
+  const userRailLayoutRef = useRef<UserRailLayoutMark[]>([]);
+  const userRailNotifyRef = useRef<(() => void) | null>(null);
+  const userRail = useScrollUserAnchors(sessionId);
   const [blurOpacity, setBlurOpacity] = useState(0);
 
   const canLoadMore = fromSeq > 0;
@@ -415,7 +423,10 @@ function MessageListRegion({
               (viewport-sized child + overflowing absolute items), which is one
               of the "list drifts while streaming" sources.
             */}
-            <div className="mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col bg-(--_dk-editor)">
+            <div
+              ref={columnRef}
+              className="mx-auto flex w-full max-w-[var(--_dk-prose-measure)] flex-col bg-(--_dk-editor)"
+            >
               <MessageList
                 key={sessionId}
                 messages={messages}
@@ -436,10 +447,29 @@ function MessageListRegion({
                 miniPhase={miniPhase}
                 onMiniAnimationEnd={onMiniAnimationEnd}
                 composerCollapsed={composerCollapsed}
+                userRailLayoutRef={userRailLayoutRef}
+                userRailNotifyRef={userRailNotifyRef}
               />
             </div>
           </div>
         </div>
+        <UserMessageRail
+          scrollRef={listRef}
+          columnRef={columnRef}
+          layoutRef={userRailLayoutRef}
+          notifyRef={userRailNotifyRef}
+          onCenterSeq={userRail.noteCenter}
+          onJump={(seq) => {
+            onStickChange(false);
+            void useMessageStore
+              .getState()
+              .ensureSeqLoaded(sessionId, seq)
+              .then((ok) => {
+                if (ok) revealSeqRef.current?.(seq, { glide: true });
+              });
+          }}
+          className="absolute top-4 right-4 bottom-0 left-4 z-20"
+        />
         {/* Unfocused dimming — pure visual mask, never touches content alpha.
             Instead of fading the list's own opacity (which re-composites every
             message and can break nested backdrop-filter), a translucent

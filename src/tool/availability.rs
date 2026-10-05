@@ -7,6 +7,7 @@ use crate::config::resolved::ResolvedConfig;
 use crate::config::schema::{AvailableKind, AvailableTool, ToolOrigin, ToolReadiness};
 use crate::engines::WorkspaceEngines;
 use crate::optional::EngineManager;
+use crate::permission::permission_surface;
 
 pub fn is_available(resolved: &ResolvedConfig, tool_id: &str) -> bool {
     if core_tool_ids().iter().any(|id| id == tool_id) {
@@ -25,24 +26,40 @@ pub fn is_available(resolved: &ResolvedConfig, tool_id: &str) -> bool {
         .any(|tool| tool.name == tool_id)
 }
 
+fn tool_card(
+    id: String,
+    kind: AvailableKind,
+    origin: ToolOrigin,
+    overridden: bool,
+) -> AvailableTool {
+    let permission_surface = permission_surface(&id);
+    AvailableTool {
+        id,
+        kind,
+        origin,
+        overridden,
+        permission_surface,
+    }
+}
+
 pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
     let mut out = Vec::new();
     for id in core_tool_ids() {
-        out.push(AvailableTool {
+        out.push(tool_card(
             id,
-            kind: AvailableKind::Core,
-            origin: ToolOrigin::Builtin,
-            overridden: false,
-        });
+            AvailableKind::Core,
+            ToolOrigin::Builtin,
+            false,
+        ));
     }
     for id in optional_builtin_ids() {
         if resolved.workspace_tool_readiness().get(*id).copied() == Some(ToolReadiness::Ready) {
-            out.push(AvailableTool {
-                id: (*id).to_string(),
-                kind: AvailableKind::Engine,
-                origin: ToolOrigin::Workspace,
-                overridden: false,
-            });
+            out.push(tool_card(
+                (*id).to_string(),
+                AvailableKind::Engine,
+                ToolOrigin::Workspace,
+                false,
+            ));
         }
     }
     let custom = resolved.custom_tools();
@@ -55,12 +72,12 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
                 .global_custom_tools()
                 .iter()
                 .any(|t| t.name == tool.name);
-        out.push(AvailableTool {
-            id: tool.name,
-            kind: AvailableKind::Custom,
+        out.push(tool_card(
+            tool.name,
+            AvailableKind::Custom,
             origin,
             overridden,
-        });
+        ));
     }
     let mut mcp_ids: Vec<String> = resolved.mcp_servers().keys().cloned().collect();
     mcp_ids.sort();
@@ -70,12 +87,12 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
             .unwrap_or(ToolOrigin::Global);
         let overridden = origin == ToolOrigin::Workspace
             && resolved.global_mcp_servers().contains_key(&server_id);
-        out.push(AvailableTool {
-            id: mcp_catalog_id(&server_id),
-            kind: AvailableKind::Mcp,
+        out.push(tool_card(
+            mcp_catalog_id(&server_id),
+            AvailableKind::Mcp,
             origin,
             overridden,
-        });
+        ));
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
@@ -176,5 +193,30 @@ mod tests {
         assert!(is_available(&resolved, "webfetch"));
         assert!(is_available(&resolved, "websearch"));
         assert!(!agent_tool_enabled(&resolved, "default", "webfetch"));
+    }
+
+    #[test]
+    fn catalog_permission_surface_follows_preset_predicate() {
+        use crate::config::schema::PermissionSurface;
+
+        let resolved = ConfigManager::resolve_without_catalog(
+            GlobalSettings::default(),
+            WorkspaceState::new("/tmp/surface"),
+        );
+        let tools = available_tools(&resolved);
+        let surface = |id: &str| {
+            tools
+                .iter()
+                .find(|t| t.id == id)
+                .unwrap_or_else(|| panic!("missing {id}"))
+                .permission_surface
+        };
+        assert_eq!(surface("read"), PermissionSurface::Preset);
+        assert_eq!(surface("bash"), PermissionSurface::Preset);
+        assert_eq!(surface("litecode_workspace"), PermissionSurface::Preset);
+        assert_eq!(surface("webfetch"), PermissionSurface::Fixed);
+        assert_eq!(surface("session_search"), PermissionSurface::Fixed);
+        assert_eq!(surface("kill_shell"), PermissionSurface::Fixed);
+        assert_eq!(surface("plan"), PermissionSurface::Fixed);
     }
 }

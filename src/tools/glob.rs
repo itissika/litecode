@@ -383,7 +383,9 @@ mod tests {
         std::fs::write(root.join("node_modules/pkg/index.js"), "module.exports=1\n").unwrap();
         std::fs::write(root.join(".env"), "AGENT_GLOB=1\n").unwrap();
 
-        let found = glob_match(root, root, "**/*.{rs,js,env}", false).unwrap().hits;
+        let found = glob_match(root, root, "**/*.{rs,js,env}", false)
+            .unwrap()
+            .hits;
         assert!(
             found
                 .iter()
@@ -520,7 +522,10 @@ mod tests {
         std::fs::write(root.join("keep.rs"), "fn k() {}\n").unwrap();
 
         let filtered = glob_match(root, root, "**/*", false).unwrap();
-        assert!(filtered.iter().any(|path| path == "keep.rs"), "{filtered:?}");
+        assert!(
+            filtered.iter().any(|path| path == "keep.rs"),
+            "{filtered:?}"
+        );
         assert!(
             filtered.iter().any(|path| path == "knowledge/node.md"),
             "{filtered:?}"

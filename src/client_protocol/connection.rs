@@ -90,6 +90,48 @@ fn resolve_sid(session: &SessionController, params_sid: &str) -> String {
     }
 }
 
+fn emit_user_anchors(
+    session: &SessionController,
+    sink: &UnboundedSender<serde_json::Value>,
+    id: serde_json::Value,
+    session_id: &str,
+    anchor_seq: Option<i64>,
+    before: u32,
+    after: u32,
+) {
+    match session.user_anchor_window(session_id, anchor_seq, i64::from(before), i64::from(after)) {
+        Ok(window) => {
+            let anchors = window
+                .seqs
+                .into_iter()
+                .filter_map(|seq| u64::try_from(seq).ok())
+                .map(|seq| crate::client_protocol::protocol::UserAnchorWire { seq })
+                .collect();
+            let result = crate::client_protocol::protocol::UserAnchorsResult {
+                session_id: session_id.to_string(),
+                anchors,
+                anchor_seq: window.anchor.and_then(|seq| u64::try_from(seq).ok()),
+                has_more_before: window.has_more_before,
+                has_more_after: window.has_more_after,
+            };
+            emit(
+                sink,
+                serde_json::to_value(ok_response(
+                    id,
+                    serde_json::to_value(result).unwrap_or_default(),
+                ))
+                .unwrap(),
+            );
+        }
+        Err(e) => {
+            emit(
+                sink,
+                serde_json::to_value(err_response(id, -32000, e.to_string())).unwrap(),
+            );
+        }
+    }
+}
+
 pub async fn handle_jsonrpc(
     session: &mut SessionController,
     sink: &UnboundedSender<serde_json::Value>,
@@ -1080,6 +1122,63 @@ pub async fn handle_jsonrpc(
                     );
                 }
             }
+        }
+
+        methods::BUFFER_USER_ANCHORS => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                #[serde(default)]
+                session_id: String,
+                #[serde(default)]
+                anchor_seq: Option<u64>,
+                #[serde(default)]
+                before: u32,
+                #[serde(default)]
+                after: u32,
+            }
+            let params: Params = match serde_json::from_value(rpc.params.clone()) {
+                Ok(p) => p,
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {}", e),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            let anchor_seq = match params.anchor_seq {
+                None => None,
+                Some(seq) => match i64::try_from(seq) {
+                    Ok(seq) => Some(seq),
+                    Err(_) => {
+                        emit(
+                            sink,
+                            serde_json::to_value(err_response(
+                                id,
+                                -32602,
+                                "Invalid params: anchor_seq".to_string(),
+                            ))
+                            .unwrap(),
+                        );
+                        return false;
+                    }
+                },
+            };
+            let sid = resolve_sid(session, &params.session_id);
+            emit_user_anchors(
+                session,
+                sink,
+                id,
+                &sid,
+                anchor_seq,
+                params.before,
+                params.after,
+            );
         }
 
         methods::BUFFER_LOAD => {

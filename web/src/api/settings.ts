@@ -145,11 +145,15 @@ export interface AgentProfile {
   allowed_subagents: string[];
 }
 
+export type PermissionSurface = "preset" | "fixed";
+
 export interface AvailableTool {
   id: string;
   kind: AvailableKind;
   origin: ToolOrigin;
   overridden?: boolean;
+  /** Backend declaration: `preset` shows ALL/SAFE; `fixed` is bind only. */
+  permission_surface?: PermissionSurface;
 }
 
 export interface ToolSchema {
@@ -377,13 +381,14 @@ export async function getAgent(id: string): Promise<AgentProfile> {
 export async function putAgent(
   id: string,
   profile: AgentProfile,
+  presetIds: ReadonlySet<string> = new Set(),
 ): Promise<RevisionResponse> {
   return requestJson<RevisionResponse>(
     `/api/settings/agents/${encodeURIComponent(id)}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(withSyncedToolSeries(profile)),
+      body: JSON.stringify(withSyncedToolSeries(profile, presetIds)),
     },
   );
 }
@@ -592,25 +597,19 @@ export const SUBAGENT_SERIES_TOOL_IDS = [
   "subagent_send",
 ] as const;
 
-/**
- * Tools with fixed behavior — only `enabled`, no preset (CONFIG §2.5). Mirrors
- * the backend's `core_none_tools()`; the whole subagent series belongs here, so
- * derive it from the series instead of re-listing (subagent_send drifted once).
- */
-export const NONE_TOOL_IDS = new Set<string>([
-  "plan",
-  "todo",
-  "knowledge",
-  ...SUBAGENT_SERIES_TOOL_IDS,
-]);
-
-/** MCP catalog ids (`mcp_*`) have no ALL/SAFE — bind is on/off only. */
-export function isMcpCatalogTool(toolId: string): boolean {
-  return toolId.startsWith("mcp_");
+/** True when the backend card declares an ALL/SAFE dial. */
+export function isConfigurableTool(tool: {
+  permission_surface?: PermissionSurface;
+}): boolean {
+  return tool.permission_surface === "preset";
 }
 
-export function isConfigurableTool(toolId: string): boolean {
-  return !NONE_TOOL_IDS.has(toolId) && !isMcpCatalogTool(toolId);
+export function presetToolIds(
+  tools: readonly { id: string; permission_surface?: PermissionSurface }[],
+): Set<string> {
+  return new Set(
+    tools.filter((tool) => tool.permission_surface === "preset").map((tool) => tool.id),
+  );
 }
 
 export interface AgentListItem {
@@ -648,11 +647,13 @@ export function toolEnableSeries(toolId: string): readonly string[] | null {
   return null;
 }
 
-function defaultSeriesBinding(toolId: string): AgentToolBinding {
+function defaultSeriesBinding(
+  toolId: string,
+  presetIds: ReadonlySet<string>,
+): AgentToolBinding {
   return {
     enabled: false,
-    last_applied_preset:
-      NONE_TOOL_IDS.has(toolId) || isMcpCatalogTool(toolId) ? null : "ALL",
+    last_applied_preset: presetIds.has(toolId) ? "ALL" : null,
   };
 }
 
@@ -661,11 +662,12 @@ export function applyToolEnabled(
   tools: Record<string, AgentToolBinding>,
   toolId: string,
   enabled: boolean,
+  presetIds: ReadonlySet<string> = new Set(),
 ): Record<string, AgentToolBinding> {
   const ids = toolEnableSeries(toolId) ?? [toolId];
   const next = { ...tools };
   for (const id of ids) {
-    const current = next[id] ?? defaultSeriesBinding(id);
+    const current = next[id] ?? defaultSeriesBinding(id, presetIds);
     next[id] = { ...current, enabled };
   }
   return next;
@@ -674,6 +676,7 @@ export function applyToolEnabled(
 /** Persist-time sync: if any series member is on, all members are on (and present). */
 export function syncToolEnableSeries(
   tools: Record<string, AgentToolBinding>,
+  presetIds: ReadonlySet<string> = new Set(),
 ): Record<string, AgentToolBinding> {
   const next = { ...tools };
   for (const series of TOOL_ENABLE_SERIES) {
@@ -681,15 +684,18 @@ export function syncToolEnableSeries(
     if (!anyPresent) continue;
     const anyEnabled = series.some((id) => next[id]?.enabled === true);
     for (const id of series) {
-      const current = next[id] ?? defaultSeriesBinding(id);
+      const current = next[id] ?? defaultSeriesBinding(id, presetIds);
       next[id] = { ...current, enabled: anyEnabled };
     }
   }
   return next;
 }
 
-export function withSyncedToolSeries(profile: AgentProfile): AgentProfile {
-  return { ...profile, tools: syncToolEnableSeries(profile.tools) };
+export function withSyncedToolSeries(
+  profile: AgentProfile,
+  presetIds: ReadonlySet<string> = new Set(),
+): AgentProfile {
+  return { ...profile, tools: syncToolEnableSeries(profile.tools, presetIds) };
 }
 
 export function isProtectedAgent(id: string): boolean {

@@ -197,6 +197,9 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             ON transcript_items(session_id, seq);
         CREATE INDEX IF NOT EXISTS idx_transcript_items_session_turn
             ON transcript_items(session_id, turn_id, turn_seq);
+        CREATE INDEX IF NOT EXISTS idx_transcript_items_user_seq
+            ON transcript_items(session_id, seq)
+            WHERE kind = 'item/user';
         CREATE TABLE IF NOT EXISTS session_context_meter (
             session_id         TEXT PRIMARY KEY,
             prompt_tokens      INTEGER NOT NULL DEFAULT 0,

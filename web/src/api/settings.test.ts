@@ -27,15 +27,13 @@ function catalogModel(patch: Partial<CatalogModelDto> = {}): CatalogModelDto {
 }
 
 describe("settings helpers", () => {
-  it("identifies NONE tools without preset", () => {
-    expect(isConfigurableTool("read")).toBe(true);
-    expect(isConfigurableTool("plan")).toBe(false);
-    expect(isConfigurableTool("todo")).toBe(false);
-    expect(isConfigurableTool("mcp_github")).toBe(false);
-    expect(isConfigurableTool("echo_py")).toBe(true);
-    // The whole subagent series is fixed-behavior, none of it carries a preset.
+  it("shows ALL/SAFE only when the backend card says preset", () => {
+    expect(isConfigurableTool({ permission_surface: "preset" })).toBe(true);
+    expect(isConfigurableTool({ permission_surface: "fixed" })).toBe(false);
+    expect(isConfigurableTool({})).toBe(false);
     for (const id of SUBAGENT_SERIES_TOOL_IDS) {
-      expect(isConfigurableTool(id)).toBe(false);
+      const tool = { id, permission_surface: "fixed" as const };
+      expect(isConfigurableTool(tool)).toBe(false);
     }
   });
 
@@ -142,10 +140,14 @@ describe("settings helpers", () => {
     ]);
     expect(toolEnableSeries("read")).toBeNull();
 
-    const enabled = applyToolEnabled({}, "kill_shell", true);
+    const presetIds = new Set(["bash"]);
+    const enabled = applyToolEnabled({}, "kill_shell", true, presetIds);
     expect(enabled.bash.enabled).toBe(true);
+    expect(enabled.bash.last_applied_preset).toBe("ALL");
     expect(enabled.wait_shell.enabled).toBe(true);
+    expect(enabled.wait_shell.last_applied_preset).toBeNull();
     expect(enabled.kill_shell.enabled).toBe(true);
+    expect(enabled.kill_shell.last_applied_preset).toBeNull();
 
     const disabled = applyToolEnabled(enabled, "bash", false);
     expect(disabled.bash.enabled).toBe(false);
@@ -162,18 +164,23 @@ describe("settings helpers", () => {
     expect(mixed.read.enabled).toBe(true);
     expect(mixed.read.last_applied_preset).toBe("SAFE");
 
-    const profile = withSyncedToolSeries({
-      role: "primary",
-      model_ref: "",
-      system_prompt: "",
-      temperature: 0.7,
-      max_steps: 50,
-      description: "",
-      allowed_subagents: [],
-      tools: { bash: { enabled: true, last_applied_preset: "ALL" } },
-    });
+    const profile = withSyncedToolSeries(
+      {
+        role: "primary",
+        model_ref: "",
+        system_prompt: "",
+        temperature: 0.7,
+        max_steps: 50,
+        description: "",
+        allowed_subagents: [],
+        tools: { bash: { enabled: true, last_applied_preset: "ALL" } },
+      },
+      presetIds,
+    );
     expect(profile.tools.wait_shell?.enabled).toBe(true);
+    expect(profile.tools.wait_shell?.last_applied_preset).toBeNull();
     expect(profile.tools.kill_shell?.enabled).toBe(true);
+    expect(profile.tools.kill_shell?.last_applied_preset).toBeNull();
   });
 
   it("links subagent launch wait stop as one enable series", async () => {

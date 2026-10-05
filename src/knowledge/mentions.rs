@@ -10,9 +10,8 @@ static KEY: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Node citation. Only `key` is recognized.
-static SHORTCODE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"\[@ key="([^"]*)"\]"#).expect("node citation")
-});
+static SHORTCODE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"\[@ key="([^"]*)"\]"#).expect("node citation"));
 
 /// File citation. `symbol` and `lines` are optional, in that order.
 /// A match with neither symbol nor lines is a file. A match with either is a symbol or a line range.
@@ -78,11 +77,7 @@ pub fn parse_line_span(raw: &str) -> Option<LineSpan> {
 }
 
 /// One symbol or range citation. Absent `symbol` is a line range. Absent `lines` names the symbol only.
-pub fn symbol_mention_source(
-    file: &str,
-    symbol: Option<&str>,
-    lines: Option<LineSpan>,
-) -> String {
+pub fn symbol_mention_source(file: &str, symbol: Option<&str>, lines: Option<LineSpan>) -> String {
     let mut out = format!(r#"[@ file="{file}""#);
     if let Some(symbol) = symbol.map(str::trim).filter(|text| !text.is_empty()) {
         out.push_str(&format!(r#" symbol="{symbol}""#));
@@ -602,11 +597,7 @@ see [@ file=\"src/a.rs\"]
                 end: 2165,
             }),
         );
-        let range = symbol_mention_source(
-            "src/a.rs",
-            None,
-            Some(LineSpan { start: 4, end: 4 }),
-        );
+        let range = symbol_mention_source("src/a.rs", None, Some(LineSpan { start: 4, end: 4 }));
         let knowledge = symbol_mention_source("src/a.rs", Some("fn alpha"), None);
         let value = format!(
             "see {symbol} then {} and {knowledge}\n```\n{symbol}\n```\n`{range}`",

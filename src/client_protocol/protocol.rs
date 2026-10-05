@@ -16,6 +16,8 @@ pub mod methods {
     pub const SESSION_SUBSCRIBE: &str = "session/subscribe";
     pub const SESSION_UNSUBSCRIBE: &str = "session/unsubscribe";
     pub const BUFFER_LOAD: &str = "buffer/load";
+    /// User-message anchors (`item/user` seqs) around a cursor. Bodies stay on `buffer/load`.
+    pub const BUFFER_USER_ANCHORS: &str = "buffer/user-anchors";
     pub const BUFFER_ITEM: &str = "buffer/item";
     /// Parent session: child session created for a `subagent_launch` call_id.
     pub const AGENT_SUBAGENT_BOUND: &str = "agent/subagent_bound";
@@ -295,6 +297,25 @@ pub struct WireBufferEvent {
     /// Hidden reminders stay on the wire so seq cursors stay continuous.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+}
+
+/// One user-message position. The body is loaded separately via `buffer/load`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserAnchorWire {
+    pub seq: crate::session::event::Seq,
+}
+
+/// RPC result for `buffer/user-anchors`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserAnchorsResult {
+    pub session_id: String,
+    /// Ascending window: requested predecessors, the anchor when it is a user row, then successors.
+    pub anchors: Vec<UserAnchorWire>,
+    /// Present when `anchor_seq` (or the latest user row) is itself `item/user`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_seq: Option<crate::session::event::Seq>,
+    pub has_more_before: bool,
+    pub has_more_after: bool,
 }
 
 /// RPC result for `buffer/load`.

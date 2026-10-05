@@ -15,6 +15,7 @@ import { displayMessages, useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
 import { AgentChatInput } from "./AgentChatInput";
 import { MessageList } from "./MessageList";
+import type { RevealSeq } from "./transcript/transcriptScrollGlide";
 import { ProgressiveBlur } from "./ProgressiveBlur";
 import { SessionStatusLine } from "./SessionStatusLine";
 
@@ -66,7 +67,7 @@ export function SubagentReadOnlyContent({
   }, [loadMoreHistoryAction, sessionId]);
 
   const listRef = useRef<HTMLDivElement>(null);
-  const revealSeqRef = useRef<((seq: number) => void) | null>(null);
+  const revealSeqRef = useRef<RevealSeq | null>(null);
   const [blurOpacity, setBlurOpacity] = useState(0);
   const pendingReveal = useSyncExternalStore(
     subscribePendingReveal,

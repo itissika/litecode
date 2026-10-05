@@ -121,6 +121,15 @@ pub enum ToolOrigin {
     Workspace,
 }
 
+/// Whether the Agents card shows ALL/SAFE. `fixed` is bind on/off only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionSurface {
+    Preset,
+    #[default]
+    Fixed,
+}
+
 /// One currently bindable tool card for this workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableTool {
@@ -129,6 +138,9 @@ pub struct AvailableTool {
     pub origin: ToolOrigin,
     #[serde(default)]
     pub overridden: bool,
+    /// Backend declaration of whether this tool has an ALL/SAFE dial.
+    #[serde(default)]
+    pub permission_surface: PermissionSurface,
 }
 
 /// Workspace-engine configured intent (from engines.json).

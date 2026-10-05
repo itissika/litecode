@@ -268,6 +268,20 @@ export type WireBufferEvent =
 /** HumanView row: a committed log row. Its lifecycle is its own `state`. */
 export type HumanRow = WireBufferEvent;
 
+/** One `item/user` position from `buffer/user-anchors`. */
+export interface UserAnchorRef {
+  seq: number;
+}
+
+/** Cursor page of user-message anchors. Bodies stay on `buffer/load`. */
+export interface UserAnchorsResult {
+  session_id: string;
+  anchors: UserAnchorRef[];
+  anchor_seq?: number | null;
+  has_more_before: boolean;
+  has_more_after: boolean;
+}
+
 export interface BufferLoaded {
   session_id: string;
   from_seq: number;

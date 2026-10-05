@@ -614,6 +614,26 @@ impl SessionManager {
         Ok(())
     }
 
+    pub fn entry_user_anchor_window(
+        &self,
+        session_id: &str,
+        anchor_seq: Option<i64>,
+        before: i64,
+        after: i64,
+    ) -> Result<crate::session::data::command::UserAnchorWindow> {
+        match self.data.read_blocking(SessionRead::UserAnchors {
+            session_id: session_id.to_string(),
+            anchor_seq,
+            before,
+            after,
+        })? {
+            ReadValue::UserAnchors(window) => Ok(window),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected user anchors".into(),
+            )),
+        }
+    }
+
     pub fn entry_user_detail_count(&self, session_id: &str) -> Result<i64> {
         match self.data.read_blocking(SessionRead::UserDetailCount {
             session_id: session_id.to_string(),

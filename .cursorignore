@@ -1,0 +1,6 @@
+# Cursor-only overrides (Git still uses .gitignore dev/).
+# Git: parent dev/ is not traversed unless we negate it first (see Cursor ignore-file docs).
+!dev/
+dev/*
+!dev/参考/
+!dev/参考/**

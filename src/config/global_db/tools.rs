@@ -59,10 +59,6 @@ pub fn is_workspace_optional(id: &str) -> bool {
     matches!(id, "code_search" | "lsp")
 }
 
-pub fn is_configurable_tool(id: &str) -> bool {
-    core_configurable_tools().contains(&id) || network_core_tools().contains(&id)
-}
-
 pub fn mcp_catalog_id(server_id: &str) -> String {
     format!("mcp_{server_id}")
 }

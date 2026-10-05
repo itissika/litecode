@@ -188,12 +188,19 @@ const lspTool: AvailableTool = {
   id: "lsp",
   kind: "engine",
   origin: "workspace",
+  permission_surface: "fixed",
 };
-const readTool: AvailableTool = { id: "read", kind: "core", origin: "builtin" };
+const readTool: AvailableTool = {
+  id: "read",
+  kind: "core",
+  origin: "builtin",
+  permission_surface: "preset",
+};
 const mcpDemoTool: AvailableTool = {
   id: "mcp_demo",
   kind: "mcp",
   origin: "workspace",
+  permission_surface: "fixed",
 };
 
 describe("AgentsSection subagent tool cards", () => {
@@ -245,6 +252,8 @@ describe("AgentsSection subagent tool cards", () => {
     expect(
       within(readPreset).getByRole("button", { name: "ALL" }),
     ).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "lsp preset" })).toBeNull();
+    expect(screen.getAllByText("Not configurable").length).toBeGreaterThan(0);
     // MCP server bindings expose the per-server tool visibility picker.
     expect(
       screen.getByRole("button", {

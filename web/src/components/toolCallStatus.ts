@@ -8,7 +8,7 @@ export { isToolCallLive } from "../lib/toolCallLive";
 /**
  * Process FoldCards represent a contiguous tool/reasoning segment, not a single
  * tool invocation. The group stays open until the following message arrives
- * (assistant output or user bubble, closing the segment) or a terminal stop
+ * (assistant output, a user bubble, or a system-mark bubble) or a terminal stop
  * (failed/incomplete) occurs.
  * Streaming state is irrelevant — a live node cannot coexist with a following
  * message or terminal stop, so the product semantics reduce to two conditions.

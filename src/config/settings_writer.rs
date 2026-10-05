@@ -653,10 +653,8 @@ impl SettingsWriter {
                 .get_mut(&id)
                 .expect("agent exists after load check");
             for (tool_id, binding) in profile.tools.iter_mut() {
-                if tools::core_none_tools().contains(&tool_id.as_str())
-                    || tools::is_mcp_catalog_id(tool_id)
-                {
-                    binding.last_applied_preset = None;
+                if !crate::permission::has_permission_preset(tool_id) {
+                    clear_fixed_preset(binding, tools::is_mcp_catalog_id(tool_id));
                     continue;
                 }
                 apply_preset_to_binding(tool_id, binding, preset);
@@ -995,23 +993,30 @@ fn validate_agent_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Expand `last_applied_preset` into policy/path_mode for configurable tools.
-/// NONE tools (`plan` / `todo` / `subagent_launch` / `subagent_wait` / `subagent_stop` /
-/// `subagent_list` / `subagent_send`) are left untouched.
+/// Expand `last_applied_preset` into policy/path_mode for tools that have a dial.
+/// Fixed tools (bind only, including MCP allowlists) are stored as allow-all.
 fn expand_binding_presets(tools: &mut HashMap<String, AgentToolBinding>) {
     for (tool_id, binding) in tools.iter_mut() {
-        if tools::is_mcp_catalog_id(tool_id) {
-            binding.last_applied_preset = None;
-            continue;
+        let mcp = tools::is_mcp_catalog_id(tool_id);
+        if !mcp {
+            binding.allowed_tools = None;
         }
-        binding.allowed_tools = None;
-        if tools::core_none_tools().contains(&tool_id.as_str()) {
-            binding.last_applied_preset = None;
+        if !crate::permission::has_permission_preset(tool_id) {
+            clear_fixed_preset(binding, mcp);
             continue;
         }
         if let Some(preset) = binding.last_applied_preset {
             apply_preset_to_binding(tool_id, binding, preset);
         }
+    }
+}
+
+fn clear_fixed_preset(binding: &mut AgentToolBinding, keep_allowed_tools: bool) {
+    binding.last_applied_preset = None;
+    binding.policy = crate::permission::ToolPolicy::allow_all();
+    binding.path_mode = crate::permission::BindingPathMode::Unrestricted;
+    if !keep_allowed_tools {
+        binding.allowed_tools = None;
     }
 }
 

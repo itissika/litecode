@@ -510,13 +510,7 @@ impl KnowledgeTool {
         let now = SystemTime::now();
         let incoming = corpus.incoming(&to).len();
         let card = corpus.by_key(&to).map(|node| {
-            view::node_row(
-                node,
-                &node_issues(&issues, &node.id),
-                incoming,
-                now,
-                &root,
-            )
+            view::node_row(node, &node_issues(&issues, &node.id), incoming, now, &root)
         });
         let mut parts = vec!["# Renamed".to_string()];
         if !wrote.is_empty() {
@@ -1051,11 +1045,7 @@ mod tests {
             .await;
         assert!(checked.content.contains("# Check"));
         assert!(!checked.content.contains("Check ·"));
-        assert!(
-            checked
-                .content
-                .contains("Checked 1 node. No issues.")
-        );
+        assert!(checked.content.contains("Checked 1 node. No issues."));
 
         let split = tool
             .execute(

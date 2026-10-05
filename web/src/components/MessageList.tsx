@@ -1,4 +1,4 @@
-import { memo, useMemo, type CSSProperties, type RefObject } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, type CSSProperties, type RefObject } from "react";
 
 import type { HumanRow, PendingMessage } from "../api/types";
 import { canRevertFiles, projectBubbles } from "../lib/transcriptProjection";
@@ -8,10 +8,15 @@ import { CompactingMark, TranscriptMarkForRow } from "./transcriptMarks";
 import { ItemBubble, type EditingUserAnchor } from "./transcript/ItemBubble";
 import { PendingQueueBubble } from "./transcript/PendingQueueBubble";
 import { useBottomPad, useBottomPadMotion } from "./transcript/useBottomPad";
+import type { RevealSeq } from "./transcript/transcriptScrollGlide";
 import {
   HISTORY_LOADER_HEIGHT,
   useTranscriptViewport,
 } from "./transcript/useTranscriptViewport";
+import {
+  USER_DOT_CENTER_Y,
+  type UserRailLayoutMark,
+} from "./transcript/transcriptUserRailMarks";
 
 export type { EditingUserAnchor };
 
@@ -32,7 +37,7 @@ interface MessageListProps {
   onStickChange?: (stickToEnd: boolean) => void;
   jumpToEndRef?: RefObject<(() => void) | null>;
   revealBashRef?: RefObject<((callId: string) => void) | null>;
-  revealSeqRef?: RefObject<((seq: number) => void) | null>;
+  revealSeqRef?: RefObject<RevealSeq | null>;
   editingAnchor?: EditingUserAnchor | null;
   onEditAnchor?: (anchor: EditingUserAnchor) => void;
   onDismissEdit?: () => void;
@@ -45,6 +50,9 @@ interface MessageListProps {
    *  text cursor. Not merely a noop handler — the writable affordances are not
    *  built at all. */
   readOnly?: boolean;
+  /** Dot centers for the scroll-synced user rail. Absent in tests and read-only panels. */
+  userRailLayoutRef?: RefObject<UserRailLayoutMark[]>;
+  userRailNotifyRef?: RefObject<(() => void) | null>;
 }
 
 export const MessageList = memo(function MessageList({
@@ -67,6 +75,8 @@ export const MessageList = memo(function MessageList({
   onMiniAnimationEnd = () => {},
   composerCollapsed = false,
   readOnly = false,
+  userRailLayoutRef,
+  userRailNotifyRef,
 }: MessageListProps) {
   const bubbles = useMemo(() => projectBubbles(messages), [messages]);
   // Transient "compacting now" line: `compacting` is set on started and cleared
@@ -103,6 +113,7 @@ export const MessageList = memo(function MessageList({
   const queueRows = pendingQueue ? 1 : 0;
 
   const pad = useBottomPad({ scrollRef, composerCollapsed });
+  const onGeometryRef = useRef<(() => void) | null>(null);
   const view = useTranscriptViewport({
     bubbles,
     compactingRows,
@@ -121,6 +132,7 @@ export const MessageList = memo(function MessageList({
     jumpToEndRef,
     revealBashRef,
     revealSeqRef,
+    onGeometryRef,
   });
   useBottomPadMotion({
     scrollRef,
@@ -133,26 +145,51 @@ export const MessageList = memo(function MessageList({
     setStick: view.setStick,
   });
 
-  const itemStyle = (start: number): CSSProperties => ({
+  // The virtualizer owns main-axis position (`transform`) and the inner
+  // container's height, and writes both before paint when a measurement
+  // lands. React must not set either, or the next render would put the
+  // estimate back for a frame.
+  const itemStyle: CSSProperties = {
     position: "absolute",
     top: 0,
     left: 0,
     width: "100%",
-    transform: `translateY(${start}px)`,
-  });
+  };
 
   const showList =
     bubbles.length + compactingRows + queueRows > 0 || canLoadMore;
+
+  onGeometryRef.current = () => {
+    if (!userRailLayoutRef) return;
+    const marks: UserRailLayoutMark[] = [];
+    for (let index = 0; index < bubbles.length; index++) {
+      const bubble = bubbles[index];
+      if (!bubble?.isUser || bubble.first == null || bubble.first.seq < 0) {
+        continue;
+      }
+      const start =
+        view.virtualizer.measurementsCache?.[index]?.start ??
+        view.virtualizer.getOffsetForIndex?.(index)?.[0];
+      if (start == null) continue;
+      marks.push({
+        seq: bubble.first.seq,
+        contentY: start + USER_DOT_CENTER_Y,
+      });
+    }
+    userRailLayoutRef.current = marks;
+    userRailNotifyRef?.current?.();
+  };
+
+  useLayoutEffect(() => {
+    onGeometryRef.current?.();
+  }, [bubbles, userRailLayoutRef, userRailNotifyRef, view.virtualItems, view.virtualizer]);
 
   return (
     <div data-testid="message-list">
       {showList && (
         <div
-          style={{
-            height: `${view.totalSize}px`,
-            width: "100%",
-            position: "relative",
-          }}
+          ref={view.virtualizer.containerRef}
+          style={{ width: "100%", position: "relative" }}
         >
           {canLoadMore ? (
             <div
@@ -177,7 +214,7 @@ export const MessageList = memo(function MessageList({
                   key={virtualItem.key}
                   data-index={virtualItem.index}
                   ref={view.virtualizer.measureElement}
-                  style={itemStyle(virtualItem.start)}
+                  style={itemStyle}
                 >
                   <PendingQueueBubble
                     text={pendingQueue.joined}
@@ -194,7 +231,7 @@ export const MessageList = memo(function MessageList({
                   key={virtualItem.key}
                   data-index={virtualItem.index}
                   ref={view.virtualizer.measureElement}
-                  style={itemStyle(virtualItem.start)}
+                  style={itemStyle}
                 >
                   <CompactingMark />
                 </div>
@@ -236,6 +273,7 @@ export const MessageList = memo(function MessageList({
                 readOnly={readOnly}
                 isRunning={isRunning}
                 followedByUser={bubble.followedByUser}
+                followedByMark={bubble.followedByMark}
                 sessionId={sessionId}
                 bubbleKey={bubble.key}
                 editingAnchor={editingAnchor ?? null}
@@ -252,7 +290,7 @@ export const MessageList = memo(function MessageList({
                 data-index={virtualItem.index}
                 data-seq-hit={bubble.rows.map((row) => row.seq).join(" ")}
                 ref={view.virtualizer.measureElement}
-                style={itemStyle(virtualItem.start)}
+                style={itemStyle}
               >
                 {/* The positioned wrapper owns its own translateY, so the
                     settle animates a child instead of clobbering it. */}

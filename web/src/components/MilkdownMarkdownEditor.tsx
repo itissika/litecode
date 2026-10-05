@@ -3,6 +3,7 @@ import { replaceAll } from "@milkdown/kit/utils";
 import { useEffect, useRef } from "react";
 
 import { registerMarkdownFlush } from "../lib/markdownFlush";
+import { remarkImageStringAttrs } from "./markdownImageAttrs";
 
 import "@milkdown/crepe/theme/common/style.css";
 
@@ -45,6 +46,7 @@ export function MilkdownMarkdownEditor({ filePath, content, onChange }: Props) {
         [Crepe.Feature.TopBar]: false,
       },
     });
+    crepe.editor.use(remarkImageStringAttrs);
     crepeRef.current = crepe;
 
     crepe.on((listener) => {

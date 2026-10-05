@@ -157,21 +157,34 @@ fn bind_tools<'a>(
     preset: ToolPreset,
     tools: impl IntoIterator<Item = &'a str>,
 ) -> Result<()> {
-    use crate::config::schema::AgentToolBinding;
-    use crate::permission::presets::binding_for_tool;
-
     for tool in tools {
-        let (policy, path_mode) = binding_for_tool(tool, preset);
-        let binding = AgentToolBinding {
-            enabled: true,
-            policy,
-            path_mode,
-            last_applied_preset: Some(preset),
-            allowed_tools: None,
-        };
-        store::upsert_agent_tool(conn, agent_id, tool, &binding)?;
+        store::upsert_agent_tool(conn, agent_id, tool, &binding_seeded(tool, preset))?;
     }
     Ok(())
+}
+
+/// Preset tools keep the requested dial. Fixed tools are enabled with allow-all and no dial.
+fn binding_seeded(tool: &str, preset: ToolPreset) -> crate::config::schema::AgentToolBinding {
+    use crate::config::schema::AgentToolBinding;
+    use crate::permission::presets::{binding_for_tool, has_permission_preset};
+
+    if !has_permission_preset(tool) {
+        return AgentToolBinding {
+            enabled: true,
+            policy: crate::permission::ToolPolicy::allow_all(),
+            path_mode: crate::permission::BindingPathMode::default(),
+            last_applied_preset: None,
+            allowed_tools: None,
+        };
+    }
+    let (policy, path_mode) = binding_for_tool(tool, preset);
+    AgentToolBinding {
+        enabled: true,
+        policy,
+        path_mode,
+        last_applied_preset: Some(preset),
+        allowed_tools: None,
+    }
 }
 
 fn bind_none(conn: &Connection, agent_id: &str, tool: &str) -> Result<()> {
@@ -196,15 +209,12 @@ fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
     use crate::permission::presets::binding_for_tool;
 
     for tool in ["read", "grep", "glob", "session_search"] {
-        let (policy, path_mode) = binding_for_tool(tool, ToolPreset::Safe);
-        let binding = AgentToolBinding {
-            enabled: true,
-            policy,
-            path_mode,
-            last_applied_preset: Some(ToolPreset::Safe),
-            allowed_tools: None,
-        };
-        store::upsert_agent_tool(conn, "explore", tool, &binding)?;
+        store::upsert_agent_tool(
+            conn,
+            "explore",
+            tool,
+            &binding_seeded(tool, ToolPreset::Safe),
+        )?;
     }
 
     let (bash_policy, bash_path) = binding_for_tool("bash", ToolPreset::Safe);
@@ -236,18 +246,11 @@ fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
     }
 
     for tool in network_core_tools() {
-        let (policy, path_mode) = binding_for_tool(tool, ToolPreset::All);
         store::upsert_agent_tool(
             conn,
             "explore",
             tool,
-            &AgentToolBinding {
-                enabled: true,
-                policy,
-                path_mode,
-                last_applied_preset: Some(ToolPreset::All),
-                allowed_tools: None,
-            },
+            &binding_seeded(tool, ToolPreset::All),
         )?;
     }
     let (workspace_policy, workspace_path) =
@@ -360,6 +363,34 @@ pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
     ensure_explore_shared_tools(conn)?;
     restore_default_if_mistakenly_replaced(conn)?;
     reconcile_role_rules(conn)?;
+    normalize_fixed_builtin_bindings(conn)?;
+    Ok(())
+}
+
+/// Tools that used to carry ALL/SAFE but are now bind-only. Rewrite stored rows
+/// so an old SAFE=Ask does not linger until the next settings save.
+/// Coding presets and `litecode_workspace` are left as stored.
+fn normalize_fixed_builtin_bindings(conn: &Connection) -> Result<()> {
+    use crate::permission::has_permission_preset;
+
+    let policy_json = serde_json::to_string(&crate::permission::ToolPolicy::allow_all())?;
+    let mut ids: Vec<String> = super::tools::core_tool_ids();
+    ids.extend(
+        super::tools::optional_builtin_ids()
+            .iter()
+            .map(|id| (*id).to_string()),
+    );
+    for id in ids {
+        if has_permission_preset(&id) {
+            continue;
+        }
+        conn.execute(
+            "UPDATE agent_tools
+             SET policy_json = ?1, path_mode = 'unrestricted', last_applied_preset = NULL
+             WHERE tool_id = ?2",
+            rusqlite::params![policy_json, id],
+        )?;
+    }
     Ok(())
 }
 
@@ -373,16 +404,12 @@ fn ensure_default_core_bindings(conn: &Connection) -> Result<()> {
     }
     for tool in core_configurable_tools() {
         if !agent_has_tool(conn, "default", tool)? {
-            let (policy, path_mode) =
-                crate::permission::presets::binding_for_tool(tool, ToolPreset::All);
-            let binding = crate::config::schema::AgentToolBinding {
-                enabled: true,
-                policy,
-                path_mode,
-                last_applied_preset: Some(ToolPreset::All),
-                allowed_tools: None,
-            };
-            store::upsert_agent_tool(conn, "default", tool, &binding)?;
+            store::upsert_agent_tool(
+                conn,
+                "default",
+                tool,
+                &binding_seeded(tool, ToolPreset::All),
+            )?;
         }
     }
     for tool in core_none_tools() {
@@ -415,16 +442,12 @@ fn ensure_general_agent(conn: &Connection) -> Result<()> {
     }
     for tool in subagent_configurable_tools() {
         if !agent_has_tool(conn, "general", tool)? {
-            let (policy, path_mode) =
-                crate::permission::presets::binding_for_tool(tool, ToolPreset::All);
-            let binding = crate::config::schema::AgentToolBinding {
-                enabled: true,
-                policy,
-                path_mode,
-                last_applied_preset: Some(ToolPreset::All),
-                allowed_tools: None,
-            };
-            store::upsert_agent_tool(conn, "general", tool, &binding)?;
+            store::upsert_agent_tool(
+                conn,
+                "general",
+                tool,
+                &binding_seeded(tool, ToolPreset::All),
+            )?;
         }
     }
     for tool in subagent_none_tools() {
@@ -446,16 +469,12 @@ fn ensure_explore_shared_tools(conn: &Connection) -> Result<()> {
         return Ok(());
     }
     if !agent_has_tool(conn, "explore", "litecode_workspace")? {
-        let (policy, path_mode) =
-            crate::permission::presets::binding_for_tool("litecode_workspace", ToolPreset::All);
-        let binding = crate::config::schema::AgentToolBinding {
-            enabled: true,
-            policy,
-            path_mode,
-            last_applied_preset: Some(ToolPreset::All),
-            allowed_tools: None,
-        };
-        store::upsert_agent_tool(conn, "explore", "litecode_workspace", &binding)?;
+        store::upsert_agent_tool(
+            conn,
+            "explore",
+            "litecode_workspace",
+            &binding_seeded("litecode_workspace", ToolPreset::All),
+        )?;
     }
     for tool in subagent_none_tools() {
         if !agent_has_tool(conn, "explore", tool)? {
@@ -497,16 +516,12 @@ fn ensure_orchestrator_agent(conn: &Connection) -> Result<()> {
     }
     for tool in core_configurable_tools() {
         if !agent_has_tool(conn, "orchestrator", tool)? {
-            let (policy, path_mode) =
-                crate::permission::presets::binding_for_tool(tool, ToolPreset::All);
-            let binding = crate::config::schema::AgentToolBinding {
-                enabled: true,
-                policy,
-                path_mode,
-                last_applied_preset: Some(ToolPreset::All),
-                allowed_tools: None,
-            };
-            store::upsert_agent_tool(conn, "orchestrator", tool, &binding)?;
+            store::upsert_agent_tool(
+                conn,
+                "orchestrator",
+                tool,
+                &binding_seeded(tool, ToolPreset::All),
+            )?;
         }
     }
     for tool in core_none_tools() {
@@ -973,5 +988,57 @@ mod tests {
                 .unwrap();
             assert_eq!(workspace, 1, "{agent} should bind litecode_workspace");
         }
+    }
+
+    #[test]
+    fn fixed_builtins_drop_stored_presets_coding_dials_stay() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate::migrate(&conn).unwrap();
+        seed(&conn).unwrap();
+
+        let session_preset: Option<String> = conn
+            .query_row(
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'default' AND tool_id = 'session_search'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(session_preset, None);
+
+        let bash_preset: Option<String> = conn
+            .query_row(
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'bash'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bash_preset.as_deref(), Some("SAFE"));
+
+        conn.execute(
+            "UPDATE agent_tools SET last_applied_preset = 'SAFE', policy_json = '{\"default\":\"ask\",\"default_id\":\"__default\",\"rules\":[]}', path_mode = 'workspace_only' WHERE agent_id = 'explore' AND tool_id = 'webfetch'",
+            [],
+        )
+        .unwrap();
+        ensure_core_bindings(&conn).unwrap();
+
+        let (preset, policy, path): (Option<String>, String, String) = conn
+            .query_row(
+                "SELECT last_applied_preset, policy_json, path_mode FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'webfetch'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(preset, None);
+        assert_eq!(path, "unrestricted");
+        assert!(policy.contains("\"allow\""));
+
+        let bash_after: Option<String> = conn
+            .query_row(
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'bash'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bash_after.as_deref(), Some("SAFE"));
     }
 }

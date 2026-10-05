@@ -11,13 +11,21 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   bubbleImageCount,
   bubblePlainText,
+  estimateAssistantBubbleHeight,
   estimateUserBubbleHeight,
   locateBashTool,
   locateSeq,
   type Bubble,
 } from "../../lib/transcriptProjection";
-import { useStickToBottom } from "../../lib/scrollStick";
+import { SCROLL_INTENT_KEYS, useStickToBottom } from "../../lib/scrollStick";
 import { requestFoldCardOpen } from "../foldCardState";
+import {
+  centerDelta,
+  easeInOutCubic,
+  glideDuration,
+  rebaseGlideFrom,
+  type RevealSeq,
+} from "./transcriptScrollGlide";
 import { scrollGlide } from "./useBottomPad";
 
 /** History sentinel, applied as paddingStart so it is not a virtual item. */
@@ -27,7 +35,6 @@ const COMPACTING_PENDING_KEY = "__compacting_pending__";
 const COMPACTING_LINE_HEIGHT = 22;
 /** Virtual key of the trailing queued-batch bubble. */
 const QUEUE_BUBBLE_KEY = "__pending_queue__";
-const ASSISTANT_ESTIMATE = 240;
 const MARK_ESTIMATE = 28;
 const EDITING_ESTIMATE = 240;
 
@@ -68,6 +75,21 @@ function seqHitSelector(seq: number): string {
   return `[data-seq-hit~="${seq}"]`;
 }
 
+/** Center `el` inside the transcript scroller only. Ancestors stay put. */
+function alignInScroller(scroller: HTMLElement, el: HTMLElement): void {
+  const host = scroller.getBoundingClientRect();
+  const box = el.getBoundingClientRect();
+  if (host.height <= 0 || box.height <= 0) return;
+  const delta = centerDelta({
+    scrollerTop: host.top,
+    scrollerHeight: host.height,
+    elementTop: box.top,
+    elementHeight: box.height,
+  });
+  if (Math.abs(delta) < 1) return;
+  scroller.scrollTop += delta;
+}
+
 export function useTranscriptViewport({
   bubbles,
   compactingRows,
@@ -86,6 +108,9 @@ export function useTranscriptViewport({
   jumpToEndRef,
   revealBashRef,
   revealSeqRef,
+  /** Fired after the virtualizer changes geometry, including a measurement
+   *  that updates positions without a React render. */
+  onGeometryRef,
 }: {
   bubbles: Bubble[];
   compactingRows: number;
@@ -103,7 +128,8 @@ export function useTranscriptViewport({
   onStickChange?: (stickToEnd: boolean) => void;
   jumpToEndRef?: RefObject<(() => void) | null>;
   revealBashRef?: RefObject<((callId: string) => void) | null>;
-  revealSeqRef?: RefObject<((seq: number) => void) | null>;
+  revealSeqRef?: RefObject<RevealSeq | null>;
+  onGeometryRef?: RefObject<(() => void) | null>;
 }) {
   const count = bubbles.length + compactingRows + queueRows;
   const paddingStart = canLoadMore ? HISTORY_LOADER_HEIGHT : 0;
@@ -140,7 +166,7 @@ export function useTranscriptViewport({
               bubbleImageCount(bubble),
             );
       }
-      return ASSISTANT_ESTIMATE;
+      return estimateAssistantBubbleHeight(bubble);
     },
     [bubbles, compactingRows, editingBubbleKey, queueImageCount, queueText],
   );
@@ -171,6 +197,14 @@ export function useTranscriptViewport({
     paddingStart,
     paddingEnd,
     anchorTo: "end",
+    // Measurement corrects scrollTop immediately, then tells React later.
+    // Writing positions in that same callback keeps the two from landing a
+    // frame apart. The container height and item transforms belong to the
+    // virtualizer; MessageList must not set them.
+    directDomUpdates: true,
+    onChange: () => {
+      onGeometryRef?.current?.();
+    },
   });
 
   // See shouldCompensateSizeChange for the rule. While unpinned, compensate
@@ -217,7 +251,8 @@ export function useTranscriptViewport({
         const tick = () => {
           const el = document.querySelector(bashCallSelector(callId));
           if (el instanceof HTMLElement) {
-            el.scrollIntoView({ block: "center", inline: "nearest" });
+            const scroller = scrollRef.current;
+            if (scroller) alignInScroller(scroller, el);
             el.classList.remove("bash-view-reveal");
             void el.offsetWidth;
             el.classList.add("bash-view-reveal");
@@ -229,26 +264,25 @@ export function useTranscriptViewport({
       };
       seek();
     },
-    [sessionId, setStick, virtualizer],
+    [scrollRef, sessionId, setStick, virtualizer],
   );
   if (revealBashRef) revealBashRef.current = revealBash;
 
+  const glideStopRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => glideStopRef.current?.(), []);
+
   const revealSeq = useCallback(
-    (seq: number) => {
+    (seq: number, options?: { glide?: boolean }) => {
       setStick(false);
+      glideStopRef.current?.();
       const started = performance.now();
-      const seek = () => {
-        const bubbleIndex = locateSeq(bubblesRef.current, seq);
-        if (bubbleIndex == null) {
-          if (performance.now() - started < 800) requestAnimationFrame(seek);
-          return;
-        }
-        virtualizer.scrollToIndex(bubbleIndex, { align: "center" });
+      const emphasize = (correct: boolean) => {
         const paintStarted = performance.now();
         const tick = () => {
           const el = document.querySelector(seqHitSelector(seq));
           if (el instanceof HTMLElement) {
-            el.scrollIntoView({ block: "center", inline: "nearest" });
+            const scroller = scrollRef.current;
+            if (correct && scroller) alignInScroller(scroller, el);
             el.classList.remove("session-search-reveal");
             void el.offsetWidth;
             el.classList.add("session-search-reveal");
@@ -258,9 +292,83 @@ export function useTranscriptViewport({
         };
         requestAnimationFrame(tick);
       };
+      const seek = () => {
+        const bubbleIndex = locateSeq(bubblesRef.current, seq);
+        if (bubbleIndex == null) {
+          if (performance.now() - started < 800) requestAnimationFrame(seek);
+          return;
+        }
+        const scroller = scrollRef.current;
+        const glide =
+          options?.glide === true &&
+          scroller != null &&
+          scrollGlide() === "smooth";
+        if (!glide || !scroller) {
+          virtualizer.scrollToIndex(bubbleIndex, { align: "center" });
+          emphasize(true);
+          return;
+        }
+        const initial = virtualizer.getOffsetForIndex(bubbleIndex, "center")?.[0];
+        if (initial == null || Math.abs(initial - scroller.scrollTop) < 2) {
+          if (initial != null) scroller.scrollTop = initial;
+          else virtualizer.scrollToIndex(bubbleIndex, { align: "center" });
+          emphasize(true);
+          return;
+        }
+        let from = scroller.scrollTop;
+        let to = initial;
+        const duration = glideDuration(to - from);
+        const t0 = performance.now();
+        let raf = 0;
+        let stopped = false;
+        const detach = () => {
+          if (raf !== 0) cancelAnimationFrame(raf);
+          raf = 0;
+          scroller.removeEventListener("wheel", onAbort);
+          scroller.removeEventListener("pointerdown", onAbort);
+          window.removeEventListener("keydown", onKey);
+          if (glideStopRef.current === stop) glideStopRef.current = null;
+        };
+        function stop() {
+          stopped = true;
+          detach();
+        }
+        function onAbort() {
+          stop();
+        }
+        function onKey(event: KeyboardEvent) {
+          if (SCROLL_INTENT_KEYS.has(event.key)) stop();
+        }
+        const step = (now: number) => {
+          if (stopped) return;
+          const p = Math.min(1, (now - t0) / duration);
+          const eased = easeInOutCubic(p);
+          const nextTo =
+            virtualizer.getOffsetForIndex(bubbleIndex, "center")?.[0] ?? to;
+          if (nextTo !== to) {
+            from = rebaseGlideFrom(scroller.scrollTop, nextTo, eased);
+            to = nextTo;
+          }
+          scroller.scrollTop = from + (to - from) * eased;
+          if (p < 1) {
+            raf = requestAnimationFrame(step);
+            return;
+          }
+          const dest =
+            virtualizer.getOffsetForIndex(bubbleIndex, "center")?.[0] ?? to;
+          scroller.scrollTop = dest;
+          detach();
+          emphasize(false);
+        };
+        glideStopRef.current = stop;
+        scroller.addEventListener("wheel", onAbort, { passive: true });
+        scroller.addEventListener("pointerdown", onAbort);
+        window.addEventListener("keydown", onKey);
+        raf = requestAnimationFrame(step);
+      };
       seek();
     },
-    [setStick, virtualizer],
+    [scrollRef, setStick, virtualizer],
   );
   if (revealSeqRef) revealSeqRef.current = revealSeq;
 

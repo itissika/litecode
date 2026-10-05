@@ -5,6 +5,7 @@ import { isCompactCutRow, projectionRowKey } from "../api/adapter";
 import {
   bubbleIdentity,
   canRevertFiles,
+  estimateAssistantBubbleHeight,
   estimateUserBubbleHeight,
   groupRowsForBubbles,
   locateBashTool,
@@ -198,6 +199,39 @@ describe("groupRowsForBubbles compact cut", () => {
     expect(grouped[2]?.map((r) => r.seq)).toEqual([liveTool.seq]);
     expect(bubbleIdentity(grouped, 0)).toBe(String(liveReasoning.seq));
     expect(bubbleIdentity(grouped, 1)).toBe("5");
+  });
+});
+
+describe("estimateAssistantBubbleHeight", () => {
+  const reasoning = (text: string): HumanRow => ({
+    seq: 1,
+    kind: "item/assistant",
+    state: "final",
+    body: {
+      type: "reasoning",
+      id: "rs_1",
+      summary: [{ type: "summary_text", text }],
+      content: [{ type: "reasoning_text", text }],
+      status: "completed",
+    },
+  });
+
+  it("counts a closed process group as its header when a user message follows", () => {
+    const bubbles = projectBubbles([reasoning("a".repeat(400)), userRow]);
+    const assistant = bubbles.find((bubble) => !bubble.isUser);
+    expect(assistant).toBeTruthy();
+    expect(estimateAssistantBubbleHeight(assistant!)).toBe(16 + 28);
+  });
+
+  it("counts a closed process group as its header when a system mark follows", () => {
+    const bubbles = projectBubbles([reasoning("thinking"), compactCut(5)]);
+    const assistant = bubbles.find((bubble) => !bubble.isUser && !bubble.markOnly);
+    expect(estimateAssistantBubbleHeight(assistant!)).toBe(16 + 28);
+  });
+
+  it("adds reasoning lines while the process group is still the tail", () => {
+    const bubbles = projectBubbles([reasoning("a".repeat(72 * 3))]);
+    expect(estimateAssistantBubbleHeight(bubbles[0]!)).toBe(16 + 28 + 3 * 25);
   });
 });
 

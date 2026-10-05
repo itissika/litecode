@@ -20,7 +20,9 @@ pub use grants::{
 pub use matchers::{ArgMatcher, MatchContext, matches};
 pub use messages::{permission_denied_by_user_message, permission_denied_message};
 pub use policy::{BindingPathMode, DEFAULT_RULE_ID, PolicyRule, ToolPolicy};
-pub use presets::{apply_preset_to_tools, binding_for_tool};
+pub use presets::{
+    apply_preset_to_tools, binding_for_tool, has_permission_preset, permission_surface,
+};
 pub use sensitive::is_sensitive_system_path;
 pub use sinks::{
     CancellingPermissionSink, DenyPermissionSink, RecordingPermissionSink, deny_permission_sink,

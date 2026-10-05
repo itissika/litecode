@@ -386,6 +386,8 @@ export interface Bubble {
   isUser: boolean;
   markOnly: boolean;
   followedByUser: boolean;
+  /** Next bubble is a system mark (compact, background exit, …), which ends the segment. */
+  followedByMark: boolean;
 }
 
 /** One pass over the visible rows: bubble identity and whether the next bubble is a user message. */
@@ -401,11 +403,14 @@ export function projectBubbles(rows: HumanRow[]): Bubble[] {
       isUser,
       markOnly: group.every(isTranscriptMarkRow),
       followedByUser: false,
+      followedByMark: false,
     };
     return bubble;
   });
   for (let i = 0; i < bubbles.length - 1; i++) {
-    bubbles[i]!.followedByUser = bubbles[i + 1]!.isUser;
+    const next = bubbles[i + 1]!;
+    bubbles[i]!.followedByUser = next.isUser;
+    bubbles[i]!.followedByMark = next.markOnly;
   }
   return bubbles;
 }
@@ -429,35 +434,83 @@ export function bubbleImageCount(bubble: Bubble): number {
 
 /** `py-4` on a user bubble. */
 const USER_BUBBLE_PAD = 32;
+/** `py-2` on an assistant bubble. */
+const ASSISTANT_BUBBLE_PAD = 16;
 /** `0.89rem * 1.75` prose line-height, rounded. */
 const USER_LINE_HEIGHT = 25;
 /** Reading measure is 72ch; a long line wraps there. */
 const USER_CHARS_PER_LINE = 72;
+/** FoldCard header, or one collapsed tool row inside an open process group. */
+const PROCESS_ROW = 28;
 
 /** One image strip under the text padding. */
 const USER_IMAGE_STRIP = 128;
 
+function wrappedLineCount(text: string): number {
+  let lines = 0;
+  for (const part of text.split("\n")) {
+    lines += Math.max(1, Math.ceil(part.length / USER_CHARS_PER_LINE));
+  }
+  return lines;
+}
+
 /**
- * Rough height of a user bubble before it is measured. Only the scrollbar
- * depends on this; the virtualizer replaces it with the real height.
+ * Rough height of a user bubble before it is measured. The virtualizer
+ * replaces it with the real height on first layout.
  */
 export function estimateUserBubbleHeight(
   text: string,
   imageCount = 0,
 ): number {
-  let lines = 0;
-  if (text.length > 0) {
-    for (const part of text.split("\n")) {
-      lines += Math.max(1, Math.ceil(part.length / USER_CHARS_PER_LINE));
-    }
-  } else if (imageCount === 0) {
-    lines = 1;
-  }
+  const lines =
+    text.length > 0 ? wrappedLineCount(text) : imageCount === 0 ? 1 : 0;
   return (
     USER_BUBBLE_PAD +
     lines * USER_LINE_HEIGHT +
     (imageCount > 0 ? USER_IMAGE_STRIP : 0)
   );
+}
+
+/**
+ * Rough height of an assistant bubble from the rows already in hand.
+ * A closed process group is only its header. An open one adds reasoning
+ * lines and one row per tool. Prose uses the same line measure as user text.
+ * The virtualizer replaces this with the measured height.
+ */
+export function estimateAssistantBubbleHeight(bubble: Bubble): number {
+  const groups = groupNodes(rowsToNodes(bubble.rows));
+  let height = ASSISTANT_BUBBLE_PAD;
+  if (groups.length === 0) return height + USER_LINE_HEIGHT;
+  for (let index = 0; index < groups.length; index++) {
+    const group = groups[index]!;
+    if (group.type === "cut") {
+      height += PROCESS_ROW;
+      continue;
+    }
+    if (group.type === "output") {
+      for (const node of group.nodes) {
+        if (node.kind === "text") height += wrappedLineCount(node.text) * USER_LINE_HEIGHT;
+        else if (node.kind === "images") height += USER_IMAGE_STRIP;
+      }
+      continue;
+    }
+    height += PROCESS_ROW;
+    const followedByMessage =
+      groups[index + 1]?.type === "output" ||
+      bubble.followedByUser ||
+      bubble.followedByMark;
+    const open =
+      !followedByMessage && !processGroupHasTerminalStop(group.nodes);
+    if (!open) continue;
+    for (const node of group.nodes) {
+      if (node.kind === "reasoning") {
+        height += wrappedLineCount(node.text) * USER_LINE_HEIGHT;
+      } else if (node.kind === "tool") {
+        height += PROCESS_ROW;
+      }
+    }
+  }
+  return height;
 }
 
 /** Find the virtual bubble that contains a transcript seq. */

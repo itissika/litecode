@@ -87,6 +87,18 @@ pub fn execute(
         SessionRead::UserAnchorStem { session_id, seq } => {
             Ok(ReadValue::Count(user_anchor_stem(conn, &session_id, seq)?))
         }
+        SessionRead::UserAnchors {
+            session_id,
+            anchor_seq,
+            before,
+            after,
+        } => Ok(ReadValue::UserAnchors(session::user_anchor_window_on(
+            conn,
+            &session_id,
+            anchor_seq,
+            before,
+            after,
+        )?)),
         SessionRead::CheckpointSeq { session_id } => {
             let v: i64 = conn.query_row(
                 "SELECT checkpoint_seq FROM sessions WHERE id = ?1",

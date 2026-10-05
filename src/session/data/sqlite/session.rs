@@ -13,7 +13,7 @@ use crate::authority::responses::{
     AssistantRole, InputMessage, InputRole, MessageItem, OutputStatus,
 };
 use crate::platform_knobs::{ContextMode, ThinkingTier};
-use crate::session::data::command::SessionListPreview;
+use crate::session::data::command::{SessionListPreview, UserAnchorWindow};
 use crate::session::estimate::compute_token_estimate;
 use crate::session::event::{
     EventDraft, EventType, Seq, SessionEvent, finalize_draft, item_from_event,
@@ -1222,6 +1222,115 @@ pub(crate) fn load_wire_seq_cursor_on(conn: &Connection, session_id: &str) -> Re
     Ok((last, next))
 }
 
+/// Caller-chosen window of `item/user` seqs. `before` / `after` are clamped.
+const USER_ANCHOR_WINDOW_MAX: i64 = 64;
+
+pub(crate) fn user_anchor_window_on(
+    conn: &Connection,
+    session_id: &str,
+    anchor_seq: Option<i64>,
+    before: i64,
+    after: i64,
+) -> Result<UserAnchorWindow> {
+    let before = before.clamp(0, USER_ANCHOR_WINDOW_MAX);
+    let after = after.clamp(0, USER_ANCHOR_WINDOW_MAX);
+    let (split, anchor) = match anchor_seq {
+        Some(seq) => (seq, user_seq_if_kind(conn, session_id, seq)?),
+        None => match latest_user_seq(conn, session_id)? {
+            Some(seq) => (seq, Some(seq)),
+            None => {
+                return Ok(UserAnchorWindow {
+                    seqs: Vec::new(),
+                    anchor: None,
+                    has_more_before: false,
+                    has_more_after: false,
+                });
+            }
+        },
+    };
+    let (older, has_more_before) = user_seqs_beside(conn, session_id, split, before, true)?;
+    let (newer, has_more_after) = user_seqs_beside(conn, session_id, split, after, false)?;
+    let mut seqs = older;
+    if let Some(seq) = anchor {
+        seqs.push(seq);
+    }
+    seqs.extend(newer);
+    Ok(UserAnchorWindow {
+        seqs,
+        anchor,
+        has_more_before,
+        has_more_after,
+    })
+}
+
+fn user_seq_if_kind(conn: &Connection, session_id: &str, seq: i64) -> Result<Option<i64>> {
+    conn.query_row(
+        "SELECT seq FROM transcript_items
+         WHERE session_id = ?1 AND seq = ?2 AND kind = 'item/user'",
+        rusqlite::params![session_id, seq],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn latest_user_seq(conn: &Connection, session_id: &str) -> Result<Option<i64>> {
+    conn.query_row(
+        "SELECT seq FROM transcript_items
+         WHERE session_id = ?1 AND kind = 'item/user'
+         ORDER BY seq DESC LIMIT 1",
+        rusqlite::params![session_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// `older`: seqs strictly below `split`, ascending, closest `limit` rows.
+/// `newer`: seqs strictly above `split`, ascending, closest `limit` rows.
+fn user_seqs_beside(
+    conn: &Connection,
+    session_id: &str,
+    split: i64,
+    limit: i64,
+    older: bool,
+) -> Result<(Vec<i64>, bool)> {
+    if limit == 0 {
+        let cmp = if older { "<" } else { ">" };
+        let sql = format!(
+            "SELECT 1 FROM transcript_items
+             WHERE session_id = ?1 AND kind = 'item/user' AND seq {cmp} ?2
+             LIMIT 1"
+        );
+        let hit: Option<i64> = conn
+            .query_row(&sql, rusqlite::params![session_id, split], |row| row.get(0))
+            .optional()?;
+        return Ok((Vec::new(), hit.is_some()));
+    }
+    let (cmp, order) = if older { ("<", "DESC") } else { (">", "ASC") };
+    let sql = format!(
+        "SELECT seq FROM transcript_items
+         WHERE session_id = ?1 AND kind = 'item/user' AND seq {cmp} ?2
+         ORDER BY seq {order} LIMIT ?3"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params![session_id, split, limit + 1], |row| {
+        row.get(0)
+    })?;
+    let mut seqs = Vec::new();
+    for row in rows {
+        seqs.push(row?);
+    }
+    let has_more = seqs.len() > limit as usize;
+    if has_more {
+        seqs.truncate(limit as usize);
+    }
+    if older {
+        seqs.reverse();
+    }
+    Ok((seqs, has_more))
+}
+
 pub(crate) fn load_events_range_on(
     conn: &Connection,
     session_id: &str,
@@ -2366,6 +2475,16 @@ impl Session {
         })
     }
 
+    /// User-message anchors around `anchor_seq` (`None` = latest `item/user`).
+    pub fn user_anchor_window(
+        &self,
+        anchor_seq: Option<i64>,
+        before: i64,
+        after: i64,
+    ) -> Result<UserAnchorWindow> {
+        user_anchor_window_on(self.conn(), &self.id, anchor_seq, before, after)
+    }
+
     /// Persisted `item/user` row count.
     pub fn user_detail_count(&self) -> Result<i64> {
         self.conn()
@@ -3171,7 +3290,51 @@ mod tests {
         session.revert_to_user_anchor(2).unwrap();
         let loaded = session.load_transcript().unwrap();
         assert_eq!(loaded.len(), 2);
+        let after_revert = session.user_anchor_window(None, 2, 2).unwrap();
+        assert_eq!(after_revert.seqs, vec![0]);
+        assert_eq!(after_revert.anchor, Some(0));
+        assert!(!after_revert.has_more_before);
+        assert!(!after_revert.has_more_after);
         assert_eq!(item_text_preview(&loaded[0]), "u0");
+    }
+
+    #[test]
+    fn user_anchor_window_is_a_cursor_page() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[
+                user_text("u0"),
+                user_text("u1"),
+                user_text("u2"),
+                user_text("u3"),
+                user_text("u4"),
+                user_text("u5"),
+            ])
+            .unwrap();
+
+        let mid = session.user_anchor_window(Some(3), 2, 2).unwrap();
+        assert_eq!(mid.seqs, vec![1, 2, 3, 4, 5]);
+        assert_eq!(mid.anchor, Some(3));
+        assert!(mid.has_more_before);
+        assert!(!mid.has_more_after);
+
+        let head = session.user_anchor_window(Some(0), 2, 2).unwrap();
+        assert_eq!(head.seqs, vec![0, 1, 2]);
+        assert_eq!(head.anchor, Some(0));
+        assert!(!head.has_more_before);
+        assert!(head.has_more_after);
+
+        let tail = session.user_anchor_window(None, 2, 2).unwrap();
+        assert_eq!(tail.seqs, vec![3, 4, 5]);
+        assert_eq!(tail.anchor, Some(5));
+        assert!(tail.has_more_before);
+        assert!(!tail.has_more_after);
+
+        let beside = session.user_anchor_window(Some(100), 2, 2).unwrap();
+        assert_eq!(beside.anchor, None);
+        assert_eq!(beside.seqs, vec![4, 5]);
+        assert!(beside.has_more_before);
+        assert!(!beside.has_more_after);
     }
 
     #[test]

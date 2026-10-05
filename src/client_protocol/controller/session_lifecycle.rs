@@ -605,6 +605,18 @@ impl SessionController {
         Ok(())
     }
 
+    pub fn user_anchor_window(
+        &self,
+        session_id: &str,
+        anchor_seq: Option<i64>,
+        before: i64,
+        after: i64,
+    ) -> anyhow::Result<crate::session::data::command::UserAnchorWindow> {
+        self.sessions
+            .entry_user_anchor_window(session_id, anchor_seq, before, after)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
     pub fn materialize_range(
         &self,
         session_id: &str,

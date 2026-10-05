@@ -179,16 +179,8 @@ mod tests {
         );
 
         let two = tempfile::tempdir().unwrap();
-        write_node(
-            two.path(),
-            "a.md",
-            &enabled("a", "see [@ key=\"gone\"]\n"),
-        );
-        write_node(
-            two.path(),
-            "b.md",
-            &enabled("b", "see [@ key=\"also\"]\n"),
-        );
+        write_node(two.path(), "a.md", &enabled("a", "see [@ key=\"gone\"]\n"));
+        write_node(two.path(), "b.md", &enabled("b", "see [@ key=\"also\"]\n"));
         assert_eq!(
             note(two.path()).unwrap().text,
             "Knowledge base: 2 nodes have errors. You can run `knowledge check` and tell the user."

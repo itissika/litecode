@@ -47,17 +47,21 @@ vi.mock("@tanstack/react-virtual", () => ({
   }) => {
     const { count, getItemKey } = options;
     virtualOptions.current = options;
+    const items = Array.from({ length: count }, (_, index) => ({
+      key: getItemKey?.(index) ?? index,
+      index,
+      start: index * 200,
+      size: 200,
+      end: (index + 1) * 200,
+    }));
     return {
-      getVirtualItems: () =>
-        Array.from({ length: count }, (_, index) => ({
-          key: getItemKey?.(index) ?? index,
-          index,
-          start: index * 200,
-          size: 200,
-          end: (index + 1) * 200,
-        })),
+      getVirtualItems: () => items,
+      measurementsCache: items,
+      getOffsetForIndex: (index: number) =>
+        index >= 0 && index < count ? ([index * 200, "start"] as const) : undefined,
       getTotalSize: () => count * 200 + (options.paddingEnd ?? 0),
       measureElement: () => {},
+      containerRef: () => {},
       scrollToEnd: (opts?: { behavior?: string }) => {
         virtualizerEnds.push(opts ?? {});
       },
@@ -289,6 +293,76 @@ describe("MessageList process group across seal", () => {
     ).toBe("false");
     expect(screen.getByText("queued while the turn was running")).toBeTruthy();
   });
+
+  it.each([
+    {
+      label: "compact",
+      mark: {
+        seq: 4,
+        kind: "compacted",
+        state: "final",
+        body: { summary: "folded older turns", from: 0, to: 3 },
+      } satisfies HumanRow,
+      markText: /compaction point/,
+    },
+    {
+      label: "background terminal exit",
+      mark: {
+        seq: 4,
+        kind: "reminder/bash_exit",
+        state: "final",
+        body: {
+          kind: "bash_exit",
+          exits: [
+            {
+              job_id: "bg_a",
+              command: "sleep 8",
+              exit_code: 3,
+              killed: false,
+              output_file: ".litecode/bash/bg_a.output",
+            },
+          ],
+          running: [],
+          text: "Background bash bg_a exited with code 3.",
+        },
+      } satisfies HumanRow,
+      markText: /background terminal exited/,
+    },
+  ])(
+    "collapses a sealed process group when the next bubble is a $label mark",
+    ({ mark, markText }) => {
+      const sealedTool: HumanRow = { ...liveTool, state: "final" };
+      const toolOutput: HumanRow = {
+        seq: 3,
+        kind: "item/tool_result",
+        state: "final",
+        body: {
+          type: "function_call_output",
+          call_id: "call_1",
+          output: "done",
+        },
+      };
+
+      render(
+        <MessageList
+          messages={[sealedReasoning, sealedTool, toolOutput, mark]}
+          loadingHistory={false}
+          canLoadMore={false}
+          onLoadMore={() => {}}
+          isRunning={false}
+          scrollRef={makeScrollRef()}
+          sessionId="session-1"
+        />,
+      );
+
+      expect(screen.getByText(markText)).toBeTruthy();
+      expect(
+        screen
+          .getByRole("button", { name: /1 reasoning, 1 tool/i })
+          .getAttribute("aria-expanded"),
+      ).toBe("false");
+    },
+  );
 
   it("keeps the process FoldCard expanded when the first row seals live→buffer", () => {
     const { rerender } = render(

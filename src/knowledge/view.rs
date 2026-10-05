@@ -410,9 +410,7 @@ fn row_at(
     };
     let path = display_path(path_prefix, &node.path);
     let pad = " ".repeat(indent);
-    let mut lines = vec![format!(
-        "{pad}- {title} · `{path}` · {when} · {tail}"
-    )];
+    let mut lines = vec![format!("{pad}- {title} · `{path}` · {when} · {tail}")];
     let cont = " ".repeat(indent + 2);
     for issue in issues {
         lines.push(format!(
@@ -709,15 +707,7 @@ mod tests {
             reference: Some("warn".into()),
         }];
         let incoming = |_: &str| 1;
-        let board = dashboard(
-            &nodes,
-            &issues,
-            incoming,
-            None,
-            now,
-            Some("knowledge"),
-            &[],
-        );
+        let board = dashboard(&nodes, &issues, incoming, None, now, Some("knowledge"), &[]);
         let recent = board.split("## Worth noting").next().unwrap();
         assert!(recent.contains("**seq**"));
         assert!(!recent.contains("**warn**"));

@@ -65,9 +65,7 @@ pub fn path_has_product_internal_dir(rel: &str) -> bool {
 /// `foo/.litecode` is not this path.
 pub fn is_agent_knowledge_rel(rel: &str) -> bool {
     let rel = rel.trim_matches('/');
-    rel == ".litecode"
-        || rel == ".litecode/knowledge"
-        || rel.starts_with(".litecode/knowledge/")
+    rel == ".litecode" || rel == ".litecode/knowledge" || rel.starts_with(".litecode/knowledge/")
 }
 
 /// True when `name` is a discovery segment or product-internal dir (LSP / shallow walks).
