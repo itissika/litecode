@@ -28,7 +28,10 @@ use crate::provider_catalog::{ProviderQuirk, ReasoningReplay, ResolvedModel};
 use crate::session::media_tokens::classify_input_file;
 use crate::types::{LitecodeError, Result, StreamEvents};
 
-use super::http::{llm_http_client, send_cancellable};
+use super::http::{
+    llm_http_client, on_broken_stream, preserve_partial, send_cancellable, EmptyStreamAction,
+    ReconnectBudget,
+};
 use super::sse::{SseLineReader, check_event_stream_content_type, sse_data_payload};
 use super::stream_contract::{
     StreamContractGate, StreamItemAccumulator, forward_stream_event, resolve_stream_outcome,
@@ -391,90 +394,171 @@ impl LlmProvider for ResponsesCodec {
                 request.session_id.as_deref(),
                 &body,
             );
-            let resp = send_cancellable(
-                self.request(&body, api_key, request.session_id.as_deref()),
-                cancel,
-                "opening Responses event stream",
-            )
-            .await?;
-            if let Some(dump) = &dump {
-                dump.status(resp.status().as_u16());
-            }
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
+            let mut budget = ReconnectBudget::new();
+            'open: loop {
+                let resp = send_cancellable(
+                    self.request(&body, api_key, request.session_id.as_deref()),
+                    cancel,
+                    "opening Responses event stream",
+                    &mut budget,
+                )
+                .await?;
                 if let Some(dump) = &dump {
-                    dump.error_body(&text);
+                    dump.status(resp.status().as_u16());
                 }
-                return Err(LitecodeError::Llm(format!(
-                    "{}: HTTP {status}: {text}",
-                    error_prefix(&self.model)
-                )));
-            }
-            let resp = check_event_stream_content_type(resp).await?;
 
-            let mut terminal_items: Option<Vec<Item>> = None;
-            let mut reader = SseLineReader::new();
-            let mut stream = resp.bytes_stream();
-            let mut gate = StreamContractGate::new();
-            let mut acc = StreamItemAccumulator::new();
-            let mut cancelled = cancel.is_cancelled();
-
-            while !cancelled {
-                tokio::select! {
-                    biased;
-                    _ = cancel.cancelled() => {
-                        cancelled = true;
-                        break;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    if let Some(dump) = &dump {
+                        dump.error_body(&text);
                     }
-                    chunk = stream.next() => {
-                        let Some(chunk) = chunk else { break; };
-                        let chunk = chunk.map_err(|error| {
-                            interrupted_stream_error("reading Responses event stream", &error, &acc)
-                        })?;
-                        for line in reader.feed(&chunk)? {
-                            if let Some(dump) = &dump {
-                                dump.line(&line);
+                    return Err(LitecodeError::Llm(format!(
+                        "{}: HTTP {status}: {text}",
+                        error_prefix(&self.model)
+                    )));
+                }
+                let resp = match check_event_stream_content_type(resp).await {
+                    Ok(resp) => resp,
+                    Err(error) => {
+                        match on_broken_stream(&mut budget, cancel, false).await? {
+                            EmptyStreamAction::Retry => continue 'open,
+                            EmptyStreamAction::GiveUp => return Err(error),
+                        }
+                    }
+                };
+
+                let mut terminal_items: Option<Vec<Item>> = None;
+                let mut reader = SseLineReader::new();
+                let mut stream = resp.bytes_stream();
+                let mut gate = StreamContractGate::new();
+                let mut acc = StreamItemAccumulator::new();
+                let mut cancelled = cancel.is_cancelled();
+
+                while !cancelled {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => {
+                            cancelled = true;
+                            break;
+                        }
+                        chunk = stream.next() => {
+                            let Some(chunk) = chunk else { break; };
+                            let chunk = match chunk {
+                                Ok(chunk) => chunk,
+                                Err(error) => {
+                                    let failure = interrupted_stream_error(
+                                        "reading Responses event stream",
+                                        &error,
+                                        &acc,
+                                    );
+                                    match on_broken_stream(&mut budget, cancel, !acc.is_empty())
+                                        .await?
+                                    {
+                                        EmptyStreamAction::Retry => continue 'open,
+                                        EmptyStreamAction::GiveUp => return Err(preserve_partial(failure, &acc)),
+                                    }
+                                }
+                            };
+                            let lines = match reader.feed(&chunk) {
+                                Ok(lines) => lines,
+                                Err(error) => {
+                                    match on_broken_stream(&mut budget, cancel, !acc.is_empty())
+                                        .await?
+                                    {
+                                        EmptyStreamAction::Retry => continue 'open,
+                                        EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
+                                    }
+                                }
+                            };
+                            for line in lines {
+                                if let Some(dump) = &dump {
+                                    dump.line(&line);
+                                }
+                                let Some(data) = sse_data_payload(&line) else {
+                                    continue;
+                                };
+                                let Some(event) = (match self.parse_stream_event(data) {
+                                    Ok(event) => event,
+                                    Err(error) => {
+                                        match on_broken_stream(
+                                            &mut budget,
+                                            cancel,
+                                            !acc.is_empty(),
+                                        )
+                                        .await?
+                                        {
+                                            EmptyStreamAction::Retry => continue 'open,
+                                            EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
+                                        }
+                                    }
+                                }) else {
+                                    continue;
+                                };
+                                if let Some(items) =
+                                    forward_stream_event(&mut gate, &mut acc, event, &mut on_event)?
+                                {
+                                    terminal_items = Some(items);
+                                }
+                                if cancel.is_cancelled() {
+                                    cancelled = true;
+                                    break;
+                                }
                             }
-                            let Some(data) = sse_data_payload(&line) else {
-                                continue;
+                        }
+                    }
+                }
+
+                if !cancelled {
+                    let tail = match reader.finish() {
+                        Ok(line) => line,
+                        Err(error) => {
+                            match on_broken_stream(&mut budget, cancel, !acc.is_empty()).await? {
+                                EmptyStreamAction::Retry => continue 'open,
+                                EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
+                            }
+                        }
+                    };
+                    if let Some(line) = tail {
+                        if let Some(dump) = &dump {
+                            dump.line(&line);
+                        }
+                        if let Some(data) = sse_data_payload(&line) {
+                            let event = match self.parse_stream_event(data) {
+                                Ok(event) => event,
+                                Err(error) => {
+                                    match on_broken_stream(&mut budget, cancel, !acc.is_empty())
+                                        .await?
+                                    {
+                                        EmptyStreamAction::Retry => continue 'open,
+                                        EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
+                                    }
+                                }
                             };
-                            let Some(event) = self.parse_stream_event(data)? else {
-                                continue;
-                            };
-                            if let Some(items) =
-                                forward_stream_event(&mut gate, &mut acc, event, &mut on_event)?
+                            if let Some(event) = event
+                                && let Some(items) =
+                                    forward_stream_event(&mut gate, &mut acc, event, &mut on_event)?
                             {
                                 terminal_items = Some(items);
                             }
-                            if cancel.is_cancelled() {
-                                cancelled = true;
-                                break;
-                            }
                         }
                     }
                 }
-            }
 
-            if !cancelled {
-                if let Some(line) = reader.finish()? {
-                    if let Some(dump) = &dump {
-                        dump.line(&line);
-                    }
-                    if let Some(data) = sse_data_payload(&line)
-                        && let Some(event) = self.parse_stream_event(data)?
-                    {
-                        if let Some(items) =
-                            forward_stream_event(&mut gate, &mut acc, event, &mut on_event)?
-                        {
-                            terminal_items = Some(items);
+                if cancelled {
+                    return resolve_stream_outcome(terminal_items, &acc, true);
+                }
+                match resolve_stream_outcome(terminal_items, &acc, false) {
+                    Ok(items) => return Ok(items),
+                    Err(error) if acc.is_empty() => {
+                        match on_broken_stream(&mut budget, cancel, false).await? {
+                            EmptyStreamAction::Retry => continue 'open,
+                            EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
                         }
                     }
+                    Err(error) => return Err(error),
                 }
             }
-
-            resolve_stream_outcome(terminal_items, &acc, cancelled)
         })
     }
 }
@@ -1433,6 +1517,28 @@ provider_id = "p"
         format!("http://{address}/v1")
     }
 
+    async fn serve_times(times: usize, body: String, content_type: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let content_type = content_type.to_string();
+        tokio::spawn(async move {
+            for _ in 0..times {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 8192];
+                let _ = socket.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        format!("http://{address}/v1")
+    }
+
     fn completed_response() -> Value {
         serde_json::json!({
             "id": "resp_1",
@@ -1642,9 +1748,59 @@ provider_id = "p"
     }
 
     #[tokio::test]
+    async fn truncated_sse_after_items_is_terminal_and_keeps_partials() {
+        let delta = serde_json::json!({
+            "type": "response.output_text.delta",
+            "sequence_number": 1,
+            "item_id": "msg_1",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "recover me"
+        });
+        let endpoint = serve_once(
+            format!("data: {delta}\n\ndata: {{\"type\":"),
+            "text/event-stream",
+            None,
+        )
+        .await;
+        let notices = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_notices = std::sync::Arc::clone(&notices);
+        let sink: std::sync::Arc<dyn Fn(crate::llm::reconnect::LlmReconnect) + Send + Sync> =
+            std::sync::Arc::new(move |notice| sink_notices.lock().unwrap().push(notice));
+        let codec = codec_at(OPENAI_PROVIDER, &endpoint);
+        let error = crate::llm::reconnect::scope(sink, async move {
+            codec
+                .complete_with_stream_events(
+                    &sample_request(),
+                    "sk-test",
+                    None,
+                    &CancellationToken::new(),
+                )
+                .await
+        })
+        .await
+        .expect_err("a cut SSE line after items is terminal");
+        let LitecodeError::LlmStreamInterrupted { partial, .. } = error else {
+            panic!("expected interrupted stream error, got {error:?}");
+        };
+        assert_eq!(partial.len(), 1);
+        assert_eq!(crate::types::item_text_preview(&partial[0]), "recover me");
+        let seen = notices.lock().unwrap().clone();
+        assert!(
+            seen.iter().any(|notice| notice.is_failed()),
+            "terminal truncation surfaces Retry, got {seen:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn non_event_stream_content_type_surfaces_the_proxy_body() {
         let body = r#"{"error":{"message":"upstream exploded"}}"#;
-        let endpoint = serve_once(body.to_string(), "application/json", None).await;
+        let endpoint = serve_times(
+            super::ReconnectBudget::max_attempts() as usize,
+            body.to_string(),
+            "application/json",
+        )
+        .await;
         let codec = codec_at(OPENAI_PROVIDER, &endpoint);
         let message = codec
             .complete_with_stream_events(

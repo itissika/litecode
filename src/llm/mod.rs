@@ -6,6 +6,7 @@
 
 mod codec;
 mod provider;
+pub mod reconnect;
 mod replay_compat;
 mod request;
 

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { isCompactCutRow } from "../api/adapter";
+import { formatLlmReconnect } from "../lib/llmReconnect";
 import type { SessionSnapshot, TurnFinished, TurnSnapshot } from "../api/types";
 import { useConnectionStore } from "./connectionStore";
 import { subscribeComposerAppend } from "./composerDraft";
@@ -1137,5 +1138,118 @@ describe("turnStore queued (pending) messages", () => {
       .getState()
       .applySnapshotMeter(sessionId, snapshot(sessionId));
     expect(useMessageStore.getState().bySession.get(sessionId)?.pendingQueue).toBeNull();
+  });
+
+  it("formats reconnect copy and keeps the failed bubble until the next turn", () => {
+    expect(
+      formatLlmReconnect({
+        phase: "waiting",
+        attempt: 2,
+        max_attempts: 6,
+        delay_ms: 500,
+      }),
+    ).toBe("Waiting 0.5s before reconnecting (2/6)");
+    expect(
+      formatLlmReconnect({
+        phase: "waiting",
+        attempt: 3,
+        max_attempts: 6,
+        delay_ms: 2000,
+      }),
+    ).toBe("Waiting 2s before reconnecting (3/6)");
+    expect(
+      formatLlmReconnect({
+        phase: "connecting",
+        attempt: 2,
+        max_attempts: 6,
+      }),
+    ).toBe("Reconnecting (2/6)");
+    expect(
+      formatLlmReconnect({
+        phase: "failed",
+        attempt: 6,
+        max_attempts: 6,
+      }),
+    ).toBe("Reconnection failed (6/6)");
+    expect(
+      formatLlmReconnect({
+        phase: "failed",
+        attempt: 1,
+        max_attempts: 6,
+      }),
+    ).toBe("Reconnection failed");
+
+    const sessionId = "s-reconnect";
+    useTurnStore.getState().onTurnStarted({
+      session_id: sessionId,
+      turn_id: "t-reconnect",
+      input: "hi",
+      step_max: 5,
+    });
+    useTurnStore.getState().onTurnEvent({
+      session_id: sessionId,
+      turn_id: "",
+      event: {
+        type: "llm_reconnect",
+        phase: "waiting",
+        attempt: 2,
+        max_attempts: 6,
+        delay_ms: 500,
+      },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.llmReconnect?.phase).toBe(
+      "waiting",
+    );
+
+    useTurnStore.getState().onTurnEvent({
+      session_id: sessionId,
+      turn_id: "t-reconnect",
+      event: {
+        type: "llm_reconnect",
+        phase: "cleared",
+        attempt: 2,
+        max_attempts: 6,
+      },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.llmReconnect).toBeNull();
+
+    useTurnStore.getState().onTurnEvent({
+      session_id: sessionId,
+      turn_id: "t-reconnect",
+      event: {
+        type: "llm_reconnect",
+        phase: "failed",
+        attempt: 6,
+        max_attempts: 6,
+      },
+    });
+    useTurnStore.getState().onTurnEvent({
+      session_id: sessionId,
+      turn_id: "t-reconnect",
+      event: { type: "error", code: "llm_http", message: "connect failed" },
+    });
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+
+    useTurnStore.getState().onTurnFinished({
+      session_id: sessionId,
+      turn_id: "t-reconnect",
+      reason: "error",
+      final_text: null,
+      error: { code: "llm_http", message: "connect failed", retryable: true },
+      snapshot: snapshot(sessionId),
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.runState).toBe("idle");
+    expect(useTurnStore.getState().byId.get(sessionId)?.llmReconnect?.phase).toBe(
+      "failed",
+    );
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+
+    useTurnStore.getState().onTurnStarted({
+      session_id: sessionId,
+      turn_id: "t-next",
+      input: "again",
+      step_max: 5,
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.llmReconnect).toBeNull();
   });
 });

@@ -14,6 +14,15 @@ use tokio_util::sync::CancellationToken;
 
 use super::{SessionController, StartTurnError};
 
+enum TurnLaunch {
+    User {
+        input: UserInput,
+        plan_execution: bool,
+    },
+    /// Same transcript, no new `item/user`. Used after a failed LLM reconnect.
+    Wake,
+}
+
 impl SessionController {
     /// Ensure a Projection exists for `session_id`. If not, delegate to
     /// `subscribe()` which creates a real Projection with a proper
@@ -43,6 +52,36 @@ impl SessionController {
         permission_sink: Arc<dyn PermissionSink>,
         turn_id: &str,
         plan_execution: bool,
+    ) -> Result<(), StartTurnError> {
+        self.launch_turn(
+            session_id,
+            TurnLaunch::User {
+                input,
+                plan_execution,
+            },
+            permission_sink,
+            turn_id,
+        )
+        .await
+    }
+
+    /// Continue after `llm_reconnect` failed. Does not append a user message.
+    pub async fn retry_failed_turn(
+        &mut self,
+        session_id: &str,
+        permission_sink: Arc<dyn PermissionSink>,
+        turn_id: &str,
+    ) -> Result<(), StartTurnError> {
+        self.launch_turn(session_id, TurnLaunch::Wake, permission_sink, turn_id)
+            .await
+    }
+
+    async fn launch_turn(
+        &mut self,
+        session_id: &str,
+        launch: TurnLaunch,
+        permission_sink: Arc<dyn PermissionSink>,
+        turn_id: &str,
     ) -> Result<(), StartTurnError> {
         // Ensure the projection exists for this session.
         self.ensure_projection_for_turn(session_id).await?;
@@ -107,36 +146,46 @@ impl SessionController {
                 other => StartTurnError::Runtime(anyhow::anyhow!("{other}")),
             })?;
 
-        // A plan-execution chip is text. Images belong to a composer message.
-        let input = if plan_execution {
-            UserInput::text(input.text)
-        } else {
-            input
-        };
+        let turn_input = match launch {
+            TurnLaunch::Wake => crate::runtime::TurnInput::Wake {
+                anchor_user_seq: None,
+            },
+            TurnLaunch::User {
+                input,
+                plan_execution,
+            } => {
+                // A plan-execution chip is text. Images belong to a composer message.
+                let input = if plan_execution {
+                    UserInput::text(input.text)
+                } else {
+                    input
+                };
 
-        // The plan-execution message is issued on the human's behalf, so it
-        // carries its own kind (`plan/execute`) instead of `item/user`.
-        // Persist it first, then wake the turn. A write failure falls back to
-        // an ordinary user message appended by the runtime.
-        let turn_input = if plan_execution {
-            match self
-                .sessions
-                .append_plan_execute(session_id, &crate::types::user_text(&input.text))
-            {
-                Ok(()) => crate::runtime::TurnInput::Wake {
-                    anchor_user_seq: None,
-                },
-                Err(error) => {
-                    tracing::warn!(
-                        session_id,
-                        error = %error,
-                        "failed to persist plan-execution message; continuing as a user message"
-                    );
+                // The plan-execution message is issued on the human's behalf, so it
+                // carries its own kind (`plan/execute`) instead of `item/user`.
+                // Persist it first, then wake the turn. A write failure falls back to
+                // an ordinary user message appended by the runtime.
+                if plan_execution {
+                    match self
+                        .sessions
+                        .append_plan_execute(session_id, &crate::types::user_text(&input.text))
+                    {
+                        Ok(()) => crate::runtime::TurnInput::Wake {
+                            anchor_user_seq: None,
+                        },
+                        Err(error) => {
+                            tracing::warn!(
+                                session_id,
+                                error = %error,
+                                "failed to persist plan-execution message; continuing as a user message"
+                            );
+                            crate::runtime::TurnInput::User(input)
+                        }
+                    }
+                } else {
                     crate::runtime::TurnInput::User(input)
                 }
             }
-        } else {
-            crate::runtime::TurnInput::User(input)
         };
 
         let handle = match spawn_turn(
@@ -236,15 +285,27 @@ impl SessionController {
         let op_id = operation_id.clone();
         tokio::spawn(async move {
             let cancel = CancellationToken::new();
-            let result = CompactPolicy::compact_now(
-                &budget,
-                &sessions,
-                &sid,
-                compaction_binding.compact_call(),
-                &compaction_system,
-                crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
-                &cancel,
-                Some(&op_id),
+            let sessions_for_sink = Arc::clone(&sessions);
+            let sid_for_sink = sid.clone();
+            let sink: Arc<dyn Fn(crate::llm::reconnect::LlmReconnect) + Send + Sync> =
+                Arc::new(move |notice| {
+                    sessions_for_sink.publish_internal(
+                        &sid_for_sink,
+                        crate::runtime::observer::InternalEvent::LlmReconnect(notice),
+                    );
+                });
+            let result = crate::llm::reconnect::scope(
+                sink,
+                CompactPolicy::compact_now(
+                    &budget,
+                    &sessions,
+                    &sid,
+                    compaction_binding.compact_call(),
+                    &compaction_system,
+                    crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+                    &cancel,
+                    Some(&op_id),
+                ),
             )
             .await
             .map(|_| ());

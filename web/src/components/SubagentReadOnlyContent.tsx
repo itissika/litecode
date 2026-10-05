@@ -14,6 +14,7 @@ import {
 import { displayMessages, useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
 import { AgentChatInput } from "./AgentChatInput";
+import { LlmReconnectBubble } from "./LlmReconnectBubble";
 import { MessageList } from "./MessageList";
 import type { RevealSeq } from "./transcript/transcriptScrollGlide";
 import { ProgressiveBlur } from "./ProgressiveBlur";
@@ -169,6 +170,7 @@ export function SubagentReadOnlyContent({
           aligned, and the status panel is the only shrinkable item. */}
       <div className="pointer-events-none absolute inset-0 z-10 flex min-h-0 flex-col justify-end px-4 pb-4">
         <div className="pointer-events-auto mx-auto flex min-h-0 w-full max-w-[var(--_dk-prose-measure)] flex-col gap-2">
+          <LlmReconnectBubble sessionId={sessionId} allowRetry={false} />
           <SessionStatusLine sessionId={sessionId} variant="subagent" />
           <AgentChatInput
             key={sessionId}

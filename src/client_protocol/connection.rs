@@ -76,6 +76,7 @@ fn operation_error(
         Some(StructuredError {
             code,
             message: message.into(),
+            retryable: false,
         }),
         snapshot,
     )
@@ -269,6 +270,76 @@ pub async fn handle_jsonrpc(
                     emit(
                         sink,
                         serde_json::to_value(err_response(id, -32000, msg)).unwrap(),
+                    );
+                }
+            }
+        }
+
+        methods::AGENT_RETRY => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                #[serde(default)]
+                session_id: String,
+            }
+            let params: Params = match serde_json::from_value(rpc.params.clone()) {
+                Ok(params) => params,
+                Err(error) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {error}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            let sid = resolve_sid(session, &params.session_id);
+            if session.sessions.is_child_session(&sid) {
+                emit(
+                    sink,
+                    serde_json::to_value(err_response(
+                        id,
+                        -32000,
+                        "cannot retry a subagent session".into(),
+                    ))
+                    .unwrap(),
+                );
+                return false;
+            }
+            if session.sessions.is_turn_running(&sid).await
+                || !session.sessions.llm_reconnect_retryable(&sid)
+            {
+                let message = if session.sessions.is_turn_running(&sid).await {
+                    "agent already running"
+                } else {
+                    "nothing to retry"
+                };
+                emit(
+                    sink,
+                    serde_json::to_value(err_response(id, -32000, message.into())).unwrap(),
+                );
+                return false;
+            }
+            let turn_id = uuid::Uuid::new_v4().to_string();
+            let permission_sink = session.permission_sink_for(&sid, perm_tx, &turn_id);
+            match session.retry_failed_turn(&sid, permission_sink, &turn_id).await {
+                Ok(()) => {
+                    for msg in session.take_outgoing_for(&sid) {
+                        emit(sink, msg);
+                    }
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(id, serde_json::json!({"started": true})))
+                            .unwrap(),
+                    );
+                }
+                Err(error) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, error.to_string())).unwrap(),
                     );
                 }
             }

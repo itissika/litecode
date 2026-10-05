@@ -1070,7 +1070,14 @@ impl AgentRuntime {
         self.emit_todo_progress();
         self.emit_plan_changed();
 
-        let outcome = crate::agent::run(self).await;
+        let outcome = {
+            let observer = Arc::clone(&self.observer);
+            let sink: Arc<dyn Fn(crate::llm::reconnect::LlmReconnect) + Send + Sync> =
+                Arc::new(move |notice| {
+                    observer.on_internal(InternalEvent::LlmReconnect(notice));
+                });
+            crate::llm::reconnect::scope(sink, crate::agent::run(self)).await
+        };
         let settled = project_items(&self.context_pipeline.working_set());
         self.sync_active_plan_revision_after_turn(&settled);
 

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::llm::reconnect::LlmReconnect;
 use crate::session::task_state::TodoItem;
 
 /// L1 failure category; mapped to wire error codes in `client_protocol::project`.
@@ -266,6 +267,10 @@ pub enum InternalEvent {
     PendingMessages {
         pending: Vec<crate::session::manager::PendingMessage>,
     },
+    /// LLM transport reconnect while a model call is still in flight.
+    /// `Cleared` drops the bubble; other phases stick on the session until the
+    /// next turn starts or a non-retryable finish.
+    LlmReconnect(LlmReconnect),
     Error(TurnError),
 }
 

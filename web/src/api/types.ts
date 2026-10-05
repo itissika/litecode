@@ -22,6 +22,19 @@ export type ErrorCode =
 export interface StructuredError {
   code: ErrorCode;
   message: string;
+  /** Present when the turn can be continued with `agent/retry`. */
+  retryable?: boolean;
+}
+
+export type LlmReconnectPhase = "waiting" | "connecting" | "cleared" | "failed";
+
+/** Structured LLM reconnect status. English copy is formatted on the client. */
+export interface LlmReconnectNotice {
+  phase: LlmReconnectPhase;
+  attempt: number;
+  max_attempts: number;
+  /** Backoff before the next try. Present while `phase` is `waiting`. */
+  delay_ms?: number;
 }
 
 export type CompactionKind =
@@ -470,6 +483,11 @@ export interface SessionSnapshot {
    * notification; absent = empty.
    */
   pending_messages?: PendingMessage[];
+  /**
+   * LLM reconnect bubble still showing. Absent after a clear, a new turn, or a
+   * finish that was not a transport failure.
+   */
+  llm_reconnect?: LlmReconnectNotice | null;
 }
 
 /** One queued user message (server-assigned id; delete, never edit). */
@@ -670,6 +688,13 @@ export type WireEvent =
       always: boolean;
     }
   | { type: "error"; code: ErrorCode; message: string }
+  | {
+      type: "llm_reconnect";
+      phase: LlmReconnectPhase;
+      attempt: number;
+      max_attempts: number;
+      delay_ms?: number;
+    }
   | { type: "snapshot_notice"; level: string; message: string };
 
 // --- JSON-RPC 2.0 types ---

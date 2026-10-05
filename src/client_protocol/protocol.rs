@@ -10,6 +10,8 @@ use crate::session::task_state::TodoItem;
 
 pub mod methods {
     pub const AGENT_RUN: &str = "agent/run";
+    /// Wake the session after a failed LLM reconnect. Does not append a user row.
+    pub const AGENT_RETRY: &str = "agent/retry";
     pub const AGENT_CANCEL: &str = "agent/cancel";
     pub const AGENT_PERMISSION: &str = "agent/permission";
     pub const SESSION_SNAPSHOT: &str = "session/snapshot";
@@ -78,6 +80,10 @@ pub enum ErrorCode {
 pub struct StructuredError {
     pub code: ErrorCode,
     pub message: String,
+    /// The turn failed after the LLM reconnect budget was spent, or the stream
+    /// died after tokens had already arrived. The client may `agent/retry`.
+    #[serde(default)]
+    pub retryable: bool,
 }
 
 /// Wire-serializable turn phase (L2 projection of L1 `runtime::observer::TurnPhase`).
@@ -403,6 +409,10 @@ pub struct SessionSnapshot {
     /// Active workspace-relative plan file for the session, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_plan_path: Option<String>,
+    /// Last LLM reconnect that is still showing. Absent after a clear, a new
+    /// turn, or a finish that was not a transport failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_reconnect: Option<crate::llm::reconnect::LlmReconnect>,
 }
 
 fn default_thinking_tier() -> String {
@@ -540,10 +550,22 @@ pub enum WireEvent {
         code: ErrorCode,
         message: String,
     },
+    /// LLM transport reconnect. `delay_ms` is present only while waiting.
+    LlmReconnect {
+        phase: crate::llm::reconnect::LlmReconnectPhase,
+        attempt: u32,
+        max_attempts: u32,
+        #[serde(default, skip_serializing_if = "u64_is_zero")]
+        delay_ms: u64,
+    },
     SnapshotNotice {
         level: String,
         message: String,
     },
+}
+
+fn u64_is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// JSON-RPC 2.0 request envelope.

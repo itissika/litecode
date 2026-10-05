@@ -367,6 +367,7 @@ fn project_with(
                 Some(StructuredError {
                     code: compact_fail_code(*fail_kind),
                     message: error.clone().unwrap_or_else(|| "compaction failed".into()),
+                    retryable: false,
                 })
             } else {
                 None
@@ -418,6 +419,19 @@ fn project_with(
                 message: error.message.clone(),
             },
         ),
+        InternalEvent::LlmReconnect(notice) => Some(notification(
+            "agent/turn_event",
+            serde_json::json!({
+                "session_id": session_id,
+                "turn_id": turn_id.unwrap_or(""),
+                "event": WireEvent::LlmReconnect {
+                    phase: notice.phase,
+                    attempt: notice.attempt,
+                    max_attempts: notice.max_attempts,
+                    delay_ms: notice.delay_ms,
+                },
+            }),
+        )),
         InternalEvent::PermissionAsk {
             session_id,
             turn_id,
@@ -463,7 +477,7 @@ fn project_with(
             committed_next_seq: _,
         } => {
             let snapshot = snapshot?;
-            let error = turn_error(reason, final_text);
+            let error = turn_error(reason, final_text, snapshot.llm_reconnect);
             let mut params = serde_json::json!({
                 "session_id": snapshot.session_id,
                 "turn_id": turn_id,
@@ -510,19 +524,33 @@ fn project_with(
     }
 }
 
-fn turn_error(reason: &TurnEndReason, final_text: &Option<String>) -> Option<StructuredError> {
+fn turn_error(
+    reason: &TurnEndReason,
+    final_text: &Option<String>,
+    reconnect: Option<crate::llm::reconnect::LlmReconnect>,
+) -> Option<StructuredError> {
     match reason {
-        TurnEndReason::Error => Some(StructuredError {
-            code: ErrorCode::Internal,
-            message: final_text.clone().unwrap_or_else(|| "turn failed".into()),
-        }),
+        TurnEndReason::Error => {
+            let retryable = reconnect.is_some_and(|notice| notice.is_failed());
+            Some(StructuredError {
+                code: if retryable {
+                    ErrorCode::LlmHttp
+                } else {
+                    ErrorCode::Internal
+                },
+                message: final_text.clone().unwrap_or_else(|| "turn failed".into()),
+                retryable,
+            })
+        }
         TurnEndReason::Cancelled => Some(StructuredError {
             code: ErrorCode::Cancelled,
             message: "cancelled".into(),
+            retryable: false,
         }),
         TurnEndReason::MaxSteps => Some(StructuredError {
             code: ErrorCode::MaxSteps,
             message: "max steps reached".into(),
+            retryable: false,
         }),
         TurnEndReason::Completed => None,
     }
@@ -1119,5 +1147,6 @@ pub fn buffer_snapshot(
         todos: Vec::new(),
         pending_messages: Vec::new(),
         active_plan_path: None,
+        llm_reconnect: None,
     }
 }

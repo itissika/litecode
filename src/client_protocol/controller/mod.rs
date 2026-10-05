@@ -289,6 +289,7 @@ impl Projection {
         // Memory-only queue, but still part of the snapshot: a rebuilt panel
         // (subscribed while idle after a cancel) must see it.
         snap.pending_messages = self.sessions.pending_messages_snapshot(&self.session_id);
+        snap.llm_reconnect = self.sessions.llm_reconnect(&self.session_id);
         if let Ok(meta) = self.sessions.data().meta_blocking(&self.session_id) {
             snap.meta = crate::client_protocol::protocol::SessionMetaWire {
                 id: meta.id,
@@ -769,7 +770,11 @@ impl Projection {
         self.push_outgoing(project::operation_result(
             op,
             false,
-            Some(StructuredError { code, message }),
+            Some(StructuredError {
+                code,
+                message,
+                retryable: false,
+            }),
             self.snapshot(project, binding),
         ));
     }

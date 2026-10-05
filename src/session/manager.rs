@@ -10,7 +10,8 @@ use crate::config::ResolvedConfig;
 use crate::config::TurnGuard;
 use crate::runtime::RuntimeHandle;
 use crate::runtime::TurnHandle;
-use crate::runtime::observer::{InternalEnvelope, InternalEvent, TurnPhase};
+use crate::llm::reconnect::{LlmReconnect, LlmReconnectPhase};
+use crate::runtime::observer::{InternalEnvelope, InternalEvent, TurnEndReason, TurnPhase};
 use crate::session::data::command::{MutationId, ReadValue, SessionMutation, SessionRead};
 use crate::session::data::{SessionData, SessionDataReader};
 use crate::session::event::{EventDraft, EventType};
@@ -217,6 +218,8 @@ pub struct SessionRecord {
     last_permission_sink: Option<Arc<dyn crate::permission::PermissionSink>>,
     /// Files this process has seen the session touch. Not durable.
     file_tracker: crate::reminder::FileTracker,
+    /// Last reconnect bubble that should survive a refresh. Not a log row.
+    llm_reconnect: Option<LlmReconnect>,
 }
 
 impl SessionRecord {
@@ -246,6 +249,32 @@ impl SessionRecord {
             project: Some(meta.project.clone()),
             last_permission_sink: None,
             file_tracker: crate::reminder::FileTracker::default(),
+            llm_reconnect: None,
+        }
+    }
+
+    fn note_internal(&mut self, event: &InternalEvent) {
+        match event {
+            InternalEvent::LlmReconnect(notice) => {
+                self.llm_reconnect = notice.retained();
+            }
+            InternalEvent::TurnStarted { .. } => {
+                self.llm_reconnect = None;
+            }
+            InternalEvent::TurnCompleted { reason, .. } => {
+                let keep = *reason == TurnEndReason::Error
+                    && matches!(
+                        self.llm_reconnect,
+                        Some(LlmReconnect {
+                            phase: LlmReconnectPhase::Failed,
+                            ..
+                        })
+                    );
+                if !keep {
+                    self.llm_reconnect = None;
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -805,6 +834,8 @@ impl SessionManager {
         record.agent_id = primary_agent.to_string();
         record.project = Some(project.to_string());
         record.event_buffer.clear();
+        // Leave a failed reconnect in place until TurnStarted. A spawn that
+        // never starts must still be retryable.
         record.activity = SessionActivity::StartingTurn {
             turn_id,
             progress: progress.clone(),
@@ -1861,9 +1892,23 @@ impl SessionManager {
         if record.event_buffer.len() >= EVENT_BUFFER_CAPACITY {
             record.event_buffer.pop_front();
         }
+        record.note_internal(&envelope.event);
         record.event_buffer.push_back(envelope.clone());
         let _ = record.event_tx.send(envelope);
         true
+    }
+
+    /// Reconnect bubble still showing for this session, if any.
+    pub fn llm_reconnect(&self, session_id: &str) -> Option<LlmReconnect> {
+        self.records
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .and_then(|record| record.llm_reconnect)
+    }
+
+    pub fn llm_reconnect_retryable(&self, session_id: &str) -> bool {
+        self.llm_reconnect(session_id).is_some_and(|notice| notice.is_failed())
     }
 
     pub fn child_session_id_for_call(
@@ -2548,6 +2593,7 @@ async fn fanout_turn(
                 {
                     let mut records = manager.records.lock().unwrap();
                     if let Some(record) = records.get_mut(&session_id) {
+                        record.note_internal(&envelope.event);
                         if record.event_buffer.len() >= EVENT_BUFFER_CAPACITY {
                             record.event_buffer.pop_front();
                         }
@@ -2835,7 +2881,37 @@ fn apply_event_to_progress(progress: &mut TurnProgress, ev: &InternalEvent) -> b
 mod child_session_tests {
     use super::*;
     use crate::config::TurnGuard;
+    use crate::llm::reconnect::{LlmReconnect, LlmReconnectPhase};
+    use crate::runtime::observer::InternalEvent;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn reserve_turn_keeps_a_failed_reconnect_retryable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            dir.path().join("sessions.db").to_str().unwrap().to_string(),
+        ));
+        let session_id = mgr
+            .open_session("/proj", "default", None)
+            .await
+            .expect("session");
+        assert!(mgr.publish_internal(
+            &session_id,
+            InternalEvent::LlmReconnect(LlmReconnect {
+                phase: LlmReconnectPhase::Failed,
+                attempt: 6,
+                max_attempts: 6,
+                delay_ms: 0,
+            }),
+        ));
+        assert!(mgr.llm_reconnect_retryable(&session_id));
+        mgr.reserve_turn(&session_id, "turn-1".into(), 8, "default", "/proj")
+            .expect("reserve");
+        assert!(mgr.llm_reconnect_retryable(&session_id));
+        assert!(mgr.release_turn_reservation(&session_id, "turn-1"));
+        assert!(mgr.llm_reconnect_retryable(&session_id));
+    }
 
     #[tokio::test]
     async fn open_child_and_remove_parent_cascades_in_memory() {

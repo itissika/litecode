@@ -430,7 +430,12 @@ impl CompactPolicy {
             }
             result = tokio::time::timeout(
                 timeout,
-                llm.provider.complete_with_stream_events(&request, llm.api_key, None, cancel),
+                crate::llm::reconnect::scope_compaction(llm.provider.complete_with_stream_events(
+                    &request,
+                    llm.api_key,
+                    None,
+                    cancel,
+                )),
             ) => {
                 match result {
                     Ok(Ok(items)) => items,

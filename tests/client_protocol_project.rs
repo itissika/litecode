@@ -509,3 +509,81 @@ fn pending_messages_projects_the_full_authority_list() {
     assert_eq!(msg["params"]["pending_messages"][0]["id"], "p1");
     assert_eq!(msg["params"]["pending_messages"][1]["text"], "second");
 }
+
+#[test]
+fn llm_reconnect_projects_without_a_turn_id() {
+    use litecode::llm::reconnect::{LlmReconnect, LlmReconnectPhase};
+
+    let msg = project::project_live(
+        &InternalEvent::LlmReconnect(LlmReconnect {
+            phase: LlmReconnectPhase::Waiting,
+            attempt: 2,
+            max_attempts: 6,
+            delay_ms: 500,
+        }),
+        "s1",
+        None,
+    )
+    .unwrap();
+    assert!(method_is(&msg, "agent/turn_event"));
+    assert_eq!(msg["params"]["turn_id"], "");
+    assert_eq!(msg["params"]["event"]["type"], "llm_reconnect");
+    assert_eq!(msg["params"]["event"]["phase"], "waiting");
+    assert_eq!(msg["params"]["event"]["attempt"], 2);
+    assert_eq!(msg["params"]["event"]["max_attempts"], 6);
+    assert_eq!(msg["params"]["event"]["delay_ms"], 500);
+}
+
+#[test]
+fn turn_finished_marks_a_failed_reconnect_retryable() {
+    use litecode::llm::reconnect::{LlmReconnect, LlmReconnectPhase};
+
+    let mut snap = sample_snapshot();
+    snap.llm_reconnect = Some(LlmReconnect {
+        phase: LlmReconnectPhase::Failed,
+        attempt: 6,
+        max_attempts: 6,
+        delay_ms: 0,
+    });
+    let msg = project::project(
+        &InternalEvent::TurnCompleted {
+            turn_id: "t1".into(),
+            final_text: Some("opening stream failed".into()),
+            reason: TurnEndReason::Error,
+            turn_token_stats: TurnTokenStats::default(),
+            committed_next_seq: 0,
+        },
+        &snap,
+    )
+    .unwrap();
+    assert_eq!(msg["params"]["error"]["code"], "llm_http");
+    assert_eq!(msg["params"]["error"]["retryable"], true);
+    assert_eq!(msg["params"]["snapshot"]["llm_reconnect"]["phase"], "failed");
+    assert!(msg["params"]["snapshot"]["llm_reconnect"].get("delay_ms").is_none());
+
+    snap.llm_reconnect = None;
+    let plain = project::project(
+        &InternalEvent::TurnCompleted {
+            turn_id: "t1".into(),
+            final_text: Some("boom".into()),
+            reason: TurnEndReason::Error,
+            turn_token_stats: TurnTokenStats::default(),
+            committed_next_seq: 0,
+        },
+        &snap,
+    )
+    .unwrap();
+    assert_eq!(plain["params"]["error"]["code"], "internal");
+    assert_eq!(plain["params"]["error"]["retryable"], false);
+}
+
+#[test]
+fn structured_error_omitted_retryable_is_false() {
+    let error: litecode::client_protocol::protocol::StructuredError =
+        serde_json::from_value(serde_json::json!({
+            "code": "internal",
+            "message": "x"
+        }))
+        .unwrap();
+    assert!(!error.retryable);
+}

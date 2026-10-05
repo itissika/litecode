@@ -27,6 +27,7 @@ import {
   MessageList,
   type EditingUserAnchor,
 } from "../../components/MessageList";
+import { LlmReconnectBubble } from "../../components/LlmReconnectBubble";
 import { PermissionCard } from "../../components/PermissionModal";
 import { ProgressiveBlur } from "../../components/ProgressiveBlur";
 import { SessionStatusLine } from "../../components/SessionStatusLine";
@@ -611,6 +612,7 @@ export function ComposerDock({
                 }}
               />
             )}
+            <LlmReconnectBubble sessionId={sessionId} />
             <SessionStatusLine
               sessionId={sessionId}
               onRevealBash={onRevealBash}

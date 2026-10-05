@@ -179,6 +179,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     if (snap.turn) {
       useTurnStore.getState().applySnapshotTurn(sessionId, snap.turn);
     }
+    useTurnStore.getState().applyLlmReconnect(sessionId, snap.llm_reconnect);
     useTurnStore.getState().applySnapshotMeter(sessionId, snap);
     if (snap.bash) {
       useBashStore.getState().applySnapshot(sessionId, snap.bash);

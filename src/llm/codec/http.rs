@@ -5,6 +5,7 @@
 //! [`crate::types::StreamEvents`] ordered lives in
 //! [`super::stream_contract::forward_stream_event`].
 
+use crate::llm::reconnect::{LlmReconnect, LlmReconnectPhase};
 use crate::types::{LitecodeError, Result};
 use tokio_util::sync::CancellationToken;
 
@@ -28,11 +29,50 @@ const RETRY_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(8);
 /// Retries after the first attempt (total attempts = `RETRY_MAX + 1`).
 const RETRY_MAX: usize = 5;
 
+/// Attempts already started against the shared connect + empty-stream budget.
+pub(super) struct ReconnectBudget {
+    used: usize,
+}
+
+impl ReconnectBudget {
+    pub(super) fn new() -> Self {
+        Self { used: 0 }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_used(used: usize) -> Self {
+        Self { used }
+    }
+
+    pub(super) fn max_attempts() -> u32 {
+        (RETRY_MAX + 1) as u32
+    }
+
+    fn has_room(&self) -> bool {
+        self.used <= RETRY_MAX
+    }
+}
+
+/// What to do after the response body died before any streamed item.
+pub(super) enum EmptyStreamAction {
+    Retry,
+    GiveUp,
+}
+
 /// Backoff for a 0-based retry index: `base * 2^attempt`, capped at
 /// [`RETRY_MAX_DELAY`] (500ms, 1s, 2s, 4s, 8s, 8s, …).
 fn retry_delay(attempt: usize) -> std::time::Duration {
     let factor = 1u32 << attempt.min(16);
     RETRY_BASE_DELAY.saturating_mul(factor).min(RETRY_MAX_DELAY)
+}
+
+fn notify(phase: LlmReconnectPhase, attempt: u32, delay_ms: u64) {
+    crate::llm::reconnect::emit(LlmReconnect {
+        phase,
+        attempt,
+        max_attempts: ReconnectBudget::max_attempts(),
+        delay_ms,
+    });
 }
 
 /// Send a request while remaining cancellable during connect/headers.
@@ -41,15 +81,31 @@ fn retry_delay(attempt: usize) -> std::time::Duration {
 /// Transient failures (connect/timeout/request errors, 408/502/503/504) retry up
 /// to [`RETRY_MAX`] times with a doubling backoff; a non-clonable body is sent
 /// once. Nothing has reached the model server on these paths, so a retry cannot
-/// duplicate a generation.
+/// duplicate a generation. `budget` is shared with a later empty-stream loss so
+/// both paths spend the same six attempts.
 pub(super) async fn send_cancellable(
     request: reqwest::RequestBuilder,
     cancel: &CancellationToken,
     stage: &str,
+    budget: &mut ReconnectBudget,
 ) -> Result<reqwest::Response> {
     let template = request.try_clone();
     let mut first = Some(request);
-    for attempt in 0..=RETRY_MAX {
+    loop {
+        if !budget.has_room() {
+            notify(LlmReconnectPhase::Failed, budget.used as u32, 0);
+            return Err(LitecodeError::Llm(format!(
+                "{stage} failed: reconnect budget exhausted"
+            )));
+        }
+
+        let attempt_index = budget.used;
+        budget.used += 1;
+        let attempt_n = budget.used as u32;
+        if attempt_index > 0 {
+            notify(LlmReconnectPhase::Connecting, attempt_n, 0);
+        }
+
         let request = if let Some(request) = first.take() {
             request
         } else if let Some(request) = template
@@ -69,24 +125,31 @@ pub(super) async fn send_cancellable(
             result = request.send() => result,
         };
         let retry = match &result {
-            Ok(response) => matches!(
-                response.status(),
-                reqwest::StatusCode::REQUEST_TIMEOUT
-                    | reqwest::StatusCode::BAD_GATEWAY
-                    | reqwest::StatusCode::SERVICE_UNAVAILABLE
-                    | reqwest::StatusCode::GATEWAY_TIMEOUT
-            ),
+            Ok(response) => is_retryable_status(response.status()),
             Err(error) => error.is_connect() || error.is_timeout() || error.is_request(),
         };
-        if !retry || attempt == RETRY_MAX || template.is_none() {
+        if !retry {
+            // Cleared means the reconnect succeeded and the call continues.
+            // A non-retryable status or transport error is a failure.
+            if attempt_index > 0
+                && result
+                    .as_ref()
+                    .is_ok_and(|response| response.status().is_success())
+            {
+                notify(LlmReconnectPhase::Cleared, attempt_n, 0);
+            }
+            return result.map_err(|error| transport_error(stage, &error));
+        }
+        if !budget.has_room() || template.is_none() {
+            notify(LlmReconnectPhase::Failed, budget.used as u32, 0);
             return result.map_err(|error| transport_error(stage, &error));
         }
 
-        let delay = retry_delay(attempt);
+        let delay = retry_delay(attempt_index);
         tracing::warn!(
             stage,
-            attempt = attempt + 1,
-            max_attempts = RETRY_MAX + 1,
+            attempt = attempt_n,
+            max_attempts = ReconnectBudget::max_attempts(),
             delay_ms = delay.as_millis() as u64,
             status = result
                 .as_ref()
@@ -94,13 +157,77 @@ pub(super) async fn send_cancellable(
                 .map(|response| response.status().as_u16()),
             "transient LLM HTTP failure; retrying"
         );
+        notify(
+            LlmReconnectPhase::Waiting,
+            attempt_n + 1,
+            delay.as_millis() as u64,
+        );
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(LitecodeError::Canceled),
             _ = tokio::time::sleep(delay) => {}
         }
     }
-    unreachable!("bounded LLM HTTP retry loop")
+}
+
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::REQUEST_TIMEOUT
+            | reqwest::StatusCode::BAD_GATEWAY
+            | reqwest::StatusCode::SERVICE_UNAVAILABLE
+            | reqwest::StatusCode::GATEWAY_TIMEOUT
+    )
+}
+
+/// Count an empty-body stream loss against the same budget as connect retries.
+///
+/// A generation that already produced items must not call this: replaying the
+/// request would duplicate it. Cancellation does not emit `failed`.
+pub(super) async fn on_empty_stream_loss(
+    budget: &mut ReconnectBudget,
+    cancel: &CancellationToken,
+) -> Result<EmptyStreamAction> {
+    if !budget.has_room() {
+        notify(LlmReconnectPhase::Failed, budget.used as u32, 0);
+        return Ok(EmptyStreamAction::GiveUp);
+    }
+    let delay = retry_delay(budget.used.saturating_sub(1));
+    notify(
+        LlmReconnectPhase::Waiting,
+        (budget.used + 1) as u32,
+        delay.as_millis() as u64,
+    );
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(LitecodeError::Canceled),
+        _ = tokio::time::sleep(delay) => {}
+    }
+    Ok(EmptyStreamAction::Retry)
+}
+
+/// A broken event stream: retry while nothing was produced, otherwise surface Retry.
+///
+/// Replaying a request that already yielded items would duplicate the generation.
+pub(super) async fn on_broken_stream(
+    budget: &mut ReconnectBudget,
+    cancel: &CancellationToken,
+    produced_items: bool,
+) -> Result<EmptyStreamAction> {
+    if produced_items {
+        note_terminal_transport_failure(budget);
+        return Ok(EmptyStreamAction::GiveUp);
+    }
+    on_empty_stream_loss(budget, cancel).await
+}
+
+/// Stream died after tokens were already produced. Surface Retry immediately.
+pub(super) fn note_terminal_transport_failure(budget: &ReconnectBudget) {
+    notify(
+        LlmReconnectPhase::Failed,
+        budget.used.max(1) as u32,
+        0,
+    );
 }
 
 /// Preserve useful transport diagnostics without exposing credentials or bodies.
@@ -167,6 +294,23 @@ pub(super) fn transport_error(stage: &str, error: &reqwest::Error) -> LitecodeEr
     ))
 }
 
+/// Keep items already streamed when a later line or content type fails.
+pub(super) fn preserve_partial(
+    error: LitecodeError,
+    acc: &super::stream_contract::StreamItemAccumulator,
+) -> LitecodeError {
+    if acc.is_empty() {
+        return error;
+    }
+    match error {
+        LitecodeError::Llm(message) => LitecodeError::LlmStreamInterrupted {
+            message,
+            partial: acc.seal_incomplete(),
+        },
+        other => other,
+    }
+}
+
 pub(super) fn interrupted_stream_error(
     stage: &str,
     error: &reqwest::Error,
@@ -220,6 +364,7 @@ mod tests {
             client.post("http://127.0.0.1:1/never-connected"),
             &cancel,
             "test send",
+            &mut ReconnectBudget::new(),
         )
         .await;
         assert!(matches!(result, Err(LitecodeError::Canceled)));
@@ -247,6 +392,7 @@ mod tests {
                 .body("{}"),
             &CancellationToken::new(),
             "test send",
+            &mut ReconnectBudget::new(),
         )
         .await
         .unwrap();
@@ -278,6 +424,7 @@ mod tests {
                 .body("{}"),
             &CancellationToken::new(),
             "test send",
+            &mut ReconnectBudget::new(),
         )
         .await
         .unwrap();
@@ -320,5 +467,241 @@ mod tests {
             .unwrap();
 
         server.await.unwrap();
+    }
+
+    fn collect_notices() -> (
+        std::sync::Arc<dyn Fn(crate::llm::reconnect::LlmReconnect) + Send + Sync>,
+        std::sync::Arc<std::sync::Mutex<Vec<crate::llm::reconnect::LlmReconnect>>>,
+    ) {
+        let notices = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_notices = std::sync::Arc::clone(&notices);
+        let sink: std::sync::Arc<dyn Fn(crate::llm::reconnect::LlmReconnect) + Send + Sync> =
+            std::sync::Arc::new(move |notice| sink_notices.lock().unwrap().push(notice));
+        (sink, notices)
+    }
+
+    #[tokio::test]
+    async fn first_success_emits_no_reconnect_notice() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let (sink, notices) = collect_notices();
+        let client = llm_http_client().unwrap();
+        let response = crate::llm::reconnect::scope(sink, async move {
+            send_cancellable(
+                client
+                    .post(format!("http://{address}/responses"))
+                    .body("{}"),
+                &CancellationToken::new(),
+                "test send",
+                &mut ReconnectBudget::new(),
+            )
+            .await
+        })
+        .await
+        .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert!(notices.lock().unwrap().is_empty());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retry_emits_waiting_then_connecting_then_cleared() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for status in ["503 Service Unavailable", "200 OK"] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request).await.unwrap();
+                let response =
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let (sink, notices) = collect_notices();
+        let client = llm_http_client().unwrap();
+        let response = crate::llm::reconnect::scope(sink, async move {
+            send_cancellable(
+                client
+                    .post(format!("http://{address}/responses"))
+                    .body("{}"),
+                &CancellationToken::new(),
+                "test send",
+                &mut ReconnectBudget::new(),
+            )
+            .await
+        })
+        .await
+        .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let got = notices.lock().unwrap().clone();
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].phase, LlmReconnectPhase::Waiting);
+        assert_eq!(got[0].attempt, 2);
+        assert_eq!(got[0].max_attempts, 6);
+        assert_eq!(got[0].delay_ms, 500);
+        assert_eq!(got[1].phase, LlmReconnectPhase::Connecting);
+        assert_eq!(got[1].attempt, 2);
+        assert_eq!(got[2].phase, LlmReconnectPhase::Cleared);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn non_retryable_status_after_a_retry_does_not_clear() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for status in ["503 Service Unavailable", "400 Bad Request"] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request).await.unwrap();
+                let response =
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let (sink, notices) = collect_notices();
+        let client = llm_http_client().unwrap();
+        let response = crate::llm::reconnect::scope(sink, async move {
+            send_cancellable(
+                client
+                    .post(format!("http://{address}/responses"))
+                    .body("{}"),
+                &CancellationToken::new(),
+                "test send",
+                &mut ReconnectBudget::new(),
+            )
+            .await
+        })
+        .await
+        .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        let got = notices.lock().unwrap().clone();
+        assert!(
+            got.iter()
+                .all(|notice| notice.phase != LlmReconnectPhase::Cleared),
+            "a rejected retry must not clear the bubble, got {got:?}"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn exhausted_budget_emits_failed_without_another_wait() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let (sink, notices) = collect_notices();
+        let client = llm_http_client().unwrap();
+        let response = crate::llm::reconnect::scope(sink, async move {
+            send_cancellable(
+                client
+                    .post(format!("http://{address}/responses"))
+                    .body("{}"),
+                &CancellationToken::new(),
+                "test send",
+                &mut ReconnectBudget::with_used(RETRY_MAX),
+            )
+            .await
+        })
+        .await
+        .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let got = notices.lock().unwrap().clone();
+        assert!(
+            got.iter().any(|notice| notice.phase == LlmReconnectPhase::Failed
+                && notice.attempt == 6
+                && notice.max_attempts == 6)
+        );
+        assert!(
+            got.iter()
+                .all(|notice| notice.phase != LlmReconnectPhase::Waiting)
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancel_while_waiting_does_not_emit_failed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let cancel = CancellationToken::new();
+        let cancel_sleep = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            cancel_sleep.cancel();
+        });
+        let (sink, notices) = collect_notices();
+        let client = llm_http_client().unwrap();
+        let result = crate::llm::reconnect::scope(sink, async move {
+            send_cancellable(
+                client
+                    .post(format!("http://{address}/responses"))
+                    .body("{}"),
+                &cancel,
+                "test send",
+                &mut ReconnectBudget::new(),
+            )
+            .await
+        })
+        .await;
+        assert!(matches!(result, Err(LitecodeError::Canceled)));
+        let got = notices.lock().unwrap().clone();
+        assert!(
+            got.iter()
+                .any(|notice| notice.phase == LlmReconnectPhase::Waiting)
+        );
+        assert!(
+            got.iter()
+                .all(|notice| notice.phase != LlmReconnectPhase::Failed)
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn empty_stream_loss_on_a_spent_budget_emits_failed() {
+        let (sink, notices) = collect_notices();
+        let action = crate::llm::reconnect::scope(sink, async {
+            on_empty_stream_loss(
+                &mut ReconnectBudget::with_used(RETRY_MAX + 1),
+                &CancellationToken::new(),
+            )
+            .await
+        })
+        .await
+        .unwrap();
+        assert!(matches!(action, EmptyStreamAction::GiveUp));
+        let got = notices.lock().unwrap().clone();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].phase, LlmReconnectPhase::Failed);
+        assert_eq!(got[0].attempt, 6);
     }
 }

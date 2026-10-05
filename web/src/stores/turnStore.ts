@@ -16,12 +16,14 @@ import type {
   TurnStarted,
   TurnEventEnvelope,
   TurnFinished,
+  LlmReconnectNotice,
   PermissionRequest,
   SessionSnapshot,
   CompactLifecycle,
 } from "../api/types";
 import { EMPTY_TOKEN_BREAKDOWN } from "../api/types";
 import { debugTrace } from "../lib/debugTrace";
+import { reconnectAfterFinish } from "../lib/llmReconnect";
 import { useConnectionStore, attachSiblingStores } from "./connectionStore";
 import { appendComposerText } from "./composerDraft";
 import { useMessageStore, type TurnEndNotice } from "./messageStore";
@@ -79,6 +81,8 @@ export interface TurnSlice {
    * `session/pending_messages` notification — never a local edit.
    */
   pendingMessages: PendingMessage[];
+  /** Live LLM reconnect bubble. Null when the link is healthy. */
+  llmReconnect: LlmReconnectNotice | null;
 }
 
 export function emptySlice(): TurnSlice {
@@ -114,6 +118,7 @@ export const EMPTY_SLICE: TurnSlice = {
   todoItems: [],
   activePlanPath: null,
   pendingMessages: [],
+  llmReconnect: null,
 };
 
 function todoPatchFromItems(
@@ -274,6 +279,13 @@ interface TurnStore {
   ) => void;
   /** Transcript revert cancelled the live turn; wait for turn_finished. */
   onTranscriptReverted: (sessionId: string) => void;
+  /** Hydrate or clear the reconnect bubble from a session snapshot. */
+  applyLlmReconnect: (
+    sessionId: string,
+    notice: LlmReconnectNotice | null | undefined,
+  ) => void;
+  /** `agent/retry` — wake the same transcript, no new user message. */
+  retryLlmReconnect: (sessionId: string) => void;
   onCompactLifecycle: (life: CompactLifecycle) => void;
   applySnapshotTurn: (
     sessionId: string,
@@ -680,11 +692,27 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         turnStepMax: ts.step_max,
         pendingPermission: null,
         pendingCancel: false,
+        llmReconnect: null,
       });
     },
 
     onTurnEvent: (te) => {
       const sessionId = te.session_id;
+      if (te.event.type === "llm_reconnect") {
+        const notice = te.event;
+        patch(sessionId, {
+          llmReconnect:
+            notice.phase === "cleared"
+              ? null
+              : {
+                  phase: notice.phase,
+                  attempt: notice.attempt,
+                  max_attempts: notice.max_attempts,
+                  delay_ms: notice.delay_ms,
+                },
+        });
+        return;
+      }
       const current = getSlice(get().byId, sessionId);
       if (te.turn_id !== current.currentTurnId) {
         {
@@ -705,7 +733,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           notify.add(sessionId, "Context compacted");
           break;
         case "error":
-          useToastStore.getState().showToast(te.event.message, "error", 8000);
+          if (current.llmReconnect?.phase !== "failed") {
+            useToastStore.getState().showToast(te.event.message, "error", 8000);
+          }
           break;
         case "snapshot_notice": {
           const level = te.event.level.toLowerCase();
@@ -855,7 +885,8 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       });
 
       const snap = tf.snapshot;
-      const notice = turnEndNoticeFrom(tf);
+      const retryable = tf.reason === "error" && tf.error?.retryable === true;
+      const notice = retryable ? null : turnEndNoticeFrom(tf);
       if (!applies) {
         get().applySnapshotMeter(sessionId, snap);
         if (current.runState === "idle" && notice) {
@@ -895,6 +926,11 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         compactEligible: snap.compact_eligible ?? false,
         compacting: snap.compacting ?? false,
         activePlanPath: snap.active_plan_path ?? null,
+        llmReconnect: reconnectAfterFinish(
+          retryable,
+          current.llmReconnect,
+          snap.llm_reconnect,
+        ),
         ...(tts
           ? {
               lastTurnPromptTokens: tts.prompt_tokens ?? 0,
@@ -912,6 +948,28 @@ export const useTurnStore = create<TurnStore>((set, get) => {
             }
           : {}),
       });
+    },
+
+    applyLlmReconnect: (sessionId, notice) => {
+      if (!notice || notice.phase === "cleared") {
+        patch(sessionId, { llmReconnect: null });
+        return;
+      }
+      patch(sessionId, { llmReconnect: notice });
+    },
+
+    retryLlmReconnect: (sessionId) => {
+      const current = getSlice(get().byId, sessionId);
+      if (current.llmReconnect?.phase !== "failed" || current.runState !== "idle") {
+        return;
+      }
+      void useConnectionStore
+        .getState()
+        .sendRpc("agent/retry", { session_id: sessionId })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : "Retry failed";
+          useToastStore.getState().showToast(message, "error");
+        });
     },
 
     applySnapshotTurn: (sessionId, turn) => {
