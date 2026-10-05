@@ -150,7 +150,7 @@ describe("AgentMarkdown citations", () => {
     expect(resolveCitations).not.toHaveBeenCalled();
   });
 
-  it("opens a file shortcode at the start line and leaves a file link as text", () => {
+  it("opens a file shortcode at the start line and a markdown file link as a chip", () => {
     const openFile = vi.fn(async () => {});
     const openFileAt = vi.fn(async () => {});
     useEditorStore.setState({ openFile, openFileAt } as never);
@@ -164,7 +164,7 @@ describe("AgentMarkdown citations", () => {
 
     expect(container.textContent).toContain(".../src/a.rs");
     expect(container.textContent).not.toContain("src/a.rs : 4-9");
-    expect(container.textContent).toContain("validate.ts");
+    expect(container.textContent).toContain(".../auth/validate.ts");
     expect(container.textContent).not.toContain('[@ file="src/a.rs"]');
     expect(resolveCitations).not.toHaveBeenCalled();
 
@@ -178,6 +178,42 @@ describe("AgentMarkdown citations", () => {
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     fireEvent.click(files[1]!);
     expect(openFileAt).toHaveBeenCalledWith("src/a.rs", 4);
+
+    fireEvent.click(screen.getByRole("button", { name: ".../auth/validate.ts" }));
+    expect(openFile).toHaveBeenCalledWith("src/auth/validate.ts");
+  });
+
+  it("opens a relative file link at its line or symbol", () => {
+    const openFile = vi.fn(async () => {});
+    const openFileAt = vi.fn(async () => {});
+    useEditorStore.setState({ openFile, openFileAt } as never);
+    render(
+      <AgentMarkdown
+        citations
+        text={"See [validate](src/auth/validate.ts#L42) and [user](src/session.rs#Session.user)"}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: ".../auth/validate.ts" }));
+    expect(openFileAt).toHaveBeenCalledWith("src/auth/validate.ts", 42);
+    fireEvent.click(screen.getByRole("button", { name: "session.rs : Session.user" }));
+    expect(openFile).toHaveBeenCalledWith("src/session.rs");
+  });
+
+  it("renders a file-ish link we cannot open as plain text", () => {
+    const { container } = render(
+      <AgentMarkdown citations text={"[secret](../secret) and [hosts](/etc/hosts)"} />,
+    );
+
+    expect(container.textContent).toContain("secret");
+    expect(container.textContent).toContain("hosts");
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("does not turn a markdown file link inside inline code into a chip", () => {
+    render(<AgentMarkdown citations text={"`[a](src/a.ts)`"} />);
+    expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("opens a symbol citation at the file, and at the start line when a range is written", () => {
@@ -224,7 +260,7 @@ describe("AgentMarkdown citations", () => {
     expect(screen.getByRole("button", { name: ".../src/a.rs" }).parentElement?.className).toContain(
       "is-file",
     );
-    expect(screen.getAllByRole("button")).toHaveLength(2);
+    expect(screen.getAllByRole("button")).toHaveLength(3);
     expect(container.textContent).toContain("a.ts");
     expect(container.textContent).not.toContain(fileShortcode);
   });

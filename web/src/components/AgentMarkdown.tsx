@@ -3,7 +3,7 @@ import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { citationUrlTransform } from "../lib/citationRef";
+import { citationUrlTransform, classifyWorkspaceLink } from "../lib/citationRef";
 import { normalizeKey } from "../lib/knowledge/markers";
 import { revealKnowledgeNode } from "../lib/knowledge/panel";
 import {
@@ -203,6 +203,17 @@ export const AgentMarkdown = memo(function AgentMarkdown({
             />
           );
         }
+        const workspaceLink = citations ? classifyWorkspaceLink(href) : null;
+        if (workspaceLink?.action === "chip") {
+          return (
+            <WorkspaceCitationChip
+              path={workspaceLink.path}
+              symbol={workspaceLink.symbol}
+              line={workspaceLink.line}
+            />
+          );
+        }
+        if (workspaceLink?.action === "text") return <>{children}</>;
         if (href && /^file:/i.test(href)) {
           return <>{children}</>;
         }

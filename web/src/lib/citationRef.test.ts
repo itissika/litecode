@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   citationUrlTransform,
+  classifyWorkspaceLink,
   parseFileCitation,
 } from "./citationRef";
 
@@ -60,5 +61,64 @@ describe("citationUrlTransform", () => {
     expect(citationUrlTransform("file:src/a.ts#L42")).toBe("file:src/a.ts#L42");
     expect(citationUrlTransform("https://example.com")).toBe("https://example.com");
     expect(citationUrlTransform("javascript:alert(1)")).toBe("");
+  });
+});
+
+describe("classifyWorkspaceLink", () => {
+  it("chips a file link, at the line or symbol it names", () => {
+    expect(classifyWorkspaceLink("file:src/a.ts")).toEqual({
+      action: "chip",
+      path: "src/a.ts",
+      line: null,
+      symbol: null,
+    });
+    expect(classifyWorkspaceLink("src/auth/validate.ts#L42")).toEqual({
+      action: "chip",
+      path: "src/auth/validate.ts",
+      line: 42,
+      symbol: null,
+    });
+    expect(classifyWorkspaceLink("src/session.rs#Session.user")).toEqual({
+      action: "chip",
+      path: "src/session.rs",
+      line: null,
+      symbol: "Session.user",
+    });
+    expect(classifyWorkspaceLink("./src/my%20file.ts")).toEqual({
+      action: "chip",
+      path: "src/my file.ts",
+      line: null,
+      symbol: null,
+    });
+    expect(classifyWorkspaceLink("src\\a.ts")).toEqual({
+      action: "chip",
+      path: "src/a.ts",
+      line: null,
+      symbol: null,
+    });
+  });
+
+  it("turns a file-ish link we cannot open into text", () => {
+    expect(classifyWorkspaceLink("../secret")).toEqual({ action: "text" });
+    expect(classifyWorkspaceLink("/etc/hosts")).toEqual({ action: "text" });
+    expect(classifyWorkspaceLink("file:../secret")).toEqual({ action: "text" });
+    expect(classifyWorkspaceLink("file:C:/Windows/note.txt")).toEqual({
+      action: "text",
+    });
+  });
+
+  it("leaves a web link, an anchor, and a bare word alone", () => {
+    expect(classifyWorkspaceLink("https://example.com")).toEqual({
+      action: "link",
+    });
+    expect(classifyWorkspaceLink("mailto:someone@example.com")).toEqual({
+      action: "link",
+    });
+    expect(classifyWorkspaceLink("//example.com/a.ts")).toEqual({
+      action: "link",
+    });
+    expect(classifyWorkspaceLink("#section")).toEqual({ action: "link" });
+    expect(classifyWorkspaceLink("here")).toEqual({ action: "link" });
+    expect(classifyWorkspaceLink(undefined)).toEqual({ action: "link" });
   });
 });
