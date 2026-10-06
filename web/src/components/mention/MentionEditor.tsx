@@ -27,8 +27,11 @@ import {
 } from "react";
 
 import { citationFact, formatLineSpan } from "../../lib/knowledge/markers";
+import { dragCarriesMention, dropCarriesMention } from "../../lib/dropPayload";
+import { mentionTextForDrop } from "../../lib/mentionDrop";
+import { useSessionStore } from "../../stores/sessionStore";
 import { FileMentionChip, KnowledgeMentionChip } from "./chips";
-import { bodyToContent, fileMentionOptions, knowledgeMentionOptions } from "./serialize";
+import { bodyToContent, fileMentionOptions, knowledgeMentionOptions, mentionInlineContent } from "./serialize";
 import {
   fileCandidates,
   fileDisplayName,
@@ -81,6 +84,8 @@ interface MentionEditorProps {
   onFocus?: () => void;
   onPaste?: (event: ClipboardEvent) => boolean;
   onDropText?: (text: string) => boolean;
+  /** File, path, and code-span drops become mention chips at the caret. */
+  onMentionDrop?: boolean;
   onEscape?: () => void;
   handle?: Ref<MentionEditorHandle>;
 }
@@ -187,7 +192,7 @@ function MentionList({
   if (items.length === 0) {
     return (
       <div ref={rootRef} className="knowledge-mention-empty">
-        {loading ? "搜索中" : "未找到"}
+        {loading ? "Searching…" : "No matches"}
       </div>
     );
   }
@@ -230,7 +235,7 @@ function MentionList({
                 <button
                   type="button"
                   className="knowledge-mention-hash"
-                  aria-label={`在 ${fileDisplayName(item.path)} 中选符号`}
+                  aria-label={`Pick a symbol in ${fileDisplayName(item.path)}`}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -407,6 +412,7 @@ export function MentionEditor({
   onFocus,
   onPaste,
   onDropText,
+  onMentionDrop,
   onEscape,
   handle,
 }: MentionEditorProps) {
@@ -426,6 +432,8 @@ export function MentionEditor({
   onPasteRef.current = onPaste;
   const onDropTextRef = useRef(onDropText);
   onDropTextRef.current = onDropText;
+  const onMentionDropRef = useRef(onMentionDrop);
+  onMentionDropRef.current = onMentionDrop;
   const onEscapeRef = useRef(onEscape);
   onEscapeRef.current = onEscape;
   const placeholderRef = useRef(placeholder);
@@ -436,6 +444,7 @@ export function MentionEditor({
   submitRef.current = submitOnEnter;
   const emitted = useRef(value);
   const initialContent = useRef(bodyToContent(value));
+  const insertChips = useRef<((pos: number, text: string) => void) | null>(null);
   const nodeKey = useMemo(() => new PluginKey("knowledgeNodeMention"), []);
   const fileKey = useMemo(() => new PluginKey("knowledgeFileMention"), []);
 
@@ -506,14 +515,34 @@ export function MentionEditor({
         return true;
       },
       handlePaste: (_view: EditorView, event: ClipboardEvent) => onPasteRef.current?.(event) === true,
-      handleDrop: (_view: EditorView, event: DragEvent, _slice: Slice, moved: boolean) => {
+      handleDrop: (view: EditorView, event: DragEvent, _slice: Slice, moved: boolean) => {
         if (moved) return false;
-        const text = event.dataTransfer?.getData("text/plain") ?? "";
+        const transfer = event.dataTransfer;
+        if (onMentionDropRef.current && transfer && dropCarriesMention(transfer)) {
+          event.preventDefault();
+          event.stopPropagation();
+          const coords = view.posAtCoords({ left: event.clientX, top: event.clientY });
+          const pos = coords?.pos ?? view.state.selection.from;
+          const project = useSessionStore.getState().project;
+          void mentionTextForDrop(transfer, project).then((text) => {
+            if (text) insertChips.current?.(pos, text);
+          });
+          return true;
+        }
+        const text = transfer?.getData("text/plain") ?? "";
         if (!text || onDropTextRef.current?.(text) !== true) return false;
         event.preventDefault();
         return true;
       },
       handleDOMEvents: {
+        dragover: (_view: EditorView, event: DragEvent) => {
+          const transfer = event.dataTransfer;
+          if (!onMentionDropRef.current || !transfer || !dragCarriesMention(transfer)) {
+            return false;
+          }
+          event.preventDefault();
+          return true;
+        },
         blur: () => {
           onBlurRef.current?.();
           return false;
@@ -540,6 +569,13 @@ export function MentionEditor({
     },
   });
 
+  insertChips.current = (pos, text) => {
+    if (!editor || editor.isDestroyed) return;
+    const nodes = mentionInlineContent(text);
+    if (nodes.length === 0) return;
+    editor.chain().focus().insertContentAt(pos, nodes).run();
+  };
+
   useImperativeHandle(handle, () => ({
     focus: () => {
       editor?.commands.focus();
@@ -557,6 +593,13 @@ export function MentionEditor({
     if (!editor) return;
     (editor.view.dom as HTMLElement & { litecodeEditor?: typeof editor }).litecodeEditor = editor;
   }, [editor]);
+
+  useEffect(() => {
+    if (!editor) return;
+    const dom = editor.view.dom;
+    if (onMentionDrop) dom.setAttribute("data-mention-drop", "true");
+    else dom.removeAttribute("data-mention-drop");
+  }, [editor, onMentionDrop]);
 
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;

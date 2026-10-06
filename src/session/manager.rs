@@ -8,9 +8,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::ResolvedConfig;
 use crate::config::TurnGuard;
+use crate::llm::reconnect::{LlmReconnect, LlmReconnectPhase};
 use crate::runtime::RuntimeHandle;
 use crate::runtime::TurnHandle;
-use crate::llm::reconnect::{LlmReconnect, LlmReconnectPhase};
 use crate::runtime::observer::{InternalEnvelope, InternalEvent, TurnEndReason, TurnPhase};
 use crate::session::data::command::{MutationId, ReadValue, SessionMutation, SessionRead};
 use crate::session::data::{SessionData, SessionDataReader};
@@ -1908,7 +1908,8 @@ impl SessionManager {
     }
 
     pub fn llm_reconnect_retryable(&self, session_id: &str) -> bool {
-        self.llm_reconnect(session_id).is_some_and(|notice| notice.is_failed())
+        self.llm_reconnect(session_id)
+            .is_some_and(|notice| notice.is_failed())
     }
 
     pub fn child_session_id_for_call(

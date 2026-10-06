@@ -119,7 +119,32 @@ interface ConnectionStore {
 }
 
 let wsClient: AgentWsClient | null = null;
+let unbindTransportNudge: (() => void) | null = null;
 const pendingSubscriptions = new Map<string, Promise<void>>();
+
+/** Foreground check for a socket that is still OPEN but no longer receiving.
+ *  Background timers are throttled, so focus handles the return itself. */
+const STALE_CHECK_MS = 5_000;
+
+function bindTransportNudge(): () => void {
+  const nudge = (force: boolean) => wsClient?.ensureLive(force);
+  const onReturn = () => nudge(true);
+  const onVisible = () => {
+    if (document.visibilityState === "visible") onReturn();
+  };
+  window.addEventListener("focus", onReturn);
+  window.addEventListener("online", onReturn);
+  document.addEventListener("visibilitychange", onVisible);
+  const timer = window.setInterval(() => {
+    if (document.visibilityState === "visible") nudge(false);
+  }, STALE_CHECK_MS);
+  return () => {
+    window.removeEventListener("focus", onReturn);
+    window.removeEventListener("online", onReturn);
+    document.removeEventListener("visibilitychange", onVisible);
+    window.clearInterval(timer);
+  };
+}
 
 export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
   create<ConnectionStore>((set, get) => {
@@ -163,9 +188,13 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
 
         set({ state: "connecting" });
         wsClient.connect();
+        unbindTransportNudge?.();
+        unbindTransportNudge = bindTransportNudge();
       },
 
       destroy: () => {
+        unbindTransportNudge?.();
+        unbindTransportNudge = null;
         // Kill every live terminal before tearing down the socket so no backend
         // PTY is orphaned on app-level exit.
         siblingStores.terminalCloseAll?.();

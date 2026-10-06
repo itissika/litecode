@@ -39,6 +39,10 @@ export interface EditorTab {
   kind: FileKind;
   /** Bumped when a non-text file changes on disk so its preview refetches. */
   diskRevision: number;
+  /** Dropped from outside the workspace. Not read or written through the workspace API. */
+  external?: boolean;
+  /** Object URL for an external image, pdf, or media preview. */
+  previewUrl?: string;
 }
 
 /** A file the user has open that was overwritten on disk (by the agent).
@@ -95,6 +99,8 @@ interface EditorStore {
   clearConflict: (path: string) => void;
   setDockviewApi: (api: DockviewApi | null) => void;
   setMdView: (path: string, view: MdEditorView) => void;
+  /** Temporary preview of a file dropped from outside the workspace. */
+  openExternalPreview: (file: File, chip: string) => Promise<void>;
 }
 
 function makeTab(path: string, content: string, diskRevision = 0): EditorTab {
@@ -405,6 +411,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   ensureReadable: (path) => {
+    if (get().tabs.find((tab) => tab.path === path)?.external) {
+      return Promise.resolve();
+    }
     const pending = readableInflight.get(path);
     if (pending) return pending;
     const job = loadReadable(path, get, set).finally(() => {
@@ -415,6 +424,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   closeTab: (path) => {
+    const leaving = get().tabs.find((tab) => tab.path === path);
+    if (leaving?.previewUrl) URL.revokeObjectURL(leaving.previewUrl);
     const { dockviewApi } = get();
 
     // Mark that this close is initiated by the store to prevent
@@ -473,7 +484,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }
 
     const tab = get().tabs.find((t) => t.path === path);
-    if (!tab || tab.loading || !isTextKind(tab.kind)) return;
+    if (!tab || tab.external || tab.loading || !isTextKind(tab.kind)) return;
 
     // Freeze the bytes we actually send. Completing a save must never claim
     // later edits (content B) were written when only snapshot A hit disk.
@@ -512,7 +523,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   reloadFromDisk: async (path) => {
     const tab = get().tabs.find((t) => t.path === path);
-    if (!tab) return;
+    if (!tab || tab.external) return;
     if (!isTextKind(tab.kind)) {
       set((s) => ({
         tabs: s.tabs.map((t) =>
@@ -566,7 +577,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     for (const p of paths) {
       const tab = get().tabs.find((t) => t.path === p);
-      if (!tab) continue;
+      if (!tab || tab.external) continue;
 
       // Agent-first: disk is the authority. Discard unsaved human edits and
       // reload. Conflict cards are intentionally not used.
@@ -583,7 +594,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   remapTabs: (from, to) => {
     const { dockviewApi, tabs } = get();
     const affected = tabs.filter(
-      (t) => t.path === from || (from !== "" && t.path.startsWith(`${from}/`)),
+      (t) =>
+        !t.external &&
+        (t.path === from || (from !== "" && t.path.startsWith(`${from}/`))),
     );
     if (affected.length === 0) return;
 
@@ -689,6 +702,62 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       const next = { ...s.conflicts };
       delete next[path];
       return { conflicts: next };
+    });
+  },
+
+  openExternalPreview: async (file, chip) => {
+    const id = `external:${chip}`;
+    const named = file.name || fileNameFromPath(chip);
+    const kind = fileKindFromPath(named);
+    const previous = get().tabs.find((tab) => tab.path === id);
+    if (previous?.previewUrl) URL.revokeObjectURL(previous.previewUrl);
+
+    let next: EditorTab;
+    if (isTextKind(kind)) {
+      const content = await file.text();
+      next = { ...makeTab(id, content), external: true };
+    } else if (
+      kind === "image" ||
+      kind === "pdf" ||
+      kind === "audio" ||
+      kind === "video"
+    ) {
+      next = {
+        ...shellTab(id, kind),
+        loading: false,
+        error: null,
+        external: true,
+        previewUrl: URL.createObjectURL(file),
+      };
+    } else {
+      next = { ...shellTab(id, "binary"), external: true };
+    }
+
+    set((state) => {
+      const exists = state.tabs.some((tab) => tab.path === id);
+      return {
+        activePath: id,
+        tabs: exists
+          ? state.tabs.map((tab) => (tab.path === id ? next : tab))
+          : [...state.tabs, next],
+      };
+    });
+
+    const { dockviewApi } = get();
+    if (!dockviewApi) return;
+    const panel = dockviewApi.getPanel(id);
+    if (panel) {
+      panel.api.setTitle(fileNameFromPath(named));
+      panel.api.setActive();
+      return;
+    }
+    dockviewApi.addPanel({
+      id,
+      component: "editor",
+      title: fileNameFromPath(named),
+      tabComponent: "editor",
+      params: { filePath: id },
+      position: editorPanelPosition(dockviewApi),
     });
   },
 }));

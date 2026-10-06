@@ -1,28 +1,37 @@
 use crate::config::AgentConfig;
-use crate::config::global_db::{CITATION_PROMPT, builtin_prompt_for, is_builtin_prompt_marker};
+use crate::config::global_db::{
+    CITATION_PROMPT, HARNESS_SYSTEM, HARNESS_TOOLS, builtin_prompt_for, is_builtin_prompt_marker,
+};
 use crate::context_pipeline::env::Context;
 
-/// Unified entry: body + citation rules + CLAUDE.md. Hidden agents get body only.
+/// Unified entry: harness header + editable layers + tool rules + citations + CLAUDE.md.
+/// Hidden agents get the editable body only.
 pub fn build_system_prompt(
     agent_id: &str,
     agent_config: &AgentConfig,
     ctx: Option<&Context>,
 ) -> String {
-    let body = resolve_body(agent_id, &agent_config.system_prompt);
+    let editable = resolve_body(agent_id, &agent_config.system_prompt);
     if agent_config.role == "hidden" {
-        return body;
+        return editable;
     }
-    let body = append_citations(&body);
+    let body = splice_harness(&editable);
     let claude_md = ctx.and_then(|c| c.claude_md.as_deref()).unwrap_or("");
     splice_claude_md(&body, claude_md)
 }
 
-fn append_citations(body: &str) -> String {
-    let suffix = CITATION_PROMPT.trim();
-    if body.trim().is_empty() {
-        return suffix.to_string();
+/// Fixed LiteCode layers around the editable block. An empty editable block still
+/// gets the header, tool rules, and citations.
+fn splice_harness(editable: &str) -> String {
+    let mut parts = Vec::with_capacity(4);
+    parts.push(HARNESS_SYSTEM.trim());
+    let editable = editable.trim();
+    if !editable.is_empty() {
+        parts.push(editable);
     }
-    format!("{}\n\n{suffix}", body.trim_end())
+    parts.push(HARNESS_TOOLS.trim());
+    parts.push(CITATION_PROMPT.trim());
+    parts.join("\n\n")
 }
 
 fn resolve_body(agent_id: &str, stored: &str) -> String {
@@ -48,11 +57,19 @@ mod tests {
     use super::*;
     use crate::config::WorkspacePaths;
     use crate::config::global_db::{
-        CITATION_PROMPT, COMPACTION_PROMPT, DEFAULT_PROMPT, ORCHESTRATOR_PROMPT,
+        CITATION_PROMPT, COMPACTION_PROMPT, DEFAULT_PROMPT, GENERAL_PROMPT, HARNESS_SYSTEM,
+        HARNESS_TOOLS, ORCHESTRATOR_PROMPT,
     };
 
-    fn with_citations(body: &str) -> String {
-        format!("{}\n\n{}", body.trim_end(), CITATION_PROMPT.trim())
+    fn visible(editable: &str) -> String {
+        let mut parts = vec![HARNESS_SYSTEM.trim()];
+        let editable = editable.trim();
+        if !editable.is_empty() {
+            parts.push(editable);
+        }
+        parts.push(HARNESS_TOOLS.trim());
+        parts.push(CITATION_PROMPT.trim());
+        parts.join("\n\n")
     }
 
     fn make_ctx(claude_md: Option<&str>, agents_md: Option<&str>) -> Context {
@@ -77,9 +94,15 @@ mod tests {
     #[test]
     fn builtin_general_marker_loads_default_pack() {
         let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), None);
-        assert!(prompt.starts_with("You are a General Purpose Agent in LiteCode."));
+        assert!(prompt.starts_with("# System"));
         assert!(!prompt.contains("You are litecode"));
-        assert_eq!(prompt, with_citations(DEFAULT_PROMPT));
+        assert_eq!(prompt, visible(DEFAULT_PROMPT));
+        let identity = prompt
+            .find("You are a General Purpose Agent in LiteCode.")
+            .unwrap();
+        assert!(prompt.find("# System").unwrap() < identity);
+        assert!(identity < prompt.find("# Using your tools").unwrap());
+        assert!(prompt.find("# Using your tools").unwrap() < prompt.find("# Citations").unwrap());
         assert!(prompt.contains("[@ key=\"seq\"]"));
         assert!(prompt.contains("knowledge guide"));
         assert!(prompt.contains("[@ file=\"src/a.rs\"]"));
@@ -89,6 +112,7 @@ mod tests {
         assert!(!prompt.contains("[@ id="));
         assert!(!prompt.contains("file_path:line_number"));
         assert!(!prompt.contains("owner/repo#123"));
+        assert!(!prompt.contains("# Doing tasks"));
     }
 
     #[test]
@@ -98,17 +122,31 @@ mod tests {
             &cfg("primary", "builtin:orchestrator"),
             None,
         );
-        assert!(prompt.starts_with("You are LiteCode's Orchestrator."));
-        assert_eq!(prompt, with_citations(ORCHESTRATOR_PROMPT));
-        assert!(prompt.contains("# Citations"));
+        assert!(prompt.starts_with("# System"));
+        assert_eq!(prompt, visible(ORCHESTRATOR_PROMPT));
+        let identity = prompt.find("You are LiteCode's Orchestrator.").unwrap();
+        assert!(prompt.find("# System").unwrap() < identity);
+        assert!(identity < prompt.find("# Citations").unwrap());
         assert!(!prompt.contains("file_path:line_number"));
     }
 
     #[test]
-    fn user_override_replaces_builtin() {
+    fn user_override_replaces_editable_layers() {
         let prompt =
             build_system_prompt("default", &cfg("primary", "You are a custom agent."), None);
-        assert_eq!(prompt, with_citations("You are a custom agent."));
+        assert_eq!(prompt, visible("You are a custom agent."));
+        assert!(prompt.contains("# System"));
+        assert!(prompt.contains("# Using your tools"));
+        assert!(prompt.contains("# Citations"));
+        assert!(!prompt.contains("General Purpose Agent"));
+    }
+
+    #[test]
+    fn empty_override_still_splices_harness() {
+        let prompt = build_system_prompt("default", &cfg("primary", "  "), None);
+        assert_eq!(prompt, visible(""));
+        assert!(prompt.starts_with("# System"));
+        assert!(prompt.contains("# Using your tools"));
         assert!(prompt.contains("# Citations"));
         assert!(!prompt.contains("General Purpose Agent"));
     }
@@ -119,6 +157,7 @@ mod tests {
         let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), Some(&ctx));
         assert!(prompt.contains("<context from=\"CLAUDE.md\">"));
         assert!(prompt.contains("# contract"));
+        assert!(prompt.find("# System").unwrap() < prompt.find("General Purpose Agent").unwrap());
         assert!(
             prompt.find("# Citations").unwrap()
                 < prompt.find("<context from=\"CLAUDE.md\">").unwrap()
@@ -136,6 +175,7 @@ mod tests {
             Some(&ctx),
         );
         assert_eq!(prompt, COMPACTION_PROMPT.trim());
+        assert!(!prompt.contains("# System"));
         assert!(!prompt.contains("# Citations"));
         assert!(!prompt.contains("CLAUDE.md"));
         assert!(!prompt.contains("# contract"));
@@ -151,16 +191,25 @@ mod tests {
     #[test]
     fn explore_marker_loads_explore_pack() {
         let prompt = build_system_prompt("explore", &cfg("subagent", "builtin:explore"), None);
+        assert!(prompt.starts_with("# System"));
         assert!(prompt.contains("Explore Purpose Agent"));
-        assert!(prompt.contains("READ-ONLY"));
+        assert!(prompt.contains("Don't change local or remote state."));
         assert!(prompt.contains("# Citations"));
+        assert!(!prompt.contains("READ-ONLY"));
+        assert!(!prompt.contains("# Core Tools"));
     }
 
     #[test]
     fn general_marker_loads_general_pack() {
         let prompt = build_system_prompt("general", &cfg("subagent", "builtin:general"), None);
-        assert!(prompt.starts_with("You are general,"));
-        assert!(prompt.contains("# Collaboration"));
+        assert!(prompt.starts_with("# System"));
+        assert!(prompt.contains("You are general,"));
+        assert!(prompt.contains("You can work heads-down."));
         assert!(prompt.contains("# Citations"));
+        assert!(!prompt.contains("# Collaboration"));
+        let system = prompt.find("# System").unwrap();
+        let identity = prompt.find("You are general,").unwrap();
+        assert!(system < identity);
+        assert_eq!(prompt, visible(GENERAL_PROMPT));
     }
 }

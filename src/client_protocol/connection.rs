@@ -325,7 +325,10 @@ pub async fn handle_jsonrpc(
             }
             let turn_id = uuid::Uuid::new_v4().to_string();
             let permission_sink = session.permission_sink_for(&sid, perm_tx, &turn_id);
-            match session.retry_failed_turn(&sid, permission_sink, &turn_id).await {
+            match session
+                .retry_failed_turn(&sid, permission_sink, &turn_id)
+                .await
+            {
                 Ok(()) => {
                     for msg in session.take_outgoing_for(&sid) {
                         emit(sink, msg);

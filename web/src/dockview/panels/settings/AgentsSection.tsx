@@ -234,6 +234,11 @@ function AgentProfileFields({
           }
           disabled={saveBlocked}
         />
+        <p className="mt-1 text-[11px] text-(--_dk-text-muted)">
+          Replaces identity, work, and voice. A <code>builtin:</code> value
+          uses the built-in text. System, tool, and citation sections are
+          always added.
+        </p>
       </div>
       <div
         data-anchor="max-steps"

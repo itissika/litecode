@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 /**
  * Sandboxed preload may only `require` Electron/Node builtins — not local files.
@@ -32,6 +32,14 @@ type RemoteHistoryItem = {
 contextBridge.exposeInMainWorld("litecode", {
   getAuthToken: (): string | undefined => {
     return ipcRenderer.sendSync("litecode:get-auth-token") as string | undefined;
+  },
+  getPathForFile: (file: File): string => {
+    try {
+      const value = webUtils.getPathForFile(file);
+      return typeof value === "string" ? value : "";
+    } catch {
+      return "";
+    }
   },
   getSessionMode: (): "local" | "remote" => {
     const mode = ipcRenderer.sendSync("litecode:get-session-mode") as string | undefined;

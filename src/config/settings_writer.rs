@@ -1622,9 +1622,8 @@ max_output = 1024
     fn custom_rules_without_a_preset_store_allow_all() {
         let mut tools = std::collections::HashMap::new();
         let mut dirty = dial_binding(None);
-        dirty.policy = crate::permission::ToolPolicy::with_default(
-            crate::permission::PermissionAction::Ask,
-        );
+        dirty.policy =
+            crate::permission::ToolPolicy::with_default(crate::permission::PermissionAction::Ask);
         tools.insert("gated".into(), dirty);
         let mut safe = std::collections::HashMap::new();
         safe.insert("gated".into(), declared_rules());

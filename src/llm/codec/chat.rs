@@ -21,8 +21,8 @@ use crate::types::{LitecodeError, Result, StreamEvents};
 
 use super::chat_synth::ChatSynth;
 use super::http::{
-    llm_http_client, on_broken_stream, preserve_partial, send_cancellable, EmptyStreamAction,
-    ReconnectBudget,
+    EmptyStreamAction, ReconnectBudget, llm_http_client, on_broken_stream, preserve_partial,
+    send_cancellable,
 };
 use super::sse::{SseLineReader, check_event_stream_content_type, sse_data_payload};
 use super::stream_contract::{
@@ -272,12 +272,10 @@ impl LlmProvider for ChatCompletionsCodec {
                 }
                 let resp = match check_event_stream_content_type(resp).await {
                     Ok(resp) => resp,
-                    Err(error) => {
-                        match on_broken_stream(&mut budget, cancel, false).await? {
-                            EmptyStreamAction::Retry => continue 'open,
-                            EmptyStreamAction::GiveUp => return Err(error),
-                        }
-                    }
+                    Err(error) => match on_broken_stream(&mut budget, cancel, false).await? {
+                        EmptyStreamAction::Retry => continue 'open,
+                        EmptyStreamAction::GiveUp => return Err(error),
+                    },
                 };
 
                 let mut terminal_items: Option<Vec<Item>> = None;
@@ -370,7 +368,9 @@ impl LlmProvider for ChatCompletionsCodec {
                         Err(error) => {
                             match on_broken_stream(&mut budget, cancel, !acc.is_empty()).await? {
                                 EmptyStreamAction::Retry => continue 'open,
-                                EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
+                                EmptyStreamAction::GiveUp => {
+                                    return Err(preserve_partial(error, &acc));
+                                }
                             }
                         }
                     };
@@ -391,7 +391,9 @@ impl LlmProvider for ChatCompletionsCodec {
                                         .await?
                                     {
                                         EmptyStreamAction::Retry => continue 'open,
-                                        EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
+                                        EmptyStreamAction::GiveUp => {
+                                            return Err(preserve_partial(error, &acc));
+                                        }
                                     }
                                 }
                             };

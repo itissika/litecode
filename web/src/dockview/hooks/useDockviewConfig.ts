@@ -195,9 +195,6 @@ export function useDockviewConfig() {
       }, 500);
     });
 
-    api.onUnhandledDragOver((e) => {
-      e.accept();
-    });
   }, []);
 
   const onWillDrop = useCallback((event: DockviewWillDropEvent) => {

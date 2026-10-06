@@ -9,20 +9,23 @@ import { FileFallback } from "./FileFallback";
 export function PdfPreview({
   path,
   diskRevision,
+  sourceUrl,
 }: {
   path: string;
   diskRevision: number;
+  sourceUrl?: string;
 }) {
   const connected = useConnectionStore((s) => s.state === "connected");
+  const ready = Boolean(sourceUrl) || connected;
   const hostRef = useRef<HTMLDivElement>(null);
   const successKey = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [ready, setReady] = useState(false);
+  const [readyPages, setReadyPages] = useState(false);
 
   useEffect(() => {
-    if (!connected) return;
-    const key = `${path}\0${diskRevision}`;
+    if (!ready) return;
+    const key = `${sourceUrl ?? path}\0${diskRevision}`;
     if (successKey.current === key) return;
     const host = hostRef.current;
     if (!host) return;
@@ -31,7 +34,9 @@ export function PdfPreview({
     setError(null);
     void (async () => {
       try {
-        const blob = await readBytes(path);
+        const blob = sourceUrl
+          ? await fetch(sourceUrl).then((response) => response.blob())
+          : await readBytes(path);
         const data = new Uint8Array(await blob.arrayBuffer());
         const pdfjs = await import("pdfjs-dist");
         pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -58,7 +63,7 @@ export function PdfPreview({
         await doc.destroy();
         if (cancelled) return;
         successKey.current = key;
-        setReady(true);
+        setReadyPages(true);
         setLoading(false);
       } catch (err) {
         if (cancelled) return;
@@ -70,12 +75,12 @@ export function PdfPreview({
     return () => {
       cancelled = true;
     };
-  }, [connected, path, diskRevision]);
+  }, [ready, path, diskRevision, sourceUrl]);
 
   useEffect(() => {
     successKey.current = null;
-    setReady(false);
-  }, [path, diskRevision]);
+    setReadyPages(false);
+  }, [path, diskRevision, sourceUrl]);
 
   if (error) return <FileFallback path={path} message={error} />;
 
@@ -86,7 +91,7 @@ export function PdfPreview({
           Loading…
         </div>
       ) : null}
-      {!connected && !loading && !ready ? (
+      {!ready && !loading && !readyPages ? (
         <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-muted)">
           Waiting to reconnect…
         </div>

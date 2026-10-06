@@ -107,7 +107,7 @@ export function SqlitePreview({
       ) : null}
       {page && tables.length === 0 ? (
         <div className="flex flex-1 items-center justify-center text-sm text-(--_dk-text-muted)">
-          这个数据库没有表
+          This database has no tables.
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-auto">

@@ -5,6 +5,7 @@ import { AgentWsClient } from "./agentWs";
 /** Capture the URL passed to `new WebSocket`. */
 let wsUrl: string | null = null;
 let sendSpy: ReturnType<typeof vi.fn> | null = null;
+let socketsCreated = 0;
 
 class MockWebSocket {
   static OPEN = 1;
@@ -15,6 +16,7 @@ class MockWebSocket {
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
   constructor(url: string) {
+    socketsCreated += 1;
     wsUrl = url;
     sendSpy = vi.fn();
   }
@@ -22,22 +24,38 @@ class MockWebSocket {
     sendSpy?.();
   }
   close(): void {
-    this.readyState = 3;
+    if (this.readyState === MockWebSocket.CLOSED) return;
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.();
   }
+}
+
+const HELLO = JSON.stringify({
+  jsonrpc: "2.0",
+  method: "server/hello",
+  params: { project: "p", workspace_id: "w" },
+});
+
+function openAndHello(client: AgentWsClient): MockWebSocket {
+  client.connect();
+  const ws = (client as unknown as { ws: MockWebSocket }).ws;
+  ws.readyState = MockWebSocket.OPEN;
+  ws.onopen?.();
+  ws.onmessage?.({ data: HELLO });
+  return ws;
 }
 
 beforeEach(() => {
   wsUrl = null;
   sendSpy = null;
+  socketsCreated = 0;
+  vi.useFakeTimers();
   vi.stubGlobal("WebSocket", MockWebSocket);
-  // Neutralize the handshake/reconnect timers so tests don't leave pending work.
-  vi.spyOn(globalThis, "setTimeout").mockImplementation((() => 0) as never);
-  vi.spyOn(globalThis, "clearTimeout").mockImplementation(
-    (() => undefined) as never,
-  );
 });
 
 afterEach(() => {
+  vi.clearAllTimers();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -136,5 +154,110 @@ describe("AgentWsClient incoming frames", () => {
     ws.onmessage?.({ data: workspaceChangedJson.slice(cut) });
     expect(onError).not.toHaveBeenCalled();
     expect(onEnvelope).toHaveBeenCalledWith(workspaceChanged);
+  });
+});
+
+describe("AgentWsClient liveness", () => {
+  function clientWith(onError: (error: string) => void = () => {}) {
+    return new AgentWsClient({
+      url: "ws://127.0.0.1:7483/ws",
+      onEnvelope: () => {},
+      onError,
+    });
+  }
+
+  it("keeps a socket that is still receiving frames", () => {
+    const client = clientWith();
+    const ws = openAndHello(client);
+    vi.advanceTimersByTime(9_000);
+    ws.onmessage?.({
+      data: JSON.stringify({ jsonrpc: "2.0", method: "server/stats", params: {} }),
+    });
+    vi.advanceTimersByTime(9_000);
+    client.ensureLive(true);
+    expect(socketsCreated).toBe(1);
+  });
+
+  it("reconnects a silent open socket once", () => {
+    const client = clientWith();
+    openAndHello(client);
+    vi.advanceTimersByTime(10_001);
+    client.ensureLive(false);
+    expect(socketsCreated).toBe(2);
+    client.ensureLive(false);
+    expect(socketsCreated).toBe(2);
+  });
+
+  it("retries when hello does not arrive, without an auth error", () => {
+    const onError = vi.fn();
+    const client = clientWith(onError);
+    client.connect();
+    const ws = (client as unknown as { ws: MockWebSocket }).ws;
+    ws.readyState = MockWebSocket.OPEN;
+    ws.onopen?.();
+    vi.advanceTimersByTime(2_000);
+    expect(onError).not.toHaveBeenCalled();
+    expect(socketsCreated).toBe(1);
+    vi.advanceTimersByTime(500);
+    expect(socketsCreated).toBe(2);
+  });
+
+  it("stops when the upgrade fails and only focus retries", () => {
+    const onError = vi.fn();
+    const client = new AgentWsClient({
+      url: "ws://127.0.0.1:7483/ws",
+      authToken: "tok",
+      onEnvelope: () => {},
+      onError,
+    });
+    client.connect();
+    const ws = (client as unknown as { ws: MockWebSocket }).ws;
+    ws.onerror?.();
+    expect(onError).toHaveBeenCalledWith(
+      "Authentication failed: token rejected by serve.",
+    );
+    vi.advanceTimersByTime(30_000);
+    client.ensureLive(false);
+    expect(socketsCreated).toBe(1);
+    client.ensureLive(true);
+    expect(socketsCreated).toBe(2);
+  });
+
+  it("skips a pending backoff when forced and waits it out otherwise", () => {
+    const client = clientWith();
+    const ws = openAndHello(client);
+    ws.close();
+    expect(socketsCreated).toBe(1);
+    client.ensureLive(false);
+    expect(socketsCreated).toBe(1);
+    client.ensureLive(true);
+    expect(socketsCreated).toBe(2);
+  });
+
+  it("keeps retrying a refused reconnect after a completed hello", () => {
+    const onError = vi.fn();
+    const client = new AgentWsClient({
+      url: "ws://127.0.0.1:7483/ws",
+      authToken: "tok",
+      onEnvelope: () => {},
+      onError,
+    });
+    const ws = openAndHello(client);
+    ws.close();
+    vi.advanceTimersByTime(500);
+    const retry = (client as unknown as { ws: MockWebSocket }).ws;
+    retry.onerror?.();
+    expect(onError).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1_000);
+    expect(socketsCreated).toBe(3);
+  });
+
+  it("does not revive a client torn down by disconnect", () => {
+    const client = clientWith();
+    openAndHello(client);
+    client.disconnect();
+    vi.advanceTimersByTime(30_000);
+    client.ensureLive(true);
+    expect(socketsCreated).toBe(1);
   });
 });

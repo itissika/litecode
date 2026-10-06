@@ -558,8 +558,15 @@ fn turn_finished_marks_a_failed_reconnect_retryable() {
     .unwrap();
     assert_eq!(msg["params"]["error"]["code"], "llm_http");
     assert_eq!(msg["params"]["error"]["retryable"], true);
-    assert_eq!(msg["params"]["snapshot"]["llm_reconnect"]["phase"], "failed");
-    assert!(msg["params"]["snapshot"]["llm_reconnect"].get("delay_ms").is_none());
+    assert_eq!(
+        msg["params"]["snapshot"]["llm_reconnect"]["phase"],
+        "failed"
+    );
+    assert!(
+        msg["params"]["snapshot"]["llm_reconnect"]
+            .get("delay_ms")
+            .is_none()
+    );
 
     snap.llm_reconnect = None;
     let plain = project::project(

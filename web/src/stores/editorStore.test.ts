@@ -279,12 +279,12 @@ describe("ensureReadable", () => {
 
   it("turns an undisplayable text read into a binary fallback", async () => {
     mockedReadFile.mockRejectedValue(
-      new WorkspaceRequestError("二进制，无法在这里显示", 415),
+      new WorkspaceRequestError("Binary file. Can't display it here.", 415),
     );
     await useEditorStore.getState().ensureReadable("weird.txt");
     const tab = useEditorStore.getState().tabs[0]!;
     expect(tab.kind).toBe("binary");
-    expect(tab.error).toBe("二进制，无法在这里显示");
+    expect(tab.error).toBe("Binary file. Can't display it here.");
     expect(tab.errorRetryable).toBe(false);
 
     mockedReadFile.mockClear();
@@ -412,5 +412,49 @@ describe("editor panel placement", () => {
       }),
     );
     useEditorStore.getState().setDockviewApi(null);
+  });
+});
+
+describe("external preview", () => {
+  it("keeps dropped text out of the workspace read and save paths", async () => {
+    const file = new File(["hello"], "notes.ts", { type: "text/plain" });
+    await useEditorStore.getState().openExternalPreview(file, "C:/outside/notes.ts");
+    const tab = useEditorStore.getState().tabs[0];
+    expect(tab?.external).toBe(true);
+    expect(tab?.content).toBe("hello");
+    expect(tab?.path).toBe("external:C:/outside/notes.ts");
+    expect(mockedReadFile).not.toHaveBeenCalled();
+
+    await useEditorStore.getState().save(tab?.path);
+    expect(mockedWriteFile).not.toHaveBeenCalled();
+    await useEditorStore.getState().ensureReadable(tab!.path);
+    expect(mockedReadFile).not.toHaveBeenCalled();
+
+    await useEditorStore.getState().handleWorkspaceChange([tab!.path], "modified");
+    expect(mockedReadFile).not.toHaveBeenCalled();
+  });
+
+  it("previews an image from an object URL and refuses a binary as text", async () => {
+    const previousCreate = URL.createObjectURL;
+    const previousRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn(() => "blob:shot");
+    URL.revokeObjectURL = vi.fn();
+    try {
+    const image = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+    await useEditorStore.getState().openExternalPreview(image, "C:/shot.png");
+    const tab = useEditorStore.getState().tabs[0];
+    expect(tab?.kind).toBe("image");
+    expect(tab?.previewUrl?.startsWith("blob:")).toBe(true);
+    expect(mockedReadFile).not.toHaveBeenCalled();
+
+    const zip = new File([new Uint8Array([1])], "pack.zip", { type: "application/zip" });
+    await useEditorStore.getState().openExternalPreview(zip, "C:/pack.zip");
+    const binary = useEditorStore.getState().tabs.find((entry) => entry.path.endsWith("pack.zip"));
+    expect(binary?.kind).toBe("binary");
+    expect(binary?.previewUrl).toBeUndefined();
+    } finally {
+      URL.createObjectURL = previousCreate;
+      URL.revokeObjectURL = previousRevoke;
+    }
   });
 });

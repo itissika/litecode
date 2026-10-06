@@ -24,6 +24,9 @@ export interface AgentWsOptions {
 
 const DEFAULT_WS_PATH = "/ws";
 const HANDSHAKE_TIMEOUT_MS = 2000;
+/** Server pushes `server/stats` every 2s. Silence longer than this means the
+ *  socket is open in name only (sleep, half-open TCP). */
+const STALE_AFTER_MS = 10_000;
 /** Drop a stuck partial frame rather than holding it forever. */
 const MAX_WS_BUFFER = 8 * 1024 * 1024;
 
@@ -52,7 +55,21 @@ export class AgentWsClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
+  /** App teardown. Unlike an auth give-up, focus must not revive this client. */
+  private stopped = false;
   private handshakeComplete = false;
+  /** A completed hello means a later refused upgrade is a down server, not a
+   *  bad token. First-connect rejection still stops. */
+  private hadHello = false;
+  /** True once this attempt's `onopen` has run. Closing before that, without
+   *  the hello timer, is an upgrade rejection. A hello timeout keeps retrying. */
+  private socketOpened = false;
+  /** Hello timer fired. `onclose` from that close must keep retrying. */
+  private handshakeTimedOut = false;
+  /** Bumped on each `connect` so a replaced socket cannot schedule another. */
+  private generation = 0;
+  private connectStartedAt = 0;
+  private lastInboundAt = 0;
   private lineBuffer = "";
   private needsAuth: boolean;
 
@@ -73,25 +90,49 @@ export class AgentWsClient {
   }
 
   connect(): void {
+    if (this.stopped) return;
     this.intentionalClose = false;
     this.handshakeComplete = false;
+    this.socketOpened = false;
+    this.handshakeTimedOut = false;
+    this.lineBuffer = "";
     this.clearReconnectTimer();
     this.clearHandshakeTimer();
+    const previous = this.ws;
+    this.ws = null;
+    this.generation += 1;
+    const generation = this.generation;
+    previous?.close();
+
+    this.connectStartedAt = Date.now();
     this.setConnectionState(
       this.reconnectAttempt > 0 ? "reconnecting" : "connecting",
     );
 
     this.handshakeTimer = setTimeout(() => {
-      if (!this.handshakeComplete) {
-        this.failHandshake(this.authErrorMessage());
+      if (
+        generation !== this.generation ||
+        this.handshakeComplete ||
+        this.intentionalClose ||
+        this.stopped
+      ) {
+        return;
       }
+      // The upgrade was accepted (or is still in flight) but hello never
+      // arrived. Keep the backoff loop; this is not a rejected token.
+      this.handshakeTimedOut = true;
+      this.ws?.close();
+      this.scheduleReconnect();
     }, HANDSHAKE_TIMEOUT_MS);
 
     const wsUrl = this.buildConnectUrl();
     const ws = new WebSocket(wsUrl);
     this.ws = ws;
+    const current = () => generation === this.generation;
 
     ws.onopen = () => {
+      if (!current()) return;
+      this.socketOpened = true;
       this.reconnectAttempt = 0;
       this.setConnectionState("connected");
       if (this.needsAuth && this.options.authToken) {
@@ -100,26 +141,46 @@ export class AgentWsClient {
     };
 
     ws.onmessage = (ev) => {
+      if (!current()) return;
       if (typeof ev.data !== "string") return;
+      this.lastInboundAt = Date.now();
       this.handleIncoming(ev.data);
     };
 
     ws.onerror = () => {
-      if (!this.handshakeComplete) {
-        this.failHandshake(this.authErrorMessage());
-      } else {
+      if (!current()) return;
+      // Upgrade failed before the socket opened: bad token or refused.
+      // A later close of an already-open socket is handled by `onclose`.
+      if (!this.handshakeComplete && !this.socketOpened) {
+        if (this.hadHello) {
+          this.ws?.close();
+        } else {
+          this.failHandshake(this.authErrorMessage());
+        }
+      } else if (this.handshakeComplete) {
         this.options.onError?.("WebSocket error");
       }
     };
 
     ws.onclose = () => {
+      if (!current()) return;
       this.ws = null;
       this.lineBuffer = "";
-      if (!this.handshakeComplete) {
-        this.failHandshake(this.authErrorMessage());
+      if (this.stopped || this.intentionalClose) return;
+      if (this.handshakeTimedOut) {
+        this.handshakeTimedOut = false;
+        this.scheduleReconnect();
         return;
       }
-      if (!this.intentionalClose && this.reconnectEnabled) {
+      if (!this.handshakeComplete && !this.socketOpened) {
+        if (this.hadHello && this.reconnectEnabled) {
+          this.scheduleReconnect();
+        } else {
+          this.failHandshake(this.authErrorMessage());
+        }
+        return;
+      }
+      if (this.reconnectEnabled) {
         this.scheduleReconnect();
       } else {
         this.setConnectionState("disconnected");
@@ -127,12 +188,60 @@ export class AgentWsClient {
     };
   }
 
+  /**
+   * Reconnect when this socket is gone or has gone silent.
+   * `force` is the window-focus path: it also retries once after an auth
+   * give-up, and it skips a pending backoff. A healthy socket stays up.
+   */
+  ensureLive(force = false): void {
+    if (this.stopped) return;
+    if (this.intentionalClose) {
+      if (force) this.connect();
+      return;
+    }
+
+    const ws = this.ws;
+    const open = ws?.readyState === WebSocket.OPEN;
+    if (open && this.handshakeComplete) {
+      if (
+        this.lastInboundAt > 0 &&
+        Date.now() - this.lastInboundAt > STALE_AFTER_MS
+      ) {
+        this.reconnectAttempt = Math.max(this.reconnectAttempt, 1);
+        this.connect();
+      }
+      return;
+    }
+
+    if (this.reconnectTimer) {
+      if (!force) return;
+      this.clearReconnectTimer();
+      this.connect();
+      return;
+    }
+
+    if (!ws) {
+      if (force) this.connect();
+      return;
+    }
+
+    if (
+      force &&
+      Date.now() - this.connectStartedAt >= HANDSHAKE_TIMEOUT_MS
+    ) {
+      this.connect();
+    }
+  }
+
   disconnect(): void {
+    this.stopped = true;
     this.intentionalClose = true;
     this.clearReconnectTimer();
     this.clearHandshakeTimer();
-    this.ws?.close();
+    const ws = this.ws;
     this.ws = null;
+    this.generation += 1;
+    ws?.close();
     this.setConnectionState("disconnected");
   }
 
@@ -305,6 +414,7 @@ export class AgentWsClient {
         if (rpc.method !== undefined && id == null) {
           if (rpc.method === "server/hello") {
             this.handshakeComplete = true;
+            this.hadHello = true;
             this.clearHandshakeTimer();
           }
           this.options.onEnvelope(json as WireEnvelope);
@@ -322,6 +432,13 @@ export class AgentWsClient {
   }
 
   private scheduleReconnect(): void {
+    if (this.stopped || this.intentionalClose || !this.reconnectEnabled) {
+      if (this.stopped || !this.reconnectEnabled) {
+        this.setConnectionState("disconnected");
+      }
+      return;
+    }
+    if (this.reconnectTimer) return;
     this.setConnectionState("reconnecting");
     const delay = Math.min(
       this.reconnectBaseMs * 2 ** this.reconnectAttempt,

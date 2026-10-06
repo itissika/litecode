@@ -13,6 +13,7 @@ import type { editor } from "monaco-editor";
 
 import { fetchSymbolAt } from "../api/workspace";
 import { formatLineSpan, symbolMentionSource } from "../lib/knowledge/markers";
+import { spanFromSelection, writeCodeSpan } from "../lib/dropPayload";
 import { appendComposerText, composerTarget } from "../stores/composerDraft";
 import { useEditorStore } from "../stores/editorStore";
 import { useConnectionStore } from "../stores/connectionStore";
@@ -79,12 +80,16 @@ export function EditorPane({
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const addToChatRef = useRef<{ dispose: () => void } | null>(null);
+  const spanDragCleanup = useRef<(() => void) | null>(null);
   const pathRef = useRef(filePath);
   pathRef.current = filePath;
   const milkdownHostRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    return () => addToChatRef.current?.dispose();
+    return () => {
+      addToChatRef.current?.dispose();
+      spanDragCleanup.current?.();
+    };
   }, []);
 
   const addSelectionToChat = useCallback(async (ed: editor.ICodeEditor) => {
@@ -162,9 +167,9 @@ export function EditorPane({
   // The panel owns its read, the same way an agent panel owns its subscription.
   // Every transition to connected (first connect and each reconnect) re-reads.
   useEffect(() => {
-    if (!wsConnected) return;
+    if (!wsConnected || tab?.external) return;
     void useEditorStore.getState().ensureReadable(filePath);
-  }, [wsConnected, filePath]);
+  }, [wsConnected, filePath, tab?.external]);
 
   // Listen to dockview panel api events
   useEffect(() => {
@@ -242,7 +247,7 @@ export function EditorPane({
   }, [filePath, tab?.loading, tab?.content, pendingReveal]);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col" data-drop-zone="editor">
       {showMdToggle && (
         <div className="flex h-7 shrink-0 items-center justify-end gap-1 border-b border-(--_dk-line-visible) bg-(--_dk-editor) px-2">
           <button
@@ -288,7 +293,11 @@ export function EditorPane({
               />
             )}
             {tab.kind === "image" ? (
-              <ImagePreview path={filePath} diskRevision={tab.diskRevision} />
+              <ImagePreview
+                path={filePath}
+                diskRevision={tab.diskRevision}
+                sourceUrl={tab.previewUrl}
+              />
             ) : tab.kind === "pdf" ? (
               <Suspense
                 fallback={
@@ -297,13 +306,18 @@ export function EditorPane({
                   </div>
                 }
               >
-                <PdfPreview path={filePath} diskRevision={tab.diskRevision} />
+                <PdfPreview
+                  path={filePath}
+                  diskRevision={tab.diskRevision}
+                  sourceUrl={tab.previewUrl}
+                />
               </Suspense>
             ) : tab.kind === "audio" || tab.kind === "video" ? (
               <MediaPreview
                 path={filePath}
                 diskRevision={tab.diskRevision}
                 kind={tab.kind}
+                sourceUrl={tab.previewUrl}
               />
             ) : tab.kind === "sqlite" ? (
               <SqlitePreview path={filePath} diskRevision={tab.diskRevision} />
@@ -354,7 +368,7 @@ export function EditorPane({
                   addToChatRef.current?.dispose();
                   addToChatRef.current = _editor.addAction({
                     id: "litecode.add-selection-to-chat",
-                    label: "添加到对话",
+                    label: "Add to chat",
                     contextMenuGroupId: "9_cutcopypaste",
                     contextMenuOrder: 2,
                     keybindings: [
@@ -365,6 +379,24 @@ export function EditorPane({
                       void addSelectionToChat(ed);
                     },
                   });
+                  spanDragCleanup.current?.();
+                  const node = _editor.getDomNode();
+                  if (node) {
+                    const onDragStart = (event: DragEvent) => {
+                      if (!event.dataTransfer) return;
+                      const span = spanFromSelection(
+                        pathRef.current,
+                        _editor.getSelection(),
+                      );
+                      if (!span) return;
+                      writeCodeSpan(event.dataTransfer, span);
+                    };
+                    node.addEventListener("dragstart", onDragStart);
+                    spanDragCleanup.current = () =>
+                      node.removeEventListener("dragstart", onDragStart);
+                  } else {
+                    spanDragCleanup.current = null;
+                  }
                   const pending = useEditorStore.getState().pendingReveal;
                   if (pending && pending.path === filePath) {
                     const reveal = useEditorStore

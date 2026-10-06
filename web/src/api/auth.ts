@@ -2,6 +2,8 @@
 
 export interface LitecodeDesktopBridge {
   getAuthToken?: () => string | undefined;
+  /** Real filesystem path for a file dropped onto the desktop window. */
+  getPathForFile?: (file: File) => string;
   /** Electron session: local sidecar vs remote attach. */
   getSessionMode?: () => "local" | "remote";
   pickFolder?: () => Promise<string | null>;

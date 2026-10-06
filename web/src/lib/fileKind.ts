@@ -9,7 +9,7 @@ export type FileKind =
   | "binary";
 
 /** Shown when the file is binary and Monaco must not receive the bytes. */
-export const BINARY_FILE_MESSAGE = "二进制，无法在这里显示";
+export const BINARY_FILE_MESSAGE = "Binary file. Can't display it here.";
 
 const IMAGE_EXT = new Set([
   "png",

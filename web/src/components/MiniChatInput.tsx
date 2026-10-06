@@ -128,6 +128,7 @@ export function MiniChatInput({
             onChange={(next) => onChange(next, settings)}
             onSubmit={() => submit()}
             onEscape={onDismiss}
+            onMentionDrop
           />
         </div>
         <button

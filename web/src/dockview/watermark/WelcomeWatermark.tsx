@@ -5,6 +5,7 @@ export function WelcomeWatermark(_props: IWatermarkPanelProps) {
   return (
     <div
       className="flex h-full flex-col items-center justify-center gap-6"
+      data-drop-zone="editor"
       style={{ background: "var(--_dk-root)" }}
     >
       <Logo size="md" animated={false} style={{ opacity: 0.35 }} />

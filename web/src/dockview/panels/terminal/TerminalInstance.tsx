@@ -471,6 +471,7 @@ export function TerminalInstance({
           })
           .catch(() => {});
       }}
+      data-drop-zone="terminal"
       onDragOver={(e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";

@@ -223,11 +223,7 @@ pub(super) async fn on_broken_stream(
 
 /// Stream died after tokens were already produced. Surface Retry immediately.
 pub(super) fn note_terminal_transport_failure(budget: &ReconnectBudget) {
-    notify(
-        LlmReconnectPhase::Failed,
-        budget.used.max(1) as u32,
-        0,
-    );
+    notify(LlmReconnectPhase::Failed, budget.used.max(1) as u32, 0);
 }
 
 /// Preserve useful transport diagnostics without exposing credentials or bodies.
@@ -627,9 +623,10 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
         let got = notices.lock().unwrap().clone();
         assert!(
-            got.iter().any(|notice| notice.phase == LlmReconnectPhase::Failed
-                && notice.attempt == 6
-                && notice.max_attempts == 6)
+            got.iter()
+                .any(|notice| notice.phase == LlmReconnectPhase::Failed
+                    && notice.attempt == 6
+                    && notice.max_attempts == 6)
         );
         assert!(
             got.iter()

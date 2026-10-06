@@ -21,6 +21,7 @@ import { useSettingsStore } from "../stores/settingsStore";
 import { AboutContent } from "./panels/AboutPanel";
 import { Logo } from "../components/Logo";
 import { useEditorStore } from "../stores/editorStore";
+import { foreignDropIntent, previewForeignDrop } from "../lib/externalDrop";
 import "../lib/litecodeTerminal";
 
 function readSessionMode(): "local" | "remote" {
@@ -103,7 +104,23 @@ export function AppShellDockview() {
         <Logo size="lg" splash />
         <TitleBar onMenuAction={handleMenuAction} sessionMode={sessionMode} />
 
-        <div className="relative flex-1 min-h-0 overflow-hidden">
+        <div
+          className="relative flex-1 min-h-0 overflow-hidden"
+          onDragOverCapture={(event) => {
+            if (foreignDropIntent(event.target, event.dataTransfer, "over") === "ignore") {
+              return;
+            }
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+          }}
+          onDropCapture={(event) => {
+            const intent = foreignDropIntent(event.target, event.dataTransfer, "drop");
+            if (intent === "ignore") return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (intent === "preview") void previewForeignDrop(event.dataTransfer);
+          }}
+        >
           <DockviewReact
             components={panelComponents}
             tabComponents={tabComponents}

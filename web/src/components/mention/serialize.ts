@@ -85,3 +85,9 @@ function inlineContent(line: string): JSONContent[] {
   }
   return nodes;
 }
+
+/** Inline nodes for one shortcode line, ready for `insertContentAt`. */
+export function mentionInlineContent(text: string): JSONContent[] {
+  const paragraph = bodyToContent(text).content?.[0];
+  return paragraph?.content ?? [];
+}

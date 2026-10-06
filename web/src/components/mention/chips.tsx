@@ -2,7 +2,7 @@ import { X } from "@phosphor-icons/react";
 import { NodeViewWrapper, type ReactNodeViewProps } from "@tiptap/react";
 import { useMemo, type MouseEvent } from "react";
 
-import { humanFileLabel, humanSymbolLabel, normalizeKey } from "../../lib/knowledge/markers";
+import { humanFileLabel, humanSymbolLabel, isWorkspaceFileRef, normalizeKey } from "../../lib/knowledge/markers";
 import { chipForMarker } from "../../lib/knowledge/refDisplay";
 import { useEditorStore } from "../../stores/editorStore";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
@@ -57,7 +57,7 @@ export function KnowledgeMentionChip({
       <button
         type="button"
         className="knowledge-token-remove nodrag"
-        aria-label={`移除 ${label}`}
+        aria-label={`Remove ${label}`}
         onMouseDown={stopChipEvent}
         onClick={(event) => {
           stopChipEvent(event);
@@ -118,7 +118,7 @@ export function FileMentionChip({
               : "knowledge-token is-file"
       }
     >
-      {tone === "missing" ? (
+      {tone === "missing" || !isWorkspaceFileRef(path) ? (
         <span className="knowledge-token-label">{label}</span>
       ) : (
         <button
@@ -137,7 +137,7 @@ export function FileMentionChip({
       <button
         type="button"
         className="knowledge-token-remove nodrag"
-        aria-label={`移除 ${label}`}
+        aria-label={`Remove ${label}`}
         onMouseDown={stopChipEvent}
         onClick={(event) => {
           stopChipEvent(event);

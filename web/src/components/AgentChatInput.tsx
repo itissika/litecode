@@ -718,6 +718,7 @@ export function AgentChatInput({
             onChange={setDraft}
             onSubmit={submitFromKeys}
             onPaste={onPasteImage}
+            onMentionDrop
             onFocus={() => {
               noteComposerFocus(sessionId);
               if (knowledgeAsked.current) return;

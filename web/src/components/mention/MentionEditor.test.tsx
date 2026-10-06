@@ -3,15 +3,20 @@ import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { symbolMentionSource } from "../../lib/knowledge/markers";
+import { LITECODE_PATHS_MIME, LITECODE_SPAN_MIME } from "../../lib/dropPayload";
+import { useEditorStore } from "../../stores/editorStore";
+import { fakeTransfer } from "../../test/fakeTransfer";
 import { MentionEditor, type MentionEditorHandle } from "./MentionEditor";
 import { clearSymbolCache } from "./suggestions";
 
 const fetchMentionPaths = vi.hoisted(() => vi.fn());
 const fetchSymbols = vi.hoisted(() => vi.fn());
+const fetchSymbolAt = vi.hoisted(() => vi.fn());
 
 vi.mock("../../api/workspace", () => ({
   fetchMentionPaths,
   fetchSymbols,
+  fetchSymbolAt,
 }));
 
 const files = [
@@ -73,7 +78,7 @@ describe("MentionEditor symbol mode", () => {
     );
     await typeQuery(handle, "/mang");
     expect(await screen.findByText("src/a/manager.rs")).toBeTruthy();
-    const hashes = screen.getAllByRole("button", { name: "在 manager.rs 中选符号" });
+    const hashes = screen.getAllByRole("button", { name: "Pick a symbol in manager.rs" });
     fireEvent.click(hashes[0]);
     expect(fetchSymbols).toHaveBeenCalledWith("src/a/manager.rs");
     const row = await screen.findByRole("option", { name: /fn test_run/ });
@@ -129,5 +134,88 @@ describe("MentionEditor symbol mode", () => {
     );
     const chip = await screen.findByRole("button", { name: "a.rs : fn save" });
     expect(chip.closest(".knowledge-token")?.classList.contains("is-symbol")).toBe(true);
+  });
+});
+
+describe("MentionEditor drops", () => {
+  function dropEvent(dt: DataTransfer): Event {
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", { value: dt });
+    Object.defineProperty(event, "clientX", { value: 8 });
+    Object.defineProperty(event, "clientY", { value: 8 });
+    return event;
+  }
+
+  async function dropOnEditor(dt: DataTransfer) {
+    const onChange = vi.fn();
+    render(
+      <MentionEditor
+        label="正文"
+        value=""
+        candidates={[]}
+        onChange={onChange}
+        onMentionDrop
+      />,
+    );
+    const el = document.querySelector<HTMLElement>(".mention-editor-body");
+    if (!el) throw new Error("editor missing");
+    el.getBoundingClientRect = () =>
+      ({
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: 200,
+        bottom: 40,
+        width: 200,
+        height: 40,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    document.elementFromPoint = () => el;
+    el.dispatchEvent(dropEvent(dt));
+    return onChange;
+  }
+
+  it("inserts a file chip for a tree path and does not open an absolute path", async () => {
+    const openFile = vi.fn(async () => {});
+    const previous = useEditorStore.getState().openFile;
+    useEditorStore.setState({ openFile });
+
+    const tree = fakeTransfer();
+    tree.setData(LITECODE_PATHS_MIME, JSON.stringify(["src/a.rs"]));
+    const onChange = await dropOnEditor(tree);
+    const chip = await screen.findByRole("button", { name: ".../src/a.rs" });
+    fireEvent.click(chip);
+    expect(openFile).toHaveBeenCalledWith("src/a.rs");
+    await waitFor(() => {
+      const written = onChange.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(written).toContain('[@ file="src/a.rs"]');
+    });
+
+    cleanup();
+    const outside = fakeTransfer();
+    outside.setData("text/uri-list", "file:///C:/outside/a.ts");
+    await dropOnEditor(outside);
+    expect(await screen.findByText(".../outside/a.ts")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: ".../outside/a.ts" })).toBeNull();
+
+    useEditorStore.setState({ openFile: previous });
+  });
+
+  it("inserts a symbol chip for a code span", async () => {
+    fetchSymbolAt.mockResolvedValue({ chain: "fn save" });
+    const span = fakeTransfer();
+    span.setData(
+      LITECODE_SPAN_MIME,
+      JSON.stringify({ path: "src/a.rs", start: 4, end: 9 }),
+    );
+    span.setData("text/plain", "fn save() {}");
+    const onChange = await dropOnEditor(span);
+    expect(await screen.findByRole("button", { name: "a.rs : fn save" })).toBeTruthy();
+    await waitFor(() => {
+      const written = onChange.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(written).toContain('symbol="fn save"');
+      expect(written).toContain('lines="4-9"');
+    });
   });
 });

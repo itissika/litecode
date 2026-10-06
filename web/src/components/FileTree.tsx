@@ -44,9 +44,10 @@ import { fileNameFromPath } from "../utils/language";
 import { getFileIcon, FolderIcon } from "../utils/fileIcon";
 import { isSelfOrDescendant, parentPath } from "../utils/path";
 import { useToastStore } from "../stores/toastStore";
+import { LITECODE_PATHS_MIME, parsePathPayload } from "../lib/dropPayload";
 import { flattenVisibleRows, visibleEntryPaths } from "../lib/fileTreeVisible";
 
-export const LITECODE_PATHS_MIME = "application/x-litecode-paths";
+export { LITECODE_PATHS_MIME };
 
 /** Folder tint: amber lerped toward the normal folder text so a "has changes"
  *  folder reads as a hint, not a shout. Tweak the 60% to taste. */
@@ -78,19 +79,7 @@ function dropDir(
 
 function readInternalPaths(dt: DataTransfer): string[] | null {
   const raw = dt.getData(LITECODE_PATHS_MIME) || dt.getData("text/plain");
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (Array.isArray(parsed) && parsed.every((p) => typeof p === "string")) {
-      return parsed;
-    }
-  } catch {
-    /* plain text paths */
-  }
-  return raw
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  return parsePathPayload(raw);
 }
 
 function handleDropEvent(
@@ -718,6 +707,7 @@ export function FileTree() {
       ref={rootRef}
       tabIndex={0}
       role={filtering ? "search" : "tree"}
+      data-drop-zone="tree"
       className="flex min-h-0 h-full flex-col outline-none"
       onKeyDown={onKeyDown}
       onClick={() => rootRef.current?.focus()}

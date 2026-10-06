@@ -28,17 +28,17 @@ pub enum WorkspaceError {
     IsDir(String),
     #[error("file too large (max {MAX_FILE_SIZE} bytes)")]
     TooLarge,
-    #[error("文件太大，无法在面板里预览")]
+    #[error("File is too large to preview in the panel.")]
     PreviewTooLarge,
-    #[error("二进制，无法在这里显示")]
+    #[error("Binary file. Can't display it here.")]
     Binary,
-    #[error("这是 UTF-16，这里按 UTF-8 打开会损坏")]
+    #[error("This file is UTF-16. Opening it as UTF-8 here would corrupt it.")]
     Utf16,
     #[error("content is not valid UTF-8 (if this is a GBK/ANSI file, convert it to UTF-8 first)")]
     NotUtf8,
-    #[error("不是 SQLite 数据库，无法预览")]
+    #[error("Not a SQLite database. Can't preview it.")]
     NotSqlite,
-    #[error("未知的表")]
+    #[error("Unknown table.")]
     UnknownTable,
     #[error("offset is too large")]
     PreviewOffset,

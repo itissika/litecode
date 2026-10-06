@@ -580,7 +580,7 @@ async fn workspace_preview_reads_and_open_guards() {
         .expect("nul");
     assert_eq!(nul.status(), 415);
     let nul_body: Value = nul.json().await.expect("nul json");
-    assert_eq!(nul_body["error"], "二进制，无法在这里显示");
+    assert_eq!(nul_body["error"], "Binary file. Can't display it here.");
 
     let utf16 = client
         .get(format!("{base}/file?path=utf16.txt"))
@@ -589,7 +589,10 @@ async fn workspace_preview_reads_and_open_guards() {
         .expect("utf16");
     assert_eq!(utf16.status(), 415);
     let utf16_body: Value = utf16.json().await.expect("utf16 json");
-    assert_eq!(utf16_body["error"], "这是 UTF-16，这里按 UTF-8 打开会损坏");
+    assert_eq!(
+        utf16_body["error"],
+        "This file is UTF-16. Opening it as UTF-8 here would corrupt it."
+    );
 
     let bad = client
         .get(format!("{base}/file?path=bad.txt"))
@@ -624,7 +627,10 @@ async fn workspace_preview_reads_and_open_guards() {
         .expect("big");
     assert_eq!(too_big.status(), 413);
     let too_big_body: Value = too_big.json().await.expect("big json");
-    assert_eq!(too_big_body["error"], "文件太大，无法在面板里预览");
+    assert_eq!(
+        too_big_body["error"],
+        "File is too large to preview in the panel."
+    );
 
     let sqlite: Value = client
         .get(format!("{base}/sqlite?path=app.db"))
