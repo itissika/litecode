@@ -1,53 +1,57 @@
-//! Media token budget over tool results and older user messages.
+//! Carried-media cap for the ephemeral model view, and a full strip for compact.
 //!
-//! **Downgrade strategy (ephemeral LLM view only):** when estimated media tokens exceed
-//! `budget_limit`, strip the oldest `InputImage` / `InputFile` parts until under budget.
-//! The newest user message is never stripped. Persisted transcript is never mutated.
-//! Per-part costs come from [`crate::session::media_tokens`] — same helpers as
-//! [`crate::session::estimate`].
+//! The view keeps at most [`MAX_CARRIED_MEDIA_PARTS`] image/file parts. Older
+//! parts become a short text note. The newest user message is preferred: other
+//! media is removed first, and that message is trimmed only when its own parts
+//! still exceed the cap. The persisted transcript is never mutated.
+//!
+//! Compaction serializes history as one text prompt. [`strip_media_for_summary`]
+//! removes every media part before that JSON is built, so stored data URLs are
+//! not sent to the summarizer.
 
 use crate::authority::responses::{
-    FunctionCallOutput, InputContent, InputRole, InputTextContent, MessageItem,
+    FunctionCallOutput, FunctionCallOutputItemParam, InputContent, InputRole, InputTextContent,
+    MessageItem,
 };
-use crate::session::media_tokens::input_content_media_tokens;
 use crate::types::Item;
 
-/// One fifth of the context window. A zero window disables the trim.
-pub fn media_budget_limit(context_window: usize) -> usize {
-    context_window / 5
+/// Image/file parts an ephemeral model view may still carry.
+pub const MAX_CARRIED_MEDIA_PARTS: usize = 2;
+
+/// Apply the carried-media cap to a transcript view (ephemeral LLM view only).
+pub fn apply_carried_media_budget(items: &mut [Item]) {
+    retain_newest_media(items, MAX_CARRIED_MEDIA_PARTS, true);
 }
 
-/// Apply media token budget to a transcript view (ephemeral LLM view only).
-///
-/// When estimated media tokens exceed `budget_limit`, remove the oldest
-/// image/file parts so the view stays under budget. The newest user message
-/// keeps its images even when that alone exceeds the limit.
-pub fn apply_media_token_budget(items: &mut [Item], budget_limit: usize) {
-    if budget_limit == 0 {
-        return;
-    }
-    let protected = last_user_index(items);
-    let mut media_tokens = estimate_view_media_tokens(items);
-    if media_tokens <= budget_limit {
+/// Remove every image/file part before a transcript is serialized for compact.
+pub fn strip_media_for_summary(items: &mut [Item]) {
+    retain_newest_media(items, 0, false);
+}
+
+fn retain_newest_media(items: &mut [Item], max_parts: usize, protect_latest_user: bool) {
+    let protected = if protect_latest_user {
+        last_user_index(items)
+    } else {
+        None
+    };
+    let mut to_strip = count_media_parts(items).saturating_sub(max_parts);
+    if to_strip == 0 {
         return;
     }
 
     for (index, item) in items.iter_mut().enumerate() {
-        if media_tokens <= budget_limit {
+        if to_strip == 0 {
             break;
         }
         if Some(index) == protected {
             continue;
         }
-        match item {
-            Item::FunctionCallOutput(output) => {
-                trim_tool_output(output, &mut media_tokens, budget_limit);
-            }
-            Item::Message(MessageItem::Input(message)) => {
-                trim_input_media(&mut message.content, &mut media_tokens, budget_limit);
-            }
-            _ => {}
-        }
+        to_strip = strip_oldest_media(item, to_strip);
+    }
+    if to_strip > 0
+        && let Some(index) = protected
+    {
+        strip_oldest_media(&mut items[index], to_strip);
     }
 }
 
@@ -60,33 +64,48 @@ fn last_user_index(items: &[Item]) -> Option<usize> {
     })
 }
 
-/// Estimate media tokens in tool results and user input messages.
-pub fn estimate_view_media_tokens(items: &[Item]) -> usize {
-    let mut total = 0usize;
-    for item in items {
-        match item {
-            Item::FunctionCallOutput(output) => {
-                let FunctionCallOutput::Content(parts) = &output.output else {
-                    continue;
-                };
-                for part in parts {
-                    total += input_content_media_tokens(part);
-                }
-            }
-            Item::Message(MessageItem::Input(message)) => {
-                for part in &message.content {
-                    total += input_content_media_tokens(part);
-                }
-            }
-            _ => {}
-        }
-    }
-    total
+fn count_media_parts(items: &[Item]) -> usize {
+    items.iter().map(item_media_parts).sum()
 }
 
-fn trim_input_media(parts: &mut [InputContent], media_tokens: &mut usize, budget_limit: usize) {
+fn item_media_parts(item: &Item) -> usize {
+    match item {
+        Item::FunctionCallOutput(output) => match &output.output {
+            FunctionCallOutput::Content(parts) => {
+                parts.iter().filter(|part| is_media(part)).count()
+            }
+            FunctionCallOutput::Text(_) => 0,
+        },
+        Item::Message(MessageItem::Input(message)) => {
+            message.content.iter().filter(|part| is_media(part)).count()
+        }
+        _ => 0,
+    }
+}
+
+fn is_media(part: &InputContent) -> bool {
+    matches!(
+        part,
+        InputContent::InputImage(_) | InputContent::InputFile(_)
+    )
+}
+
+fn strip_oldest_media(item: &mut Item, to_strip: usize) -> usize {
+    if to_strip == 0 {
+        return 0;
+    }
+    match item {
+        Item::FunctionCallOutput(output) => strip_tool_output(output, to_strip),
+        Item::Message(MessageItem::Input(message)) => {
+            strip_input_media(&mut message.content, to_strip)
+        }
+        _ => to_strip,
+    }
+}
+
+fn strip_input_media(parts: &mut [InputContent], mut to_strip: usize) -> usize {
     for part in parts.iter_mut() {
-        if *media_tokens <= budget_limit {
+        if to_strip == 0 {
             break;
         }
         let kind = match part {
@@ -94,46 +113,35 @@ fn trim_input_media(parts: &mut [InputContent], media_tokens: &mut usize, budget
             InputContent::InputFile(_) => "file",
             InputContent::InputText(_) => continue,
         };
-        let cost = input_content_media_tokens(part);
         *part = InputContent::InputText(InputTextContent {
-            text: format!("[media trimmed: {kind} over budget]"),
+            text: format!("[media trimmed: {kind}]"),
         });
-        *media_tokens = media_tokens.saturating_sub(cost);
+        to_strip -= 1;
     }
+    to_strip
 }
 
-fn trim_tool_output(
-    output: &mut crate::authority::responses::FunctionCallOutputItemParam,
-    media_tokens: &mut usize,
-    budget_limit: usize,
-) {
+fn strip_tool_output(output: &mut FunctionCallOutputItemParam, mut to_strip: usize) -> usize {
     let FunctionCallOutput::Content(parts) = &mut output.output else {
-        return;
+        return to_strip;
     };
-    let before = parts.len();
     let mut kept = Vec::with_capacity(parts.len());
     let mut stripped = 0usize;
     for part in parts.drain(..) {
-        match &part {
-            InputContent::InputImage(_) | InputContent::InputFile(_) => {
-                if *media_tokens > budget_limit {
-                    let cost = input_content_media_tokens(&part);
-                    *media_tokens = media_tokens.saturating_sub(cost);
-                    stripped += 1;
-                    continue;
-                }
-            }
-            InputContent::InputText(_) => {}
+        let drop_part = is_media(&part) && to_strip > 0;
+        if drop_part {
+            to_strip -= 1;
+            stripped += 1;
+            continue;
         }
         kept.push(part);
     }
-    *parts = kept;
-    if stripped > 0
-        && parts
+    let collapse = stripped > 0
+        && kept
             .iter()
-            .all(|part| matches!(part, InputContent::InputText(_)))
-    {
-        let text = parts
+            .all(|part| matches!(part, InputContent::InputText(_)));
+    if collapse {
+        let text = kept
             .iter()
             .filter_map(|part| match part {
                 InputContent::InputText(text) => Some(text.text.as_str()),
@@ -142,45 +150,25 @@ fn trim_tool_output(
             .collect::<Vec<_>>()
             .join("\n");
         let note = if text.is_empty() {
-            format!("[media trimmed: {stripped} part(s) over budget]")
+            format!("[media trimmed: {stripped} part(s)]")
         } else {
-            format!("{text}\n[media trimmed: {stripped} part(s) over budget]")
+            format!("{text}\n[media trimmed: {stripped} part(s)]")
         };
         output.output = FunctionCallOutput::Text(note);
-    } else if stripped > 0 && before > 0 {
-        let _ = before;
+    } else {
+        *parts = kept;
     }
-}
-
-/// Estimate media tokens in FunctionCallOutput Content (image/file parts).
-pub fn estimate_tool_media_tokens(items: &[Item]) -> usize {
-    let mut n = 0usize;
-    for item in items {
-        let Item::FunctionCallOutput(out) = item else {
-            continue;
-        };
-        let FunctionCallOutput::Content(parts) = &out.output else {
-            continue;
-        };
-        for part in parts {
-            n += input_content_media_tokens(part);
-        }
-    }
-    n
+    to_strip
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authority::responses::{
-        FunctionCallOutputItemParam, InputImageContent, InputTextContent, MessageItem,
-    };
-    use crate::session::media_tokens::IMAGE_FALLBACK_TOKENS;
-    use crate::types::user_text;
+    use crate::authority::responses::InputImageContent;
 
-    fn fc_content_with_image() -> Item {
+    fn tool_image(call_id: &str, url: &str) -> Item {
         Item::FunctionCallOutput(FunctionCallOutputItemParam {
-            call_id: "c1".into(),
+            call_id: call_id.into(),
             output: FunctionCallOutput::Content(vec![
                 InputContent::InputText(InputTextContent {
                     text: "caption".into(),
@@ -188,7 +176,7 @@ mod tests {
                 InputContent::InputImage(InputImageContent {
                     detail: Default::default(),
                     file_id: None,
-                    image_url: Some("https://example.com/a.png".into()),
+                    image_url: Some(url.into()),
                 }),
             ]),
             id: None,
@@ -196,53 +184,106 @@ mod tests {
         })
     }
 
-    #[test]
-    fn media_budget_preserves_non_media_items() {
-        let mut items = vec![user_text("hi")];
-        apply_media_token_budget(&mut items, 100);
-        assert_eq!(items.len(), 1);
-    }
-
-    #[test]
-    fn media_budget_trims_when_over_limit() {
-        let mut items = vec![fc_content_with_image()];
-        assert_eq!(estimate_tool_media_tokens(&items), IMAGE_FALLBACK_TOKENS);
-        apply_media_token_budget(&mut items, 1);
-        assert_eq!(estimate_tool_media_tokens(&items), 0);
-        match &items[0] {
-            Item::FunctionCallOutput(out) => match &out.output {
-                FunctionCallOutput::Text(t) => assert!(t.contains("media trimmed")),
-                FunctionCallOutput::Content(parts) => {
-                    assert!(
-                        parts
-                            .iter()
-                            .all(|p| !matches!(p, InputContent::InputImage(_)))
-                    );
-                }
+    fn image_urls(item: &Item) -> Vec<String> {
+        let parts: Vec<&InputContent> = match item {
+            Item::Message(MessageItem::Input(message)) => message.content.iter().collect(),
+            Item::FunctionCallOutput(output) => match &output.output {
+                FunctionCallOutput::Content(parts) => parts.iter().collect(),
+                FunctionCallOutput::Text(_) => return Vec::new(),
             },
-            _ => panic!("expected function_call_output"),
-        }
+            _ => return Vec::new(),
+        };
+        parts
+            .into_iter()
+            .filter_map(|part| match part {
+                InputContent::InputImage(image) => image.image_url.clone(),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
-    fn trim_cost_matches_shared_helper() {
-        let items = vec![fc_content_with_image()];
+    fn under_cap_keeps_every_media_part() {
+        let mut items = vec![
+            tool_image("c1", "https://example.com/a.png"),
+            crate::types::user_message("", &["https://example.com/b.png".into()]),
+        ];
+        apply_carried_media_budget(&mut items);
+        assert_eq!(count_media_parts(&items), 2);
         assert_eq!(
-            estimate_tool_media_tokens(&items),
-            input_content_media_tokens(&InputContent::InputImage(InputImageContent {
-                detail: Default::default(),
-                file_id: None,
-                image_url: Some("https://example.com/a.png".into()),
-            }))
+            image_urls(&items[0]),
+            vec!["https://example.com/a.png".to_string()]
+        );
+        assert_eq!(
+            image_urls(&items[1]),
+            vec!["https://example.com/b.png".to_string()]
         );
     }
 
     #[test]
-    fn budget_keeps_the_latest_user_image() {
-        let older = crate::types::user_message("", &["https://example.com/old.png".into()]);
-        let latest = crate::types::user_message("", &["https://example.com/new.png".into()]);
-        let mut items = vec![older, latest];
-        apply_media_token_budget(&mut items, 1);
+    fn cap_drops_oldest_and_keeps_two() {
+        let mut items = vec![
+            tool_image("c1", "https://example.com/old.png"),
+            tool_image("c2", "https://example.com/mid.png"),
+            tool_image("c3", "https://example.com/new.png"),
+        ];
+        apply_carried_media_budget(&mut items);
+        assert_eq!(count_media_parts(&items), 2);
+        match &items[0] {
+            Item::FunctionCallOutput(output) => match &output.output {
+                FunctionCallOutput::Text(text) => assert!(text.contains("media trimmed")),
+                other => panic!("oldest tool image should be trimmed, got {other:?}"),
+            },
+            other => panic!("expected function_call_output, got {other:?}"),
+        }
+        assert_eq!(
+            image_urls(&items[1]),
+            vec!["https://example.com/mid.png".to_string()]
+        );
+        assert_eq!(
+            image_urls(&items[2]),
+            vec!["https://example.com/new.png".to_string()]
+        );
+    }
+
+    #[test]
+    fn newest_user_message_is_preferred_over_older_media() {
+        let mut items = vec![
+            tool_image("c1", "https://example.com/old.png"),
+            tool_image("c2", "https://example.com/mid.png"),
+            crate::types::user_message("", &["https://example.com/user.png".into()]),
+        ];
+        apply_carried_media_budget(&mut items);
+        assert_eq!(count_media_parts(&items), 2);
+        assert!(image_urls(&items[0]).is_empty());
+        assert_eq!(
+            image_urls(&items[1]),
+            vec!["https://example.com/mid.png".to_string()]
+        );
+        assert_eq!(
+            image_urls(&items[2]),
+            vec!["https://example.com/user.png".to_string()]
+        );
+    }
+
+    #[test]
+    fn newest_user_message_itself_is_capped_at_two() {
+        let mut items = vec![crate::types::user_message(
+            "",
+            &[
+                "https://example.com/a.png".into(),
+                "https://example.com/b.png".into(),
+                "https://example.com/c.png".into(),
+            ],
+        )];
+        apply_carried_media_budget(&mut items);
+        assert_eq!(
+            image_urls(&items[0]),
+            vec![
+                "https://example.com/b.png".to_string(),
+                "https://example.com/c.png".to_string(),
+            ]
+        );
         match &items[0] {
             Item::Message(MessageItem::Input(message)) => {
                 assert!(message.content.iter().any(|part| matches!(
@@ -250,18 +291,21 @@ mod tests {
                     InputContent::InputText(text) if text.text.contains("media trimmed")
                 )));
             }
-            _ => panic!("older user message"),
+            other => panic!("expected user message, got {other:?}"),
         }
-        match &items[1] {
-            Item::Message(MessageItem::Input(message)) => {
-                assert!(
-                    message
-                        .content
-                        .iter()
-                        .any(|part| matches!(part, InputContent::InputImage(_)))
-                );
-            }
-            _ => panic!("latest user message"),
-        }
+    }
+
+    #[test]
+    fn summary_strip_removes_every_media_part() {
+        let blob = format!("data:image/png;base64,{}", "A".repeat(80));
+        let mut items = vec![
+            tool_image("c1", &blob),
+            crate::types::user_message("", &["litecode-media:abc.png".into()]),
+        ];
+        strip_media_for_summary(&mut items);
+        assert_eq!(count_media_parts(&items), 0);
+        let rendered = format!("{items:?}");
+        assert!(!rendered.contains("data:image"));
+        assert!(!rendered.contains("litecode-media:"));
     }
 }

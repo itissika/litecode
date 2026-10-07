@@ -1,7 +1,7 @@
 //! Transcript token estimates for budget / row `token_estimate`.
 //!
 //! Text is counted with **tiktoken-rs cl100k_base**. Media costs come from
-//! [`crate::session::media_tokens`] (same helpers as media_budget trim).
+//! [`crate::session::media_tokens`].
 //!
 //! **Forbidden:** `item_text_preview` or character-length heuristics as budget truth.
 

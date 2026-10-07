@@ -161,13 +161,14 @@ fn ensure_after_leading_summary(items: &[Item], cut: usize) -> usize {
     }
 }
 
-/// Deep-copy items and truncate tool-result text for the summarizer prompt.
+/// Deep-copy items, drop every media part, and truncate tool-result text.
+///
+/// The summarizer receives text only. Image and file bytes never enter the
+/// compact request, including data URLs already stored on tool results.
 pub fn truncate_items_for_summary(items: &[Item]) -> Vec<Item> {
-    items
-        .iter()
-        .cloned()
-        .map(truncate_item_tool_results)
-        .collect()
+    let mut cloned = items.to_vec();
+    super::media_budget::strip_media_for_summary(&mut cloned);
+    cloned.into_iter().map(truncate_item_tool_results).collect()
 }
 
 fn truncate_item_tool_results(mut item: Item) -> Item {
@@ -226,7 +227,8 @@ pub fn build_compaction_prompt(discarded: &[Item]) -> String {
 mod tests {
     use super::*;
     use crate::authority::responses::{
-        FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
+        FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall, InputContent,
+        InputImageContent, InputTextContent,
     };
     use crate::context_pipeline::summary::compact_summary_message;
     use crate::types::{item_text_preview, user_text};
@@ -322,6 +324,35 @@ mod tests {
                 .iter()
                 .any(|i| matches!(i, Item::Message(_)) && item_text_preview(i) == "tail")
         );
+    }
+
+    #[test]
+    fn serialize_strips_media_before_the_compact_prompt() {
+        let blob = format!("data:image/png;base64,{}", "A".repeat(400));
+        let items = vec![
+            crate::types::user_message("see", &["litecode-media:deadbeef.png".into()]),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                call_id: "c1".into(),
+                output: FunctionCallOutput::Content(vec![
+                    InputContent::InputText(InputTextContent {
+                        text: "caption".into(),
+                    }),
+                    InputContent::InputImage(InputImageContent {
+                        detail: Default::default(),
+                        file_id: None,
+                        image_url: Some(blob.clone()),
+                    }),
+                ]),
+                id: None,
+                status: None,
+            }),
+        ];
+        let prompt = build_compaction_prompt(&items);
+        assert!(!prompt.contains(&blob));
+        assert!(!prompt.contains("data:image"));
+        assert!(!prompt.contains("litecode-media:"));
+        assert!(prompt.contains("caption"));
+        assert!(prompt.contains("media trimmed"));
     }
 
     #[test]

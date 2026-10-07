@@ -1,7 +1,7 @@
 //! Shared Item-native media token accounting (vision tiles + named fallbacks).
 //!
-//! Used by [`crate::session::estimate::compute_token_estimate`] and
-//! [`crate::context_pipeline::media_budget`] so trim math and budget truth share one cost model.
+//! Used by [`crate::session::estimate::compute_token_estimate`]. The carried-media
+//! cap is a part count and does not consult these costs.
 //!
 //! **Not** Message/ContentBlock dialect — operates on Responses [`InputContent`] only.
 

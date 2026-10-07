@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn token_count_does_not_apply_a_separate_media_slice() {
         // Trigger, success check, and stored estimate share compute_token_estimate
-        // / token_count_with_baseline — no window/5 media trim on the counter.
+        // / token_count_with_baseline. The carried-media cap is view-only.
         let budget = BudgetPolicy::new(10_000);
         let items = vec![user_text("hi")];
         assert_eq!(
