@@ -1,5 +1,7 @@
 /** Host-injected or dev-only auth token for local serve. Never a user settings field. */
 
+import type { BrowserBounds, BrowserPanelState } from "../lib/browserPanel";
+
 export interface LitecodeDesktopBridge {
   getAuthToken?: () => string | undefined;
   /** Real filesystem path for a file dropped onto the desktop window. */
@@ -128,6 +130,31 @@ export interface LitecodeDesktopBridge {
   windowMaximizeToggle?: () => Promise<boolean>;
   windowIsMaximized?: () => Promise<boolean>;
   windowClose?: () => Promise<void>;
+  /** Chrome for one dockview popout. Calls originate in the main window. */
+  popoutWindowMinimize?: (dockId: string) => Promise<void>;
+  popoutWindowMaximizeToggle?: (dockId: string) => Promise<boolean>;
+  popoutWindowIsMaximized?: (dockId: string) => Promise<boolean>;
+  popoutWindowClose?: (dockId: string) => Promise<void>;
+  /** Embedded browser pages. Present only in the Electron host. */
+  browserCreate?: (input: {
+    id: string;
+    backgroundColor: string;
+  }) => Promise<BrowserPanelState>;
+  browserNavigate?: (input: { id: string; url: string }) => Promise<BrowserPanelState>;
+  browserGoBack?: (id: string) => Promise<BrowserPanelState>;
+  browserGoForward?: (id: string) => Promise<BrowserPanelState>;
+  browserSetBounds?: (input: {
+    id: string;
+    bounds: BrowserBounds;
+    place?: string;
+  }) => void;
+  browserSetVisible?: (input: { id: string; visible: boolean }) => void;
+  browserDestroy?: (id: string) => void;
+  /** Attach the native page to a popout window, or back to the main window. */
+  browserSetHost?: (input: { id: string; popoutId: string | null }) => boolean;
+  /** Synchronous so a menu can hide guest pages before the next paint. */
+  browserSetObscured?: (obscured: boolean) => void;
+  onBrowserState?: (handler: (state: BrowserPanelState) => void) => () => void;
 }
 
 declare global {

@@ -12,6 +12,7 @@ interface FakePanelApi {
   component: string;
   tabComponent?: string;
   title?: string;
+  location?: { type: string };
   isMaximized: () => boolean;
   exitMaximized: () => void;
   maximize: () => void;
@@ -19,11 +20,16 @@ interface FakePanelApi {
   close: () => void;
 }
 
-function makePanel(component: string, tabComponent?: string): IDockviewPanel {
+function makePanel(
+  component: string,
+  tabComponent?: string,
+  locationType?: string,
+): IDockviewPanel {
   const api: FakePanelApi = {
     component,
     tabComponent,
     title: `${component} title`,
+    location: locationType ? { type: locationType } : undefined,
     isMaximized: () => false,
     exitMaximized: () => {},
     maximize: () => {},
@@ -36,13 +42,14 @@ function makePanel(component: string, tabComponent?: string): IDockviewPanel {
 function makeParams(
   panel: IDockviewPanel,
   allPanels: IDockviewPanel[],
+  addPopoutGroup?: DockviewApi["addPopoutGroup"],
 ): GetTabContextMenuItemsParams {
   return {
     panel,
     group: { panels: [panel] } as unknown as DockviewGroupPanel,
     api: {
       panels: allPanels,
-      addPopoutGroup: () => Promise.resolve(true),
+      addPopoutGroup,
     } as unknown as DockviewApi,
     event: {} as MouseEvent,
   };
@@ -63,13 +70,7 @@ describe("buildTabContextMenuItems", () => {
     );
 
     expect(items).not.toContain("close");
-    expect(labels(items)).toEqual([
-      "Popout Window",
-      "separator",
-      "Maximize",
-      "separator",
-      "Rename",
-    ]);
+    expect(labels(items)).toEqual(["Maximize", "separator", "Rename"]);
   });
 
   it("keeps Close hidden for non-terminal edge panels even when terminals exist", () => {
@@ -80,19 +81,49 @@ describe("buildTabContextMenuItems", () => {
     );
 
     expect(items).not.toContain("close");
-    expect(labels(items)).toEqual([
-      "Popout Window",
-      "separator",
-      "Maximize",
-      "separator",
-      "Rename",
-    ]);
+    expect(labels(items)).toEqual(["Maximize", "separator", "Rename"]);
   });
 
-  it("keeps the default close items for non-edge (editor) tabs", () => {
+  it("keeps the default close items for non-edge tabs that are not in the grid", () => {
     const editor = makePanel("editor");
     const items = buildTabContextMenuItems(makeParams(editor, [editor]));
 
     expect(items).toEqual(["close", "closeOthers", "closeAll"]);
+  });
+
+  it("offers popout for a grid tab and records a dock id on the popout page", () => {
+    const editor = makePanel("editor", "editor", "grid");
+    const browser = makePanel("browser", "browser", "grid");
+    const calls: Array<{ panel: IDockviewPanel | DockviewGroupPanel; url?: string }> = [];
+    const addPopoutGroup: DockviewApi["addPopoutGroup"] = (panel, options) => {
+      calls.push({ panel, url: options?.popoutUrl });
+      return Promise.resolve(true);
+    };
+
+    const editorItems = buildTabContextMenuItems(
+      makeParams(editor, [editor], addPopoutGroup),
+    );
+    const browserItems = buildTabContextMenuItems(
+      makeParams(browser, [browser], addPopoutGroup),
+    );
+    expect(labels(editorItems)).toEqual([
+      "Popout Window",
+      "separator",
+      "close",
+      "closeOthers",
+      "closeAll",
+    ]);
+    expect(labels(browserItems)[0]).toBe("Popout Window");
+
+    const popout = editorItems[0];
+    if (typeof popout === "string" || !popout.action) {
+      throw new Error("expected a popout action");
+    }
+    popout.action();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.panel).toBe(editor);
+    expect(calls[0]?.url).toMatch(
+      /^\/popout\.html\?dock=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
   });
 });

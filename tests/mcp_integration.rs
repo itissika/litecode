@@ -41,6 +41,7 @@ fn mock_def() -> litecode::config::schema::McpServerDefinition {
 
 fn echo_tool(pool: Arc<McpConnectionPool>, cmd: &str, args: &[String]) -> McpTool {
     McpTool::new(
+        "mock",
         "echo".into(),
         serde_json::json!({"type": "object", "properties": {"greeting": {"type": "string"}}}),
         McpServerConnection {
@@ -246,8 +247,8 @@ async fn block_on_hub_from_turn_runtime_does_not_panic() {
     assert_eq!(n, 7);
 }
 
-/// Catalog enable + agent bind →`build_tool_list` advertises MCP's own names
-/// (`echo`), not `mcp_<id>`, and `Tool::call` works on the turn runtime.
+/// Catalog enable + agent bind →`build_tool_list` advertises
+/// `mcp_<server>_<tool>` and `Tool::call` still uses the raw server name.
 #[tokio::test(flavor = "current_thread")]
 async fn catalog_and_bind_exposes_echo_and_round_trips() {
     use litecode::config::TurnGuard;
@@ -327,19 +328,26 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
     .await;
     let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
     assert!(
-        names.contains(&"echo".to_string()),
-        "LLM list must use the server tool name, got {names:?}"
+        names.contains(&"mcp_mock_echo".to_string()),
+        "LLM list must prefix the server id, got {names:?}"
     );
     assert!(
-        !names.contains(&"crash".to_string()),
+        !names.contains(&"echo".to_string()),
+        "raw MCP name must not be advertised, got {names:?}"
+    );
+    assert!(
+        !names.contains(&"crash".to_string()) && !names.contains(&"mcp_mock_crash".to_string()),
         "MCP allowlist must hide unselected tools, got {names:?}"
     );
     assert!(
-        !names.iter().any(|n| n.starts_with("mcp_")),
+        !names.iter().any(|n| n == "mcp_mock"),
         "catalog id must not be advertised as a tool, got {names:?}"
     );
 
-    let echo = tools.iter().find(|t| t.name() == "echo").expect("echo");
+    let echo = tools
+        .iter()
+        .find(|t| t.name() == "mcp_mock_echo")
+        .expect("echo");
     let result = echo.call(serde_json::json!({"greeting": "from-list"}));
     assert_eq!(
         result.level,

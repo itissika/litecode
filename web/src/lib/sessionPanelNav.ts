@@ -1,4 +1,5 @@
 import { getDockviewApi, useConnectionStore } from "../stores/connectionStore";
+import { isMainGrid } from "../dockview/popout/location";
 
 export interface PendingSeqReveal {
   sessionId: string;
@@ -60,7 +61,7 @@ export function fallbackSessionTitle(
  *  fresh group when the grid is empty. Shared by both panel flavours so the
  *  positioning logic is not copy-pasted. */
 export function gridPosition(api: DockviewApi): { referenceGroup: string } {
-  const gridGroups = api.groups.filter((g) => g.api.location.type === "grid");
+  const gridGroups = api.groups.filter((g) => isMainGrid(g.api.location.type));
   if (gridGroups.length === 0) {
     const group = api.addGroup();
     return { referenceGroup: group.id };

@@ -4,13 +4,21 @@ import type {
   ReactContextMenuItemConfig,
 } from "dockview-react";
 
+import { popoutPageUrl } from "./popoutUrl";
+import { isMainGrid } from "../popout/location";
+
 type TabMenuItem = BuiltInContextMenuItem | ReactContextMenuItemConfig;
 
 /**
  * Build the right-click tab context menu.
  *
  * Edge tabs (Explorer / Search / Source Control / Sessions / Terminal) are
- * persistent workspace panels: Popout / Maximize / Rename, and no close.
+ * permanent rails: Maximize / Rename, and no close. Dockview refuses to
+ * pop an edge group out, so there is no Popout item.
+ * Grid tabs (editor, agent, browser, and the rest of the center) can open
+ * in a separate window. The popout URL carries the dock id the desktop host
+ * uses for that window. The title bar is attached when dockview reports the
+ * window (`onDidAddPopoutGroup`).
  * Extra shells live in the terminal panel's own list; closing one there
  * kills that pty. The dockview terminal tab itself stays.
  */
@@ -21,11 +29,6 @@ export function buildTabContextMenuItems(
 
   if (panel.api.tabComponent === "edge") {
     return [
-      {
-        label: "Popout Window",
-        action: () => api.addPopoutGroup(panel).catch(() => {}),
-      },
-      "separator",
       panel.api.isMaximized()
         ? { label: "Restore", action: () => panel.api.exitMaximized() }
         : { label: "Maximize", action: () => panel.api.maximize() },
@@ -40,5 +43,18 @@ export function buildTabContextMenuItems(
     ];
   }
 
-  return ["close", "closeOthers", "closeAll"];
+  const items: TabMenuItem[] = ["close", "closeOthers", "closeAll"];
+  if (!isMainGrid(panel.api.location?.type)) return items;
+  return [
+    {
+      label: "Popout Window",
+      action: () => {
+        void api
+          .addPopoutGroup(panel, { popoutUrl: popoutPageUrl() })
+          .catch(() => {});
+      },
+    },
+    "separator",
+    ...items,
+  ];
 }

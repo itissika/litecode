@@ -130,6 +130,17 @@
   white-space: nowrap;
 }
 
+/* Dockview's header action slot is an inline width:100% wrapper. Keep it
+   shrink-wrapped so an empty slot (edge rails have no +) cannot stretch the
+   tab bar. */
+.litecode-dv-base .dv-right-actions-container {
+  flex: 0 0 auto;
+}
+.litecode-dv-base .dv-right-actions-container > .dv-react-part {
+  width: auto !important;
+  height: 100%;
+}
+
 /* ═══ SASH ═══ */
 .litecode-dv-base .dv-sash:hover,
 .litecode-dv-base .dv-sash.dv-sash-hover {

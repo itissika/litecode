@@ -287,6 +287,14 @@ fn writer_loop(
         // would turn a cosmetic problem into an outage.
         tracing::warn!(error = %error, "could not seal rows left in flight by a previous run");
     }
+    if let Err(error) = seal_tail_unanswered_calls(&state) {
+        // Same posture as the in-flight seal: a session we cannot repair now is
+        // repaired on the next open. The model view still pads the pair.
+        tracing::warn!(
+            error = %error,
+            "could not seal unanswered tool calls left at the tail by a previous run"
+        );
+    }
     // Ready only once the startup repair has run: callers treat a successful
     // open as "the store is in a servable state", and the repair is part of
     // that state.
@@ -345,6 +353,56 @@ fn seal_orphaned_in_progress(state: &WriterState) -> Result<usize> {
     }
     if sealed > 0 {
         tracing::info!(rows = sealed, "sealed orphaned in-progress rows at startup");
+    }
+    Ok(sealed)
+}
+
+/// Append an interrupt result for unanswered tool calls that are still the tail.
+///
+/// A process that dies while a tool is running leaves a final `function_call`
+/// and no `function_call_output`. Nothing is executing at startup, so that call
+/// will not receive a real result. The agent loop's abort seal cannot run
+/// either. This is that seal, for the one shape an append-only log can close
+/// honestly: the unanswered calls are a suffix, so the new rows sit immediately
+/// after them.
+///
+/// A call already followed by later history is left alone. Inserting its result
+/// at the tail would place a tool result after a later turn, which providers
+/// reject. The ephemeral model view still pads that pair in place.
+///
+/// Runs after [`seal_orphaned_in_progress`]: a call that was still `in_progress`
+/// is final by the time we look, and a session that could not be sealed is
+/// skipped until the next open.
+fn seal_tail_unanswered_calls(state: &WriterState) -> Result<usize> {
+    let ids: Vec<String> = {
+        let conn = state.db.conn();
+        let mut stmt = conn.prepare(
+            "SELECT t.session_id FROM transcript_items t
+             WHERE t.kind = 'item/tool_call'
+               AND t.seq = (
+                 SELECT MAX(seq) FROM transcript_items u WHERE u.session_id = t.session_id
+               )
+             ORDER BY t.session_id",
+        )?;
+        stmt.query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    let mut sealed = 0usize;
+    for id in ids {
+        let session = Session::resume_shared(Rc::clone(&state.db), state.data_root.clone(), &id)?;
+        let seqs = session.seal_tail_unanswered_calls()?;
+        if !seqs.is_empty() {
+            tracing::warn!(
+                session_id = %id,
+                rows = seqs.len(),
+                seqs = ?seqs,
+                "sealed unanswered tool calls a previous run left at the tail"
+            );
+        }
+        sealed += seqs.len();
+    }
+    if sealed > 0 {
+        tracing::info!(rows = sealed, "sealed unanswered tool calls at startup");
     }
     Ok(sealed)
 }

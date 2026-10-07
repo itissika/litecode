@@ -5,6 +5,8 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
  * Keep this string identical to `REMOTE_PROGRESS_CHANNEL` in `./remote-progress`.
  */
 const REMOTE_PROGRESS_CHANNEL = "litecode:remote-progress";
+/** Keep identical to `BROWSER_STATE_CHANNEL` in `./browser-host`. */
+const BROWSER_STATE_CHANNEL = "litecode:browser-state";
 
 type RemoteProgressEvent = {
   stage: string;
@@ -16,6 +18,22 @@ type RecentWorkspace = {
   path: string;
   pinned: boolean;
   lastOpenedAt: number;
+};
+
+type BrowserBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type BrowserState = {
+  id: string;
+  url: string;
+  title: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  loading: boolean;
 };
 
 type RemoteHistoryItem = {
@@ -168,5 +186,64 @@ contextBridge.exposeInMainWorld("litecode", {
   },
   windowClose: async (): Promise<void> => {
     await ipcRenderer.invoke("litecode:window-close");
+  },
+  popoutWindowMinimize: async (dockId: string): Promise<void> => {
+    await ipcRenderer.invoke("litecode:popout-window-minimize", dockId);
+  },
+  popoutWindowMaximizeToggle: async (dockId: string): Promise<boolean> => {
+    return (await ipcRenderer.invoke(
+      "litecode:popout-window-maximize-toggle",
+      dockId,
+    )) as boolean;
+  },
+  popoutWindowIsMaximized: async (dockId: string): Promise<boolean> => {
+    return (await ipcRenderer.invoke(
+      "litecode:popout-window-is-maximized",
+      dockId,
+    )) as boolean;
+  },
+  popoutWindowClose: async (dockId: string): Promise<void> => {
+    await ipcRenderer.invoke("litecode:popout-window-close", dockId);
+  },
+  browserCreate: async (input: {
+    id: string;
+    backgroundColor: string;
+  }): Promise<BrowserState> => {
+    return (await ipcRenderer.invoke("litecode:browser-create", input)) as BrowserState;
+  },
+  browserNavigate: async (input: { id: string; url: string }): Promise<BrowserState> => {
+    return (await ipcRenderer.invoke("litecode:browser-navigate", input)) as BrowserState;
+  },
+  browserGoBack: async (id: string): Promise<BrowserState> => {
+    return (await ipcRenderer.invoke("litecode:browser-go-back", id)) as BrowserState;
+  },
+  browserGoForward: async (id: string): Promise<BrowserState> => {
+    return (await ipcRenderer.invoke("litecode:browser-go-forward", id)) as BrowserState;
+  },
+  browserSetBounds: (input: {
+    id: string;
+    bounds: BrowserBounds;
+    place?: string;
+  }): void => {
+    ipcRenderer.send("litecode:browser-set-bounds", input);
+  },
+  browserSetHost: (input: { id: string; popoutId: string | null }): boolean => {
+    return ipcRenderer.sendSync("litecode:browser-set-host", input) === true;
+  },
+  browserSetVisible: (input: { id: string; visible: boolean }): void => {
+    ipcRenderer.send("litecode:browser-set-visible", input);
+  },
+  browserDestroy: (id: string): void => {
+    ipcRenderer.send("litecode:browser-destroy", id);
+  },
+  browserSetObscured: (obscured: boolean): void => {
+    ipcRenderer.sendSync("litecode:browser-set-obscured", obscured);
+  },
+  onBrowserState: (handler: (state: BrowserState) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: BrowserState) => {
+      handler(payload);
+    };
+    ipcRenderer.on(BROWSER_STATE_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(BROWSER_STATE_CHANNEL, listener);
   },
 });

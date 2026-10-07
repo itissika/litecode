@@ -213,9 +213,10 @@ interface DropdownProps {
  * downward when that side has the room, and its width and height are clamped
  * to the screen; height is also clamped to the dock pane the trigger lives
  * in. A caller may pass `maxHeight` as a wish — it is kept only when that
- * side can hold it. The panel is rendered through a portal to `document.body`,
- * so it escapes any ancestor overflow/stacking context (fold cards, scroll
- * containers, dialogs) instead of being clipped by them. The panel's shell
+ * side can hold it. The panel is rendered through a portal to the trigger's
+ * document body, so it escapes any ancestor overflow/stacking context (fold
+ * cards, scroll containers, dialogs) instead of being clipped by them. In the
+ * main window that body is `document.body`. The panel's shell
  * styling comes from `variant`, so the look is edited in exactly one place.
  * Callers supply only the trigger button and the panel content.
  *
@@ -247,9 +248,10 @@ export function Dropdown({
   const update = () => {
     const el = rootRef.current;
     if (!el) return;
+    const view = el.ownerDocument.defaultView ?? window;
     const rect = el.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
+    const vw = view.innerWidth;
+    const vh = view.innerHeight;
     const box = visibleBox(el, vw, vh);
     const above = Math.max(0, rect.top - box.top);
     const below = Math.max(0, box.bottom - rect.bottom);
@@ -339,6 +341,9 @@ export function Dropdown({
 
   useEffect(() => {
     if (!open) return;
+    const el = rootRef.current;
+    const view = el?.ownerDocument.defaultView ?? window;
+    const doc = el?.ownerDocument ?? document;
     const onScroll = () => update();
     const onResize = () => update();
     const onKey = (e: KeyboardEvent) => {
@@ -350,10 +355,10 @@ export function Dropdown({
       if (panelRef.current && panelRef.current.contains(t)) return;
       setOpen(false);
     };
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
-    window.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onDown);
+    view.addEventListener("scroll", onScroll, true);
+    view.addEventListener("resize", onResize);
+    view.addEventListener("keydown", onKey);
+    doc.addEventListener("mousedown", onDown);
     const pane = rootRef.current ? dockPane(rootRef.current) : null;
     let observer: ResizeObserver | null = null;
     if (pane && typeof ResizeObserver !== "undefined") {
@@ -362,10 +367,10 @@ export function Dropdown({
     }
     return () => {
       observer?.disconnect();
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onResize);
-      window.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onDown);
+      view.removeEventListener("scroll", onScroll, true);
+      view.removeEventListener("resize", onResize);
+      view.removeEventListener("keydown", onKey);
+      doc.removeEventListener("mousedown", onDown);
     };
   }, [open, direction, align, variant, maxHeight, flip]);
 
@@ -395,7 +400,7 @@ export function Dropdown({
                 })
               : children}
           </div>,
-          document.body,
+          rootRef.current?.ownerDocument.body ?? document.body,
         )}
     </div>
   );

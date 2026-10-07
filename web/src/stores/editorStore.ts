@@ -23,6 +23,7 @@ import {
   type MdEditorView,
 } from "../utils/wysiwygMarkdown";
 import { remapPathPrefix } from "../utils/path";
+import { isMainGrid } from "../dockview/popout/location";
 import { closingFlags } from "../dockview/config/sharedFlags";
 import { attachSiblingStores } from "./connectionStore";
 
@@ -283,17 +284,17 @@ function groupHasAgent(group: DockviewApi["groups"][number]): boolean {
 
 /** Editor tabs sit beside the agent group. Dropping Monaco into the agent's
  *  own tab strip crowds the conversation. */
-function editorPanelPosition(dockviewApi: DockviewApi): {
+export function editorPanelPosition(dockviewApi: DockviewApi): {
   referenceGroup: string;
   direction?: "right";
 } {
-  const gridGroups = dockviewApi.groups.filter(
-    (group) => group.api.location.type === "grid",
+  const gridGroups = dockviewApi.groups.filter((group) =>
+    isMainGrid(group.api.location.type),
   );
   const active = dockviewApi.activeGroup;
   if (
     active &&
-    active.api.location.type === "grid" &&
+    isMainGrid(active.api.location.type) &&
     !groupHasAgent(active)
   ) {
     return { referenceGroup: active.api.id };
@@ -670,8 +671,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       } finally {
         closingFlags.closingFromStore = false;
       }
-      const gridGroups = dockviewApi.groups.filter(
-        (g) => g.api.location.type === "grid",
+      const gridGroups = dockviewApi.groups.filter((g) =>
+        isMainGrid(g.api.location.type),
       );
       const referenceGroup =
         groupId ?? (gridGroups[0] ? gridGroups[0].api.id : undefined);

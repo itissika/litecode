@@ -6,6 +6,7 @@ import {
   MagnifyingGlass,
   GitBranch,
   BookOpen,
+  Globe,
 } from "@phosphor-icons/react";
 import type React from "react";
 
@@ -24,6 +25,7 @@ const ICON_MAP: Record<string, IconComponent> = {
   sessions: Chats, // session list / history
   knowledge: BookOpen,
   knowledgeGraph: BookOpen,
+  browser: Globe,
 };
 
 export function getPanelIcon(component: string): IconComponent {

@@ -22,6 +22,8 @@ import { AboutContent } from "./panels/AboutPanel";
 import { Logo } from "../components/Logo";
 import { useEditorStore } from "../stores/editorStore";
 import { foreignDropIntent, previewForeignDrop } from "../lib/externalDrop";
+import { installBrowserChromeObscure, pushBrowserObscure } from "../lib/browserObscure";
+import { BrowserHeaderAction } from "./shell/BrowserHeaderAction";
 import "../lib/litecodeTerminal";
 
 function readSessionMode(): "local" | "remote" {
@@ -42,6 +44,19 @@ export function AppShellDockview() {
   );
 
   const openSettings = useSettingsStore((s) => s.openSettings);
+  const settingsOpen = useSettingsStore((s) => s.open);
+
+  useEffect(() => installBrowserChromeObscure(), []);
+
+  useEffect(() => {
+    if (!dialogVisible) return;
+    return pushBrowserObscure();
+  }, [dialogVisible]);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    return pushBrowserObscure();
+  }, [settingsOpen]);
 
   useEffect(() => {
     setSessionMode(readSessionMode());
@@ -131,6 +146,7 @@ export function AppShellDockview() {
             keyboardNavigation={{ keymap: keyboardKeymap }}
             onWillDrop={onWillDrop}
             getTabContextMenuItems={getTabContextMenuItems}
+            rightHeaderActionsComponent={BrowserHeaderAction}
             getTabGroupChipContextMenuItems={() => ["rename", "colorPicker"]}
             defaultRenderer="always"
           />

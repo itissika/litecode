@@ -1,6 +1,7 @@
 import type { DockviewApi } from "dockview-react";
 
 import { useSessionStore } from "../stores/sessionStore";
+import { isMainGrid } from "../dockview/popout/location";
 
 /**
  * When the restored centre grid contains no panels at all, open a chat.
@@ -22,7 +23,7 @@ let considered = false;
 
 /** True when the centre grid already holds any panel. Edge rails do not count. */
 function centreHasPanel(dockview: DockviewApi): boolean {
-  return dockview.panels.some((panel) => panel.api.location.type === "grid");
+  return dockview.panels.some((panel) => isMainGrid(panel.api.location.type));
 }
 
 function ensureCentreChat(): void {

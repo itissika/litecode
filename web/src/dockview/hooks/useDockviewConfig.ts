@@ -3,8 +3,11 @@ import type { DockviewApi, DockviewWillDropEvent } from "dockview-react";
 
 import { clearFoldCardOpen } from "../../components/foldCardState";
 import { recoverDefaultLayout } from "../config/layout";
+import { foldPopoutsIntoGrid } from "../config/foldPopoutLayout";
 import { noteLayoutSettled } from "../../lib/centreChat";
 import { buildTabContextMenuItems } from "../config/tabContextMenu";
+import { isCenterDock } from "../popout/location";
+import { bindPopoutWindows } from "../popout/popoutChrome";
 import { closingFlags } from "../config/sharedFlags";
 import { useEditorStore } from "../../stores/editorStore";
 import {
@@ -68,29 +71,24 @@ export function layoutStore(): LayoutStore {
   };
 }
 
-function preventCrossZoneDrop(event: DockviewWillDropEvent, api: DockviewApi) {
-  const panel = event.panel;
+/** Center grid and popout windows are one dock. Edge rails stay on their own. */
+export function preventCrossZoneDrop(event: DockviewWillDropEvent, api: DockviewApi) {
   const data = event.getData();
+  const sourceZone = data?.panelId
+    ? api.getPanel(data.panelId)?.api.location.type
+    : data?.groupId
+      ? api.getGroup(data.groupId)?.api.location.type
+      : undefined;
+  if (!sourceZone) return;
 
-  const sourcePanelId = panel?.api.id ?? data?.panelId;
-  if (!sourcePanelId) return;
-
-  const sourcePanel = api.getPanel(sourcePanelId);
-  if (!sourcePanel) return;
-
-  const sourceZone = sourcePanel.api.location.type;
-
-  if (!event.group) {
-    if (sourceZone === "edge") {
-      event.preventDefault();
-    }
+  const targetZone = event.group?.api.location.type;
+  if (!targetZone) {
+    if (sourceZone === "edge") event.preventDefault();
     return;
   }
 
-  const targetZone = event.group.api.location.type;
-  if (sourceZone !== targetZone) {
-    event.preventDefault();
-  }
+  if (isCenterDock(sourceZone) && isCenterDock(targetZone)) return;
+  if (sourceZone !== targetZone) event.preventDefault();
 }
 
 export function useDockviewConfig() {
@@ -106,6 +104,11 @@ export function useDockviewConfig() {
     api.onDidRemovePanel((panel) => {
       if (panel.api.component === "editor" && !closingFlags.closingFromStore) {
         useEditorStore.getState().closeTab(panel.api.id);
+      }
+      // Moves suppress this event. A browser close is the real removal, so the
+      // guest page is destroyed here rather than on React unmount.
+      if (panel.api.component === "browser") {
+        window.litecode?.browserDestroy?.(panel.api.id);
       }
       // Fold open-intent lives in a module map, not in the panel. Drop it
       // here, still inside close(), before React unmounts. The unmount
@@ -140,7 +143,7 @@ export function useDockviewConfig() {
           recoverDefaultLayout(api);
           noteLayoutSettled(api);
         } else {
-          const data = parsed.layout;
+          const data = foldPopoutsIntoGrid(parsed.layout);
           isRestoring = true;
           const finishRestore = () => {
             recoverDefaultLayout(api);
@@ -180,12 +183,14 @@ export function useDockviewConfig() {
       noteLayoutSettled(api);
     }
 
+    bindPopoutWindows(api);
+
     let saveTimer: ReturnType<typeof setTimeout>;
     api.onDidLayoutChange(() => {
       if (isRestoring) return;
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
-        const data = api.toJSON();
+        const data = foldPopoutsIntoGrid(api.toJSON());
         store.save(
           JSON.stringify({
             schemaVersion: LAYOUT_SCHEMA_VERSION,

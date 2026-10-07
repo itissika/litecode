@@ -2542,14 +2542,16 @@ impl Session {
 
     /// Synthesize `FunctionCallOutput`s for `FunctionCall`s that lack a matching
     /// output (crash between persist and tool completion). Used on the **ephemeral
-    /// LLM view**. Callers must not persist
-    /// these pads as `detail` — hanging calls stay on disk until a real result
-    /// or abort seal.
+    /// LLM view**.
+    ///
+    /// When the unanswered calls are still the tail of the log, startup persists
+    /// the same output via [`Self::seal_tail_unanswered_calls`]. Calls already
+    /// followed by later history stay unpadded on disk — an append-only log
+    /// cannot put the result back beside them — and this view still supplies
+    /// the pair. Callers must not persist this view.
     ///
     /// Returns the number of outputs appended.
     pub fn pad_unanswered_calls(transcript: &mut Transcript) -> usize {
-        use crate::authority::responses::{FunctionCallOutput, FunctionCallOutputItemParam};
-
         let answered: std::collections::HashSet<String> = transcript
             .iter()
             .filter_map(|item| match item {
@@ -2565,15 +2567,7 @@ impl Session {
         let flush =
             |pending: &mut Vec<(String, String)>, result: &mut Vec<Item>, padded: &mut usize| {
                 for (call_id, name) in pending.drain(..) {
-                    result.push(Item::FunctionCallOutput(FunctionCallOutputItemParam {
-                        call_id,
-                        output: FunctionCallOutput::Text(format!(
-                            "tool '{name}' was interrupted: no result was recorded \
-                         (session recovered before completion)"
-                        )),
-                        id: None,
-                        status: None,
-                    }));
+                    result.push(Self::unanswered_call_output(&call_id, &name));
                     *padded += 1;
                 }
             };
@@ -2604,6 +2598,94 @@ impl Session {
             *transcript = result;
         }
         padded
+    }
+
+    /// The abort seal for a tool call that never recorded a result.
+    ///
+    /// Same text the ephemeral view pads with, so a call closed here and a call
+    /// the view still has to pad say one thing.
+    fn unanswered_call_output(call_id: &str, name: &str) -> Item {
+        use crate::authority::responses::{FunctionCallOutput, FunctionCallOutputItemParam};
+
+        Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: call_id.to_string(),
+            output: FunctionCallOutput::Text(format!(
+                "tool '{name}' was interrupted: no result was recorded \
+                 (session recovered before completion)"
+            )),
+            id: None,
+            status: None,
+        })
+    }
+
+    /// Persist interrupt results for unanswered calls that are still the log tail.
+    ///
+    /// Append-only: the results are new rows after the calls, and the calls
+    /// themselves are not rewritten. A session that still has an `in_progress`
+    /// row is left untouched — startup seals those first, and a session that
+    /// could not be sealed is retried on the next open. Returns the new seqs.
+    pub(crate) fn seal_tail_unanswered_calls(&self) -> Result<Vec<Seq>> {
+        let in_flight: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM transcript_items
+             WHERE session_id = ?1 AND state = 'in_progress'",
+            rusqlite::params![self.id],
+            |row| row.get(0),
+        )?;
+        if in_flight > 0 {
+            return Ok(Vec::new());
+        }
+
+        let rows = self.load_history_transcript()?;
+        let mut answered = HashSet::new();
+        let mut items = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let item = row_to_item(row, &self.data_root).ok();
+            if let Some(Item::FunctionCallOutput(output)) = &item {
+                answered.insert(output.call_id.clone());
+            }
+            items.push(item);
+        }
+
+        let mut suffix = Vec::new();
+        for index in (0..rows.len()).rev() {
+            match &items[index] {
+                Some(Item::FunctionCall(call))
+                    if !call.call_id.is_empty() && !answered.contains(&call.call_id) =>
+                {
+                    suffix.push(index);
+                }
+                _ => break,
+            }
+        }
+        if suffix.is_empty() {
+            return Ok(Vec::new());
+        }
+        suffix.reverse();
+
+        let mut sealed = Vec::new();
+        let mut start = 0;
+        while start < suffix.len() {
+            let turn_id = rows[suffix[start]].turn_id.clone();
+            let mut end = start + 1;
+            while end < suffix.len() && rows[suffix[end]].turn_id == turn_id {
+                end += 1;
+            }
+            let outputs: Vec<Item> = suffix[start..end]
+                .iter()
+                .filter_map(|&index| match &items[index] {
+                    Some(Item::FunctionCall(call)) => {
+                        Some(Self::unanswered_call_output(&call.call_id, &call.name))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let outcome = self.insert_detail_rows_with_turn(&outputs, &turn_id)?;
+            if let Some((first, last)) = outcome.seq_range {
+                sealed.extend(first..=last);
+            }
+            start = end;
+        }
+        Ok(sealed)
     }
 
     pub fn set_agent_id(&mut self, agent_id: &str) -> Result<()> {

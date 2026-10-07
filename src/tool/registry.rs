@@ -99,6 +99,7 @@ fn instantiate_tool(
             .filter(|tool| allowed_tools.map_or(true, |allowed| allowed.contains(&tool.name)))
             .map(|tool| {
                 Arc::new(McpTool::new(
+                    server_id,
                     if tool.description.is_empty() {
                         format!("MCP tool {} from server '{server_id}'", tool.name)
                     } else {

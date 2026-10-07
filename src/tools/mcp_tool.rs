@@ -28,11 +28,14 @@ pub struct McpTool {
 
 impl McpTool {
     pub fn new(
+        server_id: &str,
         description: String,
         input_schema: Value,
         server_connection: McpServerConnection,
     ) -> Self {
-        let tool_name = server_connection.tool_name.clone();
+        // Agent-facing name. `server_connection.tool_name` stays the raw
+        // `tools/call` name.
+        let tool_name = format!("mcp_{server_id}_{}", server_connection.tool_name);
         Self {
             tool_name,
             tool_description: description,
@@ -109,5 +112,31 @@ impl Tool for McpTool {
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn agent_name_prefixes_server_id() {
+        let tool = McpTool::new(
+            "github",
+            "read a file".into(),
+            serde_json::json!({"type": "object"}),
+            McpServerConnection {
+                tool_name: "read".into(),
+                server_name: "global:github".into(),
+                command: "unused".into(),
+                args: Vec::new(),
+                env: HashMap::new(),
+                cwd: None,
+                pool: Arc::new(McpConnectionPool::new()),
+                timeout_secs: 60,
+            },
+        );
+        assert_eq!(tool.name(), "mcp_github_read");
     }
 }

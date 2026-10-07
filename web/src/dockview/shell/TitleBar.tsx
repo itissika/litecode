@@ -1,28 +1,50 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { MenuBar } from "../menu/MenuBar";
 import { Logo } from "../../components/Logo";
+import type { MenuItem } from "../menu/menuItems";
 import {
   useServerVersionTags,
   VersionTags,
 } from "../../components/VersionTags";
 
+export interface TitleBarChrome {
+  maximized: boolean;
+  onMinimize: () => void;
+  onToggleMaximize: () => void;
+  onClose: () => void;
+}
+
 interface TitleBarProps {
   onMenuAction?: (item: string) => void;
   sessionMode?: "local" | "remote";
+  /** Replaces the default Options menu. */
+  menuItems?: MenuItem[];
+  /** Popout windows have no Options menu. The main window always does. */
+  showMenu?: boolean;
+  /**
+   * Window buttons for a specific window. The default path drives the main
+   * BrowserWindow through `window.litecode`.
+   */
+  chrome?: TitleBarChrome;
 }
 
 export function TitleBar({
   onMenuAction,
   sessionMode = "local",
+  menuItems,
+  showMenu = true,
+  chrome,
 }: TitleBarProps) {
   const [maximized, setMaximized] = useState(false);
-  const hasWindowChrome = typeof window.litecode?.windowClose === "function";
+  const hasWindowChrome =
+    chrome != null || typeof window.litecode?.windowClose === "function";
   const versionTags = useServerVersionTags();
+  const shownMaximized = chrome?.maximized ?? maximized;
 
   useEffect(() => {
-    if (!hasWindowChrome) return;
+    if (chrome || !hasWindowChrome) return;
     void window.litecode?.windowIsMaximized?.().then(setMaximized);
-  }, [hasWindowChrome]);
+  }, [chrome, hasWindowChrome]);
 
   const dragStyle = {
     WebkitAppRegion: "drag",
@@ -46,7 +68,13 @@ export function TitleBar({
         <span style={noDrag}>
           <VersionTags {...versionTags} size="xs" className="ml-2 mr-1" />
         </span>
-        <MenuBar onAction={onMenuAction} sessionMode={sessionMode} />
+        {showMenu ? (
+          <MenuBar
+            onAction={onMenuAction}
+            sessionMode={sessionMode}
+            items={menuItems}
+          />
+        ) : null}
         {sessionMode === "remote" ? (
           <span
             className="ml-2 px-1.5 text-[10px] uppercase tracking-wide"
@@ -69,7 +97,10 @@ export function TitleBar({
             type="button"
             aria-label="Minimize"
             className="px-3 py-0 h-[32px] text-xs hover:brightness-125 active:brightness-75"
-            onClick={() => void window.litecode?.windowMinimize?.()}
+            onClick={() => {
+              if (chrome) chrome.onMinimize();
+              else void window.litecode?.windowMinimize?.();
+            }}
           >
             <svg width="10" height="10" viewBox="0 0 10 10">
               <rect y="4" width="10" height="1.5" fill="currentColor" />
@@ -77,13 +108,14 @@ export function TitleBar({
           </button>
           <button
             type="button"
-            aria-label={maximized ? "Restore" : "Maximize"}
+            aria-label={shownMaximized ? "Restore" : "Maximize"}
             className="px-3 py-0 h-[32px] text-xs hover:brightness-125 active:brightness-75"
             onClick={() => {
-              void window.litecode?.windowMaximizeToggle?.().then(setMaximized);
+              if (chrome) chrome.onToggleMaximize();
+              else void window.litecode?.windowMaximizeToggle?.().then(setMaximized);
             }}
           >
-            {maximized ? (
+            {shownMaximized ? (
               <svg width="10" height="10" viewBox="0 0 10 10">
                 <path
                   d="M2 3h5v5H2V3zm1-1h5v5"
@@ -111,7 +143,10 @@ export function TitleBar({
             type="button"
             aria-label="Close"
             className="px-3 py-0 h-[32px] text-xs lc-titlebar-close active:brightness-75"
-            onClick={() => void window.litecode?.windowClose?.()}
+            onClick={() => {
+              if (chrome) chrome.onClose();
+              else void window.litecode?.windowClose?.();
+            }}
           >
             <svg width="10" height="10" viewBox="0 0 10 10">
               <path

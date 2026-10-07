@@ -6,6 +6,8 @@ import {
   classifyIpcSender,
   exactHttpOrigin,
   isAllowedNavigation,
+  resolveWindowOpen,
+  workbenchPopoutDockId,
   type IpcTrustContext,
 } from "./ipc-trust";
 
@@ -147,5 +149,46 @@ describe("navigation and origin policy", () => {
       ),
       false,
     );
+  });
+});
+
+const DOCK = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+
+describe("popout window policy", () => {
+  const popout = `https://workbench.example/popout.html?dock=${DOCK}`;
+
+  it("allows only a workbench popout page with one dock id", () => {
+    assert.equal(resolveWindowOpen(popout, context("workbench")), "popout");
+    assert.equal(workbenchPopoutDockId(popout, context("workbench")), DOCK);
+    assert.equal(
+      resolveWindowOpen("https://workbench.example/popout.html", context("workbench")),
+      "deny",
+    );
+    assert.equal(
+      resolveWindowOpen(`${popout}&next=1`, context("workbench")),
+      "deny",
+    );
+    assert.equal(resolveWindowOpen(popout, context("hub")), "external");
+    assert.equal(
+      resolveWindowOpen("https://example.com/docs", context("workbench")),
+      "external",
+    );
+    assert.equal(
+      resolveWindowOpen("file:///etc/passwd", context("workbench")),
+      "deny",
+    );
+  });
+
+  it("rejects IPC from the popout document", () => {
+    const trusted = sender(popout);
+    const result = classifyIpcSender(
+      { sender: trusted, senderFrame: trusted.mainFrame },
+      trusted,
+      context("workbench"),
+    );
+    assert.equal(result.trusted, false);
+    if (!result.trusted) {
+      assert.match(result.reason, /popout/);
+    }
   });
 });

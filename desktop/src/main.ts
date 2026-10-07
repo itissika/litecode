@@ -21,6 +21,9 @@ import {
   assertIpcSurface,
   exactHttpOrigin,
   isAllowedNavigation,
+  resolveWindowOpen,
+  workbenchPopoutDockId,
+  isPopoutDockId,
   type AllowedSurface,
   type IpcTrustContext,
 } from "./ipc-trust";
@@ -59,12 +62,17 @@ import {
 import { scanSshHostKey, SshSession, type RemoteServeHandle, type SshTunnelHandle } from "./ssh-session";
 import { SshTargets, type SavedSshTarget } from "./ssh-targets";
 import { readUiTheme, writeUiTheme, type UiThemeName } from "./ui-theme";
-import { isAllowedExternalUrl, isAllowedLoadUrl } from "./url-policy";
+import { isAllowedLoadUrl } from "./url-policy";
 import { senderOwnedWindow } from "./window-guard";
+import { BrowserHost } from "./browser-host";
+import { createBrowserHost } from "./browser-view";
 
 type SessionMode = "local" | "remote";
 
 let mainWindow: BrowserWindow | null = null;
+let browserHost: BrowserHost | null = null;
+const popoutWindows = new Map<string, BrowserWindow>();
+let browserObscured = false;
 let sidecar: SidecarHandle | null = null;
 let authToken = "";
 let sessionMode: SessionMode = "local";
@@ -93,7 +101,68 @@ function hubPagePath(): string {
   return path.join(app.getPath("userData"), "hub-index.html");
 }
 
+function disposeBrowserHost(): void {
+  browserHost?.destroyAll();
+  browserHost = null;
+}
+
+function ensureBrowserHost(): BrowserHost | null {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return null;
+  if (!browserHost) {
+    browserHost = createBrowserHost(win, (id) => popoutWindows.get(id) ?? null);
+    browserHost.setObscured(browserObscured);
+  }
+  return browserHost;
+}
+
+function popoutWindowOptions(): Electron.BrowserWindowConstructorOptions {
+  const iconPath = path.join(__dirname, "..", "build", "icon.ico");
+  return {
+    frame: false,
+    autoHideMenuBar: true,
+    backgroundColor: "#0a0a0a",
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: undefined,
+    },
+  };
+}
+
+function lockPopoutWindow(child: BrowserWindow, openedUrl: string): void {
+  child.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  const guard = (event: Electron.Event, url: string) => {
+    if (url !== openedUrl) event.preventDefault();
+  };
+  child.webContents.on("will-navigate", guard);
+  child.webContents.on("will-redirect", guard);
+}
+
+function popoutByDock(id: unknown): BrowserWindow | null {
+  if (typeof id !== "string" || !isPopoutDockId(id)) return null;
+  const win = popoutWindows.get(id);
+  if (!win || win.isDestroyed()) return null;
+  return win;
+}
+
+function rememberPopout(dock: string, child: BrowserWindow): void {
+  popoutWindows.set(dock, child);
+  child.once("close", () => {
+    if (popoutWindows.get(dock) === child) popoutWindows.delete(dock);
+    browserHost?.parkPopout(dock);
+  });
+}
+
+function asRecord(payload: unknown): Record<string, unknown> {
+  if (!payload || typeof payload !== "object") return {};
+  return payload as Record<string, unknown>;
+}
+
 async function loadHub(win: BrowserWindow): Promise<void> {
+  disposeBrowserHost();
   const filePath = writeHubPage(hubPagePath());
   trustContext = {
     activeSurface: "hub",
@@ -112,6 +181,7 @@ async function safeLoadURL(win: BrowserWindow, url: string): Promise<void> {
   if (!workbenchOrigin) {
     throw new Error(`Refusing to load an untrusted workbench URL: ${url}`);
   }
+  disposeBrowserHost();
   trustContext = {
     activeSurface: "workbench",
     hubFileUrl: pathToFileURL(hubPagePath()).toString(),
@@ -146,17 +216,33 @@ async function createWindow(content: BootContent): Promise<BrowserWindow> {
     console.error(`[litecode] preload failed (${preloadPath}):`, error);
   });
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isAllowedExternalUrl(url)) void shell.openExternal(url);
+    const decision = resolveWindowOpen(url, trustContext);
+    if (decision === "popout") {
+      return { action: "allow", overrideBrowserWindowOptions: popoutWindowOptions() };
+    }
+    if (decision === "external") void shell.openExternal(url);
     return { action: "deny" };
+  });
+  win.webContents.on("did-create-window", (child, details) => {
+    lockPopoutWindow(child, details.url);
+    const dock = workbenchPopoutDockId(details.url, trustContext);
+    if (dock) rememberPopout(dock, child);
   });
   const guardNavigation = (event: Electron.Event, url: string) => {
     const context = trustContext;
     if (!context || !isAllowedNavigation(context.activeSurface, url, context)) {
       event.preventDefault();
+      return;
     }
+    // The shell is actually leaving this document. Drop guest pages first so
+    // they cannot stay painted over the next surface.
+    disposeBrowserHost();
   };
   win.webContents.on("will-navigate", guardNavigation);
   win.webContents.on("will-redirect", guardNavigation);
+  win.on("close", () => {
+    disposeBrowserHost();
+  });
 
   if (content.kind === "hub") {
     await loadHub(win);
@@ -843,7 +929,63 @@ function handleTrusted(
   });
 }
 
+function registerBrowserIpc(): void {
+  handleTrusted("litecode:browser-create", "workbench", (_event, payload: unknown) => {
+    const host = ensureBrowserHost();
+    if (!host) throw new Error("Browser is unavailable");
+    const body = asRecord(payload);
+    return host.create(typeof body.id === "string" ? body.id : "", body.backgroundColor);
+  });
+
+  handleTrusted("litecode:browser-navigate", "workbench", (_event, payload: unknown) => {
+    const host = ensureBrowserHost();
+    if (!host) throw new Error("Browser is unavailable");
+    const body = asRecord(payload);
+    return host.navigate(typeof body.id === "string" ? body.id : "", body.url);
+  });
+
+  handleTrusted("litecode:browser-go-back", "workbench", (_event, id: unknown) => {
+    const host = ensureBrowserHost();
+    if (!host) throw new Error("Browser is unavailable");
+    return host.goBack(typeof id === "string" ? id : "");
+  });
+
+  handleTrusted("litecode:browser-go-forward", "workbench", (_event, id: unknown) => {
+    const host = ensureBrowserHost();
+    if (!host) throw new Error("Browser is unavailable");
+    return host.goForward(typeof id === "string" ? id : "");
+  });
+
+  onTrusted("litecode:browser-set-bounds", "workbench", (_event, payload: unknown) => {
+    const body = asRecord(payload);
+    browserHost?.setBounds(body.id, body.bounds, body.place);
+  });
+
+  onTrusted("litecode:browser-set-host", "workbench", (event, payload: unknown) => {
+    const body = asRecord(payload);
+    const host = ensureBrowserHost();
+    event.returnValue = host ? host.setHost(body.id, body.popoutId ?? null) : false;
+  });
+
+  onTrusted("litecode:browser-set-visible", "workbench", (_event, payload: unknown) => {
+    const body = asRecord(payload);
+    browserHost?.setVisible(body.id, body.visible === true);
+  });
+
+  onTrusted("litecode:browser-destroy", "workbench", (_event, id: unknown) => {
+    browserHost?.destroy(id);
+  });
+
+  onTrusted("litecode:browser-set-obscured", "workbench", (event, obscured: unknown) => {
+    browserObscured = obscured === true;
+    browserHost?.setObscured(browserObscured);
+    event.returnValue = undefined;
+  });
+}
+
 function registerIpc(): void {
+  registerBrowserIpc();
+
   onTrusted("litecode:get-auth-token", "workbench", (event) => {
     event.returnValue = authToken || undefined;
   });
@@ -1103,6 +1245,35 @@ function registerIpc(): void {
 
   handleTrusted("litecode:window-close", "both", (event) => {
     targetWindow(event)?.close();
+  });
+
+  handleTrusted("litecode:popout-window-minimize", "workbench", (_event, dockId: unknown) => {
+    popoutByDock(dockId)?.minimize();
+  });
+
+  handleTrusted(
+    "litecode:popout-window-maximize-toggle",
+    "workbench",
+    (_event, dockId: unknown) => {
+      const win = popoutByDock(dockId);
+      if (!win) return false;
+      if (win.isMaximized()) {
+        win.unmaximize();
+        return false;
+      }
+      win.maximize();
+      return true;
+    },
+  );
+
+  handleTrusted(
+    "litecode:popout-window-is-maximized",
+    "workbench",
+    (_event, dockId: unknown) => popoutByDock(dockId)?.isMaximized() ?? false,
+  );
+
+  handleTrusted("litecode:popout-window-close", "workbench", (_event, dockId: unknown) => {
+    popoutByDock(dockId)?.close();
   });
 }
 

@@ -11,11 +11,13 @@ import { SessionListPanel } from "../panels/SessionListPanel";
 import { TerminalPanel } from "../panels/TerminalPanel";
 import { KnowledgePanel } from "../panels/KnowledgePanel";
 import { KnowledgeGraphPanel } from "../panels/KnowledgeGraphPanel";
+import { BrowserPanel } from "../panels/BrowserPanel";
 
 import { EdgeTab } from "../tabs/EdgeTab";
 import { EditorTab } from "../tabs/EditorTab";
 import { AgentTab } from "../tabs/AgentTab";
 import { KnowledgeGraphTab } from "../tabs/KnowledgeGraphTab";
+import { BrowserTab } from "../tabs/BrowserTab";
 
 export const panelComponents: Record<
   string,
@@ -32,6 +34,7 @@ export const panelComponents: Record<
   terminal: TerminalPanel,
   knowledge: KnowledgePanel,
   knowledgeGraph: KnowledgeGraphPanel,
+  browser: BrowserPanel,
 };
 
 export const tabComponents: Record<
@@ -42,4 +45,5 @@ export const tabComponents: Record<
   editor: EditorTab,
   agent: AgentTab,
   knowledgeGraph: KnowledgeGraphTab,
+  browser: BrowserTab,
 };

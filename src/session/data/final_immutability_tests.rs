@@ -21,8 +21,8 @@ use tempfile::TempDir;
 use super::command::{MutationId, SessionMutation};
 use super::sqlite::session::SessionApply;
 use crate::authority::responses::{
-    AssistantRole, MessageItem, OutputMessage, OutputMessageContent, OutputStatus,
-    OutputTextContent,
+    AssistantRole, FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall, MessageItem,
+    OutputMessage, OutputMessageContent, OutputStatus, OutputTextContent,
 };
 use crate::session::{SessionData, WorkspaceWriteLease};
 use crate::types::{Item, assistant_text, user_text};
@@ -507,6 +507,201 @@ fn a_restart_seals_rows_the_previous_run_left_in_flight() {
     assert!(in_flight(&db, &sid).is_empty());
     assert_eq!(settled_bodies(&db, &sid).len(), 1, "no duplicate rows");
     drop(data);
+}
+
+fn function_call(call_id: &str, name: &str) -> Item {
+    Item::FunctionCall(FunctionToolCall {
+        arguments: "{}".into(),
+        call_id: call_id.into(),
+        namespace: None,
+        name: name.into(),
+        id: None,
+        status: Some(OutputStatus::Completed),
+    })
+}
+
+fn insert_details(data: &SessionData, sid: &str, turn_id: &str, items: Vec<Item>) {
+    data.mutate_blocking(SessionMutation::InsertDetails {
+        session_id: sid.to_string(),
+        expected_revision: data.revision_blocking(sid).expect("revision"),
+        operation_id: MutationId::new(),
+        items,
+        turn_id: turn_id.into(),
+    })
+    .expect("insert");
+}
+
+/// A crash during a tool leaves a final call and no output. Nothing is running
+/// at the next open, and the calls are still the tail, so startup appends the
+/// interrupt result the agent loop can no longer write. The calls stay as they
+/// were. A second open finds them answered and appends nothing.
+#[test]
+fn a_restart_seals_unanswered_calls_left_at_the_tail() {
+    let dir = TempDir::new().expect("tempdir");
+    let db = dir.path().join("sessions.db");
+    let lease = WorkspaceWriteLease::acquire(dir.path()).expect("lease");
+
+    let (sid, call_bodies) = {
+        let data = SessionData::open(&lease, &db).expect("open");
+        let sid = data.create_session("/p", "default", None).expect("create");
+        insert_details(
+            &data,
+            &sid,
+            "t-wait",
+            vec![
+                user_text("go"),
+                function_call("call_a", "subagent_wait"),
+                function_call("call_b", "wait_shell"),
+            ],
+        );
+        let bodies = settled_bodies(&db, &sid);
+        drop(data);
+        (sid, bodies)
+    };
+
+    let data = SessionData::open(&lease, &db).expect("reopen");
+    let settled = settled_bodies(&db, &sid);
+    assert_eq!(
+        settled.keys().copied().collect::<Vec<_>>(),
+        vec![0, 1, 2, 3, 4],
+        "the two tail calls each gain one output"
+    );
+    assert_eq!(
+        settled[&1], call_bodies[&1],
+        "the first call is not rewritten"
+    );
+    assert_eq!(
+        settled[&2], call_bodies[&2],
+        "the second call is not rewritten"
+    );
+    assert_interrupted_output(&settled[&3], "call_a", "subagent_wait");
+    assert_interrupted_output(&settled[&4], "call_b", "wait_shell");
+
+    let conn = Connection::open(&db).expect("db");
+    let turn_ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT turn_id FROM transcript_items
+                 WHERE session_id = ?1 AND seq IN (3, 4) ORDER BY seq",
+            )
+            .expect("prepare");
+        stmt.query_map(rusqlite::params![sid], |row| row.get(0))
+            .expect("query")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect")
+    };
+    assert_eq!(
+        turn_ids,
+        ["t-wait", "t-wait"],
+        "the result stays on the call's turn"
+    );
+    drop(conn);
+    drop(data);
+
+    let _data = SessionData::open(&lease, &db).expect("reopen again");
+    assert_eq!(
+        settled_bodies(&db, &sid).len(),
+        5,
+        "a second restart does not append another result"
+    );
+}
+
+/// Later history means the result would land after a subsequent turn. Leave the
+/// call unanswered on disk; the model view pads it in place.
+#[test]
+fn a_restart_leaves_an_unanswered_call_that_later_history_follows() {
+    let dir = TempDir::new().expect("tempdir");
+    let db = dir.path().join("sessions.db");
+    let lease = WorkspaceWriteLease::acquire(dir.path()).expect("lease");
+
+    let sid = {
+        let data = SessionData::open(&lease, &db).expect("open");
+        let sid = data.create_session("/p", "default", None).expect("create");
+        insert_details(
+            &data,
+            &sid,
+            "t-old",
+            vec![function_call("call_old", "read"), user_text("continue")],
+        );
+        drop(data);
+        sid
+    };
+
+    let _data = SessionData::open(&lease, &db).expect("reopen");
+    let settled = settled_bodies(&db, &sid);
+    assert_eq!(
+        settled.keys().copied().collect::<Vec<_>>(),
+        vec![0, 1],
+        "startup must not append a result after later history"
+    );
+    for body in settled.values() {
+        let item: Item = serde_json::from_str(body).expect("item");
+        assert!(
+            !matches!(item, Item::FunctionCallOutput(_)),
+            "the hanging call stays unanswered on disk"
+        );
+    }
+}
+
+/// A call still in flight is sealed incomplete first, then closed with the same
+/// interrupt result, because the tail is that call once the seal finishes.
+#[test]
+fn a_restart_seals_an_in_flight_call_and_appends_its_interrupt_result() {
+    let dir = TempDir::new().expect("tempdir");
+    let db = dir.path().join("sessions.db");
+    let lease = WorkspaceWriteLease::acquire(dir.path()).expect("lease");
+
+    let sid = {
+        let data = SessionData::open(&lease, &db).expect("open");
+        let sid = data.create_session("/p", "default", None).expect("create");
+        data.mutate_blocking(SessionMutation::BeginStreamItem {
+            session_id: sid.clone(),
+            expected_revision: data.revision_blocking(&sid).expect("revision"),
+            operation_id: MutationId::new(),
+            item: function_call("call_live", "bash"),
+            turn_id: "t-crash".into(),
+        })
+        .expect("begin");
+        drop(data);
+        sid
+    };
+
+    assert_eq!(in_flight(&db, &sid), vec![0]);
+
+    let _data = SessionData::open(&lease, &db).expect("reopen");
+    assert!(in_flight(&db, &sid).is_empty(), "the call row is sealed");
+    let settled = settled_bodies(&db, &sid);
+    assert_eq!(settled.keys().copied().collect::<Vec<_>>(), vec![0, 1]);
+    let call: Item = serde_json::from_str(&settled[&0]).expect("call");
+    match call {
+        Item::FunctionCall(call) => {
+            assert_eq!(call.call_id, "call_live");
+            assert_eq!(call.status, Some(OutputStatus::Incomplete));
+        }
+        other => panic!("expected the sealed call, got {other:?}"),
+    }
+    assert_interrupted_output(&settled[&1], "call_live", "bash");
+}
+
+fn assert_interrupted_output(body: &str, call_id: &str, name: &str) {
+    let item: Item = serde_json::from_str(body).expect("output item");
+    match item {
+        Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: got_id,
+            output: FunctionCallOutput::Text(text),
+            ..
+        }) => {
+            assert_eq!(got_id, call_id);
+            assert_eq!(
+                text,
+                format!(
+                    "tool '{name}' was interrupted: no result was recorded \
+                     (session recovered before completion)"
+                )
+            );
+        }
+        other => panic!("expected an interrupt result, got {other:?}"),
+    }
 }
 
 /// A revert must not let a later append reuse a deleted seq, across a reopen.

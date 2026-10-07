@@ -1,5 +1,6 @@
 import { getDockviewApi } from "../../stores/connectionStore";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
+import { isMainGrid } from "../../dockview/popout/location";
 
 export const KNOWLEDGE_GRAPH_PANEL_ID = "knowledge-graph";
 
@@ -10,14 +11,14 @@ function besideCurrentGrid(api: DockviewApi): {
   referenceGroup: string;
   direction?: "right";
 } {
-  const gridGroups = api.groups.filter((group) => group.api.location.type === "grid");
+  const gridGroups = api.groups.filter((group) => isMainGrid(group.api.location.type));
   if (gridGroups.length === 0) {
     const group = api.addGroup();
     return { referenceGroup: group.id };
   }
   const active = api.activeGroup;
   const anchor =
-    active && active.api.location.type === "grid" ? active : gridGroups[0]!;
+    active && isMainGrid(active.api.location.type) ? active : gridGroups[0]!;
   return { referenceGroup: anchor.api.id, direction: "right" };
 }
 
