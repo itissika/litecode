@@ -1,5 +1,5 @@
 import { loader } from "@monaco-editor/react";
-import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
+import * as monaco from "monaco-editor/editor/editor.api";
 
 // Local Monaco bundle: no CDN dependency at runtime.
 //
@@ -13,56 +13,57 @@ import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 // Monaco's built-in services would only add megabytes and worker mismatches.
 
 // Basic languages (c/cpp are both registered by the cpp contribution).
-import "monaco-editor/esm/vs/basic-languages/rust/rust.contribution";
-import "monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution";
-import "monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution";
-import "monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution";
-import "monaco-editor/esm/vs/basic-languages/python/python.contribution";
-import "monaco-editor/esm/vs/basic-languages/ini/ini.contribution";
-import "monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution";
-import "monaco-editor/esm/vs/basic-languages/css/css.contribution";
-import "monaco-editor/esm/vs/basic-languages/scss/scss.contribution";
-import "monaco-editor/esm/vs/basic-languages/html/html.contribution";
-import "monaco-editor/esm/vs/basic-languages/xml/xml.contribution";
-import "monaco-editor/esm/vs/basic-languages/sql/sql.contribution";
-import "monaco-editor/esm/vs/basic-languages/shell/shell.contribution";
-import "monaco-editor/esm/vs/basic-languages/go/go.contribution";
-import "monaco-editor/esm/vs/basic-languages/java/java.contribution";
-import "monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution";
-import "monaco-editor/esm/vs/basic-languages/csharp/csharp.contribution";
-import "monaco-editor/esm/vs/basic-languages/ruby/ruby.contribution";
-import "monaco-editor/esm/vs/basic-languages/php/php.contribution";
-import "monaco-editor/esm/vs/basic-languages/swift/swift.contribution";
-import "monaco-editor/esm/vs/basic-languages/kotlin/kotlin.contribution";
-import "monaco-editor/esm/vs/basic-languages/lua/lua.contribution";
-import "monaco-editor/esm/vs/basic-languages/dockerfile/dockerfile.contribution";
-import "monaco-editor/esm/vs/basic-languages/wgsl/wgsl.contribution";
-import "monaco-editor/esm/vs/basic-languages/powershell/powershell.contribution";
-import "monaco-editor/esm/vs/basic-languages/bat/bat.contribution";
-import "monaco-editor/esm/vs/basic-languages/graphql/graphql.contribution";
-import "monaco-editor/esm/vs/basic-languages/protobuf/protobuf.contribution";
-import "monaco-editor/esm/vs/basic-languages/perl/perl.contribution";
-import "monaco-editor/esm/vs/basic-languages/r/r.contribution";
-import "monaco-editor/esm/vs/basic-languages/scala/scala.contribution";
-import "monaco-editor/esm/vs/basic-languages/dart/dart.contribution";
-import "monaco-editor/esm/vs/basic-languages/elixir/elixir.contribution";
-import "monaco-editor/esm/vs/basic-languages/clojure/clojure.contribution";
-import "monaco-editor/esm/vs/basic-languages/less/less.contribution";
-import "monaco-editor/esm/vs/basic-languages/hcl/hcl.contribution";
-import "monaco-editor/esm/vs/basic-languages/objective-c/objective-c.contribution";
-import "monaco-editor/esm/vs/basic-languages/systemverilog/systemverilog.contribution";
-import "monaco-editor/esm/vs/basic-languages/vb/vb.contribution";
-import "monaco-editor/esm/vs/basic-languages/fsharp/fsharp.contribution";
-import "monaco-editor/esm/vs/basic-languages/solidity/solidity.contribution";
-import "monaco-editor/esm/vs/language/json/monaco.contribution";
+// Monaco 0.57 moved each language to languages/definitions/<id>/register.
+import "monaco-editor/languages/definitions/rust/register";
+import "monaco-editor/languages/definitions/typescript/register";
+import "monaco-editor/languages/definitions/javascript/register";
+import "monaco-editor/languages/definitions/markdown/register";
+import "monaco-editor/languages/definitions/python/register";
+import "monaco-editor/languages/definitions/ini/register";
+import "monaco-editor/languages/definitions/yaml/register";
+import "monaco-editor/languages/definitions/css/register";
+import "monaco-editor/languages/definitions/scss/register";
+import "monaco-editor/languages/definitions/html/register";
+import "monaco-editor/languages/definitions/xml/register";
+import "monaco-editor/languages/definitions/sql/register";
+import "monaco-editor/languages/definitions/shell/register";
+import "monaco-editor/languages/definitions/go/register";
+import "monaco-editor/languages/definitions/java/register";
+import "monaco-editor/languages/definitions/cpp/register";
+import "monaco-editor/languages/definitions/csharp/register";
+import "monaco-editor/languages/definitions/ruby/register";
+import "monaco-editor/languages/definitions/php/register";
+import "monaco-editor/languages/definitions/swift/register";
+import "monaco-editor/languages/definitions/kotlin/register";
+import "monaco-editor/languages/definitions/lua/register";
+import "monaco-editor/languages/definitions/dockerfile/register";
+import "monaco-editor/languages/definitions/wgsl/register";
+import "monaco-editor/languages/definitions/powershell/register";
+import "monaco-editor/languages/definitions/bat/register";
+import "monaco-editor/languages/definitions/graphql/register";
+import "monaco-editor/languages/definitions/protobuf/register";
+import "monaco-editor/languages/definitions/perl/register";
+import "monaco-editor/languages/definitions/r/register";
+import "monaco-editor/languages/definitions/scala/register";
+import "monaco-editor/languages/definitions/dart/register";
+import "monaco-editor/languages/definitions/elixir/register";
+import "monaco-editor/languages/definitions/clojure/register";
+import "monaco-editor/languages/definitions/less/register";
+import "monaco-editor/languages/definitions/hcl/register";
+import "monaco-editor/languages/definitions/objective-c/register";
+import "monaco-editor/languages/definitions/systemverilog/register";
+import "monaco-editor/languages/definitions/vb/register";
+import "monaco-editor/languages/definitions/fsharp/register";
+import "monaco-editor/languages/definitions/solidity/register";
+import "monaco-editor/language/json/monaco.contribution";
 import { registerShaderSupport } from "./monacoShaders";
 
 registerShaderSupport(monaco);
 
 // Workers: the editor worker covers tokenization for every basic language; the
 // JSON language service needs its own worker.
-import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
+import editorWorker from "monaco-editor/editor/editor.worker?worker";
+import jsonWorker from "monaco-editor/language/json/json.worker?worker";
 
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string): Worker {

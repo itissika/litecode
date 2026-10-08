@@ -40,9 +40,10 @@ export function PdfPreview({
         const data = new Uint8Array(await blob.arrayBuffer());
         const pdfjs = await import("pdfjs-dist");
         pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-        const doc = await pdfjs.getDocument({ data }).promise;
+        const task = pdfjs.getDocument({ data });
+        const doc = await task.promise;
         if (cancelled) {
-          await doc.destroy();
+          await task.destroy();
           return;
         }
         host.replaceChildren();
@@ -54,13 +55,11 @@ export function PdfPreview({
           canvas.width = viewport.width;
           canvas.height = viewport.height;
           canvas.className = "mx-auto mb-3 max-w-full bg-white";
-          const context = canvas.getContext("2d");
-          if (!context) continue;
           host.appendChild(canvas);
-          await page.render({ canvasContext: context, viewport }).promise;
+          await page.render({ canvas, viewport }).promise;
           page.cleanup();
         }
-        await doc.destroy();
+        await task.destroy();
         if (cancelled) return;
         successKey.current = key;
         setReadyPages(true);

@@ -4,7 +4,7 @@ import { AgentWsClient } from "./agentWs";
 
 /** Capture the URL passed to `new WebSocket`. */
 let wsUrl: string | null = null;
-let sendSpy: ReturnType<typeof vi.fn> | null = null;
+let sendSpy: ReturnType<typeof vi.fn<() => void>> | null = null;
 let socketsCreated = 0;
 
 class MockWebSocket {
