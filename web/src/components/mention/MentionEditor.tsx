@@ -12,19 +12,23 @@ import type { EditorView } from "@tiptap/pm/view";
 import {
   EditorContent,
   ReactNodeViewRenderer,
-  ReactRenderer,
   useEditor,
 } from "@tiptap/react";
-import type { SuggestionProps } from "@tiptap/suggestion";
+import { exitSuggestion, type SuggestionProps } from "@tiptap/suggestion";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
 import {
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type Ref,
 } from "react";
+
+import { trackEditorView } from "../../lib/editorRoot";
 
 import { citationFact, formatLineSpan } from "../../lib/knowledge/markers";
 import { dragCarriesMention, dropCarriesMention } from "../../lib/dropPayload";
@@ -66,6 +70,83 @@ type MentionAttrs = {
 type MentionListHandle = {
   onKeyDown: (props: { event: KeyboardEvent }) => boolean;
 };
+
+type MentionListProps = SuggestionProps<MenuItem, MentionAttrs> & {
+  wide?: boolean;
+  includeLinesRef?: { current: boolean };
+  onHighlight?: (path: string | null) => void;
+  onLock?: (path: string) => void;
+};
+
+type MentionMenu = {
+  update: (next: MentionListProps) => void;
+  onKeyDown: (props: { event: KeyboardEvent }) => boolean;
+  destroy: () => void;
+};
+
+/**
+ * The suggestion plugin mounts into the opener `document.body`. A popped-out
+ * panel lives in another document, so the menu has to be created there or it
+ * paints on the main window.
+ */
+function mountMentionList(props: MentionListProps, pluginKey: PluginKey): MentionMenu {
+  const doc = props.editor.view.dom.ownerDocument;
+  const host = doc.createElement("div");
+  host.className = "knowledge-mention-menu";
+  doc.body.appendChild(host);
+  const root = createRoot(host);
+  const handle: { current: MentionListHandle | null } = { current: null };
+  let closed = false;
+
+  const paint = (next: MentionListProps) => {
+    flushSync(() => {
+      root.render(
+        <MentionList
+          {...next}
+          ref={(value) => {
+            handle.current = value;
+          }}
+        />,
+      );
+    });
+  };
+
+  const releasePosition = props.mount(host, {
+    autoUpdate: { animationFrame: true },
+  });
+
+  let stopOutside = () => {};
+  if (doc !== document) {
+    const NodeCtor = doc.defaultView?.Node ?? Node;
+    const onPointerDown = (event: Event) => {
+      const target = event.target;
+      if (!target || !(target instanceof NodeCtor)) return;
+      if (host.contains(target) || props.editor.view.dom.contains(target)) return;
+      exitSuggestion(props.editor.view, pluginKey);
+    };
+    doc.addEventListener("pointerdown", onPointerDown, true);
+    stopOutside = () => doc.removeEventListener("pointerdown", onPointerDown, true);
+  }
+
+  paint(props);
+
+  return {
+    update(next) {
+      if (!closed) paint(next);
+    },
+    onKeyDown(event) {
+      return handle.current?.onKeyDown(event) ?? false;
+    },
+    destroy() {
+      if (closed) return;
+      closed = true;
+      stopOutside();
+      releasePosition();
+      root.unmount();
+      host.remove();
+    },
+  };
+}
 
 interface MentionEditorProps {
   label: string;
@@ -273,30 +354,20 @@ function nodeSuggestion(candidatesRef: { current: readonly string[] }, pluginKey
     items: ({ query }: { query: string }) =>
       mentionItems(candidatesRef.current, query).map((id) => ({ kind: "node" as const, id })),
     render: () => {
-      let component: ReactRenderer<MentionListHandle> | null = null;
-      let unmount: (() => void) | null = null;
+      let menu: MentionMenu | null = null;
       return {
         onStart: (props: SuggestionProps<MenuItem, MentionAttrs>) => {
-          component = new ReactRenderer(MentionList, {
-            props,
-            editor: props.editor,
-            className: "knowledge-mention-menu",
-          });
-          unmount = props.mount(component.element, {
-            autoUpdate: { animationFrame: true },
-          });
+          menu = mountMentionList(props, pluginKey);
         },
         onUpdate(props: SuggestionProps<MenuItem, MentionAttrs>) {
-          component?.updateProps(props);
+          menu?.update(props);
         },
         onKeyDown(props: { event: KeyboardEvent }) {
-          return component?.ref?.onKeyDown(props) ?? false;
+          return menu?.onKeyDown(props) ?? false;
         },
         onExit() {
-          unmount?.();
-          unmount = null;
-          component?.destroy();
-          component = null;
+          menu?.destroy();
+          menu = null;
         },
       };
     },
@@ -329,8 +400,7 @@ function fileSuggestion(
       }
     },
     render: () => {
-      let component: ReactRenderer<MentionListHandle> | null = null;
-      let unmount: (() => void) | null = null;
+      let menu: MentionMenu | null = null;
       let editor: Editor | null = null;
       let range: Range = { from: 0, to: 0 };
 
@@ -358,20 +428,13 @@ function fileSuggestion(
         onStart: (props: SuggestionProps<MenuItem, MentionAttrs>) => {
           editor = props.editor;
           range = props.range;
-          component = new ReactRenderer(MentionList, {
-            props: listProps(props),
-            editor: props.editor,
-            className: "knowledge-mention-menu",
-          });
-          unmount = props.mount(component.element, {
-            autoUpdate: { animationFrame: true },
-          });
+          menu = mountMentionList(listProps(props), pluginKey);
         },
         onUpdate(props: SuggestionProps<MenuItem, MentionAttrs>) {
           editor = props.editor;
           range = props.range;
           if (phaseForQuery(props.query, locked.current).mode === "file") locked.current = null;
-          component?.updateProps(listProps(props));
+          menu?.update(listProps(props));
         },
         onKeyDown(props: { event: KeyboardEvent; range: Range }) {
           range = props.range;
@@ -380,15 +443,13 @@ function fileSuggestion(
             lock(highlighted.current);
             return true;
           }
-          return component?.ref?.onKeyDown(props) ?? false;
+          return menu?.onKeyDown(props) ?? false;
         },
         onExit() {
           locked.current = null;
           highlighted.current = null;
-          unmount?.();
-          unmount = null;
-          component?.destroy();
-          component = null;
+          menu?.destroy();
+          menu = null;
         },
       };
     },
@@ -572,6 +633,14 @@ export function MentionEditor({
       onChangeRef.current(next);
     },
   });
+
+  useLayoutEffect(() => {
+    if (!editor) return;
+    return trackEditorView(editor.view, () => {
+      exitSuggestion(editor.view, nodeKey);
+      exitSuggestion(editor.view, fileKey);
+    });
+  }, [editor, fileKey, nodeKey]);
 
   insertChips.current = (pos, text) => {
     if (!editor || editor.isDestroyed) return;

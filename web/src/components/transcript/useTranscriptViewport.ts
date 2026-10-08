@@ -28,6 +28,11 @@ import {
 } from "./transcriptScrollGlide";
 import { hostHtmlElement, viewOf } from "../../lib/domView";
 import { scrollGlide } from "./useBottomPad";
+import {
+  followScrollerWindow,
+  observeRowHeight,
+  rebindVirtualizerWindow,
+} from "./virtualizerWindow";
 
 /** History sentinel, applied as paddingStart so it is not a virtual item. */
 export const HISTORY_LOADER_HEIGHT = 40;
@@ -419,6 +424,28 @@ export function useTranscriptViewport({
       onLoadMore();
     }
   }, [canLoadMore, count, loadingHistory, onLoadMore, virtualItems]);
+
+  // The scroller is the same node after a popout. Rebind the virtualizer onto
+  // that window, and while a mini chat is open measure its row from there so
+  // the editor is not covered by the next row.
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    return followScrollerWindow(scroller, () => rebindVirtualizerWindow(virtualizer));
+  }, [scrollRef, virtualizer]);
+
+  useLayoutEffect(() => {
+    if (!editingBubbleKey) return;
+    const scroller = scrollRef.current;
+    const input = scroller?.querySelector("[data-mini-chat-input]");
+    const item = hostHtmlElement(input?.closest("[data-index]") ?? null, scroller);
+    if (!item) return;
+    const index = Number(item.dataset.index);
+    if (!Number.isInteger(index)) return;
+    return observeRowHeight(item, (height) => {
+      virtualizer.resizeItem(index, height);
+    });
+  }, [editingBubbleKey, scrollRef, virtualizer]);
 
   return { virtualizer, virtualItems, totalSize, setStick };
 }

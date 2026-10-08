@@ -32,7 +32,7 @@ import { PermissionCard } from "../../components/PermissionModal";
 import { ProgressiveBlur } from "../../components/ProgressiveBlur";
 import { SessionStatusLine } from "../../components/SessionStatusLine";
 import { releaseSessionTab } from "../../components/sessionTeardown";
-import { isHostElement, viewOf } from "../../lib/domView";
+import { hostElementFromTarget, viewOf } from "../../lib/domView";
 import { SubagentReadOnlyContent } from "../../components/SubagentReadOnlyContent";
 import { composerCardClass } from "../../components/composerCard";
 import { UserMessageRail } from "../../components/transcript/UserMessageRail";
@@ -302,10 +302,9 @@ export function AgentChatShell({
     const root = shellRef.current;
     const doc = root?.ownerDocument ?? document;
     const dismissOutside = (event: MouseEvent) => {
-      const target = event.target;
+      const target = hostElementFromTarget(event.target, root);
       if (
-        isHostElement(target, root) &&
-        target.closest(
+        target?.closest(
           "[data-mini-chat-input], [data-user-message-bubble], [data-dropdown-panel]",
         )
       ) {

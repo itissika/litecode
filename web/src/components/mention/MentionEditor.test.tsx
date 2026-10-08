@@ -62,6 +62,58 @@ function press(key: string) {
   field.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
 }
 
+describe("MentionEditor popout document", () => {
+  it("keeps the @ menu in the editor document after the panel moves", async () => {
+    const onChange = vi.fn();
+    const handle = editorHandle();
+    render(
+      <MentionEditor
+        label="正文"
+        value=""
+        candidates={["alpha"]}
+        onChange={onChange}
+        handle={handle}
+      />,
+    );
+    await waitFor(() => expect(handle.current).toBeTruthy());
+    const field = document.querySelector<HTMLElement & { litecodeEditor?: { view: { root: Node } } }>(
+      '[aria-label="正文"]',
+    );
+    const editor = field?.litecodeEditor;
+    const shell = field?.parentElement;
+    const home = shell?.parentElement;
+    if (!editor || !shell || !home) throw new Error("editor missing");
+    expect(editor.view.root).toBe(document);
+
+    const frame = document.createElement("iframe");
+    document.body.appendChild(frame);
+    const pop = frame.contentDocument;
+    if (!pop) throw new Error("popout document missing");
+    try {
+      pop.body.appendChild(shell);
+      await Promise.resolve();
+
+      expect(editor.view.root).toBe(pop);
+      handle.current?.insertText("@al");
+      await waitFor(() => {
+        expect(pop.body.querySelector(".knowledge-mention-menu")?.textContent).toContain("alpha");
+      });
+      expect(document.querySelector(".knowledge-mention-menu")).toBeNull();
+      const option = pop.body.querySelector<HTMLElement>('[role="option"]');
+      if (!option) throw new Error("suggestion option missing");
+      fireEvent.click(option);
+      await waitFor(() => {
+        const written = onChange.mock.calls.map((call) => String(call[0])).join("\n");
+        expect(written).toContain("alpha");
+      });
+    } finally {
+      // React unmount removes the shell from the document that rendered it.
+      if (shell.ownerDocument !== document) home.appendChild(shell);
+      frame.remove();
+    }
+  });
+});
+
 describe("MentionEditor symbol mode", () => {
   it("locks the highlighted file and inserts a symbol shortcode without lines", async () => {
     const onChange = vi.fn();

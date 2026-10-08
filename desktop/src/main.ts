@@ -23,6 +23,7 @@ import {
   syncDevUpstream,
 } from "./dev-ui";
 import { readWorkspaceLayout, writeWorkspaceLayout } from "./layout-file";
+import { popoutBoundsFromFeatures } from "./popout-bounds";
 import { writeHubPage } from "./hub";
 import {
   assertIpcSurface,
@@ -224,10 +225,16 @@ async function createWindow(content: BootContent): Promise<BrowserWindow> {
   win.webContents.on("preload-error", (_event, preloadPath, error) => {
     console.error(`[litecode] preload failed (${preloadPath}):`, error);
   });
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url, features }) => {
     const decision = resolveWindowOpen(url, trustContext);
     if (decision === "popout") {
-      return { action: "allow", overrideBrowserWindowOptions: popoutWindowOptions() };
+      // overrideBrowserWindowOptions replaces the window.open feature string,
+      // which is where dockview put the saved screen rectangle.
+      const bounds = popoutBoundsFromFeatures(features);
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: { ...popoutWindowOptions(), ...(bounds ?? {}) },
+      };
     }
     if (decision === "external") void shell.openExternal(url);
     return { action: "deny" };
@@ -235,7 +242,19 @@ async function createWindow(content: BootContent): Promise<BrowserWindow> {
   win.webContents.on("did-create-window", (child, details) => {
     lockPopoutWindow(child, details.url);
     const dock = workbenchPopoutDockId(details.url, trustContext);
-    if (dock) rememberPopout(dock, child);
+    if (!dock) return;
+    rememberPopout(dock, child);
+    const { x, y, width, height } = details.options;
+    if (
+      typeof x === "number" &&
+      typeof y === "number" &&
+      typeof width === "number" &&
+      typeof height === "number" &&
+      width >= 1 &&
+      height >= 1
+    ) {
+      child.setBounds({ x, y, width, height });
+    }
   });
   const guardNavigation = (event: Electron.Event, url: string) => {
     const context = trustContext;

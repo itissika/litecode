@@ -3,7 +3,13 @@ import type { DockviewApi, DockviewWillDropEvent } from "dockview-react";
 
 import { clearFoldCardOpen } from "../../components/foldCardState";
 import { recoverDefaultLayout } from "../config/layout";
-import { foldPopoutsIntoGrid } from "../config/foldPopoutLayout";
+import {
+  applyStagedPopoutBounds,
+  preparePopoutRestore,
+  stagePopoutBounds,
+} from "../config/popoutRestore";
+import { dockIdFromPopoutUrl } from "../config/popoutUrl";
+import { dockIdFromLocation } from "../popout/location";
 import { noteLayoutSettled } from "../../lib/centreChat";
 import { watchGridGroups } from "../../lib/knowledge/panel";
 import { buildTabContextMenuItems } from "../config/tabContextMenu";
@@ -32,6 +38,8 @@ function sessionIdFromPanel(
   if (!prefix || !panelId.startsWith(prefix)) return null;
   return panelId.slice(prefix.length) || null;
 }
+
+const POPOUT_RESTORE_MS = 5000;
 
 const LAYOUT_STORAGE_KEY = "litecode-dockview-layout-v2";
 // Bump when the default layout shape changes so incompatible persisted
@@ -132,7 +140,14 @@ export function useDockviewConfig() {
           recoverDefaultLayout(api);
           noteLayoutSettled(api);
         } else {
-          const data = foldPopoutsIntoGrid(parsed.layout);
+          const prepared = preparePopoutRestore(parsed.layout, {
+            x: window.screenX,
+            y: window.screenY,
+          });
+          const data = prepared.layout;
+          stagePopoutBounds(prepared.bounds);
+          const restoredGroups = (data as { popoutGroups?: unknown }).popoutGroups;
+          const pendingPopouts = Array.isArray(restoredGroups) ? restoredGroups.length : 0;
           isRestoring = true;
           const finishRestore = () => {
             recoverDefaultLayout(api);
@@ -140,9 +155,42 @@ export function useDockviewConfig() {
             // Layout JSON only puts the tabs back.
             noteLayoutSettled(api);
           };
+          // Popout windows open after fromJSON. Hold saves until they exist,
+          // otherwise the next snapshot would record an empty popout list.
+          // The previous file already has their screen rectangles; do not
+          // write a new snapshot here. moveTo updates screen coordinates
+          // asynchronously, and an early save would replace the good ones.
+          let waiting = pendingPopouts;
+          const popoutWatch: { dispose(): void }[] = [];
+          let popoutTimer: ReturnType<typeof setTimeout> | undefined;
+          const releasePopouts = () => {
+            if (popoutTimer !== undefined) clearTimeout(popoutTimer);
+            popoutTimer = undefined;
+            for (const sub of popoutWatch.splice(0)) sub.dispose();
+            stagePopoutBounds(new Map());
+            if (!isRestoring) return;
+            isRestoring = false;
+          };
+          const markSettled = () => {
+            waiting -= 1;
+            if (waiting <= 0) releasePopouts();
+          };
+          if (waiting > 0) {
+            popoutWatch.push(
+              api.onDidAddPopoutGroup((popout) => {
+                const dock =
+                  dockIdFromLocation(popout.group.api.location) ??
+                  dockIdFromPopoutUrl(popout.window.location.href);
+                if (applyStagedPopoutBounds(popout.window, dock)) markSettled();
+              }),
+              api.onDidOpenPopoutWindowFail(() => {
+                markSettled();
+              }),
+            );
+            popoutTimer = setTimeout(releasePopouts, POPOUT_RESTORE_MS);
+          }
           let safetyTimer: ReturnType<typeof setTimeout> | undefined;
           const disposable = api.onDidLayoutFromJSON(() => {
-            isRestoring = false;
             if (safetyTimer !== undefined) clearTimeout(safetyTimer);
             disposable.dispose();
             try {
@@ -151,15 +199,20 @@ export function useDockviewConfig() {
               recoverDefaultLayout(api);
               noteLayoutSettled(api);
             }
+            if (waiting <= 0) isRestoring = false;
           });
           api.fromJSON(data);
           // Safety net: reset after 2s if onDidLayoutFromJSON never fires.
           safetyTimer = setTimeout(() => {
-            if (isRestoring) {
-              isRestoring = false;
-              disposable.dispose();
+            if (!isRestoring) return;
+            disposable.dispose();
+            try {
               finishRestore();
+            } catch {
+              recoverDefaultLayout(api);
+              noteLayoutSettled(api);
             }
+            if (waiting <= 0) isRestoring = false;
           }, 2000);
         }
       } catch {
@@ -180,11 +233,10 @@ export function useDockviewConfig() {
       if (isRestoring) return;
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
-        const data = foldPopoutsIntoGrid(api.toJSON());
         store.save(
           JSON.stringify({
             schemaVersion: LAYOUT_SCHEMA_VERSION,
-            layout: data,
+            layout: api.toJSON(),
           }),
         );
       }, 500);

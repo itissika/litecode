@@ -15,6 +15,7 @@ type DomWindow = Window & {
   ResizeObserver?: typeof ResizeObserver;
   Element: typeof Element;
   HTMLElement: typeof HTMLElement;
+  Node: typeof Node;
 };
 
 function domWindow(node: Node | null | undefined): DomWindow {
@@ -28,21 +29,49 @@ export function hostResizeObserver(
   return domWindow(node).ResizeObserver ?? null;
 }
 
-/** `instanceof Element` against the window that contains `scope`, not the opener. */
+/**
+ * A node ProseMirror builds with the opener `document` and then appends into
+ * a popout keeps the opener's prototype. `instanceof` the popout's Element
+ * is false even though `ownerDocument` is the popout. Hit-testing has to use
+ * the document, or a click on that text looks like an outside click.
+ */
+function hostNode(target: EventTarget | null, scope: Node | null | undefined): Node | null {
+  if (!target || typeof target !== "object") return null;
+  const node = target as Node;
+  if (node.nodeType !== 1 && node.nodeType !== 3) return null;
+  const doc = scope?.ownerDocument ?? document;
+  return node.ownerDocument === doc ? node : null;
+}
+
+/** Element in `scope`'s document. Moved-in nodes are included. */
 export function isHostElement(
   target: EventTarget | null,
   scope: Node | null | undefined,
 ): target is Element {
-  return !!target && target instanceof domWindow(scope).Element;
+  const node = hostNode(target, scope);
+  return node?.nodeType === 1;
 }
 
-/** HTMLElement from `scope`'s window, or null. */
+/**
+ * Element under a hit in `scope`'s document.
+ * A caret click's target is often the text node itself.
+ */
+export function hostElementFromTarget(
+  target: EventTarget | null,
+  scope: Node | null | undefined,
+): Element | null {
+  const node = hostNode(target, scope);
+  if (!node) return null;
+  return node.nodeType === 1 ? (node as Element) : node.parentElement;
+}
+
+/** HTMLElement from `scope`'s document, or null. */
 export function hostHtmlElement(
   node: Element | null,
   scope: Node | null | undefined,
 ): HTMLElement | null {
-  if (!node) return null;
-  return node instanceof domWindow(scope).HTMLElement ? node : null;
+  if (!node || !isHostElement(node, scope)) return null;
+  return node as HTMLElement;
 }
 
 /** Resize cursor on the document that owns `node`, not the opener. */
