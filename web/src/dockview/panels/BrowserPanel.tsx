@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowLeft, ArrowRight } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowLeft, ArrowRight, X } from "@phosphor-icons/react";
 import type { IDockviewPanelProps } from "dockview-react";
 
 import {
@@ -46,6 +46,7 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [hasPage, setHasPage] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const placeRef = useRef(MAIN_BROWSER_PLACE);
@@ -63,6 +64,7 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
     setError(null);
     const shown = displayBrowserUrl(state.url);
     latestUrlRef.current = shown;
+    setHasPage(shown.length > 0);
     if (!focusedRef.current) setAddress(shown);
     const panel = apiRef.current;
     const title = state.title.trim() || "Browser";
@@ -244,6 +246,16 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
     });
   };
 
+  const pageAction = (
+    run: ((id: string) => Promise<BrowserPanelState>) | undefined,
+    failure: string,
+  ) => {
+    if (!run) return;
+    void run(api.id).then(applyState).catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : failure);
+    });
+  };
+
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
     const url = normalizeBrowserUrl(address);
@@ -302,6 +314,20 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
             setAddress(latestUrlRef.current);
           }}
         />
+        <button
+          type="button"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-(--_dk-text-muted) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) disabled:pointer-events-none disabled:opacity-40"
+          aria-label={loading ? "Stop" : "Reload"}
+          title={loading ? "Stop" : "Reload"}
+          disabled={!loading && !hasPage}
+          onClick={() =>
+            loading
+              ? pageAction(window.litecode?.browserStop, "Could not stop the page")
+              : pageAction(window.litecode?.browserReload, "Could not reload the page")
+          }
+        >
+          {loading ? <X size={14} /> : <ArrowClockwise size={14} />}
+        </button>
       </form>
       {error ? (
         <p className="shrink-0 px-2 py-1 text-xs text-(--_dk-amber-500)">{error}</p>

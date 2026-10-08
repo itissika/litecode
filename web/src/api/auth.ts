@@ -140,6 +140,8 @@ export interface LitecodeDesktopBridge {
   browserNavigate?: (input: { id: string; url: string }) => Promise<BrowserPanelState>;
   browserGoBack?: (id: string) => Promise<BrowserPanelState>;
   browserGoForward?: (id: string) => Promise<BrowserPanelState>;
+  browserReload?: (id: string) => Promise<BrowserPanelState>;
+  browserStop?: (id: string) => Promise<BrowserPanelState>;
   browserSetBounds?: (input: {
     id: string;
     bounds: BrowserBounds;

@@ -1085,6 +1085,18 @@ function registerBrowserIpc(): void {
     return host.goForward(typeof id === "string" ? id : "");
   });
 
+  handleTrusted("litecode:browser-reload", "workbench", (_event, id: unknown) => {
+    const host = ensureBrowserHost();
+    if (!host) throw new Error("Browser is unavailable");
+    return host.reload(typeof id === "string" ? id : "");
+  });
+
+  handleTrusted("litecode:browser-stop", "workbench", (_event, id: unknown) => {
+    const host = ensureBrowserHost();
+    if (!host) throw new Error("Browser is unavailable");
+    return host.stop(typeof id === "string" ? id : "");
+  });
+
   onTrusted("litecode:browser-set-bounds", "workbench", (_event, payload: unknown) => {
     const body = asRecord(payload);
     browserHost?.setBounds(body.id, body.bounds, body.place);

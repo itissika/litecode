@@ -53,6 +53,12 @@ function wrapPage(wc: WebContents): BrowserPage {
         wc.navigationHistory.goForward();
       }
     },
+    reload: () => {
+      if (!wc.isDestroyed()) wc.reload();
+    },
+    stop: () => {
+      if (!wc.isDestroyed()) wc.stop();
+    },
     canGoBack: () => !wc.isDestroyed() && wc.navigationHistory.canGoBack(),
     canGoForward: () => !wc.isDestroyed() && wc.navigationHistory.canGoForward(),
     close: () => {

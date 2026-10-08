@@ -19,6 +19,8 @@ class FakePage implements BrowserPage {
   destroyed = false;
   loads: string[] = [];
   closed = 0;
+  reloads = 0;
+  stops = 0;
   private navigateListeners: Array<() => void> = [];
   private loadingListeners: Array<(loading: boolean) => void> = [];
   private openHandler: ((url: string) => void) | null = null;
@@ -48,6 +50,14 @@ class FakePage implements BrowserPage {
   goForward(): void {
     this.forward = false;
     this.back = true;
+  }
+
+  reload(): void {
+    this.reloads += 1;
+  }
+
+  stop(): void {
+    this.stops += 1;
   }
 
   canGoBack(): boolean {
@@ -230,6 +240,19 @@ describe("BrowserHost", () => {
     assert.equal(view.webContents.forward, true);
     host.goForward(PANEL_ID);
     assert.equal(view.webContents.back, true);
+  });
+
+  it("reloads in place and stops the pending load", () => {
+    const view = new FakeView();
+    const host = hostWith(view);
+    host.create(PANEL_ID, "#0a0a0a");
+    const reloading = host.reload(PANEL_ID);
+    assert.equal(view.webContents.reloads, 1);
+    assert.deepEqual(view.webContents.loads, []);
+    assert.equal(reloading.loading, true);
+    const stopped = host.stop(PANEL_ID);
+    assert.equal(view.webContents.stops, 1);
+    assert.equal(stopped.loading, false);
   });
 
   it("applies a rectangle only for the window the view is hanging on", () => {

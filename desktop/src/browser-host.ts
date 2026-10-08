@@ -37,6 +37,8 @@ export interface BrowserPage {
   getTitle(): string;
   goBack(): void;
   goForward(): void;
+  reload(): void;
+  stop(): void;
   canGoBack(): boolean;
   canGoForward(): boolean;
   close(): void;
@@ -160,6 +162,26 @@ export class BrowserHost {
 
   goForward(id: string): BrowserState {
     return this.go(id, "forward");
+  }
+
+  /** Reload in place. The address bar and history stay where they are. */
+  reload(id: string): BrowserState {
+    const panelId = this.requireId(id);
+    const entry = this.requirePage(panelId);
+    entry.loading = true;
+    entry.view.webContents.reload();
+    this.emit(panelId, entry);
+    return this.snapshot(panelId, entry);
+  }
+
+  /** Drop the pending load; whatever already rendered stays on screen. */
+  stop(id: string): BrowserState {
+    const panelId = this.requireId(id);
+    const entry = this.requirePage(panelId);
+    entry.view.webContents.stop();
+    entry.loading = false;
+    this.emit(panelId, entry);
+    return this.snapshot(panelId, entry);
   }
 
   setBounds(id: unknown, bounds: unknown, place?: unknown): void {

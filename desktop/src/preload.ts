@@ -205,6 +205,12 @@ contextBridge.exposeInMainWorld("litecode", {
   browserGoForward: async (id: string): Promise<BrowserState> => {
     return (await ipcRenderer.invoke("litecode:browser-go-forward", id)) as BrowserState;
   },
+  browserReload: async (id: string): Promise<BrowserState> => {
+    return (await ipcRenderer.invoke("litecode:browser-reload", id)) as BrowserState;
+  },
+  browserStop: async (id: string): Promise<BrowserState> => {
+    return (await ipcRenderer.invoke("litecode:browser-stop", id)) as BrowserState;
+  },
   browserSetBounds: (input: {
     id: string;
     bounds: BrowserBounds;
