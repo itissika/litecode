@@ -1,7 +1,7 @@
-import type { DockviewApi, DockviewGroupPanel, IDockviewPanel } from "dockview-react";
+import type { DockviewApi, IDockviewPanel } from "dockview-react";
 
-import { popoutPageUrl } from "../config/popoutUrl";
-import { dockPanelToMain } from "../popout/dockHome";
+import { joinPopoutWindow, movePanelToMain, popoutPanel } from "../workbench/commands";
+import { bindDockview } from "../workbench/host";
 import {
   MAIN_WINDOW_KEY,
   decideRelease,
@@ -49,14 +49,6 @@ function screenWindows(api: DockviewApi): { windows: ScreenWindow[]; byKey: Map<
   return { windows, byKey };
 }
 
-function groupInWindow(api: DockviewApi, win: Window): DockviewGroupPanel | undefined {
-  const groups = api.groups.filter((group) => {
-    const location = group.api.location;
-    return location.type === "popout" && location.getWindow() === win;
-  });
-  return groups.find((group) => group.api.isVisible) ?? groups[0];
-}
-
 function hostView(event: Event): Window {
   const view = (event as Event & { view?: Window | null }).view;
   if (view && !view.closed) return view;
@@ -100,13 +92,18 @@ function aimsAtMainCenter(point: { screenX: number; screenY: number }): boolean 
  * Opening the window from `dragend` itself leaves the empty popout page up.
  */
 export function bindTabDrag(api: DockviewApi): void {
+  bindDockview(api);
   api.onWillShowOverlay((event) => {
-    const source = dragSourceLocation(event.getData(), api);
-    if (rejectsDockTarget(source, event.group?.api.location.type)) event.preventDefault();
+    const data = event.getData();
+    const sourcePanel = data?.panelId ? api.getPanel(data.panelId) : undefined;
+    const source = dragSourceLocation(data, api);
+    if (rejectsDockTarget(source, event.group?.api.location.type, sourcePanel?.api.component)) {
+      event.preventDefault();
+    }
   });
 
   const arm = (nativeEvent: Event, panel: IDockviewPanel) => {
-    if (tabClass(panel.api.location?.type) !== "center") return;
+    if (tabClass(panel.api.location?.type, panel.api.component) !== "center") return;
     const view = hostView(nativeEvent);
 
     let placed = false;
@@ -138,24 +135,26 @@ export function bindTabDrag(api: DockviewApi): void {
           if (!point || placed) return;
           const { windows, byKey } = screenWindows(api);
           const key = windowAtPoint(point, windows);
-          const decision = decideRelease(tabClass(panel.api.location?.type), key);
+          const decision = decideRelease(
+            tabClass(panel.api.location?.type, panel.api.component),
+            key,
+          );
           if (decision === "popout") {
-            void api.addPopoutGroup(panel, { popoutUrl: popoutPageUrl() }).catch(() => {});
+            popoutPanel(panel.id);
             return;
           }
           if (decision === "stay") {
             // An empty center has no drop target, so Dockview never accepts
             // the drop. A release on that center still comes home.
             if (panel.api.getWindow() !== window && aimsAtMainCenter(point)) {
-              dockPanelToMain(api, panel);
+              movePanelToMain(panel.id);
             }
             return;
           }
           if (decision !== "join" || !key) return;
           const target = byKey.get(key);
           if (!target || panel.api.getWindow() === target) return;
-          const group = groupInWindow(api, target);
-          if (group) panel.api.moveTo({ group });
+          joinPopoutWindow(panel.id, key);
         }, 0);
       }, 0);
     };

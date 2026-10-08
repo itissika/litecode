@@ -1,5 +1,8 @@
-import { getDockviewApi, useConnectionStore } from "../stores/connectionStore";
-import { isMainGrid } from "../dockview/popout/location";
+import { useConnectionStore } from "../stores/connectionStore";
+import { clearFoldCardOpen } from "../components/foldCardState";
+import { hasPanel } from "../dockview/workbench/queries";
+import { onPanelRemoved } from "../dockview/workbench/events";
+import { openPanel } from "../dockview/workbench/commands";
 
 export interface PendingSeqReveal {
   sessionId: string;
@@ -43,7 +46,28 @@ export function clearPendingReveal(expectedGen?: number): void {
   emit();
 }
 
-type DockviewApi = NonNullable<ReturnType<typeof getDockviewApi>>;
+function sessionIdFromPanel(
+  component: string | undefined,
+  panelId: string,
+): string | null {
+  const prefix =
+    component === "agent"
+      ? "agent-"
+      : component === "subagent"
+        ? "subagent-"
+        : null;
+  if (!prefix || !panelId.startsWith(prefix)) return null;
+  return panelId.slice(prefix.length) || null;
+}
+
+onPanelRemoved((event) => {
+  const sid = sessionIdFromPanel(event.component, event.id);
+  if (!sid) return;
+  clearFoldCardOpen(sid);
+  if (event.component === "agent") {
+    useConnectionStore.getState().unsubscribeSession(sid);
+  }
+});
 
 /** Tab/panel title for a session panel with no preview to summarize yet. A
  *  writable root reads "NEW" — a freshly created session has no message to
@@ -57,37 +81,11 @@ export function fallbackSessionTitle(
   return isRoot ? "NEW" : sessionId.slice(0, 8);
 }
 
-/** Where a newly-added session panel should land: the first grid group, or a
- *  fresh group when the grid is empty. Shared by both panel flavours so the
- *  positioning logic is not copy-pasted. */
-export function gridPosition(api: DockviewApi): { referenceGroup: string } {
-  // A popped-out group leaves a hidden grid group behind. Landing a new
-  // panel there keeps it invisible, so only a visible center group counts.
-  const gridGroups = api.groups.filter(
-    (g) => isMainGrid(g.api.location.type) && g.api.isVisible,
-  );
-  if (gridGroups.length === 0) {
-    const group = api.addGroup();
-    return { referenceGroup: group.id };
-  }
-  return { referenceGroup: gridGroups[0]!.api.id };
-}
-
-/** Focus an already-open panel and (re)arm its subscription. Returns whether a
- *  panel was found. */
-function activateExisting(
-  api: DockviewApi,
-  panelId: string,
-  sessionId: string,
-): boolean {
-  const existing = api.getPanel(panelId);
-  if (!existing) return false;
-  existing.api.setActive();
+function subscribe(sessionId: string): void {
   void useConnectionStore
     .getState()
     .ensureSubscribe(sessionId)
     .catch(() => {});
-  return true;
 }
 
 /** Open or focus the writable agent panel for `sessionId`. Optional seq is revealed after load.
@@ -101,17 +99,14 @@ function activateExisting(
  * NEWLY added panel; an already-open panel is activated without upgrading it. */
 export function openSessionPanel(sessionId: string, revealSeq?: number): void {
   if (revealSeq != null) requestSeqReveal(sessionId, revealSeq);
-  const api = getDockviewApi();
-  if (!api) return;
-  if (activateExisting(api, `agent-${sessionId}`, sessionId)) return;
-  api.addPanel({
+  openPanel({
     id: `agent-${sessionId}`,
     component: "agent",
     title: fallbackSessionTitle(sessionId, true),
-    params: { sessionId, sessionKind: "root" },
     tabComponent: "agent",
-    position: gridPosition(api),
+    params: { sessionId, sessionKind: "root" },
   });
+  subscribe(sessionId);
 }
 
 /**
@@ -120,24 +115,30 @@ export function openSessionPanel(sessionId: string, revealSeq?: number): void {
  *
  * `ensureSubscribe` is NOT refcounted, so a child must never be hosted by two
  * panels at once. A legacy/restored writable `agent-<id>` panel may already own
- * this child (old layouts, or a Search result opened before this phase); we
- * activate that single host instead of adding a second one — `AgentPanel`
- * fail-closes a known child to the read-only transcript.
+ * this child (old layouts, or a Search result opened before this phase); the
+ * workbench activates that single host instead of adding a second one —
+ * `AgentPanel` fail-closes a known child to the read-only transcript.
  */
 export function openSubagentPanel(childId: string, revealSeq?: number): void {
   if (revealSeq != null) requestSeqReveal(childId, revealSeq);
-  const api = getDockviewApi();
-  if (!api) return;
-  if (activateExisting(api, `subagent-${childId}`, childId)) return;
-  if (activateExisting(api, `agent-${childId}`, childId)) return;
-  api.addPanel({
-    id: `subagent-${childId}`,
-    component: "subagent",
-    title: fallbackSessionTitle(childId, false),
-    params: { sessionId: childId },
-    tabComponent: "agent",
-    position: gridPosition(api),
-  });
+  if (hasPanel(`agent-${childId}`)) {
+    openPanel({
+      id: `agent-${childId}`,
+      component: "agent",
+      title: fallbackSessionTitle(childId, false),
+      tabComponent: "agent",
+      params: { sessionId: childId },
+    });
+  } else {
+    openPanel({
+      id: `subagent-${childId}`,
+      component: "subagent",
+      title: fallbackSessionTitle(childId, false),
+      tabComponent: "agent",
+      params: { sessionId: childId },
+    });
+  }
+  subscribe(childId);
 }
 
 /** Minimal session metadata the classifier needs. */

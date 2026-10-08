@@ -4,7 +4,7 @@ import { DockviewReact } from "dockview-react";
 import { panelComponents, tabComponents } from "./config/registry";
 import { keyboardKeymap } from "./config/keymap";
 import { useDockviewConfig } from "./hooks/useDockviewConfig";
-import { ensureSearchPanel } from "./config/layout";
+import { revealEdgePanel } from "./workbench/edges";
 import { TitleBar } from "./shell/TitleBar";
 import { StatusBar } from "../components/StatusBar";
 import { WelcomeWatermark } from "./watermark/WelcomeWatermark";
@@ -79,10 +79,7 @@ export function AppShellDockview() {
         (e.key === "f" || e.key === "F")
       ) {
         e.preventDefault();
-        const api = useEditorStore.getState().dockviewApi;
-        if (!api) return;
-        ensureSearchPanel(api);
-        api.getPanel("workspace-search")?.api.setActive();
+        revealEdgePanel("search");
         window.dispatchEvent(new Event("litecode:focus-workspace-search"));
       } else if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
         // Global "save active editor" — mirrors VS Code's workbench-level

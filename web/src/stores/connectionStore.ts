@@ -1,5 +1,4 @@
 import { create, type StoreApi, type UseBoundStore } from "zustand";
-import type { DockviewApi } from "dockview-react";
 
 import { AgentWsClient, type WireEnvelope } from "../api/agentWs";
 import { getAuthToken } from "../api/auth";
@@ -31,17 +30,6 @@ import { useBashStore } from "./bashStore";
 import { useToastStore } from "./toastStore";
 import { useEngineStore } from "./engineStore";
 import { useWorkspaceChangeStore } from "./workspaceChangeStore";
-
-/** Module-level dockview API reference, set by useDockviewConfig. */
-let _dockviewApi: DockviewApi | null = null;
-
-export function setDockviewApi(api: DockviewApi | null): void {
-  _dockviewApi = api;
-}
-
-export function getDockviewApi(): DockviewApi | null {
-  return _dockviewApi;
-}
 
 interface StoreLike {
   getState: () => any;

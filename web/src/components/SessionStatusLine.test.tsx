@@ -14,7 +14,8 @@ vi.mock("../api/workspace", () => ({ readFile: vi.fn() }));
 import type { BashJob, HumanRow, SessionInfo } from "../api/types";
 import { readFile } from "../api/workspace";
 import { useBashStore } from "../stores/bashStore";
-import { setDockviewApi, useConnectionStore } from "../stores/connectionStore";
+import { bindDockview } from "../dockview/workbench/host";
+import { useConnectionStore } from "../stores/connectionStore";
 import { useEditorStore } from "../stores/editorStore";
 import {
   emptySlice as emptyMessageSlice,
@@ -1327,7 +1328,7 @@ describe("SessionStatusLine — subagent roster panel (dock)", () => {
   });
 
   afterEach(() => {
-    setDockviewApi(null);
+    bindDockview(null);
     useConnectionStore.setState({ state: "disconnected" });
     useMessageStore.getState().reset(PARENT);
     useMessageStore.getState().reset(CHILD_A);
@@ -1382,7 +1383,7 @@ describe("SessionStatusLine — subagent roster panel (dock)", () => {
   it("opens the child in its own read-only dock panel on row click (no embedded transcript)", () => {
     bind("call_a", CHILD_A);
     const addPanel = vi.fn();
-    setDockviewApi({
+    bindDockview({
       getPanel: () => undefined,
       addPanel,
       addGroup: vi.fn(() => ({ id: "g-new" })),

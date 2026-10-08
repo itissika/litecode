@@ -20,14 +20,21 @@ interface Harness {
   moves: DockviewGroupPanel[];
 }
 
+const draggedPanels = new Map<string, IDockviewPanel>();
+
 function panel(type: string, getWindow: () => Window = () => window): IDockviewPanel {
-  return {
+  const item = {
+    id: `panel-${draggedPanels.size}`,
     api: {
+      component: type === "edge" ? "terminal" : "editor",
       location: { type },
       getWindow,
       moveTo: () => {},
+      setActive: () => {},
     },
   } as unknown as IDockviewPanel;
+  draggedPanels.set(item.id, item);
+  return item;
 }
 
 function harness(options?: {
@@ -62,7 +69,10 @@ function harness(options?: {
       onDrop = cb;
       return { dispose() {} };
     },
-    getPanel: () => ({ api: { location: { type: sourceType } } }),
+    getPanel: (id: string) =>
+      draggedPanels.get(id) ?? {
+        api: { location: { type: sourceType }, component: "editor" },
+      },
     getGroup: () => ({ api: { location: { type: sourceType } } }),
     getPopouts: () =>
       options?.popoutWindow && options.popoutGroup

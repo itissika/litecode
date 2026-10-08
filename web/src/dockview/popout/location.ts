@@ -1,24 +1,10 @@
 import { dockIdFromPopoutUrl } from "../config/popoutUrl";
 
 /**
- * Dockview's own location mark.
- * `grid` is the main window's center. `popout` is that same center living in
- * another window. `edge` is a side rail. Drag treats grid and popout as one
- * dock; new panels still open on the main grid.
+ * Electron window id carried in the popout URL dockview stores on the group.
+ * Whether a group is the main center, a popout, or an edge rail is a group
+ * role. Callers that need that answer use the panel manager.
  */
-export function isMainGrid(type: string | undefined): boolean {
-  return type === "grid";
-}
-
-export function isPopout(type: string | undefined): boolean {
-  return type === "popout";
-}
-
-export function isCenterDock(type: string | undefined): boolean {
-  return type === "grid" || type === "popout";
-}
-
-/** Electron window id carried in the popout URL dockview stores on the group. */
 export function dockIdFromLocation(location: {
   type: string;
   popoutUrl?: string;

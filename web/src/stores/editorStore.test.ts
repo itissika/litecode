@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DockviewApi } from "dockview-react";
 
+import { bindDockview } from "../dockview/workbench/host";
+
 import { WorkspaceRequestError } from "../lib/workspaceError";
 import { useEditorStore } from "./editorStore";
 import { readFile, writeFile } from "../api/workspace";
@@ -388,7 +390,7 @@ describe("editor panel placement", () => {
 
   it("opens a file beside the agent group instead of inside it", async () => {
     const api = fakeDockview([gridGroup("agent", ["agent"])], "agent");
-    useEditorStore.getState().setDockviewApi(api);
+    bindDockview(api);
     await useEditorStore.getState().openFile("src/a.ts");
     expect(api.addPanel).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -396,7 +398,7 @@ describe("editor panel placement", () => {
         position: { referenceGroup: "agent", direction: "right" },
       }),
     );
-    useEditorStore.getState().setDockviewApi(null);
+    bindDockview(null);
   });
 
   it("reuses an editor group that is not the agent group", async () => {
@@ -404,14 +406,14 @@ describe("editor panel placement", () => {
       [gridGroup("agent", ["agent"]), gridGroup("editors", ["editor"])],
       "agent",
     );
-    useEditorStore.getState().setDockviewApi(api);
+    bindDockview(api);
     await useEditorStore.getState().openFile("src/b.ts");
     expect(api.addPanel).toHaveBeenCalledWith(
       expect.objectContaining({
         position: { referenceGroup: "editors" },
       }),
     );
-    useEditorStore.getState().setDockviewApi(null);
+    bindDockview(null);
   });
 });
 

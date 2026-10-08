@@ -1,7 +1,6 @@
-import type { DockviewApi, IDockviewGroupPanel } from "dockview-react";
-
-import { editorPanelPosition } from "../stores/editorStore";
-import { isMainGrid } from "../dockview/popout/location";
+import { onPanelRemoved } from "../dockview/workbench/events";
+import { openPanel } from "../dockview/workbench/commands";
+import type { GroupRole } from "../dockview/workbench/model";
 
 export type BrowserBounds = {
   x: number;
@@ -50,12 +49,12 @@ export function sameBrowserUrl(a: string, b: string): boolean {
   }
 }
 
-/** The + lives on grid tab bars only. Edge rails stay as they are. */
+/** The + lives on the main center tab bar only. Popouts and edge rails stay as they are. */
 export function showBrowserAddButton(
-  locationType: string | undefined,
+  role: GroupRole | null,
   hasBridge: boolean,
 ): boolean {
-  return hasBridge && isMainGrid(locationType);
+  return hasBridge && role === "main-center";
 }
 
 export const MAIN_BROWSER_PLACE = "main";
@@ -74,32 +73,22 @@ export function browserBoundsPlace(
   return null;
 }
 
-function isAgentGroup(group: IDockviewGroupPanel): boolean {
-  return group.panels.some(
-    (panel) =>
-      panel.api.component === "agent" || panel.api.component === "subagent",
-  );
-}
-
 /**
- * Add a browser tab. A normal editor group receives it directly. An agent
- * group keeps its own strip, and the page opens with the editors instead.
+ * Add a browser tab on the main center.
+ * A preferred group is used only when it is a usable document group.
  */
-export function addBrowserPanel(api: DockviewApi, preferredGroupId?: string): void {
-  const id = `browser-${crypto.randomUUID()}`;
-  const preferred = preferredGroupId ? api.getGroup(preferredGroupId) : undefined;
-  const position =
-    preferred &&
-    isMainGrid(preferred.api.location.type) &&
-    !isAgentGroup(preferred)
-      ? { referenceGroup: preferred.api.id }
-      : editorPanelPosition(api);
-  api.addPanel({
-    id,
+export function addBrowserPanel(preferredGroupId?: string): void {
+  openPanel({
+    id: `browser-${crypto.randomUUID()}`,
     component: "browser",
     title: "Browser",
     tabComponent: "browser",
     params: { url: "" },
-    position,
+    preferredGroupId,
   });
 }
+
+onPanelRemoved((event) => {
+  if (event.component !== "browser") return;
+  window.litecode?.browserDestroy?.(event.id);
+});

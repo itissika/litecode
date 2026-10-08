@@ -1,13 +1,15 @@
 import type { IDockviewHeaderActionsProps } from "dockview-react";
 
 import { addBrowserPanel, showBrowserAddButton } from "../../lib/browserPanel";
+import { groupRole } from "../workbench";
+import { readGroup } from "../workbench/readGroup";
 import { getPanelIcon } from "../tabs/icons";
 
 export function BrowserHeaderAction(props: IDockviewHeaderActionsProps) {
   const BrowserIcon = getPanelIcon("browser");
   const hasBridge = typeof window.litecode?.browserCreate === "function";
-  const locationType = props.location?.type ?? props.group.api.location.type;
-  if (!showBrowserAddButton(locationType, hasBridge)) return null;
+  const role = groupRole(readGroup(props.group));
+  if (!showBrowserAddButton(role, hasBridge)) return null;
 
   return (
     <div className="flex h-full items-center px-1">
@@ -17,7 +19,7 @@ export function BrowserHeaderAction(props: IDockviewHeaderActionsProps) {
         aria-label="New Browser"
         title="New Browser"
         onPointerDown={(event) => event.stopPropagation()}
-        onClick={() => addBrowserPanel(props.containerApi, props.group.api.id)}
+        onClick={() => addBrowserPanel(props.group.api.id)}
       >
         <BrowserIcon size={14} weight="regular" aria-hidden />
       </button>

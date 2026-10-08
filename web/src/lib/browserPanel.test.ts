@@ -29,12 +29,13 @@ describe("displayBrowserUrl", () => {
 });
 
 describe("showBrowserAddButton", () => {
-  it("shows the add button only on a desktop grid group", () => {
-    expect(showBrowserAddButton("grid", true)).toBe(true);
+  it("shows the add button only on the main center", () => {
+    expect(showBrowserAddButton("main-center", true)).toBe(true);
     expect(showBrowserAddButton("edge", true)).toBe(false);
-    expect(showBrowserAddButton("grid", false)).toBe(false);
-    expect(showBrowserAddButton(undefined, true)).toBe(false);
-    expect(showBrowserAddButton("popout", true)).toBe(false);
+    expect(showBrowserAddButton("main-center", false)).toBe(false);
+    expect(showBrowserAddButton(null, true)).toBe(false);
+    expect(showBrowserAddButton("popout-center", true)).toBe(false);
+    expect(showBrowserAddButton("popout-anchor", true)).toBe(false);
   });
 });
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { layoutStore, preventCrossZoneDrop } from "./useDockviewConfig";
+import { layoutStore } from "../workbench/lifecycle";
+import { preventCrossZoneDrop } from "./useDockviewConfig";
 
 const KEY = "litecode-dockview-layout-v2";
 

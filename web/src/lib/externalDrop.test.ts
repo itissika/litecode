@@ -11,7 +11,6 @@ afterEach(() => {
   useEditorStore.setState({
     tabs: [],
     activePath: null,
-    dockviewApi: null,
     conflicts: {},
     saving: false,
   });

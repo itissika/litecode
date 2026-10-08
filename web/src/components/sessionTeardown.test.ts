@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { userTextItem } from "../api/adapter";
 import type { HumanRow } from "../api/types";
-import { setDockviewApi, useConnectionStore } from "../stores/connectionStore";
+import { bindDockview } from "../dockview/workbench/host";
+import { useConnectionStore } from "../stores/connectionStore";
 import {
   emptySlice as emptyMessageSlice,
   useMessageStore,
@@ -79,12 +80,12 @@ const unsubscribed = (sendRpc: ReturnType<typeof vi.fn>) =>
   sendRpc.mock.calls.some(([method]) => method === "session/unsubscribe");
 
 beforeEach(() => {
-  setDockviewApi(null);
+  bindDockview(null);
 });
 
 afterEach(() => {
   resetSubagentRosterHolds();
-  setDockviewApi(null);
+  bindDockview(null);
   useConnectionStore.setState({
     state: "disconnected",
     subscribedSessions: new Set(),
@@ -149,7 +150,7 @@ describe("sessionTeardown — path 3: roster card collapses with no tab (P6)", (
 describe("sessionTeardown — path 4: roster card collapses while the tab owns the session", () => {
   it("touches nothing — the tab is still rendering the child", () => {
     const sendRpc = seedSessionState();
-    setDockviewApi({
+    bindDockview({
       getPanel: (id: string) => (id === `agent-${CHILD}` ? {} : undefined),
     } as never);
 

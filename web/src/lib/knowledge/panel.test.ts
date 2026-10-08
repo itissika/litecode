@@ -1,20 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { setDockviewApi } from "../../stores/connectionStore";
+import { bindDockview } from "../../dockview/workbench/host";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
-import { followCitation, openKnowledgeGraphPanel, placeGridPanel, revealKnowledgeNode } from "./panel";
+import { followCitation, openKnowledgeGraphPanel, revealKnowledgeNode } from "./panel";
 import { useEditorStore } from "../../stores/editorStore";
 
 afterEach(() => {
-  setDockviewApi(null);
+  bindDockview(null);
 });
+
+function gridGroup(id: string) {
+  return { api: { id, location: { type: "grid" as const }, isVisible: true } };
+}
 
 describe("openKnowledgeGraphPanel", () => {
   it("activates a hidden graph panel instead of adding another", () => {
     const setActive = vi.fn();
     const addPanel = vi.fn();
-    setDockviewApi({
-      getPanel: vi.fn(() => ({ api: { setActive, isVisible: false } })),
+    bindDockview({
+      getPanel: vi.fn(() => ({ api: { setActive, isVisible: false, component: "knowledgeGraph" } })),
       addPanel,
       groups: [],
       addGroup: vi.fn(),
@@ -24,31 +28,31 @@ describe("openKnowledgeGraphPanel", () => {
     expect(addPanel).not.toHaveBeenCalled();
   });
 
-  it("leaves an already visible graph panel where it is", () => {
+  it("activates an already visible graph panel", () => {
     const setActive = vi.fn();
     const addPanel = vi.fn();
-    setDockviewApi({
-      getPanel: vi.fn(() => ({ api: { setActive, isVisible: true } })),
+    bindDockview({
+      getPanel: vi.fn(() => ({ api: { setActive, isVisible: true, component: "knowledgeGraph" } })),
       addPanel,
       groups: [],
       addGroup: vi.fn(),
     } as never);
     openKnowledgeGraphPanel();
-    expect(setActive).not.toHaveBeenCalled();
+    expect(setActive).toHaveBeenCalled();
     expect(addPanel).not.toHaveBeenCalled();
   });
 
-  it("splits a new group beside the current grid when none is open", () => {
+  it("joins the only main group when the active group is an edge rail", () => {
     const addPanel = vi.fn();
     const addGroup = vi.fn();
-    setDockviewApi({
+    bindDockview({
       getPanel: vi.fn(() => undefined),
       addPanel,
       addGroup,
       activeGroup: { api: { id: "edge", location: { type: "edge" } } },
       groups: [
         { api: { location: { type: "edge" }, id: "edge" } },
-        { api: { location: { type: "grid" }, id: "g1" } },
+        { api: { location: { type: "grid" }, id: "g1", isVisible: true } },
       ],
     } as never);
     openKnowledgeGraphPanel();
@@ -59,7 +63,7 @@ describe("openKnowledgeGraphPanel", () => {
         component: "knowledgeGraph",
         title: "Knowledge Graph",
         tabComponent: "knowledgeGraph",
-        position: { referenceGroup: "g1", direction: "right" },
+        position: { referenceGroup: "g1" },
       }),
     );
   });
@@ -67,7 +71,7 @@ describe("openKnowledgeGraphPanel", () => {
   it("starts a grid group when the center is empty", () => {
     const addPanel = vi.fn();
     const addGroup = vi.fn(() => ({ id: "fresh" }));
-    setDockviewApi({
+    bindDockview({
       getPanel: vi.fn(() => undefined),
       addPanel,
       addGroup,
@@ -89,7 +93,7 @@ describe("revealKnowledgeNode", () => {
       byId: new Map([["seq", { id: "seq" }]]),
     } as never);
     const addPanel = vi.fn();
-    setDockviewApi({
+    bindDockview({
       getPanel: vi.fn(() => undefined),
       addPanel,
       addGroup: vi.fn(() => ({ id: "fresh" })),
@@ -98,92 +102,6 @@ describe("revealKnowledgeNode", () => {
     revealKnowledgeNode("seq");
     expect(useKnowledgeStore.getState().focusedId).toBe("seq");
     expect(addPanel).toHaveBeenCalled();
-  });
-});
-
-function gridGroup(id: string) {
-  return { api: { id, location: { type: "grid" as const } } };
-}
-
-describe("placeGridPanel", () => {
-  it("splits a group only when the center has no other layout", () => {
-    const addPanel = vi.fn();
-    placeGridPanel(
-      {
-        getPanel: () => undefined,
-        addPanel,
-        onDidActiveGroupChange: () => ({ dispose() {} }),
-        activeGroup: gridGroup("src"),
-        groups: [gridGroup("src")],
-      } as never,
-      { id: "src/a.rs", component: "editor", title: "a.rs" },
-    );
-    expect(addPanel).toHaveBeenCalledWith(
-      expect.objectContaining({
-        position: { referenceGroup: "src", direction: "right" },
-      }),
-    );
-  });
-
-  it("drops a new panel into the only other grid group", () => {
-    const addPanel = vi.fn();
-    placeGridPanel(
-      {
-        getPanel: () => undefined,
-        addPanel,
-        onDidActiveGroupChange: () => ({ dispose() {} }),
-        activeGroup: gridGroup("src"),
-        groups: [gridGroup("src"), gridGroup("editors")],
-      } as never,
-      { id: "src/a.rs", component: "editor", title: "a.rs" },
-    );
-    expect(addPanel).toHaveBeenCalledWith(
-      expect.objectContaining({
-        position: { referenceGroup: "editors" },
-      }),
-    );
-  });
-
-  it("uses the most recently active other group when several exist", () => {
-    const addPanel = vi.fn();
-    const changed: { current: (group: ReturnType<typeof gridGroup>) => void } = {
-      current: () => undefined,
-    };
-    const api = {
-      getPanel: () => undefined,
-      addPanel,
-      onDidActiveGroupChange: (listener: (group: ReturnType<typeof gridGroup>) => void) => {
-        changed.current = listener;
-        return { dispose() {} };
-      },
-      activeGroup: gridGroup("src"),
-      groups: [gridGroup("src"), gridGroup("fresh"), gridGroup("stale")],
-    };
-    placeGridPanel(api as never, { id: "one", component: "editor", title: "one" });
-    expect(addPanel).toHaveBeenLastCalledWith(
-      expect.objectContaining({ position: { referenceGroup: "stale" } }),
-    );
-    changed.current(gridGroup("fresh"));
-    changed.current(gridGroup("src"));
-    placeGridPanel(api as never, { id: "two", component: "editor", title: "two" });
-    expect(addPanel).toHaveBeenLastCalledWith(
-      expect.objectContaining({ position: { referenceGroup: "fresh" } }),
-    );
-  });
-
-  it("activates a panel that is already open", () => {
-    const setActive = vi.fn();
-    const addPanel = vi.fn();
-    placeGridPanel(
-      {
-        getPanel: () => ({ api: { setActive } }),
-        addPanel,
-        groups: [],
-      } as never,
-      { id: "src/a.rs", component: "editor", title: "a.rs" },
-    );
-    expect(setActive).toHaveBeenCalled();
-    expect(addPanel).not.toHaveBeenCalled();
   });
 });
 
@@ -206,42 +124,34 @@ describe("followCitation", () => {
       byKey: new Map([["seq", { id: "seq", key: "seq" }]]),
     } as never);
     const addPanel = vi.fn();
-    setDockviewApi({
+    bindDockview({
       activePanel: { id: "knowledge-graph", api: { component: "knowledgeGraph" } },
       addPanel,
       getPanel: vi.fn(),
       groups: [gridGroup("graph")],
       activeGroup: gridGroup("graph"),
-      onDidActiveGroupChange: () => ({ dispose() {} }),
     } as never);
     followCitation({ kind: "node", key: "seq" });
     expect(addPanel).not.toHaveBeenCalled();
     expect(useKnowledgeStore.getState().focusedId).toBe("seq");
   });
 
-  it("asks the editor to open a workspace file in the other grid group", () => {
+  it("asks the editor to open a workspace file", () => {
     const openFile = vi.fn(async () => {});
     const openFileAt = vi.fn(async () => {});
     useEditorStore.setState({ openFile, openFileAt, tabs: [] } as never);
     const addPanel = vi.fn();
-    setDockviewApi({
+    bindDockview({
       activePanel: { id: "agent-1", api: { component: "agent" } },
       activeGroup: gridGroup("src"),
       groups: [gridGroup("src"), gridGroup("editors")],
       getPanel: () => undefined,
       addPanel,
-      onDidActiveGroupChange: () => ({ dispose() {} }),
     } as never);
     followCitation({ kind: "file", path: "src/a.rs", line: 4 });
-    expect(addPanel).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: "src/a.rs",
-        component: "editor",
-        position: { referenceGroup: "editors" },
-      }),
-    );
     expect(openFileAt).toHaveBeenCalledWith("src/a.rs", 4);
     expect(openFile).not.toHaveBeenCalled();
+    expect(addPanel).not.toHaveBeenCalled();
   });
 
   it("activates an external preview instead of reading the path from the workspace", () => {
@@ -252,13 +162,14 @@ describe("followCitation", () => {
     } as never);
     const setActive = vi.fn();
     const addPanel = vi.fn();
-    setDockviewApi({
+    bindDockview({
       getPanel: (id: string) =>
-        id === "external:C:/outside/a.ts" ? { api: { setActive } } : undefined,
+        id === "external:C:/outside/a.ts"
+          ? { api: { setActive, component: "editor", isVisible: true } }
+          : undefined,
       addPanel,
       groups: [gridGroup("src")],
       activeGroup: gridGroup("src"),
-      onDidActiveGroupChange: () => ({ dispose() {} }),
     } as never);
     followCitation({ kind: "file", path: "C:/outside/a.ts" });
     expect(setActive).toHaveBeenCalled();
@@ -270,12 +181,11 @@ describe("followCitation", () => {
     const openFile = vi.fn(async () => {});
     useEditorStore.setState({ openFile, tabs: [] } as never);
     const addPanel = vi.fn();
-    setDockviewApi({
+    bindDockview({
       getPanel: () => undefined,
       addPanel,
       groups: [gridGroup("src")],
       activeGroup: gridGroup("src"),
-      onDidActiveGroupChange: () => ({ dispose() {} }),
     } as never);
     followCitation({ kind: "file", path: "C:/outside/a.ts" });
     expect(addPanel).not.toHaveBeenCalled();

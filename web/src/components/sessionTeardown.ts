@@ -1,4 +1,5 @@
-import { getDockviewApi, useConnectionStore } from "../stores/connectionStore";
+import { hasPanel } from "../dockview/workbench/queries";
+import { useConnectionStore } from "../stores/connectionStore";
 import { useMessageStore } from "../stores/messageStore";
 import { useNotificationStore } from "../stores/notificationStore";
 import { useTurnStore } from "../stores/turnStore";
@@ -15,7 +16,7 @@ export interface TeardownScope {
 
 /** The session's own dock tab (`agent-<id>`) is open and owns its stream. */
 function ownedByDockTab(sessionId: string): boolean {
-  return !!getDockviewApi()?.getPanel(`agent-${sessionId}`);
+  return hasPanel(`agent-${sessionId}`);
 }
 
 /**

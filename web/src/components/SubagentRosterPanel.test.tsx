@@ -7,7 +7,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { setDockviewApi, useConnectionStore } from "../stores/connectionStore";
+import { useConnectionStore } from "../stores/connectionStore";
 import { openSubagentPanel } from "../lib/sessionPanelNav";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
@@ -87,7 +87,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  setDockviewApi(null);
   useConnectionStore.setState({ state: "disconnected" });
   useMessageStore.getState().reset(PARENT);
   useMessageStore.getState().reset(CHILD);

@@ -1,7 +1,8 @@
 import type { DockviewApi } from "dockview-react";
 
+import { bindDockview } from "../dockview/workbench/host";
+import { mainCenterHasPanel } from "../dockview/workbench/queries";
 import { useSessionStore } from "../stores/sessionStore";
-import { isMainGrid } from "../dockview/popout/location";
 
 /**
  * When the restored centre grid contains no panels at all, open a chat.
@@ -16,26 +17,22 @@ import { isMainGrid } from "../dockview/popout/location";
  * session GC.
  */
 
-let api: DockviewApi | null = null;
+let ready = false;
 let transportReady = false;
 /** Already decided for this page load, whether or not a panel was created. */
 let considered = false;
 
-/** True when the centre grid already holds any panel. Edge rails do not count. */
-function centreHasPanel(dockview: DockviewApi): boolean {
-  return dockview.panels.some((panel) => isMainGrid(panel.api.location.type));
-}
-
 function ensureCentreChat(): void {
-  if (!transportReady || !api || considered) return;
+  if (!transportReady || !ready || considered) return;
   considered = true;
-  if (centreHasPanel(api)) return;
+  if (mainCenterHasPanel()) return;
   useSessionStore.getState().newSession();
 }
 
 /** The dockview layout finished restoring (or was built from scratch). */
 export function noteLayoutSettled(next: DockviewApi): void {
-  api = next;
+  bindDockview(next);
+  ready = true;
   ensureCentreChat();
 }
 
@@ -51,7 +48,8 @@ export function noteTransportReady(): void {
 
 /** Test hook: forget the signals this page load already saw. */
 export function resetCentreChatForTests(): void {
-  api = null;
+  ready = false;
   transportReady = false;
   considered = false;
+  bindDockview(null);
 }

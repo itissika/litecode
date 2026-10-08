@@ -15,8 +15,8 @@ import type {
 import {
   useConnectionStore,
   attachSiblingStores,
-  getDockviewApi,
 } from "./connectionStore";
+import { closePanel } from "../dockview/workbench/commands";
 import { useBashStore } from "./bashStore";
 import { useToastStore } from "./toastStore";
 import { useTurnStore } from "./turnStore";
@@ -387,7 +387,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         const exists = state.sessions.some((s) => s.id === session_id);
         if (event === "deleted") {
           useConnectionStore.getState().unsubscribeSession(session_id);
-          getDockviewApi()?.getPanel(`agent-${session_id}`)?.api.close();
+          closePanel(`agent-${session_id}`);
           return exists
             ? {
                 sessions: sortSessions(
@@ -568,7 +568,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         sessions: sortSessions(get().sessions.filter((s) => s.id !== id)),
       });
       useConnectionStore.getState().unsubscribeSession(id);
-      getDockviewApi()?.getPanel(`agent-${id}`)?.api.close();
+      closePanel(`agent-${id}`);
 
       useConnectionStore
         .getState()

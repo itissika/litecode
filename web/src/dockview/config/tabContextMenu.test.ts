@@ -38,7 +38,7 @@ function makePanel(
     close: () => {},
     moveTo: () => {},
   };
-  return { api } as unknown as IDockviewPanel;
+  return { id: component, api } as unknown as IDockviewPanel;
 }
 
 function makeParams(
@@ -51,7 +51,9 @@ function makeParams(
     group: { panels: [panel] } as unknown as DockviewGroupPanel,
     api: {
       panels: allPanels,
+      groups: [],
       ...api,
+      getPanel: (id: string) => allPanels.find((item) => item.id === id),
     } as unknown as DockviewApi,
     event: {} as MouseEvent,
   };

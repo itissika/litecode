@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
-import { getDockviewApi } from "./connectionStore";
+
+import { panelVisible, watchPanelVisible } from "../dockview/workbench/queries";
 
 /**
  * Tracks the visibility of the dockview `sessions` panel (the session list).
@@ -13,42 +14,25 @@ import { getDockviewApi } from "./connectionStore";
 const SESSIONS_PANEL_ID = "sessions";
 
 let visible = false;
-let wired = false;
+let unwatch: (() => void) | undefined;
 const listeners = new Set<() => void>();
 
 function recompute(): void {
-  const v =
-    getDockviewApi()?.getPanel(SESSIONS_PANEL_ID)?.api.isVisible ?? false;
-  if (v !== visible) {
-    visible = v;
-    listeners.forEach((l) => l());
-  }
-}
-
-function wire(): void {
-  if (wired) return;
-  const tryWire = (): void => {
-    const api = getDockviewApi();
-    if (!api) {
-      // Dockview not mounted yet — retry shortly.
-      window.setTimeout(tryWire, 250);
-      return;
-    }
-    const panel = api.getPanel(SESSIONS_PANEL_ID);
-    panel?.api.onDidVisibilityChange(recompute);
-    // Re-check if the layout (and thus the panel) is rebuilt.
-    api.onDidLayoutChange?.(recompute);
-    recompute();
-    wired = true;
-  };
-  tryWire();
+  const next = panelVisible(SESSIONS_PANEL_ID);
+  if (next === visible) return;
+  visible = next;
+  listeners.forEach((listener) => listener());
 }
 
 function subscribe(cb: () => void): () => void {
   listeners.add(cb);
-  if (listeners.size === 1) wire();
+  if (listeners.size === 1) unwatch = watchPanelVisible(SESSIONS_PANEL_ID, recompute);
   return () => {
     listeners.delete(cb);
+    if (listeners.size === 0) {
+      unwatch?.();
+      unwatch = undefined;
+    }
   };
 }
 

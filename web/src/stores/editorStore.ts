@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import type { DockviewApi } from "dockview-react";
 
 import {
   readFile,
@@ -23,8 +22,9 @@ import {
   type MdEditorView,
 } from "../utils/wysiwygMarkdown";
 import { remapPathPrefix } from "../utils/path";
-import { isMainGrid } from "../dockview/popout/location";
 import { closingFlags } from "../dockview/config/sharedFlags";
+import { closePanel, openPanel, revealPanel } from "../dockview/workbench/commands";
+import { onPanelRemoved } from "../dockview/workbench/events";
 import { attachSiblingStores } from "./connectionStore";
 
 /** Tab id for an external preview. The chip stores the path; the bytes live on the tab. */
@@ -71,7 +71,6 @@ interface EditorStore {
   conflicts: Record<string, EditorConflict>;
   activePath: string | null;
   saving: boolean;
-  dockviewApi: DockviewApi | null;
   pendingReveal: { path: string; line: number; column?: number } | null;
   /** Per-tab Markdown view. Missing means default (wysiwyg for `.md`). */
   mdViewByPath: Record<string, MdEditorView>;
@@ -103,7 +102,6 @@ interface EditorStore {
   remapTabs: (from: string, to: string) => void;
   closeDeleted: (path: string) => void;
   clearConflict: (path: string) => void;
-  setDockviewApi: (api: DockviewApi | null) => void;
   setMdView: (path: string, view: MdEditorView) => void;
   /** Temporary preview of a file dropped from outside the workspace. */
   openExternalPreview: (file: File, chip: string) => Promise<void>;
@@ -279,62 +277,13 @@ async function loadReadable(
   }
 }
 
-const AGENT_PANEL_COMPONENTS = new Set(["agent", "subagent"]);
-
-function groupHasAgent(group: DockviewApi["groups"][number]): boolean {
-  return group.panels.some((panel) =>
-    AGENT_PANEL_COMPONENTS.has(panel.api.component),
-  );
-}
-
-/** Editor tabs sit beside the agent group. Dropping Monaco into the agent's
- *  own tab strip crowds the conversation. */
-export function editorPanelPosition(dockviewApi: DockviewApi): {
-  referenceGroup: string;
-  direction?: "right";
-} {
-  const gridGroups = dockviewApi.groups.filter((group) =>
-    isMainGrid(group.api.location.type),
-  );
-  const active = dockviewApi.activeGroup;
-  if (
-    active &&
-    isMainGrid(active.api.location.type) &&
-    !groupHasAgent(active)
-  ) {
-    return { referenceGroup: active.api.id };
-  }
-  const editorGroup = gridGroups.find(
-    (group) =>
-      !groupHasAgent(group) &&
-      group.panels.some((panel) => panel.api.component === "editor"),
-  );
-  if (editorGroup) return { referenceGroup: editorGroup.api.id };
-  const agentGroup = gridGroups.find((group) => groupHasAgent(group));
-  if (agentGroup) {
-    return { referenceGroup: agentGroup.api.id, direction: "right" };
-  }
-  if (gridGroups.length === 0) {
-    const group = dockviewApi.addGroup();
-    return { referenceGroup: group.id };
-  }
-  return { referenceGroup: gridGroups[0]!.api.id };
-}
-
-function addEditorPanel(dockviewApi: DockviewApi, path: string) {
-  const existing = dockviewApi.getPanel(path);
-  if (existing) {
-    existing.api.setActive();
-    return;
-  }
-  const fileName = fileNameFromPath(path);
-  dockviewApi.addPanel({
+function openEditorPanel(path: string): void {
+  openPanel({
     id: path,
     component: "editor",
-    title: fileName,
+    title: fileNameFromPath(path),
     tabComponent: "editor",
     params: { filePath: path },
-    position: editorPanelPosition(dockviewApi),
   });
 }
 
@@ -343,13 +292,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   conflicts: {},
   activePath: null,
   saving: false,
-  dockviewApi: null,
   pendingReveal: null,
   mdViewByPath: {},
   jumpBack: [],
   jumpForward: [],
-
-  setDockviewApi: (api) => set({ dockviewApi: api }),
 
   setMdView: (path, view) => {
     set((s) => ({
@@ -408,8 +354,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   openFile: async (path) => {
-    const { dockviewApi } = get();
-    if (dockviewApi) addEditorPanel(dockviewApi, path);
+    openEditorPanel(path);
     const existing = get().tabs.find((t) => t.path === path);
     set({ activePath: path });
     if (existing && (existing.dirty || !existing.errorRetryable)) return;
@@ -432,13 +377,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   closeTab: (path) => {
     const leaving = get().tabs.find((tab) => tab.path === path);
     if (leaving?.previewUrl) URL.revokeObjectURL(leaving.previewUrl);
-    const { dockviewApi } = get();
-
-    // Mark that this close is initiated by the store to prevent
-    // onDidRemovePanel → closeTab infinite loop.
     closingFlags.closingFromStore = true;
     try {
-      dockviewApi?.getPanel(path)?.api.close();
+      closePanel(path);
     } finally {
       closingFlags.closingFromStore = false;
     }
@@ -461,8 +402,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   setActive: (path) => {
-    const { dockviewApi } = get();
-    dockviewApi?.getPanel(path)?.api.setActive();
+    revealPanel(path);
     set({ activePath: path });
   },
 
@@ -598,7 +538,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   remapTabs: (from, to) => {
-    const { dockviewApi, tabs } = get();
+    const { tabs } = get();
     const affected = tabs.filter(
       (t) =>
         !t.external &&
@@ -662,34 +602,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       void get().reloadFromDisk(path);
     }
 
-    if (!dockviewApi) return;
-
     for (const tab of affected) {
       const oldPath = tab.path;
       const newPath = remapPathPrefix(oldPath, from, to);
       if (oldPath === newPath) continue;
-      const panel = dockviewApi.getPanel(oldPath);
-      const groupId = panel?.api.group.api.id;
       closingFlags.closingFromStore = true;
       try {
-        panel?.api.close();
+        closePanel(oldPath);
       } finally {
         closingFlags.closingFromStore = false;
       }
-      const gridGroups = dockviewApi.groups.filter((g) =>
-        isMainGrid(g.api.location.type),
-      );
-      const referenceGroup =
-        groupId ?? (gridGroups[0] ? gridGroups[0].api.id : undefined);
-      if (!referenceGroup) continue;
-      dockviewApi.addPanel({
-        id: newPath,
-        component: "editor",
-        title: fileNameFromPath(newPath),
-        tabComponent: "editor",
-        params: { filePath: newPath },
-        position: { referenceGroup },
-      });
+      openEditorPanel(newPath);
     }
   },
 
@@ -749,23 +672,19 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       };
     });
 
-    const { dockviewApi } = get();
-    if (!dockviewApi) return;
-    const panel = dockviewApi.getPanel(id);
-    if (panel) {
-      panel.api.setTitle(fileNameFromPath(named));
-      panel.api.setActive();
-      return;
-    }
-    dockviewApi.addPanel({
+    openPanel({
       id,
       component: "editor",
       title: fileNameFromPath(named),
       tabComponent: "editor",
       params: { filePath: id },
-      position: editorPanelPosition(dockviewApi),
     });
   },
 }));
+
+onPanelRemoved((event) => {
+  if (event.component !== "editor" || closingFlags.closingFromStore) return;
+  useEditorStore.getState().closeTab(event.id);
+});
 
 attachSiblingStores({ editor: useEditorStore });

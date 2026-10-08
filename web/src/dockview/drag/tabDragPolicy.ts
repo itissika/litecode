@@ -1,4 +1,4 @@
-import { isCenterDock } from "../popout/location";
+import { kindForComponent } from "../workbench/kinds";
 
 /** Center tabs live on the main grid or in a popout. Edge tabs are the side rails. */
 export type TabClass = "center" | "edge";
@@ -26,15 +26,25 @@ export interface ScreenWindow {
 /** Screen key of the main window. Popout keys are their own. */
 export const MAIN_WINDOW_KEY = "main-window";
 
-export function tabClass(locationType: string | undefined): TabClass | null {
+/**
+ * A declared kind wins. Location is the fallback for a drag payload that
+ * only carries Dockview's location mark.
+ */
+export function tabClass(
+  locationType: string | undefined,
+  component?: string,
+): TabClass | null {
+  const spec = kindForComponent(component);
+  if (spec) return spec.zone === "edge" ? "edge" : "center";
   if (locationType === "edge") return "edge";
-  if (isCenterDock(locationType)) return "center";
+  if (locationType === "grid" || locationType === "popout") return "center";
   return null;
 }
 
+/** Edge rails are edge. Grid and popout, including a hidden popout anchor, are center. */
 export function dockTarget(locationType: string | undefined): DockTarget {
   if (locationType === "edge") return "edge";
-  if (isCenterDock(locationType)) return "center";
+  if (locationType === "grid" || locationType === "popout") return "center";
   return "root";
 }
 
@@ -52,8 +62,9 @@ export function decideDockTarget(source: TabClass, target: DockTarget): DockDeci
 export function rejectsDockTarget(
   sourceType: string | undefined,
   targetType: string | undefined,
+  component?: string,
 ): boolean {
-  const source = tabClass(sourceType);
+  const source = tabClass(sourceType, component);
   if (!source) return false;
   return decideDockTarget(source, dockTarget(targetType)) === "reject";
 }

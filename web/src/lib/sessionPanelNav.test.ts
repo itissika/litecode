@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { setDockviewApi, useConnectionStore } from "../stores/connectionStore";
+import { bindDockview } from "../dockview/workbench/host";
+import { useConnectionStore } from "../stores/connectionStore";
 import {
   classifySession,
   clearPendingReveal,
@@ -15,7 +16,7 @@ import {
 
 afterEach(() => {
   clearPendingReveal();
-  setDockviewApi(null);
+  bindDockview(null);
 });
 
 describe("sessionPanelNav", () => {
@@ -36,7 +37,7 @@ describe("sessionPanelNav", () => {
     const addPanel = vi.fn();
     const ensureSubscribe = vi.fn(async () => {});
     useConnectionStore.setState({ ensureSubscribe } as never);
-    setDockviewApi({
+    bindDockview({
       getPanel: vi.fn(() => ({ api: { setActive } })),
       addPanel,
       groups: [],
@@ -54,7 +55,7 @@ describe("sessionPanelNav", () => {
 
   it("opens a missing panel in the grid group", () => {
     const addPanel = vi.fn();
-    setDockviewApi({
+    bindDockview({
       getPanel: vi.fn(() => undefined),
       addPanel,
       addGroup: vi.fn(() => ({ id: "g-new" })),
@@ -77,7 +78,7 @@ describe("sessionPanelNav", () => {
   it("skips a hidden grid group left behind by a popout and opens a visible one", () => {
     const addPanel = vi.fn();
     const addGroup = vi.fn(() => ({ id: "g-new" }));
-    setDockviewApi({
+    bindDockview({
       getPanel: vi.fn(() => undefined),
       addPanel,
       addGroup,
@@ -95,7 +96,7 @@ describe("sessionPanelNav", () => {
 
   it("opens a missing read-only subagent panel in the grid group", () => {
     const addPanel = vi.fn();
-    setDockviewApi({
+    bindDockview({
       getPanel: vi.fn(() => undefined),
       addPanel,
       addGroup: vi.fn(() => ({ id: "g-new" })),
@@ -121,7 +122,7 @@ describe("sessionPanelNav", () => {
   it("focuses an already-open subagent panel without adding another", () => {
     const setActive = vi.fn();
     const addPanel = vi.fn();
-    setDockviewApi({
+    bindDockview({
       getPanel: (id: string) =>
         id === "subagent-child-x" ? { api: { setActive } } : undefined,
       addPanel,
@@ -141,7 +142,7 @@ describe("sessionPanelNav", () => {
     // a known child), never a second panel that double-subscribes.
     const setActive = vi.fn();
     const addPanel = vi.fn();
-    setDockviewApi({
+    bindDockview({
       getPanel: (id: string) =>
         id === "agent-child-y" ? { api: { setActive } } : undefined,
       addPanel,
@@ -191,7 +192,7 @@ describe("openKnownSessionPanel", () => {
 
   function setApi() {
     const addPanel = vi.fn();
-    setDockviewApi({
+    bindDockview({
       getPanel: vi.fn(() => undefined),
       addPanel,
       addGroup: vi.fn(() => ({ id: "g-new" })),

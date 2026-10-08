@@ -8,7 +8,7 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import type { TreeEntry } from "../api/workspace";
-import { getDockviewApi } from "../stores/connectionStore";
+import { revealEdgePanel } from "../dockview/workbench/edges";
 import { useEditorStore } from "../stores/editorStore";
 import { useExplorerStore } from "../stores/explorerStore";
 import { useSessionStore } from "../stores/sessionStore";
@@ -19,7 +19,6 @@ import {
   gitFileLetters,
   gitStatusColor,
 } from "../lib/gitStatus";
-import { ensureTerminalPanel } from "../dockview/config/layout";
 import { useTerminalTabs } from "../lib/litecodeTerminal";
 import {
   copyAbsolutePaths,
@@ -127,17 +126,12 @@ async function beginCreate(
 }
 
 function openIntegratedTerminal(path: string, isDir: boolean): void {
-  const api = getDockviewApi();
-  if (!api) {
+  if (!revealEdgePanel("terminal")) {
     useToastStore.getState().showToast("Terminal is unavailable", "error");
     return;
   }
   const cwd = isDir ? path : parentPath(path);
-  ensureTerminalPanel(api);
   useTerminalTabs.getState().open(cwd || undefined);
-  const panel = api.getPanel("workspace-terminal");
-  panel?.api.group.api.expand();
-  panel?.api.setActive();
 }
 
 function InlineNameInput({
