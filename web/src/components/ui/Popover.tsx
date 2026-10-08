@@ -8,6 +8,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { viewOf } from "../../lib/domView";
+
 export interface PopoverApi {
   open: boolean;
   toggle: () => void;
@@ -125,12 +127,13 @@ export function Popover({
   const close = useCallback(() => setOpen(false), []);
 
   const clearTimers = useCallback(() => {
+    const view = viewOf(rootRef.current);
     if (openTimer.current !== null) {
-      window.clearTimeout(openTimer.current);
+      view.clearTimeout(openTimer.current);
       openTimer.current = null;
     }
     if (closeTimer.current !== null) {
-      window.clearTimeout(closeTimer.current);
+      view.clearTimeout(closeTimer.current);
       closeTimer.current = null;
     }
   }, []);
@@ -138,9 +141,10 @@ export function Popover({
   const update = useCallback(() => {
     const el = rootRef.current;
     if (!el) return;
+    const view = viewOf(el);
     const rect = el.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
+    const vw = view.innerWidth;
+    const vh = view.innerHeight;
     const w =
       width === "trigger" ? Math.max(rect.width, MIN_TRIGGER_WIDTH) : width;
 
@@ -214,15 +218,18 @@ export function Popover({
       if (panelRef.current?.contains(t)) return;
       setOpen(false);
     };
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
-    window.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onDown);
+    const root = rootRef.current;
+    const view = viewOf(root);
+    const doc = root?.ownerDocument ?? document;
+    view.addEventListener("scroll", onScroll, true);
+    view.addEventListener("resize", onResize);
+    view.addEventListener("keydown", onKey);
+    doc.addEventListener("mousedown", onDown);
     return () => {
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onResize);
-      window.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onDown);
+      view.removeEventListener("scroll", onScroll, true);
+      view.removeEventListener("resize", onResize);
+      view.removeEventListener("keydown", onKey);
+      doc.removeEventListener("mousedown", onDown);
     };
   }, [open, hover, update, clearTimers]);
 
@@ -230,12 +237,13 @@ export function Popover({
   // leaving both schedules one. The open side uses a delay so sweeping the
   // pointer across rows does not spam panels.
   const onPointerEnter = useCallback(() => {
+    const view = viewOf(rootRef.current);
     if (closeTimer.current !== null) {
-      window.clearTimeout(closeTimer.current);
+      view.clearTimeout(closeTimer.current);
       closeTimer.current = null;
     }
     if (!open && openTimer.current === null) {
-      openTimer.current = window.setTimeout(() => {
+      openTimer.current = view.setTimeout(() => {
         openTimer.current = null;
         setOpen(true);
       }, hoverOpenDelay);
@@ -243,12 +251,13 @@ export function Popover({
   }, [open, hoverOpenDelay]);
 
   const onPointerLeave = useCallback(() => {
+    const view = viewOf(rootRef.current);
     if (openTimer.current !== null) {
-      window.clearTimeout(openTimer.current);
+      view.clearTimeout(openTimer.current);
       openTimer.current = null;
     }
     if (open && closeTimer.current === null) {
-      closeTimer.current = window.setTimeout(() => {
+      closeTimer.current = view.setTimeout(() => {
         closeTimer.current = null;
         setOpen(false);
       }, hoverCloseDelay);
@@ -280,7 +289,7 @@ export function Popover({
           >
             {typeof children === "function" ? children({ close }) : children}
           </div>,
-          document.body,
+          rootRef.current?.ownerDocument.body ?? document.body,
         )}
     </div>
   );

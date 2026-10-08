@@ -26,6 +26,7 @@ import {
   rebaseGlideFrom,
   type RevealSeq,
 } from "./transcriptScrollGlide";
+import { hostHtmlElement, viewOf } from "../../lib/domView";
 import { scrollGlide } from "./useBottomPad";
 
 /** History sentinel, applied as paddingStart so it is not a virtual item. */
@@ -238,29 +239,33 @@ export function useTranscriptViewport({
   const revealBash = useCallback(
     (callId: string) => {
       setStick(false);
-      const started = performance.now();
+      const view = viewOf(scrollRef.current);
+      const started = view.performance.now();
       const seek = () => {
         const located = locateBashTool(bubblesRef.current, callId, sessionId);
         if (!located) {
-          if (performance.now() - started < 800) requestAnimationFrame(seek);
+          if (view.performance.now() - started < 800) view.requestAnimationFrame(seek);
           return;
         }
         for (const id of located.foldIds) requestFoldCardOpen(id);
         virtualizer.scrollToIndex(located.bubbleIndex, { align: "center" });
-        const paintStarted = performance.now();
+        const paintStarted = view.performance.now();
         const tick = () => {
-          const el = document.querySelector(bashCallSelector(callId));
-          if (el instanceof HTMLElement) {
-            const scroller = scrollRef.current;
+          const scroller = scrollRef.current;
+          const el = hostHtmlElement(
+            (scroller ?? view.document).querySelector(bashCallSelector(callId)),
+            scroller,
+          );
+          if (el) {
             if (scroller) alignInScroller(scroller, el);
             el.classList.remove("bash-view-reveal");
             void el.offsetWidth;
             el.classList.add("bash-view-reveal");
             return;
           }
-          if (performance.now() - paintStarted < 800) requestAnimationFrame(tick);
+          if (view.performance.now() - paintStarted < 800) view.requestAnimationFrame(tick);
         };
-        requestAnimationFrame(tick);
+        view.requestAnimationFrame(tick);
       };
       seek();
     },
@@ -275,34 +280,38 @@ export function useTranscriptViewport({
     (seq: number, options?: { glide?: boolean }) => {
       setStick(false);
       glideStopRef.current?.();
-      const started = performance.now();
+      const view = viewOf(scrollRef.current);
+      const started = view.performance.now();
       const emphasize = (correct: boolean) => {
-        const paintStarted = performance.now();
+        const paintStarted = view.performance.now();
         const tick = () => {
-          const el = document.querySelector(seqHitSelector(seq));
-          if (el instanceof HTMLElement) {
-            const scroller = scrollRef.current;
+          const scroller = scrollRef.current;
+          const el = hostHtmlElement(
+            (scroller ?? view.document).querySelector(seqHitSelector(seq)),
+            scroller,
+          );
+          if (el) {
             if (correct && scroller) alignInScroller(scroller, el);
             el.classList.remove("session-search-reveal");
             void el.offsetWidth;
             el.classList.add("session-search-reveal");
             return;
           }
-          if (performance.now() - paintStarted < 800) requestAnimationFrame(tick);
+          if (view.performance.now() - paintStarted < 800) view.requestAnimationFrame(tick);
         };
-        requestAnimationFrame(tick);
+        view.requestAnimationFrame(tick);
       };
       const seek = () => {
         const bubbleIndex = locateSeq(bubblesRef.current, seq);
         if (bubbleIndex == null) {
-          if (performance.now() - started < 800) requestAnimationFrame(seek);
+          if (view.performance.now() - started < 800) view.requestAnimationFrame(seek);
           return;
         }
         const scroller = scrollRef.current;
         const glide =
           options?.glide === true &&
           scroller != null &&
-          scrollGlide() === "smooth";
+          scrollGlide(view) === "smooth";
         if (!glide || !scroller) {
           virtualizer.scrollToIndex(bubbleIndex, { align: "center" });
           emphasize(true);
@@ -318,15 +327,15 @@ export function useTranscriptViewport({
         let from = scroller.scrollTop;
         let to = initial;
         const duration = glideDuration(to - from);
-        const t0 = performance.now();
+        const t0 = view.performance.now();
         let raf = 0;
         let stopped = false;
         const detach = () => {
-          if (raf !== 0) cancelAnimationFrame(raf);
+          if (raf !== 0) view.cancelAnimationFrame(raf);
           raf = 0;
           scroller.removeEventListener("wheel", onAbort);
           scroller.removeEventListener("pointerdown", onAbort);
-          window.removeEventListener("keydown", onKey);
+          view.removeEventListener("keydown", onKey);
           if (glideStopRef.current === stop) glideStopRef.current = null;
         };
         function stop() {
@@ -351,7 +360,7 @@ export function useTranscriptViewport({
           }
           scroller.scrollTop = from + (to - from) * eased;
           if (p < 1) {
-            raf = requestAnimationFrame(step);
+            raf = view.requestAnimationFrame(step);
             return;
           }
           const dest =
@@ -363,8 +372,8 @@ export function useTranscriptViewport({
         glideStopRef.current = stop;
         scroller.addEventListener("wheel", onAbort, { passive: true });
         scroller.addEventListener("pointerdown", onAbort);
-        window.addEventListener("keydown", onKey);
-        raf = requestAnimationFrame(step);
+        view.addEventListener("keydown", onKey);
+        raf = view.requestAnimationFrame(step);
       };
       seek();
     },
@@ -377,7 +386,9 @@ export function useTranscriptViewport({
     const grew = padGrewRef.current;
     padGrewRef.current = false;
     if (!stickToEnd) return;
-    virtualizer.scrollToEnd(grew ? { behavior: scrollGlide() } : undefined);
+    virtualizer.scrollToEnd(
+      grew ? { behavior: scrollGlide(viewOf(scrollRef.current)) } : undefined,
+    );
   }, [stickToEnd, totalSize, count, virtualizer, padGrewRef]);
 
   // paddingStart is not an item, so a change that does not move the first

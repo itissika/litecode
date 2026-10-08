@@ -187,23 +187,8 @@ contextBridge.exposeInMainWorld("litecode", {
   windowClose: async (): Promise<void> => {
     await ipcRenderer.invoke("litecode:window-close");
   },
-  popoutWindowMinimize: async (dockId: string): Promise<void> => {
-    await ipcRenderer.invoke("litecode:popout-window-minimize", dockId);
-  },
-  popoutWindowMaximizeToggle: async (dockId: string): Promise<boolean> => {
-    return (await ipcRenderer.invoke(
-      "litecode:popout-window-maximize-toggle",
-      dockId,
-    )) as boolean;
-  },
-  popoutWindowIsMaximized: async (dockId: string): Promise<boolean> => {
-    return (await ipcRenderer.invoke(
-      "litecode:popout-window-is-maximized",
-      dockId,
-    )) as boolean;
-  },
-  popoutWindowClose: async (dockId: string): Promise<void> => {
-    await ipcRenderer.invoke("litecode:popout-window-close", dockId);
+  popoutSetAlwaysOnTop: async (dockId: string, onTop: boolean): Promise<boolean> => {
+    return (await ipcRenderer.invoke("litecode:popout-set-always-on-top", dockId, onTop)) === true;
   },
   browserCreate: async (input: {
     id: string;

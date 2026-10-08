@@ -30,7 +30,7 @@ import { citationFact, formatLineSpan } from "../../lib/knowledge/markers";
 import { dragCarriesMention, dropCarriesMention } from "../../lib/dropPayload";
 import { mentionTextForDrop } from "../../lib/mentionDrop";
 import { useSessionStore } from "../../stores/sessionStore";
-import { FileMentionChip, KnowledgeMentionChip } from "./chips";
+import { MentionChipView } from "./chips";
 import { bodyToContent, fileMentionOptions, knowledgeMentionOptions, mentionInlineContent } from "./serialize";
 import {
   fileCandidates,
@@ -460,7 +460,9 @@ export function MentionEditor({
       Mention.extend({
         addNodeView() {
           return ReactNodeViewRenderer(
-            (props) => <KnowledgeMentionChip {...props} sourceIdRef={sourceIdRef} />,
+            (props) => (
+              <MentionChipView {...props} sourceIdRef={sourceIdRef} mode="node" />
+            ),
             { as: "span" },
           );
         },
@@ -476,7 +478,9 @@ export function MentionEditor({
         },
         addNodeView() {
           return ReactNodeViewRenderer(
-            (props) => <FileMentionChip {...props} sourceIdRef={sourceIdRef} />,
+            (props) => (
+              <MentionChipView {...props} sourceIdRef={sourceIdRef} mode="file" />
+            ),
             { as: "span" },
           );
         },

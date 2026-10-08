@@ -7,44 +7,26 @@ import {
   VersionTags,
 } from "../../components/VersionTags";
 
-export interface TitleBarChrome {
-  maximized: boolean;
-  onMinimize: () => void;
-  onToggleMaximize: () => void;
-  onClose: () => void;
-}
-
 interface TitleBarProps {
   onMenuAction?: (item: string) => void;
   sessionMode?: "local" | "remote";
   /** Replaces the default Options menu. */
   menuItems?: MenuItem[];
-  /** Popout windows have no Options menu. The main window always does. */
-  showMenu?: boolean;
-  /**
-   * Window buttons for a specific window. The default path drives the main
-   * BrowserWindow through `window.litecode`.
-   */
-  chrome?: TitleBarChrome;
 }
 
 export function TitleBar({
   onMenuAction,
   sessionMode = "local",
   menuItems,
-  showMenu = true,
-  chrome,
 }: TitleBarProps) {
   const [maximized, setMaximized] = useState(false);
-  const hasWindowChrome =
-    chrome != null || typeof window.litecode?.windowClose === "function";
+  const hasWindowChrome = typeof window.litecode?.windowClose === "function";
   const versionTags = useServerVersionTags();
-  const shownMaximized = chrome?.maximized ?? maximized;
 
   useEffect(() => {
-    if (chrome || !hasWindowChrome) return;
+    if (!hasWindowChrome) return;
     void window.litecode?.windowIsMaximized?.().then(setMaximized);
-  }, [chrome, hasWindowChrome]);
+  }, [hasWindowChrome]);
 
   const dragStyle = {
     WebkitAppRegion: "drag",
@@ -68,13 +50,11 @@ export function TitleBar({
         <span style={noDrag}>
           <VersionTags {...versionTags} size="xs" className="ml-2 mr-1" />
         </span>
-        {showMenu ? (
-          <MenuBar
-            onAction={onMenuAction}
-            sessionMode={sessionMode}
-            items={menuItems}
-          />
-        ) : null}
+        <MenuBar
+          onAction={onMenuAction}
+          sessionMode={sessionMode}
+          items={menuItems}
+        />
         {sessionMode === "remote" ? (
           <span
             className="ml-2 px-1.5 text-[10px] uppercase tracking-wide"
@@ -98,8 +78,7 @@ export function TitleBar({
             aria-label="Minimize"
             className="px-3 py-0 h-[32px] text-xs hover:brightness-125 active:brightness-75"
             onClick={() => {
-              if (chrome) chrome.onMinimize();
-              else void window.litecode?.windowMinimize?.();
+              void window.litecode?.windowMinimize?.();
             }}
           >
             <svg width="10" height="10" viewBox="0 0 10 10">
@@ -108,14 +87,13 @@ export function TitleBar({
           </button>
           <button
             type="button"
-            aria-label={shownMaximized ? "Restore" : "Maximize"}
+            aria-label={maximized ? "Restore" : "Maximize"}
             className="px-3 py-0 h-[32px] text-xs hover:brightness-125 active:brightness-75"
             onClick={() => {
-              if (chrome) chrome.onToggleMaximize();
-              else void window.litecode?.windowMaximizeToggle?.().then(setMaximized);
+              void window.litecode?.windowMaximizeToggle?.().then(setMaximized);
             }}
           >
-            {shownMaximized ? (
+            {maximized ? (
               <svg width="10" height="10" viewBox="0 0 10 10">
                 <path
                   d="M2 3h5v5H2V3zm1-1h5v5"
@@ -144,8 +122,7 @@ export function TitleBar({
             aria-label="Close"
             className="px-3 py-0 h-[32px] text-xs lc-titlebar-close active:brightness-75"
             onClick={() => {
-              if (chrome) chrome.onClose();
-              else void window.litecode?.windowClose?.();
+              void window.litecode?.windowClose?.();
             }}
           >
             <svg width="10" height="10" viewBox="0 0 10 10">

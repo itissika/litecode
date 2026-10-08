@@ -1,5 +1,7 @@
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 
+import { viewOf } from "../../lib/domView";
+
 import { isHumanUserRow, isTranscriptMarkRow } from "../../api/adapter";
 import type { HumanRow } from "../../api/types";
 import {
@@ -54,9 +56,10 @@ function MiniChatPanel({
     // The textarea is already sized at full width (child layout effect runs
     // first), so scrollHeight is the mini chat's natural height.
     const natural = el.scrollHeight;
-    // Defer to the next frame so the browser paints the start height first,
-    // then the height/opacity transition runs.
-    requestAnimationFrame(() => {
+    // Defer to the next frame of the window that owns this node, so the
+    // popout paints the start height before the height/opacity transition.
+    const view = viewOf(el);
+    view.requestAnimationFrame(() => {
       setHeight(natural);
       setOpacity(1);
     });

@@ -27,6 +27,11 @@ import { isMainGrid } from "../dockview/popout/location";
 import { closingFlags } from "../dockview/config/sharedFlags";
 import { attachSiblingStores } from "./connectionStore";
 
+/** Tab id for an external preview. The chip stores the path; the bytes live on the tab. */
+export function externalPreviewId(path: string): string {
+  return `external:${path}`;
+}
+
 export interface EditorTab {
   path: string;
   content: string;
@@ -707,7 +712,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   openExternalPreview: async (file, chip) => {
-    const id = `external:${chip}`;
+    const id = externalPreviewId(chip);
     const named = file.name || fileNameFromPath(chip);
     const kind = fileKindFromPath(named);
     const previous = get().tabs.find((tab) => tab.path === id);

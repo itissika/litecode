@@ -4,8 +4,9 @@ import type {
   ReactContextMenuItemConfig,
 } from "dockview-react";
 
+import { dockPanelToMain } from "../popout/dockHome";
+import { isMainGrid, isPopout } from "../popout/location";
 import { popoutPageUrl } from "./popoutUrl";
-import { isMainGrid } from "../popout/location";
 
 type TabMenuItem = BuiltInContextMenuItem | ReactContextMenuItemConfig;
 
@@ -17,8 +18,10 @@ type TabMenuItem = BuiltInContextMenuItem | ReactContextMenuItemConfig;
  * pop an edge group out, so there is no Popout item.
  * Grid tabs (editor, agent, browser, and the rest of the center) can open
  * in a separate window. The popout URL carries the dock id the desktop host
- * uses for that window. The title bar is attached when dockview reports the
- * window (`onDidAddPopoutGroup`).
+ * uses for that window. Theme, the tab-bar drag strip, and a layout-size
+ * watch attach when dockview reports the window (`onDidAddPopoutGroup`).
+ * A tab that is already out gets a way back onto the main grid. Dragging
+ * that tab past the main window and releasing uses the same popout call.
  * Extra shells live in the terminal panel's own list; closing one there
  * kills that pty. The dockview terminal tab itself stays.
  */
@@ -44,7 +47,18 @@ export function buildTabContextMenuItems(
   }
 
   const items: TabMenuItem[] = ["close", "closeOthers", "closeAll"];
-  if (!isMainGrid(panel.api.location?.type)) return items;
+  const location = panel.api.location?.type;
+  if (isPopout(location)) {
+    return [
+      {
+        label: "Return to Main Window",
+        action: () => dockPanelToMain(api, panel),
+      },
+      "separator",
+      ...items,
+    ];
+  }
+  if (!isMainGrid(location)) return items;
   return [
     {
       label: "Popout Window",

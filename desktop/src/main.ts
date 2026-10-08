@@ -21,9 +21,9 @@ import {
   assertIpcSurface,
   exactHttpOrigin,
   isAllowedNavigation,
+  isPopoutDockId,
   resolveWindowOpen,
   workbenchPopoutDockId,
-  isPopoutDockId,
   type AllowedSurface,
   type IpcTrustContext,
 } from "./ipc-trust";
@@ -119,6 +119,8 @@ function ensureBrowserHost(): BrowserHost | null {
 function popoutWindowOptions(): Electron.BrowserWindowConstructorOptions {
   const iconPath = path.join(__dirname, "..", "build", "icon.ico");
   return {
+    // No OS title bar. The popout is dragged from the tab-bar void; thickFrame
+    // (Windows default) keeps the resize edges.
     frame: false,
     autoHideMenuBar: true,
     backgroundColor: "#0a0a0a",
@@ -128,6 +130,9 @@ function popoutWindowOptions(): Electron.BrowserWindowConstructorOptions {
       contextIsolation: true,
       nodeIntegration: false,
       preload: undefined,
+      // Same-origin window.open shares the main renderer. Keep this window
+      // painting if Chromium marks it hidden while the opener is off-screen.
+      backgroundThrottling: false,
     },
   };
 }
@@ -139,13 +144,6 @@ function lockPopoutWindow(child: BrowserWindow, openedUrl: string): void {
   };
   child.webContents.on("will-navigate", guard);
   child.webContents.on("will-redirect", guard);
-}
-
-function popoutByDock(id: unknown): BrowserWindow | null {
-  if (typeof id !== "string" || !isPopoutDockId(id)) return null;
-  const win = popoutWindows.get(id);
-  if (!win || win.isDestroyed()) return null;
-  return win;
 }
 
 function rememberPopout(dock: string, child: BrowserWindow): void {
@@ -204,6 +202,10 @@ async function createWindow(content: BootContent): Promise<BrowserWindow> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Popouts are same-process children of this window. The default throttle
+      // freezes that process — and every popout, including resize — when this
+      // window is minimized, occluded, or hidden.
+      backgroundThrottling: false,
     },
   });
   // Preload/page scripts can invoke synchronous IPC while loadFile/loadURL is
@@ -1247,34 +1249,17 @@ function registerIpc(): void {
     targetWindow(event)?.close();
   });
 
-  handleTrusted("litecode:popout-window-minimize", "workbench", (_event, dockId: unknown) => {
-    popoutByDock(dockId)?.minimize();
-  });
-
   handleTrusted(
-    "litecode:popout-window-maximize-toggle",
+    "litecode:popout-set-always-on-top",
     "workbench",
-    (_event, dockId: unknown) => {
-      const win = popoutByDock(dockId);
-      if (!win) return false;
-      if (win.isMaximized()) {
-        win.unmaximize();
-        return false;
-      }
-      win.maximize();
-      return true;
+    (_event, dockId: unknown, onTop: unknown) => {
+      if (typeof dockId !== "string" || !isPopoutDockId(dockId)) return false;
+      const child = popoutWindows.get(dockId);
+      if (!child || child.isDestroyed()) return false;
+      child.setAlwaysOnTop(onTop === true);
+      return child.isAlwaysOnTop();
     },
   );
-
-  handleTrusted(
-    "litecode:popout-window-is-maximized",
-    "workbench",
-    (_event, dockId: unknown) => popoutByDock(dockId)?.isMaximized() ?? false,
-  );
-
-  handleTrusted("litecode:popout-window-close", "workbench", (_event, dockId: unknown) => {
-    popoutByDock(dockId)?.close();
-  });
 }
 
 app.whenReady().then(async () => {

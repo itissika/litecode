@@ -1,79 +1,22 @@
-import type { MouseEvent } from "react";
-
 import {
-  normalizeKey,
   parseLineSpan,
   splitBodyRefs,
   type BodySegment,
 } from "../../lib/knowledge/markers";
-import { revealKnowledgeNode } from "../../lib/knowledge/panel";
-import { useKnowledgeStore } from "../../stores/knowledgeStore";
+import type { Citation } from "../../lib/knowledge/refDisplay";
 import { AgentMarkdown } from "../AgentMarkdown";
-import { WorkspaceCitationChip } from "../CitationChip";
+import { CitationChip } from "../CitationChip";
 
-function stopBubble(event: MouseEvent) {
-  event.stopPropagation();
-}
-
-function ReadChip({
-  className,
-  label,
-  title,
-  onOpen,
-}: {
-  className: string;
-  label: string;
-  title?: string;
-  onOpen?: () => void;
-}) {
-  return (
-    <span className={className} title={title}>
-      {onOpen ? (
-        <button
-          type="button"
-          className="knowledge-token-label"
-          aria-label={label}
-          onMouseDown={stopBubble}
-          onClick={(event) => {
-            stopBubble(event);
-            onOpen();
-          }}
-        >
-          {label}
-        </button>
-      ) : (
-        <span className="knowledge-token-label">{label}</span>
-      )}
-    </span>
-  );
-}
-
-function NodeChip({ id, label }: { id: string; label: string }) {
-  const key = normalizeKey(id);
-  const target = useKnowledgeStore((state) => (key ? state.byKey.get(key) : undefined));
-  return (
-    <ReadChip
-      className={target ? "knowledge-token" : "knowledge-token is-invalid"}
-      label={label}
-      onOpen={target ? () => revealKnowledgeNode(target.id) : undefined}
-    />
-  );
-}
-
-function FileChip({
-  path,
-  lines,
-  symbol,
-}: {
-  path: string;
-  label: string;
-  lines: string | null;
-  symbol: string | null;
-}) {
+function citationFor(segment: Exclude<BodySegment, { type: "text" }>): Citation {
+  if (segment.type === "ref") return { kind: "node", key: segment.id };
+  const lines = segment.type === "symbol" ? segment.lines : null;
   const span = lines ? parseLineSpan(lines) : null;
-  return (
-    <WorkspaceCitationChip path={path} symbol={symbol} line={span?.start ?? null} />
-  );
+  return {
+    kind: "file",
+    path: segment.path,
+    symbol: segment.type === "symbol" ? segment.symbol : null,
+    line: span?.start ?? null,
+  };
 }
 
 const BLOCK_LINE = /^(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s?|```|~~~)/;
@@ -112,15 +55,7 @@ function SegmentView({ segment }: { segment: BodySegment }) {
       </>
     );
   }
-  if (segment.type === "ref") return <NodeChip id={segment.id} label={segment.label} />;
-  return (
-    <FileChip
-      path={segment.path}
-      label={segment.label}
-      lines={segment.type === "symbol" ? segment.lines : null}
-      symbol={segment.type === "symbol" ? segment.symbol : null}
-    />
-  );
+  return <CitationChip citation={citationFor(segment)} />;
 }
 
 /** User prose with mention shortcodes drawn as read-only capsules. */

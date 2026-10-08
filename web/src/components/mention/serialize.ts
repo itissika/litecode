@@ -7,7 +7,7 @@ export function knowledgeMentionOptions(
   suggestion: MentionOptions["suggestion"],
 ): Partial<MentionOptions> {
   return {
-    HTMLAttributes: { class: "knowledge-token" },
+    HTMLAttributes: { class: "mention-chip" },
     deleteTriggerWithBackspace: true,
     renderText({ node }) {
       const id = String(node.attrs.id ?? "");
@@ -22,7 +22,7 @@ export function fileMentionOptions(
   suggestion: MentionOptions["suggestion"],
 ): Partial<MentionOptions> {
   return {
-    HTMLAttributes: { class: "knowledge-token is-file" },
+    HTMLAttributes: { class: "mention-chip" },
     deleteTriggerWithBackspace: true,
     renderText({ node }) {
       const path = String(node.attrs.id ?? "");

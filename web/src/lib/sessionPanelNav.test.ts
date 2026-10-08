@@ -58,7 +58,7 @@ describe("sessionPanelNav", () => {
       getPanel: vi.fn(() => undefined),
       addPanel,
       addGroup: vi.fn(() => ({ id: "g-new" })),
-      groups: [{ api: { location: { type: "grid" }, id: "g1" } }],
+      groups: [{ api: { location: { type: "grid" }, id: "g1", isVisible: true } }],
     } as never);
     openSessionPanel("sess-new");
     expect(addPanel).toHaveBeenCalledWith(
@@ -74,13 +74,32 @@ describe("sessionPanelNav", () => {
     expect(getPendingReveal()).toBeNull();
   });
 
+  it("skips a hidden grid group left behind by a popout and opens a visible one", () => {
+    const addPanel = vi.fn();
+    const addGroup = vi.fn(() => ({ id: "g-new" }));
+    setDockviewApi({
+      getPanel: vi.fn(() => undefined),
+      addPanel,
+      addGroup,
+      groups: [{ api: { location: { type: "grid" }, id: "hidden", isVisible: false } }],
+    } as never);
+    openSessionPanel("sess-empty");
+    expect(addGroup).toHaveBeenCalled();
+    expect(addPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "agent-sess-empty",
+        position: { referenceGroup: "g-new" },
+      }),
+    );
+  });
+
   it("opens a missing read-only subagent panel in the grid group", () => {
     const addPanel = vi.fn();
     setDockviewApi({
       getPanel: vi.fn(() => undefined),
       addPanel,
       addGroup: vi.fn(() => ({ id: "g-new" })),
-      groups: [{ api: { location: { type: "grid" }, id: "g1" } }],
+      groups: [{ api: { location: { type: "grid" }, id: "g1", isVisible: true } }],
     } as never);
 
     openSubagentPanel("child-new", 7);
@@ -176,7 +195,7 @@ describe("openKnownSessionPanel", () => {
       getPanel: vi.fn(() => undefined),
       addPanel,
       addGroup: vi.fn(() => ({ id: "g-new" })),
-      groups: [{ api: { location: { type: "grid" }, id: "g1" } }],
+      groups: [{ api: { location: { type: "grid" }, id: "g1", isVisible: true } }],
     } as never);
     return addPanel;
   }

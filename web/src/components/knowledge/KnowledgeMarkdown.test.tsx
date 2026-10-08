@@ -37,10 +37,10 @@ describe("KnowledgeMarkdown", () => {
     render(
       <KnowledgeMarkdown sourceId="broken-marker" text={mentionSource("not-a-node")} />,
     );
-    const chip = screen.getByRole("button", { name: "not-a-node" });
-    expect(chip.getAttribute("aria-invalid")).toBe("true");
-    expect(chip.hasAttribute("disabled")).toBe(true);
-    fireEvent.click(chip);
+    expect(screen.queryByRole("button", { name: "not-a-node" })).toBeNull();
+    expect(
+      screen.getByText("not-a-node").closest(".knowledge-token")?.classList.contains("is-invalid"),
+    ).toBe(true);
     expect(useKnowledgeStore.getState().focusedId).toBeNull();
   });
 

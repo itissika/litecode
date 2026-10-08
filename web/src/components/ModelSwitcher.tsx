@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import type { ModelInfo } from "../api/types";
+import { paintDragCursor, viewOf } from "../lib/domView";
 import { splitModelRef } from "../api/settings";
 import { useSessionStore } from "../stores/sessionStore";
 import { useSettingsStore } from "../stores/settingsStore";
@@ -253,18 +254,24 @@ export function ModelSwitcher({
    *  so no layout read is needed at the end of the gesture. */
   const dragHeightRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
+  const rafViewRef = useRef<Window>(window);
   /** Height written by a drag; `null` means "size to content". */
   const [listHeight, setListHeight] = useState<number | null>(null);
 
+  const cancelDragFrame = () => {
+    if (rafRef.current == null) return;
+    rafViewRef.current.cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+  };
+
   useEffect(() => {
     return () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      cancelDragFrame();
       // A drag cut short by the panel closing (Escape, outside click) must not
       // leave the page stuck in its resize cursor.
       if (draggingRef.current) {
         draggingRef.current = false;
-        document.body.style.userSelect = "";
-        document.body.style.cursor = "";
+        paintDragCursor(bodyRef.current, false);
       }
     };
   }, []);
@@ -300,22 +307,17 @@ export function ModelSwitcher({
     };
     dragHeightRef.current = Math.round(rect.height);
     (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
-    document.body.style.userSelect = "none";
-    document.body.style.cursor = "ns-resize";
+    paintDragCursor(event.currentTarget, true);
   };
 
   const onResizeEnd = (event: React.PointerEvent) => {
     if (!draggingRef.current) return;
     draggingRef.current = false;
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
+    cancelDragFrame();
     const grip = event.currentTarget as HTMLElement;
     if (grip.hasPointerCapture?.(event.pointerId))
       grip.releasePointerCapture(event.pointerId);
-    document.body.style.userSelect = "";
-    document.body.style.cursor = "";
+    paintDragCursor(grip, false);
     if (dragHeightRef.current != null) setListHeight(dragHeightRef.current);
   };
 
@@ -323,8 +325,10 @@ export function ModelSwitcher({
     if (!draggingRef.current) return;
     // Coalesce high-frequency moves into one style write per frame.
     const y = event.clientY;
-    if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => applyResize(y));
+    cancelDragFrame();
+    const view = viewOf(event.currentTarget);
+    rafViewRef.current = view;
+    rafRef.current = view.requestAnimationFrame(() => applyResize(y));
   };
 
   const currentModelInfo = modelId

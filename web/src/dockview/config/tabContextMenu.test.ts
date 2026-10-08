@@ -18,6 +18,7 @@ interface FakePanelApi {
   maximize: () => void;
   setTitle: () => void;
   close: () => void;
+  moveTo: (options: { group?: unknown }) => void;
 }
 
 function makePanel(
@@ -35,6 +36,7 @@ function makePanel(
     maximize: () => {},
     setTitle: () => {},
     close: () => {},
+    moveTo: () => {},
   };
   return { api } as unknown as IDockviewPanel;
 }
@@ -42,14 +44,14 @@ function makePanel(
 function makeParams(
   panel: IDockviewPanel,
   allPanels: IDockviewPanel[],
-  addPopoutGroup?: DockviewApi["addPopoutGroup"],
+  api: Partial<DockviewApi> = {},
 ): GetTabContextMenuItemsParams {
   return {
     panel,
     group: { panels: [panel] } as unknown as DockviewGroupPanel,
     api: {
       panels: allPanels,
-      addPopoutGroup,
+      ...api,
     } as unknown as DockviewApi,
     event: {} as MouseEvent,
   };
@@ -101,10 +103,10 @@ describe("buildTabContextMenuItems", () => {
     };
 
     const editorItems = buildTabContextMenuItems(
-      makeParams(editor, [editor], addPopoutGroup),
+      makeParams(editor, [editor], { addPopoutGroup }),
     );
     const browserItems = buildTabContextMenuItems(
-      makeParams(browser, [browser], addPopoutGroup),
+      makeParams(browser, [browser], { addPopoutGroup }),
     );
     expect(labels(editorItems)).toEqual([
       "Popout Window",
@@ -125,5 +127,66 @@ describe("buildTabContextMenuItems", () => {
     expect(calls[0]?.url).toMatch(
       /^\/popout\.html\?dock=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
     );
+  });
+
+  it("returns a popout tab to a visible main-grid group", () => {
+    const editor = makePanel("editor", "editor", "popout");
+    const moves: unknown[] = [];
+    editor.api.moveTo = (options) => {
+      moves.push(options.group);
+    };
+    const hidden = {
+      api: { location: { type: "grid" }, isVisible: false },
+    };
+    const home = {
+      api: { location: { type: "grid" }, isVisible: true, id: "center" },
+    };
+    const items = buildTabContextMenuItems(
+      makeParams(editor, [editor], {
+        groups: [hidden, home] as unknown as DockviewApi["groups"],
+        addGroup: () => {
+          throw new Error("a visible grid group is already there");
+        },
+      }),
+    );
+
+    expect(labels(items)).toEqual([
+      "Return to Main Window",
+      "separator",
+      "close",
+      "closeOthers",
+      "closeAll",
+    ]);
+
+    const back = items[0];
+    if (typeof back === "string" || !back.action) {
+      throw new Error("expected a return action");
+    }
+    back.action();
+    expect(moves).toEqual([home]);
+  });
+
+  it("opens a main-grid group when the center has nothing visible to return to", () => {
+    const editor = makePanel("editor", "editor", "popout");
+    const moves: unknown[] = [];
+    editor.api.moveTo = (options) => {
+      moves.push(options.group);
+    };
+    const created = { api: { id: "fresh" } };
+    const items = buildTabContextMenuItems(
+      makeParams(editor, [editor], {
+        groups: [
+          { api: { location: { type: "grid" }, isVisible: false } },
+        ] as unknown as DockviewApi["groups"],
+        addGroup: () => created as unknown as DockviewGroupPanel,
+      }),
+    );
+
+    const back = items[0];
+    if (typeof back === "string" || !back.action) {
+      throw new Error("expected a return action");
+    }
+    back.action();
+    expect(moves).toEqual([created]);
   });
 });

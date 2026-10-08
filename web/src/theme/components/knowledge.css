@@ -151,59 +151,6 @@
   background: var(--_dk-side);
 }
 
-.knowledge-ref {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2em;
-  margin: 0 0.05em;
-  padding: 0.05em 0.28em 0.05em 0.22em;
-  border: none;
-  border-radius: 0.25rem;
-  background: var(--_dk-accent-glow);
-  color: var(--_dk-accent-hover);
-  font-family: var(--_dk-font-code);
-  font-size: var(--_dk-text-xs);
-  font-weight: 400;
-  line-height: 1.25;
-  vertical-align: baseline;
-  cursor: pointer;
-}
-
-.knowledge-ref:hover {
-  text-decoration: underline;
-}
-
-.knowledge-ref.is-warning {
-  color: var(--_dk-amber-500);
-}
-
-.knowledge-ref.is-error,
-.knowledge-ref.is-invalid {
-  background: transparent;
-  color: var(--_dk-red-500);
-  text-decoration: none;
-  cursor: default;
-}
-
-.knowledge-ref.is-error .knowledge-ref-icon,
-.knowledge-ref.is-invalid .knowledge-ref-icon {
-  color: var(--_dk-red-500);
-}
-
-.knowledge-ref.is-disabled-target {
-  background: var(--_dk-accent-glow);
-  color: var(--_dk-text-disabled);
-}
-
-.knowledge-ref.is-disabled-target .knowledge-ref-icon {
-  color: var(--_dk-text-disabled);
-}
-
-.knowledge-ref:disabled {
-  cursor: default;
-  opacity: 1;
-}
-
 .knowledge-card-body {
   position: relative;
   display: flex;
@@ -215,7 +162,7 @@
   cursor: pointer;
 }
 
-.knowledge-card-body .knowledge-ref {
+.knowledge-card-body .knowledge-token {
   position: relative;
   z-index: 1;
 }
@@ -232,13 +179,6 @@
   flex-wrap: wrap;
   gap: 0.2rem 0.3rem;
   padding: 0.35rem 0 0.1rem;
-}
-
-.knowledge-ref-icon {
-  flex-shrink: 0;
-  width: 10px;
-  height: 10px;
-  opacity: 0.85;
 }
 
 .knowledge-issues {
@@ -799,7 +739,7 @@
   text-overflow: ellipsis;
 }
 
-.knowledge-inline-body .knowledge-ref,
+.knowledge-inline-body .knowledge-token,
 .knowledge-inline-body .knowledge-inline-text {
   vertical-align: baseline;
 }
@@ -1100,6 +1040,16 @@
   color: var(--_dk-red-500);
 }
 
+.knowledge-token.is-disabled {
+  background: color-mix(in srgb, var(--_dk-text-disabled) 14%, transparent);
+  color: var(--_dk-text-disabled);
+}
+
+.knowledge-token.is-warning {
+  background: color-mix(in srgb, var(--_dk-amber-500) 16%, transparent);
+  color: var(--_dk-amber-500);
+}
+
 .knowledge-token {
   display: inline-flex;
   align-items: center;
@@ -1125,7 +1075,7 @@
 /* Light theme's emerald (#00d459) is a display green — as 11px label text on
    the pale surface it washes out, so step the label toward the theme ink. The
    14% tinted background reads fine as is; invalid chips stay red. */
-:root[data-dv-theme="light"] .knowledge-token:not(.is-invalid):not(.is-file):not(.is-missing) {
+:root[data-dv-theme="light"] .knowledge-token:not(.is-invalid):not(.is-file):not(.is-missing):not(.is-disabled):not(.is-warning) {
   color: color-mix(in srgb, var(--_dk-emerald-500) 50%, var(--_dk-text-primary));
 }
 

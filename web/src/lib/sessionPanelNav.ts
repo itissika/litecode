@@ -61,7 +61,11 @@ export function fallbackSessionTitle(
  *  fresh group when the grid is empty. Shared by both panel flavours so the
  *  positioning logic is not copy-pasted. */
 export function gridPosition(api: DockviewApi): { referenceGroup: string } {
-  const gridGroups = api.groups.filter((g) => isMainGrid(g.api.location.type));
+  // A popped-out group leaves a hidden grid group behind. Landing a new
+  // panel there keeps it invisible, so only a visible center group counts.
+  const gridGroups = api.groups.filter(
+    (g) => isMainGrid(g.api.location.type) && g.api.isVisible,
+  );
   if (gridGroups.length === 0) {
     const group = api.addGroup();
     return { referenceGroup: group.id };

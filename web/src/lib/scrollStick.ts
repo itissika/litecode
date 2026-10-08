@@ -6,6 +6,8 @@ import {
   type RefObject,
 } from "react";
 
+import { viewOf } from "./domView";
+
 /** Keys that scroll a container; used to detect keyboard scroll intent. */
 export const SCROLL_INTENT_KEYS = new Set([
   "ArrowUp",
@@ -110,6 +112,7 @@ export function useStickToBottom({
   useEffect(() => {
     const el = ref.current;
     if (!el || !active) return;
+    const view = viewOf(el);
 
     let stickRaf = 0;
     let scrollRaf = 0;
@@ -118,7 +121,7 @@ export function useStickToBottom({
     // rAF so trackpad momentum that settles past the end does not flip-flop.
     const afterHumanScroll = () => {
       if (stickRaf) return;
-      stickRaf = requestAnimationFrame(() => {
+      stickRaf = view.requestAnimationFrame(() => {
         stickRaf = 0;
         setStick(isAtEndRef.current());
       });
@@ -176,7 +179,7 @@ export function useStickToBottom({
         setStick(isAtEndRef.current());
       }
       if (onScrollRef.current && !scrollRaf) {
-        scrollRaf = requestAnimationFrame(() => {
+        scrollRaf = view.requestAnimationFrame(() => {
           scrollRaf = 0;
           onScrollRef.current?.();
         });
@@ -191,8 +194,8 @@ export function useStickToBottom({
     el.addEventListener("pointerup", onPointerUp);
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => {
-      if (stickRaf) cancelAnimationFrame(stickRaf);
-      if (scrollRaf) cancelAnimationFrame(scrollRaf);
+      if (stickRaf) view.cancelAnimationFrame(stickRaf);
+      if (scrollRaf) view.cancelAnimationFrame(scrollRaf);
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("touchstart", onTouchStart);
       el.removeEventListener("touchmove", onTouchMove);

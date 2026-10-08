@@ -5,16 +5,13 @@ import ReactMarkdown, {
 } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { chipForMarker } from "../../lib/knowledge/refDisplay";
 import { knowledgeFirstLineSegments } from "../../lib/knowledge/markers";
 import {
   parseKnowledgeRef,
   parseLocationRef,
   remarkKnowledgeRef,
 } from "../../lib/knowledge/remarkKnowledgeRef";
-import { useKnowledgeStore } from "../../stores/knowledgeStore";
-import { WorkspaceCitationChip } from "../CitationChip";
-import { KnowledgeRefChip } from "./KnowledgeRefChip";
+import { CitationChip } from "../CitationChip";
 
 const KnowledgeSourceContext = createContext<string | null>(null);
 
@@ -35,19 +32,30 @@ function inlineText(children: ReactNode): string {
 
 function BodyRefChip({ marker, label }: { marker: string; label: string }) {
   const sourceId = useContext(KnowledgeSourceContext);
-  const source = useKnowledgeStore((s) =>
-    sourceId == null ? undefined : s.byId.get(sourceId),
-  );
-  const byKey = useKnowledgeStore((s) => s.byKey);
-  const focusCanvas = useKnowledgeStore((s) => s.focusCanvas);
-  if (!source) return <span>{marker}</span>;
-  const model = chipForMarker(source, marker, byKey, label);
+  if (!sourceId) return <span>{marker}</span>;
   return (
-    <KnowledgeRefChip
-      model={model}
-      onActivate={() => {
-        if (model.targetId != null) focusCanvas(model.targetId);
-      }}
+    <CitationChip
+      citation={{ kind: "node", key: marker }}
+      sourceId={sourceId}
+      label={label}
+    />
+  );
+}
+
+function FileRefChip({
+  path,
+  symbol,
+  line,
+}: {
+  path: string;
+  symbol: string | null;
+  line: number | null;
+}) {
+  const sourceId = useContext(KnowledgeSourceContext) ?? undefined;
+  return (
+    <CitationChip
+      citation={{ kind: "file", path, symbol, line }}
+      sourceId={sourceId}
     />
   );
 }
@@ -65,7 +73,7 @@ const components: Components = {
     const located = parseLocationRef(href);
     if (located) {
       return (
-        <WorkspaceCitationChip
+        <FileRefChip
           path={located.path}
           symbol={located.symbol}
           line={located.line}

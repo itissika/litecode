@@ -5,8 +5,10 @@ import { clearFoldCardOpen } from "../../components/foldCardState";
 import { recoverDefaultLayout } from "../config/layout";
 import { foldPopoutsIntoGrid } from "../config/foldPopoutLayout";
 import { noteLayoutSettled } from "../../lib/centreChat";
+import { watchGridGroups } from "../../lib/knowledge/panel";
 import { buildTabContextMenuItems } from "../config/tabContextMenu";
-import { isCenterDock } from "../popout/location";
+import { bindTabDrag, dragSourceLocation } from "../drag/bindTabDrag";
+import { rejectsDockTarget } from "../drag/tabDragPolicy";
 import { bindPopoutWindows } from "../popout/popoutChrome";
 import { closingFlags } from "../config/sharedFlags";
 import { useEditorStore } from "../../stores/editorStore";
@@ -73,22 +75,8 @@ export function layoutStore(): LayoutStore {
 
 /** Center grid and popout windows are one dock. Edge rails stay on their own. */
 export function preventCrossZoneDrop(event: DockviewWillDropEvent, api: DockviewApi) {
-  const data = event.getData();
-  const sourceZone = data?.panelId
-    ? api.getPanel(data.panelId)?.api.location.type
-    : data?.groupId
-      ? api.getGroup(data.groupId)?.api.location.type
-      : undefined;
-  if (!sourceZone) return;
-
-  const targetZone = event.group?.api.location.type;
-  if (!targetZone) {
-    if (sourceZone === "edge") event.preventDefault();
-    return;
-  }
-
-  if (isCenterDock(sourceZone) && isCenterDock(targetZone)) return;
-  if (sourceZone !== targetZone) event.preventDefault();
+  const source = dragSourceLocation(event.getData(), api);
+  if (rejectsDockTarget(source, event.group?.api.location.type)) event.preventDefault();
 }
 
 export function useDockviewConfig() {
@@ -100,6 +88,7 @@ export function useDockviewConfig() {
 
     useEditorStore.getState().setDockviewApi(api);
     setDockviewApi(api);
+    watchGridGroups(api);
 
     api.onDidRemovePanel((panel) => {
       if (panel.api.component === "editor" && !closingFlags.closingFromStore) {
@@ -184,6 +173,7 @@ export function useDockviewConfig() {
     }
 
     bindPopoutWindows(api);
+    bindTabDrag(api);
 
     let saveTimer: ReturnType<typeof setTimeout>;
     api.onDidLayoutChange(() => {

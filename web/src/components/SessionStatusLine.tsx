@@ -16,6 +16,7 @@ import { normalizeToolFilePath } from "../api/adapter";
 import type { BashJob } from "../api/types";
 import { readFile } from "../api/workspace";
 import { bashCallMetaByCallId, type BashCallMeta } from "../lib/bashLive";
+import { paintDragCursor, viewOf } from "../lib/domView";
 import { bashKill } from "../lib/litecodeBash";
 import { useBashStore } from "../stores/bashStore";
 import { useEditorStore } from "../stores/editorStore";
@@ -201,10 +202,12 @@ export function SessionStatusLine({
   // primary path, but if the browser suppresses the animation (reduced-motion,
   // backgrounded tab) the timer guarantees the mount never lingers.
   const closeTimerRef = useRef<number | null>(null);
+  const closeTimerViewRef = useRef<Window | null>(null);
   const finishClose = () => {
     if (closeTimerRef.current !== null) {
-      window.clearTimeout(closeTimerRef.current);
+      (closeTimerViewRef.current ?? window).clearTimeout(closeTimerRef.current);
       closeTimerRef.current = null;
+      closeTimerViewRef.current = null;
     }
     setClosingId(null);
   };
@@ -234,10 +237,10 @@ export function SessionStatusLine({
   // never stays stuck at ns-resize / user-select:none. (The dragged height is
   // dropped by the opening handlers below, right before the new panel mounts.)
   useEffect(() => {
+    const root = rootRef.current;
     return () => {
       draggingRef.current = false;
-      document.body.style.userSelect = "";
-      document.body.style.cursor = "";
+      paintDragCursor(root, false);
     };
   }, [openId]);
 
@@ -250,11 +253,14 @@ export function SessionStatusLine({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") requestClose();
     };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
+    const root = rootRef.current;
+    const view = viewOf(root);
+    const doc = root?.ownerDocument ?? document;
+    doc.addEventListener("mousedown", onDown);
+    view.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
+      doc.removeEventListener("mousedown", onDown);
+      view.removeEventListener("keydown", onKey);
     };
   }, [openId]);
 
@@ -264,7 +270,9 @@ export function SessionStatusLine({
   const requestClose = () => {
     if (openId && !closingId) {
       setClosingId(openId);
-      closeTimerRef.current = window.setTimeout(finishClose, PANEL_EXIT_MS);
+      const view = viewOf(rootRef.current);
+      closeTimerViewRef.current = view;
+      closeTimerRef.current = view.setTimeout(finishClose, PANEL_EXIT_MS);
     }
     setOpenId(null);
   };
@@ -395,8 +403,7 @@ export function SessionStatusLine({
     heightRef.current = h;
     dragStartRef.current = { y: e.clientY, h };
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-    document.body.style.userSelect = "none";
-    document.body.style.cursor = "ns-resize";
+    paintDragCursor(e.currentTarget, true);
   };
 
   const onResizeMove = (e: ReactPointerEvent) => {
@@ -410,8 +417,7 @@ export function SessionStatusLine({
     const el = e.currentTarget as HTMLElement;
     if (el.hasPointerCapture?.(e.pointerId))
       el.releasePointerCapture?.(e.pointerId);
-    document.body.style.userSelect = "";
-    document.body.style.cursor = "";
+    paintDragCursor(el, false);
   };
 
   const openPlan = (path: string) => {

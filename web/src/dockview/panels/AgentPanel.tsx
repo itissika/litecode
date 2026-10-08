@@ -32,6 +32,7 @@ import { PermissionCard } from "../../components/PermissionModal";
 import { ProgressiveBlur } from "../../components/ProgressiveBlur";
 import { SessionStatusLine } from "../../components/SessionStatusLine";
 import { releaseSessionTab } from "../../components/sessionTeardown";
+import { isHostElement, viewOf } from "../../lib/domView";
 import { SubagentReadOnlyContent } from "../../components/SubagentReadOnlyContent";
 import { composerCardClass } from "../../components/composerCard";
 import { UserMessageRail } from "../../components/transcript/UserMessageRail";
@@ -211,6 +212,8 @@ export function AgentChatShell({
   // (the pad only exists to keep the tail clear of the floating composer).
   const [composerCollapsed, setComposerCollapsed] = useState(false);
   const dismissTimerRef = useRef<number | null>(null);
+  const dismissTimerViewRef = useRef<Window | null>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
   const jumpToEndRef = useRef<(() => void) | null>(null);
   const revealBashRef = useRef<((callId: string) => void) | null>(null);
   const revealSeqRef = useRef<RevealSeq | null>(null);
@@ -269,37 +272,39 @@ export function AgentChatShell({
     );
   }, []);
 
+  const clearDismissTimer = useCallback(() => {
+    if (dismissTimerRef.current === null) return;
+    (dismissTimerViewRef.current ?? window).clearTimeout(dismissTimerRef.current);
+    dismissTimerRef.current = null;
+    dismissTimerViewRef.current = null;
+  }, []);
+
   const finishDismiss = useCallback(() => {
-    if (dismissTimerRef.current !== null) {
-      clearTimeout(dismissTimerRef.current);
-      dismissTimerRef.current = null;
-    }
+    clearDismissTimer();
     setMiniPhase("idle");
     setEditingAnchor(null);
-  }, []);
+  }, [clearDismissTimer]);
 
   const dismiss = useCallback(() => {
     if (miniPhase === "visible" || miniPhase === "entering") {
       setMiniPhase("exiting");
-      dismissTimerRef.current = window.setTimeout(finishDismiss, 180);
+      clearDismissTimer();
+      const view = viewOf(shellRef.current);
+      dismissTimerViewRef.current = view;
+      dismissTimerRef.current = view.setTimeout(finishDismiss, 180);
     }
-  }, [finishDismiss, miniPhase]);
+  }, [clearDismissTimer, finishDismiss, miniPhase]);
 
-  useEffect(
-    () => () => {
-      if (dismissTimerRef.current !== null) {
-        clearTimeout(dismissTimerRef.current);
-      }
-    },
-    [],
-  );
+  useEffect(() => () => clearDismissTimer(), [clearDismissTimer]);
 
   useEffect(() => {
     if (!editingAnchor) return;
+    const root = shellRef.current;
+    const doc = root?.ownerDocument ?? document;
     const dismissOutside = (event: MouseEvent) => {
       const target = event.target;
       if (
-        target instanceof Element &&
+        isHostElement(target, root) &&
         target.closest(
           "[data-mini-chat-input], [data-user-message-bubble], [data-dropdown-panel]",
         )
@@ -308,12 +313,12 @@ export function AgentChatShell({
       }
       dismiss();
     };
-    document.addEventListener("mousedown", dismissOutside);
-    return () => document.removeEventListener("mousedown", dismissOutside);
+    doc.addEventListener("mousedown", dismissOutside);
+    return () => doc.removeEventListener("mousedown", dismissOutside);
   }, [editingAnchor, dismiss]);
 
   return (
-    <div className="relative flex h-full flex-col">
+    <div ref={shellRef} className="relative flex h-full flex-col">
       <MessageListRegion
         sessionId={sessionId}
         isActive={isActive}

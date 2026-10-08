@@ -114,7 +114,8 @@ impl McpConnectionPool {
         }
     }
 
-    async fn on_hub<T: Send + 'static>(
+    /// Hop `fut` onto the MCP hub and await it. Does not block the caller thread.
+    pub(crate) async fn on_hub<T: Send + 'static>(
         &self,
         fut: impl Future<Output = T> + Send + 'static,
     ) -> Result<T> {

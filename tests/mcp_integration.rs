@@ -361,3 +361,60 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
         result.content
     );
 }
+
+/// `execute` must return a pending future so a caller timeout can fire while
+/// the hub call is still running.
+#[tokio::test(flavor = "current_thread")]
+async fn execute_stays_pending_while_hang_blocks_on_hub() {
+    use std::time::{Duration, Instant};
+
+    let pool = Arc::new(McpConnectionPool::new());
+    let def = mock_def();
+    pool.start("mock", &def, None).await.expect("start");
+
+    let (cmd, args) = mock_command();
+    let tool = McpTool::new(
+        "mock",
+        "hang".into(),
+        serde_json::json!({"type": "object", "properties": {}}),
+        McpServerConnection {
+            tool_name: "hang".into(),
+            server_name: "mock".into(),
+            command: cmd,
+            args,
+            env: HashMap::new(),
+            cwd: None,
+            pool: Arc::clone(&pool),
+            timeout_secs: 3,
+        },
+    );
+
+    let started = Instant::now();
+    let raced = tokio::time::timeout(
+        Duration::from_secs(1),
+        tool.execute(
+            serde_json::json!({}),
+            litecode::tool::trait_::ToolExecutionContext {
+                path_mode: litecode::workspace::ToolPathMode::Safe,
+                workspace_root: std::path::PathBuf::from("."),
+                call_id: "call_hang".into(),
+                cancel: tokio_util::sync::CancellationToken::new(),
+                output_limit: 8000,
+                session_id: String::new(),
+                session: None,
+            },
+        ),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    pool.stop("mock").await;
+
+    assert!(
+        raced.is_err(),
+        "execute must stay pending so a caller timeout can fire, got {raced:?} after {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "caller timeout did not fire ahead of the hub timeout: {elapsed:?}"
+    );
+}

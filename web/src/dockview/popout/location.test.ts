@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { dockIdFromLocation, isCenterDock, isMainGrid } from "./location";
+import { dockIdFromLocation, isCenterDock, isMainGrid, isPopout } from "./location";
 
 const DOCK = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 
@@ -9,6 +9,8 @@ describe("dock location", () => {
     expect(isMainGrid("grid")).toBe(true);
     expect(isMainGrid("popout")).toBe(false);
     expect(isMainGrid("edge")).toBe(false);
+    expect(isPopout("popout")).toBe(true);
+    expect(isPopout("grid")).toBe(false);
     expect(isCenterDock("grid")).toBe(true);
     expect(isCenterDock("popout")).toBe(true);
     expect(isCenterDock("edge")).toBe(false);

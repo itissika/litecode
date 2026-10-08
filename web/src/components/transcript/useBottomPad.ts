@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
+import { hostResizeObserver, viewOf } from "../../lib/domView";
+
 /**
  * Trailing clearance, as a fraction of the scroll viewport, that keeps the tail
  * of the transcript readable: half a viewport while the composer floats over it,
@@ -10,8 +12,8 @@ const PAD_EXPANDED = 0.5;
 const PAD_COLLAPSED = 0.2;
 
 /** Native glide for the scroll moves the list makes on its own (pad changes). */
-export function scrollGlide(): ScrollBehavior {
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches
+export function scrollGlide(view: Window = window): ScrollBehavior {
+  return view.matchMedia("(prefers-reduced-motion: reduce)").matches
     ? "auto"
     : "smooth";
 }
@@ -41,20 +43,22 @@ export function useBottomPad({
   const padGrewRef = useRef(false);
 
   useEffect(() => {
+    const el = scrollRef.current;
+    const view = viewOf(el);
     const measure = () => {
-      const el = scrollRef.current;
-      if (!el) return;
-      const h = el.getBoundingClientRect().height;
+      const node = scrollRef.current;
+      if (!node) return;
+      const h = node.getBoundingClientRect().height;
       setViewportH(h > 0 ? h : 0);
     };
     measure();
-    const raf = requestAnimationFrame(measure);
-    const ro = new ResizeObserver(measure);
-    const el = scrollRef.current;
-    if (el) ro.observe(el);
+    const raf = view.requestAnimationFrame(measure);
+    const Observer = hostResizeObserver(el);
+    const ro = Observer ? new Observer(measure) : null;
+    if (el && ro) ro.observe(el);
     return () => {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
+      view.cancelAnimationFrame(raf);
+      ro?.disconnect();
     };
   }, [scrollRef]);
 
@@ -113,23 +117,24 @@ export function useBottomPadMotion({
       setPadCollapsed(composerCollapsed);
       return;
     }
+    const view = viewOf(el);
     let settled = false;
     const finish = () => {
       if (settled) return;
       settled = true;
       el.removeEventListener("scrollend", finish);
-      clearTimeout(fallback);
+      view.clearTimeout(fallback);
       setPadCollapsed(true);
     };
     // `scrollend` is the exact signal, the timer the safety net for engines that
     // never send it (a late drop only clamps by the few px still in flight).
-    const fallback = window.setTimeout(finish, 700);
+    const fallback = view.setTimeout(finish, 700);
     el.addEventListener("scrollend", finish);
-    virtualizer.scrollToOffset(nextMax, { behavior: scrollGlide() });
+    virtualizer.scrollToOffset(nextMax, { behavior: scrollGlide(view) });
     return () => {
       settled = true;
       el.removeEventListener("scrollend", finish);
-      clearTimeout(fallback);
+      view.clearTimeout(fallback);
     };
   }, [
     composerCollapsed,

@@ -10,6 +10,10 @@ export function isMainGrid(type: string | undefined): boolean {
   return type === "grid";
 }
 
+export function isPopout(type: string | undefined): boolean {
+  return type === "popout";
+}
+
 export function isCenterDock(type: string | undefined): boolean {
   return type === "grid" || type === "popout";
 }

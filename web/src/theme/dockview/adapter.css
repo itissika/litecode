@@ -141,6 +141,39 @@
   height: 100%;
 }
 
+/* Popout windows have no OS title bar. The tab-bar void is the drag handle.
+   The minimum covers a drag strip plus the pin button when the tabs fill the row. */
+.litecode-popout .dv-tabs-and-actions-container:not(.dv-groupview-header-vertical) .dv-void-container {
+  flex-shrink: 0;
+  align-items: center;
+  min-width: 60px;
+  -webkit-app-region: drag;
+}
+
+.litecode-popout .lc-popout-pin {
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  margin-right: 6px;
+  flex: 0 0 auto;
+  border: 0;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--_dk-text-muted);
+  cursor: pointer;
+}
+
+.litecode-popout .lc-popout-pin:hover,
+.litecode-popout .lc-popout-pin[aria-pressed="true"] {
+  color: var(--_dk-text-primary);
+  background: var(--_dk-line-visible);
+}
+
 /* ═══ SASH ═══ */
 .litecode-dv-base .dv-sash:hover,
 .litecode-dv-base .dv-sash.dv-sash-hover {

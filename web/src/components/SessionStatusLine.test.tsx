@@ -1386,7 +1386,7 @@ describe("SessionStatusLine — subagent roster panel (dock)", () => {
       getPanel: () => undefined,
       addPanel,
       addGroup: vi.fn(() => ({ id: "g-new" })),
-      groups: [{ api: { location: { type: "grid" }, id: "g1" } }],
+      groups: [{ api: { location: { type: "grid" }, id: "g1", isVisible: true } }],
     } as never);
 
     const roster = openRoster();

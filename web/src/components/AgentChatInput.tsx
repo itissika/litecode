@@ -9,6 +9,7 @@ import {
   normalizeImage,
 } from "../lib/imageNormalize";
 
+import { paintDragCursor, viewOf } from "../lib/domView";
 import { mentionKeysOf } from "../lib/knowledge/flowProjection";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useKnowledgeStore } from "../stores/knowledgeStore";
@@ -274,7 +275,8 @@ export function AgentChatInput({
           })),
         ]);
       }
-      requestAnimationFrame(() => {
+      const view = viewOf(boxRef.current);
+      view.requestAnimationFrame(() => {
         editorRef.current?.focus();
       });
     });
@@ -338,14 +340,17 @@ export function AgentChatInput({
   const draggingRef = useRef(false);
   const dragStartRef = useRef({ y: 0, h: 0 });
   const rafRef = useRef<number | null>(null);
+  const rafViewRef = useRef<Window>(window);
+
+  const cancelDragFrame = () => {
+    if (rafRef.current == null) return;
+    rafViewRef.current.cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+  };
 
   // Cancel any pending resize frame on unmount to avoid writing to a
   // detached textarea.
-  useEffect(() => {
-    return () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    };
-  }, []);
+  useEffect(() => () => cancelDragFrame(), []);
 
   const applyResize = (clientY: number) => {
     rafRef.current = null;
@@ -385,30 +390,27 @@ export function AgentChatInput({
     draggingRef.current = true;
     dragStartRef.current = { y: e.clientY, h: box.offsetHeight };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    document.body.style.userSelect = "none";
-    document.body.style.cursor = "ns-resize";
+    paintDragCursor(e.currentTarget, true);
   };
 
   const onResizeEnd = (e: React.PointerEvent) => {
     if (!draggingRef.current) return;
     draggingRef.current = false;
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
+    cancelDragFrame();
     const el = e.currentTarget as HTMLElement;
     if (el.hasPointerCapture?.(e.pointerId))
       el.releasePointerCapture(e.pointerId);
-    document.body.style.userSelect = "";
-    document.body.style.cursor = "";
+    paintDragCursor(el, false);
   };
 
   const onResizeMove = (e: React.PointerEvent) => {
     if (!draggingRef.current) return;
     // Coalesce high-frequency move events into a single style write per frame.
     const y = e.clientY;
-    if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => applyResize(y));
+    cancelDragFrame();
+    const view = viewOf(e.currentTarget);
+    rafViewRef.current = view;
+    rafRef.current = view.requestAnimationFrame(() => applyResize(y));
   };
 
   const isRunning = runState === "running" || runState === "cancelling";

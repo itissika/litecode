@@ -130,11 +130,8 @@ export interface LitecodeDesktopBridge {
   windowMaximizeToggle?: () => Promise<boolean>;
   windowIsMaximized?: () => Promise<boolean>;
   windowClose?: () => Promise<void>;
-  /** Chrome for one dockview popout. Calls originate in the main window. */
-  popoutWindowMinimize?: (dockId: string) => Promise<void>;
-  popoutWindowMaximizeToggle?: (dockId: string) => Promise<boolean>;
-  popoutWindowIsMaximized?: (dockId: string) => Promise<boolean>;
-  popoutWindowClose?: (dockId: string) => Promise<void>;
+  /** Pin one popout window above ordinary windows. The main window is unchanged. */
+  popoutSetAlwaysOnTop?: (dockId: string, onTop: boolean) => Promise<boolean>;
   /** Embedded browser pages. Present only in the Electron host. */
   browserCreate?: (input: {
     id: string;

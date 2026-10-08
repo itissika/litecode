@@ -4,14 +4,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { citationUrlTransform, classifyWorkspaceLink } from "../lib/citationRef";
-import { normalizeKey } from "../lib/knowledge/markers";
-import { revealKnowledgeNode } from "../lib/knowledge/panel";
 import {
   parseKnowledgeRef,
   parseLocationRef,
   remarkKnowledgeRef,
 } from "../lib/knowledge/remarkKnowledgeRef";
-import { useKnowledgeStore } from "../stores/knowledgeStore";
 import {
   getMarkdownHighlighter,
   isSupportedHighlightLang,
@@ -21,7 +18,7 @@ import {
 } from "../lib/shiki";
 import { isMermaidLang } from "../lib/mermaid";
 import { useStreamingBuffer } from "../lib/streamingBuffer";
-import { WorkspaceCitationChip } from "./CitationChip";
+import { CitationChip } from "./CitationChip";
 import { MermaidBlock } from "./MermaidBlock";
 
 const GENERIC_LANGS = new Set(["", "text", "txt", "plain", "plaintext"]);
@@ -109,33 +106,6 @@ function linkLabel(children: ReactNode): string {
   return "";
 }
 
-function NodeCitationChip({ id, label }: { id: string; label: string }) {
-  const key = normalizeKey(id);
-  const target = useKnowledgeStore((state) => (key ? state.byKey.get(key) : undefined));
-  const shown = label || key;
-  return (
-    <span className={target ? "knowledge-token" : "knowledge-token is-invalid"}>
-      {target ? (
-        <button
-          type="button"
-          className="knowledge-token-label"
-          aria-label={shown}
-          onMouseDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            revealKnowledgeNode(target.id);
-          }}
-        >
-          {shown}
-        </button>
-      ) : (
-        <span className="knowledge-token-label">{shown}</span>
-      )}
-    </span>
-  );
-}
-
 interface AgentMarkdownProps {
   text: string;
   streaming?: boolean;
@@ -191,25 +161,36 @@ export const AgentMarkdown = memo(function AgentMarkdown({
       a: ({ href, children }: { href?: string; children?: ReactNode }) => {
         const nodeKey = citations ? parseKnowledgeRef(href) : null;
         if (nodeKey) {
-          return <NodeCitationChip id={nodeKey} label={linkLabel(children) || nodeKey} />;
+          return (
+            <CitationChip
+              citation={{ kind: "node", key: nodeKey }}
+              label={linkLabel(children) || nodeKey}
+            />
+          );
         }
         const located = citations ? parseLocationRef(href) : null;
         if (located) {
           return (
-            <WorkspaceCitationChip
-              path={located.path}
-              symbol={located.symbol}
-              line={located.line}
+            <CitationChip
+              citation={{
+                kind: "file",
+                path: located.path,
+                symbol: located.symbol,
+                line: located.line,
+              }}
             />
           );
         }
         const workspaceLink = citations ? classifyWorkspaceLink(href) : null;
         if (workspaceLink?.action === "chip") {
           return (
-            <WorkspaceCitationChip
-              path={workspaceLink.path}
-              symbol={workspaceLink.symbol}
-              line={workspaceLink.line}
+            <CitationChip
+              citation={{
+                kind: "file",
+                path: workspaceLink.path,
+                symbol: workspaceLink.symbol,
+                line: workspaceLink.line,
+              }}
             />
           );
         }

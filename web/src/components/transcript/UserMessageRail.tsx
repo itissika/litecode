@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 
+import { hostResizeObserver, viewOf } from "../../lib/domView";
+
 import {
   nearestUserMark,
   placeUserRailTicks,
@@ -116,7 +118,7 @@ export function UserMessageRail({
           `[data-user-rail-seq="${tick.seq}"]`,
         );
         if (!node) {
-          node = document.createElement("button");
+          node = scroller.ownerDocument.createElement("button");
           node.type = "button";
           node.dataset.userRailSeq = String(tick.seq);
           node.setAttribute("aria-label", "Jump to user message");
@@ -142,17 +144,16 @@ export function UserMessageRail({
       }
     };
 
+    const view = viewOf(scroller);
     const schedule = () => {
       if (frame !== 0) return;
-      frame = requestAnimationFrame(paint);
+      frame = view.requestAnimationFrame(paint);
     };
 
     notifyRef.current = schedule;
     scroller.addEventListener("scroll", schedule, { passive: true });
-    const observer =
-      typeof ResizeObserver === "undefined"
-        ? null
-        : new ResizeObserver(schedule);
+    const Observer = hostResizeObserver(scroller);
+    const observer = Observer ? new Observer(schedule) : null;
     observer?.observe(scroller);
     schedule();
 
@@ -160,7 +161,7 @@ export function UserMessageRail({
       if (notifyRef.current === schedule) notifyRef.current = null;
       scroller.removeEventListener("scroll", schedule);
       observer?.disconnect();
-      if (frame !== 0) cancelAnimationFrame(frame);
+      if (frame !== 0) view.cancelAnimationFrame(frame);
     };
   }, [scrollRef, layoutRef, notifyRef]);
 
