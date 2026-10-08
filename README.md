@@ -86,7 +86,7 @@ The design rationale lives in the repo's own knowledge base — `knowledge/`, th
 ## 🧑‍💻 Development
 
 ```powershell
-# Windows desktop (Electron host + sidecar)
+# Windows desktop (Electron host + sidecar, Vite hot reload in the window)
 ./scripts/dev_win.ps1
 ```
 

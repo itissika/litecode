@@ -4,18 +4,23 @@ Host shell for the `litecode` sidecar. Users never type a serve auth token for
 local workspaces; remote sessions generate a token automatically and show it
 read-only.
 
-## Dev (Windows — preferred, end-state shell)
+## Dev (Windows — preferred)
 
-One-shot PowerShell loop: assemble `dist/product` (debug cargo + `web/dist`) and launch Electron so it spawns the sidecar with auth injection — same shape as a packaged install, not the browser Vite path (`scripts/serve.sh` / `scripts/serve_win.ps1`).
+One-shot PowerShell loop: assemble `dist/product` and launch Electron. The shell still spawns the sidecar (auth injection, hub, workspace switch). The workbench page comes from Vite, so edits under `web/` hot-reload in the desktop window. `-NoHmr` loads the sidecar's built `web/dist` instead — the packaged shape.
 
 ```powershell
 # From repo root
 ./scripts/dev_win.ps1
-./scripts/dev_win.ps1 -RebuildWeb     # after UI changes
+./scripts/dev_win.ps1 -NoHmr          # static UI, same document as a packaged install
+./scripts/dev_win.ps1 -RebuildWeb     # refresh web/dist (sidecar boot; required for -NoHmr UI changes)
 ./scripts/dev_win.ps1 -SkipAssemble   # reuse existing dist/product
 ```
 
-For UI HMR in a normal browser (transition), use `./scripts/serve_win.ps1` instead — it prints a `LITECODE_BROWSER_DEV` handshake URL with `?token=`.
+`web/` changes do not need `-RebuildWeb` while hot reload is on. The sidecar still needs a `web/dist` to start; the first assemble builds it, and later launches reuse it.
+
+For the same Vite loop in a normal browser, use `./scripts/serve_win.ps1`. It prints a `LITECODE_BROWSER_DEV` handshake URL with `?token=`.
+
+Hot reload follows the sidecar's ephemeral port: Electron writes the READY origin to `dist/dev-sidecar-upstream.txt`, and Vite proxies `/api`, `/ws`, and `/health` there. Remote workbenches stay on the remote server. Shell changes (`desktop/src`) still restart with the Electron process.
 
 ## Dev (Linux / manual)
 

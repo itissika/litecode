@@ -44,13 +44,14 @@ and `/api` to `127.0.0.1:7483` (or `LITECODE_BIND` when set — see below).
 # open the printed LITECODE_BROWSER_DEV link (includes ?token=)
 ```
 
-End-state Electron shell: `./scripts/dev_win.ps1` (no Vite HMR).
+Desktop shell with the same hot reload inside the Electron window: `./scripts/dev_win.ps1`. `-NoHmr` loads the built `web/dist` instead.
 
 ### Environment variables
 
 | Variable | Description |
 |----------|-------------|
-| `LITECODE_BIND` | API host:port the dev proxy targets (default `127.0.0.1:7483`). Set it — or pass `-Bind` to `serve_win.ps1` — when another app already owns `7483`. |
+| `LITECODE_BIND` | API host:port the dev proxy targets (default `127.0.0.1:7483`). Set it — or pass `-Bind` to `serve_win.ps1` — when another app already owns `7483`. Ignored when `LITECODE_DEV_UPSTREAM_FILE` is set. |
+| `LITECODE_DEV_UPSTREAM_FILE` | **Desktop hot reload.** Vite reads the sidecar origin from this file on each `/api`, `/ws`, and `/health` request, because the desktop sidecar binds an ephemeral port. `dev_win.ps1` sets it. Loopback http(s) only. |
 | `VITE_WS_URL` | Override WebSocket URL when not using the Vite proxy (e.g. `ws://127.0.0.1:7483/ws`) |
 | `VITE_AUTH_TOKEN` | **Dev only.** Must match server `LITECODE_TOKEN`; sent as query `?token=` and as the `auth` wire frame on connect. Prefer starting via `scripts/serve_win.ps1` / `serve.sh`, which inject matching tokens. You can also open a handshake URL with `?token=` (read by `getAuthToken`). Production builds served by `litecode serve` should rely on host-injected auth — do not embed secrets in the client bundle. |
 

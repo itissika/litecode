@@ -1,19 +1,47 @@
 /// <reference types="vitest/config" />
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, type ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+
+import { DEV_UPSTREAM_CLOSED, pointProxyAtDevUpstream } from "./devUpstream.ts";
+
+/**
+ * `dev_win.ps1` sets `LITECODE_DEV_UPSTREAM_FILE`. The desktop sidecar binds an
+ * ephemeral port, so the proxy target is read from that file on each request.
+ * Vite passes this options object straight to http-proxy, so updating `target`
+ * inside `bypass` (which runs before the proxy call) retargets that request.
+ * `serve_win.ps1` / `serve.sh` leave the file unset and use `LITECODE_BIND`.
+ */
+function sidecarProxy(fixedTarget: string, ws: boolean, upstreamFile: string): ProxyOptions {
+  if (!upstreamFile) {
+    return ws
+      ? { target: fixedTarget, ws: true, changeOrigin: true }
+      : { target: fixedTarget, changeOrigin: true };
+  }
+  const options: ProxyOptions = {
+    target: DEV_UPSTREAM_CLOSED,
+    changeOrigin: true,
+    bypass() {
+      pointProxyAtDevUpstream(options, upstreamFile);
+    },
+  };
+  if (ws) options.ws = true;
+  return options;
+}
 
 export default defineConfig(({ mode }) => {
   // serve_win.ps1 / serve.sh export LITECODE_BIND so a non-default bind (e.g.
   // when another app owns 7483 on Windows) keeps the dev proxy in sync.
   // Falls back to the historical default when unset.
-  const bind = loadEnv(mode, ".", "LITECODE_").LITECODE_BIND || "127.0.0.1:7483";
+  const env = loadEnv(mode, ".", "LITECODE_");
+  const bind = env.LITECODE_BIND || "127.0.0.1:7483";
+  const upstreamFile = (env.LITECODE_DEV_UPSTREAM_FILE || process.env.LITECODE_DEV_UPSTREAM_FILE || "").trim();
 
   return {
     plugins: [react(), tailwindcss()],
     test: {
       environment: "jsdom",
-      include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+      include: ["src/**/*.test.ts", "src/**/*.test.tsx", "devUpstream.test.ts"],
     },
     server: {
       // Pin IPv4: `localhost` resolves to `::1` first on Windows, so Vite would
@@ -25,19 +53,9 @@ export default defineConfig(({ mode }) => {
         ignored: ['**/node_modules/**', '**/dist/**', '**/.git/**'],
       },
       proxy: {
-        "/ws": {
-          target: `ws://${bind}`,
-          ws: true,
-          changeOrigin: true,
-        },
-        "/health": {
-          target: `http://${bind}`,
-          changeOrigin: true,
-        },
-        "/api": {
-          target: `http://${bind}`,
-          changeOrigin: true,
-        },
+        "/ws": sidecarProxy(`ws://${bind}`, true, upstreamFile),
+        "/health": sidecarProxy(`http://${bind}`, false, upstreamFile),
+        "/api": sidecarProxy(`http://${bind}`, false, upstreamFile),
       },
     },
   };

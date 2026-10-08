@@ -1,8 +1,10 @@
 import type { IDockviewHeaderActionsProps } from "dockview-react";
 
 import { addBrowserPanel, showBrowserAddButton } from "../../lib/browserPanel";
+import { getPanelIcon } from "../tabs/icons";
 
 export function BrowserHeaderAction(props: IDockviewHeaderActionsProps) {
+  const BrowserIcon = getPanelIcon("browser");
   const hasBridge = typeof window.litecode?.browserCreate === "function";
   const locationType = props.location?.type ?? props.group.api.location.type;
   if (!showBrowserAddButton(locationType, hasBridge)) return null;
@@ -17,7 +19,7 @@ export function BrowserHeaderAction(props: IDockviewHeaderActionsProps) {
         onPointerDown={(event) => event.stopPropagation()}
         onClick={() => addBrowserPanel(props.containerApi, props.group.api.id)}
       >
-        +
+        <BrowserIcon size={14} weight="regular" aria-hidden />
       </button>
     </div>
   );

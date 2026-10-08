@@ -15,6 +15,13 @@ import {
 
 import { InstanceRegistry, normalizeWorkspace } from "./instance-registry";
 import { handshakeUrl } from "./handshake-url";
+import {
+  assertDevUiConfigured,
+  devUiDocumentUrl,
+  devUpstreamFilePath,
+  sameWorkbenchDocument,
+  syncDevUpstream,
+} from "./dev-ui";
 import { readWorkspaceLayout, writeWorkspaceLayout } from "./layout-file";
 import { writeHubPage } from "./hub";
 import {
@@ -775,14 +782,108 @@ async function reconnectRemote(targetId: string): Promise<{ ok: true; mode: "rem
   return connectManagedSsh(target.id, target.lastWorkspace);
 }
 
+const DEV_UI_WAIT_MS = 30_000;
+
+/**
+ * Local workbench document. With `LITECODE_UI_DEV_URL` this is the Vite origin
+ * (hot reload); otherwise it is the sidecar's own static page. The sidecar
+ * port is published before the window loads so the dev proxy can reach it.
+ */
+async function localWorkbenchUrl(readyUrl: string): Promise<string> {
+  const ui = devUiDocumentUrl(process.env.LITECODE_UI_DEV_URL);
+  assertDevUiConfigured(ui, devUpstreamFilePath());
+  syncDevUpstream(readyUrl);
+  if (!ui) return readyUrl;
+  await waitForDevUi(ui);
+  console.log(`[litecode] workbench hot reload ${ui} → ${readyUrl}`);
+  return ui;
+}
+
+async function waitForDevUi(url: string): Promise<void> {
+  const deadline = Date.now() + DEV_UI_WAIT_MS;
+  let lastError = "no response";
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return;
+      lastError = `HTTP ${response.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`Vite dev server did not become ready at ${url}: ${lastError}`);
+}
+
+/**
+ * Load the local workbench. A workspace switch keeps the same Vite document,
+ * so `loadURL` of that URL is not enough — reload after the upstream file moves
+ * to the new sidecar port.
+ */
+async function loadLocalWorkbench(win: BrowserWindow, readyUrl: string): Promise<void> {
+  const target = await localWorkbenchUrl(readyUrl);
+  let current = "";
+  try {
+    current = win.webContents.getURL();
+  } catch {
+    current = "";
+  }
+  if (sameWorkbenchDocument(current, target)) {
+    await reloadWorkbench(win);
+    return;
+  }
+  await safeLoadURL(win, target);
+}
+
+function reloadWorkbench(win: BrowserWindow): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (!win.isDestroyed()) {
+        win.webContents.removeListener("did-finish-load", onLoad);
+        win.webContents.removeListener("did-fail-load", onFail);
+      }
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      finish(new Error("Timed out reloading the workbench"));
+    }, DEV_UI_WAIT_MS);
+    const onLoad = () => finish();
+    // -3 is ERR_ABORTED: the reload itself cancels the previous navigation.
+    const onFail = (
+      _event: Electron.Event,
+      errorCode: number,
+      errorDescription: string,
+      _validatedURL: string,
+      isMainFrame: boolean,
+    ) => {
+      if (!isMainFrame || errorCode === -3) return;
+      finish(new Error(`Reload failed (${errorCode}): ${errorDescription}`));
+    };
+    win.webContents.once("did-finish-load", onLoad);
+    win.webContents.on("did-fail-load", onFail);
+    try {
+      win.webContents.reloadIgnoringCache();
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
 /**
  * Stop current sidecar (if any) and start a new one rooted at `workspace`.
- * Reloads the main window onto the new READY URL (new ephemeral port).
+ * Reloads the main window. The sidecar binds a new ephemeral port; in the Vite
+ * dev loop the document URL stays put and the proxy follows the new port.
  */
 async function relaunchSidecar(workspacePath: string): Promise<{ ok: true; project: string }> {
   const workspace = requireWorkspaceDirectory(workspacePath);
   await stopSidecar(sidecar);
   sidecar = null;
+  syncDevUpstream(null);
 
   sessionMode = "local";
   sidecar = await startSidecar({
@@ -796,7 +897,7 @@ async function relaunchSidecar(workspacePath: string): Promise<{ ok: true; proje
   recordRecent(workspace);
 
   if (mainWindow && !mainWindow.isDestroyed()) {
-    await safeLoadURL(mainWindow, sidecar.readyUrl);
+    await loadLocalWorkbench(mainWindow, sidecar.readyUrl);
   }
   return { ok: true, project: workspace };
 }
@@ -806,6 +907,7 @@ async function connectRemote(baseUrl: string, token: string): Promise<{ ok: true
   await waitForWorkspaceHealth(healthUrlFromBase(baseUrl));
   await stopSidecar(sidecar);
   sidecar = null;
+  syncDevUpstream(null);
   sessionMode = "remote";
   authToken = token;
   currentWorkspace = null;
@@ -827,10 +929,16 @@ async function connectSavedRemote(targetId: string): Promise<{ ok: true; mode: "
 
 async function boot(): Promise<void> {
   // Formal remote + legacy DEV escape hatch (same attach semantics).
+  // `LITECODE_UI_DEV_URL` is not that hatch: it only swaps the local document
+  // for Vite. Parse it first so a bad value fails before the sidecar starts.
+  const devUi = devUiDocumentUrl(process.env.LITECODE_UI_DEV_URL);
   const remoteUrl =
     process.env.LITECODE_REMOTE_URL?.trim() ||
     process.env.LITECODE_DEV_URL?.trim() ||
     "";
+  if (!remoteUrl) {
+    assertDevUiConfigured(devUi, devUpstreamFilePath());
+  }
   let content: BootContent;
 
   if (remoteUrl) {
@@ -864,7 +972,7 @@ async function boot(): Promise<void> {
       await verifySidecarAttached(sidecar);
       currentWorkspace = workspace;
       recordRecent(workspace);
-      content = { kind: "url", url: sidecar.readyUrl };
+      content = { kind: "url", url: await localWorkbenchUrl(sidecar.readyUrl) };
     } else {
       content = { kind: "hub" };
     }
@@ -1217,6 +1325,7 @@ function registerIpc(): void {
     await stopSidecar(sidecar);
     await stopManagedRemote();
     sidecar = null;
+    syncDevUpstream(null);
     sessionMode = "local";
     authToken = createToken();
     currentWorkspace = null;
@@ -1275,6 +1384,7 @@ app.whenReady().then(async () => {
     // never verifies), stop it so we never leave an orphan server process.
     await stopSidecar(sidecar).catch(() => undefined);
     sidecar = null;
+    syncDevUpstream(null);
     dialog.showErrorBox("Litecode failed to start", message);
     app.exit(1);
   }
@@ -1295,6 +1405,7 @@ app.on("before-quit", (e) => {
     await stopSidecar(sidecar);
     await stopManagedRemote();
     sidecar = null;
+    syncDevUpstream(null);
     app.exit(0);
   })();
 });
