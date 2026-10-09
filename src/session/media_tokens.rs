@@ -1,7 +1,7 @@
 //! Shared Item-native media token accounting (vision tiles + named fallbacks).
 //!
-//! Used by [`crate::session::estimate::compute_token_estimate`]. The carried-media
-//! cap is a part count and does not consult these costs.
+//! Used by [`crate::session::estimate::compute_token_estimate`]. Show-once media
+//! dropping decides by position and does not consult these costs.
 //!
 //! **Not** Message/ContentBlock dialect — operates on Responses [`InputContent`] only.
 

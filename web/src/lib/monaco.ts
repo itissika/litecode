@@ -3,14 +3,24 @@ import * as monaco from "monaco-editor/editor/editor.api";
 
 // Local Monaco bundle: no CDN dependency at runtime.
 //
-// `editor.api` ships the full standalone editor core (find, suggest, all
-// contribs) but no language services. Syntax highlighting comes from the
-// basic-languages contributions below (the set matched by `languageFromPath`);
-// HLSL / ShaderLab use the Shiki TextMate grammars already bundled for markdown.
-// JSON highlighting pulls the JSON language service (its own worker). The
-// TypeScript/JS/CSS/HTML language services are intentionally NOT bundled —
-// LiteCode gets hover/definition/diagnostics from the workspace LSP RPC, so
-// Monaco's built-in services would only add megabytes and worker mismatches.
+// `editor.api` is the editor API only. Since 0.56 the hover widget, the
+// completion widget, and the rest of the editor contributions are separate
+// side-effect imports. `register.all` covers most of them; the completion
+// dropdown, document semantic tokens, and go-to commands are still wired
+// only by the full bundle, so they are imported here. Syntax highlighting
+// comes from the language definitions below. The TypeScript/JS/CSS/HTML
+// language services stay out — hover, completion, and diagnostics come from
+// the workspace LSP, and those services would only add workers that disagree
+// with it.
+import "monaco-editor/features/register.all";
+import "monaco-editor/editor/browser/coreCommands";
+import "monaco-editor/editor/contrib/caretOperations/browser/caretOperations";
+import "monaco-editor/editor/contrib/dropOrPasteInto/browser/copyPasteContribution";
+import "monaco-editor/editor/contrib/gotoSymbol/browser/goToCommands";
+import "monaco-editor/editor/contrib/gotoError/browser/markerSelectionStatus";
+import "monaco-editor/editor/contrib/semanticTokens/browser/documentSemanticTokens";
+import "monaco-editor/editor/contrib/suggest/browser/suggestController";
+import "monaco-editor/editor/common/standaloneStrings";
 
 // Basic languages (c/cpp are both registered by the cpp contribution).
 // Monaco 0.57 moved each language to languages/definitions/<id>/register.

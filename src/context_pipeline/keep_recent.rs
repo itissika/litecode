@@ -352,7 +352,7 @@ mod tests {
         assert!(!prompt.contains("data:image"));
         assert!(!prompt.contains("litecode-media:"));
         assert!(prompt.contains("caption"));
-        assert!(prompt.contains("media trimmed"));
+        assert!(prompt.contains("already viewed"));
     }
 
     #[test]

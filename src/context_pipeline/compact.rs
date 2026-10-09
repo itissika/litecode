@@ -4,6 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::authority::responses::MessageItem;
 use crate::context_pipeline::keep_recent::{build_compaction_prompt, find_keep_recent_cut};
+use crate::context_pipeline::media_budget::drop_stale_media;
 use crate::llm::{CompactLlmCall, ModelRequest};
 use crate::runtime::observer::{
     CompactionFailKind, CompactionStage, CompactionTrigger, InternalEvent,
@@ -109,7 +110,7 @@ impl CompactPolicy {
             return Ok(false);
         }
 
-        let items = project_items(rows);
+        let items = budget_items(rows);
         let token_count = budget.token_count_with_baseline(&items, prompt_baseline);
         budget.log_iteration(step, token_count);
 
@@ -152,7 +153,7 @@ impl CompactPolicy {
             // Defensive: if compact was skipped (e.g. cut race),
             // still enforce the hard limit so over-budget tokens cannot slip through.
             if !did_compact {
-                let items = project_items(rows);
+                let items = budget_items(rows);
                 budget.enforce_hard_limit_with_baseline(&items, prompt_baseline)?;
             }
             return Ok(did_compact);
@@ -258,6 +259,7 @@ impl CompactPolicy {
         let final_count = {
             let mut view = transcript.clone();
             view.extend(tail.iter().map(|row| row.item.clone()));
+            drop_stale_media(&mut view);
             budget.token_count_with_baseline(&view, prompt_baseline)
         };
         if final_count > limit {
@@ -524,6 +526,14 @@ fn emit_compact_failed(
         Some(fail_kind),
         Some(err.to_string()),
     );
+}
+
+/// Items as the model view will carry them, so the budget never counts media
+/// that [`drop_stale_media`] removes from the request.
+fn budget_items(rows: &[WorkingRow]) -> Vec<Item> {
+    let mut items = project_items(rows);
+    drop_stale_media(&mut items);
+    items
 }
 
 /// Leading rows that already have a `log_seq`. Pending rows sit after them.

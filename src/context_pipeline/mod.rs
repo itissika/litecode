@@ -330,8 +330,8 @@ impl ContextPipeline {
         Session::pad_unanswered_calls(&mut llm_items);
         let item_seqs = align_padded_item_seqs(&turn_view, &source_seqs, &llm_items);
         crate::runtime::project_llm_input_for_model(&mut llm_items, model);
-        // Cap runs before refs expand, so a trimmed part never becomes a data URL.
-        media_budget::apply_carried_media_budget(&mut llm_items);
+        // Runs before refs expand, so a dropped part never becomes a data URL.
+        media_budget::drop_stale_media(&mut llm_items);
         crate::session::media::resolve_user_media(&mut llm_items, &self.data_root);
 
         let token_count = self
