@@ -5,6 +5,7 @@ import { dockview } from "./host";
 import { kindForComponent } from "./kinds";
 import { groupRole, isUsableCenter } from "./model";
 import { placementFor, type PanelPlace } from "./placement";
+import { popoutScreenBox, type PopoutGroupRect, type PopoutHostBox } from "./popoutBox";
 import { readGroup, type GroupLike } from "./readGroup";
 
 export interface OpenPanelRequest {
@@ -144,15 +145,43 @@ export function closePanel(panelId: string): void {
   dockview()?.getPanel(panelId)?.api.close();
 }
 
-/** Pop a center panel into its own window. Edge panels are refused. */
-export function popoutPanel(panelId: string): void {
+interface PopoutSource {
+  getWindow?: () => (PopoutHostBox & { closed?: boolean }) | null;
+  group?: { element?: { getBoundingClientRect?: () => PopoutGroupRect } };
+}
+
+function sourceOf(panel: PanelLike): PopoutSource {
+  return panel.api as PopoutSource;
+}
+
+/**
+ * Pop a center panel into its own window. Edge panels are refused.
+ * `at` is the pointer release in screen coordinates. Without it, the new
+ * window sits on the group inside the window that currently holds the tab.
+ */
+export function popoutPanel(
+  panelId: string,
+  at?: { screenX: number; screenY: number },
+): void {
   const live = dockview();
   const panel = live?.getPanel(panelId);
   if (!live || !panel) return;
   const spec = kindForComponent(panel.api.component);
   if (spec && !spec.canPopout) return;
   if (!spec && panel.api.location?.type === "edge") return;
-  void live.addPopoutGroup(panel, { popoutUrl: popoutPageUrl() }).catch(() => {});
+  const source = sourceOf(panel);
+  const host = source.getWindow?.();
+  const position = popoutScreenBox(
+    host && !host.closed ? host : null,
+    source.group?.element?.getBoundingClientRect?.() ?? null,
+    at,
+  );
+  void live
+    .addPopoutGroup(panel, {
+      popoutUrl: popoutPageUrl(),
+      ...(position ? { position } : {}),
+    })
+    .catch(() => {});
 }
 
 /** Bring a panel back to the main-center group its kind belongs in. */

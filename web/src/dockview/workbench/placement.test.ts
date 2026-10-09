@@ -200,6 +200,38 @@ describe("popout and return", () => {
     expect(addPopoutGroup).not.toHaveBeenCalled();
   });
 
+  it("opens a dragged tab at the pointer, not at a minimized main window", () => {
+    const addPopoutGroup = vi.fn(() => Promise.resolve(true));
+    bindDockview({
+      addPopoutGroup,
+      getPanel: () => ({
+        api: {
+          component: "editor",
+          location: { type: "popout" },
+          getWindow: () => ({
+            closed: false,
+            screenX: 480,
+            screenY: 160,
+            innerWidth: 900,
+            innerHeight: 700,
+          }),
+          group: {
+            element: {
+              getBoundingClientRect: () => ({ left: 0, top: 0, width: 900, height: 700 }),
+            },
+          },
+        },
+      }),
+    } as never);
+    popoutPanel("src/a.ts", { screenX: 1600, screenY: 400 });
+    expect(addPopoutGroup).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        position: { left: 1600, top: 400, width: 900, height: 700 },
+      }),
+    );
+  });
+
   it("returns an editor to the document group", () => {
     const moveTo = vi.fn();
     const editors = group("editors", "grid", { components: ["editor"] });

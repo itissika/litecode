@@ -140,7 +140,7 @@ export function bindTabDrag(api: DockviewApi): void {
             key,
           );
           if (decision === "popout") {
-            popoutPanel(panel.id);
+            popoutPanel(panel.id, point);
             return;
           }
           if (decision === "stay") {

@@ -10,6 +10,7 @@ import {
   dialog,
   ipcMain,
   type MessageBoxOptions,
+  screen,
   shell,
 } from "electron";
 
@@ -23,7 +24,7 @@ import {
   syncDevUpstream,
 } from "./dev-ui";
 import { readWorkspaceLayout, writeWorkspaceLayout } from "./layout-file";
-import { popoutBoundsFromFeatures } from "./popout-bounds";
+import { boundsOnDisplay, popoutBoundsFromFeatures, type PopoutBounds } from "./popout-bounds";
 import { writeHubPage } from "./hub";
 import {
   assertIpcSurface,
@@ -124,12 +125,66 @@ function ensureBrowserHost(): BrowserHost | null {
   return browserHost;
 }
 
+function displayWorkAreas(): PopoutBounds[] {
+  return screen.getAllDisplays().map((display) => display.workArea);
+}
+
+/** Screen rectangle from `window.open`, pulled onto a display when the opener is minimized. */
+function openedPopoutBounds(features: string | undefined): PopoutBounds | null {
+  const raw = popoutBoundsFromFeatures(features);
+  if (!raw) return null;
+  return boundsOnDisplay(raw, displayWorkAreas(), screen.getCursorScreenPoint());
+}
+
+/**
+ * Put a popout on screen and show it.
+ * On Windows a window opened while its owner is minimized is created minimized.
+ * The taskbar thumbnail still paints the restored page, so the preview looks
+ * fine while the desktop shows nothing. Detach it from that owner, or restore()
+ * is undone immediately.
+ */
+function presentPopout(child: BrowserWindow, requested: PopoutBounds | null): void {
+  const place = () => {
+    if (child.isDestroyed()) return;
+    if (child.getParentWindow()) child.setParentWindow(null);
+    if (child.isMinimized()) child.restore();
+    const current = child.getBounds();
+    const next = boundsOnDisplay(
+      requested ?? current,
+      displayWorkAreas(),
+      screen.getCursorScreenPoint(),
+    );
+    const moved =
+      next.x !== current.x ||
+      next.y !== current.y ||
+      next.width !== current.width ||
+      next.height !== current.height;
+    if (moved) child.setBounds(next);
+    const opener = mainWindow;
+    const openerHidden =
+      !opener || opener.isDestroyed() || opener.isMinimized() || !opener.isVisible();
+    if (openerHidden || !child.isVisible()) {
+      child.show();
+      child.moveTop();
+      child.focus();
+    }
+  };
+  place();
+  child.once("ready-to-show", place);
+  const opener = mainWindow;
+  if (opener && !opener.isDestroyed() && opener.isMinimized()) {
+    setTimeout(place, 0);
+    setTimeout(place, 80);
+  }
+}
+
 function popoutWindowOptions(): Electron.BrowserWindowConstructorOptions {
   const iconPath = path.join(__dirname, "..", "build", "icon.ico");
   return {
     // No OS title bar. The popout is dragged from the tab-bar void; thickFrame
     // (Windows default) keeps the resize edges.
     frame: false,
+    show: true,
     autoHideMenuBar: true,
     backgroundColor: "#0a0a0a",
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
@@ -230,7 +285,7 @@ async function createWindow(content: BootContent): Promise<BrowserWindow> {
     if (decision === "popout") {
       // overrideBrowserWindowOptions replaces the window.open feature string,
       // which is where dockview put the saved screen rectangle.
-      const bounds = popoutBoundsFromFeatures(features);
+      const bounds = openedPopoutBounds(features);
       return {
         action: "allow",
         overrideBrowserWindowOptions: { ...popoutWindowOptions(), ...(bounds ?? {}) },
@@ -245,16 +300,16 @@ async function createWindow(content: BootContent): Promise<BrowserWindow> {
     if (!dock) return;
     rememberPopout(dock, child);
     const { x, y, width, height } = details.options;
-    if (
+    const requested =
       typeof x === "number" &&
       typeof y === "number" &&
       typeof width === "number" &&
       typeof height === "number" &&
       width >= 1 &&
       height >= 1
-    ) {
-      child.setBounds({ x, y, width, height });
-    }
+        ? { x, y, width, height }
+        : null;
+    presentPopout(child, requested);
   });
   const guardNavigation = (event: Electron.Event, url: string) => {
     const context = trustContext;
