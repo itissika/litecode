@@ -928,7 +928,11 @@ describe("grantPermission receipt (FE-04)", () => {
 
   it("ask_user multi-question Submit sends answers only (no flat selected)", async () => {
     const sessionId = "s-ask-multi";
-    const sendRpc = vi.fn(() => Promise.resolve({ ok: true }));
+    const sendRpc = vi.fn(
+      async (_method: string, _params: Record<string, unknown>) => ({
+        ok: true,
+      }),
+    );
     useConnectionStore.setState({ sendRpc } as never);
     useTurnStore.setState({
       byId: new Map([
