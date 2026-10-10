@@ -56,6 +56,9 @@ impl AgentDeps for AgentRuntime {
         let step = self.current_step_value();
         self.emit_phase(TurnPhase::ExecutingTools, step);
 
+        // Any tool may write disk (including custom); join pre-tool snapshot first.
+        self.await_pending_snapshot_track().await;
+
         let cancel = self.cancel.clone();
         let result = self
             .tool_pipeline

@@ -513,6 +513,9 @@ pub struct AgentRuntime {
     pub(crate) turn_usage_totals: TurnTokenStats,
     /// Stored parameters for deferred build_tool_list (async MCP schema fetch).
     build_tool_params: Option<Arc<BuildToolParams>>,
+    /// In-flight turn-start snapshot_track (parallel with first LLM). Joined
+    /// before any tool execution and again before snapshot_record_patch.
+    pending_snapshot_track: Mutex<Option<tokio::task::JoinHandle<Result<()>>>>,
 }
 
 /// Parameters needed to call build_tool_list lazily on first turn.
@@ -615,6 +618,7 @@ impl AgentRuntime {
             turn_token_stats: TurnTokenStats::default(),
             turn_usage_totals: TurnTokenStats::default(),
             build_tool_params: Some(build_tool_params),
+            pending_snapshot_track: Mutex::new(None),
         };
         Ok(runtime)
     }
@@ -678,6 +682,45 @@ impl AgentRuntime {
 
     pub(crate) fn emit_internal(&self, event: InternalEvent) {
         self.observer.on_internal(event);
+    }
+
+    /// Join the turn-start `snapshot_track` if still in flight.
+    ///
+    /// Soft-fail: emit `SnapshotNotice` and continue so tools / patch recording
+    /// still run; revert may be incomplete. Idempotent after the first join.
+    pub(crate) async fn await_pending_snapshot_track(&self) {
+        let handle = {
+            let mut slot = self
+                .pending_snapshot_track
+                .lock()
+                .expect("pending_snapshot_track lock poisoned");
+            slot.take()
+        };
+        let Some(handle) = handle else {
+            return;
+        };
+        let anchor_seq = self.rctx().turn_anchor_seq().unwrap_or(-1);
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(%e, anchor_seq, "snapshot_track failed, revert may be incomplete");
+                self.emit_internal(InternalEvent::SnapshotNotice {
+                    level: "warn".into(),
+                    message: format!(
+                        "Workspace snapshot track failed (anchor {anchor_seq}): {e}; file revert may be unavailable"
+                    ),
+                });
+            }
+            Err(e) => {
+                tracing::warn!(%e, anchor_seq, "snapshot_track join failed");
+                self.emit_internal(InternalEvent::SnapshotNotice {
+                    level: "warn".into(),
+                    message: format!(
+                        "Workspace snapshot track failed (anchor {anchor_seq}): {e}; file revert may be unavailable"
+                    ),
+                });
+            }
+        }
     }
 
     /// Single authority for `TurnCompleted`: Idle gate + emit + join result.
@@ -1032,38 +1075,23 @@ impl AgentRuntime {
         let anchor_seq = snapshot_stem_for_turn(user_seq, next_seq);
         self.rctx().set_turn_anchor_seq(anchor_seq);
 
-        // Snapshot workspace before tools run (OpenCode-style git-based snapshot).
-        // Must finish before agent::run so the tracked tree is the pre-tool workspace.
-        // Git index I/O runs on the blocking pool; we await here before any tools execute.
+        // Snapshot workspace in parallel with the first LLM call (OpenCode-style
+        // git-based snapshot). Must finish before any tool executes -- we do not
+        // guess which tools write disk -- and again before snapshot_record_patch.
         let ws = self.rctx().ctx.cwd.clone();
         let snaps = self.rctx().ctx.workspace_paths.snapshots_dir.clone();
         let track_ws = ws.clone();
         let track_snaps = snaps.clone();
         let track_sid = self.session_id.clone();
-        let track_result = tokio::task::spawn_blocking(move || {
+        let track_handle = tokio::task::spawn_blocking(move || {
             snapshot::snapshot_track(&track_ws, &track_snaps, &track_sid, anchor_seq)
-        })
-        .await;
-        match track_result {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                tracing::warn!(%e, anchor_seq, "snapshot_track failed, revert may be incomplete");
-                self.emit_internal(InternalEvent::SnapshotNotice {
-                    level: "warn".into(),
-                    message: format!(
-                        "Workspace snapshot track failed (anchor {anchor_seq}): {e}; file revert may be unavailable"
-                    ),
-                });
-            }
-            Err(e) => {
-                tracing::warn!(%e, anchor_seq, "snapshot_track join failed");
-                self.emit_internal(InternalEvent::SnapshotNotice {
-                    level: "warn".into(),
-                    message: format!(
-                        "Workspace snapshot track failed (anchor {anchor_seq}): {e}; file revert may be unavailable"
-                    ),
-                });
-            }
+        });
+        {
+            let mut slot = self
+                .pending_snapshot_track
+                .lock()
+                .expect("pending_snapshot_track lock poisoned");
+            *slot = Some(track_handle);
         }
 
         tracing::info!(
@@ -1136,6 +1164,9 @@ impl AgentRuntime {
         // Idle + TurnCompleted before workspace patch so Running never spans patch I/O.
         let finalize_result = self.finalize_agent_outcome(turn_id, outcome);
 
+        // Ensure track finished even when the turn had no tools (join is idempotent).
+        self.await_pending_snapshot_track().await;
+
         // OpenCode-style: record which paths changed this turn (file-level revert).
         let patch_ws = ws.clone();
         let patch_snaps = snaps.clone();
@@ -1188,5 +1219,75 @@ impl AgentRuntime {
         );
         self.context_pipeline.end_turn();
         finalize_result
+    }
+}
+
+
+#[cfg(test)]
+mod pending_snapshot_tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use crate::types::Result;
+
+    /// Mirrors `await_pending_snapshot_track`: take the join handle once, await it.
+    async fn take_and_await(
+        slot: &Mutex<Option<tokio::task::JoinHandle<Result<()>>>>,
+    ) -> bool {
+        let handle = slot.lock().expect("lock").take();
+        let Some(handle) = handle else {
+            return false;
+        };
+        handle.await.expect("join").expect("snapshot ok");
+        true
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pending_snapshot_waits_once_then_noops() {
+        let slot: Mutex<Option<tokio::task::JoinHandle<Result<()>>>> = Mutex::new(None);
+        let finished = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&finished);
+        let handle = tokio::task::spawn_blocking(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            flag.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        *slot.lock().unwrap() = Some(handle);
+
+        let t0 = Instant::now();
+        assert!(take_and_await(&slot).await);
+        assert!(finished.load(Ordering::SeqCst));
+        assert!(t0.elapsed() >= Duration::from_millis(60));
+
+        // Second join is a no-op (handle already taken).
+        let t1 = Instant::now();
+        assert!(!take_and_await(&slot).await);
+        assert!(t1.elapsed() < Duration::from_millis(30));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn snapshot_can_overlap_simulated_llm_then_join_before_tool() {
+        let slot: Mutex<Option<tokio::task::JoinHandle<Result<()>>>> = Mutex::new(None);
+        let snap_done = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&snap_done);
+        let handle = tokio::task::spawn_blocking(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            flag.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        *slot.lock().unwrap() = Some(handle);
+
+        // Simulated first LLM (shorter than snapshot): must not await snapshot.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !snap_done.load(Ordering::SeqCst),
+            "snapshot should still be in flight during first LLM"
+        );
+
+        // Before any tool: must join.
+        assert!(take_and_await(&slot).await);
+        assert!(snap_done.load(Ordering::SeqCst));
     }
 }
