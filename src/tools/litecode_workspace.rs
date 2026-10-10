@@ -16,6 +16,7 @@ use crate::config::global_db::tools::mcp_catalog_id;
 use crate::config::guides::{self, GuideTopic};
 use crate::config::schema::{CustomToolDefinition, McpServerDefinition, ToolOrigin};
 use crate::config::settings_writer::{validate_custom_definition, validate_mcp_definition};
+use crate::tools::custom::validate_custom_tool_run;
 use crate::config::workspace::{read_workspace_custom_tools, read_workspace_mcp};
 use crate::context_pipeline::Context;
 use crate::engines::session_search::short_session_ref;
@@ -95,6 +96,15 @@ const COMMANDS: &[CommandSpec] = &[
                custom tools take effect when this workspace has no running session. \
                A file that fails validation names the error; fix it and run `refresh` again.",
     },
+    CommandSpec {
+        name: "validate_custom",
+        usage: "validate_custom  (also pass definition + sample_input fields)",
+        summary: "run a custom tool once without registering it",
+        help: "Set `action` to `validate_custom`, plus `definition` (custom tool body) and `
+               sample_input` (stdin JSON object). Does not write files, enable the tool,
+               or evaluate `rules` (PASS is process/envelope only). Strips
+               `run_in_background` from sample stdin like production.",
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +134,32 @@ topics:\n\
 - `excludes`\n\
 - `mcp`\n\
 - `custom_tools`";
+
+
+fn parse_validate_custom(input: &Value) -> Result<(CustomToolDefinition, Value), String> {
+    let def_val = input.get("definition").ok_or_else(|| {
+        "# error\n\n`validate_custom` requires a `definition` object (custom tool body).\n"
+            .to_string()
+    })?;
+    let mut def: CustomToolDefinition = serde_json::from_value(def_val.clone())
+        .map_err(|e| format!("# error\n\ninvalid `definition`: {e}\n"))?;
+    if def.name.trim().is_empty() {
+        if let Some(n) = input.get("name").and_then(Value::as_str) {
+            def.name = n.to_string();
+        }
+    }
+    if def.name.trim().is_empty() {
+        return Err("# error\n\n`definition.name` is required.\n".into());
+    }
+    let sample_input = input
+        .get("sample_input")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !sample_input.is_object() {
+        return Err("# error\n\n`sample_input` must be a JSON object (tool stdin).\n".into());
+    }
+    Ok((def, sample_input))
+}
 
 fn parse_action(raw: &str) -> Result<Action, String> {
     let mut tokens = raw.split_whitespace();
@@ -256,6 +292,20 @@ impl LitecodeWorkspaceTool {
 
     fn run(&self, input: &Value, execution: &ToolExecutionContext) -> ToolCallResult {
         let raw = input.get("action").and_then(Value::as_str).unwrap_or("");
+        if raw.trim() == "validate_custom" {
+            return match parse_validate_custom(input) {
+                Err(message) => ToolCallResult::error(message),
+                Ok((mut def, sample_input)) => {
+                    let id = def.name.clone();
+                    if let Err(error) = validate_custom_definition(&id, &mut def) {
+                        return ToolCallResult::error(format!(
+                            "# validate_custom — FAIL\n\n- definition rejected: {error}"
+                        ));
+                    }
+                    validate_custom_tool_run(&def, &sample_input, self.runtime.workspace_root())
+                }
+            };
+        }
         match parse_action(raw) {
             Err(message) => ToolCallResult::error(message),
             Ok(Action::Panel) => self.panel(execution, true),
@@ -729,7 +779,19 @@ impl Tool for LitecodeWorkspaceTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "CLI-style command. Omit or leave empty to open the panel."
+                    "description": "CLI-style command. Omit or leave empty to open the panel. Use `validate_custom` with `definition` + `sample_input` to trial a tool without registering it (no rules eval; run_in_background stripped from stdin)."
+                },
+                "definition": {
+                    "type": "object",
+                    "description": "Custom tool body for `validate_custom` (name, command, schema, args, timeout, rules)."
+                },
+                "sample_input": {
+                    "type": "object",
+                    "description": "JSON object written to custom tool stdin during `validate_custom` (run_in_background is stripped, same as production). Does not evaluate rules."
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional name when definition.name is empty (validate_custom only)."
                 }
             }
         })

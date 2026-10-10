@@ -49,7 +49,10 @@ Linux server bundle missing for version $version.
 
   Pure-local dev (no Open Remote): pass -SkipLinuxBundle to dev_win.ps1
 "@
-        if ($Require) {
+        # -WarnOnly covers a missing archive the same way it covers a stale one.
+        # dev_win.ps1 passes -Require -WarnOnly so local desktop dev continues;
+        # package_win.ps1 passes -Require alone and still stops.
+        if ($Require -and -not $WarnOnly) {
             throw $msg
         }
         Write-Warning $msg.Trim()

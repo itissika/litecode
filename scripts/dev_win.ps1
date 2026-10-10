@@ -65,6 +65,32 @@ function Stop-DevProcess($Proc) {
   try { & taskkill /PID $Proc.Id /T /F 2>$null | Out-Null } catch {}
 }
 
+function Stop-PortListeners([int]$Port) {
+  # A leftover Vite on this port still answers GET /, so Wait-Vite would treat
+  # it as ready while the new server exits with EADDRINUSE. Electron then loads
+  # a cache that config change just invalidated (504 Outdated Optimize Dep).
+  $listeners = New-Object System.Collections.Generic.HashSet[int]
+  foreach ($line in (& netstat.exe -ano -p TCP)) {
+    if ($line -match ":$Port\s+\S+\s+LISTENING\s+(\d+)\s*$") {
+      [void]$listeners.Add([int]$Matches[1])
+    }
+  }
+  foreach ($procId in $listeners) {
+    if ($procId -le 0 -or $procId -eq $PID) { continue }
+    Write-Host "==> freeing port $Port (pid $procId)"
+    & taskkill.exe /PID $procId /T /F 2>$null | Out-Null
+  }
+  Start-Sleep -Milliseconds 400
+  foreach ($line in (& netstat.exe -ano -p TCP)) {
+    if ($line -match ":$Port\s+\S+\s+LISTENING\s+(\d+)\s*$") {
+      $owner = [int]$Matches[1]
+      if ($owner -gt 0 -and $owner -ne $PID) {
+        throw "port $Port is still in use by pid $owner"
+      }
+    }
+  }
+}
+
 function Wait-Vite([string]$Url, $Proc, [int]$TimeoutSec = 60) {
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
   Write-Host "==> waiting for Vite at $Url"
@@ -107,6 +133,7 @@ function Start-DevVite([string]$RepoRoot, [int]$Port, [bool]$SkipInstall) {
   $env:LITECODE_DEV_UPSTREAM_FILE = $upstream
   $env:LITECODE_UI_DEV_URL = "http://127.0.0.1:$Port/"
 
+  Stop-PortListeners $Port
   Write-Host "==> starting Vite hot reload at $($env:LITECODE_UI_DEV_URL)"
   # npm.cmd: nvm-windows' extensionless npm shim is not a Win32 executable.
   $proc = Start-Process -FilePath "npm.cmd" -ArgumentList @("run", "dev", "--", "--port", "$Port", "--strictPort", "--host", "127.0.0.1") `
@@ -167,6 +194,12 @@ if (-not $SkipLinuxBundle) {
   $null = & (Join-Path $Root "scripts\ensure_linux_bundle.ps1") -Root $Root -Require -WarnOnly
 } else {
   Write-Host "==> skipping Linux bundle check (-SkipLinuxBundle); Open Remote may fail"
+}
+
+# Electron downloads its dev binary on first launch. Same mirror default as package_win.ps1.
+if (-not $env:GITHUB_ACTIONS -and -not $env:ELECTRON_MIRROR) {
+  $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+  Write-Host "==> ELECTRON_MIRROR=$($env:ELECTRON_MIRROR) (set ELECTRON_MIRROR to override)"
 }
 
 $savedDevUrl = $env:LITECODE_DEV_URL

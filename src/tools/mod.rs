@@ -3,6 +3,7 @@ pub mod bash_safety;
 pub mod bash_status;
 pub mod code_search;
 pub mod custom;
+pub mod custom_hub;
 pub mod edit;
 pub mod file_path;
 pub mod glob;

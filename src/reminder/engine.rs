@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use super::kinds::{PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild, TodoSnap};
+use super::kinds::{CustomToolSettledEntry, PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild, TodoSnap};
 use super::sources;
 
 /// Facts the seam already sensed. Sources do not reach back into the runtime.
@@ -96,6 +96,7 @@ pub struct Facts {
     pub settled: Vec<SettledChild>,
     /// Full batch text for the subagent reminder, without the reminder wrapper.
     pub settled_detail: String,
+    pub custom_tool_settled: Vec<CustomToolSettledEntry>,
     pub changed_paths: Vec<String>,
 }
 
@@ -121,6 +122,9 @@ pub fn sync(ctx: &SeamCtx, view: &SpineReminderView, facts: &Facts) -> Vec<Remin
         out.push(reminder);
     }
     if let Some(reminder) = sources::subagent_settled(&facts.settled, &facts.settled_detail) {
+        out.push(reminder);
+    }
+    if let Some(reminder) = sources::custom_tool_settled(&facts.custom_tool_settled) {
         out.push(reminder);
     }
     if let Some(reminder) = sources::step_budget(ctx, view) {
@@ -159,7 +163,29 @@ mod tests {
     }
 
     #[test]
-    fn bash_exit_names_a_user_kill() {
+    fn custom_tool_settled_names_outcomes() {
+        let facts = Facts {
+            custom_tool_settled: vec![crate::reminder::CustomToolSettledEntry {
+                job_id: "ct-1".into(),
+                call_id: "call-1".into(),
+                tool_name: "demo".into(),
+                status: "ok".into(),
+                detail: "hello".into(),
+            }],
+            ..Facts::default()
+        };
+        let reminders = sync(&ctx(1), &SpineReminderView::default(), &facts);
+        let row = reminders
+            .iter()
+            .find(|reminder| reminder.kind() == ReminderKind::CustomToolSettled)
+            .unwrap();
+        assert!(row.text().contains("tool: demo"));
+        assert!(row.text().contains("status: ok"));
+        assert!(row.text().contains("detail: hello"));
+    }
+
+    #[test]
+        fn bash_exit_names_a_user_kill() {
         let facts = Facts {
             bash_exits: vec![crate::reminder::BashExitEntry {
                 job_id: "bg-1".into(),

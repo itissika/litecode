@@ -1,4 +1,5 @@
 pub mod bash_auto_turn;
+pub mod custom_auto_turn;
 pub mod context;
 pub mod exec;
 pub mod llm_resolve;
@@ -66,6 +67,8 @@ pub struct RuntimeHandle {
     pub mcp_pool: Arc<McpConnectionPool>,
     /// Process-level subagent workers (launch / wait / stop).
     pub subagent_hub: Arc<crate::tools::subagent::SubagentHub>,
+    /// Process-level async custom-tool completion mailbox.
+    pub custom_tool_hub: Arc<crate::tools::custom_hub::CustomToolHub>,
     global_db_path: PathBuf,
     settings_revision: Arc<AtomicU64>,
     loaded_revision: Arc<AtomicU64>,
@@ -100,6 +103,7 @@ impl RuntimeHandle {
             ide,
             mcp_pool: Arc::new(McpConnectionPool::new()),
             subagent_hub: Arc::new(crate::tools::subagent::SubagentHub::new()),
+            custom_tool_hub: Arc::new(crate::tools::custom_hub::CustomToolHub::new()),
             global_db_path: global_db_path.into(),
             settings_revision,
             loaded_revision: Arc::new(AtomicU64::new(loaded)),
@@ -305,6 +309,7 @@ impl Clone for RuntimeHandle {
             ide: Arc::clone(&self.ide),
             mcp_pool: Arc::clone(&self.mcp_pool),
             subagent_hub: Arc::clone(&self.subagent_hub),
+            custom_tool_hub: Arc::clone(&self.custom_tool_hub),
             global_db_path: self.global_db_path.clone(),
             settings_revision: Arc::clone(&self.settings_revision),
             // Per-clone: each clone re-reads the global DB on its first apply

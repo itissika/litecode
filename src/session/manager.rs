@@ -283,11 +283,19 @@ impl SessionRecord {
 pub struct SessionManager {
     records: std::sync::Mutex<HashMap<String, SessionRecord>>,
     activity_changed: Condvar,
+    /// Process-wide settings write gate. `begin_turn` only from
+    /// `reserve_turn` / `reserve_turn_and_claim_pending` / `begin_turn`;
+    /// `end_turn` only from `release_turn_reservation` / `finish_turn` /
+    /// `try_begin_revert`(StartingTurn) / `remove_session`. Fanout spawn
+    /// failure must call `finish_turn` so this counter cannot stick.
     pub turn_guard: Arc<TurnGuard>,
     data: Arc<SessionData>,
     /// Keeps a test-created lease alive for the manager's writer lifetime.
     _test_lease: Option<crate::session::WorkspaceWriteLease>,
     lifecycle_tx: broadcast::Sender<LifecycleEvent>,
+    /// Test-only: next `start_turn` pretends fanout thread spawn failed.
+    #[cfg(test)]
+    fail_next_fanout_spawn: std::sync::atomic::AtomicBool,
 }
 
 const EVENT_BUFFER_CAPACITY: usize = 1024;
@@ -321,6 +329,8 @@ impl SessionManager {
             data,
             _test_lease: test_lease,
             lifecycle_tx,
+            #[cfg(test)]
+            fail_next_fanout_spawn: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -333,6 +343,8 @@ impl SessionManager {
             data,
             _test_lease: None,
             lifecycle_tx,
+            #[cfg(test)]
+            fail_next_fanout_spawn: std::sync::atomic::AtomicBool::new(false),
         };
         let orphans = manager.remove_orphan_child_sessions();
         if orphans > 0 {
@@ -343,6 +355,13 @@ impl SessionManager {
 
     pub fn data(&self) -> &Arc<SessionData> {
         &self.data
+    }
+
+    /// Test-only: next `start_turn` rolls back as if fanout thread spawn failed.
+    #[cfg(test)]
+    pub fn inject_fanout_spawn_failure(&self) {
+        self.fail_next_fanout_spawn
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     pub fn reader(&self) -> SessionDataReader {
@@ -1038,6 +1057,18 @@ impl SessionManager {
         // fanout and the agent panel would never see `agent/turn_started` /
         // `buffer/item` even though session-list lifecycle already flipped to
         // running.
+        #[cfg(test)]
+        if self
+            .fail_next_fanout_spawn
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            cancel.cancel();
+            let _ = self.finish_turn(session_id, &turn_id);
+            return Err(LitecodeError::ToolExecution(
+                "turn fanout spawn failed: injected".into(),
+            ));
+        }
+
         let session_id_owned = session_id.to_string();
         let turn_id_owned = turn_id.clone();
         std::thread::Builder::new()
@@ -1058,6 +1089,9 @@ impl SessionManager {
             })
             .map_err(|error| {
                 cancel.cancel();
+                // RunningTurn + TurnGuard were already taken; mirror the runtime
+                // build failure path so the session and settings writes unblock.
+                let _ = self.finish_turn(session_id, &turn_id);
                 LitecodeError::ToolExecution(format!("turn fanout spawn failed: {error}"))
             })?;
         Ok(())
@@ -3432,6 +3466,61 @@ mod child_session_tests {
             }
             other => panic!("expected TurnStarted, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn start_turn_fanout_spawn_failure_rolls_back_running_and_turn_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("sessions.db");
+        let guard = Arc::new(TurnGuard::new());
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::clone(&guard),
+            db.to_str().unwrap().to_string(),
+        ));
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        let _ = mgr.attach(&sid);
+        mgr.reserve_turn(&sid, "t-spawn-fail".into(), 5, "default", "/proj")
+            .expect("reserve");
+        assert!(guard.is_turn_in_progress());
+        assert!(mgr.is_turn_running_blocking(&sid));
+
+        mgr.inject_fanout_spawn_failure();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = crate::runtime::TurnHandle {
+            handle: None,
+            rx,
+            cancel: CancellationToken::new(),
+            turn_id: "t-spawn-fail".into(),
+            step_max: 5,
+        };
+        let err = mgr
+            .start_turn(
+                &sid,
+                handle,
+                "default",
+                "/proj",
+                Arc::clone(&mgr),
+            )
+            .await
+            .expect_err("injected fanout spawn failure must surface");
+        assert!(
+            err.to_string().contains("fanout spawn failed"),
+            "got {err}"
+        );
+        drop(tx);
+
+        assert!(
+            !mgr.is_turn_running_blocking(&sid),
+            "RunningTurn must roll back to Idle"
+        );
+        assert!(
+            !guard.is_turn_in_progress(),
+            "TurnGuard must end_turn on spawn failure"
+        );
+        // Session must accept a new reservation (not stuck AgentAlreadyRunning).
+        mgr.reserve_turn(&sid, "t-after".into(), 5, "default", "/proj")
+            .expect("re-reserve after spawn failure rollback");
+        assert!(mgr.release_turn_reservation(&sid, "t-after"));
     }
 
     #[tokio::test]

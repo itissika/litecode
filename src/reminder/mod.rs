@@ -16,7 +16,8 @@ pub use engine::{
 };
 pub use file_tracker::FileTracker;
 pub use kinds::{
-    BackgroundBody, BashExitBody, BashExitEntry, ChildCountsBody, EnvBody, FilesChangedBody,
+    BackgroundBody, BashExitBody, BashExitEntry, ChildCountsBody, CustomToolSettledBody,
+    CustomToolSettledEntry, EnvBody, FilesChangedBody,
     KnowledgeStatusBody, MentionRef, MentionsBody, PlanChangedBody, PlanPointer, Reminder,
     ReminderKind, RunningBash, SettledChild, StepBudgetBody, SubagentSettledBody, TasksBody,
     TodoSnap, Visibility,

@@ -1,12 +1,14 @@
 import Editor from "@monaco-editor/react";
 import { CodeIcon, MarkdownLogoIcon } from "@phosphor-icons/react";
 import {
+  Component,
   lazy,
   Suspense,
   useCallback,
   useEffect,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import type { DockviewPanelApi } from "dockview-react";
 import type { editor } from "monaco-editor";
@@ -54,6 +56,44 @@ const PdfPreview = lazy(async () => {
   const mod = await import("./fileview/PdfPreview");
   return { default: mod.PdfPreview };
 });
+
+/** A failed lazy preview must not unmount the rest of the workbench. */
+class PreviewErrorBoundary extends Component<
+  { resetKey: string; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidUpdate(prev: { resetKey: string }) {
+    if (prev.resetKey !== this.props.resetKey && this.state.failed) {
+      this.setState({ failed: false });
+    }
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+          <p className="max-w-md text-sm text-(--_dk-text)">
+            This preview failed to load. Reload the window and open the file again.
+          </p>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => window.location.reload()}
+          >
+            Reload
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export function EditorPane({
   filePath,
@@ -299,19 +339,21 @@ export function EditorPane({
                 sourceUrl={tab.previewUrl}
               />
             ) : tab.kind === "pdf" ? (
-              <Suspense
-                fallback={
-                  <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-muted)">
-                    Loading…
-                  </div>
-                }
-              >
-                <PdfPreview
-                  path={filePath}
-                  diskRevision={tab.diskRevision}
-                  sourceUrl={tab.previewUrl}
-                />
-              </Suspense>
+              <PreviewErrorBoundary resetKey={filePath}>
+                <Suspense
+                  fallback={
+                    <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-muted)">
+                      Loading…
+                    </div>
+                  }
+                >
+                  <PdfPreview
+                    path={filePath}
+                    diskRevision={tab.diskRevision}
+                    sourceUrl={tab.previewUrl}
+                  />
+                </Suspense>
+              </PreviewErrorBoundary>
             ) : tab.kind === "audio" || tab.kind === "video" ? (
               <MediaPreview
                 path={filePath}
@@ -330,19 +372,21 @@ export function EditorPane({
             ) : useWysiwyg ? (
               tab.loading ? null : (
                 <div ref={milkdownHostRef} className="h-full">
-                  <Suspense
-                    fallback={
-                      <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-muted)">
-                        Loading editor…
-                      </div>
-                    }
-                  >
-                    <MilkdownMarkdownEditor
-                      filePath={filePath}
-                      content={tab.content ?? ""}
-                      onChange={(markdown) => setContent(filePath, markdown)}
-                    />
-                  </Suspense>
+                  <PreviewErrorBoundary resetKey={filePath}>
+                    <Suspense
+                      fallback={
+                        <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-muted)">
+                          Loading editor…
+                        </div>
+                      }
+                    >
+                      <MilkdownMarkdownEditor
+                        filePath={filePath}
+                        content={tab.content ?? ""}
+                        onChange={(markdown) => setContent(filePath, markdown)}
+                      />
+                    </Suspense>
+                  </PreviewErrorBoundary>
                 </div>
               )
             ) : (

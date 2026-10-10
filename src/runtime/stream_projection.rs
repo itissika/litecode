@@ -582,6 +582,7 @@ mod tests {
     use crate::authority::responses::ResponseStreamEvent;
     use crate::config::TurnGuard;
     use crate::runtime::observer::NoopObserver;
+    use crate::session::FaultKind;
     use crate::session::working::WorkingRow;
     use crate::types::user_text;
 
@@ -720,6 +721,24 @@ mod tests {
             sequence_number: output_index as u64 + 1,
             output_index,
             item,
+        })
+    }
+
+    fn done_event(id: &str, output_index: u32) -> ResponseStreamEvent {
+        use crate::authority::responses::{
+            AssistantRole, OutputItem, OutputMessage, OutputStatus,
+            ResponseOutputItemDoneEvent,
+        };
+        ResponseStreamEvent::ResponseOutputItemDone(ResponseOutputItemDoneEvent {
+            sequence_number: output_index as u64 + 100,
+            output_index,
+            item: OutputItem::Message(OutputMessage {
+                id: id.to_string(),
+                role: AssistantRole::Assistant,
+                content: vec![],
+                status: OutputStatus::Completed,
+                phase: None,
+            }),
         })
     }
 
@@ -1141,6 +1160,41 @@ mod tests {
         assert!(
             error.to_string().contains("only a row in flight"),
             "the session's own refusal is what comes back, got {error}"
+        );
+    }
+
+    /// UpdateStreamItem failure must fail `settle` (so the call/turn stops) and
+    /// must still attempt to seal open rows rather than leave them in flight.
+    #[test]
+    fn update_stream_item_failure_fails_settle_and_still_seals() {
+        let f = Fixture::open();
+        let projection = projection_for(&f);
+        projection.observe(&added_event("msg_upd", 0, false));
+        assert_eq!(f.rows().len(), 1);
+        assert_eq!(f.rows()[0].state, "in_progress");
+
+        f.sessions
+            .data()
+            .hooks()
+            .inject(FaultKind::BeforeCommit);
+        // Checkpoint flushes an UpdateStreamItem while the fault is armed.
+        projection.observe(&done_event("msg_upd", 0));
+
+        let err = projection
+            .settle(None)
+            .expect_err("update write failure must surface through settle");
+        assert!(
+            err.to_string().contains("before commit")
+                || err.to_string().contains("streamed output")
+                || err.to_string().contains("Session"),
+            "settle must carry the write failure, got {err}"
+        );
+
+        let rows = f.rows();
+        assert_eq!(rows.len(), 1, "row identity must remain");
+        assert_eq!(
+            rows[0].state, "final",
+            "settle_open must still seal after a failed update; left in_progress would be the bug"
         );
     }
 }

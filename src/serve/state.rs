@@ -145,6 +145,16 @@ impl ServeState {
             Arc::clone(&sessions),
             project.clone(),
         );
+        let custom_tool_hub = {
+            let snap = runtime.read().expect("runtime lock");
+            Arc::clone(&snap.custom_tool_hub)
+        };
+        crate::runtime::custom_auto_turn::install_custom_auto_turn(
+            Arc::clone(&custom_tool_hub),
+            Arc::clone(&runtime),
+            Arc::clone(&sessions),
+            project.clone(),
+        );
         crate::runtime::pending_auto_turn::install_pending_flush(
             Arc::clone(&runtime),
             Arc::clone(&sessions),

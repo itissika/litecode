@@ -39,6 +39,12 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), tailwindcss()],
+    optimizeDeps: {
+      // These are only reached from lazy file previews, so the cold-start
+      // crawl never sees them. Discovering them on first open re-optimizes
+      // deps and the in-flight import gets 504 Outdated Optimize Dep.
+      include: ["@milkdown/crepe", "@milkdown/kit/utils", "pdfjs-dist"],
+    },
     test: {
       environment: "jsdom",
       include: ["src/**/*.test.ts", "src/**/*.test.tsx", "devUpstream.test.ts"],

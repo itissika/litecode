@@ -77,7 +77,10 @@ fn instantiate_tool(
     }
 
     if let Some(custom) = resolved.custom_tools().iter().find(|ct| ct.name == tool_id) {
-        return vec![Arc::new(CustomTool::new(custom.clone()))];
+        return vec![Arc::new(CustomTool::new(
+            custom.clone(),
+            Arc::clone(&runtime.custom_tool_hub),
+        ))];
     }
 
     if let Some(server_id) = tool_id.strip_prefix("mcp_")
