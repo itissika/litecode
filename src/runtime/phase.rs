@@ -30,28 +30,24 @@ impl PhasePermissionSink {
 }
 
 impl PermissionSink for PhasePermissionSink {
-    fn ask_permission(
+    fn ask(
         &self,
-        tool_name: &str,
-        rule_id: &str,
-        summary: &str,
+        prompt: &crate::permission::AskPrompt<'_>,
         cancel: &CancellationToken,
-    ) -> crate::permission::AskOutcome {
+    ) -> crate::permission::AskReply {
         self.observer
             .on_internal(InternalEvent::PermissionAwaiting { awaiting: true });
-        let result = self
-            .inner
-            .ask_permission(tool_name, rule_id, summary, cancel);
+        let reply = self.inner.ask(prompt, cancel);
         self.observer
             .on_internal(InternalEvent::PermissionAwaiting { awaiting: false });
-        if matches!(result, crate::permission::AskOutcome::Allow { .. }) {
+        if matches!(reply.outcome, crate::permission::AskOutcome::Allow { .. }) {
             let step = self.step.load(Ordering::Relaxed);
             self.observer.on_internal(InternalEvent::PhaseChanged {
                 phase: TurnPhase::ExecutingTools,
                 step,
             });
         }
-        result
+        reply
     }
 }
 

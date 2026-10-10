@@ -28,20 +28,41 @@ pub fn is_available(resolved: &ResolvedConfig, tool_id: &str) -> bool {
         .any(|tool| tool.name == tool_id)
 }
 
+fn series_for(tool_id: &str) -> (Option<String>, Option<String>) {
+    for (series_id, series_label, members) in crate::config::schema::core_tool_enable_series() {
+        if members.iter().any(|m| *m == tool_id) {
+            return (
+                Some((*series_id).to_string()),
+                Some((*series_label).to_string()),
+            );
+        }
+    }
+    (None, None)
+}
+
 fn tool_card(
     id: String,
     kind: AvailableKind,
     origin: ToolOrigin,
     overridden: bool,
     surface: Option<PermissionSurface>,
+    series_id: Option<String>,
+    series_label: Option<String>,
 ) -> AvailableTool {
     let permission_surface = surface.unwrap_or_else(|| permission_surface(&id));
+    let (series_id, series_label) = if series_id.is_some() {
+        (series_id, series_label)
+    } else {
+        series_for(&id)
+    };
     AvailableTool {
         id,
         kind,
         origin,
         overridden,
         permission_surface,
+        series_id,
+        series_label,
     }
 }
 
@@ -54,6 +75,8 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
             ToolOrigin::Builtin,
             false,
             None,
+            None,
+            None,
         ));
     }
     for id in optional_builtin_ids() {
@@ -63,6 +86,8 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
                 AvailableKind::Engine,
                 ToolOrigin::Workspace,
                 false,
+                None,
+                None,
                 None,
             ));
         }
@@ -82,12 +107,19 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
         } else {
             PermissionSurface::Preset
         };
+        let series_id = tool.suite.clone();
+        let series_label = tool
+            .suite_label
+            .clone()
+            .or_else(|| tool.suite.clone());
         out.push(tool_card(
             tool.name,
             AvailableKind::Custom,
             origin,
             overridden,
             Some(surface),
+            series_id,
+            series_label,
         ));
     }
     let mut mcp_ids: Vec<String> = resolved.mcp_servers().keys().cloned().collect();
@@ -103,6 +135,8 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
             AvailableKind::Mcp,
             origin,
             overridden,
+            None,
+            None,
             None,
         ));
     }
@@ -256,6 +290,8 @@ mod tests {
             args: Vec::new(),
             timeout: 120,
             rules,
+            suite: None,
+            suite_label: None,
         };
         let mut global = GlobalSettings::default();
         global.custom_tools.push(tool("plain", Vec::new()));
@@ -277,5 +313,27 @@ mod tests {
         assert_eq!(surface("plain"), PermissionSurface::Fixed);
         assert_eq!(surface("kept"), PermissionSurface::Preset);
         assert_eq!(surface("gated"), PermissionSurface::Fixed);
+    }
+
+    #[test]
+    fn bash_and_subagent_series_declared_on_available_tools() {
+        let resolved = ConfigManager::resolve_without_catalog(
+            GlobalSettings::default(),
+            WorkspaceState::new("/tmp/series"),
+        );
+        let tools = available_tools(&resolved);
+        let bash = tools.iter().find(|t| t.id == "bash").expect("bash");
+        assert_eq!(bash.series_id.as_deref(), Some("bash"));
+        assert_eq!(bash.series_label.as_deref(), Some("Bash"));
+        let wait = tools.iter().find(|t| t.id == "wait_shell").expect("wait");
+        assert_eq!(wait.series_id.as_deref(), Some("bash"));
+        let launch = tools
+            .iter()
+            .find(|t| t.id == "subagent_launch")
+            .expect("launch");
+        assert_eq!(launch.series_id.as_deref(), Some("subagent"));
+        assert_eq!(launch.series_label.as_deref(), Some("Subagent"));
+        let ask = tools.iter().find(|t| t.id == "ask_user").expect("ask_user");
+        assert!(ask.series_id.is_none());
     }
 }

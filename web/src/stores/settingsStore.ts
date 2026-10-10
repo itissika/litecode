@@ -620,9 +620,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
 
     saveAgent: (id, profile) =>
       withTurnGuard(async () => {
-        const presetIds = presetToolIds(get().availableTools ?? []);
-        const synced = withSyncedToolSeries(profile, presetIds);
-        const { revision } = await putAgent(id, synced, presetIds);
+        const available = get().availableTools ?? [];
+        const presetIds = presetToolIds(available);
+        const synced = withSyncedToolSeries(profile, presetIds, available);
+        const { revision } = await putAgent(id, synced, presetIds, available);
         set((s) => ({
           revision,
           agents: { ...s.agents, [id]: synced },

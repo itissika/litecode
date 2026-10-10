@@ -271,6 +271,45 @@ function AgentProfileFields({
   );
 }
 
+
+/** Collapse available tools into one card per series_id (MCP-like). */
+function bindCards(tools: AvailableTool[]): {
+  key: string;
+  title: string;
+  entry: AvailableTool;
+  members: AvailableTool[];
+}[] {
+  const seen = new Set<string>();
+  const cards: {
+    key: string;
+    title: string;
+    entry: AvailableTool;
+    members: AvailableTool[];
+  }[] = [];
+  for (const entry of tools) {
+    const sid = entry.series_id ?? null;
+    if (sid) {
+      if (seen.has(`series:${sid}`)) continue;
+      seen.add(`series:${sid}`);
+      const members = tools.filter((t) => t.series_id === sid);
+      cards.push({
+        key: `series:${sid}`,
+        title: entry.series_label || sid,
+        entry: members[0] ?? entry,
+        members,
+      });
+    } else {
+      cards.push({
+        key: entry.id,
+        title: entry.id,
+        entry,
+        members: [entry],
+      });
+    }
+  }
+  return cards;
+}
+
 function AllowedSubagentsSelect({
   draft,
   subagentIds,
@@ -382,7 +421,8 @@ export function AgentToolsGrid({
         role="list"
         aria-label="Agent tool bindings"
       >
-        {bindableTools.map((entry) => {
+        {bindCards(bindableTools).map((card) => {
+          const entry = card.entry;
           const binding = bindingFor(draft.tools, entry.id);
           const configurable = isConfigurableTool(entry);
           const enabled = binding.enabled;
@@ -401,8 +441,9 @@ export function AgentToolsGrid({
 
           return (
             <div
-              key={entry.id}
+              key={card.key}
               data-enabled={enabled ? "true" : "false"}
+              data-series-id={entry.series_id ?? undefined}
               className="tool-binding-card flex flex-col overflow-hidden"
             >
               <button
@@ -417,10 +458,12 @@ export function AgentToolsGrid({
                 <div className="flex w-full items-start justify-between gap-2 p-3">
                   <div className="min-w-0">
                     <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">
-                      {entry.id}
+                      {card.title}
                     </p>
                     <p className="mt-0.5 text-dk-xs text-(--_dk-text-disabled)">
-                      {entry.kind}
+                      {card.members.length > 1
+                        ? `${entry.kind} · ${card.members.map((m) => m.id).join(", ")}`
+                        : entry.kind}
                       {entry.overridden ? " · workspace override" : ""}
                     </p>
                   </div>
@@ -507,6 +550,7 @@ function agentPersistPayload(
   draft: AgentProfile,
   selectedAgentId: string,
   presetIds: ReadonlySet<string>,
+  available: readonly AvailableTool[] = [],
 ): AgentProfile {
   const isHidden = isHiddenSettingsAgent(selectedAgentId, draft.role);
   if (isHidden) {
@@ -527,6 +571,7 @@ function agentPersistPayload(
         temperature: BUILTIN_TEMPERATURE,
       },
       presetIds,
+      available,
     );
   }
   return withSyncedToolSeries(
@@ -536,6 +581,7 @@ function agentPersistPayload(
       temperature: BUILTIN_TEMPERATURE,
     },
     presetIds,
+    available,
   );
 }
 
@@ -626,7 +672,7 @@ export function AgentsSection() {
     serialize: (d) => {
       if (!d) return { skip: "unchanged" };
       return {
-        ok: agentPersistPayload(d, selectedAgentId, presetIds),
+        ok: agentPersistPayload(d, selectedAgentId, presetIds, availableTools ?? []),
       };
     },
     commit: (p) => saveAgent(selectedAgentId, p),
@@ -676,7 +722,13 @@ export function AgentsSection() {
     if (patch.enabled !== undefined) {
       setDraft({
         ...draft,
-        tools: applyToolEnabled(draft.tools, toolId, patch.enabled, presetIds),
+        tools: applyToolEnabled(
+          draft.tools,
+          toolId,
+          patch.enabled,
+          presetIds,
+          availableTools ?? [],
+        ),
       });
       return;
     }
@@ -719,7 +771,12 @@ export function AgentsSection() {
 
   const onCreate = () => {
     if (!draft || !newAgentId.trim()) return;
-    const payload = agentPersistPayload(draft, newAgentId.trim(), presetIds);
+    const payload = agentPersistPayload(
+      draft,
+      newAgentId.trim(),
+      presetIds,
+      availableTools ?? [],
+    );
     void createAgent(newAgentId.trim(), payload)
       .then(() => {
         setCreating(false);

@@ -132,7 +132,7 @@ impl Tool for CodeSearchTool {
             }
             Some(EngineState::Warm) => {}
             _ => {
-                return ToolCallResult::ok(indexing_wait_message(&self.engines));
+                return ToolCallResult::warning(indexing_wait_message(&self.engines));
             }
         }
 
@@ -152,7 +152,7 @@ impl Tool for CodeSearchTool {
                 return ToolCallResult::error(detail);
             }
             CodeSearchCallGate::Wait => {
-                return ToolCallResult::ok(indexing_wait_message(&self.engines));
+                return ToolCallResult::warning(indexing_wait_message(&self.engines));
             }
             CodeSearchCallGate::Ready => {}
         }
@@ -629,7 +629,7 @@ mod tests {
 
         let tool = CodeSearchTool::new(engines);
         let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
         assert!(result.content.contains("refreshing"), "{}", result.content);
         assert!(
             !result.content.contains("0/0"),
@@ -656,7 +656,7 @@ mod tests {
 
         let tool = CodeSearchTool::new(engines);
         let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
         assert!(
             result.content.contains("refreshing") || result.content.contains("Try again shortly"),
             "{}",
@@ -928,7 +928,7 @@ mod tests {
             started.elapsed() < Duration::from_secs(2),
             "stale without a live worker must not wait the 30s budget"
         );
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
         assert!(
             result.content.contains("stale") || result.content.contains("Try again shortly"),
             "{}",

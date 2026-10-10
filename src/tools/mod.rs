@@ -14,6 +14,7 @@ pub mod litecode_workspace;
 pub mod lsp;
 pub mod lsp_feedback;
 pub mod mcp_tool;
+pub mod ask_user;
 pub mod plan;
 pub mod read;
 pub mod session_search;

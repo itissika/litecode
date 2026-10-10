@@ -497,7 +497,20 @@ pub struct PermissionRequest {
     pub request_id: String,
     pub tool: String,
     pub rule_id: String,
+    /// Optional card title. For ask_user, prefer `questions[].prompt`.
     pub summary: String,
+    #[serde(default)]
+    pub kind: crate::permission::AskKind,
+    #[serde(default)]
+    pub free_text: bool,
+    /// Legacy flat options (compat → single question id `q0` when `questions` empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<crate::permission::AskOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+    /// ask_user batch (≥1). Empty for permission/approval.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<crate::permission::AskQuestion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

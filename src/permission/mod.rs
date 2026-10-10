@@ -14,8 +14,9 @@ pub use action::PermissionAction;
 pub use engine::{PermissionEngine, PermissionView};
 pub use evaluate::{EvalResult, evaluate};
 pub use grants::{
-    AskOutcome, PermissionSink, blocking_wait_oneshot, blocking_wait_oneshot_cancellable,
-    check_runtime_grant, clear_runtime_grants, clear_runtime_grants_for, grant_runtime,
+    AskAnswer, AskKind, AskOption, AskOutcome, AskPrompt, AskQuestion, AskReply, PermissionSink, blocking_wait_oneshot,
+    blocking_wait_oneshot_cancellable, check_runtime_grant, clear_runtime_grants,
+    clear_runtime_grants_for, grant_runtime,
 };
 pub use matchers::{ArgMatcher, MatchContext, matches};
 pub use messages::{permission_denied_by_user_message, permission_denied_message};

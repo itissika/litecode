@@ -37,11 +37,13 @@ impl ToolPipeline {
         self.runtime = runtime;
     }
 
-    /// Inject session_id into session-scoped tools before execution.
+    /// Inject session_id + permission sink into session-scoped tools before execution.
     fn inject_sessions(&self) {
         let sid = &self.session_id;
+        let sink = std::sync::Arc::clone(&self.runtime.permission_sink);
         for tool in &self.runtime.tools {
             tool.set_active_session(sid.clone());
+            tool.set_permission_sink(std::sync::Arc::clone(&sink));
         }
     }
 

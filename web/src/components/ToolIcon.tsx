@@ -13,6 +13,7 @@ import {
   PencilIcon,
   PlugsConnectedIcon,
   PuzzlePieceIcon,
+  QuestionMarkIcon,
   StopIcon,
   StrategyIcon,
   TerminalIcon,
@@ -32,7 +33,7 @@ type GlyphProps = {
   className?: string;
 };
 
-type Glyph = ComponentType<GlyphProps>;
+export type Glyph = ComponentType<GlyphProps>;
 
 // Glyph per built-in tool name. `litecode_workspace` uses the product mark,
 // `mcp_*` tools share PlugsConnected; unknown tools fall back to a wrench.
@@ -52,6 +53,7 @@ const NAME_GLYPH: Record<string, Glyph> = {
   session_search: MagnifyingGlassIcon,
   todo: ListChecksIcon,
   plan: StrategyIcon,
+  ask_user: QuestionMarkIcon,
   code_search: CodeIcon,
   lsp: BracketsCurlyIcon,
   litecode_workspace: LitecodeMark,

@@ -2,7 +2,10 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::permission::{AskOutcome, PermissionSink, blocking_wait_oneshot_cancellable};
+use crate::permission::{
+    AskKind, AskOption, AskOutcome, AskPrompt, AskQuestion, AskReply, PermissionSink,
+    blocking_wait_oneshot_cancellable,
+};
 
 pub struct PendingPermission {
     pub session_id: String,
@@ -12,7 +15,12 @@ pub struct PendingPermission {
     pub tool: String,
     pub rule_id: String,
     pub summary: String,
-    pub reply_tx: oneshot::Sender<AskOutcome>,
+    pub kind: AskKind,
+    pub free_text: bool,
+    pub options: Vec<AskOption>,
+    pub multi_select: bool,
+    pub questions: Vec<AskQuestion>,
+    pub reply_tx: oneshot::Sender<AskReply>,
 }
 
 pub struct WsPermissionBridge {
@@ -39,14 +47,18 @@ impl WsPermissionBridge {
 }
 
 impl PermissionSink for WsPermissionBridge {
-    fn ask_permission(
-        &self,
-        tool: &str,
-        rule_id: &str,
-        summary: &str,
-        cancel: &CancellationToken,
-    ) -> AskOutcome {
-        tracing::info!(tool = %tool, rule_id = %rule_id, "permission waiting for ui");
+    fn ask(&self, prompt: &AskPrompt<'_>, cancel: &CancellationToken) -> AskReply {
+        let questions = prompt.effective_questions();
+        tracing::info!(
+            tool = %prompt.tool,
+            rule_id = %prompt.rule_id,
+            kind = ?prompt.kind,
+            free_text = prompt.free_text,
+            options = prompt.options.len(),
+            multi_select = prompt.multi_select,
+            questions = questions.len(),
+            "permission waiting for ui"
+        );
         let (reply_tx, reply_rx) = oneshot::channel();
         if self
             .tx
@@ -55,21 +67,26 @@ impl PermissionSink for WsPermissionBridge {
                 agent_name: self.agent_name.clone(),
                 turn_id: self.turn_id.clone(),
                 request_id: Uuid::new_v4().to_string(),
-                tool: tool.to_string(),
-                rule_id: rule_id.to_string(),
-                summary: summary.to_string(),
+                tool: prompt.tool.to_string(),
+                rule_id: prompt.rule_id.to_string(),
+                summary: prompt.summary.to_string(),
+                kind: prompt.kind,
+                free_text: prompt.free_text,
+                options: prompt.options.to_vec(),
+                multi_select: prompt.multi_select,
+                questions,
                 reply_tx,
             })
             .is_err()
         {
-            tracing::warn!(tool = %tool, "no active websocket for permission");
-            return AskOutcome::Deny;
+            tracing::warn!(tool = %prompt.tool, "no active websocket for permission");
+            return AskReply::from_outcome(AskOutcome::Deny);
         }
         let reply = blocking_wait_oneshot_cancellable(reply_rx, Some(cancel.clone()))
-            .unwrap_or(AskOutcome::Aborted);
+            .unwrap_or_else(|| AskReply::from_outcome(AskOutcome::Aborted));
         tracing::info!(
-            tool = %tool,
-            rule_id = %rule_id,
+            tool = %prompt.tool,
+            rule_id = %prompt.rule_id,
             ?reply,
             "permission ui replied"
         );

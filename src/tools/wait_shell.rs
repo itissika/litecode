@@ -42,7 +42,7 @@ impl WaitShellTool {
     }
 
     fn call_with_root(&self, input: Value, workspace_root: std::path::PathBuf) -> ToolCallResult {
-        let id = input["id"].as_str().filter(|s| !s.is_empty());
+        let id = resolve_bash_id(&input);
         let sec = input["sec"].as_u64();
         let sid = self.session_id();
         let call_id = self.call_id();
@@ -85,13 +85,13 @@ impl Tool for WaitShellTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "id": {
+                "bash_id": {
                     "type": "string",
-                    "description": "bash_id to wait for. Omit to wait only on sec, or until any session job exits."
+                    "description": "bash_id returned by bash for a background job. Omit to wait only on sec, or until any session job exits."
                 },
                 "sec": {
                     "type": "integer",
-                    "description": "Seconds to wait (1-600). With id: return when that job exits or time elapses, whichever first. Without id: sleep, or return sooner if any session job exits."
+                    "description": "Seconds to wait (1-600). With bash_id: return when that job exits or time elapses, whichever first. Without bash_id: sleep, or return sooner if any session job exits."
                 }
             }
         })
@@ -141,13 +141,10 @@ impl Tool for WaitShellTool {
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
-        let id = input
-            .get("id")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty());
+        let id = resolve_bash_id(input);
         let sec = input.get("sec");
         if id.is_none() && sec.is_none() {
-            return Err("missing required parameter 'id' or 'sec'".into());
+            return Err("missing required parameter 'bash_id' or 'sec'".into());
         }
         if let Some(v) = sec {
             let n = v
@@ -161,19 +158,48 @@ impl Tool for WaitShellTool {
     }
 }
 
+/// Prefer `bash_id` (canonical with kill_shell / bash results). Legacy `id` still accepted.
+fn resolve_bash_id(input: &Value) -> Option<&str> {
+    input
+        .get("bash_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            input
+                .get("id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn validate_requires_id_or_sec() {
+    fn validate_requires_bash_id_or_sec() {
         let tool = WaitShellTool::new(Arc::new(TerminalHub::new()));
         assert!(tool.validate_input(&serde_json::json!({})).is_err());
+        assert!(
+            tool.validate_input(&serde_json::json!({"bash_id": "bg_a"}))
+                .is_ok()
+        );
+        // Legacy alias still accepted.
         assert!(
             tool.validate_input(&serde_json::json!({"id": "bg_a"}))
                 .is_ok()
         );
         assert!(tool.validate_input(&serde_json::json!({"sec": 2})).is_ok());
         assert!(tool.validate_input(&serde_json::json!({"sec": 0})).is_err());
+    }
+
+    #[test]
+    fn schema_advertises_bash_id_not_id() {
+        let tool = WaitShellTool::new(Arc::new(TerminalHub::new()));
+        let schema = tool.schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("bash_id"));
+        assert!(!props.contains_key("id"));
+        assert!(props.contains_key("sec"));
     }
 }

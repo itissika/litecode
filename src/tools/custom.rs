@@ -555,6 +555,8 @@ mod tests {
                 args: vec![],
                 timeout: 10,
                 rules: Vec::new(),
+                suite: None,
+                suite_label: None,
             },
             Arc::new(CustomToolHub::new()),
         )

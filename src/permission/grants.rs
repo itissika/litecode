@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use super::action::PermissionAction;
@@ -30,6 +31,189 @@ impl AskOutcome {
     }
 }
 
+/// Kind of human Ask surfaced through the permission bridge.
+///
+/// `Permission` — Allow once / Always allow / Deny (tool grant).
+/// `Approval` — Approve / Reject + optional free-text (plan create).
+/// `AskUser` — pick from `options` (+ optional free-text); not a permission grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskKind {
+    #[default]
+    Permission,
+    Approval,
+    AskUser,
+}
+
+/// One choice on an `ask_user` card (`id` is what the agent receives).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskOption {
+    pub id: String,
+    pub label: String,
+}
+
+/// One question in an `ask_user` batch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskQuestion {
+    pub id: String,
+    pub prompt: String,
+    pub options: Vec<AskOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+    /// When true, show an optional free-text field for this question.
+    #[serde(default)]
+    pub free_text: bool,
+}
+
+/// Per-question answer on an `ask_user` submit (`answers` map value).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AskAnswer {
+    #[serde(default)]
+    pub selected: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_text: Option<String>,
+}
+
+fn trim_opt(s: Option<String>) -> Option<String> {
+    s.and_then(|s| {
+        let t = s.trim().to_string();
+        if t.is_empty() { None } else { Some(t) }
+    })
+}
+
+/// Parameters for a single human Ask.
+#[derive(Debug, Clone, Copy)]
+pub struct AskPrompt<'a> {
+    pub tool: &'a str,
+    pub rule_id: &'a str,
+    /// Optional card title; for legacy single-question ask_user may equal the prompt.
+    pub summary: &'a str,
+    pub kind: AskKind,
+    /// Approval: show free-text. Legacy ask_user (no `questions`): top-level free_text flag.
+    pub free_text: bool,
+    /// Legacy flat options (compat → single question id `q0` when `questions` empty).
+    pub options: &'a [AskOption],
+    pub multi_select: bool,
+    /// Batch questions for `ask_user` (≥1). Empty for permission/approval.
+    pub questions: &'a [AskQuestion],
+}
+
+impl<'a> AskPrompt<'a> {
+    pub fn permission(tool: &'a str, rule_id: &'a str, summary: &'a str) -> Self {
+        Self {
+            tool,
+            rule_id,
+            summary,
+            kind: AskKind::Permission,
+            free_text: false,
+            options: &[],
+            multi_select: false,
+            questions: &[],
+        }
+    }
+
+    pub fn approval(tool: &'a str, rule_id: &'a str, summary: &'a str) -> Self {
+        Self {
+            tool,
+            rule_id,
+            summary,
+            kind: AskKind::Approval,
+            free_text: true,
+            options: &[],
+            multi_select: false,
+            questions: &[],
+        }
+    }
+
+    pub fn ask_user(
+        tool: &'a str,
+        rule_id: &'a str,
+        summary: &'a str,
+        questions: &'a [AskQuestion],
+    ) -> Self {
+        Self {
+            tool,
+            rule_id,
+            summary,
+            kind: AskKind::AskUser,
+            free_text: false,
+            options: &[],
+            multi_select: false,
+            questions,
+        }
+    }
+
+    /// Wire/FE view: prefer `questions`; else lift legacy summary/options into `q0`.
+    pub fn effective_questions(&self) -> Vec<AskQuestion> {
+        if !self.questions.is_empty() {
+            return self.questions.to_vec();
+        }
+        if self.kind == AskKind::AskUser && !self.options.is_empty() {
+            return vec![AskQuestion {
+                id: "q0".into(),
+                prompt: self.summary.to_string(),
+                options: self.options.to_vec(),
+                multi_select: self.multi_select,
+                free_text: self.free_text,
+            }];
+        }
+        Vec::new()
+    }
+}
+
+/// Reply from a human Ask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskReply {
+    pub outcome: AskOutcome,
+    /// Approval (and legacy) top-level free text.
+    pub free_text: Option<String>,
+    /// Legacy flat selected option ids (prefer `answers` for ask_user).
+    pub selected: Vec<String>,
+    /// ask_user submit: map question_id → answer.
+    pub answers: HashMap<String, AskAnswer>,
+}
+
+impl AskReply {
+    pub fn from_outcome(outcome: AskOutcome) -> Self {
+        Self {
+            outcome,
+            free_text: None,
+            selected: Vec::new(),
+            answers: HashMap::new(),
+        }
+    }
+
+    pub fn from_grant(
+        approved: bool,
+        always: bool,
+        free_text: Option<String>,
+        selected: Vec<String>,
+        answers: HashMap<String, AskAnswer>,
+    ) -> Self {
+        let free_text = trim_opt(free_text);
+        let mut answers = answers;
+        for ans in answers.values_mut() {
+            ans.free_text = trim_opt(ans.free_text.take());
+        }
+        // Legacy: flat selected only → synthesize q0 answer.
+        if answers.is_empty() && !selected.is_empty() {
+            answers.insert(
+                "q0".into(),
+                AskAnswer {
+                    selected: selected.clone(),
+                    free_text: free_text.clone(),
+                },
+            );
+        }
+        Self {
+            outcome: AskOutcome::from_reply(approved, always),
+            free_text,
+            selected,
+            answers,
+        }
+    }
+}
+
 /// User-facing permission prompt sink (CLI, WebSocket bridge, tests).
 pub trait PermissionSink: Send + Sync {
     fn ask_permission(
@@ -38,7 +222,15 @@ pub trait PermissionSink: Send + Sync {
         rule_id: &str,
         summary: &str,
         cancel: &CancellationToken,
-    ) -> AskOutcome;
+    ) -> AskOutcome {
+        self.ask(&AskPrompt::permission(tool_name, rule_id, summary), cancel)
+            .outcome
+    }
+
+    /// Richer Ask that can carry prompt kind + optional free-text opinion.
+    /// Default maps to [`ask_permission`]-style permission with no free text
+    /// when an impl only overrides `ask`. Prefer overriding `ask`.
+    fn ask(&self, prompt: &AskPrompt<'_>, cancel: &CancellationToken) -> AskReply;
 }
 
 /// Wait for a oneshot reply without panicking on a tokio worker thread.

@@ -245,7 +245,7 @@ fn wait_id_after_exit_equals_exited_formatter() {
     );
     let id = bash_id_of(&launched.content);
     wait_until(&flow.hub, &id, false);
-    let result = flow.run_wait(serde_json::json!({ "id": id }));
+    let result = flow.run_wait(serde_json::json!({ "bash_id": id }));
     assert_eq!(result.level, ToolSignalLevel::Ok);
     assert_eq!(result.content, expected_exited(&flow, &id));
     assert!(!result.content.contains("<system-reminder>"));
@@ -275,7 +275,7 @@ fn wait_id_and_sec_timer_wins_while_job_runs() {
         None,
     );
     let id = bash_id_of(&launched.content);
-    let result = flow.run_wait(serde_json::json!({ "id": id, "sec": 1 }));
+    let result = flow.run_wait(serde_json::json!({ "bash_id": id, "sec": 1 }));
     assert_eq!(result.level, ToolSignalLevel::Ok);
     assert_eq!(result.content, expected_waited(&flow));
     assert!(flow.hub.jobs.get(&id).is_some_and(|(alive, _, _, _)| alive));
@@ -290,7 +290,7 @@ fn wait_id_and_sec_exit_wins_before_timer() {
     );
     let id = bash_id_of(&launched.content);
     wait_until(&flow.hub, &id, false);
-    let result = flow.run_wait(serde_json::json!({ "id": id, "sec": 30 }));
+    let result = flow.run_wait(serde_json::json!({ "bash_id": id, "sec": 30 }));
     assert_eq!(result.level, ToolSignalLevel::Ok);
     assert_eq!(result.content, expected_exited(&flow, &id));
 }
@@ -303,7 +303,7 @@ fn wait_unknown_id_equals_unknown_formatter_with_running_list() {
         None,
     );
     let live = bash_id_of(&launched.content);
-    let result = flow.run_wait(serde_json::json!({ "id": "bg_missing" }));
+    let result = flow.run_wait(serde_json::json!({ "bash_id": "bg_missing" }));
     assert_eq!(result.level, ToolSignalLevel::Error);
     assert_eq!(
         result.content,
@@ -332,7 +332,7 @@ fn wait_wakes_on_other_session_job_exit() {
         None,
     );
     let quick_id = bash_id_of(&quick.content);
-    let result = flow.run_wait(serde_json::json!({ "id": long_id, "sec": 15 }));
+    let result = flow.run_wait(serde_json::json!({ "bash_id": long_id, "sec": 15 }));
     assert_eq!(result.level, ToolSignalLevel::Ok);
     assert_eq!(result.content, expected_exited(&flow, &quick_id));
     assert!(
@@ -410,7 +410,7 @@ fn wait_after_kill_returns_exited_not_timeout() {
         "killed job must leave the running set"
     );
     let started = Instant::now();
-    let waited = flow.run_wait(serde_json::json!({ "id": id, "sec": 8 }));
+    let waited = flow.run_wait(serde_json::json!({ "bash_id": id, "sec": 8 }));
     assert!(started.elapsed() < Duration::from_secs(3));
     assert_eq!(waited.level, ToolSignalLevel::Ok);
     assert!(
@@ -431,7 +431,7 @@ fn wait_after_ui_kill_tells_agent_user_stopped() {
     let id = bash_id_of(&launched.content);
     flow.hub.kill_from_ui(&id).expect("ui kill");
     let _ = flow.hub.close_agent(&id);
-    let waited = flow.run_wait(serde_json::json!({ "id": id, "sec": 8 }));
+    let waited = flow.run_wait(serde_json::json!({ "bash_id": id, "sec": 8 }));
     assert_eq!(waited.level, ToolSignalLevel::Ok);
     assert!(
         waited.content.contains("stopped_by: user (Kill)"),
@@ -471,7 +471,7 @@ fn running_list_is_session_scoped() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, mine_id);
     assert!(!listed.iter().any(|j| j.id == other.id));
-    let wait = flow.run_wait(serde_json::json!({ "id": other.id }));
+    let wait = flow.run_wait(serde_json::json!({ "bash_id": other.id }));
     assert_eq!(wait.level, ToolSignalLevel::Error);
     assert_eq!(
         wait.content,
@@ -493,7 +493,7 @@ fn wait_validate_copy_matches_schema_helpers() {
     let tool = WaitShellTool::new(Arc::new(TerminalHub::new()));
     assert_eq!(
         tool.validate_input(&serde_json::json!({})).unwrap_err(),
-        "missing required parameter 'id' or 'sec'"
+        "missing required parameter 'bash_id' or 'sec'"
     );
     assert_eq!(
         tool.validate_input(&serde_json::json!({"sec": 0}))
@@ -505,5 +505,6 @@ fn wait_validate_copy_matches_schema_helpers() {
             .unwrap_err(),
         crate::tool::expected_type("sec", "integer", &serde_json::json!(1.5))
     );
+    assert!(tool.validate_input(&serde_json::json!({"bash_id": ""})).is_err());
     assert!(tool.validate_input(&serde_json::json!({"id": ""})).is_err());
 }

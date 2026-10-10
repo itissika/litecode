@@ -90,9 +90,21 @@ pub const SUBAGENT_SERIES_TOOL_IDS: &[&str] = &[
     "subagent_send",
 ];
 
-/// Task-board tools. Subagent role does not bind these (tool-set gate).
+/// Bash closed loop: enable/disable together on Agents (one card).
+pub const BASH_SERIES_TOOL_IDS: &[&str] = &["bash", "wait_shell", "kill_shell"];
+
+/// Server-declared enable series for Agents one-card binding.
+/// `(series_id, series_label, tool_ids)`.
+pub fn core_tool_enable_series() -> &'static [(&'static str, &'static str, &'static [&'static str])] {
+    &[
+        ("bash", "Bash", BASH_SERIES_TOOL_IDS),
+        ("subagent", "Subagent", SUBAGENT_SERIES_TOOL_IDS),
+    ]
+}
+
+/// Task-board / human-Ask tools. Subagent role does not bind these (tool-set gate).
 /// `knowledge` and `litecode_workspace` stay on the subagent tool set.
-pub const PRIMARY_ONLY_TOOL_IDS: &[&str] = &["plan", "todo"];
+pub const PRIMARY_ONLY_TOOL_IDS: &[&str] = &["plan", "todo", "ask_user"];
 
 fn default_temperature() -> f64 {
     0.7
@@ -141,6 +153,11 @@ pub struct AvailableTool {
     /// Backend declaration of whether this tool has an ALL/SAFE dial.
     #[serde(default)]
     pub permission_surface: PermissionSurface,
+    /// When set, Agents shows one card for the series (like MCP server cards).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_label: Option<String>,
 }
 
 /// Workspace-engine configured intent (from engines.json).
@@ -177,6 +194,12 @@ pub struct CustomToolDefinition {
     /// Non-empty: Agents can switch ALL/SAFE. SAFE walks these rules in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<crate::permission::PolicyRule>,
+    /// Optional Agents one-card suite id (shared across custom tools in the suite).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite: Option<String>,
+    /// Human label for the suite card; defaults to `suite` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite_label: Option<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -211,6 +234,8 @@ mod custom_tool_definition_tests {
             args: vec![],
             timeout: 120,
             rules: Vec::new(),
+            suite: None,
+            suite_label: None,
         };
         let schema = tool.to_json_schema();
         assert_eq!(schema["type"], "object");

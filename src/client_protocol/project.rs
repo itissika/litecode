@@ -439,6 +439,11 @@ fn project_with(
             tool,
             rule_id,
             summary,
+            kind,
+            free_text,
+            options,
+            multi_select,
+            questions,
         } => Some(notification(
             "agent/permission_request",
             serde_json::json!({
@@ -448,6 +453,11 @@ fn project_with(
                 "tool": tool,
                 "rule_id": rule_id,
                 "summary": summary,
+                "kind": kind,
+                "free_text": free_text,
+                "options": options,
+                "multi_select": multi_select,
+                "questions": questions,
             }),
         )),
         InternalEvent::StepCommitted => None,
@@ -929,6 +939,11 @@ pub enum IncomingWire {
         tool: String,
         rule_id: String,
         summary: String,
+        kind: crate::permission::AskKind,
+        free_text: bool,
+        options: Vec<crate::permission::AskOption>,
+        multi_select: bool,
+        questions: Vec<crate::permission::AskQuestion>,
     },
     TurnFinished {
         session_id: String,
@@ -1012,6 +1027,26 @@ pub fn classify_incoming(msg: &serde_json::Value) -> IncomingWire {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let kind = params
+                    .get("kind")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let free_text = params
+                    .get("free_text")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let options = params
+                    .get("options")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let multi_select = params
+                    .get("multi_select")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let questions = params
+                    .get("questions")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
                 return IncomingWire::PermissionRequest {
                     session_id,
                     turn_id,
@@ -1019,6 +1054,11 @@ pub fn classify_incoming(msg: &serde_json::Value) -> IncomingWire {
                     tool,
                     rule_id,
                     summary,
+                    kind,
+                    free_text,
+                    options,
+                    multi_select,
+                    questions,
                 };
             }
             IncomingWire::Ignored

@@ -23,6 +23,7 @@ use crate::tools::{
     litecode_workspace::LitecodeWorkspaceTool,
     lsp::LspTool,
     mcp_tool::McpTool,
+    ask_user::AskUserTool,
     plan::PlanTool,
     read::ReadTool,
     session_search::SessionSearchTool,
@@ -54,6 +55,7 @@ fn builtin_tool(
         "knowledge" => Arc::new(KnowledgeTool::new(Arc::clone(&ide))),
         "glob" => Arc::new(GlobTool),
         "todo" => Arc::new(TodoWriteTool::new(Arc::clone(&sessions))),
+        "ask_user" => Arc::new(AskUserTool::new()),
         "plan" => Arc::new(PlanTool::new(Arc::clone(&sessions))),
         _ => return None,
     };

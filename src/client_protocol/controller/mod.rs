@@ -936,8 +936,8 @@ pub struct SessionController {
     pub(super) _workspace_outgoing: Vec<serde_json::Value>,
     /// Deferred queue for requests that arrive while no projection is bound.
     pub(super) _dummy_deferred: VecDeque<SessionRequest>,
-    /// Permission grants that arrived while no permission wait was active;
-    /// consumed by the next matching wait (race hardening, 6a-6j).
+    /// Permission grants that arrived before the matching Ask was registered;
+    /// consumed when that Ask is inserted into the pending-ask registry.
     pub(super) stray_grants: VecDeque<SessionRequest>,
 }
 

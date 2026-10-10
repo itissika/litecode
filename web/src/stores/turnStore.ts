@@ -7,6 +7,10 @@ import {
 } from "../api/adapter";
 import type {
   AgentRunState,
+  AskAnswer,
+  AskKind,
+  AskOption,
+  AskQuestion,
   ContextMode,
   ItemTokenBreakdown,
   PendingMessage,
@@ -24,6 +28,7 @@ import type {
 import { EMPTY_TOKEN_BREAKDOWN } from "../api/types";
 import { debugTrace } from "../lib/debugTrace";
 import { reconnectAfterFinish } from "../lib/llmReconnect";
+import { normalizeAskQuestions } from "../lib/askUser";
 import { useConnectionStore, attachSiblingStores } from "./connectionStore";
 import { appendComposerText } from "./composerDraft";
 import { useMessageStore, type TurnEndNotice } from "./messageStore";
@@ -36,6 +41,12 @@ export interface PendingPermission {
   tool: string;
   rule_id: string;
   summary: string;
+  kind: AskKind;
+  free_text: boolean;
+  options: AskOption[];
+  multi_select: boolean;
+  /** Normalized ask_user questions (single q0 when wire used top-level options). */
+  questions: AskQuestion[];
 }
 
 /** Per-session turn runtime state only — no composer/UI draft fields. */
@@ -266,6 +277,11 @@ interface TurnStore {
     sessionId: string,
     approved: boolean,
     always: boolean,
+    opts?: {
+      freeText?: string;
+      selected?: string[];
+      answers?: Record<string, AskAnswer>;
+    },
   ) => void;
 
   onPermissionRequest: (sessionId: string, pr: PermissionRequest) => void;
@@ -625,7 +641,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       });
     },
 
-    grantPermission: (sessionId, approved, always) => {
+    grantPermission: (sessionId, approved, always, opts) => {
       const current = getSlice(get().byId, sessionId);
       if (!current.pendingPermission) return;
       const pending = current.pendingPermission;
@@ -633,6 +649,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       // Keep the card open until the server's `agent/permission` receipt
       // arrives; only then close it. On failure, restore the card and surface
       // the error explicitly instead of a silent empty catch (FE-04).
+      const trimmed = opts?.freeText?.trim();
+      const selected = opts?.selected;
+      const answers = opts?.answers;
       useConnectionStore
         .getState()
         .sendRpc("agent/permission", {
@@ -641,6 +660,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           approved,
           always,
           session_id: sessionId,
+          ...(trimmed ? { free_text: trimmed } : {}),
+          ...(selected && selected.length > 0 ? { selected } : {}),
+          ...(answers && Object.keys(answers).length > 0 ? { answers } : {}),
         })
         .then(() => {
           // Close only the card we granted; a newer request may have replaced it.
@@ -664,6 +686,15 @@ export const useTurnStore = create<TurnStore>((set, get) => {
     onPermissionRequest: (sessionId, pr) => {
       // Always is rule-scoped on the server (`agent, tool, rule_id`); never
       // auto-approve by whole-tool name on the client.
+      const kind = pr.kind ?? "permission";
+      const questions = normalizeAskQuestions(
+        kind,
+        pr.summary,
+        pr.questions,
+        pr.options,
+        pr.multi_select,
+        pr.free_text,
+      );
       patch(sessionId, {
         pendingPermission: {
           turn_id: pr.turn_id,
@@ -671,6 +702,11 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           tool: pr.tool,
           rule_id: pr.rule_id,
           summary: pr.summary,
+          kind,
+          free_text: pr.free_text ?? false,
+          options: pr.options ?? [],
+          multi_select: pr.multi_select ?? false,
+          questions,
         },
       });
     },

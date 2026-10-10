@@ -228,6 +228,57 @@ describe("settings helpers", () => {
     expect(mixed.subagent_list.enabled).toBe(true);
   });
 
+  it("uses server-declared series_id when available-tools labels a suite", async () => {
+    const {
+      applyToolEnabled,
+      syncToolEnableSeries,
+      toolEnableSeries,
+      seriesFromAvailableTools,
+    } = await import("./settings");
+    const available = [
+      {
+        id: "suite_a",
+        kind: "custom" as const,
+        origin: "global" as const,
+        series_id: "my_suite",
+        series_label: "My Suite",
+      },
+      {
+        id: "suite_b",
+        kind: "custom" as const,
+        origin: "global" as const,
+        series_id: "my_suite",
+        series_label: "My Suite",
+      },
+      {
+        id: "solo",
+        kind: "core" as const,
+        origin: "builtin" as const,
+      },
+    ];
+    expect(seriesFromAvailableTools(available)).toEqual([["suite_a", "suite_b"]]);
+    expect(toolEnableSeries("suite_a", available)).toEqual(["suite_a", "suite_b"]);
+    expect(toolEnableSeries("solo", available)).toBeNull();
+    // Fallback bash series still works alongside declared suites.
+    expect(toolEnableSeries("bash", available)).toEqual([
+      "bash",
+      "wait_shell",
+      "kill_shell",
+    ]);
+
+    const enabled = applyToolEnabled({}, "suite_b", true, new Set(), available);
+    expect(enabled.suite_a.enabled).toBe(true);
+    expect(enabled.suite_b.enabled).toBe(true);
+
+    const synced = syncToolEnableSeries(
+      { suite_a: { enabled: true, last_applied_preset: null } },
+      new Set(),
+      available,
+    );
+    expect(synced.suite_a.enabled).toBe(true);
+    expect(synced.suite_b.enabled).toBe(true);
+  });
+
   it("identifies protected agents", async () => {
     const { isProtectedAgent } = await import("./settings");
     expect(isProtectedAgent("default")).toBe(true);

@@ -1,1 +1,1 @@
-Search the web and return titles, URLs, and snippets.
+Search the public web for current titles, URLs, and snippets when the answer is outside the workspace. Use this for discovery; follow a specific URL with webfetch. Requires a configured search engine (Exa).

@@ -446,7 +446,8 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("true");
   });
 
-  it("claims the slot for the session's first plan and opens its panel", () => {
+  it("claims the slot for the session's first plan without opening an empty stub", async () => {
+    vi.mocked(readFile).mockResolvedValue(""); // backend empty stub = planning
     render(<SessionStatusLine sessionId="s1" />);
     expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("true");
 
@@ -455,11 +456,37 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     });
     expect(screen.getByTestId("capsule-plan").dataset.expanded).toBe("true");
     expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("false");
-    // The slot only carries the path, so a newly activated plan also opens its
-    // panel — the file is read straight away.
+    // Empty / legacy stub: bounce only — panel stays closed until body exists.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
+    expect(vi.mocked(readFile)).toHaveBeenCalledWith(".litecode/plan/calm.md");
+  });
+
+  it("opens the plan panel once the stub gains a real body", async () => {
+    vi.mocked(readFile).mockResolvedValue("");
+    render(<SessionStatusLine sessionId="s1" />);
+    act(() => {
+      seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
+
+    vi.mocked(readFile).mockResolvedValue("# Title\n\nbody");
+    act(() => {
+      useWorkspaceChangeStore.getState().record(
+        [".litecode/plan/calm.md"],
+        "modified",
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
     const panel = screen.getByTestId("status-capsule-panel");
     expect(panel.dataset.capsule).toBe("plan");
-    expect(vi.mocked(readFile)).toHaveBeenCalledWith(".litecode/plan/calm.md");
   });
 
   it("only claims the slot when one plan replaces another (no panel)", () => {
@@ -490,8 +517,9 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
   });
 
-  it("auto-opens the plan panel content-sized, dropping any dragged height", () => {
+  it("auto-opens the plan panel content-sized, dropping any dragged height", async () => {
     vi.useFakeTimers();
+    vi.mocked(readFile).mockResolvedValue("# Title\n\nbody");
     render(<SessionStatusLine sessionId="s1" />);
     // Drag the plan panel, then close it: the dragged height survives the exit
     // animation mount and must not leak into the next open.
@@ -512,6 +540,9 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
 
     act(() => {
       seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+    });
+    await act(async () => {
+      await Promise.resolve();
     });
     const panel = screen.getByTestId("status-capsule-panel");
     expect(panel.dataset.capsule).toBe("plan");
@@ -727,7 +758,9 @@ describe("SessionStatusLine — vertical expand", () => {
     // No overlay of its own — the panel's glass is not stacking another fill.
     expect(row.className).not.toContain("sticky");
     expect(row.className).not.toContain("backdrop-blur");
-    expect(within(scroll).getByRole("heading", { name: "Title" })).toBeTruthy();
+    expect(
+      await within(scroll).findByRole("heading", { name: "Title" }),
+    ).toBeTruthy();
   });
 
   it("opens the clicked capsule's panel content-sized", () => {

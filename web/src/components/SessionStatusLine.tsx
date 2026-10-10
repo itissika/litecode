@@ -63,6 +63,18 @@ export const BASH_CLAIM_GRACE_MS = 1500;
 /** User message the "执行计划" button sends on the human's behalf. */
 export const PLAN_EXECUTE_PROMPT = "按当前计划开始执行。";
 
+/**
+ * True when the on-disk plan has a real body (planned). Empty stub (backend
+ * writes "") and the legacy heading-only stub `# Plan` are still planning —
+ * bounce the capsule, do not auto-open the panel.
+ */
+export function isPlanBodyReady(md: string): boolean {
+  const t = md.trim();
+  if (!t) return false;
+  if (/^#\s*Plan\s*$/i.test(t)) return false;
+  return true;
+}
+
 const EMPTY_BASH_JOBS: BashJob[] = [];
 const EMPTY_TODO_ITEMS: TodoItem[] = [];
 
@@ -186,6 +198,7 @@ export function SessionStatusLine({
     (s) => (s.byId.get(sessionId)?.runState ?? "idle") !== "idle",
   );
   const projectRoot = useSessionStore((s) => s.project);
+  const planChangeTick = useWorkspaceChangeStore((s) => s.last);
   const openFile = useEditorStore((s) => s.openFile);
 
   const [openId, setOpenId] = useState<CapsuleId | null>(null);
@@ -311,15 +324,17 @@ export function SessionStatusLine({
   // change in any capsule's domain claims the horizontal slot for that
   // capsule. Signatures are compared by value, not array identity — snapshot
   // replays must not fire the trigger. Changes observed while busy are
-  // consumed, not queued. Plan is the one claim that also opens the panel, and
-  // only when it arrives from nothing: the slot carries nothing but a path,
-  // while a rewrite (a fresh plan file) is a revision whose panel would pop
-  // open over the reader.
+  // consumed, not queued. Plan claims the slot on path change; auto-open waits
+  // for a non-empty body (see isPlanBodyReady) so Approve's empty stub only
+  // bounces the icon. A rewrite under a fresh slug is a revision — slot only.
   //
   // Background terminals are the one delayed case: a new job claims only after
   // it survives BASH_CLAIM_GRACE_MS, and a job leaving never claims at all —
   // short calls must not flash the capsule. The pending claim is dropped by the
   // effect's own cleanup (any later domain change, panel open, or unmount).
+  // Armed when activePlanPath arrives from nothing; cleared after open or clear.
+  const planOpenArmedRef = useRef(false);
+  const planOpenSeqRef = useRef(0);
   const sigRef = useRef<{
     bash: string;
     sub: string;
@@ -342,15 +357,13 @@ export function SessionStatusLine({
     }
     if (prev.plan !== cur.plan) {
       setExpandedId("plan");
-      // Only a plan arriving from nothing opens the panel — the session's first
-      // plan, which is the one the user still has to read. Replacing one plan
-      // with another is a revision (`plan create` rewrites it under a fresh
-      // slug): the slot follows the new path, but the panel must not pop open
-      // over whatever is being read. Clearing the plan only claims the slot
-      // too: there is nothing to read.
+      // First path: arm auto-open once body is ready (stub is empty / "# Plan").
+      // Revision / clear: bounce only — never pop the panel over a reader.
       if (cur.plan && !prev.plan) {
-        heightRef.current = null;
-        setOpenId("plan");
+        planOpenArmedRef.current = true;
+        planOpenSeqRef.current += 1;
+      } else {
+        planOpenArmedRef.current = false;
       }
       return;
     }
@@ -376,6 +389,33 @@ export function SessionStatusLine({
     todoItems,
     openId,
   ]);
+
+  // Open the plan panel only once the file has a real body (not the empty /
+  // legacy stub). Stub create → capsule bounce; first non-empty write → panel.
+  useEffect(() => {
+    if (!activePlanPath || !planOpenArmedRef.current) return;
+    if (hoverRef.current !== null || openRef.current !== null) return;
+    const resolved = normalizeToolFilePath(activePlanPath, projectRoot);
+    if (!resolved) return;
+    const seq = planOpenSeqRef.current;
+    let cancelled = false;
+    void readFile(resolved)
+      .then((md) => {
+        if (cancelled || seq !== planOpenSeqRef.current) return;
+        if (!planOpenArmedRef.current) return;
+        if (!isPlanBodyReady(md)) return;
+        if (hoverRef.current !== null || openRef.current !== null) return;
+        planOpenArmedRef.current = false;
+        heightRef.current = null;
+        setOpenId("plan");
+      })
+      .catch(() => {
+        /* missing stub still planning */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePlanPath, projectRoot, planChangeTick, openId]);
 
   // Drag handle: dragging up grows the panel (delta = start.y - clientY), same
   // math as AgentChatInput's textarea resize. The new height is written straight

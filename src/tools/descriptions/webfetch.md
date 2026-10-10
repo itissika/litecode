@@ -1,1 +1,1 @@
-Fetch content from a URL.
+Fetch one URL and return its body when you already know the address (docs page, raw file, API HTML). Prefer websearch when you still need to discover URLs. Choose format for how the body should be shaped; long responses are truncated with a size note.

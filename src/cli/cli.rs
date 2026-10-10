@@ -166,6 +166,117 @@ fn ask_cli_permission(tool: &str, summary: &str) -> (bool, bool) {
     }
 }
 
+/// Approve/Reject Ask for plan create (optional free-text opinion).
+fn ask_cli_approval(tool: &str, summary: &str) -> (bool, Option<String>) {
+    eprint!(
+        "\n⚠ Approve {}: {}\n  [a]pprove / [r]eject: ",
+        tool, summary
+    );
+    std::io::stderr().flush().ok();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return (false, None);
+    }
+    let approved = matches!(
+        input.trim().to_lowercase().as_str(),
+        "a" | "approve" | "y" | "yes"
+    );
+    eprint!("  Optional opinion (Enter to skip): ");
+    std::io::stderr().flush().ok();
+    let mut opinion = String::new();
+    if std::io::stdin().read_line(&mut opinion).is_err() {
+        return (approved, None);
+    }
+    let opinion = opinion.trim();
+    let free_text = if opinion.is_empty() {
+        None
+    } else {
+        Some(opinion.to_string())
+    };
+    (approved, free_text)
+}
+
+fn ask_cli_one_question(
+    q: &crate::permission::AskQuestion,
+) -> Option<crate::permission::AskAnswer> {
+    eprintln!("\n⚠ [{}] {}", q.id, q.prompt);
+    for (i, opt) in q.options.iter().enumerate() {
+        eprintln!("  [{}] {} ({})", i + 1, opt.label, opt.id);
+    }
+    if q.multi_select {
+        eprint!("  Pick option numbers comma-separated, or [s]kip: ");
+    } else {
+        eprint!("  Pick option number, or [s]kip: ");
+    }
+    std::io::stderr().flush().ok();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return None;
+    }
+    let trimmed = input.trim().to_lowercase();
+    if trimmed.is_empty() || trimmed == "s" || trimmed == "skip" {
+        return None;
+    }
+    let mut selected = Vec::new();
+    for part in trimmed.split(|c: char| c == ',' || c.is_whitespace()) {
+        if part.is_empty() {
+            continue;
+        }
+        if let Ok(n) = part.parse::<usize>() {
+            if let Some(opt) = q.options.get(n.saturating_sub(1)) {
+                selected.push(opt.id.clone());
+                if !q.multi_select {
+                    break;
+                }
+            }
+        }
+    }
+    if selected.is_empty() {
+        return None;
+    }
+    let free_text = if q.free_text {
+        eprint!("  Optional free text (Enter to skip): ");
+        std::io::stderr().flush().ok();
+        let mut opinion = String::new();
+        if std::io::stdin().read_line(&mut opinion).is_ok() {
+            let t = opinion.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    Some(crate::permission::AskAnswer { selected, free_text })
+}
+
+fn ask_cli_ask_user(
+    summary: &str,
+    questions: &[crate::permission::AskQuestion],
+) -> (bool, std::collections::HashMap<String, crate::permission::AskAnswer>) {
+    if !summary.is_empty() {
+        eprintln!("\n⚠ {summary}");
+    }
+    let mut answers = std::collections::HashMap::new();
+    for q in questions {
+        match ask_cli_one_question(q) {
+            Some(ans) => {
+                answers.insert(q.id.clone(), ans);
+            }
+            None => return (false, std::collections::HashMap::new()),
+        }
+    }
+    if answers.is_empty() {
+        (false, answers)
+    } else {
+        (true, answers)
+    }
+}
+
 /// Run one agent turn with streaming output to stdout via the wire connection loop.
 fn run_turn_streaming(
     rt: &tokio::runtime::Runtime,
@@ -213,15 +324,61 @@ fn run_turn_streaming(
                     tool,
                     rule_id: _,
                     summary,
+                    kind,
+                    free_text: wants_free_text,
+                    options,
+                    multi_select,
+                    questions,
                     ..
                 } => {
-                    let (approved, always) = ask_cli_permission(&tool, &summary);
+                    let questions = if !questions.is_empty() {
+                        questions
+                    } else if kind == crate::permission::AskKind::AskUser && !options.is_empty() {
+                        vec![crate::permission::AskQuestion {
+                            id: "q0".into(),
+                            prompt: summary.clone(),
+                            options,
+                            multi_select,
+                            free_text: wants_free_text,
+                        }]
+                    } else {
+                        questions
+                    };
+                    let (approved, always, free_text, selected, answers) = match kind {
+                        crate::permission::AskKind::AskUser => {
+                            let (approved, answers) = ask_cli_ask_user(&summary, &questions);
+                            (approved, false, None, Vec::new(), answers)
+                        }
+                        crate::permission::AskKind::Approval => {
+                            let (approved, free_text) = ask_cli_approval(&tool, &summary);
+                            (
+                                approved,
+                                false,
+                                free_text,
+                                Vec::new(),
+                                std::collections::HashMap::new(),
+                            )
+                        }
+                        crate::permission::AskKind::Permission => {
+                            let (approved, always) = ask_cli_permission(&tool, &summary);
+                            (
+                                approved,
+                                always,
+                                None,
+                                Vec::new(),
+                                std::collections::HashMap::new(),
+                            )
+                        }
+                    };
                     conn.request_tx
                         .send(SessionRequest::PermissionGrant {
                             request_id,
                             tool,
                             approved,
                             always,
+                            free_text,
+                            selected,
+                            answers,
                         })
                         .map_err(|_| anyhow::anyhow!("connection closed"))?;
                 }

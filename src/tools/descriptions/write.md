@@ -1,2 +1,1 @@
-Create or overwrite a file with the given content.
-Prefer this over echo or heredoc to create a file.
+Create a new file or overwrite an existing one with full content. Prefer this over echo/heredoc for whole-file writes. For surgical changes in an existing file prefer edit. Use create_only when the path must not already exist.

@@ -25,6 +25,11 @@ vi.mock("../../stores/turnStore", () => ({
               tool: "bash",
               rule_id: "default",
               summary: "Run bash command",
+              kind: "permission",
+              free_text: false,
+              options: [],
+              multi_select: false,
+              questions: [],
             },
           },
         ],
@@ -50,11 +55,28 @@ describe("ComposerDock permission overlay", () => {
     expect(card.textContent).toMatch(/Run bash command/);
   });
 
+  it("wears the dock's own glass — no stripe, no colour of its own", () => {
+    render(<ComposerDock sessionId="session-1" />);
+    const cls = screen.getByTestId("permission-card").className;
+    // composerCardClass glass: rounded-md + translucent fill + 12px backdrop blur.
+    expect(cls).toContain("rounded-md");
+    expect(cls).toContain("backdrop-blur-[12px]");
+    // The ask is carried by copy + buttons: no accent stripe, no tint.
+    expect(cls).not.toContain("border-l-2");
+    expect(cls).not.toContain("amber");
+  });
+
   it("wires Allow once to grantPermission", async () => {
     const user = userEvent.setup();
     render(<ComposerDock sessionId="session-1" />);
     await user.click(screen.getByRole("button", { name: "Allow once" }));
-    expect(grantPermission).toHaveBeenCalledWith("session-1", true, false);
+    // No free-text field on this ask, so the receipt carries an undefined opinion.
+    expect(grantPermission).toHaveBeenCalledWith(
+      "session-1",
+      true,
+      false,
+      undefined,
+    );
   });
 
   it("shows Latest in the overlay when the list is unstuck", async () => {

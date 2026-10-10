@@ -854,3 +854,77 @@
     transition: none;
   }
 }
+
+/* Permission / plan-ask glass card
+   Same surface as every other card in the composer dock: it sits on
+   composerCardClass (glassFill: 82% --_dk-editor + 12px backdrop blur +
+   --_dk-composer-card-shadow) and adds nothing on top -- no accent stripe, no
+   tint overlay, so the card is exactly the dock's frosted glass and the ask is
+   carried by the copy and the buttons. Enter: short fade + 6px rise, blur
+   ramps with opacity -- no bounce.
+
+   Tweak knobs:
+     - blur         -> --perm-glass-blur (keep equal to glassFill in composerCard.ts)
+     - fill opacity -> glassFill in web/src/components/composerCard.ts (82%)
+     - enter speed  -> --perm-enter-ms
+*/
+.permission-card {
+  --perm-glass-blur: 12px;
+  --perm-enter-ms: 180ms;
+  animation: permission-card-enter var(--perm-enter-ms) cubic-bezier(0.16, 1, 0.3, 1)
+    both;
+}
+
+/* Questions swap in place: one is in the tree at a time, and it slides a hair in
+   the direction of travel -- in from below on the way down, from above on the way
+   up. The pane's height is the question's own height, so the card simply resizes
+   with it; the slide covers the resize. */
+.permission-card__question {
+  --perm-step-from: 6px;
+  animation: permission-card-step-in 150ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.permission-card__question[data-step="up"] {
+  --perm-step-from: -6px;
+}
+
+@keyframes permission-card-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--perm-step-from));
+  }
+}
+
+/* The ask card's fields: no fill of their own — the card's glass is the surface,
+   so the hairline alone marks the field and focus only lightens that hairline.
+   Stated, not inherited: a bare <input> paints the UA's own field fill.
+   Size, padding and text come from `btn-md` plus the row's own height. */
+.permission-card__input {
+  background: transparent;
+  transition: border-color 120ms ease;
+}
+
+.permission-card__input:focus {
+  outline: none;
+  border-color: var(--_dk-line-visible);
+}
+
+@keyframes permission-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+    backdrop-filter: blur(0);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    backdrop-filter: blur(var(--perm-glass-blur));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .permission-card,
+  .permission-card__question {
+    animation: none;
+  }
+}

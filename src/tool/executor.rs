@@ -1139,7 +1139,7 @@ mod tests {
             ))),
             Arc::new(crate::tools::bash::BashTool::new(Arc::clone(&hub))),
         ];
-        let args = serde_json::json!({ "id": spawned.id }).to_string();
+        let args = serde_json::json!({ "bash_id": spawned.id }).to_string();
         let result = run_named(tools, "wait_shell", &args, "sess", dir.path()).await;
         assert_eq!(result.content, expected);
         assert!(!result.content.contains("<system-reminder>"));

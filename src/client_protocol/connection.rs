@@ -7,7 +7,9 @@ use crate::client_protocol::protocol::{
     ErrorCode, JsonRpcErrorBody, JsonRpcRequestEnvelope, JsonRpcResponse, OperationKind,
     StructuredError,
 };
-use crate::permission::{self, AskOutcome, PermissionAction};
+use std::collections::HashMap;
+
+use crate::permission::{self, AskAnswer, AskOutcome, AskReply, PermissionAction};
 
 /// Upper bound for a single `agent/run` input payload (defensive cap).
 const MAX_AGENT_RUN_INPUT_BYTES: usize = 256 * 1024;
@@ -1339,6 +1341,132 @@ fn finalize_ready_turn(
     }
 }
 
+/// Outstanding Ask: agent blocks on `reply_tx`; the connection loop must not.
+struct PendingAsk {
+    session_id: String,
+    agent_name: String,
+    tool: String,
+    rule_id: String,
+    reply_tx: tokio::sync::oneshot::Sender<AskReply>,
+}
+
+/// Result of applying a grant against the pending-ask registry.
+enum GrantApply {
+    Resolved {
+        session_id: String,
+        tool: String,
+        approved: bool,
+        always: bool,
+    },
+    /// No matching Ask — caller must buffer as stray (do not silently drop).
+    Unknown {
+        request_id: String,
+        tool: String,
+        approved: bool,
+        always: bool,
+        free_text: Option<String>,
+        selected: Vec<String>,
+        answers: HashMap<String, AskAnswer>,
+    },
+}
+
+fn apply_permission_grant(
+    pending_asks: &mut HashMap<String, PendingAsk>,
+    request_id: String,
+    tool: String,
+    approved: bool,
+    always: bool,
+    free_text: Option<String>,
+    selected: Vec<String>,
+    answers: HashMap<String, AskAnswer>,
+) -> GrantApply {
+    let Some(pending) = pending_asks.remove(&request_id) else {
+        return GrantApply::Unknown {
+            request_id,
+            tool,
+            approved,
+            always,
+            free_text,
+            selected,
+            answers,
+        };
+    };
+    if approved && always {
+        permission::grant_runtime(
+            &pending.agent_name,
+            &tool,
+            &pending.rule_id,
+            PermissionAction::Allow,
+        );
+    }
+    let _ = pending
+        .reply_tx
+        .send(AskReply::from_grant(approved, always, free_text, selected, answers));
+    GrantApply::Resolved {
+        session_id: pending.session_id,
+        tool,
+        approved,
+        always,
+    }
+}
+
+/// Non-accept path for outstanding Asks (cancel / quit / disconnect): reject.
+fn reject_all_pending_asks(
+    pending_asks: &mut HashMap<String, PendingAsk>,
+) -> Vec<(String, String)> {
+    pending_asks
+        .drain()
+        .map(|(_, pending)| {
+            let _ = pending
+                .reply_tx
+                .send(AskReply::from_outcome(AskOutcome::Deny));
+            (pending.session_id, pending.tool)
+        })
+        .collect()
+}
+
+fn emit_permission_resolved(
+    session: &mut SessionController,
+    response_tx: &UnboundedSender<serde_json::Value>,
+    session_id: &str,
+    tool: &str,
+    approved: bool,
+    always: bool,
+) {
+    let project = session.project.clone();
+    let binding = session.session_binding(session_id);
+    if let Some(proj) = session.projection_mut(session_id) {
+        proj.on_event(
+            crate::client_protocol::observer::InternalEvent::PermissionResolved {
+                tool: tool.to_string(),
+                approved,
+                always,
+            },
+            &project,
+            &binding,
+        );
+        for msg in proj.take_outgoing() {
+            emit(response_tx, msg);
+        }
+    }
+}
+
+fn take_stray_grant_for(
+    session: &mut SessionController,
+    request_id: &str,
+) -> Option<SessionRequest> {
+    session
+        .stray_grants
+        .iter()
+        .position(|r| {
+            matches!(
+                r,
+                SessionRequest::PermissionGrant { request_id: rid, .. } if rid == request_id
+            )
+        })
+        .map(|i| session.stray_grants.remove(i).unwrap())
+}
+
 /// Represents a request to the session loop - either a JSON-RPC call or a transport action.
 #[derive(Debug)]
 pub enum SessionRequest {
@@ -1348,6 +1476,9 @@ pub enum SessionRequest {
         tool: String,
         approved: bool,
         always: bool,
+        free_text: Option<String>,
+        selected: Vec<String>,
+        answers: HashMap<String, AskAnswer>,
     },
     SubscribeSession {
         session_id: String,
@@ -1367,6 +1498,11 @@ pub async fn run_session_loop(
     mut perm_rx: tokio::sync::mpsc::UnboundedReceiver<PendingPermission>,
     terminal_hub: std::sync::Arc<crate::terminal::TerminalHub>,
 ) {
+    // Ask registry: agent waits on oneshot; outer loop keeps handling JsonRpc
+    // for every session (including the asking one). No nested select that
+    // parks other sessions' RPCs into deferred.
+    let mut pending_asks: HashMap<String, PendingAsk> = HashMap::new();
+
     loop {
         finalize_ready_turn(session, &response_tx);
 
@@ -1396,6 +1532,11 @@ pub async fn run_session_loop(
                             tool: perm.tool.clone(),
                             rule_id: perm.rule_id.clone(),
                             summary: perm.summary.clone(),
+                            kind: perm.kind,
+                            free_text: perm.free_text,
+                            options: perm.options.clone(),
+                            multi_select: perm.multi_select,
+                            questions: perm.questions.clone(),
                         },
                         &project,
                         &binding,
@@ -1405,26 +1546,16 @@ pub async fn run_session_loop(
                     }
                 }
 
-                // A grant may have arrived before this wait started — the stray
-                // arms below buffer it instead of dropping it, so the wait never
-                // hangs on the race. Consume the buffered match first.
-                let mut queued: Vec<SessionRequest> = Vec::new();
-                let buffered_grant = session
-                    .stray_grants
-                    .iter()
-                    .position(|r| {
-                        matches!(
-                            r,
-                            SessionRequest::PermissionGrant { request_id, .. }
-                                if request_id == &perm.request_id
-                        )
-                    })
-                    .map(|i| session.stray_grants.remove(i).unwrap());
+                // Race: grant may have arrived before this Ask was registered.
+                let buffered_grant = take_stray_grant_for(session, &perm.request_id);
                 if let Some(SessionRequest::PermissionGrant {
                     request_id,
                     tool,
                     approved,
                     always,
+                    free_text,
+                    selected,
+                    answers,
                 }) = buffered_grant
                 {
                     tracing::debug!(
@@ -1442,119 +1573,43 @@ pub async fn run_session_loop(
                             PermissionAction::Allow,
                         );
                     }
-                    perm.reply_tx.send(AskOutcome::from_reply(approved, always)).ok();
-                    let project = session.project.clone();
-                    let binding = session.session_binding(&sid);
-                    if let Some(proj) = session.projection_mut(&sid) {
-                        proj.on_event(
-                            crate::client_protocol::observer::InternalEvent::PermissionResolved {
-                                tool: tool.clone(),
-                                approved,
-                                always,
-                            },
-                            &project,
-                            &binding,
-                        );
-                        for msg in proj.take_outgoing() {
-                            emit(&response_tx, msg);
-                        }
-                    }
+                    let _ = perm.reply_tx.send(AskReply::from_grant(
+                        approved,
+                        always,
+                        free_text,
+                        selected,
+                        answers,
+                    ));
+                    emit_permission_resolved(
+                        session,
+                        &response_tx,
+                        &sid,
+                        &tool,
+                        approved,
+                        always,
+                    );
                 } else {
-                loop {
-                    tokio::select! {
-                        Some((sid2, envelope)) = session.merged_rx.recv() => {
-                            let project = session.project.clone();
-                            let binding = session.session_binding(&sid2);
-                            if let Some(proj) = session.projection_mut(&sid2) {
-                                proj.on_internal(envelope, &project, &binding);
-                                for msg in proj.take_outgoing() {
-                                    emit(&response_tx, msg);
-                                }
-                            }
-                        }
-                        req = request_rx.recv() => {
-                            match req {
-                                Some(SessionRequest::PermissionGrant {
-                                    request_id,
-                                    tool,
-                                    approved,
-                                    always,
-                                }) if request_id == perm.request_id => {
-                                    tracing::info!(
-                                        request_id = %request_id,
-                                        tool = %tool,
-                                        approved,
-                                        always,
-                                        "grant_permission received"
-                                    );
-                                    if approved && always {
-                                        permission::grant_runtime(
-                                            &perm.agent_name,
-                                            &tool,
-                                            &perm.rule_id,
-                                            PermissionAction::Allow,
-                                        );
-                                    }
-                                    perm.reply_tx.send(AskOutcome::from_reply(approved, always)).ok();
-                                    let project = session.project.clone();
-                                    let binding = session.session_binding(&sid);
-                                    if let Some(proj) = session.projection_mut(&sid) {
-                                        proj.on_event(
-                                            crate::client_protocol::observer::InternalEvent::PermissionResolved {
-                                                tool: tool.clone(),
-                                                approved,
-                                                always,
-                                            },
-                                            &project,
-                                            &binding,
-                                        );
-                                        for msg in proj.take_outgoing() {
-                                            emit(&response_tx, msg);
-                                        }
-                                    }
-                                    break;
-                                }
-                                Some(SessionRequest::PermissionGrant { request_id, .. }) => {
-                                    tracing::warn!(
-                                        request_id = %request_id,
-                                        expected = %perm.request_id,
-                                        "grant_permission request_id mismatch"
-                                    );
-                                }
-                                Some(SessionRequest::Cancel) | Some(SessionRequest::Quit) => {
-                                    // Do not reply Deny: abort must interrupt Ask, not
-                                    // continue the loop with permission-denied. Dropping
-                                    // the oneshot wakes the wait as Aborted.
-                                    drop(perm.reply_tx);
-                                    queued.push(SessionRequest::Cancel);
-                                    break;
-                                }
-                                Some(other) => {
-                                    queued.push(other);
-                                }
-                                None => break,
-                            }
-                        }
-                    }
-                }
-                } // end else: no buffered grant → wait inline
-                // Re-inject queued requests into the appropriate projection's deferred queue.
-                // If no projection exists for this sid, use the controller's dummy queue.
-                if let Some(proj) = session.projection_mut(&sid) {
-                    for req in queued {
-                        proj.deferred_mut().push_back(req);
-                    }
-                } else {
-                    for req in queued {
-                        session._dummy_deferred.push_back(req);
-                    }
+                    pending_asks.insert(
+                        perm.request_id.clone(),
+                        PendingAsk {
+                            session_id: sid,
+                            agent_name: perm.agent_name,
+                            tool: perm.tool,
+                            rule_id: perm.rule_id,
+                            reply_tx: perm.reply_tx,
+                        },
+                    );
                 }
             }
 
             req = request_rx.recv() => {
                 match req {
                     Some(SessionRequest::Quit) => {
-                        // Cancel all running turns for all subscribed sessions.
+                        for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                            emit_permission_resolved(
+                                session, &response_tx, &sid, &tool, false, false,
+                            );
+                        }
                         let sids: Vec<String> = session.projections.keys().cloned().collect();
                         for sid in &sids {
                             session.sessions.cancel_turn(sid).await;
@@ -1562,7 +1617,12 @@ pub async fn run_session_loop(
                         break;
                     }
                     Some(SessionRequest::Cancel) => {
-                        // Cancel all running turns for all subscribed sessions.
+                        // Non-accept ⇒ reject outstanding Asks, then cancel turns.
+                        for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                            emit_permission_resolved(
+                                session, &response_tx, &sid, &tool, false, false,
+                            );
+                        }
                         let sids: Vec<String> = session.projections.keys().cloned().collect();
                         for sid in &sids {
                             session.sessions.cancel_turn(sid).await;
@@ -1572,17 +1632,84 @@ pub async fn run_session_loop(
                         }
                     }
                     Some(SessionRequest::JsonRpc(rpc)) => {
+                        // Human interactive RPC stays live during Ask (any session).
                         if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub)
                             .await
                         {
+                            for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                                emit_permission_resolved(
+                                    session, &response_tx, &sid, &tool, false, false,
+                                );
+                            }
                             break;
                         }
                     }
-                    Some(stray @ SessionRequest::PermissionGrant { .. }) => {
-                        // Handled inline during permission wait; if we get here it's
-                        // a stray grant — buffer it so a subsequent wait (which may
-                        // have started a moment later) can still consume it.
-                        session.stray_grants.push_back(stray);
+                    Some(SessionRequest::PermissionGrant {
+                        request_id,
+                        tool,
+                        approved,
+                        always,
+                        free_text,
+                        selected,
+                        answers,
+                    }) => {
+                        match apply_permission_grant(
+                            &mut pending_asks,
+                            request_id,
+                            tool,
+                            approved,
+                            always,
+                            free_text,
+                            selected,
+                            answers,
+                        ) {
+                            GrantApply::Resolved {
+                                session_id,
+                                tool,
+                                approved,
+                                always,
+                            } => {
+                                tracing::info!(
+                                    session_id = %session_id,
+                                    tool = %tool,
+                                    approved,
+                                    always,
+                                    "grant_permission received"
+                                );
+                                emit_permission_resolved(
+                                    session,
+                                    &response_tx,
+                                    &session_id,
+                                    &tool,
+                                    approved,
+                                    always,
+                                );
+                            }
+                            GrantApply::Unknown {
+                                request_id,
+                                tool,
+                                approved,
+                                always,
+                                free_text,
+                                selected,
+                                answers,
+                            } => {
+                                // Mismatch / early grant: keep in stray, never drop.
+                                tracing::warn!(
+                                    request_id = %request_id,
+                                    "grant_permission with no matching pending ask; buffering as stray"
+                                );
+                                session.stray_grants.push_back(SessionRequest::PermissionGrant {
+                                    request_id,
+                                    tool,
+                                    approved,
+                                    always,
+                                    free_text,
+                                    selected,
+                                    answers,
+                                });
+                            }
+                        }
                     }
                     Some(SessionRequest::SubscribeSession { session_id }) => {
                         session.subscribe(&session_id).await;
@@ -1593,12 +1720,20 @@ pub async fn run_session_loop(
                     Some(SessionRequest::UnsubscribeSession { session_id }) => {
                         session.unsubscribe(&session_id);
                     }
-                    None => break,
+                    None => {
+                        for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                            emit_permission_resolved(
+                                session, &response_tx, &sid, &tool, false, false,
+                            );
+                        }
+                        break;
+                    }
                 }
             }
         }
 
-        // Process deferred requests from all projections.
+        // Process deferred requests from all projections (legacy queue; Ask
+        // no longer parks RPCs here).
         let sids: Vec<String> = session.projections.keys().cloned().collect();
         for sid in sids {
             let deferred: Vec<SessionRequest> = {
@@ -1611,10 +1746,20 @@ pub async fn run_session_loop(
             for req in deferred {
                 match req {
                     SessionRequest::Quit => {
+                        for (rej_sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                            emit_permission_resolved(
+                                session, &response_tx, &rej_sid, &tool, false, false,
+                            );
+                        }
                         session.sessions.cancel_turn(&sid).await;
                         return;
                     }
                     SessionRequest::Cancel => {
+                        for (rej_sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                            emit_permission_resolved(
+                                session, &response_tx, &rej_sid, &tool, false, false,
+                            );
+                        }
                         session.sessions.cancel_turn(&sid).await;
                         if let Some(proj) = session.projection_mut(&sid) {
                             for msg in proj.take_outgoing() {
@@ -1626,11 +1771,15 @@ pub async fn run_session_loop(
                         if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub)
                             .await
                         {
+                            for (rej_sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                                emit_permission_resolved(
+                                    session, &response_tx, &rej_sid, &tool, false, false,
+                                );
+                            }
                             return;
                         }
                     }
                     stale @ SessionRequest::PermissionGrant { .. } => {
-                        // Stale permission grant — buffer it for a later wait.
                         session.stray_grants.push_back(stale);
                     }
                     SessionRequest::SubscribeSession { session_id } => {
@@ -1652,10 +1801,28 @@ pub async fn run_session_loop(
         let dummy_deferred: Vec<SessionRequest> = session._dummy_deferred.drain(..).collect();
         for req in dummy_deferred {
             match req {
-                SessionRequest::Quit => break,
-                SessionRequest::Cancel => {}
+                SessionRequest::Quit => {
+                    for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                        emit_permission_resolved(
+                            session, &response_tx, &sid, &tool, false, false,
+                        );
+                    }
+                    break;
+                }
+                SessionRequest::Cancel => {
+                    for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                        emit_permission_resolved(
+                            session, &response_tx, &sid, &tool, false, false,
+                        );
+                    }
+                }
                 SessionRequest::JsonRpc(rpc) => {
                     if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub).await {
+                        for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                            emit_permission_resolved(
+                                session, &response_tx, &sid, &tool, false, false,
+                            );
+                        }
                         return;
                     }
                 }
@@ -1715,5 +1882,408 @@ impl ConnectionHandle {
 
     pub fn abort(self) {
         self.loop_handle.abort();
+    }
+}
+
+
+#[cfg(test)]
+mod pending_ask_tests {
+    use super::{GrantApply, PendingAsk, apply_permission_grant, reject_all_pending_asks};
+    use crate::permission::{AskOutcome, AskReply};
+    use std::collections::HashMap;
+    use tokio::sync::oneshot;
+
+    fn insert_ask(
+        map: &mut HashMap<String, PendingAsk>,
+        request_id: &str,
+        session_id: &str,
+    ) -> oneshot::Receiver<AskReply> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        map.insert(
+            request_id.to_string(),
+            PendingAsk {
+                session_id: session_id.to_string(),
+                agent_name: "default".into(),
+                tool: "bash".into(),
+                rule_id: "rule".into(),
+                reply_tx,
+            },
+        );
+        reply_rx
+    }
+
+    #[test]
+    fn matching_accept_resolves_allow() {
+        let mut pending = HashMap::new();
+        let rx = insert_ask(&mut pending, "req-1", "sess-a");
+        match apply_permission_grant(
+            &mut pending,
+            "req-1".into(),
+            "bash".into(),
+            true,
+            false,
+            None,
+            Vec::new(),
+            HashMap::new(),
+        ) {
+            GrantApply::Resolved {
+                session_id,
+                approved,
+                always,
+                ..
+            } => {
+                assert_eq!(session_id, "sess-a");
+                assert!(approved);
+                assert!(!always);
+            }
+            GrantApply::Unknown { .. } => panic!("expected resolved"),
+        }
+        let reply = rx.blocking_recv().unwrap();
+        assert_eq!(reply.outcome, AskOutcome::Allow { always: false });
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn matching_reject_resolves_deny() {
+        let mut pending = HashMap::new();
+        let rx = insert_ask(&mut pending, "req-2", "sess-a");
+        match apply_permission_grant(
+            &mut pending,
+            "req-2".into(),
+            "bash".into(),
+            false,
+            false,
+            None,
+            Vec::new(),
+            HashMap::new(),
+        ) {
+            GrantApply::Resolved { approved, .. } => assert!(!approved),
+            GrantApply::Unknown { .. } => panic!("expected resolved"),
+        }
+        let reply = rx.blocking_recv().unwrap();
+        assert_eq!(reply.outcome, AskOutcome::Deny);
+    }
+
+    #[test]
+    fn unknown_grant_is_not_silently_dropped() {
+        let mut pending = HashMap::new();
+        let _rx = insert_ask(&mut pending, "req-live", "sess-a");
+        match apply_permission_grant(
+            &mut pending,
+            "req-other".into(),
+            "bash".into(),
+            true,
+            false,
+            None,
+            Vec::new(),
+            HashMap::new(),
+        ) {
+            GrantApply::Unknown { request_id, .. } => assert_eq!(request_id, "req-other"),
+            GrantApply::Resolved { .. } => panic!("mismatch must be Unknown"),
+        }
+        assert_eq!(pending.len(), 1);
+        assert!(pending.contains_key("req-live"));
+    }
+
+    #[test]
+    fn reject_all_pending_is_deny_not_abort() {
+        let mut pending = HashMap::new();
+        let rx_a = insert_ask(&mut pending, "a", "sess-a");
+        let rx_b = insert_ask(&mut pending, "b", "sess-b");
+        let rejected = reject_all_pending_asks(&mut pending);
+        assert_eq!(rejected.len(), 2);
+        assert!(pending.is_empty());
+        assert_eq!(rx_a.blocking_recv().unwrap().outcome, AskOutcome::Deny);
+        assert_eq!(rx_b.blocking_recv().unwrap().outcome, AskOutcome::Deny);
+    }
+
+    #[test]
+    fn concurrent_asks_resolve_independently() {
+        let mut pending = HashMap::new();
+        let mut rx_a = insert_ask(&mut pending, "a", "sess-a");
+        let rx_b = insert_ask(&mut pending, "b", "sess-b");
+        apply_permission_grant(&mut pending, "b".into(), "bash".into(), true, false, None, Vec::new(), HashMap::new());
+        assert_eq!(pending.len(), 1);
+        assert!(pending.contains_key("a"));
+        assert_eq!(
+            rx_b.blocking_recv().unwrap().outcome,
+            AskOutcome::Allow { always: false }
+        );
+        assert!(rx_a.try_recv().is_err());
+        apply_permission_grant(&mut pending, "a".into(), "bash".into(), false, false, None, Vec::new(), HashMap::new());
+        assert_eq!(rx_a.blocking_recv().unwrap().outcome, AskOutcome::Deny);
+        assert!(pending.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ask_loop_tests {
+    use super::{SessionRequest, run_session_loop};
+    use std::collections::HashMap;
+    use crate::client_protocol::controller::SessionController;
+    use crate::client_protocol::permission_bridge::PendingPermission;
+    use crate::client_protocol::protocol::JsonRpcRequestEnvelope;
+    use crate::config::TurnGuard;
+    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
+    use crate::config::schema::{AgentProfile, AgentRole, GlobalSettings};
+    use crate::engines::WorkspaceEngines;
+    use crate::ide_base::IdeBaseHandle;
+    use crate::optional::EngineManager;
+    use crate::permission::{AskKind, AskOutcome, AskReply};
+    use crate::runtime::RuntimeHandle;
+    use crate::session::SessionManager;
+    use crate::workspace::WorkspaceService;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+    use std::time::Duration;
+    use tokio::sync::{mpsc, oneshot};
+
+    fn test_runtime(root: &std::path::Path) -> (RuntimeHandle, Arc<SessionManager>) {
+        let mut global = GlobalSettings::default();
+        global.agents.insert(
+            "default".into(),
+            AgentProfile {
+                role: AgentRole::Primary,
+                model_ref: "default".into(),
+                ..Default::default()
+            },
+        );
+        let workspace_state = WorkspaceState::new(root);
+        let resolved = resolve_without_catalog(global, workspace_state.clone());
+        let workspace = WorkspaceService::new(root.to_path_buf()).unwrap();
+        let engines = Arc::new(WorkspaceEngines::new());
+        let hub = Arc::new(crate::terminal::TerminalHub::new());
+        let ide = IdeBaseHandle::new(workspace, Arc::clone(&engines), Arc::clone(&hub));
+        let runtime = RuntimeHandle::new(
+            resolved,
+            "default".into(),
+            workspace_state,
+            Arc::new(EngineManager::new()),
+            engines,
+            ide,
+            Arc::new(AtomicU64::new(0)),
+            root.join("global.db"),
+        );
+        let sessions = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            root.join("sessions.db").to_string_lossy().to_string(),
+        ));
+        (runtime, sessions)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ask_does_not_block_other_session_rpc() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let mut controller = SessionController::with_turn_guard(runtime, None, sessions).unwrap();
+
+        let (request_tx, request_rx) = mpsc::unbounded_channel();
+        let (response_tx, mut response_rx) = mpsc::unbounded_channel();
+        let (perm_tx, perm_rx) = mpsc::unbounded_channel();
+        let perm_tx_loop = perm_tx.clone();
+        let hub = Arc::new(crate::terminal::TerminalHub::new());
+
+        let loop_handle = tokio::spawn(async move {
+            run_session_loop(
+                &mut controller,
+                request_rx,
+                response_tx,
+                perm_tx_loop,
+                perm_rx,
+                hub,
+            )
+            .await;
+        });
+
+        let (reply_tx, mut reply_rx) = oneshot::channel::<AskReply>();
+        perm_tx
+            .send(PendingPermission {
+                session_id: "sess-ask".into(),
+                agent_name: "default".into(),
+                turn_id: "turn-1".into(),
+                request_id: "req-ask".into(),
+                tool: "bash".into(),
+                rule_id: "rule".into(),
+                summary: "run".into(),
+                kind: AskKind::Permission,
+                free_text: false,
+                options: Vec::new(),
+                multi_select: false,
+                questions: Vec::new(),
+                reply_tx,
+            })
+            .unwrap();
+
+        // Give the loop a tick to register the Ask.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Human RPC on another session must be answered while Ask is outstanding.
+        request_tx
+            .send(SessionRequest::JsonRpc(JsonRpcRequestEnvelope {
+                jsonrpc: "2.0".into(),
+                id: serde_json::json!(42),
+                method: "definitely/not-a-method".into(),
+                params: serde_json::json!({}),
+            }))
+            .unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let msg = response_rx.recv().await.expect("response channel closed");
+                if msg.get("id") == Some(&serde_json::json!(42)) {
+                    return msg;
+                }
+            }
+        })
+        .await
+        .expect("other-session RPC must not wait for Ask grant");
+
+        assert_eq!(resp["error"]["code"], -32601);
+        // Ask still outstanding until explicit grant.
+        assert!(reply_rx.try_recv().is_err());
+
+        request_tx
+            .send(SessionRequest::PermissionGrant {
+                request_id: "req-ask".into(),
+                tool: "bash".into(),
+                approved: false,
+                always: false,
+                free_text: None,
+                selected: Vec::new(),
+                answers: HashMap::new(),
+            })
+            .unwrap();
+
+        let reply = tokio::time::timeout(Duration::from_secs(2), reply_rx)
+            .await
+            .expect("grant should resolve Ask")
+            .expect("oneshot open");
+        assert_eq!(reply.outcome, AskOutcome::Deny);
+
+        let _ = request_tx.send(SessionRequest::Quit);
+        let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_rejects_pending_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let mut controller = SessionController::with_turn_guard(runtime, None, sessions).unwrap();
+
+        let (request_tx, request_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = mpsc::unbounded_channel();
+        let (perm_tx, perm_rx) = mpsc::unbounded_channel();
+        let perm_tx_loop = perm_tx.clone();
+        let hub = Arc::new(crate::terminal::TerminalHub::new());
+
+        let loop_handle = tokio::spawn(async move {
+            run_session_loop(
+                &mut controller,
+                request_rx,
+                response_tx,
+                perm_tx_loop,
+                perm_rx,
+                hub,
+            )
+            .await;
+        });
+
+        let (reply_tx, reply_rx) = oneshot::channel::<AskReply>();
+        perm_tx
+            .send(PendingPermission {
+                session_id: "sess-ask".into(),
+                agent_name: "default".into(),
+                turn_id: "turn-1".into(),
+                request_id: "req-ask".into(),
+                tool: "bash".into(),
+                rule_id: "rule".into(),
+                summary: "run".into(),
+                kind: AskKind::Permission,
+                free_text: false,
+                options: Vec::new(),
+                multi_select: false,
+                questions: Vec::new(),
+                reply_tx,
+            })
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        request_tx.send(SessionRequest::Cancel).unwrap();
+
+        let reply = tokio::time::timeout(Duration::from_secs(2), reply_rx)
+            .await
+            .expect("cancel should reject Ask")
+            .expect("oneshot open");
+        assert_eq!(reply.outcome, AskOutcome::Deny);
+
+        let _ = request_tx.send(SessionRequest::Quit);
+        let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unknown_grant_is_buffered_as_stray_then_consumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let mut controller = SessionController::with_turn_guard(runtime, None, sessions).unwrap();
+
+        let (request_tx, request_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = mpsc::unbounded_channel();
+        let (perm_tx, perm_rx) = mpsc::unbounded_channel();
+        let perm_tx_loop = perm_tx.clone();
+        let hub = Arc::new(crate::terminal::TerminalHub::new());
+
+        let loop_handle = tokio::spawn(async move {
+            run_session_loop(
+                &mut controller,
+                request_rx,
+                response_tx,
+                perm_tx_loop,
+                perm_rx,
+                hub,
+            )
+            .await;
+        });
+
+        // Early grant before Ask registration.
+        request_tx
+            .send(SessionRequest::PermissionGrant {
+                request_id: "req-early".into(),
+                tool: "bash".into(),
+                approved: true,
+                always: false,
+                free_text: None,
+                selected: Vec::new(),
+                answers: HashMap::new(),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let (reply_tx, reply_rx) = oneshot::channel::<AskReply>();
+        perm_tx
+            .send(PendingPermission {
+                session_id: "sess-ask".into(),
+                agent_name: "default".into(),
+                turn_id: "turn-1".into(),
+                request_id: "req-early".into(),
+                tool: "bash".into(),
+                rule_id: "rule".into(),
+                summary: "run".into(),
+                kind: AskKind::Permission,
+                free_text: false,
+                options: Vec::new(),
+                multi_select: false,
+                questions: Vec::new(),
+                reply_tx,
+            })
+            .unwrap();
+
+        let reply = tokio::time::timeout(Duration::from_secs(2), reply_rx)
+            .await
+            .expect("stray grant should resolve Ask")
+            .expect("oneshot open");
+        assert_eq!(reply.outcome, AskOutcome::Allow { always: false });
+
+        let _ = request_tx.send(SessionRequest::Quit);
+        let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;
     }
 }

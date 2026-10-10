@@ -1562,6 +1562,8 @@ max_output = 1024
             args: Vec::new(),
             timeout: 120,
             rules,
+            suite: None,
+            suite_label: None,
         }
     }
 

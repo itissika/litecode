@@ -531,6 +531,8 @@ pub mod store {
                 timeout: row.get::<_, u64>(4)?,
                 description: row.get(5)?,
                 rules,
+                suite: None,
+                suite_label: None,
             })
         })?;
         let mut tools = Vec::new();
@@ -901,6 +903,8 @@ mod open_tests {
             args: Vec::new(),
             timeout: 120,
             rules: rules.clone(),
+            suite: None,
+            suite_label: None,
         };
         store::upsert_custom_tool(&conn, &tool).unwrap();
         let loaded = store::load(&conn).unwrap();

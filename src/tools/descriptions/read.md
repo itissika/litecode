@@ -1,1 +1,1 @@
-Read a text file with line numbers or return a supported image as media.
+Read a workspace file when you need its contents: text comes back with line numbers; supported images return as media. Prefer this over shell cat/type. Use start_line/end_line for a window on large files; call again to continue. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`. For discovery by name use glob; for content search use grep; for meaning-oriented code lookup use code_search when Warm.

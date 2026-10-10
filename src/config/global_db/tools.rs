@@ -23,6 +23,7 @@ pub fn core_none_tools() -> &'static [&'static str] {
     &[
         "plan",
         "todo",
+        "ask_user",
         "knowledge",
         "subagent_launch",
         "subagent_wait",

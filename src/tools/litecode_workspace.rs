@@ -1402,6 +1402,8 @@ mod tests {
             args: vec!["--json".into()],
             timeout: 120,
             rules: Vec::new(),
+            suite: None,
+            suite_label: None,
         });
         let mut agent = AgentProfile::default();
         agent.tools.insert(

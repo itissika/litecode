@@ -170,6 +170,8 @@ mod tests {
             args: Vec::new(),
             timeout: 120,
             rules: Vec::new(),
+            suite: None,
+            suite_label: None,
         };
         for key in object_keys(&custom) {
             assert!(

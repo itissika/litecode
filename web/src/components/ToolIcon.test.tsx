@@ -2,6 +2,7 @@ import { cleanup, render } from "@testing-library/react";
 import {
   GlobeIcon,
   MagnifyingGlassIcon,
+  QuestionMarkIcon,
   WrenchIcon,
 } from "@phosphor-icons/react";
 import { afterEach, describe, expect, it } from "vitest";
@@ -35,6 +36,10 @@ describe("tool glyph mapping", () => {
   it("reserves the generic wrench for unknown tools", () => {
     expect(glyphFor("mystery_tool")).toBe(WrenchIcon);
     expect(glyphFor("mcp_github")).not.toBe(WrenchIcon);
+  });
+
+  it("gives the question tool a glyph of its own", () => {
+    expect(glyphFor("ask_user")).toBe(QuestionMarkIcon);
   });
 });
 

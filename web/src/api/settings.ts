@@ -154,6 +154,9 @@ export interface AvailableTool {
   overridden?: boolean;
   /** Backend declaration: `preset` shows ALL/SAFE; `fixed` is bind only. */
   permission_surface?: PermissionSurface;
+  /** Server-declared enable series (Agents one-card). */
+  series_id?: string | null;
+  series_label?: string | null;
 }
 
 export interface ToolSchema {
@@ -179,6 +182,9 @@ export interface CustomToolDefinition {
   timeout?: number;
   /** Non-empty: Agents can switch ALL/SAFE. SAFE walks these rules in order. */
   rules?: ToolPermissionRule[];
+  /** Optional Agents one-card suite id. */
+  suite?: string | null;
+  suite_label?: string | null;
 }
 
 export type McpTransport =
@@ -392,13 +398,14 @@ export async function putAgent(
   id: string,
   profile: AgentProfile,
   presetIds: ReadonlySet<string> = new Set(),
+  available?: readonly AvailableTool[],
 ): Promise<RevisionResponse> {
   return requestJson<RevisionResponse>(
     `/api/settings/agents/${encodeURIComponent(id)}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(withSyncedToolSeries(profile, presetIds)),
+      body: JSON.stringify(withSyncedToolSeries(profile, presetIds, available)),
     },
   );
 }
@@ -635,7 +642,7 @@ export function isSubagentBindableTool(entry: AvailableTool): boolean {
   if ((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes(entry.id)) {
     return false;
   }
-  return entry.id !== "plan" && entry.id !== "todo";
+  return entry.id !== "plan" && entry.id !== "todo" && entry.id !== "ask_user";
 }
 
 /** Tools that form one closed loop: enable/disable together. */
@@ -645,14 +652,42 @@ export const BASH_SERIES_TOOL_IDS = [
   "kill_shell",
 ] as const;
 
-const TOOL_ENABLE_SERIES: readonly (readonly string[])[] = [
+/** Fallback core series when available-tools has no series_id yet. */
+const TOOL_ENABLE_SERIES_FALLBACK: readonly (readonly string[])[] = [
   BASH_SERIES_TOOL_IDS,
   SUBAGENT_SERIES_TOOL_IDS,
 ];
 
-export function toolEnableSeries(toolId: string): readonly string[] | null {
-  for (const series of TOOL_ENABLE_SERIES) {
-    if (series.includes(toolId)) return series;
+/** Build enable series from server-declared `series_id` on available tools. */
+export function seriesFromAvailableTools(
+  tools: readonly AvailableTool[],
+): readonly (readonly string[])[] {
+  const byId = new Map<string, string[]>();
+  for (const tool of tools) {
+    const sid = tool.series_id ?? null;
+    if (!sid) continue;
+    const list = byId.get(sid) ?? [];
+    list.push(tool.id);
+    byId.set(sid, list);
+  }
+  return [...byId.values()].map((ids) => Object.freeze([...ids].sort()) as readonly string[]);
+}
+
+export function toolEnableSeries(
+  toolId: string,
+  available?: readonly AvailableTool[],
+): readonly string[] | null {
+  if (available && available.length > 0) {
+    const seriesId = available.find((t) => t.id === toolId)?.series_id;
+    if (seriesId) {
+      const members = available
+        .filter((t) => t.series_id === seriesId)
+        .map((t) => t.id);
+      if (members.length > 0) return members;
+    }
+  }
+  for (const series of TOOL_ENABLE_SERIES_FALLBACK) {
+    if ((series as readonly string[]).includes(toolId)) return series;
   }
   return null;
 }
@@ -673,8 +708,9 @@ export function applyToolEnabled(
   toolId: string,
   enabled: boolean,
   presetIds: ReadonlySet<string> = new Set(),
+  available?: readonly AvailableTool[],
 ): Record<string, AgentToolBinding> {
-  const ids = toolEnableSeries(toolId) ?? [toolId];
+  const ids = toolEnableSeries(toolId, available) ?? [toolId];
   const next = { ...tools };
   for (const id of ids) {
     const current = next[id] ?? defaultSeriesBinding(id, presetIds);
@@ -683,13 +719,28 @@ export function applyToolEnabled(
   return next;
 }
 
+/** Declared series first; keep hardcoded fallbacks for tools the server did not label. */
+function allEnableSeries(
+  available?: readonly AvailableTool[],
+): readonly (readonly string[])[] {
+  if (!available || available.length === 0) return TOOL_ENABLE_SERIES_FALLBACK;
+  const declared = seriesFromAvailableTools(available);
+  const covered = new Set(declared.flatMap((s) => [...s]));
+  const extras = TOOL_ENABLE_SERIES_FALLBACK.filter(
+    (series) => !series.some((id) => covered.has(id)),
+  );
+  return [...declared, ...extras];
+}
+
 /** Persist-time sync: if any series member is on, all members are on (and present). */
 export function syncToolEnableSeries(
   tools: Record<string, AgentToolBinding>,
   presetIds: ReadonlySet<string> = new Set(),
+  available?: readonly AvailableTool[],
 ): Record<string, AgentToolBinding> {
   const next = { ...tools };
-  for (const series of TOOL_ENABLE_SERIES) {
+  const seriesList = allEnableSeries(available);
+  for (const series of seriesList) {
     const anyPresent = series.some((id) => id in next);
     if (!anyPresent) continue;
     const anyEnabled = series.some((id) => next[id]?.enabled === true);
@@ -704,8 +755,12 @@ export function syncToolEnableSeries(
 export function withSyncedToolSeries(
   profile: AgentProfile,
   presetIds: ReadonlySet<string> = new Set(),
+  available?: readonly AvailableTool[],
 ): AgentProfile {
-  return { ...profile, tools: syncToolEnableSeries(profile.tools, presetIds) };
+  return {
+    ...profile,
+    tools: syncToolEnableSeries(profile.tools, presetIds, available),
+  };
 }
 
 export function isProtectedAgent(id: string): boolean {

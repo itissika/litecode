@@ -634,13 +634,51 @@ export interface CompactStarted {
   trigger?: "manual" | "auto";
 }
 
+export type AskKind = "permission" | "approval" | "ask_user";
+
+export interface AskOption {
+  id: string;
+  label: string;
+}
+
+/** One question in an ask_user batch. */
+export interface AskQuestion {
+  id: string;
+  prompt: string;
+  options: AskOption[];
+  multi_select?: boolean;
+  /** When true, show optional free-text for this question. */
+  free_text?: boolean;
+}
+
+/** Per-question answer on agent/permission submit (answers map value). */
+export interface AskAnswer {
+  selected: string[];
+  free_text?: string;
+}
+
 export interface PermissionRequest {
   turn_id: string;
   request_id: string;
   tool: string;
   rule_id: string;
+  /** Optional card title. For ask_user prefer questions[].prompt. */
   summary: string;
   session_id: string;
+  /**
+   * permission = Allow once/Always/Deny;
+   * approval = Approve/Reject (+ optional free text);
+   * ask_user = questions[] batch (+ answers map on reply).
+   */
+  kind?: AskKind;
+  /** Approval / legacy ask_user top-level free-text flag. */
+  free_text?: boolean;
+  /** Legacy flat options (compat → single question id q0 when questions empty). */
+  options?: AskOption[];
+  /** Legacy multi_select for flat options. */
+  multi_select?: boolean;
+  /** ask_user batch (≥1). Empty for permission/approval. */
+  questions?: AskQuestion[];
   /** Present on legacy forwarded subagent events; ignore for main transcript. */
   parent_session_id?: string;
 }

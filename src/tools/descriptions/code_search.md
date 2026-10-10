@@ -1,1 +1,1 @@
-Semantic code search over the workspace index when the engine is Warm.
+Semantic code search over the workspace index for wide discovery by meaning or topic (where auth lives, how retries work). Prefer grep for exact symbols/strings and glob for path patterns. Needs the code_search engine Warm and a ready index; if not ready, retry shortly after the wait/progress message.

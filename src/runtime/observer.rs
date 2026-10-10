@@ -190,6 +190,11 @@ pub enum InternalEvent {
         tool: String,
         rule_id: String,
         summary: String,
+        kind: crate::permission::AskKind,
+        free_text: bool,
+        options: Vec<crate::permission::AskOption>,
+        multi_select: bool,
+        questions: Vec<crate::permission::AskQuestion>,
     },
     PermissionResolved {
         tool: String,

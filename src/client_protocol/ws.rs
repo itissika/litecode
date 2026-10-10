@@ -358,6 +358,12 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                     approved: bool,
                     #[serde(default)]
                     always: bool,
+                    #[serde(default)]
+                    free_text: Option<String>,
+                    #[serde(default)]
+                    selected: Vec<String>,
+                    #[serde(default)]
+                    answers: std::collections::HashMap<String, crate::permission::AskAnswer>,
                 }
                 match serde_json::from_value::<PermissionParams>(rpc.params.clone()) {
                     Ok(params) => {
@@ -368,6 +374,9 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                                 tool: params.tool,
                                 approved: params.approved,
                                 always: params.always,
+                                free_text: params.free_text,
+                                selected: params.selected,
+                                answers: params.answers,
                             })
                             .is_err()
                         {

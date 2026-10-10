@@ -798,6 +798,11 @@ describe("grantPermission receipt (FE-04)", () => {
               tool: "bash",
               rule_id: "default",
               summary: "Run bash",
+              kind: "permission",
+              free_text: false,
+              options: [],
+              multi_select: false,
+              questions: [],
             },
           },
         ],
@@ -858,6 +863,161 @@ describe("grantPermission receipt (FE-04)", () => {
           ?.request_id,
       ).toBe("req-1");
     });
+  });
+
+  it("ask_user Submit sends answers map (and selected for single-q compat)", async () => {
+    const sessionId = "s-ask-user";
+    const sendRpc = vi.fn(() => Promise.resolve({ ok: true }));
+    useConnectionStore.setState({ sendRpc } as never);
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            pendingPermission: {
+              turn_id: "t1",
+              request_id: "req-ask",
+              tool: "ask_user",
+              rule_id: "ask",
+              summary: "Pick one",
+              kind: "ask_user",
+              free_text: true,
+              options: [
+                { id: "a", label: "A" },
+                { id: "b", label: "B" },
+              ],
+              multi_select: false,
+              questions: [
+                {
+                  id: "q0",
+                  prompt: "Pick one",
+                  options: [
+                    { id: "a", label: "A" },
+                    { id: "b", label: "B" },
+                  ],
+                  free_text: true,
+                },
+              ],
+            },
+          },
+        ],
+      ]),
+    });
+
+    useTurnStore.getState().grantPermission(sessionId, true, false, {
+      selected: ["a"],
+      answers: { q0: { selected: ["a"], free_text: "notes" } },
+    });
+    await vi.waitFor(() => {
+      expect(sendRpc).toHaveBeenCalled();
+    });
+    expect(sendRpc).toHaveBeenCalledWith(
+      "agent/permission",
+      expect.objectContaining({
+        request_id: "req-ask",
+        tool: "ask_user",
+        approved: true,
+        always: false,
+        session_id: sessionId,
+        selected: ["a"],
+        answers: { q0: { selected: ["a"], free_text: "notes" } },
+      }),
+    );
+  });
+
+  it("ask_user multi-question Submit sends answers only (no flat selected)", async () => {
+    const sessionId = "s-ask-multi";
+    const sendRpc = vi.fn(() => Promise.resolve({ ok: true }));
+    useConnectionStore.setState({ sendRpc } as never);
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            pendingPermission: {
+              turn_id: "t1",
+              request_id: "req-multi",
+              tool: "ask_user",
+              rule_id: "ask",
+              summary: "Confirm a few things",
+              kind: "ask_user",
+              free_text: false,
+              options: [],
+              multi_select: false,
+              questions: [
+                {
+                  id: "tone",
+                  prompt: "Tone?",
+                  options: [
+                    { id: "formal", label: "Formal" },
+                    { id: "casual", label: "Casual" },
+                  ],
+                },
+                {
+                  id: "depth",
+                  prompt: "Depth?",
+                  options: [
+                    { id: "brief", label: "Brief" },
+                    { id: "deep", label: "Deep" },
+                  ],
+                  multi_select: true,
+                },
+              ],
+            },
+          },
+        ],
+      ]),
+    });
+
+    useTurnStore.getState().grantPermission(sessionId, true, false, {
+      answers: {
+        tone: { selected: ["formal"] },
+        depth: { selected: ["brief", "deep"] },
+      },
+    });
+    await vi.waitFor(() => {
+      expect(sendRpc).toHaveBeenCalled();
+    });
+    const [, params] = sendRpc.mock.calls[0];
+    expect(params).toEqual(
+      expect.objectContaining({
+        request_id: "req-multi",
+        approved: true,
+        always: false,
+        answers: {
+          tone: { selected: ["formal"] },
+          depth: { selected: ["brief", "deep"] },
+        },
+      }),
+    );
+    expect(params).not.toHaveProperty("selected");
+  });
+
+  it("onPermissionRequest normalizes legacy options into questions[q0]", () => {
+    const sessionId = "s-norm";
+    useTurnStore.getState().onPermissionRequest(sessionId, {
+      turn_id: "t1",
+      request_id: "req-n",
+      tool: "ask_user",
+      rule_id: "ask",
+      summary: "Pick",
+      session_id: sessionId,
+      kind: "ask_user",
+      options: [{ id: "x", label: "X" }],
+      free_text: true,
+    });
+    const pending = useTurnStore.getState().byId.get(sessionId)!.pendingPermission!;
+    expect(pending.questions).toEqual([
+      {
+        id: "q0",
+        prompt: "Pick",
+        options: [{ id: "x", label: "X" }],
+        multi_select: undefined,
+        free_text: true,
+      },
+    ]);
   });
 
   it("routes turn error and snapshot warning to toast, not the bell", () => {

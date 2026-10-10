@@ -1,1 +1,1 @@
-Find files by path glob; optional `path` scopes to another directory (workspace-relative preferred).
+Find files by path glob when you need names/paths, not contents. Prefer workspace-relative path scopes; with path set, keep pattern relative to that directory (e.g. path=src and pattern=**/*.rs). Default filters hide gitignored and workspace-excluded paths; set -u to include them. For content matches use grep; for semantic code lookup use code_search.
