@@ -58,18 +58,27 @@ describe("ensureMainCenterGroup", () => {
     expect(addGroup).not.toHaveBeenCalled();
   });
 
-  it("inserts a group when the anchor stays at zero size", () => {
+  it("hosts on a revealed anchor even when size still reads zero", () => {
     const anchor = group("anchor", "grid", {
       visible: false,
       width: 0,
       height: 0,
-      setVisible: () => {},
+      setVisible: () => {
+        anchor.api.isVisible = true;
+      },
     });
     const addGroup = vi.fn(() => ({ id: "fresh" }));
     const api = { groups: [anchor], addGroup };
-    const created = ensureMainCenterGroup(api as never);
-    expect(addGroup).toHaveBeenCalledWith({ referenceGroup: "anchor", direction: "right" });
-    expect(created && "api" in created && created.api.id).toBe("fresh");
+    expect(ensureMainCenterGroup(api as never)).toBe(anchor);
+    expect(addGroup).not.toHaveBeenCalled();
+  });
+
+  it("reuses a zero-size main-center instead of addGroup", () => {
+    const pending = group("pending", "grid", { width: 0, height: 0 });
+    const addGroup = vi.fn(() => ({ id: "fresh" }));
+    const api = { groups: [pending], addGroup };
+    expect(ensureMainCenterGroup(api as never)).toBe(pending);
+    expect(addGroup).not.toHaveBeenCalled();
   });
 });
 

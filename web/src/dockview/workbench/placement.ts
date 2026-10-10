@@ -1,4 +1,4 @@
-import type { DockviewApi, DockviewGroupPanel } from "dockview-react";
+﻿import type { DockviewApi, DockviewGroupPanel } from "dockview-react";
 
 import { dockview } from "./host";
 import { kindForComponent, type CenterPlacement } from "./kinds";
@@ -35,6 +35,11 @@ function usableMainGroups(api: DockviewApi): GroupLike[] {
   });
 }
 
+/** Main-center groups including ones still at 0×0 before the first layout pass. */
+function anyMainCenterGroups(api: DockviewApi): GroupLike[] {
+  return groupsOf(api).filter((group) => groupRole(readGroup(group)) === "main-center");
+}
+
 function anchors(api: DockviewApi): GroupLike[] {
   return groupsOf(api).filter(
     (group) => groupRole(readGroup(group)) === "popout-anchor",
@@ -55,38 +60,43 @@ function hasDocument(group: GroupLike): boolean {
   });
 }
 
+function pickMain(
+  candidates: GroupLike[],
+  active: GroupLike | undefined,
+): DockviewGroupPanel | null {
+  if (candidates.length === 0) return null;
+  if (active && candidates.some((group) => groupId(group) === groupId(active))) {
+    return active as unknown as DockviewGroupPanel;
+  }
+  return candidates[0] as unknown as DockviewGroupPanel;
+}
+
 /**
- * A visible main-center group.
+ * A main-center group to host a new panel.
  *
- * An anchor is shown again first: Dockview restores its cached size when
- * `setVisible(true)` runs. A brand-new group is only inserted when no anchor
- * exists, or showing the anchor still leaves it with no size.
+ * Prefer an already-measured center, then any main-center (even 0×0 right
+ * after fromJSON), then a revealed popout anchor. Never `addGroup` beside a
+ * zero-size center/anchor: that races the layout pass and leaves NEW in a
+ * side strip instead of the real center. `addGroup()` only when the grid
+ * has no center host left (watermark-only).
  */
 export function ensureMainCenterGroup(api?: DockviewApi | null): DockviewGroupPanel | null {
   const live = liveApi(api);
   if (!live) return null;
-  const usable = usableMainGroups(live);
   const active = live.activeGroup as unknown as GroupLike | undefined;
-  if (active && usable.some((group) => groupId(group) === groupId(active))) {
-    return active as unknown as DockviewGroupPanel;
-  }
-  if (usable[0]) return usable[0] as unknown as DockviewGroupPanel;
+
+  const usable = pickMain(usableMainGroups(live), active);
+  if (usable) return usable;
+
+  const pending = pickMain(anyMainCenterGroups(live), active);
+  if (pending) return pending;
 
   const anchor = anchors(live)[0];
   if (anchor?.api.setVisible) {
     anchor.api.setVisible(true);
-    if (isUsableCenter(readGroup(anchor))) {
-      return anchor as unknown as DockviewGroupPanel;
-    }
-    const id = groupId(anchor);
-    if (id) {
-      return normalizeGroup(
-        live.addGroup({
-          referenceGroup: id,
-          direction: "right",
-        }) as unknown as GroupLike,
-      );
-    }
+    // Dockview restores cached size on show; size may still read 0 until
+    // paint. Hosting on the anchor avoids splitting NEW off-center.
+    return anchor as unknown as DockviewGroupPanel;
   }
   return normalizeGroup(live.addGroup() as unknown as GroupLike);
 }
@@ -152,7 +162,8 @@ function documentPlace(api: DockviewApi): PanelPlace | null {
 }
 
 function agentPlace(api: DockviewApi): PanelPlace | null {
-  const agentGroup = usableMainGroups(api).find((group) => hasAgent(group));
+  // Include zero-size main-center: restored agent groups can read 0×0 until paint.
+  const agentGroup = anyMainCenterGroups(api).find((group) => hasAgent(group));
   if (agentGroup) return placeOn(agentGroup);
   const created = ensureMainCenterGroup(api);
   if (!created) return null;

@@ -85,3 +85,32 @@ describe("centre already has a panel", () => {
     },
   );
 });
+
+  it("does not spawn NEW when a restored center panel is still 0x0", () => {
+    noteTransportReady();
+    const host = {
+      api: {
+        id: "main",
+        location: { type: "grid" },
+        isVisible: true,
+        width: 0,
+        height: 0,
+      },
+      panels: [{ id: "agent-1", api: { component: "agent" } }],
+    };
+    bindDockview({
+      panels: [
+        {
+          id: "agent-1",
+          api: {
+            component: "agent",
+            location: { type: "grid" },
+            group: host,
+          },
+        },
+      ],
+    } as unknown as DockviewApi);
+    noteLayoutSettled();
+    expect(newSession).not.toHaveBeenCalled();
+  });
+

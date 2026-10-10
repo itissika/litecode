@@ -179,17 +179,22 @@ export function activePanelId(): string | undefined {
   return dockview()?.activePanel?.id;
 }
 
-/** True when a panel is already showing on a usable main-center group. */
+/** True when the main center already hosts any panel (size ignored).
+ *
+ * Right after fromJSON, groups can read 0x0 until paint. Requiring a usable
+ * size here falsely treats restored center panels as missing and spawns NEW
+ * into a split via addGroup.
+ */
 export function mainCenterHasPanel(api?: DockviewApi | null): boolean {
   const live = apiOr(api);
   if (!live) return false;
   return live.panels.some((panel) => {
     const group = panel.api.group as unknown as GroupLike | undefined;
     if (group) {
-      const facts = readGroup(group);
-      return groupRole(facts) === "main-center" && isUsableCenter(facts);
+      return groupRole(readGroup(group)) === "main-center";
     }
-    return panel.api.location?.type === "grid";
+    // No group handle: a visible grid panel counts; anchors are not visible.
+    return panel.api.location?.type === "grid" && panel.api.isVisible !== false;
   });
 }
 

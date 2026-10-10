@@ -40,6 +40,8 @@ let started: DockviewApi | null = null;
 let stopShell: (() => void) | undefined;
 let stopListeners: (() => void) | undefined;
 let stopLayoutRepair: (() => void) | undefined;
+/** rAF id for deferred noteLayoutSettled after restore/edges. */
+let settleRaf: number | undefined;
 
 function startWindowShell(api: DockviewApi): () => void {
   const stopRegistry = bindWindowRegistry(api);
@@ -79,11 +81,34 @@ export function layoutStore(): LayoutStore {
 }
 
 
+function cancelScheduledSettle(): void {
+  if (settleRaf === undefined) return;
+  cancelAnimationFrame(settleRaf);
+  settleRaf = undefined;
+}
+
 /**
- * Own layout restore, popout reopening, and layout saves.
- * Safe to call once per Dockview instance.
+ * Edges/fromJSON can leave center groups at 0x0 until the next paint.
+ * Defer centreChat until after that frame, and keep the restore gate closed
+ * so openPanel cannot addGroup beside a zero-size host.
  */
+function scheduleLayoutSettled(): void {
+  cancelScheduledSettle();
+  settleRaf = requestAnimationFrame(() => {
+    settleRaf = undefined;
+    setLayoutFromJsonPending(false);
+    noteLayoutSettled();
+  });
+}
+
+function finishChromeAndSettle(api: DockviewApi): void {
+  setLayoutFromJsonPending(true);
+  recoverDefaultLayout(api);
+  scheduleLayoutSettled();
+}
+
 export function stopWorkbench(): void {
+  cancelScheduledSettle();
   stopShell?.();
   stopShell = undefined;
   stopListeners?.();
@@ -96,6 +121,10 @@ export function stopWorkbench(): void {
   bindDockview(null);
 }
 
+/**
+ * Own layout restore, popout reopening, and layout saves.
+ * Safe to call once per Dockview instance.
+ */
 export function startWorkbench(api: DockviewApi): void {
   bindDockview(api);
   if (started === api) return;
@@ -128,8 +157,7 @@ export function startWorkbench(api: DockviewApi): void {
     try {
       const parsed = JSON.parse(saved) as { schemaVersion?: number; layout?: unknown };
       if (!parsed || parsed.schemaVersion !== LAYOUT_SCHEMA_VERSION) {
-        recoverDefaultLayout(api);
-        noteLayoutSettled();
+        finishChromeAndSettle(api);
       } else {
         const prepared = preparePopoutRestore(parsed.layout, {
           x: window.screenX,
@@ -142,8 +170,7 @@ export function startWorkbench(api: DockviewApi): void {
         setLayoutFromJsonPending(true);
         suppressSave = true;
         const finishRestore = () => {
-          recoverDefaultLayout(api);
-          noteLayoutSettled();
+          finishChromeAndSettle(api);
         };
         let waiting = pendingPopouts;
         const popoutWatch: { dispose(): void }[] = [];
@@ -178,14 +205,13 @@ export function startWorkbench(api: DockviewApi): void {
         const disposable = api.onDidLayoutFromJSON(() => {
           if (safetyTimer !== undefined) clearTimeout(safetyTimer);
           disposable.dispose();
-          // fromJSON applied — business may open panels; keep save suppressed
-          // until popouts settle.
-          setLayoutFromJsonPending(false);
+          // Keep restoreGate closed until scheduleLayoutSettled's rAF so
+          // centreChat/openPanel cannot race zero-size groups. Save stays
+          // suppressed until popouts settle.
           try {
             finishRestore();
           } catch {
-            recoverDefaultLayout(api);
-            noteLayoutSettled();
+            finishChromeAndSettle(api);
           }
           if (waiting <= 0) suppressSave = false;
         });
@@ -193,25 +219,20 @@ export function startWorkbench(api: DockviewApi): void {
         safetyTimer = setTimeout(() => {
           if (!suppressSave) return;
           disposable.dispose();
-          setLayoutFromJsonPending(false);
           try {
             finishRestore();
           } catch {
-            recoverDefaultLayout(api);
-            noteLayoutSettled();
+            finishChromeAndSettle(api);
           }
           if (waiting <= 0) suppressSave = false;
         }, 2000);
       }
     } catch {
-      setLayoutFromJsonPending(false);
       suppressSave = false;
-      recoverDefaultLayout(api);
-      noteLayoutSettled();
+      finishChromeAndSettle(api);
     }
   } else {
-    recoverDefaultLayout(api);
-    noteLayoutSettled();
+    finishChromeAndSettle(api);
   }
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
