@@ -108,7 +108,7 @@ impl Tool for ReadTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Read a text file with line numbers or return a supported image as media.".into()
+        crate::tools::description_text(include_str!("descriptions/read.md"))
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {

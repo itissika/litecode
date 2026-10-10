@@ -111,7 +111,7 @@ impl Tool for SubagentStopTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Request cancellation of a child session's current turn. The child session and its context remain.".into()
+        crate::tools::description_text(include_str!("../descriptions/subagent_stop.md"))
     }
 
     fn set_active_session(&self, session_id: String) {

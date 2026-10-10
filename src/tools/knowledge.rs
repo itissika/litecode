@@ -20,13 +20,6 @@ use crate::tool::trait_::{Tool, ToolExecutionContext};
 use crate::tool::write_lock::ResourceKey;
 use crate::types::ToolCallResult;
 
-const DESCRIPTION: &str = "\
-Workspace knowledge base: human-owned notes of durable ideas — architecture, principles, workflows, goals. \
-Call with an empty command first; the board shows state and what to do next. \
-Navigate by key, edit bodies with read/edit, and run check after changes. \
-Rename and create through this tool so citations keep resolving. \
-Record invariants, not details.";
-
 pub struct KnowledgeTool {
     ide: Arc<crate::ide_base::IdeBaseHandle>,
 }
@@ -548,7 +541,7 @@ impl Tool for KnowledgeTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        DESCRIPTION.into()
+        crate::tools::description_text(include_str!("descriptions/knowledge.md"))
     }
 
     fn is_concurrency_safe(&self, input: &Value) -> bool {

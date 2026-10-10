@@ -122,7 +122,7 @@ impl Tool for SubagentListTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "List child sessions as labeled blocks: id, agent, responsibility, last_send, state; running children also include turn_age and step; idle children include the latest turn reason.".to_string()
+        crate::tools::description_text(include_str!("../descriptions/subagent_list.md"))
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {

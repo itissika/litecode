@@ -765,12 +765,7 @@ impl Tool for LitecodeWorkspaceTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Facade for this workspace: excludes, MCP servers, custom tools, and sessions. \
-         `refresh` (and `refresh all`) validates excludes, MCP, and custom tools. \
-         An MCP server or custom tool that is off for you stays quiet unless you actually \
-         need it. It does not write files, enable tools, or start engines. Omit `action` \
-         to open the panel."
-            .into()
+        crate::tools::description_text(include_str!("descriptions/litecode_workspace.md"))
     }
 }
 

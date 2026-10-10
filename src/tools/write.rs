@@ -113,9 +113,7 @@ impl Tool for WriteTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Create or overwrite a file with the given content.\n\
-         Prefer this over echo or heredoc to create a file."
-            .into()
+        crate::tools::description_text(include_str!("descriptions/write.md"))
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {

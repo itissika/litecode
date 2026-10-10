@@ -1,6 +1,5 @@
-import type { DockviewApi } from "dockview-react";
-
 import { THEME_CHANGE_EVENT } from "../../lib/theme";
+import { getWindows, registeredDocuments, subscribeWindows } from "../workbench/windows";
 import { releaseOrphanRenderOverlays } from "./orphanOverlay";
 import { bindPopoutPin } from "./popoutPin";
 
@@ -46,38 +45,35 @@ export function watchPopoutLayout(win: Window): () => void {
 }
 
 /**
- * One subscription for every popout window dockview opens.
- * Theme follows `getPopouts()`. Empty render overlays are a gap in the
- * always-renderer, so those are removed here.
+ * Theme, pin, and resize watch for every registered popout.
+ * Empty render overlays are a gap in the always-renderer, so those are
+ * removed when a popout registers. Panel moves are handled by the workbench.
  */
-export function bindPopoutWindows(api: DockviewApi): void {
-  const watches = new Map<Window, () => void>();
-
-  const popoutDocuments = (): Document[] => {
-    const docs = [document];
-    for (const popout of api.getPopouts()) {
-      if (!popout.window.closed) docs.push(popout.window.document);
-    }
-    return docs;
-  };
-
+export function bindPopoutWindows(): () => void {
   const syncTheme = () => {
     const theme = currentDvTheme();
-    for (const popout of api.getPopouts()) {
-      if (!popout.window.closed) preparePopoutDocument(popout.window.document, theme);
+    for (const entry of getWindows()) {
+      if (!entry.dockId) continue;
+      try {
+        if (!entry.window.closed) preparePopoutDocument(entry.window.document, theme);
+      } catch {
+        // The popout is already leaving the registry.
+      }
     }
   };
 
-  const unwatch = (popoutWindow: Window) => {
-    const stop = watches.get(popoutWindow);
-    if (!stop) return;
-    watches.delete(popoutWindow);
-    stop();
-  };
-
-  const watch = (popoutWindow: Window) => {
-    const stopLayout = watchPopoutLayout(popoutWindow);
-    const stopPin = bindPopoutPin(popoutWindow, (dockId, onTop) => {
+  window.addEventListener(THEME_CHANGE_EVENT, syncTheme);
+  const stop = subscribeWindows((entry) => {
+    if (!entry.dockId) return () => {};
+    try {
+      if (entry.window.closed) return () => {};
+      preparePopoutDocument(entry.window.document, currentDvTheme());
+    } catch {
+      return () => {};
+    }
+    releaseOrphanRenderOverlays(registeredDocuments());
+    const stopLayout = watchPopoutLayout(entry.window);
+    const stopPin = bindPopoutPin(entry.window, (dockId, onTop) => {
       const set = window.litecode?.popoutSetAlwaysOnTop;
       return set ? set(dockId, onTop) : Promise.resolve(false);
     });
@@ -85,16 +81,9 @@ export function bindPopoutWindows(api: DockviewApi): void {
       stopLayout();
       stopPin();
     };
-  };
-
-  window.addEventListener(THEME_CHANGE_EVENT, syncTheme);
-  api.onDidAddPopoutGroup((popout) => {
-    if (!popout.window.closed && !watches.has(popout.window)) {
-      preparePopoutDocument(popout.window.document, currentDvTheme());
-      watches.set(popout.window, watch(popout.window));
-    }
-    releaseOrphanRenderOverlays(popoutDocuments());
   });
-  api.onDidRemovePopoutGroup((popout) => unwatch(popout.window));
-  api.onDidMovePanel(() => releaseOrphanRenderOverlays(popoutDocuments()));
+  return () => {
+    window.removeEventListener(THEME_CHANGE_EVENT, syncTheme);
+    stop();
+  };
 }

@@ -1,5 +1,3 @@
-import type { DockviewApi } from "dockview-react";
-
 import { bindDockview } from "../dockview/workbench/host";
 import { mainCenterHasPanel } from "../dockview/workbench/queries";
 import { useSessionStore } from "../stores/sessionStore";
@@ -30,8 +28,7 @@ function ensureCentreChat(): void {
 }
 
 /** The dockview layout finished restoring (or was built from scratch). */
-export function noteLayoutSettled(next: DockviewApi): void {
-  bindDockview(next);
+export function noteLayoutSettled(): void {
   ready = true;
   ensureCentreChat();
 }

@@ -2,6 +2,7 @@ import type { DockviewApi, IDockviewPanel } from "dockview-react";
 
 import { joinPopoutWindow, movePanelToMain, popoutPanel } from "../workbench/commands";
 import { bindDockview } from "../workbench/host";
+import { getWindows } from "../workbench/windows";
 import {
   MAIN_WINDOW_KEY,
   decideRelease,
@@ -36,15 +37,18 @@ function boxOf(win: Window): WindowBox {
   };
 }
 
-function screenWindows(api: DockviewApi): { windows: ScreenWindow[]; byKey: Map<string, Window> } {
+function screenWindows(): { windows: ScreenWindow[]; byKey: Map<string, Window> } {
   const windows: ScreenWindow[] = [{ key: MAIN_WINDOW_KEY, box: boxOf(window) }];
   const byKey = new Map<string, Window>();
-  const seen = new Set<Window>();
-  for (const popout of api.getPopouts()) {
-    if (popout.window.closed || seen.has(popout.window)) continue;
-    seen.add(popout.window);
-    windows.push({ key: popout.id, box: boxOf(popout.window) });
-    byKey.set(popout.id, popout.window);
+  for (const entry of getWindows()) {
+    if (!entry.dockId) continue;
+    try {
+      if (entry.window.closed) continue;
+    } catch {
+      continue;
+    }
+    windows.push({ key: entry.dockId, box: boxOf(entry.window) });
+    byKey.set(entry.dockId, entry.window);
   }
   return { windows, byKey };
 }
@@ -133,7 +137,7 @@ export function bindTabDrag(api: DockviewApi): void {
         view.setTimeout(() => {
           stopWatchingPlacement();
           if (!point || placed) return;
-          const { windows, byKey } = screenWindows(api);
+          const { windows, byKey } = screenWindows();
           const key = windowAtPoint(point, windows);
           const decision = decideRelease(
             tabClass(panel.api.location?.type, panel.api.component),

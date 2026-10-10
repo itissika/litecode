@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type {
   DockviewApi,
   DockviewGroupPanel,
@@ -6,6 +6,7 @@ import type {
   TabDragEvent,
 } from "dockview-react";
 
+import { bindWindowRegistry, resetWindowsForTests } from "../workbench/windows";
 import { bindTabDrag, isMainCenterHit } from "./bindTabDrag";
 
 interface Harness {
@@ -39,7 +40,6 @@ function panel(type: string, getWindow: () => Window = () => window): IDockviewP
 
 function harness(options?: {
   sourceType?: string;
-  popoutWindow?: Window;
   popoutGroup?: DockviewGroupPanel;
   gridGroups?: DockviewGroupPanel[];
 }): Harness {
@@ -74,10 +74,6 @@ function harness(options?: {
         api: { location: { type: sourceType }, component: "editor" },
       },
     getGroup: () => ({ api: { location: { type: sourceType } } }),
-    getPopouts: () =>
-      options?.popoutWindow && options.popoutGroup
-        ? [{ id: "pop-1", window: options.popoutWindow, group: options.popoutGroup }]
-        : [],
     groups: [
       ...(options?.gridGroups ?? []),
       ...(options?.popoutGroup ? [options.popoutGroup] : []),
@@ -127,12 +123,17 @@ function outsidePoint(): { screenX: number; screenY: number } {
 function popoutWindow(): Window {
   return {
     closed: false,
+    document: document,
     screenX: window.screenX + window.outerWidth + 200,
     screenY: window.screenY,
     outerWidth: 400,
     outerHeight: 300,
   } as unknown as Window;
 }
+
+afterEach(() => {
+  resetWindowsForTests();
+});
 
 describe("isMainCenterHit", () => {
   it("accepts the empty center and refuses an edge rail", () => {
@@ -202,14 +203,27 @@ describe("bindTabDrag", () => {
   });
 
   it("joins an existing popout when the release misses its drop target", async () => {
+    const dockId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     const win = popoutWindow();
     const group = {
       api: {
+        id: "pop-1",
         isVisible: true,
-        location: { type: "popout", getWindow: () => win },
+        location: {
+          type: "popout",
+          popoutUrl: `/popout.html?dock=${dockId}`,
+          getWindow: () => win,
+        },
       },
     } as unknown as DockviewGroupPanel;
-    const drag = harness({ popoutWindow: win, popoutGroup: group });
+    bindWindowRegistry({
+      onDidAddPopoutGroup: (cb) => {
+        cb({ id: "pop-1", window: win, group } as never);
+        return { dispose() {} };
+      },
+      onDidRemovePopoutGroup: () => ({ dispose() {} }),
+    });
+    const drag = harness({ popoutGroup: group });
     const editor = panel("grid");
     editor.api.moveTo = (options) => {
       if (options.group) drag.moves.push(options.group);

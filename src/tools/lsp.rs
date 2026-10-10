@@ -598,11 +598,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Language-server navigation and diagnostics: goToDefinition, findReferences, \
-         hover, diagnostics. Read the file first to obtain line numbers, then call. \
-         diagnostics needs file_path only; other actions need file_path + line + text. \
-         Waits briefly if the language server is still loading."
-            .into()
+        crate::tools::description_text(include_str!("descriptions/lsp.md"))
     }
 }
 

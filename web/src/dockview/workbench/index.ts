@@ -5,8 +5,8 @@
  *
  * - Popping a grid group out leaves that group on the main grid with
  *   location "grid" and isVisible false (size 0). It is a return anchor,
- *   not a host. The live group has location "popout". getPopouts() lists
- *   only live groups.
+ *   not a host. The live group has location "popout". The window registry
+ *   lists those live groups by dock id.
  * - setActive selects a panel inside its current group. It does not show
  *   an anchor and does not move a panel to the main window. Activating a
  *   popout group focuses that window.

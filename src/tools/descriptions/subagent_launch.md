@@ -1,0 +1,1 @@
+Create a child session and start its first background turn. agent is the subagent profile, responsibility is the stable role, prompt is the first assignment. Returns immediately; the turn result is delivered when it settles.

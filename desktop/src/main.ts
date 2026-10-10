@@ -80,6 +80,13 @@ type SessionMode = "local" | "remote";
 
 let mainWindow: BrowserWindow | null = null;
 let browserHost: BrowserHost | null = null;
+/**
+ * OS handles for popout windows, keyed by the dock id in `/popout.html?dock=`.
+ * The renderer keeps the matching DOM windows. A handle may exist before
+ * Dockview's group, and the group may be seen first. Always-on-top and the
+ * embedded browser fail closed when the handle is missing; they do not wait.
+ * Minimize, maximize, and close follow the IPC sender, not this map.
+ */
 const popoutWindows = new Map<string, BrowserWindow>();
 let browserObscured = false;
 let sidecar: SidecarHandle | null = null;

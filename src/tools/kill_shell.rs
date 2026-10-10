@@ -99,7 +99,7 @@ impl Tool for KillShellTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Stop a background bash task by bash_id. The output file stays; inspect with read/grep. Remaining running jobs are listed.".into()
+        crate::tools::description_text(include_str!("descriptions/kill_shell.md"))
     }
 
     fn set_active_session(&self, session_id: String) {

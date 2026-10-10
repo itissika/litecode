@@ -69,7 +69,7 @@ impl Tool for GlobTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Find files by path glob; optional `path` scopes to another directory (workspace-relative preferred).".into()
+        crate::tools::description_text(include_str!("descriptions/glob.md"))
     }
 }
 

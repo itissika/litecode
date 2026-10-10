@@ -127,21 +127,7 @@ impl Tool for TodoWriteTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Manage the session task list; submitting todos replaces the entire list.\n\
-         \n\
-         Use proactively for multi-step work (3+ distinct steps), when the user gives\n\
-         several tasks, or when new instructions arrive. Skip for single, straightforward\n\
-         tasks or purely conversational/informational requests.\n\
-         \n\
-         States: pending, in_progress (exactly ONE at a time), completed.\n\
-         \n\
-         Rules:\n\
-         - Update status in real time; don't batch completions.\n\
-         - Mark completed only after the work is actually done, including verification.\n\
-         - Keep exactly one in_progress while work remains.\n\
-         - Mark a step completed before starting the next one.\n\
-         - Mark all steps completed when finished."
-            .into()
+        crate::tools::description_text(include_str!("descriptions/todo.md"))
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {

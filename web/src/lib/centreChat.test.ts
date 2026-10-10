@@ -1,6 +1,7 @@
 import type { DockviewApi } from "dockview-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { bindDockview } from "../dockview/workbench/host";
 import { useSessionStore } from "../stores/sessionStore";
 import {
   noteLayoutSettled,
@@ -42,7 +43,8 @@ afterEach(() => {
 
 describe("empty centre", () => {
   it("opens a chat once both the layout and the socket are ready", () => {
-    noteLayoutSettled(empty);
+    bindDockview(empty);
+    noteLayoutSettled();
     expect(newSession).not.toHaveBeenCalled();
     noteTransportReady();
     expect(newSession).toHaveBeenCalledTimes(1);
@@ -51,18 +53,21 @@ describe("empty centre", () => {
   it("opens a chat when the socket is ready first", () => {
     noteTransportReady();
     expect(newSession).not.toHaveBeenCalled();
-    noteLayoutSettled(empty);
+    bindDockview(empty);
+    noteLayoutSettled();
     expect(newSession).toHaveBeenCalledTimes(1);
   });
 
   it("opens a chat when only the edge rails are present", () => {
     noteTransportReady();
-    noteLayoutSettled(railsOnly);
+    bindDockview(railsOnly);
+    noteLayoutSettled();
     expect(newSession).toHaveBeenCalledTimes(1);
   });
 
   it("does not open a second chat on a later hello", () => {
-    noteLayoutSettled(empty);
+    bindDockview(empty);
+    noteLayoutSettled();
     noteTransportReady();
     noteTransportReady();
     expect(newSession).toHaveBeenCalledTimes(1);
@@ -74,7 +79,8 @@ describe("centre already has a panel", () => {
     "leaves a persisted %s panel alone",
     (component) => {
       noteTransportReady();
-      noteLayoutSettled(fakeApi([{ component, where: "grid" }]));
+      bindDockview(fakeApi([{ component, where: "grid" }]));
+      noteLayoutSettled();
       expect(newSession).not.toHaveBeenCalled();
     },
   );

@@ -1,0 +1,1 @@
+Wait for a snapshot of currently running child turns. ids selects which children; omit it to select all running children. Already-idle selected ids return their latest turn immediately; unknown ids are skipped. count is how many selected turns must settle; omit it to await all selected. Does not cancel children.

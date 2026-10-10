@@ -4,7 +4,6 @@ import { DockviewReact } from "dockview-react";
 import { panelComponents, tabComponents } from "./config/registry";
 import { keyboardKeymap } from "./config/keymap";
 import { useDockviewConfig } from "./hooks/useDockviewConfig";
-import { revealEdgePanel } from "./workbench/edges";
 import { TitleBar } from "./shell/TitleBar";
 import { StatusBar } from "../components/StatusBar";
 import { WelcomeWatermark } from "./watermark/WelcomeWatermark";
@@ -20,7 +19,6 @@ import { SettingsDialog } from "./panels/SettingsDialog";
 import { useSettingsStore } from "../stores/settingsStore";
 import { AboutContent } from "./panels/AboutPanel";
 import { Logo } from "../components/Logo";
-import { useEditorStore } from "../stores/editorStore";
 import { foreignDropIntent, previewForeignDrop } from "../lib/externalDrop";
 import { installBrowserChromeObscure, pushBrowserObscure } from "../lib/browserObscure";
 import { BrowserHeaderAction } from "./shell/BrowserHeaderAction";
@@ -69,27 +67,6 @@ export function AppShellDockview() {
     };
     window.addEventListener(THEME_CHANGE_EVENT, onTheme);
     return () => window.removeEventListener(THEME_CHANGE_EVENT, onTheme);
-  }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (
-        (e.ctrlKey || e.metaKey) &&
-        e.shiftKey &&
-        (e.key === "f" || e.key === "F")
-      ) {
-        e.preventDefault();
-        revealEdgePanel("search");
-        window.dispatchEvent(new Event("litecode:focus-workspace-search"));
-      } else if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
-        // Global "save active editor" — mirrors VS Code's workbench-level
-        // Ctrl+S (no focus/active-panel gating). save() defaults to activePath.
-        e.preventDefault();
-        void useEditorStore.getState().save();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   const handleMenuAction = useCallback(

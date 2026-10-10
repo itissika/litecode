@@ -188,7 +188,7 @@ impl Tool for CodeSearchTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Semantic code search over the workspace index when the engine is Warm.".into()
+        crate::tools::description_text(include_str!("descriptions/code_search.md"))
     }
 
     fn timeout(&self) -> Option<u64> {

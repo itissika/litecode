@@ -1,7 +1,8 @@
 import type { DockviewApi, DockviewGroupPanel } from "dockview-react";
 
-import { popoutPageUrl } from "../config/popoutUrl";
+import { dockIdFromPopoutUrl, popoutPageUrl } from "../config/popoutUrl";
 import { dockview } from "./host";
+import { getWindows } from "./windows";
 import { kindForComponent } from "./kinds";
 import { groupRole, isUsableCenter } from "./model";
 import { placementFor, type PanelPlace } from "./placement";
@@ -197,22 +198,13 @@ export function movePanelToMain(panelId: string): void {
 
 /**
  * Move a panel into a popout window.
- * `windowKey` is either that window's group id or the dock id in its URL.
+ * `dockId` is the id in that window's `/popout.html?dock=` URL.
  */
-export function joinPopoutWindow(panelId: string, windowKey: string): void {
+export function joinPopoutWindow(panelId: string, dockId: string): void {
   const live = dockview();
   const panel = live?.getPanel(panelId);
-  if (!live || !panel || !live.getPopouts) return;
-  const match = live.getPopouts().find((popout) => {
-    if (popout.id === windowKey) return true;
-    const group = popout.group as unknown as GroupLike;
-    const href = popout.window?.location?.href;
-    return (
-      group.api.location?.popoutUrl?.includes(windowKey) === true ||
-      (href ? href.includes(`dock=${windowKey}`) : false)
-    );
-  });
-  const group = match?.group;
+  if (!live || !panel || !dockIdFromPopoutUrl(popoutPageUrl(dockId))) return;
+  const group = getWindows().find((entry) => entry.dockId === dockId)?.group;
   if (!group) return;
-  panelApi(panel).moveTo?.({ group });
+  panelApi(panel).moveTo?.({ group: group as unknown as DockviewGroupPanel });
 }

@@ -117,7 +117,7 @@ impl Tool for WaitShellTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Wait for a background bash job. Pass id (one job), sec (pure wait), or both (whichever happens first). Any other bash from this session exiting also returns. Does not kill the process.".into()
+        crate::tools::description_text(include_str!("descriptions/wait_shell.md"))
     }
 
     fn timeout(&self) -> Option<u64> {

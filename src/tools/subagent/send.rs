@@ -152,8 +152,7 @@ impl Tool for SubagentSendTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Start another background turn in an idle child session. Requires its id and a next assignment that fits the session's established responsibility; fails while that child is running."
-            .into()
+        crate::tools::description_text(include_str!("../descriptions/subagent_send.md"))
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {

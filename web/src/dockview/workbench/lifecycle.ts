@@ -6,14 +6,15 @@ import {
   preparePopoutRestore,
   stagePopoutBounds,
 } from "../config/popoutRestore";
-import { dockIdFromPopoutUrl } from "../config/popoutUrl";
 import { bindTabDrag } from "../drag/bindTabDrag";
+import { releaseOrphanRenderOverlays } from "../popout/orphanOverlay";
 import { bindPopoutWindows } from "../popout/popoutChrome";
-import { dockIdFromLocation } from "../popout/location";
 import { recoverDefaultLayout } from "./edges";
 import { emitPanelRemoved, onPanelRemoved } from "./events";
 import { bindDockview, dockview } from "./host";
+import { bindWorkbenchKeys } from "./keys";
 import { noteActiveGroup } from "./placement";
+import { bindWindowRegistry, onDidRegisterWindow, registeredDocuments } from "./windows";
 
 /**
  * Layout snapshots. The desktop host keeps one file per local workspace,
@@ -34,6 +35,23 @@ const POPOUT_RESTORE_MS = 5000;
 
 let restoring = false;
 let started: DockviewApi | null = null;
+let stopShell: (() => void) | undefined;
+
+function startWindowShell(api: DockviewApi): () => void {
+  const stopRegistry = bindWindowRegistry(api);
+  const stopChrome = bindPopoutWindows();
+  const stopKeys = bindWorkbenchKeys();
+  bindTabDrag(api);
+  const moveSub = api.onDidMovePanel(() => {
+    releaseOrphanRenderOverlays(registeredDocuments());
+  });
+  return () => {
+    stopRegistry();
+    stopChrome();
+    stopKeys();
+    moveSub.dispose();
+  };
+}
 
 export function layoutStore(): LayoutStore {
   const host = window.litecode;
@@ -64,7 +82,9 @@ let layoutRepairBound = false;
 export function startWorkbench(api: DockviewApi): void {
   bindDockview(api);
   if (started === api) return;
+  stopShell?.();
   started = api;
+  stopShell = startWindowShell(api);
   if (!layoutRepairBound) {
     layoutRepairBound = true;
     onPanelRemoved((event) => {
@@ -91,7 +111,7 @@ export function startWorkbench(api: DockviewApi): void {
       const parsed = JSON.parse(saved) as { schemaVersion?: number; layout?: unknown };
       if (!parsed || parsed.schemaVersion !== LAYOUT_SCHEMA_VERSION) {
         recoverDefaultLayout(api);
-        noteLayoutSettled(api);
+        noteLayoutSettled();
       } else {
         const prepared = preparePopoutRestore(parsed.layout, {
           x: window.screenX,
@@ -104,7 +124,7 @@ export function startWorkbench(api: DockviewApi): void {
         restoring = true;
         const finishRestore = () => {
           recoverDefaultLayout(api);
-          noteLayoutSettled(api);
+          noteLayoutSettled();
         };
         let waiting = pendingPopouts;
         const popoutWatch: { dispose(): void }[] = [];
@@ -123,12 +143,12 @@ export function startWorkbench(api: DockviewApi): void {
         };
         if (waiting > 0) {
           popoutWatch.push(
-            api.onDidAddPopoutGroup((popout) => {
-              const dock =
-                dockIdFromLocation(popout.group.api.location) ??
-                dockIdFromPopoutUrl(popout.window.location.href);
-              if (applyStagedPopoutBounds(popout.window, dock)) markSettled();
-            }),
+            {
+              dispose: onDidRegisterWindow((entry) => {
+                if (!entry.dockId) return;
+                if (applyStagedPopoutBounds(entry.window, entry.dockId)) markSettled();
+              }),
+            },
             api.onDidOpenPopoutWindowFail(() => {
               markSettled();
             }),
@@ -143,7 +163,7 @@ export function startWorkbench(api: DockviewApi): void {
             finishRestore();
           } catch {
             recoverDefaultLayout(api);
-            noteLayoutSettled(api);
+            noteLayoutSettled();
           }
           if (waiting <= 0) restoring = false;
         });
@@ -155,7 +175,7 @@ export function startWorkbench(api: DockviewApi): void {
             finishRestore();
           } catch {
             recoverDefaultLayout(api);
-            noteLayoutSettled(api);
+            noteLayoutSettled();
           }
           if (waiting <= 0) restoring = false;
         }, 2000);
@@ -163,15 +183,12 @@ export function startWorkbench(api: DockviewApi): void {
     } catch {
       restoring = false;
       recoverDefaultLayout(api);
-      noteLayoutSettled(api);
+      noteLayoutSettled();
     }
   } else {
     recoverDefaultLayout(api);
-    noteLayoutSettled(api);
+    noteLayoutSettled();
   }
-
-  bindPopoutWindows(api);
-  bindTabDrag(api);
 
   let saveTimer: ReturnType<typeof setTimeout>;
   api.onDidLayoutChange(() => {

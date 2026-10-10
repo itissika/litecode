@@ -367,13 +367,11 @@ impl Tool for SubagentLaunchTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
+        let base =
+            crate::tools::description_text(include_str!("../descriptions/subagent_launch.md"));
         match self.format_available_subagents() {
-            None => {
-                "Create a child session and start its first background turn. agent is the subagent profile, responsibility is the stable role, prompt is the first assignment. Returns immediately; the turn result is delivered when it settles.".into()
-            }
-            Some(catalog) => format!(
-                "Create a child session and start its first background turn. agent is the subagent profile, responsibility is the stable role, prompt is the first assignment. Returns immediately; the turn result is delivered when it settles. Available agents: {catalog}."
-            ),
+            None => base,
+            Some(catalog) => format!("{base} Available agents: {catalog}."),
         }
     }
 

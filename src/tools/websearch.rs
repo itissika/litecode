@@ -84,7 +84,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Search the web and return titles, URLs, and snippets.".into()
+        crate::tools::description_text(include_str!("descriptions/websearch.md"))
     }
 
     fn timeout(&self) -> Option<u64> {

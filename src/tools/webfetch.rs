@@ -218,7 +218,7 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self, _ctx: &Context) -> String {
-        "Fetch content from a URL.".into()
+        crate::tools::description_text(include_str!("descriptions/webfetch.md"))
     }
 
     fn timeout(&self) -> Option<u64> {

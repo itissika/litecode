@@ -2,6 +2,7 @@ import type { DockviewApi, DockviewPanel } from "dockview-react";
 
 import { dockIdFromPopoutUrl } from "../config/popoutUrl";
 import { dockview, onDockviewAttached } from "./host";
+import { getWindows } from "./windows";
 import { kindForComponent } from "./kinds";
 import {
   groupRole,
@@ -104,16 +105,12 @@ export function isInMainWindow(panelId: string): boolean {
   return where?.window === "main";
 }
 
-export function popoutWindows(api?: DockviewApi | null): PopoutWindowInfo[] {
-  const live = apiOr(api);
-  if (!live?.getPopouts) return [];
+/** Popout windows currently registered. The main window is not included. */
+export function popoutWindows(): PopoutWindowInfo[] {
   const listed: PopoutWindowInfo[] = [];
-  for (const popout of live.getPopouts()) {
-    const group = popout.group as unknown as GroupLike;
-    const dockId =
-      dockIdOf(group) ?? dockIdFromPopoutUrl(popout.window?.location?.href);
-    if (!dockId) continue;
-    listed.push({ dockId, groupId: group.api.id ?? popout.id });
+  for (const entry of getWindows()) {
+    if (!entry.dockId || !entry.groupId) continue;
+    listed.push({ dockId: entry.dockId, groupId: entry.groupId });
   }
   return listed;
 }
