@@ -12,6 +12,7 @@ import { bindPopoutWindows } from "../popout/popoutChrome";
 import { recoverDefaultLayout } from "./edges";
 import { emitPanelRemoved, onPanelRemoved } from "./events";
 import { bindDockview, dockview } from "./host";
+import { setLayoutFromJsonPending } from "./restoreGate";
 import { bindWorkbenchKeys } from "./keys";
 import { noteActiveGroup } from "./placement";
 import { bindWindowRegistry, onDidRegisterWindow, registeredDocuments } from "./windows";
@@ -33,15 +34,18 @@ export const LAYOUT_SCHEMA_VERSION = 4;
 
 const POPOUT_RESTORE_MS = 5000;
 
-let restoring = false;
+/** Suppress layout saves through popout restore as well. */
+let suppressSave = false;
 let started: DockviewApi | null = null;
 let stopShell: (() => void) | undefined;
+let stopListeners: (() => void) | undefined;
+let stopLayoutRepair: (() => void) | undefined;
 
 function startWindowShell(api: DockviewApi): () => void {
   const stopRegistry = bindWindowRegistry(api);
   const stopChrome = bindPopoutWindows();
   const stopKeys = bindWorkbenchKeys();
-  bindTabDrag(api);
+  const stopDrag = bindTabDrag(api);
   const moveSub = api.onDidMovePanel(() => {
     releaseOrphanRenderOverlays(registeredDocuments());
   });
@@ -49,6 +53,7 @@ function startWindowShell(api: DockviewApi): () => void {
     stopRegistry();
     stopChrome();
     stopKeys();
+    stopDrag();
     moveSub.dispose();
   };
 }
@@ -73,34 +78,47 @@ export function layoutStore(): LayoutStore {
   };
 }
 
-let layoutRepairBound = false;
 
 /**
  * Own layout restore, popout reopening, and layout saves.
  * Safe to call once per Dockview instance.
  */
+export function stopWorkbench(): void {
+  stopShell?.();
+  stopShell = undefined;
+  stopListeners?.();
+  stopListeners = undefined;
+  stopLayoutRepair?.();
+  stopLayoutRepair = undefined;
+  setLayoutFromJsonPending(false);
+  suppressSave = false;
+  started = null;
+  bindDockview(null);
+}
+
 export function startWorkbench(api: DockviewApi): void {
   bindDockview(api);
   if (started === api) return;
-  stopShell?.();
+  stopWorkbench();
+  bindDockview(api);
   started = api;
   stopShell = startWindowShell(api);
-  if (!layoutRepairBound) {
-    layoutRepairBound = true;
-    onPanelRemoved((event) => {
-      if (event.component !== "agent") return;
-      const live = dockview();
-      if (live) queueMicrotask(() => recoverDefaultLayout(live));
-    });
-  }
+  stopLayoutRepair = onPanelRemoved((event) => {
+    if (event.component !== "agent") return;
+    const live = dockview();
+    if (live) queueMicrotask(() => recoverDefaultLayout(live));
+  });
 
-  api.onDidRemovePanel((panel) => {
+  const removeSub = api.onDidRemovePanel((panel) => {
     emitPanelRemoved({ id: panel.id, component: panel.api.component });
   });
+  const activeSubs: { dispose(): void }[] = [];
   if (typeof api.onDidActiveGroupChange === "function") {
-    api.onDidActiveGroupChange((group) => {
-      noteActiveGroup(group as unknown as Parameters<typeof noteActiveGroup>[0]);
-    });
+    activeSubs.push(
+      api.onDidActiveGroupChange((group) => {
+        noteActiveGroup(group as unknown as Parameters<typeof noteActiveGroup>[0]);
+      }),
+    );
   }
   noteActiveGroup(api.activeGroup as unknown as Parameters<typeof noteActiveGroup>[0]);
 
@@ -121,7 +139,8 @@ export function startWorkbench(api: DockviewApi): void {
         stagePopoutBounds(prepared.bounds);
         const restoredGroups = (data as { popoutGroups?: unknown }).popoutGroups;
         const pendingPopouts = Array.isArray(restoredGroups) ? restoredGroups.length : 0;
-        restoring = true;
+        setLayoutFromJsonPending(true);
+        suppressSave = true;
         const finishRestore = () => {
           recoverDefaultLayout(api);
           noteLayoutSettled();
@@ -134,8 +153,8 @@ export function startWorkbench(api: DockviewApi): void {
           popoutTimer = undefined;
           for (const sub of popoutWatch.splice(0)) sub.dispose();
           stagePopoutBounds(new Map());
-          if (!restoring) return;
-          restoring = false;
+          suppressSave = false;
+          setLayoutFromJsonPending(false);
         };
         const markSettled = () => {
           waiting -= 1;
@@ -159,29 +178,34 @@ export function startWorkbench(api: DockviewApi): void {
         const disposable = api.onDidLayoutFromJSON(() => {
           if (safetyTimer !== undefined) clearTimeout(safetyTimer);
           disposable.dispose();
+          // fromJSON applied — business may open panels; keep save suppressed
+          // until popouts settle.
+          setLayoutFromJsonPending(false);
           try {
             finishRestore();
           } catch {
             recoverDefaultLayout(api);
             noteLayoutSettled();
           }
-          if (waiting <= 0) restoring = false;
+          if (waiting <= 0) suppressSave = false;
         });
         api.fromJSON(data as never);
         safetyTimer = setTimeout(() => {
-          if (!restoring) return;
+          if (!suppressSave) return;
           disposable.dispose();
+          setLayoutFromJsonPending(false);
           try {
             finishRestore();
           } catch {
             recoverDefaultLayout(api);
             noteLayoutSettled();
           }
-          if (waiting <= 0) restoring = false;
+          if (waiting <= 0) suppressSave = false;
         }, 2000);
       }
     } catch {
-      restoring = false;
+      setLayoutFromJsonPending(false);
+      suppressSave = false;
       recoverDefaultLayout(api);
       noteLayoutSettled();
     }
@@ -190,10 +214,10 @@ export function startWorkbench(api: DockviewApi): void {
     noteLayoutSettled();
   }
 
-  let saveTimer: ReturnType<typeof setTimeout>;
-  api.onDidLayoutChange(() => {
-    if (restoring) return;
-    clearTimeout(saveTimer);
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  const layoutSub = api.onDidLayoutChange(() => {
+    if (suppressSave) return;
+    if (saveTimer !== undefined) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       store.save(
         JSON.stringify({
@@ -203,4 +227,10 @@ export function startWorkbench(api: DockviewApi): void {
       );
     }, 500);
   });
+  stopListeners = () => {
+    removeSub.dispose();
+    for (const sub of activeSubs) sub.dispose();
+    layoutSub.dispose();
+    if (saveTimer !== undefined) clearTimeout(saveTimer);
+  };
 }

@@ -95,9 +95,9 @@ function aimsAtMainCenter(point: { screenX: number; screenY: number }): boolean 
  * The popout waits until the drag session's own cleanup timer has run.
  * Opening the window from `dragend` itself leaves the empty popout page up.
  */
-export function bindTabDrag(api: DockviewApi): void {
+export function bindTabDrag(api: DockviewApi): () => void {
   bindDockview(api);
-  api.onWillShowOverlay((event) => {
+  const overlaySub = api.onWillShowOverlay((event) => {
     const data = event.getData();
     const sourcePanel = data?.panelId ? api.getPanel(data.panelId) : undefined;
     const source = dragSourceLocation(data, api);
@@ -171,5 +171,9 @@ export function bindTabDrag(api: DockviewApi): void {
     view.addEventListener("pointercancel", finish);
   };
 
-  api.onWillDragPanel((event) => arm(event.nativeEvent, event.panel));
+  const dragSub = api.onWillDragPanel((event) => arm(event.nativeEvent, event.panel));
+  return () => {
+    overlaySub.dispose();
+    dragSub.dispose();
+  };
 }

@@ -2,6 +2,7 @@ import type { DockviewApi, DockviewGroupPanel } from "dockview-react";
 
 import { dockIdFromPopoutUrl, popoutPageUrl } from "../config/popoutUrl";
 import { dockview } from "./host";
+import { isLayoutRestoring } from "./restoreGate";
 import { getWindows } from "./windows";
 import { kindForComponent } from "./kinds";
 import { groupRole, isUsableCenter } from "./model";
@@ -116,6 +117,9 @@ export function openPanel(request: OpenPanelRequest, api?: DockviewApi | null): 
     existing.api.setActive();
     return;
   }
+  // Edges recover via addPanel directly; business opens go through here and
+  // must not race fromJSON (a panel added mid-restore is wiped).
+  if (isLayoutRestoring()) return;
   const place = placementFor(request.component, live, request.preferredGroupId);
   if (!place || !tabComponent) return;
   live.addPanel({

@@ -22,9 +22,9 @@ import {
   type MdEditorView,
 } from "../utils/wysiwygMarkdown";
 import { remapPathPrefix } from "../utils/path";
-import { closingFlags } from "../dockview/config/sharedFlags";
 import { closePanel, openPanel, revealPanel } from "../dockview/workbench/commands";
 import { onPanelRemoved } from "../dockview/workbench/events";
+import { hasPanel } from "../dockview/workbench/queries";
 import { attachSiblingStores } from "./connectionStore";
 
 /** Tab id for an external preview. The chip stores the path; the bytes live on the tab. */
@@ -277,6 +277,29 @@ async function loadReadable(
   }
 }
 
+/**
+ * Drop editor content for a panel that is already gone from Dockview.
+ * Never calls closePanel — layout close is Dockview-only; this only follows.
+ */
+function forgetEditorContent(path: string): void {
+  const leaving = useEditorStore.getState().tabs.find((tab) => tab.path === path);
+  if (!leaving) return;
+  if (leaving.previewUrl) URL.revokeObjectURL(leaving.previewUrl);
+  useEditorStore.setState((s) => {
+    const idx = s.tabs.findIndex((t) => t.path === path);
+    if (idx < 0) return s;
+    const nextTabs = s.tabs.filter((t) => t.path !== path);
+    let nextActive = s.activePath;
+    if (s.activePath === path) {
+      const neighbor = nextTabs[idx] ?? nextTabs[idx - 1];
+      nextActive = neighbor?.path ?? null;
+    }
+    const mdViewByPath = { ...s.mdViewByPath };
+    delete mdViewByPath[path];
+    return { tabs: nextTabs, activePath: nextActive, mdViewByPath };
+  });
+}
+
 function openEditorPanel(path: string): void {
   openPanel({
     id: path,
@@ -375,30 +398,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   closeTab: (path) => {
-    const leaving = get().tabs.find((tab) => tab.path === path);
-    if (leaving?.previewUrl) URL.revokeObjectURL(leaving.previewUrl);
-    closingFlags.closingFromStore = true;
-    try {
+    // Layout truth is Dockview. Close the panel; onPanelRemoved drops content.
+    // Orphan content (no panel) is dropped here so callers still clear the store.
+    if (hasPanel(path)) {
       closePanel(path);
-    } finally {
-      closingFlags.closingFromStore = false;
+      return;
     }
-
-    set((s) => {
-      const idx = s.tabs.findIndex((t) => t.path === path);
-      if (idx < 0) return s;
-
-      const nextTabs = s.tabs.filter((t) => t.path !== path);
-      let nextActive = s.activePath;
-      if (s.activePath === path) {
-        const neighbor = nextTabs[idx] ?? nextTabs[idx - 1];
-        nextActive = neighbor?.path ?? null;
-      }
-
-      const mdViewByPath = { ...s.mdViewByPath };
-      delete mdViewByPath[path];
-      return { tabs: nextTabs, activePath: nextActive, mdViewByPath };
-    });
+    forgetEditorContent(path);
   },
 
   setActive: (path) => {
@@ -606,12 +612,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       const oldPath = tab.path;
       const newPath = remapPathPrefix(oldPath, from, to);
       if (oldPath === newPath) continue;
-      closingFlags.closingFromStore = true;
-      try {
-        closePanel(oldPath);
-      } finally {
-        closingFlags.closingFromStore = false;
-      }
+      // Remap already rewrote store paths. Closing the old panel must not
+      // wipe content (forgetEditorContent keys on the old id and finds nothing).
+      closePanel(oldPath);
       openEditorPanel(newPath);
     }
   },
@@ -683,8 +686,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 }));
 
 onPanelRemoved((event) => {
-  if (event.component !== "editor" || closingFlags.closingFromStore) return;
-  useEditorStore.getState().closeTab(event.id);
+  if (event.component !== "editor") return;
+  forgetEditorContent(event.id);
 });
 
 attachSiblingStores({ editor: useEditorStore });

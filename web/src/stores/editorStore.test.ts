@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DockviewApi } from "dockview-react";
 
 import { bindDockview } from "../dockview/workbench/host";
+import { emitPanelRemoved } from "../dockview/workbench/events";
 
 import { WorkspaceRequestError } from "../lib/workspaceError";
 import { useEditorStore } from "./editorStore";
@@ -414,6 +415,82 @@ describe("editor panel placement", () => {
       }),
     );
     bindDockview(null);
+  });
+});
+
+
+describe("layout SSOT close", () => {
+  it("drops orphan tab content without a dock panel", () => {
+    const path = "src/orphan.ts";
+    useEditorStore.setState({
+      tabs: [
+        {
+          path,
+          content: "x",
+          savedContent: "x",
+          dirty: false,
+          language: "typescript",
+          loading: false,
+          error: null,
+          errorRetryable: false,
+          kind: "text" as const,
+          diskRevision: 0,
+        },
+      ],
+      activePath: path,
+      mdViewByPath: { [path]: "source" },
+    });
+    bindDockview(null);
+    useEditorStore.getState().closeTab(path);
+    expect(useEditorStore.getState().tabs).toEqual([]);
+    expect(useEditorStore.getState().activePath).toBeNull();
+    expect(useEditorStore.getState().mdViewByPath[path]).toBeUndefined();
+  });
+
+  it("closeTab only closes Dockview; onPanelRemoved drops content", () => {
+    const path = "src/a.ts";
+    let panelAlive = true;
+    const close = vi.fn(() => {
+      panelAlive = false;
+      emitPanelRemoved({ id: path, component: "editor" });
+    });
+    const api = {
+      groups: [],
+      getPanel: (id: string) =>
+        panelAlive && id === path
+          ? { id: path, api: { component: "editor", close, setActive: vi.fn() } }
+          : undefined,
+      addPanel: vi.fn(),
+      addGroup: vi.fn(() => ({ id: "new" })),
+    } as unknown as DockviewApi;
+    bindDockview(api);
+    try {
+      useEditorStore.setState({
+        tabs: [
+          {
+            path,
+            content: "body",
+            savedContent: "body",
+            dirty: false,
+            language: "typescript",
+            loading: false,
+            error: null,
+            errorRetryable: false,
+            kind: "text" as const,
+            diskRevision: 0,
+          },
+        ],
+        activePath: path,
+      });
+      useEditorStore.getState().closeTab(path);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(useEditorStore.getState().tabs).toEqual([]);
+      // Second close must not loop: panel already gone, content already dropped.
+      useEditorStore.getState().closeTab(path);
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      bindDockview(null);
+    }
   });
 });
 

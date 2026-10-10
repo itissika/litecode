@@ -64,5 +64,6 @@ export {
   revealEdgePanel,
 } from "./edges";
 export type { LayoutStore } from "./lifecycle";
-export { LAYOUT_SCHEMA_VERSION, layoutStore, startWorkbench } from "./lifecycle";
+export { isLayoutRestoring } from "./restoreGate";
+export { LAYOUT_SCHEMA_VERSION, layoutStore, startWorkbench, stopWorkbench } from "./lifecycle";
 export { ensureMainCenterGroup, placementFor, resetPlacementForTests } from "./placement";
