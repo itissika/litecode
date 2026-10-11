@@ -1,0 +1,12 @@
+{"ts":"2026-10-11T21:06:00+08:00","kind":"decision","source":"andy->gm","summary":"提拔总经理；只与总经理 1:1；群内仅 Andy 公告；工作包须可衡量产物与证据链；阻断点仅 product/architecture","evidence":["1:1 chat t36u"]}
+{"ts":"2026-10-11T21:06:00+08:00","kind":"decision","source":"gm","summary":"产品域七块：harness-core / tools-permission / ide-substrate / knowledge / model-config / client-ux / release-desktop；人员：现有 Session/Tools/前端 active；Runtime/上下文/IDE 基座 standby 待装填","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-11T13:33:01.903Z","kind":"decision","source":"andy","summary":"team-ops domain required; tool-enforced boundaries; cold start no first message until Andy launch","evidence":["t37u"]}
+{"ts":"2026-10-11T13:33:01.973Z","kind":"decision","source":"gm","summary":"Added team-ops, demand board, tools v1, WP-001/002 breakpoints, cold drafts; no CreateAgent yet","evidence":[".litecode/ops/artifacts/WP-001.md"]}
+{"ts":"2026-10-11T13:42:23.159Z","kind":"decision","source":"gm","summary":"team-ops bots created; tools v3 version header + board.md; no first message","evidence":["t38u"]}
+{"ts":"2026-10-11T13:46:02.899Z","kind":"decision","source":"gm","summary":"Delegated tools to steward; created team-ops channel + tick routine; kicked WP-003 align","evidence":["WP-003"]}
+{"ts":"2026-10-11T13:48:10.239Z","kind":"decision","source":"demand_officer","summary":"D-001 冷启动验收炼成可调度 acceptance，status=refined；admit-rules 已落盘","evidence":[".litecode/ops/demand/board.json",".litecode/ops/demand/admit-rules.md",".litecode/ops/artifacts/WP-003.md"]}
+{"ts":"2026-10-11T13:49:08.637Z","kind":"decision","source":"tools_steward","summary":"WP-003: tools_steward takeover; tools_version=4 confirmed; board backlog filled; demo traces recorded","evidence":[]}
+{"ts":"2026-10-11T13:49:56.552Z","kind":"decision","source":"gm","summary":"WP-003 align verified; assigned steward v5 cleanup of board gaps","evidence":[]}
+{"ts":"2026-10-11T13:50:12.901Z","kind":"decision","source":"gm","summary":"WP-003 align verified; assigned steward v5 cleanup","evidence":[]}
+{"ts":"2026-10-11T13:50:33.507Z","kind":"decision","source":"gm","summary":"WP-003 align verified; steward v5 cleanup assigned","evidence":[]}
+{"ts":"2026-10-11T13:56:40.174Z","kind":"decision","source":"gm","summary":"Andy corrective: tasks need full lifecycle via tools; assigned steward WP board + close WP-003 via gate","evidence":[]}

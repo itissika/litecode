@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "tools_version": 4,
+  "updated_at": "2026-10-11T13:45:45.667Z",
+  "hot_reload": true,
+  "tools": [
+    {
+      "id": "ops.validate_board",
+      "version": 4,
+      "purpose": "校验 board.json / demand board 符合 schema 与跨引用规则",
+      "invoke": "node .litecode/ops/tools/validate_all.mjs",
+      "required_for": [
+        "WP done",
+        "pipeline advance"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.append_log",
+      "version": 4,
+      "purpose": "append-only 写入怀疑/错误/决策（禁止改写历史行）",
+      "invoke": "node .litecode/ops/tools/append_log.mjs --kind <kind> --source <id> --summary <text> [--evidence <path>]",
+      "required_for": [
+        "任何状态变更后的审计"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.wp_gate",
+      "version": 4,
+      "purpose": "检查工作包是否可推进：依赖、产物、工具调用痕迹、阻断规则",
+      "invoke": "node .litecode/ops/tools/wp_gate.mjs --id WP-xxx --to <status>",
+      "required_for": [
+        "WP status 变更"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.tick",
+      "version": 4,
+      "purpose": "事件/tick：扫描需求板与 WP，输出本轮可开工清单与断点",
+      "invoke": "node .litecode/ops/tools/tick.mjs",
+      "required_for": [
+        "总经理/team-ops 每轮开工前"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.tools_version",
+      "version": 4,
+      "purpose": "打印 tools_version；热更后必须 ++ 并被调用方感知",
+      "invoke": "node .litecode/ops/tools/tools_version.mjs",
+      "required_for": [
+        "任何工具调用前"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.board",
+      "version": 3,
+      "purpose": "打开工具聚合面板（最近更新/教程/版本）",
+      "invoke": "type .litecode/ops/tools/board.md  # or Read",
+      "required_for": [
+        "onboarding",
+        "热更后同步认知"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.emit_event",
+      "version": 1,
+      "purpose": "写入事件总线 inbox",
+      "invoke": "node .litecode/ops/tools/emit_event.mjs --type --source --summary [--wp]",
+      "required_for": [
+        "跨角色通知"
+      ]
+    },
+    {
+      "id": "ops.ack_event",
+      "version": 1,
+      "purpose": "确认已消费事件",
+      "invoke": "node .litecode/ops/tools/ack_event.mjs --id E-... --by <agent_id>",
+      "required_for": [
+        "事件闭环"
+      ]
+    }
+  ],
+  "board": ".litecode/ops/tools/board.md",
+  "owner": "tools_steward",
+  "gm_policy": "GM must not edit tool scripts; request changes via demand board / events; GM may run tick as fallback"
+}

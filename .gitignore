@@ -1,7 +1,8 @@
 # Ignore build artifacts
 target
 target-pl-verify/
-.litecode/
+.litecode/*
+!.litecode/ops/
 .fastembed_cache
 .vscode
 node_modules

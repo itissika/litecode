@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-10-11T13:56:40.104Z",
+  "inbox": [
+    {
+      "id": "E-1791726345823",
+      "ts": "2026-10-11T13:45:45.823Z",
+      "type": "team_ops.align",
+      "source": "gm",
+      "summary": "工具维护移交工具集管家；启动管理团队冷启动对齐；GM tick 兜底",
+      "wp": "WP-003",
+      "acked": [
+        "demand_officer",
+        "tools_steward"
+      ]
+    },
+    {
+      "id": "E-1791726596625",
+      "ts": "2026-10-11T13:49:56.625Z",
+      "type": "team_ops.tools_cleanup",
+      "source": "gm",
+      "summary": "steward: fix board gaps emit/ack listing, ops.board version, stdout_header; bump tools_version",
+      "wp": "WP-003",
+      "acked": []
+    },
+    {
+      "id": "E-1791726612994",
+      "ts": "2026-10-11T13:50:12.994Z",
+      "type": "team_ops.tools_cleanup",
+      "source": "gm",
+      "summary": "steward: fix board gaps; bump tools_version",
+      "wp": "WP-003",
+      "acked": []
+    },
+    {
+      "id": "E-1791726633576",
+      "ts": "2026-10-11T13:50:33.576Z",
+      "type": "team_ops.tools_cleanup",
+      "source": "gm",
+      "summary": "steward: fix board gaps; bump tools_version",
+      "wp": "WP-003",
+      "acked": []
+    },
+    {
+      "id": "E-1791727000104",
+      "ts": "2026-10-11T13:56:40.104Z",
+      "type": "team_ops.corrective",
+      "source": "gm",
+      "summary": "WP status must appear on tools board; team-ops must close WPs via wp_gate; no verbal-only done",
+      "wp": "WP-003",
+      "acked": []
+    }
+  ],
+  "note": "append-only events via tools/emit_event.mjs; consumers ack via tools/ack_event.mjs"
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "litecode-ops-demand.schema.json",
+  "title": "LiteCode Demand Board",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "updated_at", "demands"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "updated_at": { "type": "string" },
+    "demands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "domain", "acceptance", "status", "source"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^D-[0-9]{3,}$" },
+          "title": { "type": "string", "minLength": 1 },
+          "domain": { "type": "string" },
+          "acceptance": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "status": { "enum": ["intake", "refined", "scheduled", "in_pipeline", "done", "rejected"] },
+          "source": { "type": "string" },
+          "notes": { "type": "string" }
+        }
+      }
+    }
+  }
+}

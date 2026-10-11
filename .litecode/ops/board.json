@@ -1,0 +1,364 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-10-11T13:56:40.240Z",
+  "domains": [
+    {
+      "id": "team-ops",
+      "name": "团队管理",
+      "goal": "需求板+强制工具集+事件/tick；工具维护归工具集管家；总经理 tick 兜底与跨域断点",
+      "baseline": ".litecode/ops/{board,demand,tools} + agents_cold drafts",
+      "owner_agent": "gm"
+    },
+    {
+      "id": "harness-core",
+      "name": "编排与会话",
+      "goal": "回合可预测、会话可恢复、上下文可审计",
+      "baseline": "knowledge/contracts/{turn-lifecycle,session-model,context-view,subagent-lifecycle}.md + framework/{session,context}.md",
+      "owner_agent": "gm"
+    },
+    {
+      "id": "tools-permission",
+      "name": "工具与权限",
+      "goal": "工具调用边界清晰、授权可复现、MCP/自定义工具可测",
+      "baseline": "knowledge/contracts/tool-*.md + framework/tools.md + featured-tools.md",
+      "owner_agent": "tools"
+    },
+    {
+      "id": "ide-substrate",
+      "name": "IDE 基座",
+      "goal": "工作区、LSP、索引与检索在共享底盘上稳定可用",
+      "baseline": "knowledge/harness/workspace-shared-substrate.md + contracts/{engine-lifecycle,retrieval-contract}.md",
+      "owner_agent": null
+    },
+    {
+      "id": "knowledge",
+      "name": "知识库",
+      "goal": "引用解析与知识状态前后端一致、可契约测试",
+      "baseline": "docs/knowledge-references.md + knowledge corpus rules",
+      "owner_agent": null
+    },
+    {
+      "id": "model-config",
+      "name": "模型与配置",
+      "goal": "provider/目录/配置提交正确且可回滚",
+      "baseline": "knowledge/framework/config.md + contracts/config-commit.md",
+      "owner_agent": null
+    },
+    {
+      "id": "client-ux",
+      "name": "客户端界面",
+      "goal": "web/desktop 交互与投影契约一致",
+      "baseline": "knowledge/{framework/ux,design/ux-design,ux/ux-interaction,contracts/client-projection}.md",
+      "owner_agent": "frontend"
+    },
+    {
+      "id": "release-desktop",
+      "name": "发布与桌面壳",
+      "goal": "瘦包、组件分发、签名发布链路可重复",
+      "baseline": "desktop README + release workflows; no personal info in repo",
+      "owner_agent": "frontend"
+    }
+  ],
+  "agents": [
+    {
+      "id": "gm",
+      "name": "LiteCode 总经理",
+      "place": "/workspace/litecode/ （只经 Andy 1:1；群内仅公告）",
+      "scope": [
+        "拆解产品域",
+        "任务基线",
+        "装填/解雇",
+        "ops 面板",
+        "跨域审核"
+      ],
+      "tools": [
+        "云端电脑读写 /workspace/litecode（工作不得溢出仓库路径）",
+        "SendToAgent",
+        "知识库只读(enabled 不改)",
+        "Git 只读与经 Andy 确认的提交"
+      ],
+      "accept_tests": [
+        "工作包有可检测产物与证据链",
+        "面板 schema 校验通过",
+        "阻断点仅 product/architecture"
+      ],
+      "reject_tests": [
+        "在云端建 Andy 相关状态",
+        "群内讨论",
+        "擅自改 enabled 知识节点",
+        "无证据结论"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "session",
+      "name": "Session",
+      "place": "/workspace/litecode/src/{session,client_protocol,serve}",
+      "scope": [
+        "会话持久化",
+        "客户端协议",
+        "serve 入口"
+      ],
+      "tools": [
+        "本机读写上述路径",
+        "cargo test 相关目标",
+        "不 commit/push 除非 Andy/总经理确认"
+      ],
+      "accept_tests": [
+        "相关 cargo/集成测试可复现",
+        "产物含结论+证据路径"
+      ],
+      "reject_tests": [
+        "改 tools/permission/mcp",
+        "改 web/desktop 大块 UI",
+        "改 enabled 知识节点"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "tools",
+      "name": "Tools",
+      "place": "/workspace/litecode/src/{tool,tools,permission,mcp,hook}",
+      "scope": [
+        "工具合约",
+        "内置工具",
+        "权限",
+        "MCP",
+        "hook"
+      ],
+      "tools": [
+        "本机读写上述路径",
+        "cargo test tools/permission",
+        "不 commit/push 除非确认"
+      ],
+      "accept_tests": [
+        "工具管线/权限测试可复现",
+        "产物含结论+证据"
+      ],
+      "reject_tests": [
+        "改 session 持久化层",
+        "改 engines/lsp",
+        "改 enabled 知识节点"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "frontend",
+      "name": "前端",
+      "place": "/workspace/litecode/{web,desktop}",
+      "scope": [
+        "Web UI",
+        "Electron 壳",
+        "暂兼发布脚本/组件下载"
+      ],
+      "tools": [
+        "本机读写 web/desktop/scripts 相关",
+        "npm/vitest",
+        "不 commit/push 除非确认"
+      ],
+      "accept_tests": [
+        "desktop/web 测试相关目标通过或标明已知失败",
+        "UI 改动小而可逆"
+      ],
+      "reject_tests": [
+        "改 Rust 内核大块",
+        "擅自改 enabled 知识节点"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "runtime",
+      "name": "Runtime",
+      "place": "/workspace/litecode/src/{runtime,agent,types}（兼 telemetry/cli/optional）",
+      "scope": [
+        "编排层",
+        "agent 核心循环",
+        "类型"
+      ],
+      "tools": [
+        "本机读写上述路径",
+        "cargo test"
+      ],
+      "accept_tests": [
+        "编排相关测试可复现",
+        "产物含结论+证据"
+      ],
+      "reject_tests": [
+        "改前端 UI",
+        "改 tools 合约未经 handoff"
+      ],
+      "status": "standby"
+    },
+    {
+      "id": "context",
+      "name": "上下文",
+      "place": "/workspace/litecode/src/{context_pipeline,reminder}",
+      "scope": [
+        "上下文装配",
+        "回合提醒"
+      ],
+      "tools": [
+        "本机读写上述路径",
+        "cargo test"
+      ],
+      "accept_tests": [
+        "上下文/reminder 测试可复现",
+        "产物含结论+证据"
+      ],
+      "reject_tests": [
+        "改 session 存储 schema 未经 handoff"
+      ],
+      "status": "standby"
+    },
+    {
+      "id": "ide",
+      "name": "IDE 基座",
+      "place": "/workspace/litecode/src/{workspace,terminal,lsp,engines}",
+      "scope": [
+        "工作区",
+        "终端",
+        "LSP",
+        "检索索引"
+      ],
+      "tools": [
+        "本机读写上述路径",
+        "cargo test"
+      ],
+      "accept_tests": [
+        "LSP/workspace/engines 相关测试可复现",
+        "产物含结论+证据"
+      ],
+      "reject_tests": [
+        "改 web 布局大块",
+        "改 session 协议"
+      ],
+      "status": "standby"
+    },
+    {
+      "id": "demand_officer",
+      "name": "需求官",
+      "place": "/workspace/litecode/.litecode/ops/demand",
+      "scope": [
+        "需求板",
+        "验收标准炼制",
+        "拒绝无验收需求"
+      ],
+      "tools": [
+        "ops.tick",
+        "ops.validate_board",
+        "ops.append_log"
+      ],
+      "accept_tests": [
+        "需求含 acceptance[]",
+        "validate 通过"
+      ],
+      "reject_tests": [
+        "直接改产品代码",
+        "跳过验收进管线"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "tools_steward",
+      "name": "工具集管家",
+      "place": "/workspace/litecode/.litecode/ops/tools",
+      "scope": [
+        "强制工具集",
+        "无损热更",
+        "tools_version++"
+      ],
+      "tools": [
+        "ops.tools_version",
+        "ops.validate_board",
+        "ops.wp_gate"
+      ],
+      "accept_tests": [
+        "热更后 version 递增",
+        "gate 行为可测"
+      ],
+      "reject_tests": [
+        "破坏性原地改工具契约",
+        "去掉 done 门禁"
+      ],
+      "status": "active"
+    }
+  ],
+  "work_packages": [
+    {
+      "id": "WP-001",
+      "domain": "team-ops",
+      "title": "冻结团队框架 v0：域+面板+工具门禁+冷启动稿",
+      "result": "ops 可校验；工具 version=1；冷启动 md 齐全；无对外首条消息",
+      "done_when": [
+        "validate_all 通过",
+        "registry tools_version>=1",
+        "agents_cold 五份稿存在",
+        "Andy 书面认可前不 CreateAgent/不 SendToAgent 业务消息"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-001.md",
+      "progress": "BREAK: team-ops bots 已建；工具 v4 事件总线已立；待管理团队冷启动对齐产物齐套后交 Andy 审；仍禁产品 bot/群启动"
+    },
+    {
+      "id": "WP-002",
+      "domain": "team-ops",
+      "title": "（断点后）装填 Runtime/上下文/IDE/需求官/工具集管家",
+      "result": "bot 已建且介绍与 cold 稿一致；仍不发首条直至群内统一启动",
+      "done_when": [
+        "CreateAgent 完成",
+        "UpdateAgent 现有三人路径与边界",
+        "board agents status 正确",
+        "仍无业务首条消息"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "backlog",
+      "depends_on": [
+        "WP-001"
+      ],
+      "blocker": null,
+      "handoff_path": ".litecode/ops/handoffs/WP-001-to-WP-002.md",
+      "artifact_path": null,
+      "progress": "BREAK: 依赖 WP-001 通过；群启动令未下前 status 不得到 done"
+    },
+    {
+      "id": "WP-003",
+      "domain": "team-ops",
+      "title": "管理团队冷启动对齐（事件+tick+职责移交）",
+      "result": "需求官与工具集管家确认职责；事件/tick 可用；工具维护权在管家；齐套证据交 WP-001 审查",
+      "done_when": [
+        "双方书面确认（log/artifact）",
+        "emit/ack/tick 演示痕迹在 tool_traces",
+        "board.md 反映 v4 与 owner=tools_steward",
+        "仍无产品 bot 消息"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-003.md",
+      "progress": "纠偏中：工具板挂 WP 状态 + v5 待发掘 + wp_gate to review"
+    }
+  ],
+  "pipelines": [
+    {
+      "id": "P-team-ops-bootstrap",
+      "name": "团队框架冷启动",
+      "owner": "gm",
+      "reviewer": "andy",
+      "work_packages": [
+        "WP-001",
+        "WP-002",
+        "WP-003"
+      ],
+      "status": "running"
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "litecode-ops-board.schema.json",
+  "title": "LiteCode Ops Board",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "updated_at", "domains", "agents", "work_packages", "pipelines"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "domains": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "goal", "baseline"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+          "name": { "type": "string", "minLength": 1 },
+          "goal": { "type": "string", "minLength": 1 },
+          "baseline": { "type": "string", "minLength": 1 },
+          "owner_agent": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "agents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "place", "scope", "tools", "accept_tests", "reject_tests", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "place": { "type": "string" },
+          "scope": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "tools": { "type": "array", "items": { "type": "string" } },
+          "accept_tests": { "type": "array", "items": { "type": "string" } },
+          "reject_tests": { "type": "array", "items": { "type": "string" } },
+          "status": { "enum": ["active", "standby", "fired"] }
+        }
+      }
+    },
+    "work_packages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "domain", "title", "result", "done_when", "owner", "reviewer", "status", "depends_on", "blocker"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^WP-[0-9]{3,}$" },
+          "domain": { "type": "string" },
+          "title": { "type": "string" },
+          "result": { "type": "string" },
+          "done_when": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "owner": { "type": ["string", "null"] },
+          "reviewer": { "type": ["string", "null"] },
+          "status": { "enum": ["backlog", "ready", "in_progress", "review", "done", "blocked", "cancelled"] },
+          "depends_on": { "type": "array", "items": { "type": "string" } },
+          "blocker": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["kind", "note"],
+            "properties": {
+              "kind": { "enum": ["product", "architecture", "other"] },
+              "note": { "type": "string" }
+            }
+          },
+          "handoff_path": { "type": ["string", "null"] },
+          "artifact_path": { "type": ["string", "null"] },
+          "progress": { "type": "string" }
+        }
+      }
+    },
+    "pipelines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "owner", "reviewer", "work_packages", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "owner": { "type": "string" },
+          "reviewer": { "type": "string" },
+          "work_packages": { "type": "array", "items": { "type": "string" } },
+          "status": { "enum": ["idle", "running", "blocked", "done"] }
+        }
+      }
+    }
+  }
+}
