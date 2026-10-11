@@ -1,7 +1,7 @@
 # 需求升管线 / 拒绝规则（需求官）
 
 路径：`.litecode/ops/demand/`
-更新：2026-10-11（WP-003）
+更新：2026-10-11（WP-003；云端工作区契约，Andy 已批准）
 
 ## 可升管线（intake → refined → scheduled → in_pipeline）
 
@@ -11,7 +11,7 @@
 2. **可调度验收**：`acceptance[]` 至少 1 条，且每条能用路径 / 命令输出 / 面板状态客观判定（是/否）。
 3. **来源可追溯**：`source` 写明 Andy 消息、WP、或事件 id。
 4. **不踩断点**：不要求在 Andy 审过 + 群启动令前建产品 bot、发产品首条、或开产品域并行 WP。
-5. **本机边界**：产物落本机 litecode 树；不要求在云端写 Andy 相关状态；开源仓不含个人信息。
+5. **工作区边界**：产物只落云端 `/workspace/litecode`（分支 `ops/team-framework`，不碰 main）；不在 Andy 本机或仓库外读写；开源仓不含个人信息。
 
 炼制完成（验收可调度）→ `status=refined`；总经理排入 WP 后 → `scheduled` / `in_pipeline`。
 

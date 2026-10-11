@@ -11,3 +11,4 @@
 {"ts":"2026-10-11T13:50:33.507Z","kind":"decision","source":"gm","summary":"WP-003 align verified; steward v5 cleanup assigned","evidence":[]}
 {"ts":"2026-10-11T13:56:40.174Z","kind":"decision","source":"gm","summary":"Andy corrective: tasks need full lifecycle via tools; assigned steward WP board + close WP-003 via gate","evidence":[]}
 {"ts":"2026-10-11T14:08:29.645Z","kind":"decision","source":"andy","summary":"契约变更：全部工作迁至云端电脑 /workspace/litecode，工作不得溢出仓库路径；结果以独立分支公开提交交 Andy 评估，认可后由 Andy 合并 main","evidence":[".gitignore",".litecode/ops/validate.mjs"]}
+{"ts":"2026-10-11T14:16:52.046Z","kind":"decision","source":"demand_officer","summary":"云端路径复核：D-001 refined 仍有效；admit-rules 边界条改为云端工作区契约","evidence":[".litecode/ops/demand/board.json",".litecode/ops/demand/admit-rules.md"]}
