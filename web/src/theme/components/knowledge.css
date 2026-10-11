@@ -1146,6 +1146,43 @@ button.knowledge-token-label {
   background: var(--_dk-ix-bg-selected);
 }
 
+/* Hover preview sits outside the capsule. The box size is set inline so it
+   matches the placement math in imageChipPreview. */
+.image-chip-anchor {
+  display: inline-flex;
+  max-width: 100%;
+  vertical-align: baseline;
+}
+
+.image-chip-preview {
+  position: fixed;
+  z-index: 1100;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  overflow: hidden;
+  border: 1px solid var(--_dk-line-visible);
+  border-radius: var(--radius-sm);
+  background: var(--_dk-editor);
+  box-shadow: var(--_dk-elevation);
+  pointer-events: none;
+}
+
+.image-chip-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.image-chip-preview-note {
+  color: var(--_dk-text-muted);
+  font-family: var(--_dk-font-code);
+  font-size: var(--_dk-text-xs);
+}
+
 .knowledge-token-text {
   white-space: pre-wrap;
 }

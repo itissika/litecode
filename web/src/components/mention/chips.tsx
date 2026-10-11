@@ -3,8 +3,11 @@ import { NodeViewWrapper, type ReactNodeViewProps } from "@tiptap/react";
 import { parseLineSpan } from "../../lib/knowledge/markers";
 import type { Citation } from "../../lib/knowledge/refDisplay";
 import { CitationChip } from "../CitationChip";
+import { imageChipPath } from "./imageChipHover";
+import { ImageChipPreview } from "./imageChipPreview";
 
-/** TipTap mention. Both node and file shortcodes render the same capsule. */
+/** TipTap mention. Both node and file shortcodes render the same capsule.
+ *  A whole-file image grows a hover preview beside it; the capsule stays text. */
 export function MentionChipView({
   node,
   deleteNode,
@@ -30,14 +33,23 @@ export function MentionChipView({
           lines: symbol ? null : rawLines,
         };
 
+  const chip = (
+    <CitationChip
+      citation={citation}
+      sourceId={sourceIdRef.current}
+      onRemove={deleteNode}
+      nodrag
+    />
+  );
+  const previewPath = imageChipPath(mode, node.attrs);
+
   return (
     <NodeViewWrapper as="span">
-      <CitationChip
-        citation={citation}
-        sourceId={sourceIdRef.current}
-        onRemove={deleteNode}
-        nodrag
-      />
+      {previewPath ? (
+        <ImageChipPreview path={previewPath}>{chip}</ImageChipPreview>
+      ) : (
+        chip
+      )}
     </NodeViewWrapper>
   );
 }

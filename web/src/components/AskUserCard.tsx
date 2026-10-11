@@ -256,7 +256,7 @@ export function AskUserCard({
             data-step={dir > 0 ? "down" : "up"}
             data-testid={`ask-user-question-${active.id}`}
             data-question-id={active.id}
-            className="permission-card__question flex flex-col gap-2"
+            className="permission-card__question flex min-w-0 flex-col gap-2"
           >
             {multi && (
               <p className="min-w-0 text-dk-base font-medium text-(--_dk-text-primary)">
@@ -264,7 +264,7 @@ export function AskUserCard({
               </p>
             )}
             <div
-              className="flex flex-col gap-2"
+              className="flex min-w-0 flex-col gap-2"
               role={qMulti ? "group" : "radiogroup"}
               aria-label={active.prompt || "Options"}
               data-testid={
@@ -280,7 +280,7 @@ export function AskUserCard({
                     aria-pressed={pickedOn}
                     data-option-id={opt.id}
                     onClick={() => pick(opt.id)}
-                    className={`${pickedOn ? "btn-primary" : "btn-ghost"} btn-sm w-full justify-start`}
+                    className={`permission-card__option ${pickedOn ? "btn-primary" : "btn-ghost"} btn-sm w-full`}
                   >
                     {opt.label}
                   </button>

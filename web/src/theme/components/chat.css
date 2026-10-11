@@ -888,6 +888,15 @@
   --perm-step-from: -6px;
 }
 
+/* ask_user choices: labels can be long; general .btn keeps nowrap for toolbars. */
+.permission-card__option {
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
+}
+
 @keyframes permission-card-step-in {
   from {
     opacity: 0;
