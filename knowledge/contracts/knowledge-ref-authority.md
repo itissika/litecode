@@ -1,8 +1,10 @@
 ```node
 node : knowledge-ref-authority
 status : pending
-domain : knowledge
 summary : 引用权威：磁盘物理状态为准；后端状态为唯一真相；前端不自判。
+x : 5598
+y : 414
+domain : knowledge
 ```
 
 **准入：** A1/A3。KR-INV-1..3：引用成立与否只看工作区磁盘真实内容；同一 HEAD 下任意入口（提醒、工具、API、消息展开）必须同结论；前端只消费后端快照。这是知识域的总不变量，其它解析/索引节点都服从它。

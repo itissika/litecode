@@ -1,8 +1,10 @@
 ```node
 node : custom-tool-hub
 status : pending
-domain : tools-permission
 summary : Custom 后台作业：begin_job 登记；完成经 mailbox 投递；取消可杀进程。
+x : 2646
+y : 378
+domain : tools-permission
 ```
 
 **准入：** A2/A5。选参后台时 `CustomToolHub` 用 job_id 登记在飞作业，完成后 `push_notice`；session 侧 `take_mailbox` / `restore_mailbox` 与 seam 提醒对接。同步路径仍走普通 Tool 结果。hub 是完成事件的唯一投递口，丢 notice 或重复投会让 agent 收不到/收到两次结算。

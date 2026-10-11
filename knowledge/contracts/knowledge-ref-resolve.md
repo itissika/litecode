@@ -1,8 +1,10 @@
 ```node
 node : knowledge-ref-resolve
 status : pending
-domain : knowledge
 summary : 引用解析：路径→可读→符号/范围→漂移，一引用一状态；错误码固定。
+x : 4500
+y : 450
+domain : knowledge
 ```
 
 **准入：** A1/A2。`resolve` / `validate_with` 按规范顺序取第一个失败状态；状态码表（missing_file、invalid_lines、symbol_drift…）由 cases.json + spec_tests 锁定。解析顺序或状态码漂移会让徽标、提醒与工具 check 对不齐。

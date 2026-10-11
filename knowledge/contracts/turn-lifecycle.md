@@ -1,12 +1,12 @@
 ```node
 node : turn-lifecycle
 status : enabled
-domain : harness-core
 summary : turn 契约：先预占再启动；seam 接收输入；取消是收尾而不是抹掉已发生的事。
-x : 504
-y : 566
+x : 522
+y : 558
 w : 398
 h : 414
+domain : harness-core
 ```
 
 **主张：** turn 是 session 上由内核持有的执行单元，不由 tab 或网络连接持有。

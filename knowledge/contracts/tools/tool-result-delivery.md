@@ -1,12 +1,12 @@
 ```node
 node : tool-result-delivery
 status : pending
-domain : tools-permission
 summary : 结果按 call_id 配对、按调用顺序回放；缺失与编码失败有兜底，持久化丢弃孤儿、启动封口尾部未回答调用。
-x : 3492
-y : 396
+x : 2394
+y : 378
 w : 416
 h : 537
+domain : tools-permission
 ```
 
 **主张：** 每个调用都以 call_id 配对拿到一条结果，并按模型给出的调用顺序交付；模型看不到悬空调用。

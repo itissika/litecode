@@ -1,8 +1,12 @@
 ```node
 node : webfetch-ssrf
 status : pending
-domain : tools-permission
 summary : webfetch 出站门：只许公网 http(s)；私网/回环/共享址拒绝。
+x : 2394
+y : 918
+w : 480
+h : 503
+domain : tools-permission
 ```
 
 **准入：** A6。`validate_public_http_url` 是 webfetch 的出站安全门：非 http(s)、缺主机、回环与私网段应拒绝。这是工具局部防护（不替代工作区沙箱/权限 floor）；门漏了会把内网当公网去拉。已知 IPv4 映射 IPv6 等缺口记 issue，不在本节点扩写。

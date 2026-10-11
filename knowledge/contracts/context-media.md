@@ -1,8 +1,10 @@
 ```node
 node : context-media
 status : pending
-domain : harness-core
 summary : 媒体只在瞬时 LLM 视图上按 show-once 降级；持久日志不被 media 适配改写。
+x : 5094
+y : 954
+domain : harness-core
 ```
 
 **准入：** A1 / A3。媒体适配只动请求副本：工具媒体仅保留最新工具批、用户媒体仅保留当前回合；更早的变为短文本占位。持久 transcript 不是写者。若回写日志，历史真源与缓存前缀都会被污染。

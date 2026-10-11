@@ -1080,6 +1080,10 @@ export function KnowledgeGraph() {
         nodesConnectable={false}
         edgesReconnectable={false}
         elementsSelectable
+        // A focused node carries a large translate. The browser then scrolls
+        // every ancestor scroll container. Canvas focus pans with setCenter.
+        nodesFocusable={false}
+        edgesFocusable={false}
         deleteKeyCode={null}
         minZoom={0.2}
         maxZoom={1.5}

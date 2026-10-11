@@ -1,12 +1,12 @@
 ```node
 node : tool-execution-context
 status : pending
-domain : tools-permission
 summary : 执行事实一次性装配成 ToolExecutionContext；提供上下文不等于每个工具都消费它。
-x : 2322
-y : 396
+x : 2124
+y : 378
 w : 480
 h : 600
+domain : tools-permission
 ```
 
 **主张：** executor 在调用前把一次调用的执行事实装配成 `ToolExecutionContext`，与模型给的 JSON 分离；管线提供上下文，是否消费由具体工具决定。

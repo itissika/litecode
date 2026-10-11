@@ -1,8 +1,10 @@
 ```node
 node : platform-knobs
 status : pending
-domain : harness-core
 summary : 平台旋钮：ThinkingSpec / ContextMode 是产品意图；厂商字面量只在目录 tiers 映射。
+x : 5094
+y : 1728
+domain : harness-core
 ```
 
 **准入：** A7。UI/session 持久化平台枚举，不把厂商 thinking 字符串写进产品路径；codec 按目录 `reasoning.tiers` 映射，压缩路径强制 `ThinkingSpec::Off`。第二套厂商字符串会绕过目录契约并污染回放。

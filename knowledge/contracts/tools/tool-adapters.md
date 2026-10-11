@@ -1,12 +1,12 @@
 ```node
 node : tool-adapters
 status : pending
-domain : tools-permission
 summary : 三种接入共用同一 Tool 输入/结果契约；差异在各家的协议适配与业务实现，不在契约本身。
-x : 4194
-y : 396
+x : 2394
+y : 702
 w : 380
 h : 500
+domain : tools-permission
 ```
 
 **主张：** 内置、Custom、MCP 共用同一 `Tool` 输入/结果契约；差异是各家的协议适配与业务实现，而不是契约。

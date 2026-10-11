@@ -1,8 +1,10 @@
 ```node
 node : ask-surface
 status : pending
-domain : client-ux
 summary : 人机协作卡统一走 PermissionCard：permission / approval / ask_user 分 kind，回执仍经 agent/permission。
+x : 4500
+y : 666
+domain : client-ux
 ```
 
 **准入：** A2 / A4。Ask 是会话级阻塞面，必须一种表面、三种 kind（Allow 系 / Approve 系 / Submit+Cancel 多题），出站仍是同一 RPC；第二套弹层会拆散投影纪律与授权回执配对。坏了会出现多会话全局闸误伤或回执对不上 request_id。

@@ -1,8 +1,10 @@
 ```node
 node : context-budget
 status : pending
-domain : harness-core
 summary : 上次请求的 provider prompt_tokens 是预算权威前缀；其后本地估算后缀；超阈触发 compact，硬顶拒绝越界。
+x : 5094
+y : 720
+domain : harness-core
 ```
 
 **准入：** A1。预算真源不能跨请求累加本地估算：有 baseline 时以 provider 计数覆盖已发送前缀，只对新增 Item 做本地估算；无 baseline 才整段估算。坏了会出现误触发 compact 或漏拦硬顶，污染准备视图与提交节奏。

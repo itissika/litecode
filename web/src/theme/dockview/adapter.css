@@ -118,6 +118,17 @@
   background-color: var(--_dk-side);
 }
 
+/* Group frames only clip. `overflow: hidden` still scrolls when a descendant
+   is focused, which shifts every panel in the group. */
+.litecode-dv-base .dv-groupview {
+  overflow: clip;
+}
+
+/* A popout has no app shell. Its document is the frame that must not scroll. */
+html.litecode-popout {
+  overflow: clip;
+}
+
 /* ═══ TAB WIDTH (fixed, content clamped) ═══ */
 /* Tab is capped at a fixed max-width; the title preview is clamped with an
    ellipsis so a long summary can't stretch the tab. */

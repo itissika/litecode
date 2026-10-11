@@ -1,8 +1,10 @@
 ```node
 node : context-compact
 status : pending
-domain : harness-core
 summary : 唯一有损历史改写只经 SessionMutation::Compact；落库后从 fold 重载工作集，失败还原内存快照且不写检查点。
+x : 5364
+y : 612
+domain : harness-core
 ```
 
 **准入：** A5 / A7。compact 是请求视图契约下唯一改写持久前缀的出口：只摘要已持久前缀，经 `SessionMutation::Compact` 落库后必须 `working_set_blocking` 重载，禁止内存拼 summary+kept；提交前失败还原快照。死亡清单钉住这条路径，第二套落库/拼装即架构违规。

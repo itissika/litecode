@@ -1,8 +1,10 @@
 ```node
 node : context-keep-recent
 status : pending
-domain : harness-core
 summary : keep-recent 切割永不拆开 tool 调用/结果对或 assistant 段；整段落在窗口内则跳过 compact。
+x : 5094
+y : 828
+domain : harness-core
 ```
 
 **准入：** A1。compact 的可丢弃前缀由 keep-recent 切割决定：切割必须保持 FunctionCall 与其 Output 同窗、assistant 段完整，且不得切到 leading summary 之前；切不出可丢弃前缀则本次不 compact。切坏会使模型侧工具配对断裂或摘要吞掉未提交语义。

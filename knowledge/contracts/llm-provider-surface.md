@@ -1,8 +1,10 @@
 ```node
 node : llm-provider-surface
 status : pending
-domain : model-config
 summary : LLM 产品面：唯一入口 complete_with_stream_events；方言关在 codec/；无平行非流式入口。
+x : 5364
+y : 1566
+domain : model-config
 ```
 
 **准入：** A1+A4。产品只看见 `LlmProvider` + `ModelRequest` + authority Items；`provider_from_model` / `codec::build` 按目录选 codec。静默丢弃 `on_event` 或另开非流式产品入口会让投影与回放分叉。坏了波及 runtime 投影、turn 绑定与客户端流。

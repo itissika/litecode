@@ -1,12 +1,12 @@
 ```node
 node : tool-output-shaping
 status : pending
-domain : tools-permission
 summary : 公共出口语言：坐标、信号、截断/落盘/媒体与 blob 还原；工具内部也在整形。
-x : 3726
-y : 396
+x : 2394
+y : 486
 w : 326
 h : 346
+domain : tools-permission
 ```
 
 **主张：** 结果文本有共同语言——坐标、信号、截断与落盘、媒体、出站还原；但工具内部也在整形。

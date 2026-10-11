@@ -1,12 +1,12 @@
 ```node
 node : tool-authorization
 status : pending
-domain : tools-permission
 summary : 授权先解析校验、再 floor 与首命中策略求值；Allow 只表示不阻塞，不等于沙箱。
-x : 2556
-y : 396
+x : 2124
+y : 486
 w : 416
 h : 471
+domain : tools-permission
 ```
 
 **主张：** `run_tool` 先解析并校验参数，再让 `authorize` 求值策略；`Allow` 只表示不阻塞，不等于被沙箱约束。

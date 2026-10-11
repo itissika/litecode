@@ -1,8 +1,10 @@
 ```node
 node : mcp-connection-pool
 status : pending
-domain : tools-permission
 summary : MCP 连接池：按 server 启停与握手；工具 schema 与 call 只经 hub，不另开旁路。
+x : 2646
+y : 486
+domain : tools-permission
 ```
 
 **准入：** A2/A4。MCP 进程生命周期（Stopped/…）与 `tools/list`、`tools/call` 都归 `McpConnectionPool`；agent 面工具只是带前缀的薄适配。池坏了会出现「目录里有 MCP、执行时无连接」或绕过握手直调。适配差异见 tool-adapters，此处只钉连接与调用出口。

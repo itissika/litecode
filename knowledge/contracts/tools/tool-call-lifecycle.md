@@ -1,12 +1,12 @@
 ```node
 node : tool-call-lifecycle
 status : pending
-domain : tools-permission
 summary : 分批执行加每调用一条结果；取消是信号，超时是止损，都不覆盖已完成结果。
-x : 3258
-y : 396
+x : 2124
+y : 918
 w : 470
 h : 531
+domain : tools-permission
 ```
 
 **主张：** 调用的生命周期以「分批执行 + 每调用一条结果」为单元；取消与超时是协作机制，不是对底层工作的保证。

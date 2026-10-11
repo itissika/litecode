@@ -1,12 +1,12 @@
 ```node
 node : tool-identity
 status : pending
-domain : tools-permission
 summary : 工具身份是 name，一次调用身份是 call_id；name 可以重名，call_id 只负责结果配对。
-x : 3960
-y : 396
+x : 2394
+y : 594
 w : 362
 h : 421
+domain : tools-permission
 ```
 
 **主张：** 工具在管线里的身份是 `Tool::name()`，一次调用的身份是 `call_id`；两者不能互相顶替——工具重名时 call_id 只保证结果配对，不回答“到底跑了哪一份”。

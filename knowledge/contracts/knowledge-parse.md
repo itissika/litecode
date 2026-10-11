@@ -1,8 +1,10 @@
 ```node
 node : knowledge-parse
 status : pending
-domain : knowledge
 summary : 节点解析：声明块定键与 status；文件名主干必须等于键。
+x : 4500
+y : 558
+domain : knowledge
 ```
 
 **准入：** A1。`parse_knowledge_markdown` 从 node 声明围栏读出键/status/画布字段；键不满足规则或 status 非法要报声明错误；文件名主干 ≠ 键报 filename_mismatch。解析错了，后面的引用与索引都会建在错误身份上。

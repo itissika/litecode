@@ -1,8 +1,12 @@
 ```node
 node : desktop-shell
-status : pending
-domain : release-desktop
+status : enabled
 summary : Electron 壳托管 sidecar 与远程能力；壳不发明产品真源，只解析路径、下载组件、转发 IPC。
+x : 1728
+y : 360
+w : 480
+h : 383
+domain : release-desktop
 ```
 
 **准入：** A3。真源在 sidecar（litecode.exe）与工作区；桌面壳负责进程寿命、IPC、Open Remote、组件落盘到 `%LOCALAPPDATA%/litecode/bundles`。壳若再持一份布局/会话/模型状态，会与 web 投影和 sidecar 抢权威。

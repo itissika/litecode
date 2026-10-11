@@ -1,12 +1,12 @@
 ```node
 node : tool-call-contract
 status : enabled
-domain : tools-permission
 summary : 公共管线职责：工具做操作，管线管调用如何接纳、执行、交代。
-x : 1908
-y : 594
+x : 1224
+y : 540
 w : 362
 h : 380
+domain : tools-permission
 ```
 
 **主张：** 工具负责具体操作，管线负责调用如何被接纳、执行与交代。

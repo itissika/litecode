@@ -1,8 +1,10 @@
 ```node
 node : session-write-path
 status : pending
-domain : harness-core
 summary : 会话写入唯一路径：单 writer、operation 幂等优先、revision CAS，回执与变更同事务。
+x : 5094
+y : 2844
+domain : harness-core
 ```
 
 **准入：** A3 / A5 / A7。会话库只有一个 writer actor 可写；业务变更、revision 推进与 operation 回执必须在同一事务落地。坏了会出现第二写者、假冲突或「错误回复却已提交」无法凭 operation_id 查回；ADR 0001 与 SQL 死亡清单钉住「禁止旁路开库」。

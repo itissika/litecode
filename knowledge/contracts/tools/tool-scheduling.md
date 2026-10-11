@@ -1,12 +1,12 @@
 ```node
 node : tool-scheduling
 status : pending
-domain : tools-permission
 summary : 并发安全调用仅在末批同样安全且资源不冲突时合并，否则开新批；非并发安全独占一批，跨会话锁只覆盖 write/edit。
-x : 2556
-y : 504
+x : 2124
+y : 594
 w : 398
 h : 536
+domain : tools-permission
 ```
 
 **主张：** executor 按 `is_concurrency_safe` 与 `resource_keys` 分批：并发安全调用仅在末批同样安全且资源不冲突时合并，否则开新批；非并发安全调用独占一批，批间顺序执行（冲突与末批全体调用比对，不限相邻一对）。

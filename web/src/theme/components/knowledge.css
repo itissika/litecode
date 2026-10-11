@@ -195,8 +195,10 @@
   color: var(--_dk-amber-500);
 }
 
+/* `clip`, not `hidden`: hidden is still a scroll container. The focus scrim
+   is 100000px and a node sits on a large translate, so focus scrolls it. */
 .knowledge-graph {
-  overflow: hidden;
+  overflow: clip;
   isolation: isolate;
   background: var(--_dk-editor);
   color: var(--_dk-text-body);
@@ -209,7 +211,7 @@
 }
 
 .knowledge-graph .react-flow {
-  overflow: hidden;
+  overflow: clip;
   background: var(--_dk-editor);
 }
 

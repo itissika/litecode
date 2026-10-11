@@ -1,12 +1,12 @@
 ```node
 node : tool-implementation-contract
 status : enabled
-domain : tools-permission
 summary : 单工具职责：声明身份与资源，专注业务实现，按共同结果契约返回。
-x : 1512
+x : 1224
 y : 810
 w : 344
 h : 382
+domain : tools-permission
 ```
 
 **主张：** 工具实现可以各异，但接入公共管线时遵守同一套实现契约。

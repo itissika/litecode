@@ -1,12 +1,12 @@
 ```node
 node : tool-input-validation
 status : pending
-domain : tools-permission
 summary : 参数先过 schema 子集与语义两层校验；未知顶层参数默认只是 Warning。
-x : 3024
-y : 396
+x : 2124
+y : 810
 w : 434
 h : 554
+domain : tools-permission
 ```
 
 **主张：** 参数在业务实现前被两层检查：公共 schema 子集 + 工具自己的语义校验；未知顶层键默认提醒而不拦截。

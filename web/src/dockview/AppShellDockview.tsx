@@ -89,12 +89,14 @@ export function AppShellDockview() {
 
   return (
     <>
-      <div className="litecode-dv-base relative flex h-[100dvh] w-screen flex-col overflow-hidden">
+      <div className="litecode-dv-base relative flex h-[100dvh] w-screen flex-col overflow-clip">
         <Logo size="lg" splash />
         <TitleBar onMenuAction={handleMenuAction} sessionMode={sessionMode} />
 
+        {/* clip, not hidden: hidden is still a scroll container, so focusing a
+            canvas node scrolls the whole dockview. */}
         <div
-          className="relative flex-1 min-h-0 overflow-hidden"
+          className="relative flex-1 min-h-0 overflow-clip"
           onDragOverCapture={(event) => {
             if (foreignDropIntent(event.target, event.dataTransfer, "over") === "ignore") {
               return;

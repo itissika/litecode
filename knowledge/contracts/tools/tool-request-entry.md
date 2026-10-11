@@ -1,12 +1,12 @@
 ```node
 node : tool-request-entry
 status : pending
-domain : tools-permission
 summary : 依赖可用、agent 可见、执行查找三个不同问题，不能混用。
-x : 2790
-y : 396
+x : 2124
+y : 702
 w : 398
 h : 531
+domain : tools-permission
 ```
 
 **主张：** 一次调用要穿过三个不同问题——配置/依赖是否可用、当前 agent 是否可见、执行时是否找到实现。

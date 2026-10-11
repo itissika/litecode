@@ -1,8 +1,10 @@
 ```node
 node : knowledge-tool
 status : pending
-domain : knowledge
 summary : knowledge 工具：读走常驻索引；写落盘后再刷新；不自造第二套解析。
+x : 5094
+y : 1170
+domain : knowledge
 ```
 
 **准入：** A4。agent 面的 `knowledge` 工具（board/list/refs/check/create/rename）必须消费同一索引与同一状态码，写操作改磁盘后通知刷新，不得在工具内另写一套引用判定。它是知识契约对 agent 的出口，也是 featured-tools 里「关系可验证」的落点。

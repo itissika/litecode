@@ -5,7 +5,10 @@ import { FileTreeContextMenu, type FileTreeMenuItem } from "../FileTreeContextMe
 import { FoldCard } from "../FoldCard";
 import { knowledgePreview, normalizeKey } from "../../lib/knowledge/markers";
 import { openKnowledgeGraphPanel, revealKnowledgeNode } from "../../lib/knowledge/panel";
-import { isVisibleInScrollParent } from "../../lib/knowledge/scrollVisible";
+import {
+  isVisibleInScrollParent,
+  nearestScrollDelta,
+} from "../../lib/knowledge/scrollVisible";
 import {
   knowledgeAttentionWarnings,
   knowledgeTitleTone,
@@ -453,9 +456,18 @@ export function KnowledgeBrowser() {
     if (!el) return;
     const pulse = () => setSideFlashPulse((n) => n + 1);
     if (!isVisibleInScrollParent(container, el)) {
-      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      const timer = window.setTimeout(pulse, 320);
-      return () => window.clearTimeout(timer);
+      const delta = nearestScrollDelta(
+        container.getBoundingClientRect(),
+        el.getBoundingClientRect(),
+      );
+      if (delta !== 0) {
+        container.scrollTo({
+          top: container.scrollTop + delta,
+          behavior: "smooth",
+        });
+        const timer = window.setTimeout(pulse, 320);
+        return () => window.clearTimeout(timer);
+      }
     }
     pulse();
   }, [flashId, flashNonce]);
