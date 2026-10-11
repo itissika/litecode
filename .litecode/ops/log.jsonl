@@ -14,3 +14,5 @@
 {"ts":"2026-10-11T14:16:52.046Z","kind":"decision","source":"demand_officer","summary":"云端路径复核：D-001 refined 仍有效；admit-rules 边界条改为云端工作区契约","evidence":[".litecode/ops/demand/board.json",".litecode/ops/demand/admit-rules.md"]}
 {"ts":"2026-10-11T14:17:09.229Z","kind":"decision","source":"tools_steward","summary":"WP-003: hot-reload tools_version=5 (board lists emit/ack; ops.board version aligned; emit/ack stdout_header); validate_all/tick/wp_gate review passed","evidence":[]}
 {"ts":"2026-10-11T14:18:13.827Z","kind":"status_change","source":"tools_steward","summary":"WP-003: in_progress -> review (ops.wp_gate)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-11T14:22:23.225Z","kind":"decision","source":"andy","summary":"提交纪律：不得频繁提交推送；只有积累大量变更或即将进行高风险变更时才 commit+push 到独立分支","evidence":[]}
+{"ts":"2026-10-11T15:15:33.823Z","kind":"decision","source":"gm","summary":"Batch1 草案：知识节点准入标准(A1-A7/排除项/主节点引用/证据/模板)与 issue 分级(arch/drift/bug/suspect)+阻断阈值 B1-B5+12 条种子 issue，待 Andy 审","evidence":[".litecode/ops/context/knowledge-node-admission.md",".litecode/ops/context/issue-grading.md",".litecode/ops/context/issue.schema.json"]}

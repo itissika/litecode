@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "litecode/ops/context/issue.schema.json",
+  "title": "LiteCode knowledge-batch issue",
+  "description": "One issue record. Grading and blocking rules: issue-grading.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "grade", "layer", "domain", "core", "basis", "title", "promise", "actual", "evidence", "repro", "reporter", "owner", "status", "blocks"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^ISSUE-[0-9]{3,}$" },
+    "grade": { "enum": ["arch", "drift", "bug", "suspect"] },
+    "layer": { "enum": ["product", "gate", "env"] },
+    "domain": { "enum": ["team-ops", "harness-core", "tools-permission", "ide-substrate", "knowledge", "model-config", "client-ux", "release-desktop"] },
+    "core": { "type": "boolean" },
+    "core_nodes": { "type": "array", "items": { "type": "string" }, "description": "Knowledge node keys this issue touches." },
+    "basis": { "type": "array", "minItems": 1, "items": { "enum": ["A1", "A2", "A3", "A4", "A5", "A6", "A7"] } },
+    "title": { "type": "string", "minLength": 1 },
+    "promise": { "type": "string", "minLength": 1, "description": "Violated promise: node key, ADR, KR-* rule, or test name." },
+    "actual": { "type": "string", "minLength": 1 },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "commit"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^[^/].*" },
+          "symbol": { "type": "string" },
+          "test": { "type": "string" },
+          "lines": { "type": "string", "pattern": "^[1-9][0-9]*(-[1-9][0-9]*)?$" },
+          "commit": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+          "note": { "type": "string" }
+        },
+        "anyOf": [{ "required": ["symbol"] }, { "required": ["test"] }, { "required": ["lines"] }]
+      }
+    },
+    "repro": { "type": "string", "description": "Test name or command. For suspect: what is missing to reproduce." },
+    "reporter": { "type": "string" },
+    "owner": { "type": "string" },
+    "status": { "enum": ["open", "confirmed", "blocked", "closed", "wontfix"] },
+    "blocks": { "type": "boolean" },
+    "threshold": { "type": "array", "items": { "enum": ["B1", "B2", "B3", "B4", "B5"] } },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ts", "by", "change"],
+        "properties": { "ts": { "type": "string" }, "by": { "type": "string" }, "change": { "type": "string" } }
+      }
+    }
+  },
+  "allOf": [
+    { "if": { "properties": { "blocks": { "const": true } } }, "then": { "required": ["threshold"] } }
+  ]
+}
