@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "tools_version": 4,
-  "updated_at": "2026-10-11T13:45:45.667Z",
+  "tools_version": 5,
+  "updated_at": "2026-10-11T14:17:05.967Z",
   "hot_reload": true,
   "tools": [
     {
@@ -57,7 +57,7 @@
     },
     {
       "id": "ops.board",
-      "version": 3,
+      "version": 5,
       "purpose": "打开工具聚合面板（最近更新/教程/版本）",
       "invoke": "type .litecode/ops/tools/board.md  # or Read",
       "required_for": [
@@ -68,21 +68,23 @@
     },
     {
       "id": "ops.emit_event",
-      "version": 1,
+      "version": 2,
       "purpose": "写入事件总线 inbox",
       "invoke": "node .litecode/ops/tools/emit_event.mjs --type --source --summary [--wp]",
       "required_for": [
         "跨角色通知"
-      ]
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
     },
     {
       "id": "ops.ack_event",
-      "version": 1,
+      "version": 2,
       "purpose": "确认已消费事件",
       "invoke": "node .litecode/ops/tools/ack_event.mjs --id E-... --by <agent_id>",
       "required_for": [
         "事件闭环"
-      ]
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
     }
   ],
   "board": ".litecode/ops/tools/board.md",

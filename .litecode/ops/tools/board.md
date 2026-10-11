@@ -5,7 +5,7 @@
 
 ## 当前版本
 
-- `tools_version`: **4**
+- `tools_version`: **5**
 - registry: `.litecode/ops/tools/registry.json`
 - 查询: `node .litecode/ops/tools/tools_version.mjs`
 
@@ -13,6 +13,7 @@
 
 | 时间 | 变更 |
 |---|---|
+| 2026-10-11 | v5：工具一览补 emit/ack；ops.board 版本对齐；emit/ack 补 stdout_header（工具集管家）|
 | 2026-10-11 | v4：事件总线 emit/ack；工具维护权移交工具集管家；GM 仅 tick 兜底
 | 2026-10-11 | v3：stdout 首行版本头；本 board；team-ops bot 已建且未发首条 |
 | 2026-10-11 | v2：validate 允许人类审查员 andy |
@@ -36,13 +37,12 @@
 | ops.wp_gate | `node .litecode/ops/tools/wp_gate.mjs --id WP-xxx --to <status>` |
 | ops.tick | `node .litecode/ops/tools/tick.mjs [--wp WP-xxx]` |
 | ops.board | Read `.litecode/ops/tools/board.md` |
+| ops.emit_event | `node .litecode/ops/tools/emit_event.mjs --type --source --summary [--wp]` |
+| ops.ack_event | `node .litecode/ops/tools/ack_event.mjs --id E-... --by <agent_id> [--wp]` |
 
 ## 待发掘
 
-- board「工具一览」未列 ops.emit_event / ops.ack_event（registry 已有，v4 事件总线）
-- ops.board registry tool_version 仍为 3，与 tools_version=4 不同步
-- emit/ack 的 registry 条目缺 stdout_header 字段（其它工具已有）
-- 使用中发现的其它缺项继续记在这里，由工具集管家热更
+- （空）使用中发现的缺项记在这里，由工具集管家热更
 
 ## 边界
 
