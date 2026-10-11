@@ -1,0 +1,64 @@
+{
+  "id": "ISSUE-007",
+  "grade": "drift",
+  "layer": "gate",
+  "domain": "ide-substrate",
+  "core": false,
+  "core_nodes": [
+    "workspace-shared-substrate",
+    "workspace-watcher"
+  ],
+  "basis": [
+    "A7"
+  ],
+  "title": "热切换死亡清单子串误伤排除重载 / open_with_default_app",
+  "promise": "tests/workspace_hotswitch_death_list.rs 禁止工作区根热切换符号重现；不得误杀合法 API",
+  "actual": "FORBIDDEN 含 reload_workspace / post_open / api/workspace/open。命中的是 reload_workspace_excludes_from_disk、plan.reload_workspace 字段、以及 open_with_default_app（post_open /api/workspace/open），均非根热切换。测试失败。",
+  "evidence": [
+    {
+      "path": "tests/workspace_hotswitch_death_list.rs",
+      "test": "fn death_list_forbidden_hot_switch_symbols",
+      "commit": "075308b"
+    },
+    {
+      "path": "src/workspace/filter/workspace_excludes.rs",
+      "symbol": "fn reload_workspace_excludes_from_disk",
+      "commit": "075308b"
+    },
+    {
+      "path": "src/runtime/mod.rs",
+      "lines": "163-171",
+      "commit": "075308b",
+      "note": "plan.reload_workspace config apply"
+    },
+    {
+      "path": "src/workspace/routes.rs",
+      "symbol": "fn post_open",
+      "commit": "075308b",
+      "note": "open_with_default_app, not root switch"
+    },
+    {
+      "path": "web/src/api/workspace.ts",
+      "lines": "150-158",
+      "commit": "075308b",
+      "note": "openWithDefaultApp → /api/workspace/open"
+    }
+  ],
+  "repro": "HOME=/workspace/litecode/.tmp/home cargo test --test workspace_hotswitch_death_list",
+  "reporter": "ide",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T00:00:00+08:00",
+      "by": "gm",
+      "change": "seeded in issue-grading.md"
+    },
+    {
+      "ts": "2026-10-12T00:40:00+08:00",
+      "by": "ide",
+      "change": "Batch3: reproduced fail; expanded evidence to post_open/api/workspace/open false positives; recommend narrow FORBIDDEN (do not silent-green)"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "id": "ISSUE-004",
+  "grade": "suspect",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": false,
+  "core_nodes": [
+    "lsp-hub-lifecycle"
+  ],
+  "basis": [
+    "A4"
+  ],
+  "title": "optional_lsp findReferences 输出缺上下文块（主责待定）",
+  "promise": "tests/optional_lsp.rs agent_lsp_tool_line_text_scenarios：findReferences 应在 locations 下附 fence/编号上下文",
+  "actual": "种子报告缺上下文块。未在本批复现（需 LS 环境）。可能是工具输出整形（tools 域）或测试过期；lsp-hub 只旁听激活/文档同步。",
+  "evidence": [
+    {
+      "path": "tests/optional_lsp.rs",
+      "test": "fn agent_lsp_tool_line_text_scenarios",
+      "commit": "075308b",
+      "note": "asserts refs content contains ``` or | under locations"
+    }
+  ],
+  "repro": "缺：可复现的 rust-analyzer/optional_lsp 环境与失败日志。cargo test --test optional_lsp agent_lsp_tool_line_text_scenarios",
+  "reporter": "ide",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T00:00:00+08:00",
+      "by": "gm",
+      "change": "seeded in issue-grading.md"
+    },
+    {
+      "ts": "2026-10-12T00:40:00+08:00",
+      "by": "ide",
+      "change": "Batch3: keep suspect; note tools may own shaping; ide owns hub lifecycle only"
+    }
+  ]
+}

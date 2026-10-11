@@ -2,6 +2,7 @@
 node : ux-interaction
 status : enabled
 summary : 三层交互模型：纯人类操作 / 人机协作（卡片阻塞循环）/ 纯 agent 可观测（按自身会话投影）。
+domain : client-ux
 x : 520
 y : 890
 w : 416
@@ -16,6 +17,8 @@ h : 449
 - 投影纪律：客户端只做投影，不发明第二套对话语义（死亡清单测试封禁旧方言）；流式平滑只是显示缓冲。
 - 人类握有控制权：可打断、可回退、可授权；交互不止「看」。
 
+契约展开：[@ key="ask-surface"]。
 上层：[@ key="ux-design"]。
 相关：[@ key="ux"]、[@ key="client-projection"]、[@ key="tool-pipeline"]。
 依据：[@ file="web/src/components/PermissionModal.tsx"]、[@ file="web/src/components/SessionStatusLine.tsx"]、[@ file="web/src/stores/connectionStore.ts"]。
+基线：075308b

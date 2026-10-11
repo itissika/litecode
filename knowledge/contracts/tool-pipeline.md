@@ -1,6 +1,7 @@
 ```node
 node : tool-pipeline
 status : enabled
+domain : tools-permission
 summary : 工具执行：模型参数与执行事实分离；按资源冲突调度；结果按 call_id 配对、按调用顺序落地。
 x : 990
 y : 548
@@ -21,3 +22,6 @@ h : 414
 
 上层：[@ key="tools"]。相关：[@ key="ux-interaction"]。
 依据：[@ file="src/tool/executor.rs"]、[@ file="src/permission/engine.rs"]、[@ file="src/permission/presets.rs"]。
+基线：075308b
+**核实结论：一致，无漂移。**（基线 075308b）
+- 子契约（授权/调度/结果/适配）证据链齐；本节点主张未改。Batch3 仅核对，不改意图。

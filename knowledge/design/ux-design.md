@@ -2,6 +2,7 @@
 node : ux-design
 status : enabled
 summary : ux 设计理念：安静克制，agent工作过程高度可见。
+domain : client-ux
 x : 486
 y : 180
 w : 326
@@ -18,3 +19,4 @@ h : 432
 
 框架展开：[@ key="ux"]。
 上层：[@ key="product-brief"]。
+基线：075308b

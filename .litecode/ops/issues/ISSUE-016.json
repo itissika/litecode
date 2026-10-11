@@ -1,0 +1,47 @@
+{
+  "id": "ISSUE-016",
+  "grade": "suspect",
+  "layer": "product",
+  "domain": "release-desktop",
+  "core": false,
+  "core_nodes": [
+    "release-design"
+  ],
+  "basis": [
+    "A1"
+  ],
+  "title": "自动更新（electron-updater）明确不在本批范围",
+  "promise": "（非承诺）未来若要 Windows 更新提醒，需独立设计 feed/签名/latest.yml",
+  "actual": "desktop 有 electron-builder NSIS，无 electron-updater/autoUpdater/publish feed；DRAFT-REL-3 单独立项",
+  "evidence": [
+    {
+      "path": "desktop/package.json",
+      "lines": "1-80",
+      "commit": "075308b",
+      "note": "builder targets nsis; no electron-updater dep"
+    },
+    {
+      "path": "desktop/src/main.ts",
+      "lines": "1-80",
+      "commit": "075308b",
+      "note": "no autoUpdater import in main entry region"
+    }
+  ],
+  "repro": "rg electron-updater desktop/ → empty product usage",
+  "reporter": "前端",
+  "owner": "前端",
+  "status": "wontfix",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T15:49:00Z",
+      "by": "前端",
+      "change": "DRAFT-REL-3 out of scope"
+    },
+    {
+      "ts": "2026-10-12T00:30:00Z",
+      "by": "前端",
+      "change": "Batch3: wontfix / deferred product; not a defect vs current nodes"
+    }
+  ]
+}

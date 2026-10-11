@@ -843,8 +843,8 @@ mod tests {
             "LexicalLane must stay a disk walk; do not wire the mention path catalog here"
         );
         assert!(
-            prod.contains("lexical_search_ripgrep(query, preset)"),
-            "lexical_search_with_preset must call the ripgrep walk"
+            prod.contains("lexical_search_ripgrep(query, preset, false, None)"),
+            "lexical_search_with_preset must call the ripgrep walk (4-arg form)"
         );
     }
 }

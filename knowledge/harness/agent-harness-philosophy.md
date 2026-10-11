@@ -18,5 +18,6 @@ h : 537
 - 团队与基座：子 agent 是完整会话、不可嵌套；能力落工作区基座共享；内核独立进程，位置只改变连接方式。
 
 框架展开：[@ key="session"]、[@ key="context"]、[@ key="tools"]、[@ key="config"]。
+契约展开：[@ key="item-authority"]、[@ key="platform-knobs"]。
 上层：[@ key="product-brief"]、[@ key="agent-design"]。
 依据：[@ file="src/agent/core.rs"]、[@ file="src/agent/deps.rs"]、[@ file="src/tool/pipeline.rs"]。

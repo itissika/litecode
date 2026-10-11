@@ -1,0 +1,56 @@
+{
+  "id": "ISSUE-012",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "tools-permission",
+  "core": false,
+  "core_nodes": [
+    "webfetch-ssrf"
+  ],
+  "basis": [
+    "A6"
+  ],
+  "title": "validate_public_http_url 漏 IPv4-mapped IPv6 / fe80 / 198.18/15",
+  "promise": "webfetch-ssrf：出站 URL 不得解析到非公网地址（回环/私网/链路本地/共享/基准测试段等）",
+  "actual": "修复前 IPv6 仅查 loopback/unspecified/unique_local，漏 fe80::/10 与 ::ffff:嵌入私网；IPv4 漏 RFC2544 198.18.0.0/15。Batch3 已用 is_non_public_ip（含 to_ipv4_mapped + is_unicast_link_local + is_ipv4_benchmarking）修复并补测。DNS 重绑定窗口另见 ISSUE-021。",
+  "evidence": [
+    {
+      "path": "src/tools/webfetch.rs",
+      "symbol": "fn validate_public_http_url",
+      "commit": "075308b",
+      "note": "Batch3 working tree patched"
+    },
+    {
+      "path": "src/tools/webfetch.rs",
+      "symbol": "fn is_non_public_ip",
+      "commit": "075308b"
+    },
+    {
+      "path": "src/tools/webfetch.rs",
+      "test": "ssrf_rejects_loopback_and_private_ips",
+      "commit": "075308b"
+    },
+    {
+      "path": "src/tools/webfetch.rs",
+      "symbol": "impl WebFetchTool › fn fetch",
+      "commit": "075308b"
+    }
+  ],
+  "repro": "HOME=/workspace/litecode/.tmp/home cargo test --lib -- webfetch::tests::ssrf  # 4 passed after fix",
+  "reporter": "Tools",
+  "owner": "Tools",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T00:00:00Z",
+      "by": "seed",
+      "change": "Seeded bug in issue-grading.md; high priority"
+    },
+    {
+      "ts": "2026-10-12T00:45:00Z",
+      "by": "Tools",
+      "change": "Batch3: fixed classifiers + tests; close. DNS rebinding → ISSUE-021"
+    }
+  ]
+}

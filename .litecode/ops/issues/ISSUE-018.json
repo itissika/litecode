@@ -1,0 +1,53 @@
+{
+  "id": "ISSUE-018",
+  "grade": "drift",
+  "layer": "product",
+  "domain": "harness-core",
+  "core": false,
+  "core_nodes": [
+    "agent-loop"
+  ],
+  "basis": [
+    "A5"
+  ],
+  "title": "LitecodeError::CompactionFailed message claims 3 attempts but empty-summary path is single-shot",
+  "promise": "Error text should match behavior; CompactionFailed Display says compaction failed after 3 attempts",
+  "actual": "first_pass_compaction returns CompactionFailed when summary.is_empty() after one LLM call; no 3-attempt loop remains. Wire still has unused CompactionCircuitOpen variant.",
+  "evidence": [
+    {
+      "path": "src/types/error.rs",
+      "symbol": "enum LitecodeError",
+      "commit": "075308b",
+      "note": "#[error(\"compaction failed after 3 attempts\")] CompactionFailed"
+    },
+    {
+      "path": "src/context_pipeline/compact.rs",
+      "symbol": "impl CompactPolicy › fn first_pass_compaction",
+      "commit": "075308b",
+      "note": "if summary.is_empty() { return Err(LitecodeError::CompactionFailed); }"
+    },
+    {
+      "path": "src/client_protocol/protocol.rs",
+      "lines": "63-64",
+      "commit": "075308b",
+      "note": "ErrorCode::CompactionCircuitOpen appears unused in emitters"
+    }
+  ],
+  "repro": "Read error.rs CompactionFailed + compact.rs first_pass_compaction empty summary branch; rg CompactionCircuitOpen (definition only).",
+  "reporter": "runtime",
+  "owner": "runtime",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T00:30:00+08:00",
+      "by": "runtime",
+      "change": "Batch 3; message/docs drift while auto-compact-fail→terminate and manual-retry paths remain correct"
+    },
+    {
+      "ts": "2026-10-12T00:40:00+08:00",
+      "by": "runtime",
+      "change": "renumbered from ISSUE-014 to avoid cross-agent collision"
+    }
+  ]
+}

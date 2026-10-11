@@ -1,6 +1,7 @@
 ```node
 node : tool-control-boundary
 status : enabled
+domain : tools-permission
 summary : 控制接缝：工具声明、政策决定、管线求值；入口、上下文、取消都不等于其效果。
 x : 1494
 y : 360
@@ -17,4 +18,8 @@ h : 416
 
 后三点是应当区分的概念，不是问题清单；本文描述理解模型，不宣称每一项当前都已实现完备。
 
+上层：[@ key="tools"]。
 相关：[@ key="tool-call-contract"]、[@ key="tool-implementation-contract"]。
+基线：075308b
+**核实结论：一致，无漂移。**（基线 075308b）
+- 理解模型节点：入口≠沙箱、提供上下文≠消费、取消≠已停 —— 与 authorization / execution-context / lifecycle 子节点一致；非完备性清单。

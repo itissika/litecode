@@ -217,7 +217,7 @@ pub enum InternalEvent {
         assistant_preview: Option<String>,
         updated_at: i64,
     },
-    /// One durable SessionLog row. Live `buffer/item` uses this same envelope
+    /// One durable SessionEvent row. Live `buffer/item` uses this same envelope
     /// (`kind`/`body`/`cites`/`state`); control-plane kinds are included here
     /// and excluded from HumanView/AgentView by spine fold.
     BufferItem {

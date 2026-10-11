@@ -1,7 +1,8 @@
 # LiteCode 会话数据（目标）
 
 每层只答四件事：**职责、身份、形状、规则**。  
-种类只写在 `SessionLog.kind`。SDK `Item` 只出现在 `item/*` 的 `body`，以及 AgentView 的装配结果。
+种类只写在 `SessionEvent` 的 `type`（代码字段 `event_type`）。SDK `Item` 只出现在 `item/*` 的 `data`，以及 AgentView 的装配结果。
+旧文偶称 SessionLog，与代码类型 `SessionEvent` 同指一行业务日志；以代码为准。
 
 ---
 
@@ -10,7 +11,7 @@
 | 名 | 指什么 |
 |---|---|
 | `SessionId` | 哪一条会话 |
-| `LogSeq` | `SessionLog` 第几行。单调、不改号、不复用 |
+| `LogSeq` / `seq` | `SessionEvent.seq` 第几行。单调、不改号、不复用 |
 | `CallId` | 一次 `item/tool_call` 与 `item/tool_result` 配对（Responses `call_id`） |
 | `ItemId` | provider 流式/续传（Responses `id`）。不是 `LogSeq` |
 | `TurnId` | Live 里这一轮是否在跑。可回放靠 `turn/end` 行 |
@@ -21,18 +22,18 @@
 
 ```text
 存   SessionMeta          现在的指针
-     SessionLog           会话流（磁盘为准，内存是热镜像）
+     SessionEvent         会话流（磁盘为准，内存是热镜像）
 
-算   脊骨 LogSeq[]        SessionLog 按 kind 折出的可见序列
+算   脊骨 LogSeq[]        SessionEvent 按 surface_op 折出的可见序列
 
 用   GateRow[]            脊骨的可提交形态（进门）
      AgentView            脊骨 → Item[]（给模型）
      HumanView            脊骨 → 卡片（给人）
 
-活   Live                 本轮相位。不是 SessionLog
+活   Live                 本轮相位。不是 SessionEvent
 ```
 
-写 SessionLog 只有三种：`append`（新 `LogSeq`）· `seal`（同一 `LogSeq` 写终态）· `truncate`（从某条 `item/user` 起含该行删掉其后）。  
+写 SessionEvent 只有三种：`append`（新 `seq`）· `seal`（同一 `seq` 写终态）· `truncate`（从某条 `item/user` 起含该行删掉其后）。  
 `truncate` 只删行、不回拨发号高水位：下一次 `append` 从 `sessions.next_seq` 取号，于是全量日志的 `LogSeq` 严格递增但**可以有空洞**（被删区间不会重现）。这是稳定身份的前提，全量加载不得再把空洞当错误。
 AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下一轮只问 Live。
 
@@ -42,12 +43,12 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 
 | | |
 |---|---|
-| 职责 | 会话行：身份 + 这一刻的绑定与指针。不是时间线，也不是 SessionLog |
+| 职责 | 会话行：身份 + 这一刻的绑定与指针。不是时间线，也不是 SessionEvent |
 | 身份 | `SessionId`（`id`） |
 | 形状 | 下表全部字段。无隐藏列 |
-| 规则 | 创建后不变的只写一次。会变的只表示「现在」。曾经怎样，写 `request/header` / `SessionLog`。Codex 把 `SessionMeta` 塞进 rollout 第一行；DSH 的 `SessionHeader` 在日志外。LC 跟 DSH：Meta 在 `sessions` 行，不进 SessionLog |
+| 规则 | 创建后不变的只写一次。会变的只表示「现在」。曾经怎样，写 `request/header` / `SessionEvent`。Codex 把 `SessionMeta` 塞进 rollout 第一行；DSH 的 `SessionHeader` 在日志外。LC 跟 DSH：Meta 在 `sessions` 行，不进 SessionEvent |
 
-子会话是独立 Session（自己的 Meta + Log + Live）。父子只靠本表指针；子在跑 ≠ 父在跑。
+子会话是独立 Session（自己的 Meta + SessionEvent + Live）。父子只靠本表指针；子在跑 ≠ 父在跑。
 
 ### 身份（创建后不变）
 
@@ -76,12 +77,12 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 
 ### 现在窗口指针
 
-不是 `MAX(LogSeq)`。最大 seq 从 SessionLog 算。对齐 Codex compact 窗口指针的精简版：只留「当前摘要行」和「脊骨从哪起」。
+不是 `MAX(LogSeq)`。最大 seq 从 SessionEvent 算。对齐 Codex compact 窗口指针的精简版：只留「当前摘要行」和「脊骨从哪起」。
 
 | 字段 | 类型 | 职责 |
 |---|---|---|
 | `compacted_seq` | `Option<LogSeq>` | 当前有效的 `compacted` 行。从未 compact 则为 `None`（现列 `checkpoint_seq`，`0` 改成 `None`） |
-| `spine_from` | `LogSeq` | 脊骨起点。无 compact 时为日志起点。被换掉的行仍在 SessionLog |
+| `spine_from` | `LogSeq` | 脊骨起点。无 compact 时为日志起点。被换掉的行仍在 SessionEvent |
 | `next_seq` | `LogSeq` | **发号高水位**：下一条 `append` 取的 `LogSeq`（现列 `sessions.next_seq`，旧库按每会话 `MAX(seq)+1` 回填）。持久化且只增；`truncate` 不回拨，所以被删的 seq 永不复用。与「当前 `MAX(LogSeq)`」——active tail，`truncate` 会下降，用来做 stale-turn/回退并发守卫——是两个独立的游标，实现上不得混用 |
 
 ### 现在产品指针
@@ -100,27 +101,31 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 |---|---|
 | Live / 线投影 | `TurnId`、相位、是否在跑、compacting、bash jobs、权限、token 统计 |
 | 目录投影 | `api_model_id`、`label`、`context_window` |
-| SessionLog | 换过的模型/工具集（`request/header`、`request/context`）、回合起止 |
+| SessionEvent | 换过的模型/工具集（`request/header`、`request/context`）、回合起止 |
 | 派生 | `max_seq`（active tail）、文件撤回锚点、FTS、meter |
 | 不抄 | Codex `WorldState`、Guardian、Realtime、fork 线程 id、`memory_mode` |
 
 ---
 
-## SessionLog
+## SessionEvent
+
+代码类型：`src/session/event.rs` 的 `SessionEvent`。G1 词汇门钉住信封字段名。
 
 | | |
 |---|---|
 | 职责 | 会话流唯一真源 |
-| 身份 | 每行一个 `LogSeq` |
-| 形状 | `{ seq, time, kind, body, cites?: LogSeq[] }` |
-| 规则 | 新能力只加 `kind`。未知 kind：行保留，不进脊骨，两 View 跳过 |
+| 身份 | 每行一个 `seq`（`LogSeq`） |
+| 形状 | `{ seq, time, type, data, surface_op?, source_seqs?, state, ignorable? }` |
+| 规则 | 新能力只加 `type`。未知 type：行保留；无 `surface_op` 则不进脊骨，两 View 跳过 |
 
-`body` 的 schema 由 `kind` 决定，不要求是 `Item`。过大则 `body_ref`，`LogSeq` 不变。  
-`cites` 只表达「引用哪些先前行」，不承担配对或折叠（配对用 `CallId`，折叠用 `compacted.body` 的 `from`/`to`）。
+- `type`：业务种类字符串（serde 名；代码字段 `event_type`）。`item/*` 的 `data` 是 Responses Item；提醒、compact、控制面各有自己的 `data`。
+- `surface_op`：折叠算子（Append / Replace{start,end} 等）。Surface 由 fold 从日志算出，不是第二份存储。控制面行通常不带 `surface_op`，不进模型对话序列。
+- `source_seqs`：本行引用/替换所依据的先前 `seq`（例如 compact 摘要）。配对工具调用仍用 `CallId`，不靠 `source_seqs`。
+- `state`：行生命周期（流式中 / 终态）；缺失即非法，客户端不得猜「已定稿」。
 
-`kind` 决定：进不进脊骨、如何改脊骨、两 View 如何读 `body`。没有平行的 `surface_op`。
+`data` 的 schema 由 `type` 决定。过大则外置 blob，`seq` 不变。
 
-### kind
+### type（kind）
 
 #### `item/*` — `body` 即 Responses `Item`
 
@@ -138,7 +143,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 
 | kind | 脊骨 | HumanView | AgentView | body |
 |---|---|---|---|---|
-| `compacted` | 本行替换 `[from, to)`。被换行仍在 SessionLog | 切痕，不展示摘要 | 脊骨**最前**一条由 `summary` 装配的 assistant `Item`（不回写） | `{ summary, from, to }` |
+| `compacted` | 本行替换 `[from, to)`。被换行仍在 SessionEvent | 切痕，不展示摘要 | 脊骨**最前**一条由 `summary` 装配的 assistant `Item`（不回写） | `{ summary, from, to }` |
 
 #### `reminder/*` — 一条提醒独占一个 seq
 
@@ -156,12 +161,15 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 | `reminder/bash_exit` | Event | 切痕「后台终端退出」 | 后台 bash 退出。`wait_shell` 自己消费的不进这里 |
 | `reminder/subagent_settled` | Event | 切痕「子会话结束」 | 后台子会话回合结束 |
 | `reminder/step_budget` | 每 turn 最多一次 | 隐藏 | 剩余步数不超过 3 |
+| `reminder/custom_tool_settled` | Event | 切痕「后台自定义工具结束」 | 后台自定义工具任务结束。结果经 mailbox 在请求缝隙写入，不发明 FunctionCallOutput |
+| `reminder/mentions` | 附着（非 seam Restore） | 隐藏 | 人键入 user 消息后立即写：展开消息里引用的知识节点/符号快照；压缩后不自动恢复；同快照仍在活面上则不重复写 |
+| `reminder/knowledge_status` | Diff（按 class） | 隐藏 | 人键入 user 消息后附着知识库 class 提示；空库不写；活面上同 class 不重复写 |
 
 隐藏行仍然下发，带 `hidden: true`，seq 游标保持连续。可见性只在 Rust 的 `ReminderKind::visibility` 声明；前端只认 `hidden`。
 
-bash 退出和子会话结束不再在 auto-turn 里先写提醒再把同一段文本当用户输入。它们只做非消费的「是否有待处理」检查，然后 `TurnInput::Wake`。首个缝隙写出对应行。回合中途的 bash 退出也不再拼进 tool result，而是在下一个请求缝隙独占一个 seq。
+bash 退出、子会话结束和后台自定义工具结束不再在 auto-turn 里先写提醒再把同一段文本当用户输入。它们只做非消费的「是否有待处理」检查，然后 `TurnInput::Wake`。首个缝隙写出对应行。回合中途的 bash 退出也不再拼进 tool result，而是在下一个请求缝隙独占一个 seq。
 
-文件跟踪是会话上的 Live 状态，不进 SessionLog。工具管线在每次调用后把 `resource_keys` 里的文件路径交给 `FileTracker`；每个 tool batch 结束后 `absorb()` 重新快照，本会话自己的 edit / write / bash 副作用不报告。缝隙里先比 mtime 和长度，变了再用 hash 确认。最多跟踪 256 个文件（LRU）；超过 2MB 只比 mtime 和长度；删除也报告。进程重启后清空。
+文件跟踪是会话上的 Live 状态，不进 SessionEvent。工具管线在每次调用后把 `resource_keys` 里的文件路径交给 `FileTracker`；每个 tool batch 结束后 `absorb()` 重新快照，本会话自己的 edit / write / bash 副作用不报告。缝隙里先比 mtime 和长度，变了再用 hash 确认。最多跟踪 256 个文件（LRU）；超过 2MB 只比 mtime 和长度；删除也报告。进程重启后清空。
 
 打开旧库时一次性把 `reminder/job_exit`、`reminder/plan` 原地改成新 kind 和新 body，并剥掉 `compacted` 摘要里内嵌的 `<system-reminder>`。不改 `seq` 和 `next_seq`。已写入的 `reminder/model` 不再是活 kind：读入时不进脊骨、不发给模型，HumanView 隐藏。
 
@@ -209,7 +217,7 @@ bash 退出和子会话结束不再在 auto-turn 里先写提醒再把同一段�
 | | |
 |---|---|
 | 职责 | 折叠之后，两个 View 和 GateRow 共同看见的 `LogSeq` 序列 |
-| 身份 | 无，从 SessionLog 算出 |
+| 身份 | 无，从 SessionEvent 算出 |
 | 形状 | `LogSeq[]` |
 | 规则 | 打开全量算一次，之后随 `append` / `seal` / `truncate` / `compacted` 增量改。不是 token 预算，也不是 AgentView |
 
@@ -233,7 +241,7 @@ bash 退出和子会话结束不再在 auto-turn 里先写提醒再把同一段�
 | 职责 | 这一步发给 provider 的 `Item[]` |
 | 身份 | 无 |
 | 形状 | 按脊骨取 `body`（`compacted` 抽成 assistant Item） |
-| 规则 | 可跳过、裁剪、补未完成 call。不回写 SessionLog |
+| 规则 | 可跳过、裁剪、补未完成 call。不回写 SessionEvent |
 
 ---
 
@@ -255,14 +263,14 @@ bash 退出和子会话结束不再在 auto-turn 里先写提醒再把同一段�
 | 职责 | 这一轮跑到哪 |
 | 身份 | `TurnId` |
 | 形状 | 相位、流式、权限、token |
-| 规则 | 与 SessionLog 分权。开不开下一轮只问这里 |
+| 规则 | 与 SessionEvent 分权。开不开下一轮只问这里 |
 
 ---
 
 ## 回合
 
 ```text
-SessionLog → 脊骨 → GateRow（已入账行 log_seq 皆 Some）
+SessionEvent → 脊骨 → GateRow（已入账行 log_seq 皆 Some）
 append  item/user | reminder/* | plan/execute | item/* | compacted | 控制面
 seal    未闭合的 item/assistant 或 item/tool_call     → 取消本轮
 AgentView = 装配(脊骨)

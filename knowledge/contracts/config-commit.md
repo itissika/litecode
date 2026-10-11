@@ -1,6 +1,7 @@
 ```node
 node : config-commit
 status : enabled
+domain : model-config
 summary : 配置提交：持久意图与运行投影分面；generation 是提交世代，不是 CAS；保存与应用分阶段。
 x : 510
 y : 700
@@ -18,4 +19,10 @@ h : 432
 - 目录是构建事实：provider / model 目录随构建内嵌，不是可写设置文档。
 
 上层：[@ key="config"]。
-依据：[@ file="src/config/settings_writer.rs"]、[@ file="src/config/gate/mod.rs"]。
+依据：[@ file="src/config/settings_writer.rs" symbol="impl SettingsWriter › fn commit_partial"]、[@ file="src/config/settings_writer.rs" symbol="impl SettingsWriter › fn commit_mixed"]、[@ file="src/config/turn_guard.rs" symbol="impl TurnGuard › fn is_turn_in_progress"]、[@ file="src/config/gate/mod.rs"]。
+基线：075308b
+
+**核实结论：一致，无漂移。**（基线 075308b）
+- 唯一写门 + generation 提交世代 —— [@ file="src/config/settings_writer.rs" symbol="impl SettingsWriter › fn commit_partial"]；活动 turn 拒写见 [@ file="src/config/turn_guard.rs" symbol="impl TurnGuard › fn is_turn_in_progress"]（ensure_writable）。
+- 跨介质非事务（半写入边界）—— [@ file="src/config/settings_writer.rs" symbol="impl SettingsWriter › fn commit_mixed"]：先 `write()` 工作区文件再 DB `replace_all`；DB 失败时文件可能已变、generation 未推进。节点主张已写清「不承诺错误必无变更」。建议加固见 ISSUE-017（非日常写崩；可选 DB 成功后再落盘/回滚）。
+- 目录是构建事实 —— 与 [@ key="provider-catalog"] 一致；非可写设置文档。

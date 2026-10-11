@@ -1,0 +1,51 @@
+{
+  "id": "ISSUE-022",
+  "grade": "suspect",
+  "layer": "gate",
+  "domain": "knowledge",
+  "core": false,
+  "core_nodes": [
+    "knowledge"
+  ],
+  "basis": [
+    "A1"
+  ],
+  "title": "准入模板「证据：」与标签惯例「依据：」双名",
+  "promise": "knowledge-node-admission §7 模板写「证据：」；现有节点惯例标签是「依据：」",
+  "actual": "工具/解析已接受别名，不构成产品 bug；文案是否收敛待 GM。Batch2 KN-B2-01。",
+  "evidence": [
+    {
+      "path": ".litecode/ops/context/knowledge-node-admission.md",
+      "lines": "109-111",
+      "commit": "075308b"
+    },
+    {
+      "path": "knowledge/framework/knowledge.md",
+      "lines": "1-20",
+      "commit": "075308b",
+      "note": "uses 依据："
+    }
+  ],
+  "repro": "对照 admission §7.1 模板与 knowledge/ 存量节点标签",
+  "reporter": "Tools",
+  "owner": "Tools",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T23:51:00Z",
+      "by": "Tools",
+      "change": "KN-B2-01 draft"
+    },
+    {
+      "ts": "2026-10-12T00:45:00Z",
+      "by": "Tools",
+      "change": "Batch3 formalize as ISSUE-022"
+    },
+    {
+      "ts": "2026-10-11T16:51:26Z",
+      "by": "GM",
+      "change": "Converge tag to 依据： — admission §7.1 template + all knowledge nodes using 证据： rewritten; kb_check keeps 证据 as legacy alias"
+    }
+  ]
+}

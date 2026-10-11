@@ -1,0 +1,53 @@
+{
+  "id": "ISSUE-017",
+  "grade": "suspect",
+  "layer": "product",
+  "domain": "model-config",
+  "core": true,
+  "core_nodes": [
+    "config-commit"
+  ],
+  "basis": [
+    "A5"
+  ],
+  "title": "commit_mixed can leave workspace file written if DB step fails (cross-medium half-write)",
+  "promise": "config-commit: 跨介质（文件 + 数据库）写入不是事务，不承诺「错误必无变更」; Andy口径: 边界情况，可为更强一致性加固",
+  "actual": "SettingsWriter::commit_mixed calls write() (workspace file) before store::replace_all (DB). If DB/validate fails after write(), file change is durable while generation is not advanced and DB unchanged. Call sites: delete_workspace_custom_tool, delete_workspace_mcp_server.",
+  "evidence": [
+    {
+      "path": "src/config/settings_writer.rs",
+      "symbol": "impl SettingsWriter › fn commit_mixed",
+      "commit": "075308b",
+      "note": "write()?; then mutate + replace_all; generation only after both"
+    },
+    {
+      "path": "src/config/settings_writer.rs",
+      "lines": "822-831",
+      "commit": "075308b",
+      "note": "delete_workspace_custom_tool uses commit_mixed"
+    },
+    {
+      "path": "src/config/settings_writer.rs",
+      "lines": "889-898",
+      "commit": "075308b",
+      "note": "delete_workspace_mcp_server uses commit_mixed"
+    }
+  ],
+  "repro": "缺注入：在 store::replace_all 失败时观察工作区自定义工具/MCP 文件已删而 DB agents 绑定未剥。非日常写崩；建议加固：DB 成功后再落盘，或失败回滚文件，或 temp+rename。",
+  "reporter": "runtime",
+  "owner": "runtime",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T00:30:00+08:00",
+      "by": "runtime",
+      "change": "Batch 3 from DRAFT-MC-1; node claim already truthful; recommend optional harden"
+    },
+    {
+      "ts": "2026-10-12T00:40:00+08:00",
+      "by": "runtime",
+      "change": "renumbered from ISSUE-013 to avoid cross-agent collision"
+    }
+  ]
+}

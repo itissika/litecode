@@ -1,5 +1,11 @@
 {
   "demand_officer": "387360fa-bdaf-4eee-b105-c259d2fee2d4",
   "tools_steward": "b8de09ec-71bf-4745-9f8c-431d487d34c8",
-  "note": "created; no first message"
+  "runtime": "0638948b-bd13-4213-980c-c9573cf54509",
+  "context": "6f0b9b1e-d8c1-4ebd-ad7d-118e74cb7a94",
+  "ide": "bbb02721-d5b0-4d4c-83a5-9b116c3a7add",
+  "session": "7d4a7810-8648-4849-a0f1-f333cdf9ab3a",
+  "frontend": "b487ebe9-1927-40a2-8248-85309179143b",
+  "tools": "c82b45df-eede-4fae-abc7-62613f268dae",
+  "note": "product bots activated 2026-10-11 after Andy group launch"
 }

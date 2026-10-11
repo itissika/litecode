@@ -1,0 +1,51 @@
+{
+  "id": "ISSUE-014",
+  "grade": "drift",
+  "layer": "product",
+  "domain": "harness-core",
+  "core": false,
+  "core_nodes": [
+    "reminder-log"
+  ],
+  "basis": [
+    "A3"
+  ],
+  "title": "DATA.md reminder seed table missing Mentions / KnowledgeStatus / CustomToolSettled",
+  "promise": "session DATA.md documents reminder kinds that exist in code",
+  "actual": "Was: DATA.md reminder seed table incomplete vs kinds.rs. Fixed 2026-10-12: added reminder/custom_tool_settled, reminder/mentions, reminder/knowledge_status rows and extended Wake paragraph; no SessionEvent digression.",
+  "evidence": [
+    {
+      "path": "src/session/DATA.md",
+      "lines": "1-80",
+      "commit": "075308b",
+      "note": "reminder seed table incomplete vs kinds.rs"
+    },
+    {
+      "path": "src/reminder/kinds.rs",
+      "lines": "25-26",
+      "commit": "075308b"
+    }
+  ],
+  "repro": "Diff DATA.md reminder section vs src/reminder/kinds.rs",
+  "reporter": "context",
+  "owner": "context",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T00:30:00+08:00",
+      "by": "context",
+      "change": "Batch3 from DRAFT-CTX-002 docs gap"
+    },
+    {
+      "ts": "2026-10-12T00:40:00+08:00",
+      "by": "runtime",
+      "change": "restored JSON after accidental ISSUE-014 overwrite; content from context artifact"
+    },
+    {
+      "ts": "2026-10-12T00:30:24+08:00",
+      "by": "context",
+      "change": "GM authorized DATA.md fix; table + Wake prose patched; closing drift"
+    }
+  ]
+}

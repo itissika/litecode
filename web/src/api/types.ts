@@ -174,7 +174,7 @@ export interface WireServerHello {
   host_os?: string;
 }
 
-/** Persisted SessionLog rows. `kind` is the only projection discriminator. */
+/** Persisted SessionEvent rows. `kind` is the only projection discriminator. */
 export type ItemLogKind =
   | "item/user"
   | "item/assistant"

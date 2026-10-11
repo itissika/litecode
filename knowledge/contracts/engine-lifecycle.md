@@ -1,6 +1,7 @@
 ```node
 node : engine-lifecycle
 status : enabled
+domain : ide-substrate
 summary : 引擎契约：desired、运行 state、索引状态与工具可见性各有含义；code/session 执行门解耦。
 x : 756
 y : 710
@@ -16,5 +17,12 @@ h : 414
 - 两类语料各自独立：code 与 session 的执行门解耦——code 门同时要运行与索引可用；session 语义门只要求共享 worker Warm，滞后只损召回，命中仍回真源水合。
 - 多消费者共享：人类界面与 agent 消费同一 owner 的状态与数据；界面只能读投影，不能回写意图或伪造生命周期。
 
+契约展开：[@ key="lsp-hub-lifecycle"]、[@ key="process-lifetime"]。
 上层：[@ key="config"]、[@ key="engine-design"]。
 依据：[@ file="src/engines/mod.rs"]、[@ file="src/engines/status_view.rs"]。
+基线：075308b
+
+**核实结论：一致，无漂移。**（基线 075308b）
+- desired 与 `EngineState` 分立 —— [@ file="src/engines/mod.rs"]（Idle/Warming/Warm/Failed/Stopped）+ `workspace_engine_desired`；投影 [@ file="src/engines/status_view.rs"]。
+- code / session 执行门解耦 —— session 语义需 code_search Warm；索引状态独立于 desired。
+- 子契约 lsp-hub-lifecycle / process-lifetime 已对照；ISSUE-009 已关（gate）；无产品层阻止扩写的矛盾。

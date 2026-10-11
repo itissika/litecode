@@ -1,6 +1,7 @@
 ```node
 node : tool-implementation-contract
 status : enabled
+domain : tools-permission
 summary : 单工具职责：声明身份与资源，专注业务实现，按共同结果契约返回。
 x : 1512
 y : 810
@@ -16,4 +17,9 @@ h : 382
 - 结果返回：按共同结果契约返回业务结果与信号，不自造方言。
 - 接入方式：内置、Custom、MCP 只是接入方式不同，不构成绕过公共契约的理由。
 
+上层：[@ key="tools"]。
 相关：[@ key="tool-call-contract"]。
+契约展开：[@ key="webfetch-ssrf"]、[@ key="websearch"]。
+基线：075308b
+**核实结论：一致，无漂移。**（基线 075308b）
+- 实现契约由 adapters / identity / webfetch-ssrf / websearch 展开；挂树完整。

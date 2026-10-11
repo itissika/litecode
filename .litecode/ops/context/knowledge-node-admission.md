@@ -21,7 +21,7 @@
 
 ## 1. 现状盘点（基线 `e583ff2`）
 
-36 个节点：27 个 `enabled`，9 个 `pending`（全部在 `knowledge/contracts/tools/`），0 个 `disabled`。
+36 个节点：26 个 `enabled`，10 个 `pending`（全部在 `knowledge/contracts/tools/`），0 个 `disabled`。
 层次：`why` → `product-brief` → `design/*`（agent/engine/ux）→ `framework/*`（config/context/session/tools/featured-tools/ux）+ `harness/*` → `contracts/*`（11 个 enabled 契约）→ `contracts/tools/*`（9 个 pending 子契约）。
 证据形态：enabled 节点只用文件级 `依据：[@ file=…]`；pending 工具子契约用符号级引用（每节点 5–6 个），是本轮节点的样板。
 
@@ -54,7 +54,9 @@
 | A6 | 安全与权限边界 | 存在一道“不可放宽”的门（沙箱、floor、SSRF、认证），能说出门在哪一处唯一实现、绕过算什么。 |
 | A7 | 架构决策与禁令（仓库特有） | 已被 ADR（`docs/adr/*`）或死亡清单测试（`tests/*_death_list.rs`、`src/types/death_list_gate.rs`）钉住的“只许一处 / 禁止第二套”。 |
 
-A7 是对总经理方向的补充：本仓已有大量以死亡清单测试表达的架构禁令，它们本身就是候选不变量的证据。
+A7 是对总经理方向的补充：本仓已有大量以死亡清单测试表达的架构禁令，它们是候选不变量的**线索**，不是定论。
+
+**死亡清单要辩证看待（Andy，2026-10-11）：** 产品迭代快，部分禁令可能已经过时。核实时先问“这条禁令今天还守着真实的架构意图吗”。若已过时，允许删除该禁令或放宽表述，但必须记一条 issue（`layer: gate`）写明过时依据（引用当前实现与相关节点），不得为了让测试变绿而静默删改。
 
 ## 4. 排除项（出现即退回）
 
@@ -76,9 +78,9 @@ A7 是对总经理方向的补充：本仓已有大量以死亡清单测试表�
   - `父节点：[@ key="…"]` —— 仅用于同一契约的拆分子节点（如 `contracts/tools/*`），与 `上层：` 二选一。
   - `契约展开：` / `框架展开：` / `向下展开：` —— 只写在上层节点里指向下层。
   - `相关：[@ key="…"]` —— 横向引用，指向别域主节点。
-  - `依据：` —— 源码证据（见第 6 节）。
-- **新节点声明块增加一行 `domain : <域 id>`**（落在 `extras`，解析器原样保留写回），用于归属统计和去重检查。存量 enabled 节点不加（需 Andy 批准）。
-- 新节点 `status : pending`。它可以引用 enabled 节点；enabled 节点向下引用它需要改 enabled 节点，按第 8 节走 Andy 审批，审批前不挂接，靠新节点的 `上层：` 单向挂树。
+  - `依据：` —— 源码证据（见第 6 节）。`证据：` 为历史别名，kb_check 仍接受；新写一律用 `依据：`。
+- **新节点声明块增加一行 `domain : <域 id>`**（落在 `extras`，解析器原样保留写回），用于归属统计和去重检查。存量 enabled 节点可补加。
+- 新节点 `status : pending`。它可以引用 enabled 节点；enabled 节点可直接补 `契约展开：` 等向下链接完成挂树（见第 8 节）。
 - 键：英文小写短横线，等于文件名主干；目录沿用 `knowledge/{design,framework,harness,contracts,ux}/`，同一契约拆分子节点放子目录（参照 `contracts/tools/`）。
 - 去重判定（Batch 2 跨域对齐时检查）：两个节点 `summary` 描述同一身份/同一状态机/同一真源，或主张中出现同一不变量 → 保留归属域那一个，另一个改成引用。
 
@@ -104,7 +106,7 @@ summary : <一句话：这个节点承诺什么>
 
 **准入：** A<编号>。<一小段（≤4 句）：它凭什么是重要节点——守住了哪条不变量/状态机/真源/契约/提交边界/安全门；坏了会波及哪些模块。>
 
-证据：[@ file="<path>" symbol="<chain>"]、[@ file="<test path>" symbol="fn <test>"]。
+依据：[@ file="<path>" symbol="<chain>"]、[@ file="<test path>" symbol="fn <test>"]。
 上层：[@ key="<parent>"]。
 基线：<短哈希>
 ````
@@ -132,7 +134,10 @@ summary : <一句话：这个节点承诺什么>
 
 ## 8. 写入纪律
 
-1. `status : enabled` 的节点：未经 Andy 明确批准，不改一个字（含 summary、坐标、标签行）。需要修正时：记 issue（契约漂移）+ 在 pending 新节点里写正确版本，等 Andy 审。
+1. `status : enabled` 的节点**允许修改**（Andy，2026-10-11）。`enabled` 只表示 Andy 的意图已尽量收敛，不代表绝对正确：
+   - `contracts/*` 体量大、只经粗审，可能已有与实现不符之处，核实时按“可能有误”对待，发现不符先记 issue 再改。
+   - 其余 enabled 节点是 Andy 手写或细看过的，**意图明确，以意图为准**；可以打磨措辞、补证据、补向下链接，但不得改变其主张的意思。若认为意图本身与实现或架构冲突，记 issue 上报，不擅自改意图。
+   - 不得把节点改成 `disabled`，也不得把 `pending` 改成 `enabled`；状态升降仍由 Andy 决定。每次改动 enabled 节点都用 `append_log` 留一条记录。
 2. `pending` 节点（含存量 9 个工具子契约）：只由归属域负责人修改；只做纠错和补证据，不重写主张；改动在 log 里留一条 `append_log`。
 3. 优先新建一个带链接的节点，而不是重写已有节点。
 4. 不改 `docs/knowledge-references.md` 与 `src/knowledge/*`；发现语法/索引问题记到 `knowledge` 域 issue。

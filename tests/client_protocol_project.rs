@@ -2,6 +2,7 @@ use litecode::client_protocol::project;
 use litecode::client_protocol::protocol::{
     TurnEndReason, TurnTokenStats, WireEvent, WireTurnPhase, methods,
 };
+use litecode::permission::AskKind;
 use litecode::runtime::observer::{InternalEvent, TurnPhase};
 use litecode::session::event::{EventType, SessionEvent};
 use litecode::session::model::LogState;
@@ -404,6 +405,11 @@ fn permission_ask_projects_to_permission_request_with_session_id() {
             tool: "bash".into(),
             rule_id: "default".into(),
             summary: "Run bash command".into(),
+            kind: AskKind::Permission,
+            free_text: false,
+            options: Vec::new(),
+            multi_select: false,
+            questions: Vec::new(),
         },
         &snap,
     )

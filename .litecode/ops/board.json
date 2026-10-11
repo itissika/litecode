@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-11T13:56:40.240Z",
+  "updated_at": "2026-10-11T15:46:51.000Z",
   "domains": [
     {
       "id": "team-ops",
@@ -118,7 +118,7 @@
     {
       "id": "tools",
       "name": "Tools",
-      "place": "/workspace/litecode/src/{tool,tools,permission,mcp,hook}",
+      "place": "/workspace/litecode/src/{tool,tools,permission,mcp,hook,knowledge,optional}",
       "scope": [
         "工具合约",
         "内置工具",
@@ -187,7 +187,7 @@
         "改前端 UI",
         "改 tools 合约未经 handoff"
       ],
-      "status": "standby"
+      "status": "active"
     },
     {
       "id": "context",
@@ -208,7 +208,7 @@
       "reject_tests": [
         "改 session 存储 schema 未经 handoff"
       ],
-      "status": "standby"
+      "status": "active"
     },
     {
       "id": "ide",
@@ -232,7 +232,7 @@
         "改 web 布局大块",
         "改 session 协议"
       ],
-      "status": "standby"
+      "status": "active"
     },
     {
       "id": "demand_officer",
@@ -317,14 +317,14 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "backlog",
+      "status": "in_progress",
       "depends_on": [
         "WP-001"
       ],
       "blocker": null,
       "handoff_path": ".litecode/ops/handoffs/WP-001-to-WP-002.md",
       "artifact_path": null,
-      "progress": "BREAK: 依赖 WP-001 通过；群启动令未下前 status 不得到 done"
+      "progress": "启动信号已收：产品 bot 已建并私信下达 Batch 2；群保持静默"
     },
     {
       "id": "WP-003",

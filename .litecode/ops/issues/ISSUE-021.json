@@ -1,0 +1,41 @@
+{
+  "id": "ISSUE-021",
+  "grade": "suspect",
+  "layer": "product",
+  "domain": "tools-permission",
+  "core": false,
+  "core_nodes": [
+    "webfetch-ssrf"
+  ],
+  "basis": [
+    "A6"
+  ],
+  "title": "webfetch 校验 DNS 与 reqwest 再次解析之间存在重绑定窗口",
+  "promise": "webfetch-ssrf：校验通过的主机在实际请求时仍应对应公网地址",
+  "actual": "validate_public_http_url 先 ToSocketAddrs，随后 reqwest 再次解析同一主机名；恶意/TTL 短 DNS 可在两跳之间换到私网。当前无复现 harness；redirect 路径每跳会再 validate，但首跳仍有窗口。",
+  "evidence": [
+    {
+      "path": "src/tools/webfetch.rs",
+      "symbol": "fn validate_public_http_url",
+      "commit": "075308b"
+    },
+    {
+      "path": "src/tools/webfetch.rs",
+      "symbol": "impl WebFetchTool › fn fetch",
+      "commit": "075308b",
+      "note": "reqwest get after validate; Policy::none + re-validate on Location"
+    }
+  ],
+  "repro": "缺：可控权威 DNS / mock resolver 在 validate 与 connect 之间切换 A 记录的集成测试",
+  "reporter": "Tools",
+  "owner": "Tools",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T00:45:00Z",
+      "by": "Tools",
+      "change": "Split from ISSUE-012 DNS-rebinding note as suspect"
+    }
+  ]
+}

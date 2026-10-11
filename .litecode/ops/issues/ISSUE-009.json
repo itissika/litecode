@@ -1,0 +1,60 @@
+{
+  "id": "ISSUE-009",
+  "grade": "drift",
+  "layer": "gate",
+  "domain": "ide-substrate",
+  "core": true,
+  "core_nodes": [
+    "engine-lifecycle",
+    "process-lifetime"
+  ],
+  "basis": [
+    "A5",
+    "A2"
+  ],
+  "title": "stop_kills 测试在 Unix 上把僵尸判为仍存活（门禁误报）",
+  "promise": "process-lifetime / engine-lifecycle：Stopped 后无运行 worker；stop_kills_os_process_when_client_not_installed 守护 kill 路径",
+  "actual": "engine.stop→kill_client→kill_process(SIGKILL) 已送达；测试在 child.try_wait 之前用 is_process_alive(kill(0))，Unix 僵尸仍返回成功，断言失败。stop_during_warmup_kills_worker 通过。原 suspect/env 升级为 drift/gate。",
+  "evidence": [
+    {
+      "path": "src/engines/code_search_engine.rs",
+      "test": "fn stop_kills_os_process_when_client_not_installed",
+      "commit": "075308b",
+      "note": "Batch3: reorder try_wait before liveness probe"
+    },
+    {
+      "path": "src/engines/code_search_engine.rs",
+      "symbol": "impl CodeSearchEngine › fn kill_client",
+      "commit": "075308b"
+    },
+    {
+      "path": "src/serve/shutdown.rs",
+      "symbol": "fn is_process_alive",
+      "commit": "075308b",
+      "note": "Unix kill(pid,0) true for zombies"
+    },
+    {
+      "path": "src/engines/code_search_engine.rs",
+      "test": "fn stop_during_warmup_kills_worker",
+      "commit": "075308b",
+      "note": "passes — real warmup+stop path"
+    }
+  ],
+  "repro": "HOME=/workspace/litecode/.tmp/home cargo test --lib engines::code_search_engine::tests::stop_kills_os_process_when_client_not_installed",
+  "reporter": "ide",
+  "owner": "ide",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T00:00:00+08:00",
+      "by": "gm",
+      "change": "seeded as suspect/env in issue-grading.md"
+    },
+    {
+      "ts": "2026-10-12T00:40:00+08:00",
+      "by": "ide",
+      "change": "Batch3: reproduced; reclassified drift/gate (zombie); patched try_wait order; closed. Product SIGKILL path intact."
+    }
+  ]
+}

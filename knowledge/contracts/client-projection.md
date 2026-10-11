@@ -2,6 +2,7 @@
 node : client-projection
 status : enabled
 summary : 客户端投影：按 session/seq 镜像权威行，快照与增量补缺口；乐观气泡没有日志身份。
+domain : client-ux
 x : 270
 y : 558
 w : 416
@@ -17,5 +18,7 @@ h : 414
 - 纪律有测试：死亡清单测试封禁第二套对话语义；流式平滑只是显示缓冲。
 - 边界：子会话事件按自身 session 分发；关闭 tab 或断开连接不拥有取消执行的权力。
 
-上层：[@ key="ux"]。
+契约展开：[@ key="connection-ask-registry"]。
+上层：[@ key="ux"]。相关：[@ key="session-model"]。
 依据：[@ file="src/client_protocol/protocol.rs"]、[@ file="web/src/stores/messageStore.ts"]。
+基线：075308b

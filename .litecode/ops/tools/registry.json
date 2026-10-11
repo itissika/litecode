@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "tools_version": 6,
-  "updated_at": "2026-10-11T14:18:10.015Z",
+  "tools_version": 7,
+  "updated_at": "2026-10-11T15:36:46.651Z",
   "hot_reload": true,
   "tools": [
     {
       "id": "ops.validate_board",
-      "version": 4,
-      "purpose": "校验 board.json / demand board 符合 schema 与跨引用规则",
+      "version": 5,
+      "purpose": "校验 board.json / demand board 符合 schema 与跨引用规则；v7 起同时跑 ops.kb_check，知识库有 error 即失败",
       "invoke": "node .litecode/ops/tools/validate_all.mjs",
       "required_for": [
         "WP done",
@@ -27,9 +27,9 @@
     },
     {
       "id": "ops.wp_gate",
-      "version": 5,
-      "purpose": "检查工作包是否可推进（依赖、产物、工具痕迹、阻断规则）；通过后写回 board.json 状态、append 状态变更 log 并重跑 validate，失败则回滚；--dry-run 只检查不写",
-      "invoke": "node .litecode/ops/tools/wp_gate.mjs --id WP-xxx --to <status> [--dry-run] [--source <agent_id>]",
+      "version": 6,
+      "purpose": "检查工作包是否可推进（依赖、产物、工具痕迹、阻断规则）；通过后写回 board.json 状态、append 状态变更 log 并重跑 validate，失败则回滚；--dry-run 只检查不写；v7 起知识类 WP 推到 review/done 前要求涉及节点 kb_check 无 error",
+      "invoke": "node .litecode/ops/tools/wp_gate.mjs --id WP-xxx --to <status> [--dry-run] [--source <agent_id>] [--kb-nodes k1,k2]",
       "required_for": [
         "WP status 变更"
       ],
@@ -57,7 +57,7 @@
     },
     {
       "id": "ops.board",
-      "version": 5,
+      "version": 6,
       "purpose": "打开工具聚合面板（最近更新/教程/版本）",
       "invoke": "type .litecode/ops/tools/board.md  # or Read",
       "required_for": [
@@ -83,6 +83,18 @@
       "invoke": "node .litecode/ops/tools/ack_event.mjs --id E-... --by <agent_id>",
       "required_for": [
         "事件闭环"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.kb_check",
+      "version": 1,
+      "purpose": "知识库校验：复刻 litecode 节点/引用解析（cases.json 对照全过才可用），报 litecode 状态码 + 准入规则（写错被静默当文本的引用、key=文件名、新节点 domain/上层|父节点/基线/五标签、主节点重复疑似）；error 使 validate_all 失败",
+      "invoke": "node .litecode/ops/tools/kb_check.mjs [--node <key>] [--json] [--wp WP-xxx] [--stock-ref <rev>] [--selftest]",
+      "required_for": [
+        "validate_all",
+        "知识类 WP 推进 review/done",
+        "知识节点提交前自查"
       ],
       "stdout_header": "LITECODE_OPS tools_version=..."
     }

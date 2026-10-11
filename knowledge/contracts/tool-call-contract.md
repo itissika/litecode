@@ -1,6 +1,7 @@
 ```node
 node : tool-call-contract
 status : enabled
+domain : tools-permission
 summary : 公共管线职责：工具做操作，管线管调用如何接纳、执行、交代。
 x : 1908
 y : 594
@@ -17,3 +18,6 @@ h : 380
 - 身份两级：tool name 是工具身份，call_id 是调用身份，二者不是一回事。
 
 上层：[@ key="tools"]。相关：[@ key="tool-pipeline"]。
+基线：075308b
+**核实结论：一致，无漂移。**（基线 075308b）
+- 管线职责拆到 tool-request-entry / lifecycle / delivery / shaping；与实现入口 `run_tool` 一致。

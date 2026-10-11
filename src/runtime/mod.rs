@@ -808,7 +808,7 @@ impl AgentRuntime {
             }
         }
         // Turn ownership remains in Live, but its durable terminal fact belongs
-        // in SessionLog so replay never infers completion from a disconnected
+        // as a SessionEvent so replay never infers completion from a disconnected
         // stream.
         let reason_name = reason.as_log_reason();
         if let Err(error) = self.sessions.apply(

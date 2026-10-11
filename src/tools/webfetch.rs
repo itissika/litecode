@@ -71,7 +71,7 @@ impl WebFetchTool {
 }
 
 /// Reject non-http(s) schemes and any URL resolving to a private/loopback/
-/// link-local/unspecified address (SSRF guard, G2).
+/// link-local/unspecified/benchmarking address (SSRF guard, G2).
 fn validate_public_http_url(parsed: &url::Url) -> Result<(), String> {
     match parsed.scheme() {
         "http" | "https" => {}
@@ -103,29 +103,53 @@ fn validate_public_http_url(parsed: &url::Url) -> Result<(), String> {
         resolved.map(|sa| sa.ip()).collect()
     };
     for ip in addrs {
-        let non_public = match ip {
-            std::net::IpAddr::V4(v4) => {
-                v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_unspecified()
-                    || is_ipv4_shared(&v4)
-            }
-            std::net::IpAddr::V6(v6) => {
-                v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local()
-            }
-        };
-        if non_public {
+        if is_non_public_ip(ip) {
             return Err(format!("URL resolves to a non-public address ({ip})"));
         }
     }
     Ok(())
 }
 
+fn is_non_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => is_non_public_ipv4(&v4),
+        std::net::IpAddr::V6(v6) => {
+            if v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+            {
+                return true;
+            }
+            // IPv4-mapped IPv6 (::ffff:a.b.c.d): judge the embedded IPv4.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_non_public_ipv4(&v4);
+            }
+            false
+        }
+    }
+}
+
+fn is_non_public_ipv4(ip: &std::net::Ipv4Addr) -> bool {
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || is_ipv4_shared(ip)
+        || is_ipv4_benchmarking(ip)
+}
+
 /// RFC 6598 shared address space (100.64.0.0/10) — also non-public.
 fn is_ipv4_shared(ip: &std::net::Ipv4Addr) -> bool {
     let octets = ip.octets();
     octets[0] == 100 && (octets[1] & 0x40) == 0x40
+}
+
+/// RFC 2544 benchmarking range 198.18.0.0/15 — non-public (often used by
+/// local DNS sinkholes / network simulators).
+fn is_ipv4_benchmarking(ip: &std::net::Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 198 && (octets[1] & 0xfe) == 18
 }
 
 impl Tool for WebFetchTool {
@@ -329,8 +353,18 @@ mod tests {
         assert!(parse_validate("http://172.16.0.1/").is_err());
         // RFC 6598 shared space is also non-public.
         assert!(parse_validate("http://100.64.0.1/").is_err());
+        // RFC 2544 benchmarking range 198.18.0.0/15 is non-public.
+        assert!(parse_validate("http://198.18.0.1/").is_err());
+        assert!(parse_validate("http://198.19.255.255/").is_err());
         // IPv6 unique-local is non-public.
         assert!(parse_validate("http://[fd00::1]/").is_err());
+        // IPv6 link-local fe80::/10 is non-public.
+        assert!(parse_validate("http://[fe80::1]/").is_err());
+        // IPv4-mapped IPv6 must judge the embedded IPv4 (ISSUE-012).
+        assert!(parse_validate("http://[::ffff:127.0.0.1]/").is_err());
+        assert!(parse_validate("http://[::ffff:10.0.0.1]/").is_err());
+        assert!(parse_validate("http://[::ffff:192.168.0.1]/").is_err());
+        assert!(parse_validate("http://[::ffff:198.18.0.1]/").is_err());
     }
 
     #[test]
@@ -338,10 +372,19 @@ mod tests {
         // A public IP is accepted without needing DNS resolution.
         assert!(parse_validate("http://8.8.8.8/").is_ok());
         assert!(parse_validate("http://[2001:4860:4860::8888]/").is_ok());
+        // IPv4-mapped public address is still public.
+        assert!(parse_validate("http://[::ffff:8.8.8.8]/").is_ok());
     }
 
     #[test]
-    fn ssrf_rejects_missing_host() {
-        assert!(parse_validate("http:///no-host").is_err());
+    fn ssrf_whatwg_triple_slash_is_hostname_not_missing_host() {
+        // ISSUE-011: rust `url` (WHATWG) parses `http:///no-host` as host
+        // "no-host", not as missing host. Missing-host rejection must not
+        // rely on this shape. Rejection here (if any) comes from DNS →
+        // non-public (e.g. sinkhole 198.18/15), not from "no host".
+        let parsed = url::Url::parse("http:///no-host").unwrap();
+        assert_eq!(parsed.host_str(), Some("no-host"));
+        // Host present → validate path runs; env may resolve to non-public.
+        let _ = validate_public_http_url(&parsed);
     }
 }

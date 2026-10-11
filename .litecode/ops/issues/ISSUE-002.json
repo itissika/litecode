@@ -1,0 +1,48 @@
+{
+  "id": "ISSUE-002",
+  "grade": "drift",
+  "layer": "gate",
+  "domain": "ide-substrate",
+  "core": true,
+  "core_nodes": [
+    "retrieval-contract"
+  ],
+  "basis": [
+    "A1",
+    "A7"
+  ],
+  "title": "词法腿门禁仍断言 2 参 lexical_search_ripgrep，实现已 4 参",
+  "promise": "retrieval-contract：词法腿走磁盘遍历、不接索引加速；tests lexical_lane_source_never_calls_text_index_accelerator 守护调用形态",
+  "actual": "lexical_search_with_preset 调用 lexical_search_ripgrep(query, preset, false, None)；门禁仍 require 子串 lexical_search_ripgrep(query, preset) 导致失败。不变量（无 try_accelerated_search/text_index/path_index）仍成立。",
+  "evidence": [
+    {
+      "path": "src/engines/code_search/lexical.rs",
+      "symbol": "fn lexical_search_with_preset",
+      "commit": "075308b",
+      "note": "calls 4-arg ripgrep walk"
+    },
+    {
+      "path": "src/engines/code_search/lexical.rs",
+      "test": "fn lexical_lane_source_never_calls_text_index_accelerator",
+      "commit": "075308b",
+      "note": "Batch3: assertion updated to 4-arg; was failing at 075308b"
+    }
+  ],
+  "repro": "HOME=/workspace/litecode/.tmp/home cargo test --lib engines::code_search::lexical::tests::lexical_lane_source_never_calls_text_index_accelerator",
+  "reporter": "ide",
+  "owner": "ide",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T00:00:00+08:00",
+      "by": "gm",
+      "change": "seeded in issue-grading.md"
+    },
+    {
+      "ts": "2026-10-12T00:40:00+08:00",
+      "by": "ide",
+      "change": "Batch3: confirmed fail at 075308b; patched gate assert to 4-arg; closed"
+    }
+  ]
+}

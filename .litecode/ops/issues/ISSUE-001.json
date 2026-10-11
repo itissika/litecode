@@ -1,0 +1,54 @@
+{
+  "id": "ISSUE-001",
+  "grade": "drift",
+  "layer": "gate",
+  "domain": "client-ux",
+  "core": true,
+  "core_nodes": [
+    "client-projection",
+    "connection-ask-registry"
+  ],
+  "basis": [
+    "A4",
+    "A5"
+  ],
+  "title": "client_protocol 权限投影测试未跟上 PermissionAsk 新字段",
+  "promise": "tests/client_protocol_project.rs + client_protocol_permission.rs 与 InternalEvent::PermissionAsk / PendingPermission / PermissionRequest / AskReply 字段一致，守护可编译运行",
+  "actual": "Batch3 已补齐 kind/free_text/options/multi_select/questions，并将 reply_tx 改为 AskReply；测试源码已与实现对齐（本工作区未 commit）。",
+  "evidence": [
+    {
+      "path": "tests/client_protocol_project.rs",
+      "test": "fn permission_ask_projects_to_permission_request_with_session_id",
+      "commit": "075308b",
+      "note": "Batch3 patched: PermissionAsk now includes AskKind fields"
+    },
+    {
+      "path": "tests/client_protocol_permission.rs",
+      "lines": "55-96",
+      "commit": "075308b",
+      "note": "Batch3 patched: PendingPermission + PermissionRequest + AskReply"
+    },
+    {
+      "path": "src/runtime/observer.rs",
+      "symbol": "PermissionAsk",
+      "commit": "075308b"
+    }
+  ],
+  "repro": "cargo test --test client_protocol_project --test client_protocol_permission",
+  "reporter": "Session",
+  "owner": "Session",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T00:00:00+08:00",
+      "by": "gm",
+      "change": "seed in issue-grading.md"
+    },
+    {
+      "ts": "2026-10-12T00:45:00+08:00",
+      "by": "Session",
+      "change": "Batch3: patched tests to match Ask fields; close"
+    }
+  ]
+}

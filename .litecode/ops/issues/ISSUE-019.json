@@ -1,0 +1,58 @@
+{
+  "id": "ISSUE-019",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "client-ux",
+  "core": true,
+  "core_nodes": [
+    "ask-surface",
+    "connection-ask-registry"
+  ],
+  "basis": [
+    "A4",
+    "A5"
+  ],
+  "title": "多 session Ask 曾串行化整条 WS（基线前已修，Batch3 关闭）",
+  "promise": "Andy口径 + ask-surface/connection-ask-registry：一 session 的 Ask 不得卡住其它 session 的人机 RPC",
+  "actual": "基线 075308b 上 run_session_loop 在 Ask 期间仍直接 handle_jsonrpc；测试 ask_does_not_block_other_session_rpc 守护。前端 pendingPermission 按 session slice，不发明第二闸。DRAFT-CUX-1 所描述嵌套 select 排队已在 74f2bb1 移除。",
+  "evidence": [
+    {
+      "path": "src/client_protocol/connection.rs",
+      "symbol": "fn run_session_loop",
+      "commit": "075308b",
+      "note": "No nested select that parks other sessions RPCs"
+    },
+    {
+      "path": "src/client_protocol/connection.rs",
+      "test": "ask_does_not_block_other_session_rpc",
+      "commit": "075308b"
+    },
+    {
+      "path": "web/src/stores/turnStore.ts",
+      "symbol": "interface PendingPermission",
+      "commit": "075308b"
+    },
+    {
+      "path": "knowledge/contracts/client/connection-ask-registry.md",
+      "lines": "1-13",
+      "commit": "075308b"
+    }
+  ],
+  "repro": "cargo test ask_does_not_block_other_session_rpc (source+test at baseline; cloud rustc may be older than crate MSRV)",
+  "reporter": "前端",
+  "owner": "Session",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T15:49:00Z",
+      "by": "前端",
+      "change": "DRAFT-CUX-1 in BATCH-2-client-ux-web"
+    },
+    {
+      "ts": "2026-10-12T00:40:00Z",
+      "by": "前端",
+      "change": "Batch3: fixed at 74f2bb1 before baseline; close as ISSUE-019 (013 taken by harness-core)"
+    }
+  ]
+}

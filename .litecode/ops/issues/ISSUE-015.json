@@ -1,0 +1,51 @@
+{
+  "id": "ISSUE-015",
+  "grade": "drift",
+  "layer": "gate",
+  "domain": "release-desktop",
+  "core": false,
+  "core_nodes": [
+    "bundle-resolve"
+  ],
+  "basis": [
+    "A7"
+  ],
+  "title": "第三方依赖 panic 路径可能仍带构建机 .cargo/registry 前缀",
+  "promise": "构建卫生：release 二进制用户可见路径不泄露构建机源码树（Andy口径：非用户功能面）",
+  "actual": "本域已把 CARGO_MANIFEST_DIR 模型回退限为 debug_assertions；桌面 devRepoRoot 在 isPackaged 时为空。未在 CI/RUSTFLAGS 见 --remap-path-prefix；第三方 crate panic 仍可能打印 registry 路径。",
+  "evidence": [
+    {
+      "path": "src/engines/code_search/embed.rs",
+      "symbol": "fn source_tree_model_path",
+      "commit": "075308b"
+    },
+    {
+      "path": "desktop/src/bundle-paths.ts",
+      "symbol": "fn devRepoRoot",
+      "commit": "075308b"
+    },
+    {
+      "path": ".github/workflows/windows-signed-release.yml",
+      "lines": "1-50",
+      "commit": "075308b",
+      "note": "no remap-path-prefix found in workflows/scripts"
+    }
+  ],
+  "repro": "缺：在签名 release 产物上触发第三方 panic 并检查栈是否含 .cargo/registry；Andy口径不升产品形态",
+  "reporter": "前端",
+  "owner": "前端",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T15:49:00Z",
+      "by": "前端",
+      "change": "DRAFT-REL-2"
+    },
+    {
+      "ts": "2026-10-12T00:30:00Z",
+      "by": "前端",
+      "change": "Batch3: formalize as gate/build-hygiene per Andy; not product; do not elevate"
+    }
+  ]
+}

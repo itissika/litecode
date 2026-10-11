@@ -1,0 +1,46 @@
+{
+  "id": "ISSUE-011",
+  "grade": "drift",
+  "layer": "gate",
+  "domain": "tools-permission",
+  "core": false,
+  "core_nodes": [
+    "webfetch-ssrf"
+  ],
+  "basis": [
+    "A6"
+  ],
+  "title": "ssrf_rejects_missing_host 前提与 WHATWG 主机解析不符",
+  "promise": "webfetch-ssrf / 测试名暗示 `http:///no-host` 应因缺主机被拒",
+  "actual": "rust `url`（WHATWG）将 `http:///no-host` 解析为主机 `no-host`；本环境 DNS 常把任意名解析到 198.18.0.1。原测试依赖错误前提。Batch3 已改写为断言 host_str==Some(\"no-host\")，不再假装缺主机。",
+  "evidence": [
+    {
+      "path": "src/tools/webfetch.rs",
+      "test": "ssrf_whatwg_triple_slash_is_hostname_not_missing_host",
+      "commit": "075308b",
+      "note": "renamed/replaced ssrf_rejects_missing_host in Batch3 working tree"
+    },
+    {
+      "path": "src/tools/webfetch.rs",
+      "symbol": "fn validate_public_http_url",
+      "commit": "075308b"
+    }
+  ],
+  "repro": "Url::parse(\"http:///no-host\").host_str() == Some(\"no-host\"); getent hosts no-host → 198.18.0.1 on this cloud box",
+  "reporter": "Tools",
+  "owner": "Tools",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T00:00:00Z",
+      "by": "seed",
+      "change": "Seeded in issue-grading.md"
+    },
+    {
+      "ts": "2026-10-12T00:45:00Z",
+      "by": "Tools",
+      "change": "Batch3: rewrite gate test; close drift/gate"
+    }
+  ]
+}

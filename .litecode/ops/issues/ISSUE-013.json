@@ -1,0 +1,51 @@
+{
+  "id": "ISSUE-013",
+  "grade": "drift",
+  "layer": "gate",
+  "domain": "harness-core",
+  "core": false,
+  "core_nodes": [
+    "context-compact",
+    "context-view"
+  ],
+  "basis": [
+    "A7"
+  ],
+  "title": "Death-list g2 asserts Compact→reload via source substrings (fragile gate)",
+  "promise": "session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept guards fold reload after Compact",
+  "actual": "Gate uses source substring assertions; product invariant still holds. Prefer symbol/behavior test later; do not silently green by deleting.",
+  "evidence": [
+    {
+      "path": "src/types/death_list_gate.rs",
+      "symbol": "fn session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept",
+      "commit": "075308b"
+    },
+    {
+      "path": "src/context_pipeline/compact.rs",
+      "symbol": "impl CompactPolicy › fn compact_transcript",
+      "commit": "075308b"
+    }
+  ],
+  "repro": "Read death_list_gate g2; compare to compact_transcript reload path.",
+  "reporter": "context",
+  "owner": "context",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T00:30:00+08:00",
+      "by": "context",
+      "change": "Batch3 from DRAFT-CTX-003"
+    },
+    {
+      "ts": "2026-10-12T00:40:00+08:00",
+      "by": "runtime",
+      "change": "restored JSON after accidental ISSUE-013 overwrite; content from context artifact"
+    },
+    {
+      "ts": "2026-10-12T00:30:24+08:00",
+      "by": "context",
+      "change": "GM authorized schedule: rewrite g2 gate from source-substring asserts to symbol/behavior test. Keep open until rewrite lands. Deleting or loosening the death-list entry still requires an issue-recorded reason; no silent green."
+    }
+  ]
+}

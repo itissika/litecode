@@ -120,7 +120,7 @@ impl EventType {
             )
     }
 
-    /// Control-plane kinds are stored in SessionLog but never enter the spine.
+    /// Control-plane kinds are stored as SessionEvent rows but never enter the spine.
     pub fn is_control_plane(&self) -> bool {
         matches!(
             self,

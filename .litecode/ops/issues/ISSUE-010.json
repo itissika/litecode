@@ -1,0 +1,65 @@
+{
+  "id": "ISSUE-010",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": true,
+  "core_nodes": [
+    "workspace-shared-substrate",
+    "workspace-sandbox"
+  ],
+  "basis": [
+    "A6"
+  ],
+  "title": "copy_path 经 sandbox.resolve 跟随符号链接后复制了目标（顶层 symlink）",
+  "promise": "workspace copy 拒绝符号链接（refuses_to_copy_symlinks）；sandbox 仍是唯一路径门，目标须在工作区内",
+  "actual": "copy_path 先 sandbox.resolve→canon_abs 跟随顶层 symlink 得到目标路径，再 copy_recursive 用 symlink_metadata 检查时已是普通文件，于是复制目标内容。子目录内链接仍拒。目标仍在工作区内，未 Escape——不触发 B3。",
+  "evidence": [
+    {
+      "path": "src/workspace/service.rs",
+      "symbol": "impl WorkspaceService › fn copy_path",
+      "commit": "075308b",
+      "note": "resolve(from) before copy_recursive"
+    },
+    {
+      "path": "src/workspace/service.rs",
+      "symbol": "fn copy_recursive",
+      "commit": "075308b",
+      "note": "symlink_metadata refuse only if src still a symlink"
+    },
+    {
+      "path": "src/workspace/sandbox.rs",
+      "symbol": "impl Sandbox › fn resolve",
+      "commit": "075308b"
+    },
+    {
+      "path": "src/config/path.rs",
+      "symbol": "fn canon_abs",
+      "commit": "075308b",
+      "note": "canonicalize follows symlinks"
+    },
+    {
+      "path": "src/workspace/service.rs",
+      "test": "fn refuses_to_copy_symlinks",
+      "commit": "075308b",
+      "note": "FAILED at 075308b: expected InvalidMove, got Ok"
+    }
+  ],
+  "repro": "HOME=/workspace/litecode/.tmp/home cargo test --lib workspace::service::tests::refuses_to_copy_symlinks",
+  "reporter": "ide",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T00:00:00+08:00",
+      "by": "gm",
+      "change": "seeded in issue-grading.md"
+    },
+    {
+      "ts": "2026-10-12T00:40:00+08:00",
+      "by": "ide",
+      "change": "Batch3: reproduced fail; evidence chain confirmed; no product fix this round (not tiny gate); not B3"
+    }
+  ]
+}

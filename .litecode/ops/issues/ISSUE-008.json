@@ -1,0 +1,46 @@
+{
+  "id": "ISSUE-008",
+  "grade": "drift",
+  "layer": "gate",
+  "domain": "client-ux",
+  "core": false,
+  "core_nodes": [
+    "ask-surface"
+  ],
+  "basis": [
+    "A2"
+  ],
+  "title": "PermissionModal 测试仍断言已不存在的 justify-start 样式类",
+  "promise": "ISSUE-008 seed / AskUserCard 选项按钮 className 与测试一致",
+  "actual": "web/src/components/PermissionModal.test.tsx L260 期望 option 含 justify-start；AskUserCard 生产渲染已无该 class",
+  "evidence": [
+    {
+      "path": "web/src/components/PermissionModal.test.tsx",
+      "lines": "255-260",
+      "commit": "075308b"
+    },
+    {
+      "path": "web/src/components/AskUserCard.tsx",
+      "symbol": "fn AskUserCard",
+      "commit": "075308b",
+      "note": "选项按钮无 justify-start"
+    }
+  ],
+  "repro": "cd web && npx vitest run src/components/PermissionModal.test.tsx -t option",
+  "reporter": "前端",
+  "owner": "前端",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T00:00:00Z",
+      "by": "gm",
+      "change": "seed in issue-grading.md"
+    },
+    {
+      "ts": "2026-10-12T00:00:00Z",
+      "by": "前端",
+      "change": "Batch3 formalize JSON; still open"
+    }
+  ]
+}

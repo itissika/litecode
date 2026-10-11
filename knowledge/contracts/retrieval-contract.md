@@ -1,6 +1,7 @@
 ```node
 node : retrieval-contract
 status : enabled
+domain : ide-substrate
 summary : 检索契约：文件/会话为真源，索引可重建；命中按证据排序、水合验证，复制品不冒充原件。
 x : 1224
 y : 700
@@ -18,3 +19,9 @@ h : 378
 
 上层：[@ key="featured-tools"]、[@ key="engine-design"]。
 依据：[@ file="src/engines/session_search/echo.rs"]、[@ file="src/engines/session_search/ranking.rs"]。
+基线：075308b
+
+**核实结论：一致，无漂移。**（基线 075308b）
+- 真源 / 回声 / 排序 —— [@ file="src/engines/session_search/echo.rs"]、[@ file="src/engines/session_search/ranking.rs"]；硬排除活跃 Surface 行见 session_search mod。
+- 词法腿不接索引加速 —— 生产代码无 `try_accelerated_search` / `text_index` / `path_index`；调用 `lexical_search_ripgrep(query, preset, false, None)`。
+- ISSUE-002：门禁曾断言 2 参（失败）；Batch3 已改为 4 参断言并关闭。不变量未变。

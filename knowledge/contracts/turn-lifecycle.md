@@ -1,6 +1,7 @@
 ```node
 node : turn-lifecycle
 status : enabled
+domain : harness-core
 summary : turn 契约：先预占再启动；seam 接收输入；取消是收尾而不是抹掉已发生的事。
 x : 504
 y : 566
@@ -16,5 +17,7 @@ h : 414
 - 取消是收尾：不擦除已产出内容与已完成副作用；未执行或中断的调用补中断结果，避免留下悬空调用。
 - 所有权交接：收尾按 turn 身份核对所有权，回退可接管租约；收尾失败仍发布完成，因此完成通知不等于终态已持久化。
 
+契约展开：[@ key="turn-reservation"]、[@ key="agent-loop"]、[@ key="stream-projection"]、[@ key="turn-llm-binding"]。
 上层：[@ key="session"]。
 依据：[@ file="src/session/manager.rs"]、[@ file="src/agent/core.rs"]。
+基线：075308b

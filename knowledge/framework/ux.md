@@ -2,6 +2,7 @@
 node : ux
 status : enabled
 summary : ux：面板体系与交互面（编辑器 / Agent 面板 / 边栏 / 设置）。
+domain : client-ux
 x : 738
 y : 360
 w : 398
@@ -17,5 +18,7 @@ h : 391
 - 视觉单一来源：主题由 token 承载，不散落硬编码。
 - 知识一等公民：Knowledge 与 Explorer / Search / Git 并列。
 
-契约展开：[@ key="client-projection"]。
+契约展开：[@ key="client-projection"]、[@ key="layout-ssot"]、[@ key="knowledge-client-view"]、[@ key="serve-bind-auth"]。
+框架展开：[@ key="theme-tokens"]。
 上层：[@ key="ux-design"]。
+基线：075308b

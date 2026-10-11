@@ -1,6 +1,6 @@
 //! Engine-owned system reminders.
 //!
-//! Each reminder owns one SessionLog seq. The body is frozen at write time.
+//! Each reminder owns one SessionEvent seq. The body is frozen at write time.
 //! AgentView renders that body; it does not recompute live state.
 
 mod engine;

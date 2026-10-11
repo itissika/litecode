@@ -23,7 +23,7 @@ use crate::types::{LitecodeError, Result};
 /// One queued user message waiting for the turn's next request seam.
 ///
 /// Process-local by contract: the queue is the live session's steering buffer,
-/// it is never written to SessionLog, and a process restart drops it. The only
+/// it is never written as a SessionEvent, and a process restart drops it. The only
 /// durable artifact of a queued message is the ordinary `item/user` row
 /// written when the queue is consumed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1616,7 +1616,7 @@ impl SessionManager {
         }
     }
 
-    /// List / GC emptiness: no SessionLog rows yet. Not AgentView.
+    /// List / GC emptiness: no SessionEvent rows yet. Not AgentView.
     ///
     /// Fold / working-set load must not hide a session that still has transcript
     /// rows. A busy turn is treated as non-empty so a just-started session stays

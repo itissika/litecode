@@ -582,12 +582,14 @@ mod tests {
         let engine = CodeSearchEngine::new();
         engine.set_worker_os_pid(Some(pid));
         engine.stop();
+        // Reap before liveness probe: on Unix kill(0) still succeeds for zombies
+        // held by this test's Child (ISSUE-009). SIGKILL already delivered above.
+        let _ = child.try_wait();
 
         assert!(
             wait_until_dead(pid, Duration::from_secs(2)),
             "code-search worker pid {pid} still alive after engine stop"
         );
-        let _ = child.try_wait();
     }
 
     #[test]

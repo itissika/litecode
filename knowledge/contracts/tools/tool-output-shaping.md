@@ -1,6 +1,7 @@
 ```node
 node : tool-output-shaping
 status : pending
+domain : tools-permission
 summary : 公共出口语言：坐标、信号、截断/落盘/媒体与 blob 还原；工具内部也在整形。
 x : 3726
 y : 396
@@ -17,3 +18,7 @@ h : 346
 - 出站与边界：客户端路径经 `encode_client_item` 处理，把 `[blob:id]` 还原为当时落盘的正文——已截断、已受紧急上限，不是未截断原文（[@ file="src/client_protocol/controller/mod.rs" lines="150-153"]、[@ file="src/tool/output.rs" symbol="fn resolve_body_refs"]）；工具自身也整形（如 `read` 行号前缀 [@ file="src/tools/read.rs" lines="507"]），`Tool::call` 辅助路径按同一预算先截断一次（[@ file="src/tool/trait_.rs" symbol="trait Tool › fn call"]）。
 
 父节点：[@ key="tool-call-contract"]。
+基线：075308b
+**核实结论：一致，无漂移。**（基线 075308b）
+- 信号合成 —— [@ file="src/tool/signal.rs" symbol="fn compose_full"]。
+- 截断/紧急上限/媒体物化/blob —— [@ file="src/tool/output.rs" symbol="fn finalize_tool_call_result"]、[@ file="src/tool/output.rs" symbol="fn materialize_media_parts"]、[@ file="src/session/data/sqlite/session.rs" symbol="impl Session › fn truncated_tool_result"]。

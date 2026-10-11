@@ -1,0 +1,53 @@
+{
+  "id": "ISSUE-003",
+  "grade": "drift",
+  "layer": "product",
+  "domain": "harness-core",
+  "core": true,
+  "core_nodes": [
+    "session-model",
+    "session-log-envelope"
+  ],
+  "basis": [
+    "A1",
+    "A7"
+  ],
+  "title": "DATA.md 仍用 SessionLog 词汇，与代码 SessionEvent 信封漂移",
+  "promise": "Andy口径：以代码 SessionEvent 为准；G1 session_seq_g1_envelope_vocab_matches_mental_model 要求文档含 SessionEvent/type/source_seqs",
+  "actual": "Batch3 已改 src/session/DATA.md：信封章节改为 SessionEvent，写入 type/surface_op/source_seqs/state；删除「没有平行的 surface_op」过时句。门禁未改（辩证：文档跟代码，不松门）。",
+  "evidence": [
+    {
+      "path": "src/session/DATA.md",
+      "lines": "110-128",
+      "commit": "075308b",
+      "note": "Batch3 rewritten SessionEvent section (working tree)"
+    },
+    {
+      "path": "src/session/event.rs",
+      "symbol": "struct SessionEvent",
+      "commit": "075308b"
+    },
+    {
+      "path": "src/types/death_list_gate.rs",
+      "test": "fn session_seq_g1_envelope_vocab_matches_mental_model",
+      "commit": "075308b"
+    }
+  ],
+  "repro": "cargo test --lib session_seq_g1_envelope_vocab_matches_mental_model",
+  "reporter": "Session",
+  "owner": "Session",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T00:00:00+08:00",
+      "by": "gm",
+      "change": "seed in issue-grading.md"
+    },
+    {
+      "ts": "2026-10-12T00:45:00+08:00",
+      "by": "Session",
+      "change": "Batch3: Andy口径=文档噪声；改 DATA.md 对齐 SessionEvent；close"
+    }
+  ]
+}

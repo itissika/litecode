@@ -14,7 +14,7 @@ use super::protocol::{
     StructuredError, TurnSnapshot, TurnTokenStats, WireEvent, WireTurnPhase,
 };
 
-/// Project one durable SessionLog row for `buffer/item`.
+/// Project one durable SessionEvent row for `buffer/item`.
 pub fn buffer_log_row(
     session_id: &str,
     event: &crate::session::event::SessionEvent,

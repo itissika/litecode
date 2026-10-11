@@ -1,6 +1,6 @@
 use litecode::client_protocol::permission_bridge::{PendingPermission, WsPermissionBridge};
 use litecode::client_protocol::protocol::PermissionRequest;
-use litecode::permission::{self, PermissionSink};
+use litecode::permission::{self, AskKind, AskReply, PermissionSink};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
@@ -66,6 +66,11 @@ async fn permission_channel_round_trip() {
             tool: "bash".into(),
             rule_id: "default".into(),
             summary: "ls".into(),
+            kind: AskKind::Permission,
+            free_text: false,
+            options: Vec::new(),
+            multi_select: false,
+            questions: Vec::new(),
             reply_tx,
         })
         .expect("send");
@@ -73,11 +78,14 @@ async fn permission_channel_round_trip() {
     let perm = perm_rx.recv().await.expect("recv");
     assert_eq!(perm.tool, "bash");
     perm.reply_tx
-        .send(permission::AskOutcome::Allow { always: false })
+        .send(AskReply::from_outcome(permission::AskOutcome::Allow { always: false }))
         .ok();
 
     let reply = permission::blocking_wait_oneshot(reply_rx);
-    assert_eq!(reply, Some(permission::AskOutcome::Allow { always: false }));
+    assert_eq!(
+        reply.map(|r| r.outcome),
+        Some(permission::AskOutcome::Allow { always: false })
+    );
 }
 
 #[test]
@@ -89,6 +97,11 @@ fn permission_request_serializes_request_id() {
         tool: "bash".into(),
         rule_id: "default".into(),
         summary: "ls".into(),
+        kind: AskKind::Permission,
+        free_text: false,
+        options: Vec::new(),
+        multi_select: false,
+        questions: Vec::new(),
     };
     let json = serde_json::to_string(&req).expect("json");
     assert!(json.contains("request_id"));
@@ -125,7 +138,7 @@ async fn ws_permission_bridge_assigns_uuid_request_id() {
         perm.request_id
     );
     perm.reply_tx
-        .send(permission::AskOutcome::Allow { always: false })
+        .send(AskReply::from_outcome(permission::AskOutcome::Allow { always: false }))
         .ok();
     let reply = ask.await.expect("join");
     assert_eq!(reply, permission::AskOutcome::Allow { always: false });

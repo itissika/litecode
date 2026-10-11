@@ -1,0 +1,50 @@
+{
+  "id": "ISSUE-020",
+  "grade": "suspect",
+  "layer": "env",
+  "domain": "release-desktop",
+  "core": false,
+  "core_nodes": [
+    "component-distribution"
+  ],
+  "basis": [
+    "A5"
+  ],
+  "title": "历史 tag Release 可能缺 litecode-components 资产（当前 latest 已齐）",
+  "promise": "component-distribution：同版本 GitHub Release 提供 litecode-components.json + 模型/linux tar",
+  "actual": "v0.2.3 已含 litecode-components.json、embed tar、linux tar、Setup exe。更旧 tag 未逐一核验。",
+  "evidence": [
+    {
+      "path": "scripts/build_components.mjs",
+      "lines": "1-40",
+      "commit": "075308b"
+    },
+    {
+      "path": ".github/workflows/windows-signed-release.yml",
+      "lines": "130-170",
+      "commit": "075308b"
+    },
+    {
+      "path": "desktop/src/components.ts",
+      "symbol": "class ComponentManager",
+      "commit": "075308b"
+    }
+  ],
+  "repro": "GitHub API releases/tags/v0.2.3 assets include litecode-components.json",
+  "reporter": "前端",
+  "owner": "前端",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-11T15:49:00Z",
+      "by": "前端",
+      "change": "DRAFT-REL-1"
+    },
+    {
+      "ts": "2026-10-12T00:40:00Z",
+      "by": "前端",
+      "change": "Batch3: v0.2.3 has assets; close as ISSUE-020 (014 taken by harness-core)"
+    }
+  ]
+}

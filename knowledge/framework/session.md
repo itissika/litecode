@@ -1,6 +1,7 @@
 ```node
 node : session
 status : enabled
+domain : harness-core
 summary : session：业务日志（kind / body / seq / state）为真源；单写者、回退与独立子会话。
 x : 34
 y : 350
@@ -16,3 +17,4 @@ h : 373
 
 契约展开：[@ key="session-model"]、[@ key="turn-lifecycle"]。
 上层：[@ key="agent-design"]。
+基线：075308b
