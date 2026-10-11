@@ -4,6 +4,7 @@ import type { DockviewApi, DockviewWillDropEvent } from "dockview-react";
 import { buildTabContextMenuItems } from "../config/tabContextMenu";
 import { dragSourceLocation } from "../drag/bindTabDrag";
 import { rejectsDockTarget } from "../drag/tabDragPolicy";
+import { routePopoutReturnDrop } from "../workbench/commands";
 import { startWorkbench } from "../workbench/lifecycle";
 
 /** Center grid and popout windows are one dock. Edge rails stay on their own. */
@@ -23,6 +24,7 @@ export function useDockviewConfig() {
   const onWillDrop = useCallback((event: DockviewWillDropEvent) => {
     if (apiRef.current) {
       preventCrossZoneDrop(event, apiRef.current);
+      routePopoutReturnDrop(event, apiRef.current);
     }
   }, []);
 

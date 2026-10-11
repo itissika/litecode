@@ -1,6 +1,26 @@
-# Changelog
+Changelog
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
+
+## \[0.2.3] - 2026-10-11
+
+### 新特性
+
+* **Windows 瘦安装包**：Windows 只发 NSIS 安装版，安装包约 130 MB；嵌入模型与 Linux 远程包不再内置，首次使用时从 GitHub Releases 自动下载（按版本清单 `litecode-components.json` 取址，sha256 校验后装到 `%LOCALAPPDATA%\litecode\bundles`）。离线或内网可用 `LITECODE_COMPONENTS_BASE` 指向本地目录。
+* **嵌入模型按需下载**：设置 → Engines 缺模型时显示下载卡片，带进度与重试；下载完成后检索引擎自动重启、状态变绿，无需重启应用。 
+* **Open Remote 按需拉取**：首次连接远程时自动下载 Linux 远程包，失败可重试。
+* **知识引用规范 v2**：引用解析由后端常驻索引统一判定（turn 提醒、`knowledge` 工具、界面一致），以磁盘真实状态为准；前端只消费后端快照。
+* **富 Ask 交互**：权限确认与向用户提问支持选项、多选与自由输入。
+* **弹出窗口增强**：弹出窗口支持拖拽、置顶与屏幕边界处理；内置浏览器工具栏可刷新 / 停止页面。
+
+### 其他
+
+* 自定义工具支持后台任务与 validate，回合更可靠；工具执行期间追踪待提交快照。
+* Dockview 作为布局唯一来源，修复新面板在零尺寸中心区旁打开的问题。
+* 前端核心依赖升级到当前稳定版；开发模式支持 Vite 热重载。
+* 发布流程：tag 必须为 `v<版本>` 且与 `Cargo.toml`、`desktop/package.json` 一致，CI 自动校验；按需组件与清单随 Release 发布。
+* 修复：发布包不再回退到构建机上的源码路径查找模型。
+* 修复：`web/package-lock.json` 与 `package.json` 不一致导致 CI `npm ci` 失败。
 
 ## \[0.2.2] - 2026-10-07
 
@@ -197,4 +217,3 @@
 * 工具集：grep / write / webfetch / subagent 等，含自定义工具示例。
 * 权限系统与敏感路径防护。
 * 嵌入模型随仓分发（granite-embedding）。
-
